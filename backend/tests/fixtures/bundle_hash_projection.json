@@ -1,0 +1,103 @@
+{
+  "contract_version": "BSHASH_v1",
+  "stage_allowlist_name": "bundle_build_allowlist_v1",
+  "source_version_refs": {
+    "chapter_goal": "CH001",
+    "scene_card": "CH001_SC03",
+    "voice_id": "VC_CHAR_LIN",
+    "relation_id": "REL_CHAR_A_CHAR_B",
+    "scene_memory_prev": "CH001_SC02",
+    "open_foreshadow_ids": [
+      "F014"
+    ],
+    "style_rule_set_id": "STYLE_GLOBAL_MAIN",
+    "banned_cluster_id": "BAN_REUNION_V1",
+    "style_observation_ids": [
+      "STY_003"
+    ],
+    "calibration_line_ids": [
+      "CAL_002"
+    ]
+  },
+  "resolved_ref_ids": {
+    "relation_ids": [
+      "REL_CHAR_A_CHAR_B"
+    ],
+    "world_rule_ids": [
+      "WR_GLOBAL_014"
+    ],
+    "open_foreshadow_ids": [
+      "F014"
+    ]
+  },
+  "ordered_injections": [
+    {
+      "slot": "chapter_goal",
+      "ref_id": "CH001",
+      "digest_key": "chapter_goal"
+    },
+    {
+      "slot": "scene_card",
+      "ref_id": "CH001_SC03",
+      "digest_key": "scene_card"
+    },
+    {
+      "slot": "pov_voice",
+      "ref_id": "VC_CHAR_LIN",
+      "digest_key": "voice_card"
+    },
+    {
+      "slot": "relation",
+      "ref_id": "REL_CHAR_A_CHAR_B",
+      "digest_key": "relation_card"
+    },
+    {
+      "slot": "prev_scene_memory",
+      "ref_id": "CH001_SC02",
+      "digest_key": "scene_memory"
+    },
+    {
+      "slot": "style_rule",
+      "ref_id": "STYLE_GLOBAL_MAIN",
+      "digest_key": "style_rule"
+    },
+    {
+      "slot": "banned_cluster",
+      "ref_id": "BAN_REUNION_V1",
+      "digest_key": "banned_rule"
+    },
+    {
+      "slot": "style_obs_0",
+      "ref_id": "STY_003",
+      "digest_key": "style_observation"
+    },
+    {
+      "slot": "calibration_0",
+      "ref_id": "CAL_002",
+      "digest_key": "calibration_line"
+    },
+    {
+      "slot": "world_rule_0",
+      "ref_id": "WR_GLOBAL_014",
+      "digest_key": "world_rule"
+    },
+    {
+      "slot": "foreshadow_0",
+      "ref_id": "F014",
+      "digest_key": "foreshadow"
+    }
+  ],
+  "inline_digests": {
+    "chapter_goal": "重逢与试探成立，章目标达成。",
+    "scene_card": "旧城重逢，主角由迟疑转为警觉。",
+    "voice_card": "短句、停顿、表客内冷；受压时更硬，不作长篇抒情。",
+    "relation_card": "重逢初期、互探知情范围；B 略占上风，提到“那年冬天”会抬高张力。",
+    "scene_memory": "旧城重逢成立，主角由迟疑转为警觉。",
+    "style_rule": "情绪以动作和停顿呈现，避免直白命名；对白收束要留余波。",
+    "banned_rule": "重逢/试探场禁止一次性说透旧事、禁止抢答真相。",
+    "style_observation": "结尾偏向余波式收束，不急于解释。",
+    "calibration_line": "门在她背后轻轻合上，像一句没说完的话。",
+    "world_rule": "城内禁术公开施放属于硬禁令。",
+    "foreshadow": "旧信寄件人线索被正式打开。"
+  }
+}

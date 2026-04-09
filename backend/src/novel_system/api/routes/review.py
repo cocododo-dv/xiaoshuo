@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from novel_system.api.deps import get_session
+from novel_system.api.response import ok
+from novel_system.db.models import HumanReviewEvent, ReviewItem
+from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.version_manager import VersionManager
+
+router = APIRouter(tags=["review"])
+
+
+@router.get("/api/v1/review-items")
+def list_review_items(request: Request, session: Session = Depends(get_session), status: str | None = None, item_type: str | None = None):
+    query = select(ReviewItem)
+    if status:
+        query = query.where(ReviewItem.status == status)
+    if item_type:
+        query = query.where(ReviewItem.item_type == item_type)
+    items = session.execute(query.order_by(ReviewItem.created_at.desc())).scalars().all()
+    return ok(
+        {"items": [_serialize_review(item) for item in items]},
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.get("/api/v1/review-items/{review_id}")
+def review_detail(review_id: str, request: Request, session: Session = Depends(get_session)):
+    item = session.get(ReviewItem, review_id)
+    return ok(_serialize_review(item), req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/review-items/import-demo")
+def import_demo_review(payload: dict, request: Request, session: Session = Depends(get_session)):
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/review-items/import-demo",
+        payload=payload,
+        action=lambda: _import_review(session, payload),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+def _import_review(session: Session, payload: dict) -> dict:
+    item = session.get(ReviewItem, payload["review_id"])
+    if item is None:
+        item = ReviewItem(**payload)
+        session.add(item)
+    else:
+        for key, value in payload.items():
+            setattr(item, key, value)
+    session.flush()
+    return {"review_id": item.review_id}
+
+
+@router.post("/api/v1/review-items/{review_id}/approve")
+def approve_review(review_id: str, request: Request, session: Session = Depends(get_session)):
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/review-items/{review_id}/approve",
+        payload={"review_id": review_id},
+        action=lambda: VersionManager(session).materialize_review(review_id),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/review-items/{review_id}/release")
+def release_review(review_id: str, request: Request, session: Session = Depends(get_session)):
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/review-items/{review_id}/release",
+        payload={"review_id": review_id},
+        action=lambda: VersionManager(session).release_review(review_id),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+def _serialize_review(item: ReviewItem) -> dict:
+    return {
+        "review_id": item.review_id,
+        "scene_id": item.scene_id,
+        "chapter_id": item.chapter_id,
+        "item_type": item.item_type,
+        "target_collection": item.target_collection,
+        "status": item.status,
+        "candidate_text": item.candidate_text,
+        "candidate_payload_json": item.candidate_payload_json,
+        "active_on_approve": item.active_on_approve,
+        "materialize_status": item.materialize_status,
+        "approved_item_row_id": item.approved_item_row_id,
+    }
+
+
+@router.get("/api/v1/human-review-events")
+def list_human_review_events(request: Request, session: Session = Depends(get_session), status: str | None = None):
+    query = select(HumanReviewEvent)
+    if status:
+        query = query.where(HumanReviewEvent.status == status)
+    items = session.execute(query.order_by(HumanReviewEvent.created_at.desc())).scalars().all()
+    return ok(
+        {"items": [_serialize_event(item) for item in items]},
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.get("/api/v1/human-review-events/{event_id}")
+def human_review_event_detail(event_id: str, request: Request, session: Session = Depends(get_session)):
+    item = session.get(HumanReviewEvent, event_id)
+    return ok(_serialize_event(item), req_id=getattr(request.state, "request_id", None))
+
+
+def _serialize_event(item: HumanReviewEvent | None) -> dict:
+    if item is None:
+        return {
+            "event_id": None,
+            "scene_id": None,
+            "chapter_id": None,
+            "event_source": "system",
+            "priority": "normal",
+            "owner": None,
+            "status": "empty",
+            "allowed_actions_json": [],
+            "result_status_map_json": {},
+            "default_action": None,
+        }
+    return {
+        "event_id": item.event_id,
+        "scene_id": item.scene_id,
+        "chapter_id": item.chapter_id,
+        "event_source": item.event_source,
+        "priority": item.priority,
+        "owner": item.owner,
+        "status": item.status,
+        "allowed_actions_json": item.allowed_actions_json,
+        "result_status_map_json": item.result_status_map_json,
+        "default_action": item.default_action,
+    }

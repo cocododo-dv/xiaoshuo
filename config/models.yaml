@@ -1,0 +1,24 @@
+task_routing:
+  extraction: cheap
+  neutral_draft: medium
+  hard_qc: medium
+  stylize: strong
+  soft_qc: medium
+  archive: cheap
+  chapter_aggregate: medium
+
+retry_budget:
+  hard_partial_max: 2
+  hard_full_max: 1
+  soft_patch_max: 2
+  total_attempt_budget: 4
+
+job_runtime:
+  idempotency_claim_ttl_seconds: 90
+  reindex_lease_ttl_seconds: 180
+  verify_lease_ttl_seconds: 180
+  heartbeat_interval_seconds: 45
+  max_reclaim_attempts:
+    idempotency: 3
+    reindex: 3
+    verify: 3

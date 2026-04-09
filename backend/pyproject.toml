@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "novel-system"
+version = "0.1.0"
+description = "Novel writing system P2 L3 implementation"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.14,<2",
+  "chromadb==1.5.7",
+  "fastapi>=0.135,<1",
+  "httpx>=0.26,<1",
+  "pydantic>=2.5,<3",
+  "pyyaml>=6.0,<7",
+  "sqlalchemy>=2.0.30,<3"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9"
+]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+  "chroma_integration: requires a real Chroma runtime in Linux or WSL",
+]
