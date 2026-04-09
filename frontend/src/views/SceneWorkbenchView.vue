@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 
 import AttemptTimeline from "../components/AttemptTimeline.vue";
+import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import { useWorkbenchStore } from "../stores/workbench";
@@ -13,10 +14,23 @@ const requestedSceneId = ref(workbench.sceneId);
 
 const hasData = computed(() => Boolean(workbench.data));
 
+function resolveSceneId() {
+  return requestedSceneId.value.trim() || workbench.sceneId;
+}
+
 async function loadWorkbench() {
-  await workbench.refreshAll(requestedSceneId.value.trim() || workbench.sceneId);
+  await workbench.refreshAll(resolveSceneId());
   if (workbench.error) {
     emit("notice", workbench.error);
+  }
+}
+
+async function runScene() {
+  try {
+    const message = await workbench.runScene(resolveSceneId());
+    emit("notice", message);
+  } catch (error) {
+    emit("notice", error.message);
   }
 }
 
@@ -36,12 +50,19 @@ onMounted(() => {
         <div class="field-inline">
           <input v-model="requestedSceneId" class="control-input" />
           <button @click="loadWorkbench">Load</button>
+          <button :disabled="workbench.actionId === 'run-scene'" @click="runScene">
+            {{ workbench.actionId === "run-scene" ? "Running..." : "Run Full Scene" }}
+          </button>
         </div>
       </template>
 
       <div v-if="workbench.loading" class="empty">Loading workbench...</div>
-      <div v-else-if="workbench.error" class="empty">{{ workbench.error }}</div>
       <template v-else-if="hasData">
+        <article v-if="workbench.error" class="paper inline-error">
+          <h3>Latest Error</h3>
+          <p>{{ workbench.error }}</p>
+        </article>
+
         <div class="stats">
           <div class="stat">
             <span>Bundle</span>
@@ -56,6 +77,22 @@ onMounted(() => {
             <strong>{{ workbench.data.scene_run_state.scene_status || "-" }}</strong>
           </div>
         </div>
+
+        <article v-if="workbench.lastRunResult" class="paper receipt-card">
+          <div class="receipt-head">
+            <div>
+              <h3>Run Receipt</h3>
+              <p class="muted receipt-copy">Latest pipeline response captured before the board refresh.</p>
+            </div>
+            <span class="badge">run/full</span>
+          </div>
+          <div class="receipt-grid">
+            <p><strong>Status</strong><br />{{ workbench.lastRunResult.scene_status || "-" }}</p>
+            <p><strong>Bundle</strong><br />{{ workbench.lastRunResult.current_bundle_id || "-" }}</p>
+            <p><strong>Hash</strong><br />{{ workbench.lastRunResult.current_bundle_hash || "-" }}</p>
+            <p><strong>Final Scene</strong><br />{{ workbench.lastRunResult.current_final_scene_row_id || "-" }}</p>
+          </div>
+        </article>
 
         <div class="workbench-columns">
           <article class="paper">
@@ -80,7 +117,10 @@ onMounted(() => {
             <p class="muted">Aggregate gate: {{ workbench.data.chapter_state.aggregate_block_reason }}</p>
           </article>
         </div>
+
+        <BundleProvenanceCard :snapshot="workbench.data.bundle?.snapshot" />
       </template>
+      <div v-else-if="workbench.error" class="empty">{{ workbench.error }}</div>
       <div v-else class="empty">Enter a scene ID to load the workbench.</div>
     </PanelShell>
 

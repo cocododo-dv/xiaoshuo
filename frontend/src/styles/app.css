@@ -207,6 +207,158 @@ pre {
   margin-bottom: 0.8rem;
 }
 
+.receipt-card {
+  position: relative;
+  overflow: hidden;
+  margin-top: 1rem;
+}
+
+.inline-error {
+  margin-bottom: 1rem;
+  border-color: rgba(163, 63, 47, 0.28);
+  background: linear-gradient(180deg, rgba(163, 63, 47, 0.08), rgba(163, 63, 47, 0.02)), var(--paper-strong);
+}
+
+.inline-error p {
+  margin-bottom: 0;
+}
+
+.receipt-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0.4rem;
+  background: linear-gradient(180deg, var(--accent), #d57049);
+}
+
+.receipt-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.receipt-copy {
+  margin: 0.35rem 0 0;
+}
+
+.receipt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem 1.2rem;
+  margin-top: 1rem;
+}
+
+.receipt-grid p {
+  margin: 0;
+}
+
+.provenance-card {
+  margin-top: 1.1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.1)),
+    var(--paper-strong);
+}
+
+.provenance-head,
+.source-top,
+.injection-top {
+  display: flex;
+  gap: 1rem;
+}
+
+.provenance-head,
+.source-top {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.provenance-copy,
+.source-row,
+.source-digest,
+.injection-ref,
+.injection-digest {
+  margin-bottom: 0;
+}
+
+.provenance-grid,
+.source-stack,
+.injection-list,
+.provenance-section {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.provenance-grid {
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  margin-top: 1rem;
+}
+
+.provenance-label {
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.source-card,
+.injection-item {
+  border-radius: 1rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.source-card {
+  padding: 1rem 1rem 1rem 1.1rem;
+  box-shadow: inset 4px 0 0 rgba(163, 63, 47, 0.14);
+}
+
+.source-version,
+.injection-index {
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.source-version {
+  color: var(--navy);
+}
+
+.source-id {
+  margin: 0.3rem 0 0.2rem;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 0.92rem;
+}
+
+.source-digest,
+.injection-digest {
+  margin-top: 0.7rem;
+  line-height: 1.55;
+}
+
+.injection-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.injection-item {
+  padding: 0.95rem 1rem;
+}
+
+.injection-top {
+  align-items: flex-start;
+}
+
+.injection-index {
+  min-width: 2.3rem;
+  color: var(--accent);
+}
+
+.injection-ref {
+  margin-top: 0.15rem;
+}
+
 .stats {
   margin-top: 1.2rem;
   flex-wrap: wrap;
@@ -290,5 +442,15 @@ pre {
 
   .job-actions {
     justify-content: flex-start;
+  }
+
+  .provenance-grid,
+  .receipt-grid,
+  .provenance-head,
+  .receipt-head,
+  .source-top,
+  .injection-top {
+    grid-template-columns: 1fr;
+    flex-direction: column;
   }
 }

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 
-import { fetchHumanReviewEvents, fetchWorkbench } from "../lib/api";
+import { fetchHumanReviewEvents, fetchWorkbench, runFullScene } from "../lib/api";
 
 export const useWorkbenchStore = defineStore("workbench", {
   state: () => ({
@@ -9,6 +9,8 @@ export const useWorkbenchStore = defineStore("workbench", {
     humanReviewItems: [],
     loading: false,
     humanReviewLoading: false,
+    actionId: "",
+    lastRunResult: null,
     error: "",
   }),
   actions: {
@@ -39,6 +41,23 @@ export const useWorkbenchStore = defineStore("workbench", {
     },
     async refreshAll(sceneId = this.sceneId) {
       await Promise.all([this.load(sceneId), this.loadHumanReview()]);
+    },
+    async runScene(sceneId = this.sceneId) {
+      const previousSceneId = this.sceneId;
+      this.actionId = "run-scene";
+      this.error = "";
+      try {
+        const result = await runFullScene(sceneId);
+        this.lastRunResult = result;
+        await this.refreshAll(sceneId);
+        return `Ran ${sceneId} through full scene pipeline`;
+      } catch (error) {
+        this.sceneId = previousSceneId;
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
     },
   },
 });

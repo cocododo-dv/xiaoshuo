@@ -53,6 +53,10 @@ export function fetchWorkbench(sceneId) {
   return apiGet(`/api/v1/scenes/${sceneId}/workbench`);
 }
 
+export function runFullScene(sceneId) {
+  return apiPost(`/api/v1/scenes/${sceneId}/run/full`);
+}
+
 export function fetchReviewItems() {
   return apiGet("/api/v1/review-items");
 }
