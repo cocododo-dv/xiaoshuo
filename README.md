@@ -8,13 +8,36 @@ This repository currently uses a split verification strategy for the vector laye
 This prevents the Windows native `chromadb` crash path from taking down unrelated backend tests.
 The strict Chroma lane has already been verified successfully in WSL Ubuntu 24.04 for this repo; keep using that lane for future real-Chroma regression checks.
 
+## Verification Scripts
+
+Use the repository-level verification scripts first. They wrap the current supported test/build flows and keep the commands aligned with CI and release docs.
+
+Windows-safe verification:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1
+```
+
+WSL strict Chroma verification:
+
+```powershell
+wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"
+```
+
+Release preflight from Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify_release.ps1
+```
+
+GitHub Actions covers the backend non-Chroma lane plus the frontend test/build lane. The WSL strict Chroma lane remains a required local release check on this machine. Use [docs/release-checklist.md](docs/release-checklist.md) before marking a Draft PR ready.
+
 ## Backend on Windows
 
 Use the Windows lane for regular backend work that does not require real Chroma writes.
 
 ```powershell
-cd backend
-python -m pytest -q -m "not chroma_integration"
+powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1 -BackendOnly
 ```
 
 Notes:
@@ -39,18 +62,16 @@ cd /mnt/e/codex/xiaoshuo/codex/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-python -m novel_system.tools.chroma_smoke
-python -m pytest tests/test_chroma_smoke.py tests/test_chroma_vector_store.py tests/test_review_release.py tests/test_vector_verify_gate.py tests/test_acceptance_flow.py -q
-python -m pytest -q
+cd ..
+bash scripts/verify_wsl_strict.sh
 ```
 
 The `python -m novel_system.tools.chroma_smoke` command is the minimum preflight check. It must succeed before running the strict Chroma backend suite.
 
-Most recent successful WSL verification:
+Most recent successful verification on 2026-04-09:
 
-- `python -m novel_system.tools.chroma_smoke`
-- `python -m pytest tests/test_chroma_smoke.py tests/test_chroma_vector_store.py tests/test_review_release.py tests/test_vector_verify_gate.py tests/test_acceptance_flow.py -q`
-- `python -m pytest -q`
+- `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
+- `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
 
 ## Demo seed
 
