@@ -7,8 +7,8 @@ from .test_orchestrator_flow import seed_story
 pytestmark = pytest.mark.chroma_integration
 
 
-def test_l3_acceptance_smoke(client) -> None:
-    seed_story(client)
+def test_l3_acceptance_smoke(client, session) -> None:
+    seed_story(client, session=session)
     run_scene = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
         headers={"X-Idempotency-Key": "acceptance-scene-1"},

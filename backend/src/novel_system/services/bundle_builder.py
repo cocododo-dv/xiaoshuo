@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
 from novel_system.db.models import ChapterGoal, SceneBundle, SceneCard, SceneMemory, SceneRunState
+from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
 from novel_system.services.resolver import Resolver
 
@@ -39,16 +40,39 @@ class BundleBuilder:
             "scene_card": scene.scene_goal,
         }
 
-        voice_id = self.resolver.resolve_voice_id(scene)
-        relation_id = self.resolver.resolve_relation_id(scene)
-        if voice_id:
-            source_version_refs["voice_id"] = voice_id
-            ordered_injections.append({"slot": "pov_voice", "ref_id": voice_id, "digest_key": "voice_card"})
-            inline_digests["voice_card"] = f"voice profile for {scene.pov_character_id}"
-        if relation_id:
-            source_version_refs["relation_id"] = relation_id
-            ordered_injections.append({"slot": "relation", "ref_id": relation_id, "digest_key": "relation_card"})
-            inline_digests["relation_card"] = "relation context resolved"
+        voice_profile_id = self.resolver.resolve_voice_profile_id(scene)
+        voice_profile = self.resolver.resolve_active_voice_profile(self.session, scene)
+        if voice_profile_id and voice_profile is None:
+            raise DomainError(
+                "BUNDLE_SOURCE_MISSING",
+                f"active voice profile missing for {voice_profile_id}",
+                status_code=409,
+            )
+        if voice_profile:
+            source_version_refs["voice_profile_id"] = voice_profile.voice_profile_id
+            source_version_refs["voice_profile_row_id"] = voice_profile.row_id
+            source_version_refs["voice_profile_version"] = voice_profile.version
+            ordered_injections.append(
+                {"slot": "pov_voice", "ref_id": voice_profile.voice_profile_id, "digest_key": "voice_card"}
+            )
+            inline_digests["voice_card"] = voice_profile.content
+
+        relation_profile_id = self.resolver.resolve_relation_profile_id(scene)
+        relation_profile = self.resolver.resolve_active_relation_profile(self.session, scene)
+        if relation_profile_id and relation_profile is None:
+            raise DomainError(
+                "BUNDLE_SOURCE_MISSING",
+                f"active relation profile missing for {relation_profile_id}",
+                status_code=409,
+            )
+        if relation_profile:
+            source_version_refs["relation_profile_id"] = relation_profile.relation_profile_id
+            source_version_refs["relation_profile_row_id"] = relation_profile.row_id
+            source_version_refs["relation_profile_version"] = relation_profile.version
+            ordered_injections.append(
+                {"slot": "relation", "ref_id": relation_profile.relation_profile_id, "digest_key": "relation_card"}
+            )
+            inline_digests["relation_card"] = relation_profile.content
         if previous_memory:
             source_version_refs["scene_memory_prev"] = previous_memory.scene_id
             ordered_injections.append(
@@ -61,7 +85,7 @@ class BundleBuilder:
             stage_allowlist_name="bundle_build_allowlist_v1",
             source_version_refs=source_version_refs,
             resolved_ref_ids={
-                "relation_ids": [relation_id] if relation_id else [],
+                "relation_ids": [relation_profile.relation_profile_id] if relation_profile else [],
                 "world_rule_ids": [],
                 "open_foreshadow_ids": [],
             },

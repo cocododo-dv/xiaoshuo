@@ -52,6 +52,35 @@ class SceneCard(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
+class VoiceProfile(Base):
+    __tablename__ = "voice_profiles"
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    voice_profile_id: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    character_id: Mapped[str] = mapped_column(String)
+    content: Mapped[str] = mapped_column(Text)
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class RelationProfile(Base):
+    __tablename__ = "relation_profiles"
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    relation_profile_id: Mapped[str] = mapped_column(String)
+    left_character_id: Mapped[str] = mapped_column(String)
+    right_character_id: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    content: Mapped[str] = mapped_column(Text)
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class SceneRunState(Base):
     __tablename__ = "scene_run_states"
 

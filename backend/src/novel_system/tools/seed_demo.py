@@ -15,6 +15,7 @@ from novel_system.db.models import (
     FinalScene,
     HumanReviewEvent,
     ReindexJob,
+    RelationProfile,
     ReviewItem,
     SceneBundle,
     SceneCard,
@@ -25,6 +26,7 @@ from novel_system.db.models import (
     VectorAliasRegistry,
     VerifyJob,
     VersionRegistry,
+    VoiceProfile,
 )
 from novel_system.db.session import SessionLocal
 
@@ -103,6 +105,48 @@ DEMO_STYLE_OBSERVATION_REVIEW = {
     "approved_item_id": None,
 }
 DEMO_ALIAS_SCOPE = "style_observation:global:global"
+DEMO_VOICE_PROFILES = [
+    {
+        "row_id": "voice_profile_VOICE_CHAR_A_v1",
+        "voice_profile_id": "VOICE_CHAR_A",
+        "version": 1,
+        "character_id": "CHAR_A",
+        "content": "short clipped lines; pressure makes the tone harder",
+        "active_flag": 1,
+        "source_note": "demo baseline",
+    },
+    {
+        "row_id": "voice_profile_VOICE_CHAR_B_v1",
+        "voice_profile_id": "VOICE_CHAR_B",
+        "version": 1,
+        "character_id": "CHAR_B",
+        "content": "measured, observant phrasing; rarely answers directly",
+        "active_flag": 1,
+        "source_note": "demo baseline",
+    },
+]
+DEMO_RELATION_PROFILES = [
+    {
+        "row_id": "relation_profile_REL_CHAR_A_CHAR_B_v1",
+        "relation_profile_id": "REL_CHAR_A_CHAR_B",
+        "left_character_id": "CHAR_A",
+        "right_character_id": "CHAR_B",
+        "version": 1,
+        "content": "reunion tension; B knows slightly more than A",
+        "active_flag": 1,
+        "source_note": "demo baseline",
+    },
+    {
+        "row_id": "relation_profile_REL_CHAR_A_CHAR_C_v1",
+        "relation_profile_id": "REL_CHAR_A_CHAR_C",
+        "left_character_id": "CHAR_A",
+        "right_character_id": "CHAR_C",
+        "version": 1,
+        "content": "uneasy cooperation; both sides hold back a condition",
+        "active_flag": 1,
+        "source_note": "demo baseline",
+    },
+]
 
 
 def _upsert(session: Any, model: type[Any], identity: str, payload: dict[str, Any]) -> Any:
@@ -171,6 +215,8 @@ def _cleanup_demo_runtime(session: Session) -> None:
     chapter_id = DEMO_CHAPTER["chapter_id"]
     review_id = DEMO_STYLE_OBSERVATION_REVIEW["review_id"]
     lineage_key = DEMO_STYLE_OBSERVATION_REVIEW["candidate_payload_json"]["lineage_key"]
+    demo_voice_ids = [item["voice_profile_id"] for item in DEMO_VOICE_PROFILES]
+    demo_relation_ids = [item["relation_profile_id"] for item in DEMO_RELATION_PROFILES]
 
     session.execute(delete(AttemptTracker).where(AttemptTracker.chapter_id == chapter_id))
     session.execute(delete(SceneBundle).where(SceneBundle.chapter_id == chapter_id))
@@ -198,6 +244,8 @@ def _cleanup_demo_runtime(session: Session) -> None:
             )
         )
     )
+    session.execute(delete(VoiceProfile).where(VoiceProfile.voice_profile_id.in_(demo_voice_ids)))
+    session.execute(delete(RelationProfile).where(RelationProfile.relation_profile_id.in_(demo_relation_ids)))
 
     remaining_global_style_count = session.scalar(
         select(func.count()).select_from(StyleObservation).where(
@@ -216,6 +264,10 @@ def _seed_demo(session: Session) -> dict[str, list[str] | str]:
     _upsert_chapter(session, DEMO_CHAPTER)
     for payload in DEMO_SCENES:
         _upsert_scene(session, payload)
+    for payload in DEMO_VOICE_PROFILES:
+        _upsert(session, VoiceProfile, "row_id", payload)
+    for payload in DEMO_RELATION_PROFILES:
+        _upsert(session, RelationProfile, "row_id", payload)
     _upsert_review_item(session, DEMO_STYLE_OBSERVATION_REVIEW)
     return {
         "chapter_id": DEMO_CHAPTER["chapter_id"],

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import text
 from sqlalchemy import func, select
 
 from novel_system.db.models import (
@@ -51,6 +52,33 @@ def test_seed_demo_is_idempotent(session) -> None:
     assert first == second
     assert _count_rows(session, SceneCard) == 3
     assert _count_rows(session, ReviewItem) == 1
+
+
+def test_seed_demo_creates_traceable_voice_and_relation_profiles(session) -> None:
+    seed_demo(session)
+    session.commit()
+
+    voice = session.execute(
+        text(
+            "SELECT row_id, voice_profile_id, version, active_flag, content "
+            "FROM voice_profiles WHERE row_id = 'voice_profile_VOICE_CHAR_A_v1'"
+        )
+    ).mappings().one()
+    relation = session.execute(
+        text(
+            "SELECT row_id, relation_profile_id, version, active_flag, content "
+            "FROM relation_profiles WHERE row_id = 'relation_profile_REL_CHAR_A_CHAR_B_v1'"
+        )
+    ).mappings().one()
+
+    assert voice["voice_profile_id"] == "VOICE_CHAR_A"
+    assert voice["version"] == 1
+    assert voice["active_flag"] == 1
+    assert voice["content"] == "short clipped lines; pressure makes the tone harder"
+    assert relation["relation_profile_id"] == "REL_CHAR_A_CHAR_B"
+    assert relation["version"] == 1
+    assert relation["active_flag"] == 1
+    assert relation["content"] == "reunion tension; B knows slightly more than A"
 
 
 def test_seed_demo_resets_demo_runtime_state(session) -> None:
