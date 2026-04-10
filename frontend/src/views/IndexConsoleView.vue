@@ -386,7 +386,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="panel-grid">
+  <section class="panel-grid" data-testid="index-console-view">
     <PanelShell
       eyebrow="Index Console"
       title="Alias, verify, and recovery"
@@ -395,10 +395,18 @@ onMounted(() => {
       <template #actions>
         <div class="field-inline">
           <button @click="refreshIndex">Refresh</button>
-          <button :disabled="indexConsole.actionId === 'promotions'" @click="runDuePromotions">
+          <button
+            :disabled="indexConsole.actionId === 'promotions'"
+            data-testid="run-due-promotions-button"
+            @click="runDuePromotions"
+          >
             {{ indexConsole.actionId === "promotions" ? "Promoting..." : "Run Due Promotions" }}
           </button>
-          <button :disabled="indexConsole.actionId === 'recovery'" @click="runRecovery">
+          <button
+            :disabled="indexConsole.actionId === 'recovery'"
+            data-testid="run-recovery-sweep-button"
+            @click="runRecovery"
+          >
             {{ indexConsole.actionId === "recovery" ? "Recovering..." : "Recovery Sweep" }}
           </button>
         </div>
@@ -415,6 +423,7 @@ onMounted(() => {
         <article
           v-if="indexConsole.lastRecoveryResult"
           class="paper receipt-card"
+          data-testid="recovery-receipt"
           :class="{ 'focused-card': isFocusedRecoverySweepReceipt() }"
         >
           <div class="receipt-head">
@@ -514,6 +523,7 @@ onMounted(() => {
                 <div class="card-actions">
                   <button
                     class="ghost"
+                    :data-testid="`recovery-created-event-${item.event_id}`"
                     @click="jumpToTarget(withSourceFocusTarget(item.target, 'recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__'))"
                   >
                     Open Recovery Event
@@ -527,6 +537,7 @@ onMounted(() => {
         <article
           v-if="indexConsole.lastRecoveryActionResult || indexConsole.recoveryTimelineItems.length"
           class="paper receipt-card"
+          data-testid="recovery-followup-receipt"
           :class="{ 'focused-card': isFocusedRecoveryReceipt() }"
         >
           <div class="receipt-head">
@@ -552,6 +563,7 @@ onMounted(() => {
             <button
               v-if="recoveryLinkedTarget(indexConsole.lastRecoveryActionResult)"
               class="ghost"
+              data-testid="recovery-followup-open-linked-target"
               @click="jumpToTarget(withSourceFocusTarget(recoveryLinkedTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
             >
               Open Linked Target
@@ -559,6 +571,7 @@ onMounted(() => {
             <button
               v-if="recoveryFollowupTarget(indexConsole.lastRecoveryActionResult)"
               class="ghost"
+              data-testid="recovery-followup-open-followup-target"
               @click="jumpToTarget(withSourceFocusTarget(recoveryFollowupTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
             >
               Open Follow-up Target
@@ -566,6 +579,7 @@ onMounted(() => {
             <button
               v-if="recoveryReplayTarget(indexConsole.lastRecoveryActionResult)"
               class="ghost"
+              data-testid="recovery-followup-open-replay-result"
               @click="jumpToTarget(withSourceFocusTarget(recoveryReplayTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
             >
               Open Replay Result
@@ -615,6 +629,7 @@ onMounted(() => {
         <article
           v-if="indexConsole.lastPromotionResult"
           class="paper receipt-card"
+          data-testid="promotion-receipt"
           :class="{ 'focused-card': isFocusedPromotionReceipt() }"
         >
           <div class="receipt-head">
@@ -645,6 +660,7 @@ onMounted(() => {
               v-for="item in promotedReviewTargets(indexConsole.lastPromotionResult)"
               :key="item.review_id"
               class="ghost"
+              :data-testid="`promotion-open-review-${item.review_id}`"
               @click="jumpToTarget(withSourceFocusTarget(item.target, 'promotion_receipt', indexConsole.lastPromotionResult?.actor_ref || '__promotion_receipt__'))"
             >
               Open Review
@@ -734,6 +750,7 @@ onMounted(() => {
               <li
                 v-for="group in prioritizedTargetActivityGroups"
                 :key="group.target.target_ref"
+                :data-testid="`target-activity-group-${group.target.target_ref}`"
                 :class="{ 'focused-card': focusTarget?.target_ref === group.target.target_ref }"
               >
                 <div class="target-group-head">
@@ -742,10 +759,14 @@ onMounted(() => {
                     Latest: {{ group.latest_at || "-" }} | Count: {{ group.activity_count ?? 0 }} | Sources:
                     {{ group.sources?.join(", ") || "-" }}
                   </div>
-                  <button class="ghost target-group-toggle" @click="toggleTargetGroup(group)">
-                    {{ isTargetGroupExpanded(group) ? "Hide Activity" : "Show Activity" }}
-                  </button>
-                </div>
+                    <button
+                      class="ghost target-group-toggle"
+                      :data-testid="`target-activity-toggle-${group.target.target_ref}`"
+                      @click="toggleTargetGroup(group)"
+                    >
+                      {{ isTargetGroupExpanded(group) ? "Hide Activity" : "Show Activity" }}
+                    </button>
+                  </div>
                 <div class="card-actions">
                   <button class="ghost" @click="jumpToTarget(group.target)">
                     {{ systemTargetLabel(group.target) }}
@@ -753,12 +774,13 @@ onMounted(() => {
                 </div>
                 <div v-if="isTargetGroupExpanded(group) && group.activity_items?.length" class="receipt-detail">
                   <ul class="receipt-list">
-                    <li
-                      v-for="item in orderedTargetActivityItems(group)"
-                      :key="item.activity_key"
-                      :data-activity-key="item.activity_key"
-                      :class="{
-                        'focused-card': isFocusedActivityItem(group, item) || isSourceLinkedActivityItem(item),
+                      <li
+                        v-for="item in orderedTargetActivityItems(group)"
+                        :key="item.activity_key"
+                        :data-testid="`target-activity-item-${item.activity_key}`"
+                        :data-activity-key="item.activity_key"
+                        :class="{
+                          'focused-card': isFocusedActivityItem(group, item) || isSourceLinkedActivityItem(item),
                         'focused-activity-item': isFocusedActivityItem(group, item),
                       }"
                     >
@@ -795,6 +817,7 @@ onMounted(() => {
           v-for="item in prioritizedJobs"
           :key="item.job_id"
           class="job-row"
+          :data-testid="`verify-job-${item.job_id}`"
           :class="{ 'focused-card': isFocusedJob(item.job_id) }"
         >
           <div class="job-main">
@@ -818,6 +841,7 @@ onMounted(() => {
             <button
               v-if="item.job_type === 'verify'"
               :disabled="indexConsole.actionId === item.job_id"
+              :data-testid="`retry-verify-job-${item.job_id}`"
               @click="retry(item.job_id)"
             >
               Retry Verify

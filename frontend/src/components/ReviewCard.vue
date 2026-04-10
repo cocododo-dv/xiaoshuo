@@ -22,7 +22,11 @@ defineEmits(["approve", "release", "open-target"]);
 </script>
 
 <template>
-  <article class="review-card" :class="{ 'focused-card': props.highlighted }">
+  <article
+    class="review-card"
+    :class="{ 'focused-card': props.highlighted }"
+    :data-testid="`review-card-${props.item.review_id}`"
+  >
     <div class="review-meta">
       <span class="badge">{{ props.item.target_collection }}</span>
       <span class="muted">{{ props.item.review_id }}</span>
@@ -31,14 +35,27 @@ defineEmits(["approve", "release", "open-target"]);
     <h3>{{ props.item.candidate_text || "Empty candidate" }}</h3>
     <pre>{{ JSON.stringify(props.item.candidate_payload_json, null, 2) }}</pre>
     <div class="card-actions">
-      <button :disabled="loading" @click="$emit('approve', props.item.review_id)">Approve</button>
+      <button
+        :disabled="loading"
+        :data-testid="`review-approve-${props.item.review_id}`"
+        @click="$emit('approve', props.item.review_id)"
+      >
+        Approve
+      </button>
       <button
         :disabled="loading || props.item.materialize_status !== 'succeeded'"
+        :data-testid="`review-release-${props.item.review_id}`"
         @click="$emit('release', props.item.review_id)"
       >
         Release
       </button>
-      <button class="ghost" @click='$emit("open-target", props.item.review_id)'>Open In Index</button>
+      <button
+        class="ghost"
+        :data-testid="`review-open-target-${props.item.review_id}`"
+        @click='$emit("open-target", props.item.review_id)'
+      >
+        Open In Index
+      </button>
     </div>
   </article>
 </template>

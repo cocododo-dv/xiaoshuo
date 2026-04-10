@@ -139,7 +139,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="panel-grid">
+  <section class="panel-grid" data-testid="review-inbox-view">
     <PanelShell
       eyebrow="Review Inbox"
       title="Approve, materialize, and release"

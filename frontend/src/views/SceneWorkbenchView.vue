@@ -96,7 +96,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="panel-grid">
+  <section class="panel-grid" data-testid="scene-workbench-view">
     <PanelShell
       eyebrow="Scene Workbench"
       title="Scene loop and archive"
@@ -104,9 +104,9 @@ onMounted(() => {
     >
       <template #actions>
         <div class="field-inline">
-          <input v-model="requestedSceneId" class="control-input" />
-          <button @click="loadWorkbench">Load</button>
-          <button :disabled="workbench.actionId === 'run-scene'" @click="runScene">
+          <input v-model="requestedSceneId" class="control-input" data-testid="scene-id-input" />
+          <button data-testid="scene-load-button" @click="loadWorkbench">Load</button>
+          <button :disabled="workbench.actionId === 'run-scene'" data-testid="run-full-scene-button" @click="runScene">
             {{ workbench.actionId === "run-scene" ? "Running..." : "Run Full Scene" }}
           </button>
         </div>
@@ -137,6 +137,7 @@ onMounted(() => {
         <article
           v-if="workbench.lastRunResult"
           class="paper receipt-card"
+          data-testid="scene-run-receipt"
           :class="{ 'focused-card': isFocusedRunReceipt }"
         >
           <div class="receipt-head">

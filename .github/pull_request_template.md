@@ -7,19 +7,18 @@
 ## Validation
 
 - [ ] `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
+- [ ] `cd frontend && npm run test:e2e`
 - [ ] `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
 - [ ] `cd backend && alembic upgrade head`
 - [ ] `cd backend && python -m novel_system.tools.seed_demo`
 - [ ] GitHub Actions CI passed
 
-## Seeded Manual Acceptance
+## Seeded Runtime-Ops E2E
 
-- [ ] Record the `Operator Ref` used during the demo session
-- [ ] Run `CH001_SC01` from `Scene Workbench`
-- [ ] Approve / release `review_demo_style_observation`
-- [ ] Exercise human review follow-up actions from `Review Inbox`
-- [ ] Exercise verify retry / `run due promotions` / `recovery sweep` from `Index Console`
-- [ ] Confirm receipts, runtime ledger entries, and target activity groups show the expected actor and target links
+- [ ] Record the `npm run test:e2e` result
+- [ ] Record the fixture operator identity: `ops.runtime.e2e`
+- [ ] Confirm the E2E lane covered `Scene Workbench`, `Review Inbox`, `Index Console`, due promotions, recovery sweep, and human-review follow-up
+- [ ] Confirm the E2E lane checked receipts, runtime ledger entries, target activity, and cross-view target focus for actor / linked-target integrity
 
 ## WSL Strict Chroma Notes
 
@@ -27,8 +26,8 @@
 
 ## Operator Ref Notes
 
-- Describe how the active `Operator Ref` was set.
-- Note which POST-driven actions were validated with `X-Operator-Ref`.
+- Describe how the automated or manual `Operator Ref` was set.
+- Note which POST-driven actions were validated with `X-Operator-Ref` and whether that evidence came from `npm run test:e2e`, manual spot-checks, or both.
 
 ## Risks / Follow-ups
 

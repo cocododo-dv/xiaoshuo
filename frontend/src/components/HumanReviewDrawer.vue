@@ -156,6 +156,7 @@ function sourceFocusedTarget(target, eventId) {
       v-for="item in props.items"
       :key="item.event_id || item.status"
       class="paper mini"
+      :data-testid="`human-review-event-${item.event_id}`"
       :class="{ 'focused-card': props.focusEventId && item.event_id === props.focusEventId }"
     >
       <h3>{{ item.event_source }}</h3>
@@ -204,7 +205,11 @@ function sourceFocusedTarget(target, eventId) {
               Replay result: {{ replaySummary(entry.replay_result) }}
             </p>
             <div v-if="historyReplayTarget(entry)" class="card-actions">
-              <button class="ghost" @click='$emit("open-target", sourceFocusedTarget(historyReplayTarget(entry), item.event_id))'>
+              <button
+                class="ghost"
+                :data-testid="`human-review-open-history-replay-${item.event_id}`"
+                @click='$emit("open-target", sourceFocusedTarget(historyReplayTarget(entry), item.event_id))'
+              >
                 Open Replay Result
               </button>
             </div>
@@ -218,6 +223,7 @@ function sourceFocusedTarget(target, eventId) {
         <button
           v-if="linkedTarget(item)"
           class="ghost"
+          :data-testid="`human-review-open-linked-${item.event_id}`"
           @click='$emit("open-target", sourceFocusedTarget(linkedTarget(item), item.event_id))'
         >
           Open Linked Target
@@ -225,6 +231,7 @@ function sourceFocusedTarget(target, eventId) {
         <button
           v-if="followupTarget(item)"
           class="ghost"
+          :data-testid="`human-review-open-followup-${item.event_id}`"
           @click='$emit("open-target", sourceFocusedTarget(followupTarget(item), item.event_id))'
         >
           Open Follow-up Target
@@ -232,6 +239,7 @@ function sourceFocusedTarget(target, eventId) {
         <button
           v-if="replayTarget(item)"
           class="ghost"
+          :data-testid="`human-review-open-replay-${item.event_id}`"
           @click='$emit("open-target", sourceFocusedTarget(replayTarget(item), item.event_id))'
         >
           Open Replay Result
@@ -242,6 +250,7 @@ function sourceFocusedTarget(target, eventId) {
           v-for="action in item.allowed_actions_json"
           :key="`${item.event_id}:${action}`"
           :disabled="props.actionId === `${item.event_id}:${action}`"
+          :data-testid="`human-review-action-${item.event_id}-${action}`"
           @click='$emit("action", { eventId: item.event_id, action })'
         >
           {{

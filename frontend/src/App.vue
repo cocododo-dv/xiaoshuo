@@ -59,12 +59,12 @@ async function reloadAll() {
 
       <label class="api-label">
         <span>API Base</span>
-        <input v-model="apiBase" class="control-input" @change="updateApiBase" />
+        <input v-model="apiBase" class="control-input" data-testid="api-base-input" @change="updateApiBase" />
       </label>
 
       <label class="api-label">
         <span>Operator Ref</span>
-        <input v-model="operatorRef" class="control-input" @change="updateOperator" />
+        <input v-model="operatorRef" class="control-input" data-testid="operator-ref-input" @change="updateOperator" />
       </label>
 
       <nav class="nav">
@@ -73,6 +73,7 @@ async function reloadAll() {
           :key="view.id"
           class="nav-btn"
           :class="{ active: activeView === view.id }"
+          :data-testid="`nav-${view.id}`"
           @click="navigate(view.id)"
         >
           {{ view.label }}
@@ -81,7 +82,7 @@ async function reloadAll() {
 
       <button class="ghost" @click="reloadAll">Reload all</button>
 
-      <div class="notice-stack">
+      <div class="notice-stack" data-testid="notice-stack">
         <div v-for="notice in notices" :key="notice" class="notice">
           {{ notice }}
         </div>

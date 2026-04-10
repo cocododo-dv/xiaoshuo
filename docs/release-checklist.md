@@ -10,26 +10,24 @@ Use this checklist before converting a Draft PR to ready state or treating the c
 ## Required local checks on this machine
 
 - Run `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
+- Run `cd frontend && npm run test:e2e`
 - Run `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
 
-## Seeded manual acceptance
+## Seeded runtime-ops E2E acceptance
 
-- Run `cd backend && alembic upgrade head`
-- Run `cd backend && python -m novel_system.tools.seed_demo`
-- Start the backend and frontend demo lane
-- Record the `Operator Ref` used for the session
-- Run `CH001_SC01` from `Scene Workbench`
-- Approve and release `review_demo_style_observation`
-- Exercise human review follow-up actions from `Review Inbox`
-- Exercise verify retry, `run due promotions`, and `recovery sweep` from `Index Console`
-- Confirm the latest receipt, runtime ledger, and target activity views all show the expected actor and linked target state
+- Record the `npm run test:e2e` result in the PR
+- Record the fixture operator identity: `ops.runtime.e2e`
+- Confirm the lane covers `Scene Workbench`, `Review Inbox`, `Index Console`, due promotions, recovery sweep, and human-review follow-up
+- Confirm the lane checks actor identity, linked-target identity, and cross-view target focus via receipts plus target activity
+- Use the manual walkthrough from the README only if the automated E2E lane fails or extra exploratory validation is needed
 
 ## PR evidence
 
 - Paste or summarize the Windows verification result in the PR.
+- Paste or summarize the seeded runtime-ops E2E result in the PR.
 - Paste or summarize the WSL strict Chroma result in the PR.
-- Describe how `X-Operator-Ref` was validated during the seeded demo.
-- Summarize the recovery / promotion / human-review follow-up manual acceptance run.
+- Describe how `X-Operator-Ref` was validated during the seeded E2E lane.
+- Summarize any manual recovery / promotion / human-review follow-up checks only if you ran extra spot-checks beyond E2E.
 - Note any environment caveats or skipped checks.
 
 ## Release gate

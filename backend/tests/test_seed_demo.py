@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import text
 from sqlalchemy import func, select
 
@@ -11,6 +13,8 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     HumanReviewEvent,
+    IdempotencyKey,
+    OperationLog,
     ReindexJob,
     ReviewItem,
     SceneBundle,
@@ -23,7 +27,7 @@ from novel_system.db.models import (
     VerifyJob,
     VersionRegistry,
 )
-from novel_system.tools.seed_demo import seed_demo
+from novel_system.tools.seed_demo import main, seed_demo
 
 
 def _count_rows(session, model) -> int:
@@ -41,6 +45,78 @@ def test_seed_demo_creates_first_chapter_and_review_item(session) -> None:
     assert _count_rows(session, SceneCard) == 3
     assert _count_rows(session, SceneRunState) == 3
     assert _count_rows(session, ReviewItem) == 1
+
+
+def test_seed_demo_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_state(session) -> None:
+    summary = seed_demo(session, fixture="runtime_ops_e2e")
+    session.commit()
+
+    assert summary["review_ids"] == [
+        "review_demo_style_observation",
+        "review_demo_due_promotion",
+        "review_demo_recovery_followup",
+    ]
+
+    due_promotion_review = session.get(ReviewItem, "review_demo_due_promotion")
+    assert due_promotion_review is not None
+    assert due_promotion_review.status == "approved"
+    assert due_promotion_review.materialize_status == "succeeded"
+
+    due_promotion_row = session.get(StyleObservation, "style_observation_STY_DEMO_DUE_PROMOTION_v1")
+    assert due_promotion_row is not None
+    assert due_promotion_row.runtime_eligibility_basis == "future_effective"
+    assert due_promotion_row.effective_at == "2000-01-01T00:00:00+00:00"
+
+    due_promotion_alias = session.get(VectorAliasRegistry, "style_observation:scene:CH001_SC02")
+    assert due_promotion_alias is not None
+    assert due_promotion_alias.candidate_alias == (
+        "style_observation_scene_CH001_SC02__candidate__style_observation_STY_DEMO_DUE_PROMOTION_v1"
+    )
+    assert due_promotion_alias.verify_status == "succeeded"
+
+    recovery_review = session.get(ReviewItem, "review_demo_recovery_followup")
+    assert recovery_review is not None
+    assert recovery_review.status == "pending"
+    assert recovery_review.materialize_status == "pending"
+
+    stale_key = session.get(IdempotencyKey, "approve-review-demo-recovery-followup")
+    assert stale_key is not None
+    assert stale_key.status == "started"
+    assert stale_key.worker_id == "http"
+    assert stale_key.lease_expires_at == "2000-01-01T00:00:00+00:00"
+
+    stale_log = session.execute(
+        select(OperationLog)
+        .where(
+            OperationLog.object_type == "idempotency_key",
+            OperationLog.object_ref == "approve-review-demo-recovery-followup",
+            OperationLog.event_type == "idempotency_started",
+        )
+    ).scalars().one()
+    assert stale_log.payload_json["request_path_template"] == "/api/v1/review-items/{review_id}/approve"
+    assert stale_log.payload_json["request_payload"] == {"review_id": "review_demo_recovery_followup"}
+
+    reclaimable_verify = session.get(VerifyJob, "verify_job_demo_reclaimable")
+    assert reclaimable_verify is not None
+    assert reclaimable_verify.status == "running"
+    assert reclaimable_verify.worker_id == "verify-worker-stale"
+    assert reclaimable_verify.lease_expires_at == "2000-01-01T00:00:00+00:00"
+
+    failed_verify = session.get(VerifyJob, "verify_job_demo_failed_recent")
+    assert failed_verify is not None
+    assert failed_verify.status == "failed"
+    assert failed_verify.error_text == "candidate alias verify failed"
+
+
+def test_seed_demo_cli_accepts_runtime_ops_e2e_fixture(capsys) -> None:
+    main(["--fixture", "runtime_ops_e2e"])
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["review_ids"] == [
+        "review_demo_style_observation",
+        "review_demo_due_promotion",
+        "review_demo_recovery_followup",
+    ]
 
 
 def test_seed_demo_is_idempotent(session) -> None:

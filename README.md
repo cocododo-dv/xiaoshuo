@@ -30,7 +30,13 @@ Release preflight from Windows:
 powershell -ExecutionPolicy Bypass -File scripts/verify_release.ps1
 ```
 
-GitHub Actions covers the backend non-Chroma lane plus the frontend test/build lane. The WSL strict Chroma lane remains a required local release check on this machine. Use [docs/release-checklist.md](docs/release-checklist.md) before marking a Draft PR ready.
+`scripts/verify_release.ps1` now runs three local lanes in order:
+
+- Windows-safe backend/frontend verification via `scripts/verify_windows.ps1`
+- Seeded runtime-ops browser E2E via `cd frontend && npm run test:e2e`
+- WSL strict Chroma verification via `scripts/verify_wsl_strict.sh`
+
+GitHub Actions still covers the backend non-Chroma lane plus the frontend test/build lane only. The seeded runtime-ops E2E lane and the WSL strict Chroma lane remain required local release checks on this machine. Use [docs/release-checklist.md](docs/release-checklist.md) before marking a Draft PR ready.
 
 ## Backend on Windows
 
@@ -71,8 +77,10 @@ The `python -m novel_system.tools.chroma_smoke` command is the minimum preflight
 Most recent successful verification on 2026-04-10:
 
 - `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
+- `cd frontend && npm run test:e2e`
 - `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
 - Windows lane result: backend `34 passed, 13 deselected`; frontend `33 passed`; production build succeeded.
+- Seeded runtime-ops E2E result: Playwright `1 passed`, covering scene run, review approve / verify / release, due promotion, recovery sweep, human-review follow-up, and cross-view target focus.
 - WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `13 passed`; full backend suite `46 passed, 1 skipped`.
 
 ## Demo seed
@@ -100,9 +108,7 @@ Runtime-ops closeout note:
 - The shell persists the operator identity in local storage under `novel-system-operator-ref`.
 - Every mutating frontend POST request sends `X-Operator-Ref`, so receipts, runtime ledger entries, and human review follow-up actions can be traced back to the active operator.
 
-## End-to-end demo
-
-Use this flow for the current local demo lane on Windows:
+## End-to-end Demo
 
 ```powershell
 cd backend
@@ -114,7 +120,22 @@ npm install
 npm run dev
 ```
 
-Then inspect:
+Manual inspection is still useful during development. When you want the release-grade seeded runtime-ops coverage on Windows, run the automated lane instead:
+
+```powershell
+cd frontend
+npm run test:e2e
+```
+
+The Playwright lane seeds the `runtime_ops_e2e` fixture, forces the memory vector backend, and validates the following browser path with `Operator Ref = ops.runtime.e2e`:
+
+- `Scene Workbench` loads `CH001_SC01` and runs the full scene pipeline
+- `Review Inbox` approves, verifies, and releases `review_demo_style_observation`
+- `Index Console` retries verify jobs, runs due promotions, and runs recovery sweep
+- Recovery-generated human review follow-up actions progress through `retry_request`, `retry_verify`, and `release_review`
+- Receipts, runtime ledger views, target activity, and cross-view target focus all keep the expected actor / linked-target identity
+
+If you want to inspect the seed manually instead, use the local dev servers above and inspect:
 
 - `Scene Workbench` with `CH001_SC01`
 - `Review Inbox` with `review_demo_style_observation`
@@ -122,7 +143,7 @@ Then inspect:
 
 ## Runtime Ops Closeout Demo
 
-Use this walkthrough when validating the 2026-04-10 runtime-ops closeout slice:
+Use this walkthrough only when you need an extra manual spot-check beyond the automated `npm run test:e2e` lane:
 
 1. Start from the seeded flow above, including `alembic upgrade head`, and set `Operator Ref` in the shell rail before taking any mutating action.
 2. In `Scene Workbench`, load `CH001_SC01`, run the full scene pipeline, and confirm the run receipt updates in place.
