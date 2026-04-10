@@ -17,6 +17,14 @@ class BundleBuilder:
         self.session = session
         self.resolver = Resolver()
 
+    @staticmethod
+    def _single_or_list(values: list[str]) -> str | list[str]:
+        return values[0] if len(values) == 1 else values
+
+    @staticmethod
+    def _combined_text(rows: list[Any], text_field: str) -> str:
+        return "\n\n".join(str(getattr(row, text_field)) for row in rows if getattr(row, text_field, None))
+
     def build(self, scene_id: str, execution_mode: str = "P2", force_rebuild: bool = False) -> dict[str, Any]:
         scene = self.session.get(SceneCard, scene_id)
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
@@ -80,14 +88,71 @@ class BundleBuilder:
             )
             inline_digests["scene_memory"] = previous_memory.content
 
+        style_rules = self.resolver.resolve_active_style_rules(self.session, scene)
+        if style_rules:
+            style_rule_ids = [row.style_rule_set_id for row in style_rules]
+            source_version_refs["style_rule_set_id"] = self._single_or_list(style_rule_ids)
+            ordered_injections.append(
+                {"slot": "style_rules", "ref_id": style_rule_ids[0], "digest_key": "style_rule"}
+            )
+            inline_digests["style_rule"] = self._combined_text(style_rules, "content")
+
+        banned_rule_clusters = self.resolver.resolve_active_banned_rule_clusters(self.session, scene)
+        if banned_rule_clusters:
+            banned_ids = [row.banned_cluster_id for row in banned_rule_clusters]
+            source_version_refs["banned_cluster_id"] = self._single_or_list(banned_ids)
+            ordered_injections.append(
+                {"slot": "banned_rules", "ref_id": banned_ids[0], "digest_key": "banned_rule"}
+            )
+            inline_digests["banned_rule"] = self._combined_text(banned_rule_clusters, "content")
+
+        calibration_lines = self.resolver.resolve_active_calibration_lines(self.session, scene)
+        if calibration_lines:
+            calibration_ids = [row.calibration_line_id for row in calibration_lines]
+            source_version_refs["calibration_line_ids"] = calibration_ids
+            ordered_injections.append(
+                {"slot": "calibration_lines", "ref_id": calibration_ids[0], "digest_key": "calibration_line"}
+            )
+            inline_digests["calibration_line"] = self._combined_text(calibration_lines, "text")
+
+        world_rules = self.resolver.resolve_active_world_rules(self.session, scene)
+        if world_rules:
+            ordered_injections.append(
+                {"slot": "world_rules", "ref_id": world_rules[0].world_rule_id, "digest_key": "world_rule"}
+            )
+            inline_digests["world_rule"] = self._combined_text(world_rules, "content")
+
+        open_foreshadows = self.resolver.resolve_open_foreshadow_trackers(self.session, scene)
+        if open_foreshadows:
+            ordered_injections.append(
+                {"slot": "foreshadow", "ref_id": open_foreshadows[0].foreshadow_id, "digest_key": "foreshadow"}
+            )
+            inline_digests["foreshadow"] = self._combined_text(open_foreshadows, "text")
+
+        scene_summary = self.resolver.resolve_scene_summary(self.session, scene)
+        if scene_summary:
+            source_version_refs["scene_summary_id"] = scene_summary.scene_id
+            ordered_injections.append(
+                {"slot": "scene_summary", "ref_id": scene_summary.scene_id, "digest_key": "scene_summary"}
+            )
+            inline_digests["scene_summary"] = scene_summary.content
+
+        chapter_summary = self.resolver.resolve_chapter_summary(self.session, scene)
+        if chapter_summary:
+            source_version_refs["chapter_summary_id"] = chapter_summary.chapter_id
+            ordered_injections.append(
+                {"slot": "chapter_summary", "ref_id": chapter_summary.chapter_id, "digest_key": "chapter_summary"}
+            )
+            inline_digests["chapter_summary"] = chapter_summary.content
+
         projection = BundleSnapshotHashProjection(
             contract_version="BSHASH_v1",
             stage_allowlist_name="bundle_build_allowlist_v1",
             source_version_refs=source_version_refs,
             resolved_ref_ids={
                 "relation_ids": [relation_profile.relation_profile_id] if relation_profile else [],
-                "world_rule_ids": [],
-                "open_foreshadow_ids": [],
+                "world_rule_ids": [row.world_rule_id for row in world_rules],
+                "open_foreshadow_ids": [row.foreshadow_id for row in open_foreshadows],
             },
             ordered_injections=ordered_injections,
             inline_digests=inline_digests,

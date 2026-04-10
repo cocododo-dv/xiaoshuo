@@ -1,0 +1,65 @@
+import { expect, test } from "@playwright/test";
+
+test("creates knowledge candidates and carries them through review, index, and provenance", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByTestId("api-base-input").fill("http://127.0.0.1:8000");
+  await page.getByTestId("api-base-input").press("Tab");
+  await page.getByTestId("operator-ref-input").fill("ops.knowledge.e2e");
+  await page.getByTestId("operator-ref-input").press("Tab");
+
+  await page.getByTestId("nav-knowledge").click();
+  await expect(page.getByTestId("knowledge-console-view")).toBeVisible();
+
+  await page.getByTestId("knowledge-review-id").fill("review_knowledge_style_rule");
+  await page.getByTestId("knowledge-item-type").selectOption("style_rule_set");
+  await page.getByTestId("knowledge-lineage-key").fill("STYLE_KNOWLEDGE_E2E");
+  await page.getByTestId("knowledge-candidate-text").fill("keep the reunion tight and gesture-led");
+  await page.getByTestId("knowledge-create-button").click();
+
+  const styleRuleReview = page.getByTestId("review-card-review_knowledge_style_rule");
+  await expect(styleRuleReview).toBeVisible();
+  await styleRuleReview.getByTestId("review-approve-review_knowledge_style_rule").click();
+  await expect(page.getByTestId("notice-stack")).toContainText("Approved review_knowledge_style_rule as ops.knowledge.e2e");
+
+  await page.getByTestId("nav-knowledge").click();
+  await page.getByTestId("knowledge-refresh-button").click();
+  await expect(page.getByTestId("knowledge-card-style_rule-STYLE_KNOWLEDGE_E2E")).toContainText(
+    "keep the reunion tight and gesture-led",
+  );
+
+  await page.getByTestId("knowledge-review-id").fill("review_knowledge_calibration");
+  await page.getByTestId("knowledge-item-type").selectOption("calibration_candidate");
+  await page.getByTestId("knowledge-lineage-key").fill("CAL_KNOWLEDGE_E2E");
+  await page.getByTestId("knowledge-candidate-text").fill("the gate sighed shut on the unfinished question");
+  await page.getByTestId("knowledge-active-on-approve").selectOption("0");
+  await page.getByTestId("knowledge-create-button").click();
+
+  const calibrationReview = page.getByTestId("review-card-review_knowledge_calibration");
+  await expect(calibrationReview).toBeVisible();
+  await calibrationReview.getByTestId("review-approve-review_knowledge_calibration").click();
+  await expect(page.getByTestId("notice-stack")).toContainText("Approved review_knowledge_calibration as ops.knowledge.e2e");
+
+  await page.getByTestId("nav-index").click();
+  const verifyJob = page.getByTestId("verify-job-verify_review_knowledge_calibration");
+  await expect(verifyJob).toBeVisible();
+  await verifyJob.getByTestId("retry-verify-job-verify_review_knowledge_calibration").click();
+  await expect(page.getByTestId("notice-stack")).toContainText(
+    "Retried verify for verify_review_knowledge_calibration as ops.knowledge.e2e",
+  );
+
+  await page.getByTestId("nav-review").click();
+  await calibrationReview.getByTestId("review-release-review_knowledge_calibration").click();
+  await expect(page.getByTestId("notice-stack")).toContainText("Released review_knowledge_calibration as ops.knowledge.e2e");
+
+  await page.getByTestId("nav-workbench").click();
+  await page.getByTestId("scene-id-input").fill("CH001_SC02");
+  await page.getByTestId("scene-load-button").click();
+  await page.getByTestId("run-full-scene-button").click();
+  const workbench = page.getByTestId("scene-workbench-view");
+  await expect(workbench).toContainText("Bundle Provenance");
+  await expect(workbench).toContainText("Style rule set");
+  await expect(workbench).toContainText("Calibration line");
+  await expect(workbench).toContainText("keep the reunion tight and gesture-led");
+  await expect(workbench).toContainText("the gate sighed shut on the unfinished question");
+});

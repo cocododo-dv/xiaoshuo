@@ -3,10 +3,12 @@ import { ref } from "vue";
 
 import { getApiBase, getOperatorRef, setApiBase, setOperatorRef } from "./lib/api";
 import { useIndexConsoleStore } from "./stores/indexConsole";
+import { useKnowledgeConsoleStore } from "./stores/knowledgeConsole";
 import { useReviewInboxStore } from "./stores/reviewInbox";
 import { useWorkbenchStore } from "./stores/workbench";
 import { useShellRouter } from "./router";
 import IndexConsoleView from "./views/IndexConsoleView.vue";
+import KnowledgeConsoleView from "./views/KnowledgeConsoleView.vue";
 import ReviewInboxView from "./views/ReviewInboxView.vue";
 import SceneWorkbenchView from "./views/SceneWorkbenchView.vue";
 
@@ -18,6 +20,7 @@ const notices = ref([]);
 const workbench = useWorkbenchStore();
 const reviewInbox = useReviewInboxStore();
 const indexConsole = useIndexConsoleStore();
+const knowledgeConsole = useKnowledgeConsoleStore();
 
 function pushNotice(message) {
   if (!message) {
@@ -37,11 +40,12 @@ function updateOperator() {
 }
 
 async function reloadAll() {
-  await Promise.all([workbench.refreshAll(), reviewInbox.load(), indexConsole.load()]);
+  await Promise.all([workbench.refreshAll(), reviewInbox.load(), indexConsole.load(), knowledgeConsole.load()]);
   if (workbench.error) pushNotice(workbench.error);
   if (reviewInbox.error) pushNotice(reviewInbox.error);
   if (indexConsole.error) pushNotice(indexConsole.error);
-  if (!workbench.error && !reviewInbox.error && !indexConsole.error) {
+  if (knowledgeConsole.error) pushNotice(knowledgeConsole.error);
+  if (!workbench.error && !reviewInbox.error && !indexConsole.error && !knowledgeConsole.error) {
     pushNotice("Reloaded all views");
   }
 }
@@ -49,7 +53,7 @@ async function reloadAll() {
 
 <template>
   <div class="shell">
-    <!-- Scene Workbench / Review Inbox / Index Console -->
+    <!-- Scene Workbench / Review Inbox / Index Console / Knowledge Console -->
     <aside class="rail">
       <div class="brand">
         <div class="eyebrow">P2 Editorial Ops</div>
@@ -101,6 +105,10 @@ async function reloadAll() {
         />
         <IndexConsoleView
           v-show="activeView === 'index'"
+          @notice="pushNotice"
+        />
+        <KnowledgeConsoleView
+          v-show="activeView === 'knowledge'"
           @notice="pushNotice"
         />
       </div>

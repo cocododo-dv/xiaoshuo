@@ -86,6 +86,85 @@ describe("buildBundleProvenance", () => {
       injections: [],
     });
   });
+
+  it("surfaces extended knowledge-family sources and injections from the bundle snapshot", () => {
+    const snapshot = {
+      source_version_refs: {
+        style_rule_set_id: "STYLE_GLOBAL_MAIN",
+        banned_cluster_id: "BAN_REUNION_V1",
+        calibration_line_ids: ["CAL_002"],
+        scene_summary_id: "CH001_SC01",
+        chapter_summary_id: "CH001",
+      },
+      resolved_ref_ids: {
+        relation_ids: ["REL_CHAR_A_CHAR_B"],
+        world_rule_ids: ["WR_GLOBAL_014"],
+        open_foreshadow_ids: ["F014"],
+      },
+      ordered_injections: [
+        { slot: "style_rules", ref_id: "STYLE_GLOBAL_MAIN", digest_key: "style_rule" },
+        { slot: "banned_rules", ref_id: "BAN_REUNION_V1", digest_key: "banned_rule" },
+        { slot: "calibration_lines", ref_id: "CAL_002", digest_key: "calibration_line" },
+        { slot: "world_rules", ref_id: "WR_GLOBAL_014", digest_key: "world_rule" },
+        { slot: "foreshadow", ref_id: "F014", digest_key: "foreshadow" },
+        { slot: "scene_summary", ref_id: "CH001_SC01", digest_key: "scene_summary" },
+        { slot: "chapter_summary", ref_id: "CH001", digest_key: "chapter_summary" },
+      ],
+      inline_digests: {
+        style_rule: "keep emotion in gesture and pause",
+        banned_rule: "do not explain the whole backstory at reunion time",
+        calibration_line: "the door closed like a sentence left unfinished",
+        world_rule: "public spellcasting inside the city is forbidden",
+        foreshadow: "the old letter sender clue is now in play",
+        scene_summary: "scene summary for the first reunion beat",
+        chapter_summary: "chapter summary for the first reunion chapter",
+      },
+    };
+
+    const provenance = buildBundleProvenance(snapshot);
+
+    expect(provenance.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "style_rule",
+          label: "Style rule set",
+          logicalId: "STYLE_GLOBAL_MAIN",
+          digest: "keep emotion in gesture and pause",
+        }),
+        expect.objectContaining({
+          key: "banned_rule",
+          label: "Banned rule cluster",
+          logicalId: "BAN_REUNION_V1",
+          digest: "do not explain the whole backstory at reunion time",
+        }),
+        expect.objectContaining({
+          key: "calibration_line",
+          label: "Calibration line",
+          logicalId: "CAL_002",
+          digest: "the door closed like a sentence left unfinished",
+        }),
+        expect.objectContaining({
+          key: "world_rule",
+          label: "World rule",
+          logicalId: "WR_GLOBAL_014",
+          digest: "public spellcasting inside the city is forbidden",
+        }),
+        expect.objectContaining({
+          key: "foreshadow",
+          label: "Open foreshadow",
+          logicalId: "F014",
+          digest: "the old letter sender clue is now in play",
+        }),
+      ]),
+    );
+    expect(provenance.injections).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ slot: "style_rules", slotLabel: "Style rules", digest: "keep emotion in gesture and pause" }),
+        expect.objectContaining({ slot: "world_rules", slotLabel: "World rules", digest: "public spellcasting inside the city is forbidden" }),
+        expect.objectContaining({ slot: "chapter_summary", slotLabel: "Chapter summary", digest: "chapter summary for the first reunion chapter" }),
+      ]),
+    );
+  });
 });
 
 describe("scene workbench source", () => {
@@ -156,9 +235,11 @@ describe("review inbox source", () => {
     expect(source).toContain("HumanReviewDrawer");
     expect(source).toContain("reviewInbox.systemRecoveryItems");
     expect(source).toContain("focusTarget");
-    expect(source).toContain("const { focusTarget, openTarget } = useShellRouter()");
+    expect(source).toContain("const { activeView, focusTarget, openTarget } = useShellRouter()");
     expect(source).toContain('@open-target="handleOpenTarget"');
     expect(source).toContain("reviewSourceActionLabel");
+    expect(source).toContain('if (nextView === "review" && previousView !== "review")');
+    expect(source).toContain("refreshReviews()");
     expect(source).toContain('source_type: "review_approve"');
     expect(source).toContain('source_type: "review_release"');
     expect(source).toContain('source_type: "review_card_open"');

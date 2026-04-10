@@ -13,6 +13,7 @@ const views = [
   { id: "workbench", label: "Scene Workbench" },
   { id: "review", label: "Review Inbox" },
   { id: "index", label: "Index Console" },
+  { id: "knowledge", label: "Knowledge Console" },
 ];
 
 const workbenchTargetTypes = new Set([

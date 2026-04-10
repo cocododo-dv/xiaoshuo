@@ -79,12 +79,25 @@ export function fetchReviewItems() {
   return apiGet("/api/v1/review-items");
 }
 
+export function createReviewItem(payload) {
+  return apiPost("/api/v1/review-items", payload);
+}
+
 export function approveReview(reviewId) {
   return apiPost(`/api/v1/review-items/${reviewId}/approve`);
 }
 
 export function releaseReview(reviewId) {
   return apiPost(`/api/v1/review-items/${reviewId}/release`);
+}
+
+export function fetchKnowledge(objectType = "") {
+  const query = objectType ? `?object_type=${encodeURIComponent(objectType)}` : "";
+  return apiGet(`/api/v1/knowledge${query}`);
+}
+
+export function fetchKnowledgeDetail(objectType, lineageKey) {
+  return apiGet(`/api/v1/knowledge/${encodeURIComponent(objectType)}/${encodeURIComponent(lineageKey)}`);
 }
 
 export function fetchAliasScopes() {

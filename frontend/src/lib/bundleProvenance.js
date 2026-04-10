@@ -2,6 +2,7 @@ const SOURCE_DEFINITIONS = [
   {
     key: "voice_profile",
     label: "Voice profile",
+    collection: "source_version_refs",
     logicalIdKey: "voice_profile_id",
     rowIdKey: "voice_profile_row_id",
     versionKey: "voice_profile_version",
@@ -10,6 +11,7 @@ const SOURCE_DEFINITIONS = [
   {
     key: "relation_profile",
     label: "Relation profile",
+    collection: "source_version_refs",
     logicalIdKey: "relation_profile_id",
     rowIdKey: "relation_profile_row_id",
     versionKey: "relation_profile_version",
@@ -18,10 +20,77 @@ const SOURCE_DEFINITIONS = [
   {
     key: "scene_memory_prev",
     label: "Previous scene memory",
+    collection: "source_version_refs",
     logicalIdKey: "scene_memory_prev",
     rowIdKey: null,
     versionKey: null,
     digestKey: "scene_memory",
+  },
+  {
+    key: "style_rule",
+    label: "Style rule set",
+    collection: "source_version_refs",
+    logicalIdKey: "style_rule_set_id",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "style_rule",
+  },
+  {
+    key: "banned_rule",
+    label: "Banned rule cluster",
+    collection: "source_version_refs",
+    logicalIdKey: "banned_cluster_id",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "banned_rule",
+  },
+  {
+    key: "calibration_line",
+    label: "Calibration line",
+    collection: "source_version_refs",
+    logicalIdKey: "calibration_line_ids",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "calibration_line",
+    multiple: true,
+  },
+  {
+    key: "scene_summary",
+    label: "Scene summary",
+    collection: "source_version_refs",
+    logicalIdKey: "scene_summary_id",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "scene_summary",
+  },
+  {
+    key: "chapter_summary",
+    label: "Chapter summary",
+    collection: "source_version_refs",
+    logicalIdKey: "chapter_summary_id",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "chapter_summary",
+  },
+  {
+    key: "world_rule",
+    label: "World rule",
+    collection: "resolved_ref_ids",
+    logicalIdKey: "world_rule_ids",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "world_rule",
+    multiple: true,
+  },
+  {
+    key: "foreshadow",
+    label: "Open foreshadow",
+    collection: "resolved_ref_ids",
+    logicalIdKey: "open_foreshadow_ids",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "foreshadow",
+    multiple: true,
   },
 ];
 
@@ -31,6 +100,13 @@ const SLOT_LABELS = {
   pov_voice: "POV voice",
   relation: "Relation",
   prev_scene_memory: "Previous scene memory",
+  style_rules: "Style rules",
+  banned_rules: "Banned rules",
+  calibration_lines: "Calibration lines",
+  world_rules: "World rules",
+  foreshadow: "Foreshadow",
+  scene_summary: "Scene summary",
+  chapter_summary: "Chapter summary",
 };
 
 export function buildBundleProvenance(snapshot) {
@@ -43,25 +119,27 @@ export function buildBundleProvenance(snapshot) {
   }
 
   const sourceVersionRefs = snapshot.source_version_refs || {};
+  const resolvedRefIds = snapshot.resolved_ref_ids || {};
   const inlineDigests = snapshot.inline_digests || {};
   const orderedInjections = snapshot.ordered_injections || [];
 
   const sources = SOURCE_DEFINITIONS.flatMap((definition) => {
-    const logicalId = sourceVersionRefs[definition.logicalIdKey];
-    if (!logicalId) {
+    const collection = definition.collection === "resolved_ref_ids" ? resolvedRefIds : sourceVersionRefs;
+    const rawLogicalId = collection[definition.logicalIdKey];
+    if (!rawLogicalId || (Array.isArray(rawLogicalId) && !rawLogicalId.length)) {
       return [];
     }
 
-    return [
-      {
-        key: definition.key,
-        label: definition.label,
-        logicalId,
-        rowId: definition.rowIdKey ? sourceVersionRefs[definition.rowIdKey] ?? null : null,
-        version: definition.versionKey ? sourceVersionRefs[definition.versionKey] ?? null : null,
-        digest: inlineDigests[definition.digestKey] ?? "-",
-      },
-    ];
+    const logicalIds = Array.isArray(rawLogicalId) ? rawLogicalId : [rawLogicalId];
+
+    return logicalIds.map((logicalId) => ({
+      key: definition.key,
+      label: definition.label,
+      logicalId,
+      rowId: definition.rowIdKey ? sourceVersionRefs[definition.rowIdKey] ?? null : null,
+      version: definition.versionKey ? sourceVersionRefs[definition.versionKey] ?? null : null,
+      digest: inlineDigests[definition.digestKey] ?? "-",
+    }));
   });
 
   const injections = orderedInjections.map((entry) => ({

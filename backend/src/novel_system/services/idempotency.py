@@ -287,6 +287,15 @@ def _resolve_operator_action_outcome(
     result: dict[str, Any],
 ) -> tuple[str | None, str, dict[str, Any]]:
     if action == "approve_review":
+        job_ids = result.get("job_ids") or []
+        targets = []
+        for job_id in job_ids:
+            if not isinstance(job_id, str):
+                continue
+            if job_id.startswith("reindex_"):
+                targets.append(_target("reindex_job", job_id))
+            elif job_id.startswith("verify_"):
+                targets.append(_target("verify_job", job_id))
         return (
             result.get("materialize_status"),
             "review approved and candidate materialized",
@@ -294,10 +303,7 @@ def _resolve_operator_action_outcome(
                 "review_id": object_ref,
                 "approved_item_row_id": result.get("approved_item_row_id"),
                 "materialize_status": result.get("materialize_status"),
-                "target_refs": [
-                    _target("reindex_job", f"reindex_{object_ref}"),
-                    _target("verify_job", f"verify_{object_ref}"),
-                ],
+                "target_refs": targets,
             },
         )
 

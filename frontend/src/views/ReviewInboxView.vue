@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from "vue";
+import { computed, onMounted, watch } from "vue";
 
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
@@ -12,7 +12,7 @@ const emit = defineEmits(["notice"]);
 
 const reviewInbox = useReviewInboxStore();
 const indexConsole = useIndexConsoleStore();
-const { focusTarget, openTarget } = useShellRouter();
+const { activeView, focusTarget, openTarget } = useShellRouter();
 
 const prioritizedRecoveryItems = computed(() => {
   const focusEventId = focusTarget.value?.target_type === "human_review_event" ? focusTarget.value.target_id : null;
@@ -136,6 +136,15 @@ function handleReviewOpenTarget(reviewId) {
 onMounted(() => {
   refreshReviews();
 });
+
+watch(
+  () => activeView.value,
+  (nextView, previousView) => {
+    if (nextView === "review" && previousView !== "review") {
+      refreshReviews();
+    }
+  },
+);
 </script>
 
 <template>

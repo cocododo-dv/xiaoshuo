@@ -61,6 +61,10 @@ class VoiceProfile(Base):
     character_id: Mapped[str] = mapped_column(String)
     content: Mapped[str] = mapped_column(Text)
     active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
@@ -76,6 +80,10 @@ class RelationProfile(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     content: Mapped[str] = mapped_column(Text)
     active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
@@ -166,9 +174,11 @@ class SceneMemory(Base):
     carry_notes_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     source_bundle_id: Mapped[str] = mapped_column(String)
     final_scene_row_id: Mapped[str] = mapped_column(String)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     active_flag: Mapped[int] = mapped_column(Integer, default=1)
     runtime_eligible: Mapped[int] = mapped_column(Integer, default=1)
     runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="direct_read")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
@@ -179,8 +189,11 @@ class ChapterMemory(Base):
     chapter_id: Mapped[str] = mapped_column(String)
     aggregate_stage: Mapped[str] = mapped_column(String)
     content: Mapped[str] = mapped_column(Text)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     active_flag: Mapped[int] = mapped_column(Integer, default=0)
     runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
@@ -224,8 +237,18 @@ class ReviewItem(Base):
         Computed(
             "CASE "
             "WHEN item_type = 'style_observation' THEN 'style_observations' "
-            "WHEN item_type = 'calibration_line' THEN 'calibration_lines' "
+            "WHEN item_type = 'style_rule_set' THEN 'style_rules' "
+            "WHEN item_type = 'banned_rule_cluster' THEN 'banned_rule_clusters' "
+            "WHEN item_type = 'voice_card_candidate' THEN 'voice_cards' "
+            "WHEN item_type = 'relation_card_candidate' THEN 'relation_cards' "
+            "WHEN item_type = 'world_rule' THEN 'world_rules' "
+            "WHEN item_type = 'calibration_candidate' THEN 'calibration_lines' "
+            "WHEN item_type = 'foreshadow_open' THEN 'foreshadow_tracker' "
+            "WHEN item_type = 'foreshadow_touch' THEN 'foreshadow_tracker' "
+            "WHEN item_type = 'foreshadow_resolve' THEN 'foreshadow_tracker' "
             "WHEN item_type = 'scene_memory' THEN 'scene_memories' "
+            "WHEN item_type = 'scene_summary' THEN 'scene_memories' "
+            "WHEN item_type = 'chapter_summary' THEN 'chapter_memories' "
             "ELSE 'review_items' END",
             persisted=True,
         ),
@@ -274,6 +297,114 @@ class StyleObservation(Base):
     scope: Mapped[str] = mapped_column(String, default="global")
     scope_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
     text: Mapped[str] = mapped_column(Text)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleRule(Base):
+    __tablename__ = "style_rules"
+    __table_args__ = (
+        CheckConstraint("NOT (active_flag = 0 AND runtime_eligible = 1)", name="ck_style_rules_runtime"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    style_rule_set_id: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    scope: Mapped[str] = mapped_column(String, default="global")
+    scope_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    content: Mapped[str] = mapped_column(Text)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class BannedRuleCluster(Base):
+    __tablename__ = "banned_rule_clusters"
+    __table_args__ = (
+        CheckConstraint("NOT (active_flag = 0 AND runtime_eligible = 1)", name="ck_banned_clusters_runtime"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    banned_cluster_id: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    scope: Mapped[str] = mapped_column(String, default="global")
+    scope_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    content: Mapped[str] = mapped_column(Text)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class WorldRule(Base):
+    __tablename__ = "world_rules"
+    __table_args__ = (
+        CheckConstraint("NOT (active_flag = 0 AND runtime_eligible = 1)", name="ck_world_rules_runtime"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    world_rule_id: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    scope: Mapped[str] = mapped_column(String, default="global")
+    scope_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    rule_tier: Mapped[str] = mapped_column(String, default="normal")
+    content: Mapped[str] = mapped_column(Text)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class CalibrationLine(Base):
+    __tablename__ = "calibration_lines"
+    __table_args__ = (
+        CheckConstraint("NOT (active_flag = 0 AND runtime_eligible = 1)", name="ck_calibration_lines_runtime"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    calibration_line_id: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    scope: Mapped[str] = mapped_column(String, default="global")
+    scope_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    text: Mapped[str] = mapped_column(Text)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ForeshadowTracker(Base):
+    __tablename__ = "foreshadow_tracker"
+    __table_args__ = (
+        CheckConstraint("NOT (active_flag = 0 AND runtime_eligible = 1)", name="ck_foreshadow_runtime"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    foreshadow_id: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    chapter_id: Mapped[str] = mapped_column(String)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    text: Mapped[str] = mapped_column(Text)
+    tracker_status: Mapped[str] = mapped_column(String, default="open")
     source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     active_flag: Mapped[int] = mapped_column(Integer, default=0)
     runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)

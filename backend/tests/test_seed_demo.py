@@ -7,11 +7,14 @@ from sqlalchemy import func, select
 
 from novel_system.db.models import (
     AttemptTracker,
+    BannedRuleCluster,
+    CalibrationLine,
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
     ChapterState,
     FinalScene,
+    ForeshadowTracker,
     HumanReviewEvent,
     IdempotencyKey,
     OperationLog,
@@ -23,9 +26,11 @@ from novel_system.db.models import (
     SceneMemory,
     SceneRunState,
     StyleObservation,
+    StyleRule,
     VectorAliasRegistry,
     VerifyJob,
     VersionRegistry,
+    WorldRule,
 )
 from novel_system.tools.seed_demo import main, seed_demo
 
@@ -155,6 +160,38 @@ def test_seed_demo_creates_traceable_voice_and_relation_profiles(session) -> Non
     assert relation["version"] == 1
     assert relation["active_flag"] == 1
     assert relation["content"] == "reunion tension; B knows slightly more than A"
+
+
+def test_seed_demo_creates_samples_for_extended_knowledge_families(session) -> None:
+    seed_demo(session)
+    session.commit()
+
+    style_rule = session.get(StyleRule, "style_rule_STYLE_DEMO_MAIN_v1")
+    banned_rule = session.get(BannedRuleCluster, "banned_rule_cluster_BAN_DEMO_REUNION_v1")
+    world_rule = session.get(WorldRule, "world_rule_WR_DEMO_CITY_v1")
+    calibration_line = session.get(CalibrationLine, "calibration_line_CAL_DEMO_001_v1")
+    foreshadow = session.get(ForeshadowTracker, "foreshadow_FORESHADOW_DEMO_001_v1")
+    scene_summary = session.get(SceneMemory, "scene_memory_CH001_SC01_summary_v1")
+    chapter_summary = session.get(ChapterMemory, "chapter_memory_CH001_summary_v1")
+    calibration_alias = session.get(VectorAliasRegistry, "calibration_line:global:global")
+
+    assert style_rule is not None
+    assert style_rule.active_flag == 1
+    assert style_rule.content == "keep emotion in gesture and pause"
+    assert banned_rule is not None
+    assert banned_rule.content == "do not explain the whole backstory at reunion time"
+    assert world_rule is not None
+    assert world_rule.rule_tier == "hard"
+    assert calibration_line is not None
+    assert calibration_line.runtime_eligibility_basis == "vector_ready"
+    assert calibration_alias is not None
+    assert calibration_alias.active_alias == "calibration_line_global_global__candidate__calibration_line_CAL_DEMO_001_v1"
+    assert foreshadow is not None
+    assert foreshadow.tracker_status == "open"
+    assert scene_summary is not None
+    assert scene_summary.content == "scene summary for the first reunion beat"
+    assert chapter_summary is not None
+    assert chapter_summary.content == "chapter summary for the first reunion chapter"
 
 
 def test_seed_demo_resets_demo_runtime_state(session) -> None:
@@ -356,15 +393,16 @@ def test_seed_demo_clears_demo_derived_records(session) -> None:
     assert _count_rows(session, SceneBundle) == 0
     assert _count_rows(session, SceneDraft) == 0
     assert _count_rows(session, FinalScene) == 0
-    assert _count_rows(session, SceneMemory) == 0
-    assert _count_rows(session, ChapterMemory) == 0
+    assert _count_rows(session, SceneMemory) == 1
+    assert _count_rows(session, ChapterMemory) == 1
     assert _count_rows(session, ChapterRollingNote) == 0
     assert _count_rows(session, HumanReviewEvent) == 0
     assert _count_rows(session, StyleObservation) == 0
-    assert _count_rows(session, VersionRegistry) == 0
+    assert _count_rows(session, VersionRegistry) == 7
     assert _count_rows(session, ReindexJob) == 0
     assert _count_rows(session, VerifyJob) == 0
     assert session.get(VectorAliasRegistry, "style_observation:global:global") is None
+    assert session.get(VectorAliasRegistry, "calibration_line:global:global") is not None
 
 
 def test_seed_demo_review_can_verify_and_release_with_memory_backend(client, session) -> None:

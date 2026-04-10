@@ -37,7 +37,25 @@ def list_review_items(request: Request, session: Session = Depends(get_session),
 @router.get("/api/v1/review-items/{review_id}")
 def review_detail(review_id: str, request: Request, session: Session = Depends(get_session)):
     item = session.get(ReviewItem, review_id)
+    if item is None:
+        raise DomainError("REVIEW_NOT_FOUND", f"review {review_id} not found", status_code=404)
     return ok(_serialize_review(item), req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/review-items")
+def create_review_item(payload: dict, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/review-items",
+        payload=payload,
+        action=lambda: _upsert_review_item(session, payload),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/review-items/import-demo")
@@ -66,6 +84,23 @@ def _import_review(session: Session, payload: dict) -> dict:
             setattr(item, key, value)
     session.flush()
     return {"review_id": item.review_id}
+
+
+def _upsert_review_item(session: Session, payload: dict) -> dict:
+    review_id = payload.get("review_id")
+    if not isinstance(review_id, str) or not review_id:
+        raise DomainError("REVIEW_ID_REQUIRED", "missing review_id", status_code=400)
+
+    item = session.get(ReviewItem, review_id)
+    if item is None:
+        item = ReviewItem(**payload)
+        session.add(item)
+    else:
+        for key, value in payload.items():
+            setattr(item, key, value)
+    session.flush()
+    session.refresh(item)
+    return _serialize_review(item)
 
 
 @router.post("/api/v1/review-items/{review_id}/approve")

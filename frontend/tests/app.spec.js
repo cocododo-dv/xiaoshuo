@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { actOnHumanReviewEvent, setOperatorRef } from "../src/lib/api";
 import { useShellRouter } from "../src/router";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
+import { useKnowledgeConsoleStore } from "../src/stores/knowledgeConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 import { useWorkbenchStore } from "../src/stores/workbench";
 
@@ -135,6 +136,7 @@ describe("vue shell", () => {
     expect(source).toContain("Scene Workbench");
     expect(source).toContain("Review Inbox");
     expect(source).toContain("Index Console");
+    expect(source).toContain("Knowledge Console");
   });
 });
 
@@ -395,6 +397,189 @@ describe("review inbox store", () => {
     );
     expect(store.actionId).toBe("");
     expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("knowledge console store", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.includes("/api/v1/knowledge/voice_card/VOICE_CHAR_A")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              object_type: "voice_card",
+              lineage_key: "VOICE_CHAR_A",
+              active_version: {
+                row_id: "voice_card_VOICE_CHAR_A_v1",
+                version: 1,
+                text: "short clipped lines; pressure makes the tone harder",
+              },
+              candidate_version: {
+                review_id: "review_voice_card_candidate",
+                text: "candidate voice update",
+              },
+              versions: [
+                {
+                  row_id: "voice_card_VOICE_CHAR_A_v1",
+                  version: 1,
+                  text: "short clipped lines; pressure makes the tone harder",
+                },
+              ],
+              runtime_refs: {
+                mode: "direct_read",
+              },
+              review_refs: ["review_voice_card_candidate"],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/knowledge")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  object_type: "voice_card",
+                  lineage_key: "VOICE_CHAR_A",
+                  status: "active",
+                  active_version: {
+                    row_id: "voice_card_VOICE_CHAR_A_v1",
+                    version: 1,
+                    text: "short clipped lines; pressure makes the tone harder",
+                  },
+                  candidate_version: null,
+                  versions: [
+                    {
+                      row_id: "voice_card_VOICE_CHAR_A_v1",
+                      version: 1,
+                      text: "short clipped lines; pressure makes the tone harder",
+                    },
+                  ],
+                  runtime_refs: {
+                    mode: "direct_read",
+                  },
+                  review_refs: [],
+                },
+              ],
+              supported_object_types: ["voice_card", "style_rule", "calibration_line"],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/review-items") && options.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              review_id: "review_voice_card_candidate",
+              item_type: "voice_card_candidate",
+              candidate_text: "candidate voice update",
+              candidate_payload_json: {
+                lineage_key: "VOICE_CHAR_A",
+                character_id: "CHAR_A",
+                text: "candidate voice update",
+              },
+              status: "pending",
+              target_collection: "voice_cards",
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/review-items")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  review_id: "review_voice_card_candidate",
+                  item_type: "voice_card_candidate",
+                  candidate_text: "candidate voice update",
+                  candidate_payload_json: {
+                    lineage_key: "VOICE_CHAR_A",
+                    character_id: "CHAR_A",
+                    text: "candidate voice update",
+                  },
+                  status: "pending",
+                  materialize_status: "pending",
+                  target_collection: "voice_cards",
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("merges pending review candidates into the knowledge catalog and loads detail", async () => {
+    const store = useKnowledgeConsoleStore();
+
+    await store.load();
+    await store.selectItem("voice_card", "VOICE_CHAR_A");
+
+    expect(store.items).toEqual([
+      expect.objectContaining({
+        object_type: "voice_card",
+        lineage_key: "VOICE_CHAR_A",
+        candidate_version: expect.objectContaining({
+          review_id: "review_voice_card_candidate",
+          text: "candidate voice update",
+        }),
+      }),
+    ]);
+    expect(store.detail).toEqual(
+      expect.objectContaining({
+        object_type: "voice_card",
+        lineage_key: "VOICE_CHAR_A",
+        runtime_refs: expect.objectContaining({
+          mode: "direct_read",
+        }),
+      }),
+    );
+  });
+
+  it("creates a candidate review item from the knowledge console form", async () => {
+    const store = useKnowledgeConsoleStore();
+
+    const message = await store.createCandidate({
+      reviewId: "review_voice_card_candidate",
+      itemType: "voice_card_candidate",
+      lineageKey: "VOICE_CHAR_A",
+      candidateText: "candidate voice update",
+      characterId: "CHAR_A",
+      activeOnApprove: 0,
+    });
+
+    expect(message).toContain("review_voice_card_candidate");
+    expect(store.lastCreateResult).toEqual(
+      expect.objectContaining({
+        review_id: "review_voice_card_candidate",
+        target_collection: "voice_cards",
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/review-items",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
   });
 });
 
