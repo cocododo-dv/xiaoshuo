@@ -72,8 +72,8 @@ Most recent successful verification on 2026-04-10:
 
 - `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
 - `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
-- Windows lane result: backend `31 passed, 13 deselected`; frontend `33 passed`; production build succeeded.
-- WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `13 passed`; full backend suite `43 passed, 1 skipped`.
+- Windows lane result: backend `34 passed, 13 deselected`; frontend `33 passed`; production build succeeded.
+- WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `13 passed`; full backend suite `46 passed, 1 skipped`.
 
 ## Demo seed
 
@@ -92,6 +92,8 @@ npm run dev
 The seed expects the local SQLite schema to be at the current Alembic head. Run `alembic upgrade head` first if you are starting from a fresh or older local database.
 
 The seed is idempotent, so rerunning it keeps the same `CH001` / `CH001_SC01..03` / `review_demo_style_observation` records, avoids duplicate rows, and resets the seeded chapter, scene, and review records back to their bootstrap shape. Shared vector alias state is still owned by the normal review/reindex flow.
+
+For the memory backend used by the Windows-safe lane and the local demo path, the in-process vector store is reused per resolved vector-store directory. That keeps seeded candidate/active alias state visible across multiple API requests in the same session, so the demo can now complete `approve -> verify -> release` without switching backends.
 
 Runtime-ops closeout note:
 

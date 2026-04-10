@@ -224,6 +224,9 @@ class FileVectorStore(InMemoryVectorStore):
     """Legacy alias kept for API compatibility with older callers."""
 
 
+_MEMORY_VECTOR_STORES: dict[str, InMemoryVectorStore] = {}
+
+
 def get_vector_store(
     *,
     backend: str | None = None,
@@ -233,7 +236,10 @@ def get_vector_store(
     selected_backend = (backend or settings.vector_backend).lower()
     _ensure_backend_runtime_supported(selected_backend)
     if selected_backend == "memory":
-        return InMemoryVectorStore()
+        namespace = str((persist_directory or settings.vector_store_dir).resolve())
+        if namespace not in _MEMORY_VECTOR_STORES:
+            _MEMORY_VECTOR_STORES[namespace] = InMemoryVectorStore()
+        return _MEMORY_VECTOR_STORES[namespace]
     if selected_backend == "chroma":
         return ChromaVectorStore(persist_directory or settings.vector_store_dir)
     raise ValueError(f"Unsupported vector backend: {selected_backend}")

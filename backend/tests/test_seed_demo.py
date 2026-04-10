@@ -289,3 +289,49 @@ def test_seed_demo_clears_demo_derived_records(session) -> None:
     assert _count_rows(session, ReindexJob) == 0
     assert _count_rows(session, VerifyJob) == 0
     assert session.get(VectorAliasRegistry, "style_observation:global:global") is None
+
+
+def test_seed_demo_review_can_verify_and_release_with_memory_backend(client, session) -> None:
+    seed_demo(session)
+    session.commit()
+
+    run_scene = client.post(
+        "/api/v1/scenes/CH001_SC01/run/full",
+        headers={
+            "X-Idempotency-Key": "seed-demo-run-scene",
+            "X-Operator-Ref": "ops.seed-demo",
+        },
+    )
+    assert run_scene.status_code == 200
+
+    approved = client.post(
+        "/api/v1/review-items/review_demo_style_observation/approve",
+        headers={
+            "X-Idempotency-Key": "seed-demo-approve-review",
+            "X-Operator-Ref": "ops.seed-demo",
+        },
+    )
+    assert approved.status_code == 200
+
+    verify = client.post(
+        "/api/v1/index/verify/verify_review_demo_style_observation/retry",
+        headers={
+            "X-Idempotency-Key": "seed-demo-verify-review",
+            "X-Operator-Ref": "ops.seed-demo",
+        },
+    )
+    assert verify.status_code == 200
+
+    released = client.post(
+        "/api/v1/review-items/review_demo_style_observation/release",
+        headers={
+            "X-Idempotency-Key": "seed-demo-release-review",
+            "X-Operator-Ref": "ops.seed-demo",
+        },
+    )
+    assert released.status_code == 200
+
+    alias = session.get(VectorAliasRegistry, "style_observation:global:global")
+    assert alias is not None
+    assert alias.active_alias == "style_observation_global_global__candidate__style_observation_STY_DEMO_001_v1"
+    assert alias.candidate_alias is None
