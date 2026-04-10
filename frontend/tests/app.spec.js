@@ -432,12 +432,37 @@ describe("knowledge console store", () => {
                 mode: "direct_read",
               },
               review_refs: ["review_voice_card_candidate"],
+              bundle_refs: [
+                {
+                  bundle_id: "bundle_CH001_SC01",
+                  scene_id: "CH001_SC01",
+                  chapter_id: "CH001",
+                  object_type: "voice_card",
+                },
+              ],
             },
           }),
         };
       }
 
       if (url.includes("/api/v1/knowledge")) {
+        if (
+          url.includes("object_type=style_rule")
+          && url.includes("scope=global")
+          && url.includes("scope_ref_id=global")
+          && url.includes("status=candidate")
+        ) {
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              data: {
+                items: [],
+                supported_object_types: ["voice_card", "style_rule", "calibration_line"],
+              },
+            }),
+          };
+        }
         return {
           ok: true,
           json: async () => ({
@@ -580,6 +605,273 @@ describe("knowledge console store", () => {
         method: "POST",
       }),
     );
+  });
+
+  it("applies object, scope, scope ref, and status filters to pending knowledge candidates", async () => {
+    const store = useKnowledgeConsoleStore();
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.includes("/api/v1/knowledge")) {
+        expect(url).toContain("object_type=style_rule");
+        expect(url).toContain("scope=global");
+        expect(url).toContain("scope_ref_id=global");
+        expect(url).toContain("status=candidate");
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [],
+              supported_object_types: ["voice_card", "style_rule", "calibration_line"],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/review-items") && !options.method) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  review_id: "review_style_rule_global_candidate",
+                  item_type: "style_rule_set",
+                  candidate_text: "keep the reunion tight and gesture-led",
+                  candidate_payload_json: {
+                    lineage_key: "STYLE_PENDING_GLOBAL",
+                    scope: "global",
+                    scope_ref_id: "global",
+                    text: "keep the reunion tight and gesture-led",
+                  },
+                  status: "pending",
+                  materialize_status: "pending",
+                  target_collection: "style_rules",
+                },
+                {
+                  review_id: "review_voice_card_candidate",
+                  item_type: "voice_card_candidate",
+                  candidate_text: "candidate voice update",
+                  candidate_payload_json: {
+                    lineage_key: "VOICE_CHAR_A",
+                    character_id: "CHAR_A",
+                    text: "candidate voice update",
+                  },
+                  status: "pending",
+                  materialize_status: "pending",
+                  target_collection: "voice_cards",
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    await store.load({
+      objectType: "style_rule",
+      scope: "global",
+      scopeRefId: "global",
+      status: "candidate",
+    });
+
+    expect(store.filters).toEqual({
+      objectType: "style_rule",
+      scope: "global",
+      scopeRefId: "global",
+      status: "candidate",
+    });
+    expect(store.items).toEqual([
+      expect.objectContaining({
+        object_type: "style_rule",
+        lineage_key: "STYLE_PENDING_GLOBAL",
+        status: "candidate",
+        candidate_version: expect.objectContaining({
+          review_id: "review_style_rule_global_candidate",
+          scope: "global",
+          scope_ref_id: "global",
+        }),
+      }),
+    ]);
+  });
+
+  it("ignores stale detail responses after filters move to a different lineage", async () => {
+    const store = useKnowledgeConsoleStore();
+    let resolveOldDetail;
+    let resolveNewDetail;
+
+    const oldDetailPromise = new Promise((resolve) => {
+      resolveOldDetail = resolve;
+    });
+    const newDetailPromise = new Promise((resolve) => {
+      resolveNewDetail = resolve;
+    });
+
+    store.items = [
+      {
+        object_type: "style_observation",
+        lineage_key: "STY_DEMO_001",
+        status: "candidate",
+        active_version: null,
+        candidate_version: { review_id: "review_demo_style_observation" },
+        versions: [{ row_id: "style_observation_STY_DEMO_001_v1", version: 1 }],
+        runtime_refs: { mode: "pending_review" },
+        review_refs: ["review_demo_style_observation"],
+        bundle_refs: [],
+      },
+    ];
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.includes("/api/v1/knowledge/style_observation/STY_DEMO_001")) {
+        return oldDetailPromise;
+      }
+
+      if (url.includes("/api/v1/knowledge/style_rule/STYLE_KNOWLEDGE_E2E")) {
+        return newDetailPromise;
+      }
+
+      if (
+        url.includes("/api/v1/knowledge")
+        && url.includes("object_type=style_rule")
+        && url.includes("scope=global")
+        && url.includes("scope_ref_id=global")
+        && url.includes("status=active")
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  object_type: "style_rule",
+                  lineage_key: "STYLE_KNOWLEDGE_E2E",
+                  status: "active",
+                  active_version: {
+                    row_id: "style_rule_STYLE_KNOWLEDGE_E2E_v1",
+                    version: 1,
+                    text: "keep the reunion tight and gesture-led",
+                    scope: "global",
+                    scope_ref_id: "global",
+                  },
+                  candidate_version: null,
+                  versions: [{ row_id: "style_rule_STYLE_KNOWLEDGE_E2E_v1", version: 1 }],
+                  runtime_refs: { mode: "direct_read" },
+                  review_refs: ["review_knowledge_style_rule"],
+                  bundle_refs: [],
+                },
+              ],
+              supported_object_types: ["style_rule", "style_observation"],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/review-items") && !options.method) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: { items: [] },
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const staleSelection = store.selectItem("style_observation", "STY_DEMO_001");
+    await store.load({
+      objectType: "style_rule",
+      scope: "global",
+      scopeRefId: "global",
+      status: "active",
+    });
+    const activeSelection = store.selectItem("style_rule", "STYLE_KNOWLEDGE_E2E");
+
+    resolveNewDetail({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        data: {
+          object_type: "style_rule",
+          lineage_key: "STYLE_KNOWLEDGE_E2E",
+          status: "active",
+          active_version: {
+            row_id: "style_rule_STYLE_KNOWLEDGE_E2E_v1",
+            version: 1,
+            text: "keep the reunion tight and gesture-led",
+            scope: "global",
+            scope_ref_id: "global",
+          },
+          candidate_version: null,
+          versions: [{ row_id: "style_rule_STYLE_KNOWLEDGE_E2E_v1", version: 1 }],
+          runtime_refs: { mode: "direct_read" },
+          review_refs: ["review_knowledge_style_rule"],
+          bundle_refs: [],
+        },
+      }),
+    });
+
+    await activeSelection;
+
+    resolveOldDetail({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        data: {
+          object_type: "style_observation",
+          lineage_key: "STY_DEMO_001",
+          status: "candidate",
+          active_version: null,
+          candidate_version: {
+            review_id: "review_demo_style_observation",
+            text: "leave the final beat compressed",
+          },
+          versions: [],
+          runtime_refs: { mode: "pending_review" },
+          review_refs: ["review_demo_style_observation"],
+          bundle_refs: [],
+        },
+      }),
+    });
+
+    await staleSelection;
+
+    expect(store.detail).toEqual(
+      expect.objectContaining({
+        object_type: "style_rule",
+        lineage_key: "STYLE_KNOWLEDGE_E2E",
+      }),
+    );
+  });
+});
+
+describe("scene workbench source", () => {
+  it("exposes a stable scene-card target for cross-view focus assertions", () => {
+    const source = readFileSync(new URL("../src/views/SceneWorkbenchView.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("scene-workbench-scene-card");
+  });
+});
+
+describe("knowledge console source", () => {
+  it("renders catalog filters and detail reference sections", () => {
+    const source = readFileSync(new URL("../src/views/KnowledgeConsoleView.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("knowledge-scope-filter");
+    expect(source).toContain("knowledge-scope-ref-filter");
+    expect(source).toContain("knowledge-status-filter");
+    expect(source).toContain("knowledge-detail-drawer");
+    expect(source).toContain("knowledge-detail-empty");
+    expect(source).toContain("Review refs");
+    expect(source).toContain("Bundle refs");
+    expect(source).toContain("knowledge-open-review-ref-");
+    expect(source).toContain("knowledge-open-bundle-ref-");
+    expect(source).toContain("Open Scene Workbench");
   });
 });
 

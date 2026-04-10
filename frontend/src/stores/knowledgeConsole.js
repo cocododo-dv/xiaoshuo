@@ -17,6 +17,13 @@ const ITEM_TYPE_TO_OBJECT_TYPE = {
   chapter_summary: "chapter_summary",
 };
 
+const EMPTY_FILTERS = Object.freeze({
+  objectType: "",
+  scope: "",
+  scopeRefId: "",
+  status: "",
+});
+
 function objectTypeForItemType(itemType) {
   return ITEM_TYPE_TO_OBJECT_TYPE[itemType] || "";
 }
@@ -104,6 +111,42 @@ function mergeDetailWithPending(detail, reviewItems) {
   return mergedList[0] || detail;
 }
 
+function normalizeFilters(value = EMPTY_FILTERS) {
+  if (typeof value === "string") {
+    return {
+      ...EMPTY_FILTERS,
+      objectType: value,
+    };
+  }
+
+  return {
+    ...EMPTY_FILTERS,
+    objectType: value?.objectType || value?.object_type || "",
+    scope: value?.scope || "",
+    scopeRefId: value?.scopeRefId || value?.scope_ref_id || "",
+    status: value?.status || "",
+  };
+}
+
+function itemMatchesFilters(item, filters) {
+  const normalized = normalizeFilters(filters);
+  const version = item?.active_version || item?.candidate_version || {};
+
+  if (normalized.objectType && item.object_type !== normalized.objectType) {
+    return false;
+  }
+  if (normalized.scope && version.scope !== normalized.scope) {
+    return false;
+  }
+  if (normalized.scopeRefId && version.scope_ref_id !== normalized.scopeRefId) {
+    return false;
+  }
+  if (normalized.status && item.status !== normalized.status) {
+    return false;
+  }
+  return true;
+}
+
 function parseJsonField(extraPayload) {
   if (!extraPayload?.trim()) {
     return {};
@@ -167,25 +210,27 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
     pendingReviewItems: [],
     detail: null,
     supportedObjectTypes: [],
-    objectTypeFilter: "",
+    filters: { ...EMPTY_FILTERS },
+    detailRequestId: 0,
     loading: false,
     actionId: "",
     lastCreateResult: null,
     error: "",
   }),
   actions: {
-    async load(objectType = this.objectTypeFilter) {
+    async load(nextFilters = this.filters) {
       this.loading = true;
       this.error = "";
-      this.objectTypeFilter = objectType || "";
+      this.filters = normalizeFilters(nextFilters);
+      const requestId = ++this.detailRequestId;
       try {
         const [knowledgePayload, reviewPayload] = await Promise.all([
-          fetchKnowledge(this.objectTypeFilter),
+          fetchKnowledge(this.filters),
           fetchReviewItems(),
         ]);
         this.pendingReviewItems = reviewPayload.items || [];
-        this.items = mergeKnowledgeAndPendingReviews(knowledgePayload.items || [], this.pendingReviewItems).filter(
-          (item) => !this.objectTypeFilter || item.object_type === this.objectTypeFilter,
+        this.items = mergeKnowledgeAndPendingReviews(knowledgePayload.items || [], this.pendingReviewItems).filter((item) =>
+          itemMatchesFilters(item, this.filters),
         );
         this.supportedObjectTypes = Array.from(
           new Set([
@@ -194,7 +239,10 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
           ]),
         ).sort();
         if (this.detail) {
-          this.detail = mergeDetailWithPending(this.detail, this.pendingReviewItems);
+          const mergedDetail = mergeDetailWithPending(this.detail, this.pendingReviewItems);
+          if (requestId === this.detailRequestId) {
+            this.detail = mergedDetail && itemMatchesFilters(mergedDetail, this.filters) ? mergedDetail : null;
+          }
         }
       } catch (error) {
         this.items = [];
@@ -207,25 +255,38 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
       }
     },
     async selectItem(objectType, lineageKey) {
+      const requestId = ++this.detailRequestId;
       this.actionId = `detail:${objectType}:${lineageKey}`;
       this.error = "";
       try {
         const existing = this.items.find(
           (item) => item.object_type === objectType && item.lineage_key === lineageKey,
         );
+        const optimisticDetail = existing && itemMatchesFilters(existing, this.filters) ? existing : null;
+        if (requestId === this.detailRequestId && optimisticDetail) {
+          this.detail = optimisticDetail;
+        }
         if (existing && (!existing.versions || existing.versions.length === 0)) {
-          this.detail = existing;
-          return existing;
+          return optimisticDetail;
         }
         const detail = await fetchKnowledgeDetail(objectType, lineageKey);
-        this.detail = mergeDetailWithPending(detail, this.pendingReviewItems);
+        if (requestId !== this.detailRequestId) {
+          return this.detail;
+        }
+        const mergedDetail = mergeDetailWithPending(detail, this.pendingReviewItems);
+        this.detail = mergedDetail && itemMatchesFilters(mergedDetail, this.filters) ? mergedDetail : optimisticDetail;
         return this.detail;
       } catch (error) {
+        if (requestId !== this.detailRequestId) {
+          return this.detail;
+        }
         this.detail = null;
         this.error = error.message;
         throw error;
       } finally {
-        this.actionId = "";
+        if (requestId === this.detailRequestId) {
+          this.actionId = "";
+        }
       }
     },
     async createCandidate(form) {
@@ -235,7 +296,7 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         const payload = buildCreatePayload(form);
         const result = await createReviewItem(payload);
         this.lastCreateResult = result;
-        await this.load(this.objectTypeFilter);
+        await this.load(this.filters);
         return `Created candidate ${result.review_id}`;
       } catch (error) {
         this.error = error.message;

@@ -171,6 +171,7 @@ onMounted(() => {
         <div class="workbench-columns">
           <article
             class="paper"
+            data-testid="scene-workbench-scene-card"
             :class="{ 'focused-card': (focusedSceneId && workbench.data.scene_card.scene_id === focusedSceneId) || isFocusedRunReceipt }"
           >
             <h3>Chapter / Scene</h3>

@@ -23,10 +23,28 @@ test("creates knowledge candidates and carries them through review, index, and p
   await expect(page.getByTestId("notice-stack")).toContainText("Approved review_knowledge_style_rule as ops.knowledge.e2e");
 
   await page.getByTestId("nav-knowledge").click();
+  await page.getByTestId("knowledge-filter-select").selectOption("style_rule");
+  await page.getByTestId("knowledge-scope-filter").fill("global");
+  await page.getByTestId("knowledge-scope-ref-filter").fill("global");
+  await page.getByTestId("knowledge-status-filter").selectOption("active");
   await page.getByTestId("knowledge-refresh-button").click();
   await expect(page.getByTestId("knowledge-card-style_rule-STYLE_KNOWLEDGE_E2E")).toContainText(
     "keep the reunion tight and gesture-led",
   );
+  await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
+  await expect(page.getByTestId("knowledge-detail-lineage")).toContainText("STYLE_KNOWLEDGE_E2E");
+  await expect(page.getByTestId("knowledge-open-review-ref-review_knowledge_style_rule")).toBeVisible();
+
+  await page.getByTestId("knowledge-scope-ref-filter").fill("missing_scope");
+  await page.getByTestId("knowledge-refresh-button").click();
+  await expect(page.getByTestId("knowledge-detail-empty")).toBeVisible();
+
+  await page.getByTestId("knowledge-scope-ref-filter").fill("global");
+  await page.getByTestId("knowledge-refresh-button").click();
+  await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
+  await page.getByTestId("knowledge-open-review-ref-review_knowledge_style_rule").click();
+  await expect(page.getByTestId("review-card-review_knowledge_style_rule")).toHaveClass(/focused-card/);
+  await page.getByTestId("nav-knowledge").click();
 
   await page.getByTestId("knowledge-review-id").fill("review_knowledge_calibration");
   await page.getByTestId("knowledge-item-type").selectOption("calibration_candidate");
@@ -62,4 +80,15 @@ test("creates knowledge candidates and carries them through review, index, and p
   await expect(workbench).toContainText("Calibration line");
   await expect(workbench).toContainText("keep the reunion tight and gesture-led");
   await expect(workbench).toContainText("the gate sighed shut on the unfinished question");
+
+  await page.getByTestId("nav-knowledge").click();
+  await page.getByTestId("knowledge-filter-select").selectOption("style_rule");
+  await page.getByTestId("knowledge-scope-filter").fill("global");
+  await page.getByTestId("knowledge-scope-ref-filter").fill("global");
+  await page.getByTestId("knowledge-status-filter").selectOption("active");
+  await page.getByTestId("knowledge-refresh-button").click();
+  await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
+  await page.getByTestId("knowledge-open-bundle-ref-bundle_CH001_SC02").click();
+  await expect(page.getByTestId("scene-id-input")).toHaveValue("CH001_SC02");
+  await expect(page.getByTestId("scene-workbench-scene-card")).toHaveClass(/focused-card/);
 });

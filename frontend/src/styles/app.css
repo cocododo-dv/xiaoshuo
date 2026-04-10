@@ -584,6 +584,19 @@ pre {
   align-items: start;
 }
 
+.knowledge-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  gap: 0.8rem;
+  align-items: end;
+  width: 100%;
+}
+
+.knowledge-filter-grid label {
+  display: grid;
+  gap: 0.35rem;
+}
+
 .knowledge-form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: 1rem;
@@ -642,6 +655,7 @@ pre {
   }
 
   .knowledge-layout,
+  .knowledge-filter-grid,
   .knowledge-form-grid {
     grid-template-columns: 1fr;
   }

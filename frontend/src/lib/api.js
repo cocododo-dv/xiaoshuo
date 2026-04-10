@@ -91,8 +91,31 @@ export function releaseReview(reviewId) {
   return apiPost(`/api/v1/review-items/${reviewId}/release`);
 }
 
-export function fetchKnowledge(objectType = "") {
-  const query = objectType ? `?object_type=${encodeURIComponent(objectType)}` : "";
+export function fetchKnowledge(filters = "") {
+  const normalized =
+    typeof filters === "string"
+      ? { objectType: filters }
+      : {
+          objectType: filters?.objectType || filters?.object_type || "",
+          scope: filters?.scope || "",
+          scopeRefId: filters?.scopeRefId || filters?.scope_ref_id || "",
+          status: filters?.status || "",
+        };
+  const params = new URLSearchParams();
+  if (normalized.objectType) {
+    params.set("object_type", normalized.objectType);
+  }
+  if (normalized.scope) {
+    params.set("scope", normalized.scope);
+  }
+  if (normalized.scopeRefId) {
+    params.set("scope_ref_id", normalized.scopeRefId);
+  }
+  if (normalized.status) {
+    params.set("status", normalized.status);
+  }
+  const queryString = params.toString();
+  const query = queryString ? `?${queryString}` : "";
   return apiGet(`/api/v1/knowledge${query}`);
 }
 

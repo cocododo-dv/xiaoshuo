@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
 import { useShellRouter } from "../router";
@@ -10,7 +10,12 @@ const emit = defineEmits(["notice"]);
 const knowledgeConsole = useKnowledgeConsoleStore();
 const { navigate, openTarget } = useShellRouter();
 
-const objectTypeFilter = ref("");
+const filters = reactive({
+  objectType: knowledgeConsole.filters?.objectType || "",
+  scope: knowledgeConsole.filters?.scope || "",
+  scopeRefId: knowledgeConsole.filters?.scopeRefId || "",
+  status: knowledgeConsole.filters?.status || "",
+});
 const draft = reactive({
   reviewId: "",
   itemType: "style_rule_set",
@@ -33,6 +38,8 @@ const selectedEntryKey = computed(() =>
 );
 
 const catalogItems = computed(() => knowledgeConsole.items || []);
+const detailReviewRefs = computed(() => knowledgeConsole.detail?.review_refs || []);
+const detailBundleRefs = computed(() => knowledgeConsole.detail?.bundle_refs || []);
 
 function previewText(version) {
   if (!version?.text) {
@@ -48,7 +55,7 @@ function selectEntry(item) {
 }
 
 async function refreshKnowledge() {
-  await knowledgeConsole.load(objectTypeFilter.value);
+  await knowledgeConsole.load(filters);
   if (!knowledgeConsole.detail && knowledgeConsole.items.length) {
     await knowledgeConsole.selectItem(knowledgeConsole.items[0].object_type, knowledgeConsole.items[0].lineage_key);
   }
@@ -107,6 +114,44 @@ function openIndexConsole(item) {
   emit("notice", `Opened Index Console for ${item.object_type}:${item.lineage_key}`);
 }
 
+function openReviewRef(reviewId) {
+  if (!reviewId) {
+    return;
+  }
+  openTarget(
+    {
+      target_type: "review_item",
+      target_id: reviewId,
+      target_ref: `review_item:${reviewId}`,
+    },
+    {
+      view_id: "review",
+      source_type: "knowledge_detail_review_ref",
+      source_id: reviewId,
+    },
+  );
+  emit("notice", `Opened review_item:${reviewId}`);
+}
+
+function openBundleWorkbench(bundleRef) {
+  if (!bundleRef?.scene_id) {
+    return;
+  }
+  openTarget(
+    {
+      target_type: "scene_card",
+      target_id: bundleRef.scene_id,
+      target_ref: `scene_card:${bundleRef.scene_id}`,
+    },
+    {
+      view_id: "workbench",
+      source_type: "knowledge_bundle_ref",
+      source_id: bundleRef.bundle_id,
+    },
+  );
+  emit("notice", `Opened scene_card:${bundleRef.scene_id}`);
+}
+
 onMounted(() => {
   refreshKnowledge();
 });
@@ -120,13 +165,38 @@ onMounted(() => {
       description="Track active rows, pending review candidates, version history, and runtime references for each knowledge family."
     >
       <template #actions>
-        <div class="field-inline">
-          <select v-model="objectTypeFilter" class="control-input" data-testid="knowledge-filter-select" @change="refreshKnowledge">
-            <option value="">All families</option>
-            <option v-for="objectType in knowledgeConsole.supportedObjectTypes" :key="objectType" :value="objectType">
-              {{ objectType }}
-            </option>
-          </select>
+        <div class="knowledge-filter-grid">
+          <label>
+            <span>Object Type</span>
+            <select v-model="filters.objectType" class="control-input" data-testid="knowledge-filter-select">
+              <option value="">All families</option>
+              <option v-for="objectType in knowledgeConsole.supportedObjectTypes" :key="objectType" :value="objectType">
+                {{ objectType }}
+              </option>
+            </select>
+          </label>
+          <label>
+            <span>Scope</span>
+            <input v-model="filters.scope" class="control-input" data-testid="knowledge-scope-filter" placeholder="global" />
+          </label>
+          <label>
+            <span>Scope Ref</span>
+            <input
+              v-model="filters.scopeRefId"
+              class="control-input"
+              data-testid="knowledge-scope-ref-filter"
+              placeholder="global / chapter / scene"
+            />
+          </label>
+          <label>
+            <span>Status</span>
+            <select v-model="filters.status" class="control-input" data-testid="knowledge-status-filter">
+              <option value="">All statuses</option>
+              <option value="active">active</option>
+              <option value="candidate">candidate</option>
+              <option value="resolved">resolved</option>
+            </select>
+          </label>
           <button data-testid="knowledge-refresh-button" @click="refreshKnowledge">Refresh</button>
         </div>
       </template>
@@ -252,7 +322,13 @@ onMounted(() => {
               <p><strong>Candidate</strong><br />{{ previewText(item.candidate_version) }}</p>
               <p class="muted">Runtime: {{ item.runtime_refs?.alias_scope || item.runtime_refs?.mode || "-" }}</p>
               <div class="card-actions">
-                <button class="ghost" @click="selectEntry(item)">View Detail</button>
+                <button
+                  class="ghost"
+                  :data-testid="`knowledge-view-detail-${item.object_type}-${item.lineage_key}`"
+                  @click="selectEntry(item)"
+                >
+                  View Detail
+                </button>
                 <button class="ghost" @click="openReviewInbox(item)">View Review Inbox</button>
                 <button class="ghost" @click="openIndexConsole(item)">Open Index Console</button>
               </div>
@@ -260,7 +336,7 @@ onMounted(() => {
           </div>
         </article>
 
-        <article class="paper knowledge-detail-card">
+        <article class="paper knowledge-detail-card" data-testid="knowledge-detail-drawer">
           <div class="receipt-head">
             <div>
               <h3>Detail Drawer</h3>
@@ -269,9 +345,11 @@ onMounted(() => {
             <span v-if="knowledgeConsole.detail" class="badge">{{ knowledgeConsole.detail.object_type }}</span>
           </div>
 
-          <div v-if="!knowledgeConsole.detail" class="empty">Select a lineage to inspect version history and runtime refs.</div>
+          <div v-if="!knowledgeConsole.detail" class="empty" data-testid="knowledge-detail-empty">
+            Select a lineage to inspect version history and runtime refs.
+          </div>
           <template v-else>
-            <p><strong>Lineage</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
+            <p data-testid="knowledge-detail-lineage"><strong>Lineage</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
             <p><strong>Active Version</strong><br />{{ previewText(knowledgeConsole.detail.active_version) }}</p>
             <p><strong>Candidate Version</strong><br />{{ previewText(knowledgeConsole.detail.candidate_version) }}</p>
             <div class="history-stack">
@@ -289,6 +367,49 @@ onMounted(() => {
                   <p>{{ version.text || "-" }}</p>
                 </li>
               </ol>
+            </div>
+            <div class="history-stack">
+              <p class="history-title">Review refs</p>
+              <ol v-if="detailReviewRefs.length" class="history-list">
+                <li v-for="reviewRef in detailReviewRefs" :key="reviewRef" class="history-entry">
+                  <p class="history-meta">
+                    <strong>{{ reviewRef }}</strong>
+                    <span>review_item</span>
+                  </p>
+                  <div class="card-actions">
+                    <button
+                      class="ghost"
+                      :data-testid="`knowledge-open-review-ref-${reviewRef}`"
+                      @click="openReviewRef(reviewRef)"
+                    >
+                      Open Review Inbox
+                    </button>
+                  </div>
+                </li>
+              </ol>
+              <p v-else class="muted">No linked review refs yet.</p>
+            </div>
+            <div class="history-stack">
+              <p class="history-title">Bundle refs</p>
+              <ol v-if="detailBundleRefs.length" class="history-list">
+                <li v-for="bundleRef in detailBundleRefs" :key="bundleRef.bundle_id" class="history-entry">
+                  <p class="history-meta">
+                    <strong>{{ bundleRef.bundle_id }}</strong>
+                    <span>{{ bundleRef.scene_id }}</span>
+                  </p>
+                  <p class="muted">Chapter {{ bundleRef.chapter_id || "-" }}</p>
+                  <div class="card-actions">
+                    <button
+                      class="ghost"
+                      :data-testid="`knowledge-open-bundle-ref-${bundleRef.bundle_id}`"
+                      @click="openBundleWorkbench(bundleRef)"
+                    >
+                      Open Scene Workbench
+                    </button>
+                  </div>
+                </li>
+              </ol>
+              <p v-else class="muted">No bundle refs yet.</p>
             </div>
           </template>
         </article>
