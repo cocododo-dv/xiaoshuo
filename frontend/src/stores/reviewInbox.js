@@ -1,23 +1,33 @@
 import { defineStore } from "pinia";
 
-import { approveReview, fetchReviewItems, releaseReview } from "../lib/api";
+import { actOnHumanReviewEvent, approveReview, fetchHumanReviewEvents, fetchReviewItems, releaseReview } from "../lib/api";
 
 export const useReviewInboxStore = defineStore("reviewInbox", {
   state: () => ({
     items: [],
+    humanReviewItems: [],
+    lastActionResult: null,
     loading: false,
     actionId: "",
     error: "",
   }),
+  getters: {
+    systemRecoveryItems: (state) =>
+      (state.humanReviewItems || []).filter(
+        (item) => item.event_source === "idempotency_recovery" && item.status !== "resolved",
+      ),
+  },
   actions: {
     async load() {
       this.loading = true;
       this.error = "";
       try {
-        const payload = await fetchReviewItems();
-        this.items = payload.items || [];
+        const [reviewPayload, humanReviewPayload] = await Promise.all([fetchReviewItems(), fetchHumanReviewEvents()]);
+        this.items = reviewPayload.items || [];
+        this.humanReviewItems = humanReviewPayload.items || [];
       } catch (error) {
         this.items = [];
+        this.humanReviewItems = [];
         this.error = error.message;
       } finally {
         this.loading = false;
@@ -27,9 +37,10 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       this.actionId = reviewId;
       this.error = "";
       try {
-        await approveReview(reviewId);
+        const result = await approveReview(reviewId);
+        this.lastActionResult = result;
         await this.load();
-        return `Approved ${reviewId}`;
+        return `Approved ${reviewId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -41,9 +52,25 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       this.actionId = reviewId;
       this.error = "";
       try {
-        await releaseReview(reviewId);
+        const result = await releaseReview(reviewId);
+        this.lastActionResult = result;
         await this.load();
-        return `Released ${reviewId}`;
+        return `Released ${reviewId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async actOnHumanReviewEvent(eventId, action) {
+      this.actionId = `${eventId}:${action}`;
+      this.error = "";
+      try {
+        const result = await actOnHumanReviewEvent(eventId, action);
+        this.lastActionResult = result;
+        await this.load();
+        return `Applied ${action} to ${eventId} (${result.status || "updated"})`;
       } catch (error) {
         this.error = error.message;
         throw error;

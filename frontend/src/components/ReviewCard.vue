@@ -8,16 +8,25 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  highlighted: {
+    type: Boolean,
+    default: false,
+  },
+  sourceActionLabel: {
+    type: String,
+    default: "",
+  },
 });
 
-defineEmits(["approve", "release"]);
+defineEmits(["approve", "release", "open-target"]);
 </script>
 
 <template>
-  <article class="review-card">
+  <article class="review-card" :class="{ 'focused-card': props.highlighted }">
     <div class="review-meta">
       <span class="badge">{{ props.item.target_collection }}</span>
       <span class="muted">{{ props.item.review_id }}</span>
+      <span v-if="props.sourceActionLabel" class="badge">{{ props.sourceActionLabel }}</span>
     </div>
     <h3>{{ props.item.candidate_text || "Empty candidate" }}</h3>
     <pre>{{ JSON.stringify(props.item.candidate_payload_json, null, 2) }}</pre>
@@ -29,6 +38,7 @@ defineEmits(["approve", "release"]);
       >
         Release
       </button>
+      <button class="ghost" @click='$emit("open-target", props.item.review_id)'>Open In Index</button>
     </div>
   </article>
 </template>

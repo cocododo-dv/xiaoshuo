@@ -7,6 +7,13 @@ from sqlalchemy.orm import Session
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.db.models import HumanReviewEvent, ReviewItem
+from novel_system.services.errors import DomainError
+from novel_system.services.human_review_manager import HumanReviewManager
+from novel_system.services.human_review_support import (
+    human_review_followup_target,
+    human_review_linked_target,
+    structured_target_from_replay_result,
+)
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.version_manager import VersionManager
 
@@ -35,6 +42,7 @@ def review_detail(review_id: str, request: Request, session: Session = Depends(g
 
 @router.post("/api/v1/review-items/import-demo")
 def import_demo_review(payload: dict, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -42,6 +50,7 @@ def import_demo_review(payload: dict, request: Request, session: Session = Depen
         path_template="/api/v1/review-items/import-demo",
         payload=payload,
         action=lambda: _import_review(session, payload),
+        actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
@@ -61,6 +70,7 @@ def _import_review(session: Session, payload: dict) -> dict:
 
 @router.post("/api/v1/review-items/{review_id}/approve")
 def approve_review(review_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -68,6 +78,7 @@ def approve_review(review_id: str, request: Request, session: Session = Depends(
         path_template="/api/v1/review-items/{review_id}/approve",
         payload={"review_id": review_id},
         action=lambda: VersionManager(session).materialize_review(review_id),
+        actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
@@ -75,6 +86,7 @@ def approve_review(review_id: str, request: Request, session: Session = Depends(
 
 @router.post("/api/v1/review-items/{review_id}/release")
 def release_review(review_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -82,6 +94,7 @@ def release_review(review_id: str, request: Request, session: Session = Depends(
         path_template="/api/v1/review-items/{review_id}/release",
         payload={"review_id": review_id},
         action=lambda: VersionManager(session).release_review(review_id),
+        actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
@@ -121,29 +134,59 @@ def human_review_event_detail(event_id: str, request: Request, session: Session 
     return ok(_serialize_event(item), req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v1/human-review-events/{event_id}/actions")
+def human_review_event_action(event_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
+    action_name = payload.get("action")
+    if not action_name:
+        raise DomainError("HUMAN_REVIEW_ACTION_REQUIRED", "missing action", status_code=400)
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/human-review-events/{event_id}/actions",
+        payload={"event_id": event_id, "action": action_name},
+        action=lambda: HumanReviewManager(session).run_action(event_id, action_name, actor_ref=actor_ref),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
 def _serialize_event(item: HumanReviewEvent | None) -> dict:
     if item is None:
         return {
             "event_id": None,
             "scene_id": None,
             "chapter_id": None,
+            "object_ref": None,
             "event_source": "system",
             "priority": "normal",
             "owner": None,
             "status": "empty",
             "allowed_actions_json": [],
-            "result_status_map_json": {},
-            "default_action": None,
-        }
+        "result_status_map_json": {},
+        "details_json": {},
+        "linked_target": None,
+        "followup_target": None,
+        "replay_target": None,
+        "default_action": None,
+    }
+    details = dict(item.details_json or {})
     return {
         "event_id": item.event_id,
         "scene_id": item.scene_id,
         "chapter_id": item.chapter_id,
+        "object_ref": item.object_ref,
         "event_source": item.event_source,
         "priority": item.priority,
         "owner": item.owner,
         "status": item.status,
         "allowed_actions_json": item.allowed_actions_json,
         "result_status_map_json": item.result_status_map_json,
+        "details_json": details,
+        "linked_target": human_review_linked_target(details, item.scene_id),
+        "followup_target": human_review_followup_target(details),
+        "replay_target": structured_target_from_replay_result(details.get("last_replay_result")),
         "default_action": item.default_action,
     }

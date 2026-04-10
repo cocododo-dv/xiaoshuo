@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from "vue";
 
-import { getApiBase, setApiBase } from "./lib/api";
+import { getApiBase, getOperatorRef, setApiBase, setOperatorRef } from "./lib/api";
 import { useIndexConsoleStore } from "./stores/indexConsole";
 import { useReviewInboxStore } from "./stores/reviewInbox";
 import { useWorkbenchStore } from "./stores/workbench";
@@ -12,6 +12,7 @@ import SceneWorkbenchView from "./views/SceneWorkbenchView.vue";
 
 const { activeView, views, navigate } = useShellRouter();
 const apiBase = ref(getApiBase());
+const operatorRef = ref(getOperatorRef());
 const notices = ref([]);
 
 const workbench = useWorkbenchStore();
@@ -28,6 +29,11 @@ function pushNotice(message) {
 function updateApiBase() {
   apiBase.value = setApiBase(apiBase.value);
   pushNotice(`Saved API base: ${apiBase.value}`);
+}
+
+function updateOperator() {
+  operatorRef.value = setOperatorRef(operatorRef.value);
+  pushNotice(`Saved operator ref: ${operatorRef.value}`);
 }
 
 async function reloadAll() {
@@ -54,6 +60,11 @@ async function reloadAll() {
       <label class="api-label">
         <span>API Base</span>
         <input v-model="apiBase" class="control-input" @change="updateApiBase" />
+      </label>
+
+      <label class="api-label">
+        <span>Operator Ref</span>
+        <input v-model="operatorRef" class="control-input" @change="updateOperator" />
       </label>
 
       <nav class="nav">

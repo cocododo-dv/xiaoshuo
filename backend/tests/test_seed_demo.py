@@ -239,8 +239,8 @@ def test_seed_demo_clears_demo_derived_records(session) -> None:
             status="succeeded",
             object_type="style_observation",
             alias_scope="style_observation:global:global",
-            target_snapshot_version="snapshot_v1",
-            target_embedding_version="embed_v1",
+            target_snapshot_version="snapshot__style_observation_STY_DEMO_001_v1",
+            target_embedding_version="embed__style_observation_STY_DEMO_001_v1",
         )
     )
     session.add(
@@ -250,8 +250,8 @@ def test_seed_demo_clears_demo_derived_records(session) -> None:
             status="succeeded",
             object_type="style_observation",
             alias_scope="style_observation:global:global",
-            target_snapshot_version="snapshot_v1",
-            target_embedding_version="embed_v1",
+            target_snapshot_version="snapshot__style_observation_STY_DEMO_001_v1",
+            target_embedding_version="embed__style_observation_STY_DEMO_001_v1",
         )
     )
     session.add(
@@ -261,11 +261,11 @@ def test_seed_demo_clears_demo_derived_records(session) -> None:
             scope="global",
             scope_ref_id="global",
             collection_family="style_observation_global_global",
-            active_alias="style_observation_global_global_candidate_v1",
+            active_alias="style_observation_global_global__candidate__style_observation_STY_DEMO_001_v1",
             candidate_alias=None,
-            active_snapshot_version="snapshot_v1",
+            active_snapshot_version="snapshot__style_observation_STY_DEMO_001_v1",
             candidate_snapshot_version=None,
-            active_embedding_version="embed_v1",
+            active_embedding_version="embed__style_observation_STY_DEMO_001_v1",
             candidate_embedding_version=None,
             verify_status="succeeded",
             sample_query_success=1,

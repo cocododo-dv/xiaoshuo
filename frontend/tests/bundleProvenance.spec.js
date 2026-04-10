@@ -102,6 +102,11 @@ describe("scene workbench source", () => {
     expect(source).toContain("Run Full Scene");
     expect(source).toContain("workbench.runScene");
     expect(source).toContain("lastRunResult");
+    expect(source).toContain("focusTarget");
+    expect(source).toContain("focused-card");
+    expect(source).toContain('source_type: "scene_run_receipt"');
+    expect(source).toContain("isFocusedRunReceipt");
+    expect(source).toContain("Open Scene Card");
   });
 
   it("keeps populated workbench content visible ahead of the error-only branch", () => {
@@ -109,5 +114,174 @@ describe("scene workbench source", () => {
 
     expect(source.indexOf('v-else-if="hasData"')).toBeLessThan(source.indexOf('v-else-if="workbench.error"'));
     expect(source).toContain('v-if="workbench.error" class="paper inline-error"');
+  });
+
+  it("renders human review context fields for recovery-generated events", () => {
+    const source = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("object_ref");
+    expect(source).toContain("details_json");
+    expect(source).toContain("request_path_template");
+    expect(source).toContain("created_by_ref");
+  });
+
+  it("renders human review action audit details for recovery-generated events", () => {
+    const source = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("Last action");
+    expect(source).toContain("last_action_at");
+    expect(source).toContain("action_history");
+    expect(source).toContain("linked_target_ref");
+    expect(source).toContain("resolution_reason");
+    expect(source).toContain("Recommended next step");
+    expect(source).toContain("Open Linked Target");
+    expect(source).toContain("Open Follow-up Target");
+    expect(source).toContain("Open Replay Result");
+    expect(source).toContain('$emit("open-target"');
+    expect(source).toContain("item.linked_target");
+    expect(source).toContain("item.followup_target");
+    expect(source).toContain("item.replay_target");
+    expect(source).toContain("source_type");
+    expect(source).toContain('view_id: "index"');
+  });
+});
+
+describe("review inbox source", () => {
+  it("surfaces recovery-generated human review events inside the inbox", () => {
+    const source = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
+    const cardSource = readFileSync(new URL("../src/components/ReviewCard.vue", import.meta.url), "utf8");
+    const drawerSource = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("System Recovery");
+    expect(source).toContain("HumanReviewDrawer");
+    expect(source).toContain("reviewInbox.systemRecoveryItems");
+    expect(source).toContain("focusTarget");
+    expect(source).toContain("const { focusTarget, openTarget } = useShellRouter()");
+    expect(source).toContain('@open-target="handleOpenTarget"');
+    expect(source).toContain("reviewSourceActionLabel");
+    expect(source).toContain('source_type: "review_approve"');
+    expect(source).toContain('source_type: "review_release"');
+    expect(source).toContain('source_type: "review_card_open"');
+    expect(source).toContain("openTarget");
+    expect(cardSource).toContain("highlighted");
+    expect(cardSource).toContain("sourceActionLabel");
+    expect(cardSource).toContain("Open In Index");
+    expect(cardSource).toContain('$emit("open-target"');
+    expect(drawerSource).toContain("focusEventId");
+  });
+
+  it("wires retry actions for recovery-generated human review events", () => {
+    const viewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
+    const drawerSource = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
+    const storeSource = readFileSync(new URL("../src/stores/reviewInbox.js", import.meta.url), "utf8");
+
+    expect(viewSource).toContain("actOnHumanReviewEvent");
+    expect(viewSource).toContain("recordRecoveryAction");
+    expect(viewSource).toContain('@action="handleHumanReviewAction"');
+    expect(drawerSource).toContain("retry_request");
+    expect(drawerSource).toContain("retry_verify");
+    expect(drawerSource).toContain("release_review");
+    expect(drawerSource).toContain('$emit("action"');
+    expect(storeSource).toContain('item.status !== "resolved"');
+  });
+});
+
+describe("shell source", () => {
+  it("persists an operator ref alongside the API base", () => {
+    const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+    const apiSource = readFileSync(new URL("../src/lib/api.js", import.meta.url), "utf8");
+
+    expect(source).toContain("Operator Ref");
+    expect(source).toContain("setOperatorRef");
+    expect(apiSource).toContain("X-Operator-Ref");
+    expect(apiSource).toContain("getOperatorRef");
+  });
+});
+
+describe("index console source", () => {
+  it("wires due promotions into the index console panel", () => {
+    const source = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("Run Due Promotions");
+    expect(source).toContain("indexConsole.runDuePromotions");
+    expect(source).toContain("lastPromotionResult");
+  });
+
+  it("renders a recovery receipt alongside recovery sweep controls", () => {
+    const source = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("Recovery Sweep");
+    expect(source).toContain("Recovery Receipt");
+    expect(source).toContain("Recovery Follow-up");
+    expect(source).toContain("System Activity");
+    expect(source).toContain("Operator Activity");
+    expect(source).toContain("Target Activity");
+    expect(source).toContain("lastRecoveryResult");
+    expect(source).toContain("lastRecoveryActionResult");
+    expect(source).toContain("recoveryTimelineItems");
+    expect(source).toContain("systemRuntimeTimelineItems");
+    expect(source).toContain("operatorActionTimelineItems");
+    expect(source).toContain("targetActivityGroups");
+    expect(source).toContain("activity_items");
+    expect(source).toContain("activity_count");
+    expect(source).toContain("latest_at");
+    expect(source).toContain("target_refs");
+    expect(source).toContain("openTarget");
+    expect(source).toContain("Open Linked Target");
+    expect(source).toContain("Open Follow-up Target");
+    expect(source).toContain("Open Replay Result");
+    expect(source).toContain("linked_target");
+    expect(source).toContain("followup_target");
+    expect(source).toContain("replay_target");
+    expect(source).toContain("actor_ref");
+    expect(source).toContain("last_actor_ref");
+    expect(source).toContain("lastRecoveryResult.actor_ref");
+    expect(source).toContain("lastPromotionResult.actor_ref");
+    expect(source).toContain("reclaimed_job_summaries");
+    expect(source).toContain("failed_job_summaries");
+    expect(source).toContain("reclaimed_idempotency_key_summaries");
+    expect(source).toContain("created_human_review_event_ids");
+    expect(source).toContain("created_human_review_event_targets");
+    expect(source).toContain("promoted_review_targets");
+    expect(source).toContain("Open Job");
+    expect(source).toContain("Open Review");
+    expect(source).toContain("Open Recovery Event");
+    expect(source).toContain("status_before");
+    expect(source).toContain("status_after");
+    expect(source).toContain("expandedTargetRefs");
+    expect(source).toContain("toggleTargetGroup");
+    expect(source).toContain("isTargetGroupExpanded");
+    expect(source).toContain("Show Activity");
+    expect(source).toContain("Hide Activity");
+    expect(source).toContain("focusedActivityKey");
+    expect(source).toContain("orderedActivityItems");
+    expect(source).toContain("focusedActivityKeyForGroup");
+    expect(source).toContain("scrollIntoView");
+    expect(source).toContain("Latest linked activity");
+    expect(source).toContain("withSourceFocusTarget");
+    expect(source).toContain("source_type");
+    expect(source).toContain("source_id");
+    expect(source).toContain("isFocusedRecoveryTimelineItem");
+    expect(source).toContain("isFocusedSystemActivityItem");
+    expect(source).toContain("isFocusedOperatorActionItem");
+    expect(source).toContain("Source-linked activity");
+  });
+
+  it("renders job diagnostics and stale-fault summaries in the index console", () => {
+    const viewSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+    const cardSource = readFileSync(new URL("../src/components/AliasScopeCard.vue", import.meta.url), "utf8");
+    const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
+
+    expect(viewSource).toContain("target_snapshot_version");
+    expect(viewSource).toContain("target_embedding_version");
+    expect(viewSource).toContain("lease_expires_at");
+    expect(viewSource).toContain("error_text");
+    expect(viewSource).toContain("focused-card");
+    expect(cardSource).toContain("recent_fault_summary");
+    expect(cardSource).toContain("collection_family");
+    expect(cardSource).toContain("sample_query_success");
+    expect(routerSource).toContain("focusTarget");
+    expect(routerSource).toContain("openTarget");
+    expect(routerSource).toContain("scene_card");
   });
 });

@@ -207,6 +207,65 @@ pre {
   margin-bottom: 0.8rem;
 }
 
+.json-block {
+  margin: 0.75rem 0 0;
+  padding: 0.85rem 1rem;
+  border-radius: 0.85rem;
+  background: rgba(33, 28, 24, 0.08);
+  color: #46362f;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.history-stack {
+  margin-top: 0.85rem;
+}
+
+.history-title,
+.history-meta,
+.history-replay {
+  margin: 0;
+}
+
+.history-title {
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.6rem 0 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.history-entry {
+  padding: 0.75rem 0.9rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.history-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: baseline;
+}
+
+.history-meta span {
+  color: rgba(27, 24, 21, 0.62);
+  font-size: 0.86rem;
+}
+
+.history-replay {
+  margin-top: 0.35rem;
+}
+
 .receipt-card {
   position: relative;
   overflow: hidden;
@@ -251,6 +310,55 @@ pre {
 
 .receipt-grid p {
   margin: 0;
+}
+
+.receipt-detail {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--line);
+}
+
+.receipt-detail h4 {
+  margin: 0 0 0.7rem;
+}
+
+.receipt-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.receipt-list li {
+  margin: 0;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.target-group-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.target-group-meta {
+  flex: 1 1 auto;
+}
+
+.target-group-toggle {
+  flex: 0 0 auto;
+}
+
+.target-group-empty {
+  margin: 0.85rem 0 0;
+}
+
+.focused-activity-item {
+  scroll-margin-top: 1.5rem;
 }
 
 .provenance-card {
@@ -385,6 +493,13 @@ pre {
   border: 1px solid var(--line);
 }
 
+.focused-card {
+  border-color: rgba(163, 63, 47, 0.42);
+  box-shadow:
+    0 0 0 2px rgba(163, 63, 47, 0.16),
+    0 18px 30px rgba(27, 24, 21, 0.1);
+}
+
 .attempt-step {
   font-size: 0.82rem;
   letter-spacing: 0.14em;
@@ -410,6 +525,34 @@ pre {
   min-width: 120px;
   display: flex;
   justify-content: flex-end;
+}
+
+.job-main {
+  min-width: 180px;
+}
+
+.job-diagnostics {
+  flex: 1 1 420px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem 1rem;
+}
+
+.job-diagnostics p {
+  margin: 0;
+}
+
+.fault-summary {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed var(--line);
+}
+
+.fault-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: center;
 }
 
 .empty {
@@ -444,12 +587,21 @@ pre {
     justify-content: flex-start;
   }
 
+  .history-meta {
+    flex-direction: column;
+  }
+
+  .job-diagnostics {
+    grid-template-columns: 1fr;
+  }
+
   .provenance-grid,
   .receipt-grid,
   .provenance-head,
   .receipt-head,
   .source-top,
-  .injection-top {
+  .injection-top,
+  .target-group-head {
     grid-template-columns: 1fr;
     flex-direction: column;
   }

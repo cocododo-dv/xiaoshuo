@@ -16,3 +16,4 @@ backend/novel_system.db
 
 frontend/dist/
 frontend/node_modules/
+.codex-run/

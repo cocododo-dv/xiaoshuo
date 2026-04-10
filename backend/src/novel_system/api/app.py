@@ -13,6 +13,11 @@ from novel_system.db.session import engine
 from novel_system.services.errors import DomainError
 
 
+def _operator_ref_from_request(request: Request) -> str:
+    actor_ref = (request.headers.get("X-Operator-Ref") or "").strip()
+    return actor_ref or "operator"
+
+
 def create_app() -> FastAPI:
     Base.metadata.create_all(bind=engine())
     app = FastAPI(title="Novel System P2")
@@ -27,6 +32,7 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
         request.state.request_id = f"req_{uuid.uuid4().hex[:12]}"
+        request.state.operator_ref = _operator_ref_from_request(request)
         return await call_next(request)
 
     @app.exception_handler(DomainError)

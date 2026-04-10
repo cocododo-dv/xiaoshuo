@@ -13,6 +13,7 @@ router = APIRouter(tags=["chapters"])
 
 @router.post("/api/v1/chapters")
 def create_chapter(payload: dict, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -20,6 +21,7 @@ def create_chapter(payload: dict, request: Request, session: Session = Depends(g
         path_template="/api/v1/chapters",
         payload=payload,
         action=lambda: _create_chapter(session, payload),
+        actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)

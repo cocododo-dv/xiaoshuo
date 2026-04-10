@@ -68,10 +68,12 @@ bash scripts/verify_wsl_strict.sh
 
 The `python -m novel_system.tools.chroma_smoke` command is the minimum preflight check. It must succeed before running the strict Chroma backend suite.
 
-Most recent successful verification on 2026-04-09:
+Most recent successful verification on 2026-04-10:
 
 - `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
 - `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
+- Windows lane result: backend `31 passed, 13 deselected`; frontend `33 passed`; production build succeeded.
+- WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `13 passed`; full backend suite `43 passed, 1 skipped`.
 
 ## Demo seed
 
@@ -79,6 +81,7 @@ Use the demo seed to bootstrap the first chapter, three scene cards, and one pen
 
 ```powershell
 cd backend
+alembic upgrade head
 python -m novel_system.tools.seed_demo
 python -m uvicorn novel_system.api.app:create_app --factory --reload
 cd ../frontend
@@ -86,7 +89,14 @@ npm install
 npm run dev
 ```
 
+The seed expects the local SQLite schema to be at the current Alembic head. Run `alembic upgrade head` first if you are starting from a fresh or older local database.
+
 The seed is idempotent, so rerunning it keeps the same `CH001` / `CH001_SC01..03` / `review_demo_style_observation` records, avoids duplicate rows, and resets the seeded chapter, scene, and review records back to their bootstrap shape. Shared vector alias state is still owned by the normal review/reindex flow.
+
+Runtime-ops closeout note:
+
+- The shell persists the operator identity in local storage under `novel-system-operator-ref`.
+- Every mutating frontend POST request sends `X-Operator-Ref`, so receipts, runtime ledger entries, and human review follow-up actions can be traced back to the active operator.
 
 ## End-to-end demo
 
@@ -107,6 +117,18 @@ Then inspect:
 - `Scene Workbench` with `CH001_SC01`
 - `Review Inbox` with `review_demo_style_observation`
 - `Index Console` after approve / verify / release actions create alias and job activity
+
+## Runtime Ops Closeout Demo
+
+Use this walkthrough when validating the 2026-04-10 runtime-ops closeout slice:
+
+1. Start from the seeded flow above, including `alembic upgrade head`, and set `Operator Ref` in the shell rail before taking any mutating action.
+2. In `Scene Workbench`, load `CH001_SC01`, run the full scene pipeline, and confirm the run receipt updates in place.
+3. In `Review Inbox`, approve and release `review_demo_style_observation`, then inspect any surfaced human review events and trigger the available retry action.
+4. In `Index Console`, exercise verify retry, `run due promotions`, and `recovery sweep`.
+5. Confirm the latest receipts, runtime ledger, and target activity groups all retain the correct actor and linked targets.
+
+The runtime-ops slice is considered closed out only when the seeded demo path, the runtime ledger, and the cross-view target jumps all agree on actor and target identity.
 
 If you need strict real-Chroma verification, use the WSL lane above instead of native Windows.
 

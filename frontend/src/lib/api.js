@@ -1,5 +1,7 @@
 const API_BASE_KEY = "novel-system-api-base";
 const DEFAULT_API_BASE = "http://127.0.0.1:8000";
+const OPERATOR_REF_KEY = "novel-system-operator-ref";
+const DEFAULT_OPERATOR_REF = "operator";
 
 export function getApiBase() {
   if (typeof window === "undefined") {
@@ -12,6 +14,21 @@ export function setApiBase(value) {
   const normalized = value.trim() || DEFAULT_API_BASE;
   if (typeof window !== "undefined") {
     window.localStorage.setItem(API_BASE_KEY, normalized);
+  }
+  return normalized;
+}
+
+export function getOperatorRef() {
+  if (typeof window === "undefined") {
+    return DEFAULT_OPERATOR_REF;
+  }
+  return window.localStorage.getItem(OPERATOR_REF_KEY) || DEFAULT_OPERATOR_REF;
+}
+
+export function setOperatorRef(value) {
+  const normalized = value.trim() || DEFAULT_OPERATOR_REF;
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(OPERATOR_REF_KEY, normalized);
   }
   return normalized;
 }
@@ -43,6 +60,7 @@ export async function apiPost(path, body = {}) {
     headers: {
       "Content-Type": "application/json",
       "X-Idempotency-Key": buildIdempotencyKey(path),
+      "X-Operator-Ref": getOperatorRef(),
     },
     body: JSON.stringify(body),
   });
@@ -77,6 +95,10 @@ export function fetchIndexJobs() {
   return apiGet("/api/v1/index/jobs");
 }
 
+export function fetchIndexRuntimeLedger() {
+  return apiGet("/api/v1/index/runtime-ledger");
+}
+
 export function retryVerify(jobId) {
   return apiPost(`/api/v1/index/verify/${jobId}/retry`);
 }
@@ -85,6 +107,14 @@ export function runRecoverySweep() {
   return apiPost("/api/v1/runtime/recovery/sweep");
 }
 
+export function runDuePromotions() {
+  return apiPost("/api/v1/runtime/promotions/run-due");
+}
+
 export function fetchHumanReviewEvents() {
   return apiGet("/api/v1/human-review-events");
+}
+
+export function actOnHumanReviewEvent(eventId, action) {
+  return apiPost(`/api/v1/human-review-events/${eventId}/actions`, { action });
 }

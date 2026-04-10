@@ -15,6 +15,7 @@ router = APIRouter(tags=["scenes"])
 
 @router.post("/api/v1/scenes")
 def create_scene(payload: dict, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -22,6 +23,7 @@ def create_scene(payload: dict, request: Request, session: Session = Depends(get
         path_template="/api/v1/scenes",
         payload=payload,
         action=lambda: _create_scene(session, payload),
+        actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
@@ -46,6 +48,7 @@ def _create_scene(session: Session, payload: dict) -> dict:
 
 @router.post("/api/v1/scenes/{scene_id}/run/full")
 def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -53,6 +56,7 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
         path_template="/api/v1/scenes/{scene_id}/run/full",
         payload={"scene_id": scene_id},
         action=lambda: Orchestrator(session).run_scene(scene_id),
+        actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)

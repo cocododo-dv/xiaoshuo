@@ -1,21 +1,52 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 import AttemptTimeline from "../components/AttemptTimeline.vue";
 import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
+import { useShellRouter } from "../router";
 import { useWorkbenchStore } from "../stores/workbench";
 
 const emit = defineEmits(["notice"]);
 
 const workbench = useWorkbenchStore();
+const { focusTarget, openTarget } = useShellRouter();
 const requestedSceneId = ref(workbench.sceneId);
 
 const hasData = computed(() => Boolean(workbench.data));
+const focusedSceneId = computed(() =>
+  focusTarget.value?.target_type === "scene_card" ? focusTarget.value.target_id : "",
+);
+const focusedHumanReviewEventId = computed(() =>
+  focusTarget.value?.target_type === "human_review_event" ? focusTarget.value.target_id : "",
+);
+const isFocusedRunReceipt = computed(
+  () => focusTarget.value?.source_type === "scene_run_receipt" && focusTarget.value?.source_id === workbench.sceneId,
+);
+
+const prioritizedHumanReviewItems = computed(() => {
+  const focusEventId = focusedHumanReviewEventId.value;
+  const items = [...workbench.humanReviewItems].slice(0, 3);
+  if (!focusEventId) {
+    return items;
+  }
+  return items.sort((left, right) => Number(right.event_id === focusEventId) - Number(left.event_id === focusEventId));
+});
 
 function resolveSceneId() {
   return requestedSceneId.value.trim() || workbench.sceneId;
+}
+
+function sceneCardTarget(sceneId = resolveSceneId()) {
+  if (!sceneId) {
+    return null;
+  }
+  return {
+    target_type: "scene_card",
+    target_id: sceneId,
+    target_ref: `scene_card:${sceneId}`,
+  };
 }
 
 async function loadWorkbench() {
@@ -27,12 +58,37 @@ async function loadWorkbench() {
 
 async function runScene() {
   try {
-    const message = await workbench.runScene(resolveSceneId());
+    const sceneId = resolveSceneId();
+    const message = await workbench.runScene(sceneId);
+    openTarget(sceneCardTarget(sceneId), {
+      view_id: "workbench",
+      source_type: "scene_run_receipt",
+      source_id: sceneId,
+    });
     emit("notice", message);
   } catch (error) {
     emit("notice", error.message);
   }
 }
+
+function handleOpenTarget(target) {
+  openTarget(target);
+  emit("notice", `Opened ${target.target_ref}`);
+}
+
+watch(
+  () => focusTarget.value?.target_ref,
+  async () => {
+    if (
+      focusTarget.value?.target_type === "scene_card"
+      && focusTarget.value.target_id
+      && focusTarget.value.target_id !== workbench.sceneId
+    ) {
+      requestedSceneId.value = focusTarget.value.target_id;
+      await loadWorkbench();
+    }
+  },
+);
 
 onMounted(() => {
   loadWorkbench();
@@ -78,7 +134,11 @@ onMounted(() => {
           </div>
         </div>
 
-        <article v-if="workbench.lastRunResult" class="paper receipt-card">
+        <article
+          v-if="workbench.lastRunResult"
+          class="paper receipt-card"
+          :class="{ 'focused-card': isFocusedRunReceipt }"
+        >
           <div class="receipt-head">
             <div>
               <h3>Run Receipt</h3>
@@ -92,10 +152,26 @@ onMounted(() => {
             <p><strong>Hash</strong><br />{{ workbench.lastRunResult.current_bundle_hash || "-" }}</p>
             <p><strong>Final Scene</strong><br />{{ workbench.lastRunResult.current_final_scene_row_id || "-" }}</p>
           </div>
+          <div class="card-actions">
+            <button
+              class="ghost"
+              @click="handleOpenTarget({
+                ...sceneCardTarget(),
+                source_type: 'scene_run_receipt',
+                source_id: workbench.sceneId,
+                view_id: 'workbench',
+              })"
+            >
+              Open Scene Card
+            </button>
+          </div>
         </article>
 
         <div class="workbench-columns">
-          <article class="paper">
+          <article
+            class="paper"
+            :class="{ 'focused-card': (focusedSceneId && workbench.data.scene_card.scene_id === focusedSceneId) || isFocusedRunReceipt }"
+          >
             <h3>Chapter / Scene</h3>
             <p><strong>{{ workbench.data.chapter_goal.chapter_goal }}</strong></p>
             <p>{{ workbench.data.scene_card.scene_goal }}</p>
@@ -129,7 +205,11 @@ onMounted(() => {
     </PanelShell>
 
     <PanelShell eyebrow="Human Review Drawer" title="Manual backflow">
-      <HumanReviewDrawer :items="workbench.humanReviewItems.slice(0, 3)" />
+      <HumanReviewDrawer
+        :items="prioritizedHumanReviewItems"
+        :focus-event-id="focusedHumanReviewEventId"
+        @open-target="handleOpenTarget"
+      />
     </PanelShell>
   </section>
 </template>
