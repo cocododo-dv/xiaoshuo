@@ -213,6 +213,24 @@ def _prepare_operator_action_context(session: Session, *, path_template: str, pa
             "target_refs": [_target("scene_card", scene_id)],
         }
 
+    if path_template == "/api/v1/runtime/recovery/sweep":
+        return {
+            "object_type": "runtime_operation",
+            "object_ref": "recovery_sweep",
+            "action": "run_recovery_sweep",
+            "status_before": None,
+            "target_refs": [],
+        }
+
+    if path_template == "/api/v1/runtime/promotions/run-due":
+        return {
+            "object_type": "runtime_operation",
+            "object_ref": "run_due_promotions",
+            "action": "run_due_promotions",
+            "status_before": None,
+            "target_refs": [],
+        }
+
     return None
 
 
@@ -319,6 +337,45 @@ def _resolve_operator_action_outcome(
             },
         )
 
+    if action == "run_recovery_sweep":
+        return (
+            "completed",
+            "recovery sweep completed",
+            {
+                "reclaimed_jobs": result.get("reclaimed_jobs"),
+                "reclaimed_job_summaries": result.get("reclaimed_job_summaries"),
+                "failed_jobs": result.get("failed_jobs"),
+                "failed_job_summaries": result.get("failed_job_summaries"),
+                "reclaimed_idempotency_keys": result.get("reclaimed_idempotency_keys"),
+                "failed_idempotency_keys": result.get("failed_idempotency_keys"),
+                "reclaimed_idempotency_key_summaries": result.get("reclaimed_idempotency_key_summaries"),
+                "created_human_review_events": result.get("created_human_review_events"),
+                "created_human_review_event_ids": result.get("created_human_review_event_ids"),
+                "created_human_review_event_targets": result.get("created_human_review_event_targets"),
+                "target_refs": _dedupe_targets(
+                    [
+                        *_result_targets(result.get("reclaimed_job_summaries")),
+                        *_result_targets(result.get("failed_job_summaries")),
+                        *_result_targets(result.get("created_human_review_event_targets")),
+                    ]
+                ),
+            },
+        )
+
+    if action == "run_due_promotions":
+        return (
+            "completed",
+            "due promotions completed",
+            {
+                "promoted": result.get("promoted"),
+                "promoted_review_ids": result.get("promoted_review_ids"),
+                "promoted_review_targets": result.get("promoted_review_targets"),
+                "promoted_row_ids": result.get("promoted_row_ids"),
+                "promoted_alias_scopes": result.get("promoted_alias_scopes"),
+                "target_refs": _dedupe_targets(_result_targets(result.get("promoted_review_targets"))),
+            },
+        )
+
     return (None, action, {})
 
 
@@ -340,3 +397,22 @@ def _dedupe_targets(targets: list[dict[str, str] | None]) -> list[dict[str, str]
         seen_refs.add(target_ref)
         deduped.append(target)
     return deduped
+
+
+def _result_targets(items: Any) -> list[dict[str, str]]:
+    if not isinstance(items, list):
+        return []
+    targets: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if not isinstance(target, dict):
+            continue
+        target_type = target.get("target_type")
+        target_id = target.get("target_id")
+        target_ref = target.get("target_ref")
+        structured = structured_target(target_type, target_id, target_ref)
+        if structured is not None:
+            targets.append(structured)
+    return targets

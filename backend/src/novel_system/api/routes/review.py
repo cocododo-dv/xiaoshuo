@@ -131,6 +131,8 @@ def list_human_review_events(request: Request, session: Session = Depends(get_se
 @router.get("/api/v1/human-review-events/{event_id}")
 def human_review_event_detail(event_id: str, request: Request, session: Session = Depends(get_session)):
     item = session.get(HumanReviewEvent, event_id)
+    if item is None:
+        raise DomainError("HUMAN_REVIEW_EVENT_NOT_FOUND", f"human review event {event_id} not found", status_code=404)
     return ok(_serialize_event(item), req_id=getattr(request.state, "request_id", None))
 
 
@@ -154,24 +156,7 @@ def human_review_event_action(event_id: str, payload: dict, request: Request, se
 
 
 def _serialize_event(item: HumanReviewEvent | None) -> dict:
-    if item is None:
-        return {
-            "event_id": None,
-            "scene_id": None,
-            "chapter_id": None,
-            "object_ref": None,
-            "event_source": "system",
-            "priority": "normal",
-            "owner": None,
-            "status": "empty",
-            "allowed_actions_json": [],
-        "result_status_map_json": {},
-        "details_json": {},
-        "linked_target": None,
-        "followup_target": None,
-        "replay_target": None,
-        "default_action": None,
-    }
+    assert item is not None
     details = dict(item.details_json or {})
     return {
         "event_id": item.event_id,

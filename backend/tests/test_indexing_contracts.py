@@ -552,6 +552,13 @@ def test_human_review_event_detail_exposes_structured_targets(client, session) -
     }
 
 
+def test_human_review_event_detail_returns_404_when_missing(client) -> None:
+    response = client.get("/api/v1/human-review-events/human_review_missing")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "HUMAN_REVIEW_EVENT_NOT_FOUND"
+
+
 def test_recovery_sweep_exposes_reclaimed_and_failed_job_summaries(client, session) -> None:
     session.add(
         VerifyJob(
@@ -1150,6 +1157,157 @@ def test_runtime_ledger_persists_review_and_scene_operator_actions(client, sessi
     scene_group = next(item for item in data["target_activity_groups"] if item["target"]["target_ref"] == "scene_card:CH001_SC01")
     assert scene_group["sources"] == ["operator_action"]
     assert any(item["label"] == "run_scene" for item in scene_group["activity_items"])
+
+
+def test_runtime_ledger_persists_recovery_and_due_promotion_operator_actions(client, session) -> None:
+    approved_row_id = "style_observation_STY_DUE_PROMOTION_OPERATOR_v1"
+
+    session.add(
+        VerifyJob(
+            job_id="verify_job_recovery_operator",
+            review_id="review_recovery_operator",
+            status="running",
+            object_type="style_observation",
+            alias_scope="style_observation:global:global",
+            target_snapshot_version="snapshot__style_observation_STY_RECOVERY_OPERATOR_v1",
+            target_embedding_version="embed__style_observation_STY_RECOVERY_OPERATOR_v1",
+            worker_id="verify-worker-stale",
+            attempt_no=2,
+            heartbeat_at="2026-04-09T15:00:00+00:00",
+            lease_expires_at="2000-01-01T00:00:00+00:00",
+            started_at="2026-04-09T14:59:00+00:00",
+        )
+    )
+    session.add(
+        ReviewItem(
+            review_id="review_due_promotion_operator",
+            scene_id="CH001_SC01",
+            chapter_id="CH001",
+            item_type="style_observation",
+            status="approved",
+            candidate_text="persist due promotions in the runtime ledger",
+            candidate_payload_json={
+                "scope": "global",
+                "scope_ref_id": "global",
+                "lineage_key": "STY_DUE_PROMOTION_OPERATOR",
+                "text": "persist due promotions in the runtime ledger",
+                "effective_at": "2000-01-01T00:00:00+00:00",
+            },
+            active_on_approve=1,
+            materialize_status="succeeded",
+            approved_item_row_id=approved_row_id,
+            approved_item_id="STY_DUE_PROMOTION_OPERATOR",
+        )
+    )
+    session.add(
+        StyleObservation(
+            row_id=approved_row_id,
+            style_observation_id="STY_DUE_PROMOTION_OPERATOR",
+            version=1,
+            scope="global",
+            scope_ref_id="global",
+            text="persist due promotions in the runtime ledger",
+            source_review_id="review_due_promotion_operator",
+            active_flag=0,
+            runtime_eligible=0,
+            runtime_eligibility_basis="future_effective",
+            effective_at="2000-01-01T00:00:00+00:00",
+        )
+    )
+    session.add(
+        VersionRegistry(
+            object_type="style_observation",
+            lineage_key="STY_DUE_PROMOTION_OPERATOR",
+            version=1,
+            physical_row_id=approved_row_id,
+            alias_scope="style_observation:global:global",
+            materialize_status="succeeded",
+            reindex_status="succeeded",
+            verify_status="succeeded",
+        )
+    )
+    session.add(
+        VectorAliasRegistry(
+            alias_scope="style_observation:global:global",
+            object_type="style_observation",
+            scope="global",
+            scope_ref_id="global",
+            collection_family="style_observation_global_global",
+            active_alias="style_observation_global_global__candidate__style_observation_STY_ACTIVE_v1",
+            candidate_alias=f"style_observation_global_global__candidate__{approved_row_id}",
+            active_snapshot_version="snapshot__style_observation_STY_ACTIVE_v1",
+            candidate_snapshot_version=f"snapshot__{approved_row_id}",
+            active_embedding_version="embed__style_observation_STY_ACTIVE_v1",
+            candidate_embedding_version=f"embed__{approved_row_id}",
+            verify_status="succeeded",
+            sample_query_success=1,
+        )
+    )
+    session.commit()
+
+    recovery = client.post(
+        "/api/v1/runtime/recovery/sweep",
+        headers={
+            "X-Idempotency-Key": "recovery-operator-runtime-ledger",
+            "X-Operator-Ref": "ops.duwei",
+        },
+    )
+    assert recovery.status_code == 200
+    assert recovery.json()["data"]["actor_ref"] == "ops.duwei"
+
+    promotions = client.post(
+        "/api/v1/runtime/promotions/run-due",
+        headers={
+            "X-Idempotency-Key": "run-due-promotions-operator-runtime-ledger",
+            "X-Operator-Ref": "ops.duwei",
+        },
+    )
+    assert promotions.status_code == 200
+    assert promotions.json()["data"]["actor_ref"] == "ops.duwei"
+
+    response = client.get("/api/v1/index/runtime-ledger")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    operator_actions = data["operator_action_timeline_items"]
+
+    recovery_action = next(item for item in operator_actions if item["action"] == "run_recovery_sweep")
+    assert recovery_action["actor_ref"] == "ops.duwei"
+    assert recovery_action["status_after"] == "completed"
+    assert recovery_action["payload_json"]["request_path_template"] == "/api/v1/runtime/recovery/sweep"
+    assert recovery_action["payload_json"]["reclaimed_jobs"] == 1
+    assert recovery_action["target_refs"] == [
+        {
+            "target_type": "verify_job",
+            "target_id": "verify_job_recovery_operator",
+            "target_ref": "verify_job:verify_job_recovery_operator",
+        }
+    ]
+
+    promotion_action = next(item for item in operator_actions if item["action"] == "run_due_promotions")
+    assert promotion_action["actor_ref"] == "ops.duwei"
+    assert promotion_action["status_after"] == "completed"
+    assert promotion_action["payload_json"]["request_path_template"] == "/api/v1/runtime/promotions/run-due"
+    assert promotion_action["payload_json"]["promoted"] == 1
+    assert promotion_action["target_refs"] == [
+        {
+            "target_type": "review_item",
+            "target_id": "review_due_promotion_operator",
+            "target_ref": "review_item:review_due_promotion_operator",
+        }
+    ]
+
+    verify_group = next(
+        item for item in data["target_activity_groups"] if item["target"]["target_ref"] == "verify_job:verify_job_recovery_operator"
+    )
+    assert "operator_action" in verify_group["sources"]
+    assert any(item["label"] == "run_recovery_sweep" for item in verify_group["activity_items"])
+
+    review_group = next(
+        item for item in data["target_activity_groups"] if item["target"]["target_ref"] == "review_item:review_due_promotion_operator"
+    )
+    assert "operator_action" in review_group["sources"]
+    assert any(item["label"] == "run_due_promotions" for item in review_group["activity_items"])
 
 
 def test_verify_auto_promotion_writes_system_runtime_activity(client, session, monkeypatch) -> None:
