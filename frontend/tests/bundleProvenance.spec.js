@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -364,5 +364,28 @@ describe("index console source", () => {
     expect(routerSource).toContain("focusTarget");
     expect(routerSource).toContain("openTarget");
     expect(routerSource).toContain("scene_card");
+  });
+});
+
+describe("interop center source", () => {
+  it("wires preview, import, export, replay, and diff panels into the interop center", () => {
+    const viewPath = new URL("../src/views/InteropCenterView.vue", import.meta.url);
+
+    expect(existsSync(viewPath)).toBe(true);
+
+    if (!existsSync(viewPath)) {
+      return;
+    }
+
+    const source = readFileSync(viewPath, "utf8");
+
+    expect(source).toContain("worksheet_yaml");
+    expect(source).toContain("Preview Worksheet");
+    expect(source).toContain("Import Worksheet");
+    expect(source).toContain("Bundle Export");
+    expect(source).toContain("Replay Final Scene");
+    expect(source).toContain("Version Drift");
+    expect(source).toContain("Text Drift");
+    expect(source).toContain("source_ref_comparisons");
   });
 });

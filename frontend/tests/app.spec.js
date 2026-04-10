@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -138,6 +138,14 @@ describe("vue shell", () => {
     expect(source).toContain("Index Console");
     expect(source).toContain("Knowledge Console");
   });
+
+  it("adds an interop center entry point to the shell", () => {
+    const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("Interop Center");
+    expect(source).toContain("InteropCenterView");
+    expect(source).toContain("activeView === 'interop'");
+  });
 });
 
 describe("shell router", () => {
@@ -217,6 +225,14 @@ describe("shell router", () => {
       source_id: 12,
     });
   });
+
+  it("ships interop and knowledge-specific target routing", () => {
+    const source = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
+
+    expect(source).toContain('{ id: "interop", label: "Interop Center" }');
+    expect(source).toContain('if (targetType === "knowledge_entry")');
+    expect(source).toContain('return "knowledge"');
+  });
 });
 
 describe("api helpers", () => {
@@ -262,6 +278,25 @@ describe("api helpers", () => {
         }),
       }),
     );
+  });
+
+  it("ships dedicated interop API helpers", () => {
+    const source = readFileSync(new URL("../src/lib/api.js", import.meta.url), "utf8");
+
+    expect(source).toContain("previewBundleWorksheet");
+    expect(source).toContain("/api/v1/interop/preview/bundle-worksheet");
+    expect(source).toContain("importBundleWorksheet");
+    expect(source).toContain("/api/v1/interop/import/bundle-worksheet");
+    expect(source).toContain("fetchBundleWorksheetExport");
+    expect(source).toContain("fetchReplayFinalScene");
+    expect(source).toContain("fetchReplayDraft");
+  });
+});
+
+describe("interop center source", () => {
+  it("ships dedicated interop store and view files", () => {
+    expect(existsSync(new URL("../src/stores/interopCenter.js", import.meta.url))).toBe(true);
+    expect(existsSync(new URL("../src/views/InteropCenterView.vue", import.meta.url))).toBe(true);
   });
 });
 

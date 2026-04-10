@@ -14,6 +14,7 @@ const views = [
   { id: "review", label: "Review Inbox" },
   { id: "index", label: "Index Console" },
   { id: "knowledge", label: "Knowledge Console" },
+  { id: "interop", label: "Interop Center" },
 ];
 
 const workbenchTargetTypes = new Set([
@@ -50,6 +51,9 @@ export function useShellRouter() {
     }
     if (targetType === "verify_job" || targetType === "reindex_job") {
       return "index";
+    }
+    if (targetType === "knowledge_entry") {
+      return "knowledge";
     }
     return activeView.value;
   }

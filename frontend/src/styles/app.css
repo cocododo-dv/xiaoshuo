@@ -584,6 +584,54 @@ pre {
   align-items: start;
 }
 
+.interop-layout,
+.interop-query-grid,
+.comparison-list,
+.comparison-copy-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.interop-layout {
+  margin-top: 1rem;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 0.75fr) minmax(0, 1.1fr);
+  align-items: start;
+}
+
+.interop-query-grid {
+  margin-top: 1rem;
+}
+
+.interop-query-grid label,
+.interop-wide {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.interop-editor {
+  min-height: 18rem;
+  font-family: "Consolas", "Courier New", monospace;
+}
+
+.comparison-list {
+  margin-top: 1rem;
+}
+
+.comparison-card {
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.comparison-diff-grid,
+.comparison-copy-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.9rem;
+}
+
+.comparison-diff-grid p,
+.comparison-copy-grid p {
+  margin: 0;
+}
+
 .knowledge-filter-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
@@ -655,6 +703,10 @@ pre {
   }
 
   .knowledge-layout,
+  .interop-layout,
+  .interop-query-grid,
+  .comparison-diff-grid,
+  .comparison-copy-grid,
   .knowledge-filter-grid,
   .knowledge-form-grid {
     grid-template-columns: 1fr;

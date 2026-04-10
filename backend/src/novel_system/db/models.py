@@ -497,6 +497,23 @@ class VerifyJob(Base):
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class InteropArtifact(Base):
+    __tablename__ = "interop_artifacts"
+
+    artifact_id: Mapped[str] = mapped_column(String, primary_key=True)
+    artifact_kind: Mapped[str] = mapped_column(String)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    file_path: Mapped[str] = mapped_column(String)
+    file_format: Mapped[str] = mapped_column(String)
+    file_checksum: Mapped[str | None] = mapped_column(String, nullable=True)
+    direction: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="completed")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
 class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
 

@@ -12,6 +12,8 @@ assert.ok(main.includes("createPinia"));
 assert.ok(app.includes("Scene Workbench"));
 assert.ok(app.includes("Review Inbox"));
 assert.ok(app.includes("Index Console"));
+assert.ok(app.includes("Interop Center"));
 assert.ok(router.includes('label: "Knowledge Console"'));
+assert.ok(router.includes('label: "Interop Center"'));
 
 console.log("frontend smoke ok");

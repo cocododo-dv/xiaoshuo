@@ -16,4 +16,6 @@ backend/novel_system.db
 
 frontend/dist/
 frontend/node_modules/
+frontend/test-results/
 .codex-run/
+.worktrees/

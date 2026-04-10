@@ -33,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_release.ps1
 `scripts/verify_release.ps1` now runs three local lanes in order:
 
 - Windows-safe backend/frontend verification via `scripts/verify_windows.ps1`
-- Seeded runtime-ops + knowledge-console browser E2E via `cd frontend && npm run test:e2e`
+- Seeded runtime-ops + knowledge-console + interop-center browser E2E via `cd frontend && npm run test:e2e`
 - WSL strict Chroma verification via `scripts/verify_wsl_strict.sh`
 
 GitHub Actions still covers the backend non-Chroma lane plus the frontend test/build lane only. The seeded browser E2E lane and the WSL strict Chroma lane remain required local release checks on this machine. Use [docs/release-checklist.md](docs/release-checklist.md) before marking a Draft PR ready.
@@ -79,9 +79,9 @@ Most recent successful verification:
 - `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
 - `cd frontend && npm run test:e2e`
 - `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
-- 2026-04-11 Windows lane result: backend `40 passed, 13 deselected`; frontend `40 passed`; production build succeeded.
-- 2026-04-11 seeded browser E2E result: Playwright `2 passed`, covering runtime-ops closeout plus Knowledge Console filtering, detail refs, and cross-view jumps.
-- 2026-04-10 WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `13 passed`; full backend suite `46 passed, 1 skipped`.
+- 2026-04-11 Windows lane result: backend `45 passed, 13 deselected`; frontend `45 passed`; production build succeeded.
+- 2026-04-11 seeded browser E2E result: Playwright `3 passed`, covering runtime-ops closeout, Knowledge Console filtering/detail refs/cross-view jumps, and Interop Center worksheet preview/import/export/replay.
+- 2026-04-11 WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `13 passed`; full backend suite `57 passed, 1 skipped`.
 
 ## Demo seed
 
@@ -127,7 +127,7 @@ cd frontend
 npm run test:e2e
 ```
 
-The Playwright lane seeds the `runtime_ops_e2e` fixture, forces the memory vector backend, and validates two browser paths with `Operator Ref = ops.runtime.e2e` and `Operator Ref = ops.knowledge.e2e`:
+The Playwright lane seeds the `runtime_ops_e2e` fixture, forces the memory vector backend, and validates three browser paths with `Operator Ref = ops.runtime.e2e`, `Operator Ref = ops.knowledge.e2e`, and `Operator Ref = ops.interop.e2e`:
 
 - `Scene Workbench` loads `CH001_SC01` and runs the full scene pipeline
 - `Review Inbox` approves, verifies, and releases `review_demo_style_observation`
@@ -135,12 +135,14 @@ The Playwright lane seeds the `runtime_ops_e2e` fixture, forces the memory vecto
 - Recovery-generated human review follow-up actions progress through `retry_request`, `retry_verify`, and `release_review`
 - Receipts, runtime ledger views, target activity, and cross-view target focus all keep the expected actor / linked-target identity
 - `Knowledge Console` applies object / scope / scope-ref / status filters, clears stale detail state when filters exclude the current lineage, opens linked review refs in `Review Inbox`, and opens bundle refs in `Scene Workbench`
+- `Interop Center` previews strict YAML worksheets, imports validated bundles, exports bundle worksheets, replays final-scene envelopes, and surfaces version/text drift comparisons with cross-view jumps back into the shell
 
 If you want to inspect the seed manually instead, use the local dev servers above and inspect:
 
 - `Scene Workbench` with `CH001_SC01`
 - `Review Inbox` with `review_demo_style_observation`
 - `Index Console` after approve / verify / release actions create alias and job activity
+- `Interop Center` with a strict YAML worksheet targeting existing `CH001` / `CH001_SC01` records
 
 ## Runtime Ops Closeout Demo
 
@@ -165,3 +167,5 @@ cd frontend
 npm install
 npm run dev
 ```
+
+The shell currently exposes `Scene Workbench`, `Review Inbox`, `Index Console`, `Knowledge Console`, and `Interop Center`. `Interop Center` is the worksheet workstation for strict YAML preview/import/export/replay flows and cross-view provenance inspection.

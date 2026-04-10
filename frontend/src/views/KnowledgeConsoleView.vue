@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive } from "vue";
+import { computed, onMounted, reactive, watch } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
 import { useShellRouter } from "../router";
@@ -8,7 +8,7 @@ import { useKnowledgeConsoleStore } from "../stores/knowledgeConsole";
 const emit = defineEmits(["notice"]);
 
 const knowledgeConsole = useKnowledgeConsoleStore();
-const { navigate, openTarget } = useShellRouter();
+const { focusTarget, navigate, openTarget } = useShellRouter();
 
 const filters = reactive({
   objectType: knowledgeConsole.filters?.objectType || "",
@@ -114,6 +114,18 @@ function openIndexConsole(item) {
   emit("notice", `Opened Index Console for ${item.object_type}:${item.lineage_key}`);
 }
 
+function parseKnowledgeTarget(targetRef) {
+  if (!targetRef?.startsWith("knowledge_entry:")) {
+    return null;
+  }
+  const [, objectType, ...rest] = targetRef.split(":");
+  const lineageKey = rest.join(":");
+  if (!objectType || !lineageKey) {
+    return null;
+  }
+  return { objectType, lineageKey };
+}
+
 function openReviewRef(reviewId) {
   if (!reviewId) {
     return;
@@ -155,6 +167,24 @@ function openBundleWorkbench(bundleRef) {
 onMounted(() => {
   refreshKnowledge();
 });
+
+watch(
+  () => focusTarget.value?.target_ref || "",
+  async (targetRef) => {
+    const target = parseKnowledgeTarget(targetRef);
+    if (!target) {
+      return;
+    }
+    if (!knowledgeConsole.items.length) {
+      await refreshKnowledge();
+    }
+    try {
+      await knowledgeConsole.selectItem(target.objectType, target.lineageKey);
+    } catch (error) {
+      emit("notice", error.message);
+    }
+  },
+);
 </script>
 
 <template>
