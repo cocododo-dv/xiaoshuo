@@ -168,6 +168,36 @@ def test_jobs_keep_job_id_ordering_when_filters_are_applied(client, session) -> 
     assert [item["job_id"] for item in response.json()["data"]["items"]] == ["reindex_job_alpha", "verify_job_beta"]
 
 
+def test_jobs_reject_invalid_job_type_filter(client, session) -> None:
+    session.add_all(
+        [
+            VerifyJob(
+                job_id="verify_job_match",
+                review_id="review_scene_pending",
+                status="failed",
+                object_type="style_observation",
+                alias_scope="style_observation:global:global",
+                target_snapshot_version="snapshot__review_scene_pending",
+                target_embedding_version="embed__review_scene_pending",
+            ),
+            ReindexJob(
+                job_id="reindex_job_other",
+                review_id="review_other",
+                status="queued",
+                object_type="style_observation",
+                alias_scope="style_observation:scene:CH001_SC02",
+                target_snapshot_version="snapshot__review_other",
+                target_embedding_version="embed__review_other",
+            ),
+        ]
+    )
+    session.commit()
+
+    response = client.get("/api/v1/index/jobs", params={"job_type": "all"})
+
+    assert response.status_code == 422
+
+
 def test_runtime_ledger_filters_operator_action_source_and_rebuilds_groups(client, session) -> None:
     _seed_runtime_ledger_filter_data(session)
 
@@ -232,3 +262,11 @@ def test_runtime_ledger_filters_system_runtime_source_and_rebuilds_groups(client
     assert [group["target"]["target_ref"] for group in data["target_activity_groups"]] == ["review_item:review_scene_pending"]
     assert data["target_activity_groups"][0]["sources"] == ["system_runtime"]
     assert data["latest_recovery_action_receipt"] is None
+
+
+def test_runtime_ledger_rejects_invalid_source_filter(client, session) -> None:
+    _seed_runtime_ledger_filter_data(session)
+
+    response = client.get("/api/v1/index/runtime-ledger", params={"source": "all"})
+
+    assert response.status_code == 422

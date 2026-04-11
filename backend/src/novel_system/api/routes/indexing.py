@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import or_
 from sqlalchemy import select
@@ -53,7 +55,7 @@ def alias_scope_detail(alias_scope: str, request: Request, session: Session = De
 def list_jobs(
     request: Request,
     session: Session = Depends(get_session),
-    job_type: str | None = None,
+    job_type: Literal["reindex", "verify"] | None = None,
     status: str | None = None,
     object_type: str | None = None,
     review_id: str | None = None,
@@ -85,7 +87,7 @@ def runtime_ledger(
     request: Request,
     session: Session = Depends(get_session),
     target_ref: str | None = None,
-    source: str | None = None,
+    source: Literal["recovery_timeline", "system_runtime", "operator_action"] | None = None,
     actor_ref: str | None = None,
 ):
     recovery_timeline = _filter_recovery_timeline(_serialize_recovery_timeline(session), target_ref=target_ref, actor_ref=actor_ref)
