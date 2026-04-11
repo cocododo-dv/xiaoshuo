@@ -21,13 +21,27 @@ router = APIRouter(tags=["review"])
 
 
 @router.get("/api/v1/review-items")
-def list_review_items(request: Request, session: Session = Depends(get_session), status: str | None = None, item_type: str | None = None):
+def list_review_items(
+    request: Request,
+    session: Session = Depends(get_session),
+    status: str | None = None,
+    item_type: str | None = None,
+    target_collection: str | None = None,
+    scene_id: str | None = None,
+    chapter_id: str | None = None,
+):
     query = select(ReviewItem)
     if status:
         query = query.where(ReviewItem.status == status)
     if item_type:
         query = query.where(ReviewItem.item_type == item_type)
-    items = session.execute(query.order_by(ReviewItem.created_at.desc())).scalars().all()
+    if target_collection:
+        query = query.where(ReviewItem.target_collection == target_collection)
+    if scene_id:
+        query = query.where(ReviewItem.scene_id == scene_id)
+    if chapter_id:
+        query = query.where(ReviewItem.chapter_id == chapter_id)
+    items = session.execute(query.order_by(ReviewItem.created_at.desc(), ReviewItem.review_id.desc())).scalars().all()
     return ok(
         {"items": [_serialize_review(item) for item in items]},
         req_id=getattr(request.state, "request_id", None),
@@ -152,11 +166,30 @@ def _serialize_review(item: ReviewItem) -> dict:
 
 
 @router.get("/api/v1/human-review-events")
-def list_human_review_events(request: Request, session: Session = Depends(get_session), status: str | None = None):
+def list_human_review_events(
+    request: Request,
+    session: Session = Depends(get_session),
+    status: str | None = None,
+    event_source: str | None = None,
+    priority: str | None = None,
+    owner: str | None = None,
+    scene_id: str | None = None,
+    chapter_id: str | None = None,
+):
     query = select(HumanReviewEvent)
     if status:
         query = query.where(HumanReviewEvent.status == status)
-    items = session.execute(query.order_by(HumanReviewEvent.created_at.desc())).scalars().all()
+    if event_source:
+        query = query.where(HumanReviewEvent.event_source == event_source)
+    if priority:
+        query = query.where(HumanReviewEvent.priority == priority)
+    if owner:
+        query = query.where(HumanReviewEvent.owner == owner)
+    if scene_id:
+        query = query.where(HumanReviewEvent.scene_id == scene_id)
+    if chapter_id:
+        query = query.where(HumanReviewEvent.chapter_id == chapter_id)
+    items = session.execute(query.order_by(HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc())).scalars().all()
     return ok(
         {"items": [_serialize_event(item) for item in items]},
         req_id=getattr(request.state, "request_id", None),
