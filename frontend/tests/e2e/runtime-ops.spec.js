@@ -17,22 +17,32 @@ test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await expect(page.getByTestId("scene-run-receipt")).toContainText("final_scene_CH001_SC01");
 
   await page.getByTestId("nav-review").click();
+  await page.getByTestId("review-filter-status").selectOption("pending");
+  await page.getByTestId("review-filter-refresh").click();
   const baseReviewCard = page.getByTestId("review-card-review_demo_style_observation");
   await expect(baseReviewCard).toBeVisible();
   await baseReviewCard.getByTestId("review-approve-review_demo_style_observation").click();
   await expect(page.getByTestId("notice-stack")).toContainText("Approved review_demo_style_observation as ops.runtime.e2e");
 
   await page.getByTestId("nav-index").click();
+  await page.getByTestId("index-job-filter-job-type").selectOption("verify");
+  await page.getByTestId("index-job-filter-review-id").fill("review_demo_style_observation");
+  await page.getByTestId("index-job-filter-refresh").click();
   const baseVerifyJob = page.getByTestId("verify-job-verify_review_demo_style_observation");
   await expect(baseVerifyJob).toBeVisible();
   await baseVerifyJob.getByTestId("retry-verify-job-verify_review_demo_style_observation").click();
   await expect(page.getByTestId("notice-stack")).toContainText("Retried verify for verify_review_demo_style_observation as ops.runtime.e2e");
 
   await page.getByTestId("nav-review").click();
+  await page.getByTestId("review-filter-status").selectOption("approved");
+  await page.getByTestId("review-filter-refresh").click();
   await baseReviewCard.getByTestId("review-release-review_demo_style_observation").click();
   await expect(page.getByTestId("notice-stack")).toContainText("Released review_demo_style_observation as ops.runtime.e2e");
 
   await page.getByTestId("nav-index").click();
+  await page.getByTestId("index-ledger-filter-target-ref").fill("review_item:review_demo_due_promotion");
+  await page.getByTestId("index-ledger-filter-source").selectOption("system_runtime");
+  await page.getByTestId("index-ledger-filter-refresh").click();
   await page.getByTestId("run-due-promotions-button").click();
   await expect(page.getByTestId("promotion-receipt")).toContainText("review_demo_due_promotion");
   await expect(page.getByTestId("promotion-receipt")).toContainText("ops.runtime.e2e");
@@ -43,6 +53,8 @@ test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await expect(page.getByTestId("recovery-receipt")).toContainText("Human Review Events");
   await expect(page.getByTestId("recovery-receipt")).toContainText("ops.runtime.e2e");
   await page.getByTestId("nav-review").click();
+  await page.getByTestId("human-review-filter-event-source").selectOption("idempotency_recovery");
+  await page.getByTestId("human-review-filter-refresh").click();
   const reviewInboxView = page.getByTestId("review-inbox-view");
   await expect(reviewInboxView).toContainText("System Recovery");
   const recoveryEvent = reviewInboxView.getByTestId(
@@ -52,15 +64,22 @@ test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await expect(recoveryEvent).toContainText("retry_verify");
   await recoveryEvent.getByTestId("human-review-open-followup-human_review_idempotency_recovery_approve-review-demo-recovery-followup").click();
 
+  await page.getByTestId("nav-index").click();
+  await page.getByTestId("index-job-filter-job-type").selectOption("verify");
+  await page.getByTestId("index-job-filter-review-id").fill("review_demo_recovery_followup");
+  await page.getByTestId("index-job-filter-refresh").click();
   await expect(page.getByTestId("index-console-view")).toContainText("verify_review_demo_recovery_followup");
   await page.getByTestId("nav-review").click();
   await recoveryEvent.getByTestId("human-review-action-human_review_idempotency_recovery_approve-review-demo-recovery-followup-retry_verify").click();
   await expect(recoveryEvent).toContainText("release_review");
   await recoveryEvent.getByTestId("human-review-action-human_review_idempotency_recovery_approve-review-demo-recovery-followup-release_review").click();
   await expect(page.getByTestId("notice-stack")).toContainText("Applied release_review");
+  await page.getByTestId("human-review-filter-refresh").click();
   await expect(recoveryEvent).toHaveCount(0);
 
   await page.getByTestId("nav-index").click();
+  await page.getByTestId("index-job-filter-clear").click();
+  await page.getByTestId("index-ledger-filter-clear").click();
   await expect(page.getByTestId("recovery-followup-receipt")).toContainText("ops.runtime.e2e");
   const followupTargetActivity = page.getByTestId("target-activity-group-review_item:review_demo_recovery_followup");
   await followupTargetActivity.getByTestId("target-activity-toggle-review_item:review_demo_recovery_followup").click();
