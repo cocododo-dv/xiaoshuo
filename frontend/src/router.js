@@ -8,6 +8,7 @@ const focusTarget = ref({
   source_type: null,
   source_id: null,
 });
+const pendingFocusView = ref(null);
 
 const views = [
   { id: "workbench", label: "Scene Workbench" },
@@ -27,6 +28,7 @@ const workbenchTargetTypes = new Set([
 
 export function useShellRouter() {
   function clearFocus() {
+    pendingFocusView.value = null;
     focusTarget.value = {
       target_type: null,
       target_id: null,
@@ -38,6 +40,9 @@ export function useShellRouter() {
 
   function navigate(nextView) {
     if (views.some((view) => view.id === nextView)) {
+      if (pendingFocusView.value && pendingFocusView.value !== nextView) {
+        pendingFocusView.value = null;
+      }
       activeView.value = nextView;
     }
   }
@@ -62,6 +67,8 @@ export function useShellRouter() {
     if (!target?.target_type || !target?.target_id || !target?.target_ref) {
       return;
     }
+    const nextView = options.view_id || target.view_id || targetView(target.target_type);
+    pendingFocusView.value = nextView !== activeView.value ? nextView : null;
     focusTarget.value = {
       target_type: target.target_type,
       target_id: target.target_id,
@@ -69,7 +76,13 @@ export function useShellRouter() {
       source_type: options.source_type ?? target.source_type ?? null,
       source_id: options.source_id ?? target.source_id ?? null,
     };
-    navigate(options.view_id || target.view_id || targetView(target.target_type));
+    navigate(nextView);
+  }
+
+  function settleFocusView(viewId) {
+    if (pendingFocusView.value === viewId) {
+      pendingFocusView.value = null;
+    }
   }
 
   function reset() {
@@ -80,10 +93,12 @@ export function useShellRouter() {
   return {
     activeView,
     focusTarget,
+    pendingFocusView,
     views,
     navigate,
     openTarget,
     clearFocus,
+    settleFocusView,
     reset,
   };
 }

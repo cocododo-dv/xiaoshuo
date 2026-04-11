@@ -9,7 +9,13 @@ import {
   fetchIndexRuntimeLedger,
   fetchReviewItems,
 } from "../src/lib/api";
-import { getVisibleHumanReviewItems, isIndexFocusVisible, isReviewFocusVisible } from "../src/lib/filterFocus";
+import {
+  getVisibleHumanReviewItems,
+  isIndexFocusVisible,
+  isReviewFocusVisible,
+  shouldClearIndexFocus,
+  shouldClearReviewFocus,
+} from "../src/lib/filterFocus";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 
@@ -118,6 +124,40 @@ describe("focus visibility helpers", () => {
     ).toBe(false);
   });
 
+  it("keeps review focus while the review view is still refreshing into a new target", () => {
+    expect(
+      shouldClearReviewFocus(
+        "review",
+        false,
+        true,
+        {
+          target_type: "review_item",
+          target_id: "review_knowledge_style_rule",
+          target_ref: "review_item:review_knowledge_style_rule",
+        },
+        [],
+        [],
+      ),
+    ).toBe(false);
+  });
+
+  it("clears review focus once the review view is settled and the target is still absent", () => {
+    expect(
+      shouldClearReviewFocus(
+        "review",
+        false,
+        false,
+        {
+          target_type: "review_item",
+          target_id: "review_knowledge_style_rule",
+          target_ref: "review_item:review_knowledge_style_rule",
+        },
+        [],
+        [],
+      ),
+    ).toBe(true);
+  });
+
   it("drops human review focus when the focused event is not in the rendered event list", () => {
     expect(
       isReviewFocusVisible(
@@ -137,6 +177,42 @@ describe("focus visibility helpers", () => {
         [],
       ),
     ).toBe(false);
+  });
+
+  it("keeps index focus management inactive while another view owns the current target", () => {
+    expect(
+      shouldClearIndexFocus(
+        "review",
+        false,
+        false,
+        {
+          target_type: "review_item",
+          target_id: "review_knowledge_style_rule",
+          target_ref: "review_item:review_knowledge_style_rule",
+        },
+        [],
+        [],
+        [],
+      ),
+    ).toBe(false);
+  });
+
+  it("clears index focus once the index view is settled and the target is still absent", () => {
+    expect(
+      shouldClearIndexFocus(
+        "index",
+        false,
+        false,
+        {
+          target_type: "verify_job",
+          target_id: "verify_review_missing",
+          target_ref: "verify_job:verify_review_missing",
+        },
+        [],
+        [],
+        [],
+      ),
+    ).toBe(true);
   });
 });
 

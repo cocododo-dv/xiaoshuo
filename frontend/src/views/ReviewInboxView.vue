@@ -1,10 +1,10 @@
 <script setup>
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ReviewCard from "../components/ReviewCard.vue";
-import { getVisibleHumanReviewItems, isReviewFocusVisible } from "../lib/filterFocus";
+import { getVisibleHumanReviewItems, shouldClearReviewFocus } from "../lib/filterFocus";
 import { useShellRouter } from "../router";
 import { useIndexConsoleStore } from "../stores/indexConsole";
 import { useReviewInboxStore } from "../stores/reviewInbox";
@@ -15,7 +15,8 @@ const reviewInbox = useReviewInboxStore();
 const indexConsole = useIndexConsoleStore();
 const shellRouter = useShellRouter();
 // const { activeView, focusTarget, openTarget } = useShellRouter()
-const { activeView, focusTarget, openTarget, clearFocus } = shellRouter;
+const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;
+const reviewFocusRefreshPending = ref(false);
 
 const visibleHumanReviewItems = computed(() =>
   getVisibleHumanReviewItems(
@@ -95,6 +96,10 @@ function reviewSourceActionLabel(reviewId) {
     return "Opened in index";
   }
   return "";
+}
+
+function reviewFocusDeferred() {
+  return reviewFocusRefreshPending.value || pendingFocusView.value === "review";
 }
 
 async function refreshReviews() {
@@ -179,17 +184,51 @@ onMounted(() => {
 
 watch(
   () => activeView.value,
-  (nextView, previousView) => {
+  async (nextView, previousView) => {
     if (nextView === "review" && previousView !== "review") {
-      refreshReviews();
+      reviewFocusRefreshPending.value = true;
+      try {
+        await refreshReviews();
+      } finally {
+        reviewFocusRefreshPending.value = false;
+      }
+      settleFocusView("review");
+      if (
+        shouldClearReviewFocus(
+          activeView.value,
+          reviewInbox.loading,
+          reviewFocusDeferred(),
+          focusTarget.value,
+          reviewInbox.items,
+          visibleHumanReviewItems.value,
+        )
+      ) {
+        clearFocus();
+      }
     }
   },
 );
 
 watch(
-  () => [focusTarget.value, reviewInbox.items, visibleHumanReviewItems.value],
+  () => [
+    focusTarget.value,
+    reviewInbox.loading,
+    pendingFocusView.value,
+    reviewFocusRefreshPending.value,
+    reviewInbox.items,
+    visibleHumanReviewItems.value,
+  ],
   () => {
-    if (!isReviewFocusVisible(focusTarget.value, reviewInbox.items, visibleHumanReviewItems.value)) {
+    if (
+      shouldClearReviewFocus(
+        activeView.value,
+        reviewInbox.loading,
+        reviewFocusDeferred(),
+        focusTarget.value,
+        reviewInbox.items,
+        visibleHumanReviewItems.value,
+      )
+    ) {
       clearFocus();
     }
   },

@@ -226,6 +226,30 @@ describe("shell router", () => {
     });
   });
 
+  it("tracks pending focus view only for cross-view target opens", () => {
+    const router = useShellRouter();
+
+    router.reset();
+    router.openTarget({
+      target_type: "review_item",
+      target_id: "review_style_pending",
+      target_ref: "review_item:review_style_pending",
+    });
+
+    expect(router.pendingFocusView.value).toBe("review");
+
+    router.settleFocusView("review");
+    expect(router.pendingFocusView.value).toBeNull();
+
+    router.openTarget({
+      target_type: "review_item",
+      target_id: "review_style_released",
+      target_ref: "review_item:review_style_released",
+    });
+
+    expect(router.pendingFocusView.value).toBeNull();
+  });
+
   it("ships interop and knowledge-specific target routing", () => {
     const source = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 

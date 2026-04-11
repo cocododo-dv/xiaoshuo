@@ -15,6 +15,20 @@ export function isReviewFocusVisible(focusTarget, reviewItems, humanReviewItems)
   return true;
 }
 
+export function shouldClearReviewFocus(
+  activeView,
+  loading,
+  refreshPending,
+  focusTarget,
+  reviewItems,
+  humanReviewItems,
+) {
+  if (activeView !== "review" || loading || refreshPending) {
+    return false;
+  }
+  return !isReviewFocusVisible(focusTarget, reviewItems, humanReviewItems);
+}
+
 export function isIndexFocusVisible(focusTarget, aliasScopes, jobs, targetActivityGroups) {
   if (focusTarget?.target_type === "verify_job" || focusTarget?.target_type === "reindex_job") {
     return (jobs || []).some((item) => item.job_id === focusTarget.target_id);
@@ -23,4 +37,19 @@ export function isIndexFocusVisible(focusTarget, aliasScopes, jobs, targetActivi
     return (targetActivityGroups || []).some((group) => group?.target?.target_ref === focusTarget.target_ref);
   }
   return true;
+}
+
+export function shouldClearIndexFocus(
+  activeView,
+  loading,
+  refreshPending,
+  focusTarget,
+  aliasScopes,
+  jobs,
+  targetActivityGroups,
+) {
+  if (activeView !== "index" || loading || refreshPending) {
+    return false;
+  }
+  return !isIndexFocusVisible(focusTarget, aliasScopes, jobs, targetActivityGroups);
 }

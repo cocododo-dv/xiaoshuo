@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 
 import AliasScopeCard from "../components/AliasScopeCard.vue";
 import PanelShell from "../components/PanelShell.vue";
-import { isIndexFocusVisible } from "../lib/filterFocus";
+import { shouldClearIndexFocus } from "../lib/filterFocus";
 import {
   focusedActivityKeyForGroup,
   nextExpandedTargetRefs,
@@ -16,8 +16,9 @@ import { useIndexConsoleStore } from "../stores/indexConsole";
 const emit = defineEmits(["notice"]);
 
 const indexConsole = useIndexConsoleStore();
-const { focusTarget, openTarget, clearFocus } = useShellRouter();
+const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = useShellRouter();
 const expandedTargetRefs = ref([]);
+const indexFocusRefreshPending = ref(false);
 
 const prioritizedJobs = computed(() => {
   const focusJobId =
@@ -51,6 +52,10 @@ const focusedActivityKey = computed(() => {
 
 const focusedSourceType = computed(() => focusTarget.value?.source_type || "");
 const focusedSourceId = computed(() => focusTarget.value?.source_id ?? null);
+
+function indexFocusDeferred() {
+  return indexFocusRefreshPending.value || pendingFocusView.value === "index";
+}
 
 watch(
   () => [focusTarget.value?.target_ref || "", indexConsole.targetActivityGroups],
@@ -401,9 +406,55 @@ onMounted(() => {
 });
 
 watch(
-  () => [focusTarget.value, indexConsole.aliasScopes, indexConsole.jobs, indexConsole.targetActivityGroups],
+  () => activeView.value,
+  async (nextView, previousView) => {
+    if (nextView === "index" && previousView !== "index") {
+      indexFocusRefreshPending.value = true;
+      try {
+        await refreshIndex();
+      } finally {
+        indexFocusRefreshPending.value = false;
+      }
+      settleFocusView("index");
+      if (
+        shouldClearIndexFocus(
+          activeView.value,
+          indexConsole.loading,
+          indexFocusDeferred(),
+          focusTarget.value,
+          indexConsole.aliasScopes,
+          indexConsole.jobs,
+          indexConsole.targetActivityGroups,
+        )
+      ) {
+        clearFocus();
+      }
+    }
+  },
+);
+
+watch(
+  () => [
+    focusTarget.value,
+    indexConsole.loading,
+    pendingFocusView.value,
+    indexFocusRefreshPending.value,
+    indexConsole.aliasScopes,
+    indexConsole.jobs,
+    indexConsole.targetActivityGroups,
+  ],
   () => {
-    if (!isIndexFocusVisible(focusTarget.value, indexConsole.aliasScopes, indexConsole.jobs, indexConsole.targetActivityGroups)) {
+    if (
+      shouldClearIndexFocus(
+        activeView.value,
+        indexConsole.loading,
+        indexFocusDeferred(),
+        focusTarget.value,
+        indexConsole.aliasScopes,
+        indexConsole.jobs,
+        indexConsole.targetActivityGroups,
+      )
+    ) {
       clearFocus();
     }
   },
