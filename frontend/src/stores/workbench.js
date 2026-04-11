@@ -27,10 +27,10 @@ export const useWorkbenchStore = defineStore("workbench", {
         this.loading = false;
       }
     },
-    async loadHumanReview() {
+    async loadHumanReview(sceneId = this.sceneId) {
       this.humanReviewLoading = true;
       try {
-        const payload = await fetchHumanReviewEvents();
+        const payload = await fetchHumanReviewEvents({ sceneId });
         this.humanReviewItems = payload.items || [];
       } catch (error) {
         this.humanReviewItems = [];
@@ -40,7 +40,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       }
     },
     async refreshAll(sceneId = this.sceneId) {
-      await Promise.all([this.load(sceneId), this.loadHumanReview()]);
+      await Promise.all([this.load(sceneId), this.loadHumanReview(sceneId)]);
     },
     async runScene(sceneId = this.sceneId) {
       const previousSceneId = this.sceneId;

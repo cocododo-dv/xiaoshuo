@@ -40,6 +40,143 @@ describe("workbench store", () => {
     expect(store.data.scene_card.scene_id).toBe("CH001_SC01");
   });
 
+  it("loads scene-scoped human review items for the requested scene", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes("/workbench")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              scene_card: { scene_id: "CH001_SC01" },
+              scene_run_state: { scene_status: "ready" },
+              bundle: { bundle_id: "bundle_CH001_SC01" },
+              attempts: [],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/human-review-events?scene_id=CH001_SC01")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  event_id: "human_review_scene_1",
+                  scene_id: "CH001_SC01",
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const store = useWorkbenchStore();
+    await store.refreshAll("CH001_SC01");
+
+    expect(store.humanReviewItems).toEqual([
+      expect.objectContaining({
+        event_id: "human_review_scene_1",
+        scene_id: "CH001_SC01",
+      }),
+    ]);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/human-review-events?scene_id=CH001_SC01",
+    );
+  });
+
+  it("replaces human review items when the workbench scene changes", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes("/scenes/CH001_SC01/workbench")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              scene_card: { scene_id: "CH001_SC01" },
+              scene_run_state: { scene_status: "ready" },
+              bundle: { bundle_id: "bundle_CH001_SC01" },
+              attempts: [],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/scenes/CH001_SC02/workbench")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              scene_card: { scene_id: "CH001_SC02" },
+              scene_run_state: { scene_status: "ready" },
+              bundle: { bundle_id: "bundle_CH001_SC02" },
+              attempts: [],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/human-review-events?scene_id=CH001_SC01")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  event_id: "human_review_scene_1",
+                  scene_id: "CH001_SC01",
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/human-review-events?scene_id=CH001_SC02")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  event_id: "human_review_scene_2",
+                  scene_id: "CH001_SC02",
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const store = useWorkbenchStore();
+
+    await store.refreshAll("CH001_SC01");
+    await store.refreshAll("CH001_SC02");
+
+    expect(store.sceneId).toBe("CH001_SC02");
+    expect(store.humanReviewItems).toEqual([
+      expect.objectContaining({
+        event_id: "human_review_scene_2",
+        scene_id: "CH001_SC02",
+      }),
+    ]);
+    expect(store.humanReviewItems).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ event_id: "human_review_scene_1" })]),
+    );
+  });
+
   it("runs a full scene and refreshes the workbench state", async () => {
     globalThis.fetch = vi.fn(async (url) => {
       if (url.includes("/run/full")) {
@@ -77,7 +214,14 @@ describe("workbench store", () => {
           ok: true,
           json: async () => ({
             ok: true,
-            data: { items: [] },
+            data: {
+              items: [
+                {
+                  event_id: "human_review_scene_1",
+                  scene_id: "CH001_SC01",
+                },
+              ],
+            },
           }),
         };
       }
@@ -91,7 +235,16 @@ describe("workbench store", () => {
     expect(message).toContain("CH001_SC01");
     expect(store.lastRunResult.current_final_scene_row_id).toBe("final_scene_CH001_SC01");
     expect(store.data.scene_run_state.scene_status).toBe("archived");
+    expect(store.humanReviewItems).toEqual([
+      expect.objectContaining({
+        event_id: "human_review_scene_1",
+        scene_id: "CH001_SC01",
+      }),
+    ]);
     expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/human-review-events?scene_id=CH001_SC01",
+    );
   });
 
   it("keeps the current scene context when a run request fails", async () => {
@@ -1568,6 +1721,13 @@ describe("scene workbench source", () => {
     const source = readFileSync(new URL("../src/views/SceneWorkbenchView.vue", import.meta.url), "utf8");
 
     expect(source).toContain("scene-workbench-scene-card");
+  });
+
+  it("passes the full scene-scoped human review list into the drawer", () => {
+    const source = readFileSync(new URL("../src/views/SceneWorkbenchView.vue", import.meta.url), "utf8");
+
+    expect(source).toContain(':items="workbench.humanReviewItems"');
+    expect(source).not.toContain(".slice(0, 3)");
   });
 });
 

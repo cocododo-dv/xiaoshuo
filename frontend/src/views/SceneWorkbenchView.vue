@@ -25,15 +25,6 @@ const isFocusedRunReceipt = computed(
   () => focusTarget.value?.source_type === "scene_run_receipt" && focusTarget.value?.source_id === workbench.sceneId,
 );
 
-const prioritizedHumanReviewItems = computed(() => {
-  const focusEventId = focusedHumanReviewEventId.value;
-  const items = [...workbench.humanReviewItems].slice(0, 3);
-  if (!focusEventId) {
-    return items;
-  }
-  return items.sort((left, right) => Number(right.event_id === focusEventId) - Number(left.event_id === focusEventId));
-});
-
 function resolveSceneId() {
   return requestedSceneId.value.trim() || workbench.sceneId;
 }
@@ -208,7 +199,7 @@ onMounted(() => {
 
     <PanelShell eyebrow="Human Review Drawer" title="Manual backflow">
       <HumanReviewDrawer
-        :items="prioritizedHumanReviewItems"
+        :items="workbench.humanReviewItems"
         :focus-event-id="focusedHumanReviewEventId"
         @open-target="handleOpenTarget"
       />
