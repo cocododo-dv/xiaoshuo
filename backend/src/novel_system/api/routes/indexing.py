@@ -27,7 +27,7 @@ from novel_system.services.knowledge_catalog import (
     list_target_activity_groups,
     list_vector_alias_scopes,
 )
-from novel_system.services.version_manager import VersionManager
+from novel_system.services.versioning import PromotionService, RuntimeRecoveryService, VectorLifecycleService
 
 router = APIRouter(tags=["indexing"])
 
@@ -144,7 +144,7 @@ def retry_verify(job_id: str, request: Request, session: Session = Depends(get_s
         method="POST",
         path_template="/api/v1/index/verify/{job_id}/retry",
         payload={"job_id": job_id},
-        action=lambda: VersionManager(session).run_verify(job_id),
+        action=lambda: VectorLifecycleService(session).run_verify(job_id),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -160,7 +160,7 @@ def recovery_sweep(request: Request, session: Session = Depends(get_session)):
         method="POST",
         path_template="/api/v1/runtime/recovery/sweep",
         payload={},
-        action=lambda: VersionManager(session).recover_stuck_jobs(),
+        action=lambda: RuntimeRecoveryService(session).recover_stuck_jobs(),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -176,7 +176,7 @@ def run_due_promotions(request: Request, session: Session = Depends(get_session)
         method="POST",
         path_template="/api/v1/runtime/promotions/run-due",
         payload={},
-        action=lambda: VersionManager(session).run_due_promotions(),
+        action=lambda: PromotionService(session).run_due_promotions(),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}

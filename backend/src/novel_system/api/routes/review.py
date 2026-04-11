@@ -15,7 +15,7 @@ from novel_system.services.human_review_support import (
     structured_target_from_replay_result,
 )
 from novel_system.services.idempotency import execute_with_idempotency
-from novel_system.services.version_manager import VersionManager
+from novel_system.services.versioning import PromotionService, ReviewMaterializationService
 
 router = APIRouter(tags=["review"])
 
@@ -126,7 +126,7 @@ def approve_review(review_id: str, request: Request, session: Session = Depends(
         method="POST",
         path_template="/api/v1/review-items/{review_id}/approve",
         payload={"review_id": review_id},
-        action=lambda: VersionManager(session).materialize_review(review_id),
+        action=lambda: ReviewMaterializationService(session).materialize_review(review_id),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -142,7 +142,7 @@ def release_review(review_id: str, request: Request, session: Session = Depends(
         method="POST",
         path_template="/api/v1/review-items/{review_id}/release",
         payload={"review_id": review_id},
-        action=lambda: VersionManager(session).release_review(review_id),
+        action=lambda: PromotionService(session).release_review(review_id),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
