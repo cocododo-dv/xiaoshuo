@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +9,7 @@ import {
   fetchIndexRuntimeLedger,
   fetchReviewItems,
 } from "../src/lib/api";
+import { isIndexFocusVisible, isReviewFocusVisible } from "../src/lib/filterFocus";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 
@@ -90,5 +92,46 @@ describe("query filter helpers", () => {
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/index/alias-scopes"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/index/jobs?job_type=verify"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/index/runtime-ledger?target_ref=review_item%3Areview_scene_pending"));
+  });
+});
+
+describe("focus visibility helpers", () => {
+  it("drops review focus when the filtered payload no longer contains the focused row", () => {
+    expect(
+      isReviewFocusVisible(
+        { target_type: "review_item", target_id: "review_scene_pending", target_ref: "review_item:review_scene_pending" },
+        [{ review_id: "review_other" }],
+        [],
+      ),
+    ).toBe(false);
+  });
+
+  it("drops index focus when the filtered payload removes the focused target", () => {
+    expect(
+      isIndexFocusVisible(
+        { target_type: "verify_job", target_id: "verify_job_match", target_ref: "verify_job:verify_job_match" },
+        [],
+        [],
+        [],
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("filter controls", () => {
+  it("ships review and index filter controls with refresh and clear actions", () => {
+    const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
+    const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+
+    expect(reviewSource).toContain('data-testid="review-filter-status"');
+    expect(reviewSource).toContain('data-testid="human-review-filter-clear"');
+    expect(indexSource).toContain('data-testid="index-alias-filter-verify-status"');
+    expect(indexSource).toContain('data-testid="index-job-filter-review-id"');
+    expect(indexSource).toContain('data-testid="index-ledger-filter-target-ref"');
+    expect(indexSource).toContain('data-testid="index-ledger-filter-clear"');
+  });
+
+  it("adds the focus helper module to the frontend source tree", () => {
+    expect(existsSync(new URL("../src/lib/filterFocus.js", import.meta.url))).toBe(true);
   });
 });

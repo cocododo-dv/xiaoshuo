@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 
 import AliasScopeCard from "../components/AliasScopeCard.vue";
 import PanelShell from "../components/PanelShell.vue";
+import { isIndexFocusVisible } from "../lib/filterFocus";
 import {
   focusedActivityKeyForGroup,
   nextExpandedTargetRefs,
@@ -15,7 +16,7 @@ import { useIndexConsoleStore } from "../stores/indexConsole";
 const emit = defineEmits(["notice"]);
 
 const indexConsole = useIndexConsoleStore();
-const { focusTarget, openTarget } = useShellRouter();
+const { focusTarget, openTarget, clearFocus } = useShellRouter();
 const expandedTargetRefs = ref([]);
 
 const prioritizedJobs = computed(() => {
@@ -356,6 +357,21 @@ async function refreshIndex() {
   }
 }
 
+function clearAliasFilters() {
+  indexConsole.clearAliasFilters();
+  refreshIndex();
+}
+
+function clearJobFilters() {
+  indexConsole.clearJobFilters();
+  refreshIndex();
+}
+
+function clearLedgerFilters() {
+  indexConsole.clearLedgerFilters();
+  refreshIndex();
+}
+
 async function runRecovery() {
   try {
     emit("notice", await indexConsole.runRecovery());
@@ -383,6 +399,16 @@ async function retry(jobId) {
 onMounted(() => {
   refreshIndex();
 });
+
+watch(
+  () => [focusTarget.value, indexConsole.aliasScopes, indexConsole.jobs, indexConsole.targetActivityGroups],
+  () => {
+    if (!isIndexFocusVisible(focusTarget.value, indexConsole.aliasScopes, indexConsole.jobs, indexConsole.targetActivityGroups)) {
+      clearFocus();
+    }
+  },
+  { deep: true },
+);
 </script>
 
 <template>
@@ -415,6 +441,37 @@ onMounted(() => {
       <div v-if="indexConsole.loading" class="empty">Loading alias scopes...</div>
       <div v-else-if="indexConsole.error" class="empty">{{ indexConsole.error }}</div>
       <template v-else>
+        <div class="field-inline">
+          <select v-model="indexConsole.aliasFilters.verifyStatus" data-testid="index-alias-filter-verify-status">
+            <option value="">All alias verify states</option>
+            <option value="pending">pending</option>
+            <option value="failed">failed</option>
+            <option value="succeeded">succeeded</option>
+          </select>
+          <button data-testid="index-alias-filter-refresh" @click="refreshIndex">Refresh</button>
+          <button data-testid="index-alias-filter-clear" @click="clearAliasFilters">Clear</button>
+        </div>
+        <div class="field-inline">
+          <select v-model="indexConsole.jobFilters.jobType" data-testid="index-job-filter-job-type">
+            <option value="">All jobs</option>
+            <option value="verify">verify</option>
+            <option value="reindex">reindex</option>
+          </select>
+          <input v-model="indexConsole.jobFilters.reviewId" data-testid="index-job-filter-review-id" />
+          <button data-testid="index-job-filter-refresh" @click="refreshIndex">Refresh</button>
+          <button data-testid="index-job-filter-clear" @click="clearJobFilters">Clear</button>
+        </div>
+        <div class="field-inline">
+          <input v-model="indexConsole.ledgerFilters.targetRef" data-testid="index-ledger-filter-target-ref" />
+          <select v-model="indexConsole.ledgerFilters.source" data-testid="index-ledger-filter-source">
+            <option value="">All sources</option>
+            <option value="recovery_timeline">recovery_timeline</option>
+            <option value="system_runtime">system_runtime</option>
+            <option value="operator_action">operator_action</option>
+          </select>
+          <button data-testid="index-ledger-filter-refresh" @click="refreshIndex">Refresh</button>
+          <button data-testid="index-ledger-filter-clear" @click="clearLedgerFilters">Clear</button>
+        </div>
         <div v-if="!indexConsole.aliasScopes.length" class="empty">No alias scopes exist yet.</div>
         <div v-else class="alias-grid">
           <AliasScopeCard v-for="item in indexConsole.aliasScopes" :key="item.alias_scope" :item="item" />

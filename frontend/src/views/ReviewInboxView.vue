@@ -4,6 +4,7 @@ import { computed, onMounted, watch } from "vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ReviewCard from "../components/ReviewCard.vue";
+import { isReviewFocusVisible } from "../lib/filterFocus";
 import { useShellRouter } from "../router";
 import { useIndexConsoleStore } from "../stores/indexConsole";
 import { useReviewInboxStore } from "../stores/reviewInbox";
@@ -12,7 +13,7 @@ const emit = defineEmits(["notice"]);
 
 const reviewInbox = useReviewInboxStore();
 const indexConsole = useIndexConsoleStore();
-const { activeView, focusTarget, openTarget } = useShellRouter();
+const { activeView, focusTarget, openTarget, clearFocus } = useShellRouter();
 
 const prioritizedRecoveryItems = computed(() => {
   const focusEventId = focusTarget.value?.target_type === "human_review_event" ? focusTarget.value.target_id : null;
@@ -72,6 +73,16 @@ async function refreshReviews() {
   if (reviewInbox.error) {
     emit("notice", reviewInbox.error);
   }
+}
+
+function clearReviewFilters() {
+  reviewInbox.clearReviewFilters();
+  refreshReviews();
+}
+
+function clearHumanReviewFilters() {
+  reviewInbox.clearHumanReviewFilters();
+  refreshReviews();
 }
 
 async function approve(reviewId) {
@@ -145,6 +156,16 @@ watch(
     }
   },
 );
+
+watch(
+  () => [focusTarget.value, reviewInbox.items, reviewInbox.humanReviewItems],
+  () => {
+    if (!isReviewFocusVisible(focusTarget.value, reviewInbox.items, reviewInbox.humanReviewItems)) {
+      clearFocus();
+    }
+  },
+  { deep: true },
+);
 </script>
 
 <template>
@@ -168,6 +189,25 @@ watch(
       <div v-if="reviewInbox.loading" class="empty">Loading review inbox...</div>
       <div v-else-if="reviewInbox.error" class="empty">{{ reviewInbox.error }}</div>
       <template v-else>
+        <div class="field-inline">
+          <select v-model="reviewInbox.reviewFilters.status" data-testid="review-filter-status">
+            <option value="">All review statuses</option>
+            <option value="pending">pending</option>
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+          </select>
+          <button data-testid="review-filter-refresh" @click="refreshReviews">Refresh</button>
+          <button data-testid="review-filter-clear" @click="clearReviewFilters">Clear</button>
+        </div>
+        <div class="field-inline">
+          <select v-model="reviewInbox.humanReviewFilters.eventSource" data-testid="human-review-filter-event-source">
+            <option value="">All event sources</option>
+            <option value="idempotency_recovery">idempotency_recovery</option>
+            <option value="manual_scene_review">manual_scene_review</option>
+          </select>
+          <button data-testid="human-review-filter-refresh" @click="refreshReviews">Refresh</button>
+          <button data-testid="human-review-filter-clear" @click="clearHumanReviewFilters">Clear</button>
+        </div>
         <article v-if="reviewInbox.systemRecoveryItems.length" class="paper inline-error">
           <div class="receipt-head">
             <div>
