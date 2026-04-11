@@ -76,7 +76,7 @@ def list_jobs(
     reindex_jobs = [] if job_type == "verify" else session.execute(reindex_query).scalars().all()
     verify_jobs = [] if job_type == "reindex" else session.execute(verify_query).scalars().all()
     items = [_serialize_reindex(job) for job in reindex_jobs] + [_serialize_verify(job) for job in verify_jobs]
-    items.sort(key=lambda item: ((item["finished_at"] or ""), item["job_id"]), reverse=True)
+    items.sort(key=lambda item: item["job_id"])
     return ok({"items": items}, req_id=getattr(request.state, "request_id", None))
 
 
