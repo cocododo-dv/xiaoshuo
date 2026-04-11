@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     HumanReviewEvent,
     OperationLog,
+    ReconcileFault,
     ReindexJob,
     ReviewItem,
     SceneBundle,
@@ -29,6 +30,24 @@ from novel_system.services.human_review_support import (
 from novel_system.services.knowledge_registry import all_descriptors, descriptor_for_item_type, descriptor_for_object_type
 
 
+def list_knowledge_entries(
+    session: Session,
+    *,
+    object_type: str | None = None,
+    scope: str | None = None,
+    scope_ref_id: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    return _list_knowledge_items(
+        session,
+        object_type=object_type,
+        scope=scope,
+        scope_ref_id=scope_ref_id,
+        status=status,
+        include_pending=True,
+    )
+
+
 def list_knowledge(
     session: Session,
     *,
@@ -36,6 +55,190 @@ def list_knowledge(
     scope: str | None = None,
     scope_ref_id: str | None = None,
     status: str | None = None,
+) -> list[dict[str, Any]]:
+    return _list_knowledge_items(
+        session,
+        object_type=object_type,
+        scope=scope,
+        scope_ref_id=scope_ref_id,
+        status=status,
+        include_pending=False,
+    )
+
+
+def get_knowledge_entry(session: Session, *, object_type: str, lineage_key: str) -> dict[str, Any]:
+    payload, _, _ = _resolve_knowledge_entry(session, object_type=object_type, lineage_key=lineage_key)
+    return payload
+
+
+def get_knowledge_workflow(session: Session, *, object_type: str, lineage_key: str) -> dict[str, Any]:
+    payload, reviews, descriptor = _resolve_knowledge_entry(session, object_type=object_type, lineage_key=lineage_key)
+    return _serialize_workflow(
+        session,
+        object_type=descriptor.object_type,
+        lineage_key=lineage_key,
+        payload=payload,
+        reviews=reviews,
+    )
+
+
+def get_knowledge(session: Session, *, object_type: str, lineage_key: str) -> dict[str, Any]:
+    payload = get_knowledge_entry(session, object_type=object_type, lineage_key=lineage_key)
+    payload["workflow"] = get_knowledge_workflow(session, object_type=object_type, lineage_key=lineage_key)
+    return payload
+
+
+def list_vector_alias_scopes(
+    session: Session,
+    *,
+    object_type: str | None = None,
+    scope: str | None = None,
+    scope_ref_id: str | None = None,
+    verify_status: str | None = None,
+) -> list[dict[str, Any]]:
+    query = select(VectorAliasRegistry)
+    if object_type:
+        query = query.where(VectorAliasRegistry.object_type == object_type)
+    if scope:
+        query = query.where(VectorAliasRegistry.scope == scope)
+    if scope_ref_id:
+        query = query.where(VectorAliasRegistry.scope_ref_id == scope_ref_id)
+    if verify_status:
+        query = query.where(VectorAliasRegistry.verify_status == verify_status)
+    items = session.execute(query.order_by(VectorAliasRegistry.alias_scope.asc())).scalars().all()
+    return [_serialize_alias_scope(item, session=session) for item in items]
+
+
+def get_vector_alias_scope(session: Session, alias_scope: str) -> dict[str, Any] | None:
+    item = session.get(VectorAliasRegistry, alias_scope)
+    if item is None:
+        return None
+    return _serialize_alias_scope(item, session=session)
+
+
+def list_jobs(
+    session: Session,
+    *,
+    job_type: str | None = None,
+    status: str | None = None,
+    object_type: str | None = None,
+    review_id: str | None = None,
+    alias_scope: str | None = None,
+) -> list[dict[str, Any]]:
+    reindex_query = select(ReindexJob)
+    verify_query = select(VerifyJob)
+    if status:
+        reindex_query = reindex_query.where(ReindexJob.status == status)
+        verify_query = verify_query.where(VerifyJob.status == status)
+    if object_type:
+        reindex_query = reindex_query.where(ReindexJob.object_type == object_type)
+        verify_query = verify_query.where(VerifyJob.object_type == object_type)
+    if review_id:
+        reindex_query = reindex_query.where(ReindexJob.review_id == review_id)
+        verify_query = verify_query.where(VerifyJob.review_id == review_id)
+    if alias_scope:
+        reindex_query = reindex_query.where(ReindexJob.alias_scope == alias_scope)
+        verify_query = verify_query.where(VerifyJob.alias_scope == alias_scope)
+    reindex_jobs = [] if job_type == "verify" else session.execute(reindex_query).scalars().all()
+    verify_jobs = [] if job_type == "reindex" else session.execute(verify_query).scalars().all()
+    items = [_serialize_reindex_job(job) for job in reindex_jobs] + [_serialize_verify_job(job) for job in verify_jobs]
+    items.sort(key=lambda item: item["job_id"])
+    return items
+
+
+def get_job(session: Session, job_id: str) -> dict[str, Any] | None:
+    job = session.get(ReindexJob, job_id)
+    if job is not None:
+        return _serialize_reindex_job(job)
+    job = session.get(VerifyJob, job_id)
+    if job is not None:
+        return _serialize_verify_job(job)
+    return None
+
+
+def list_activity_events(
+    session: Session,
+    *,
+    stream: str,
+    target_ref: str | None = None,
+    actor_ref: str | None = None,
+) -> list[dict[str, Any]]:
+    if stream == "recovery_timeline":
+        return _filter_recovery_timeline(_serialize_recovery_timeline(session), target_ref=target_ref, actor_ref=actor_ref)
+    if stream == "system_runtime":
+        return _filter_activity_timeline(_serialize_system_runtime_timeline(session), target_ref=target_ref, actor_ref=actor_ref)
+    if stream == "operator_action":
+        return _filter_activity_timeline(_serialize_operator_action_timeline(session), target_ref=target_ref, actor_ref=actor_ref)
+    raise DomainError("ACTIVITY_STREAM_INVALID", f"unsupported activity stream {stream}", status_code=400)
+
+
+def list_target_activity_groups(
+    session: Session,
+    *,
+    target_ref: str | None = None,
+    source: str | None = None,
+    actor_ref: str | None = None,
+) -> list[dict[str, Any]]:
+    recovery_timeline = list_activity_events(
+        session,
+        stream="recovery_timeline",
+        target_ref=target_ref,
+        actor_ref=actor_ref,
+    )
+    system_runtime_timeline = list_activity_events(
+        session,
+        stream="system_runtime",
+        target_ref=target_ref,
+        actor_ref=actor_ref,
+    )
+    operator_action_timeline = list_activity_events(
+        session,
+        stream="operator_action",
+        target_ref=target_ref,
+        actor_ref=actor_ref,
+    )
+
+    if source == "recovery_timeline":
+        system_runtime_timeline = []
+        operator_action_timeline = []
+    elif source == "system_runtime":
+        recovery_timeline = []
+        operator_action_timeline = []
+    elif source == "operator_action":
+        recovery_timeline = []
+        system_runtime_timeline = []
+
+    return _serialize_target_activity_groups(
+        recovery_timeline,
+        system_runtime_timeline,
+        operator_action_timeline,
+    )
+
+
+def latest_recovery_action_receipt(
+    session: Session,
+    *,
+    target_ref: str | None = None,
+    actor_ref: str | None = None,
+) -> dict[str, Any] | None:
+    recovery_timeline = list_activity_events(
+        session,
+        stream="recovery_timeline",
+        target_ref=target_ref,
+        actor_ref=actor_ref,
+    )
+    latest_receipt = next((item for item in recovery_timeline if item["last_action_at"]), None)
+    return _serialize_recovery_receipt(latest_receipt)
+
+
+def _list_knowledge_items(
+    session: Session,
+    *,
+    object_type: str | None = None,
+    scope: str | None = None,
+    scope_ref_id: str | None = None,
+    status: str | None = None,
+    include_pending: bool,
 ) -> list[dict[str, Any]]:
     query = select(VersionRegistry)
     if object_type:
@@ -56,17 +259,57 @@ def list_knowledge(
             continue
         grouped[(registry.object_type, registry.lineage_key)].append(registry)
 
-    items: list[dict[str, Any]] = []
+    items: dict[tuple[str, str], dict[str, Any]] = {}
     for (current_object_type, lineage_key), grouped_registries in grouped.items():
         item = _serialize_entry(session, current_object_type, lineage_key, grouped_registries)
-        if _matches_filters(item, scope=scope, scope_ref_id=scope_ref_id, status=status):
-            items.append(item)
+        _merge_related_reviews_into_item(
+            session,
+            item,
+            object_type=current_object_type,
+            lineage_key=lineage_key,
+        )
+        items[(current_object_type, lineage_key)] = item
 
-    items.sort(key=lambda item: (item["object_type"], item["lineage_key"]))
-    return items
+    if include_pending:
+        reviews = session.execute(
+            select(ReviewItem).order_by(ReviewItem.created_at.desc(), ReviewItem.review_id.desc())
+        ).scalars().all()
+        for review in reviews:
+            if review.status == "rejected":
+                continue
+            try:
+                descriptor = descriptor_for_item_type(review.item_type)
+            except KeyError:
+                continue
+            if object_type and descriptor.object_type != object_type:
+                continue
+            lineage_key = _review_lineage_key(review)
+            key = (descriptor.object_type, lineage_key)
+            if key in items:
+                continue
+            related_reviews = _related_reviews(
+                session,
+                object_type=descriptor.object_type,
+                lineage_key=lineage_key,
+                review_refs=[review.review_id],
+            )
+            items[key] = _serialize_pending_entry(descriptor.object_type, lineage_key, related_reviews)
+
+    filtered_items = [
+        item
+        for item in items.values()
+        if _matches_filters(item, scope=scope, scope_ref_id=scope_ref_id, status=status)
+    ]
+    filtered_items.sort(key=lambda item: (item["object_type"], item["lineage_key"]))
+    return filtered_items
 
 
-def get_knowledge(session: Session, *, object_type: str, lineage_key: str) -> dict[str, Any]:
+def _resolve_knowledge_entry(
+    session: Session,
+    *,
+    object_type: str,
+    lineage_key: str,
+) -> tuple[dict[str, Any], list[ReviewItem], Any]:
     try:
         descriptor = descriptor_for_object_type(object_type)
     except KeyError as exc:
@@ -106,15 +349,7 @@ def get_knowledge(session: Session, *, object_type: str, lineage_key: str) -> di
                 payload["candidate_version"] = pending_candidate
     else:
         payload = _serialize_pending_entry(descriptor.object_type, lineage_key, related_reviews)
-
-    payload["workflow"] = _serialize_workflow(
-        session,
-        object_type=descriptor.object_type,
-        lineage_key=lineage_key,
-        payload=payload,
-        reviews=related_reviews,
-    )
-    return payload
+    return payload, related_reviews, descriptor
 
 
 def _serialize_entry(
@@ -263,6 +498,31 @@ def _matches_filters(
     return True
 
 
+def _merge_related_reviews_into_item(
+    session: Session,
+    item: dict[str, Any],
+    *,
+    object_type: str,
+    lineage_key: str,
+) -> None:
+    related_reviews = _related_reviews(
+        session,
+        object_type=object_type,
+        lineage_key=lineage_key,
+        review_refs=item.get("review_refs", []),
+    )
+    if not related_reviews:
+        return
+    item["review_refs"] = list(
+        dict.fromkeys([*item.get("review_refs", []), *(review.review_id for review in related_reviews)])
+    )
+    pending_candidate = _candidate_version_from_reviews(related_reviews)
+    if pending_candidate is not None and (
+        item.get("candidate_version") is None or related_reviews[0].materialize_status != "succeeded"
+    ):
+        item["candidate_version"] = pending_candidate
+
+
 def supported_object_types() -> list[str]:
     return [descriptor.object_type for descriptor in all_descriptors()]
 
@@ -308,6 +568,46 @@ def _serialize_review_candidate(review: ReviewItem) -> dict[str, Any]:
         "chapter_id": payload.get("chapter_id") or review.chapter_id,
         "scene_id": payload.get("scene_id") or review.scene_id,
         "lineage_key": _review_lineage_key(review),
+    }
+
+
+def _latest_alias_fault_summary(session: Session, alias_scope: str) -> dict[str, Any] | None:
+    fault = session.execute(
+        select(ReconcileFault)
+        .where(
+            ReconcileFault.fault_scope == "alias_mismatch",
+            ReconcileFault.object_ref == alias_scope,
+        )
+        .order_by(ReconcileFault.created_at.desc(), ReconcileFault.fault_id.desc())
+    ).scalars().first()
+    if fault is None:
+        return None
+    return {
+        "fault_scope": fault.fault_scope,
+        "severity": fault.severity,
+        "object_ref": fault.object_ref,
+        "details_json": fault.details_json,
+        "created_at": fault.created_at,
+    }
+
+
+def _serialize_alias_scope(item: VectorAliasRegistry, *, session: Session) -> dict[str, Any]:
+    return {
+        "alias_scope": item.alias_scope,
+        "object_type": item.object_type,
+        "scope": item.scope,
+        "scope_ref_id": item.scope_ref_id,
+        "collection_family": item.collection_family,
+        "active_alias": item.active_alias,
+        "candidate_alias": item.candidate_alias,
+        "active_snapshot_version": item.active_snapshot_version,
+        "candidate_snapshot_version": item.candidate_snapshot_version,
+        "active_embedding_version": item.active_embedding_version,
+        "candidate_embedding_version": item.candidate_embedding_version,
+        "verify_status": item.verify_status,
+        "sample_query_success": bool(item.sample_query_success),
+        "updated_at": item.updated_at,
+        "recent_fault_summary": _latest_alias_fault_summary(session, item.alias_scope),
     }
 
 
@@ -646,6 +946,51 @@ def _serialize_recovery_event(item: HumanReviewEvent) -> dict[str, Any]:
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     }
+
+
+def _serialize_recovery_receipt(item: dict[str, Any] | None) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    return {
+        "event_id": item["event_id"],
+        "event_source": item["event_source"],
+        "status": item["status"],
+        "action": item["last_action"],
+        "action_at": item["last_action_at"],
+        "actor_ref": item["last_actor_ref"],
+        "object_ref": item["object_ref"],
+        "linked_target": item["linked_target"],
+        "linked_target_ref": item["linked_target_ref"],
+        "resolution_reason": item["resolution_reason"],
+        "followup_action": item["followup_action"],
+        "followup_target": item["followup_target"],
+        "followup_target_ref": item["followup_target_ref"],
+        "replay_result": item["last_replay_result"],
+        "replay_target": item["replay_target"],
+    }
+
+
+def _filter_recovery_timeline(items: list[dict[str, Any]], *, target_ref: str | None, actor_ref: str | None) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        targets = [item.get("linked_target"), item.get("followup_target"), item.get("replay_target")]
+        if target_ref and not any(target and target.get("target_ref") == target_ref for target in targets):
+            continue
+        if actor_ref and item.get("last_actor_ref") != actor_ref:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _filter_activity_timeline(items: list[dict[str, Any]], *, target_ref: str | None, actor_ref: str | None) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        if target_ref and not any(target.get("target_ref") == target_ref for target in item.get("target_refs") or []):
+            continue
+        if actor_ref and item.get("actor_ref") != actor_ref:
+            continue
+        filtered.append(item)
+    return filtered
 
 
 def _serialize_system_runtime_timeline(session: Session) -> list[dict[str, Any]]:

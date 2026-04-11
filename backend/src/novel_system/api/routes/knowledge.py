@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
-from novel_system.services.knowledge_catalog import get_knowledge, list_knowledge, supported_object_types
+from novel_system.services.knowledge_catalog import get_knowledge, list_knowledge_entries, supported_object_types
 
 router = APIRouter(tags=["knowledge"])
 
@@ -21,7 +21,7 @@ def knowledge_index(
 ):
     return ok(
         {
-            "items": list_knowledge(
+            "items": list_knowledge_entries(
                 session,
                 object_type=object_type,
                 scope=scope,

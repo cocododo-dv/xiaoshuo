@@ -18,6 +18,15 @@ from novel_system.services.human_review_support import (
     structured_target_from_replay_result,
 )
 from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.knowledge_catalog import (
+    get_job,
+    get_vector_alias_scope,
+    latest_recovery_action_receipt,
+    list_activity_events,
+    list_jobs as list_domain_jobs,
+    list_target_activity_groups,
+    list_vector_alias_scopes,
+)
 from novel_system.services.version_manager import VersionManager
 
 router = APIRouter(tags=["indexing"])
@@ -32,23 +41,23 @@ def list_alias_scopes(
     scope_ref_id: str | None = None,
     verify_status: str | None = None,
 ):
-    query = select(VectorAliasRegistry)
-    if object_type:
-        query = query.where(VectorAliasRegistry.object_type == object_type)
-    if scope:
-        query = query.where(VectorAliasRegistry.scope == scope)
-    if scope_ref_id:
-        query = query.where(VectorAliasRegistry.scope_ref_id == scope_ref_id)
-    if verify_status:
-        query = query.where(VectorAliasRegistry.verify_status == verify_status)
-    items = session.execute(query.order_by(VectorAliasRegistry.alias_scope.asc())).scalars().all()
-    return ok({"items": [_serialize_alias(item, session=session) for item in items]}, req_id=getattr(request.state, "request_id", None))
+    return ok(
+        {
+            "items": list_vector_alias_scopes(
+                session,
+                object_type=object_type,
+                scope=scope,
+                scope_ref_id=scope_ref_id,
+                verify_status=verify_status,
+            )
+        },
+        req_id=getattr(request.state, "request_id", None),
+    )
 
 
 @router.get("/api/v1/index/alias-scopes/{alias_scope:path}")
 def alias_scope_detail(alias_scope: str, request: Request, session: Session = Depends(get_session)):
-    item = session.get(VectorAliasRegistry, alias_scope)
-    return ok(_serialize_alias(item, session=session), req_id=getattr(request.state, "request_id", None))
+    return ok(get_vector_alias_scope(session, alias_scope), req_id=getattr(request.state, "request_id", None))
 
 
 @router.get("/api/v1/index/jobs")
@@ -61,25 +70,19 @@ def list_jobs(
     review_id: str | None = None,
     alias_scope: str | None = None,
 ):
-    reindex_query = select(ReindexJob)
-    verify_query = select(VerifyJob)
-    if status:
-        reindex_query = reindex_query.where(ReindexJob.status == status)
-        verify_query = verify_query.where(VerifyJob.status == status)
-    if object_type:
-        reindex_query = reindex_query.where(ReindexJob.object_type == object_type)
-        verify_query = verify_query.where(VerifyJob.object_type == object_type)
-    if review_id:
-        reindex_query = reindex_query.where(ReindexJob.review_id == review_id)
-        verify_query = verify_query.where(VerifyJob.review_id == review_id)
-    if alias_scope:
-        reindex_query = reindex_query.where(ReindexJob.alias_scope == alias_scope)
-        verify_query = verify_query.where(VerifyJob.alias_scope == alias_scope)
-    reindex_jobs = [] if job_type == "verify" else session.execute(reindex_query).scalars().all()
-    verify_jobs = [] if job_type == "reindex" else session.execute(verify_query).scalars().all()
-    items = [_serialize_reindex(job) for job in reindex_jobs] + [_serialize_verify(job) for job in verify_jobs]
-    items.sort(key=lambda item: item["job_id"])
-    return ok({"items": items}, req_id=getattr(request.state, "request_id", None))
+    return ok(
+        {
+            "items": list_domain_jobs(
+                session,
+                job_type=job_type,
+                status=status,
+                object_type=object_type,
+                review_id=review_id,
+                alias_scope=alias_scope,
+            )
+        },
+        req_id=getattr(request.state, "request_id", None),
+    )
 
 
 @router.get("/api/v1/index/runtime-ledger")
@@ -90,31 +93,37 @@ def runtime_ledger(
     source: Literal["recovery_timeline", "system_runtime", "operator_action"] | None = None,
     actor_ref: str | None = None,
 ):
-    recovery_timeline = _filter_recovery_timeline(_serialize_recovery_timeline(session), target_ref=target_ref, actor_ref=actor_ref)
-    system_runtime_timeline = _filter_activity_timeline(_serialize_system_runtime_timeline(session), target_ref=target_ref, actor_ref=actor_ref)
-    operator_action_timeline = _filter_activity_timeline(_serialize_operator_action_timeline(session), target_ref=target_ref, actor_ref=actor_ref)
-
-    if source == "recovery_timeline":
-        system_runtime_timeline = []
-        operator_action_timeline = []
-    elif source == "system_runtime":
-        recovery_timeline = []
-        operator_action_timeline = []
-    elif source == "operator_action":
-        recovery_timeline = []
-        system_runtime_timeline = []
-
-    latest_receipt = next((item for item in recovery_timeline if item["last_action_at"]), None)
+    recovery_timeline = [] if source in {"system_runtime", "operator_action"} else list_activity_events(
+        session,
+        stream="recovery_timeline",
+        target_ref=target_ref,
+        actor_ref=actor_ref,
+    )
+    system_runtime_timeline = [] if source in {"recovery_timeline", "operator_action"} else list_activity_events(
+        session,
+        stream="system_runtime",
+        target_ref=target_ref,
+        actor_ref=actor_ref,
+    )
+    operator_action_timeline = [] if source in {"recovery_timeline", "system_runtime"} else list_activity_events(
+        session,
+        stream="operator_action",
+        target_ref=target_ref,
+        actor_ref=actor_ref,
+    )
     return ok(
         {
-            "latest_recovery_action_receipt": _serialize_recovery_receipt(latest_receipt),
+            "latest_recovery_action_receipt": None
+            if source in {"system_runtime", "operator_action"}
+            else latest_recovery_action_receipt(session, target_ref=target_ref, actor_ref=actor_ref),
             "recovery_timeline_items": recovery_timeline,
             "system_runtime_timeline_items": system_runtime_timeline,
             "operator_action_timeline_items": operator_action_timeline,
-            "target_activity_groups": _serialize_target_activity_groups(
-                recovery_timeline,
-                system_runtime_timeline,
-                operator_action_timeline,
+            "target_activity_groups": list_target_activity_groups(
+                session,
+                target_ref=target_ref,
+                source=source,
+                actor_ref=actor_ref,
             ),
         },
         req_id=getattr(request.state, "request_id", None),
@@ -123,12 +132,7 @@ def runtime_ledger(
 
 @router.get("/api/v1/index/jobs/{job_id}")
 def job_detail(job_id: str, request: Request, session: Session = Depends(get_session)):
-    job = session.get(ReindexJob, job_id)
-    if job:
-        payload = _serialize_reindex(job)
-    else:
-        payload = _serialize_verify(session.get(VerifyJob, job_id))
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return ok(get_job(session, job_id), req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v1/index/verify/{job_id}/retry")

@@ -1,9 +1,10 @@
 import { defineStore } from "pinia";
 
 import {
-  fetchAliasScopes,
-  fetchIndexJobs,
-  fetchIndexRuntimeLedger,
+  fetchActivityEvents,
+  fetchJobs,
+  fetchTargetActivityGroups,
+  fetchVectorAliasScopes,
   retryVerify,
   runDuePromotions,
   runRecoverySweep,
@@ -42,6 +43,32 @@ function recoveryEventTimestamp(item) {
 
 function systemRuntimeTimestamp(item) {
   return item?.created_at || "";
+}
+
+function latestRecoveryActionReceipt(recoveryEvents) {
+  const latest = [...(recoveryEvents || [])]
+    .filter((item) => item?.last_action_at)
+    .sort((left, right) => recoveryEventTimestamp(right).localeCompare(recoveryEventTimestamp(left)))[0];
+  if (!latest) {
+    return null;
+  }
+  return {
+    event_id: latest.event_id,
+    event_source: latest.event_source,
+    status: latest.status,
+    action: latest.last_action,
+    action_at: latest.last_action_at,
+    actor_ref: latest.last_actor_ref,
+    object_ref: latest.object_ref,
+    linked_target: latest.linked_target,
+    linked_target_ref: latest.linked_target_ref,
+    resolution_reason: latest.resolution_reason,
+    followup_action: latest.followup_action,
+    followup_target: latest.followup_target,
+    followup_target_ref: latest.followup_target_ref,
+    replay_result: latest.last_replay_result,
+    replay_target: latest.replay_target,
+  };
 }
 
 export const useIndexConsoleStore = defineStore("indexConsole", {
@@ -98,18 +125,30 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
       this.loading = true;
       this.error = "";
       try {
-        const [aliasScopes, jobs, runtimeLedger] = await Promise.all([
-          fetchAliasScopes(this.aliasFilters),
-          fetchIndexJobs(this.jobFilters),
-          fetchIndexRuntimeLedger(this.ledgerFilters),
+        const activityFilters = {
+          targetRef: this.ledgerFilters.targetRef,
+          actorRef: this.ledgerFilters.actorRef,
+        };
+        const selectedSource = this.ledgerFilters.source || "";
+        const requestedStreams = selectedSource
+          ? [selectedSource]
+          : ["recovery_timeline", "system_runtime", "operator_action"];
+        const [aliasScopes, jobs, targetGroups, ...activityPayloads] = await Promise.all([
+          fetchVectorAliasScopes(this.aliasFilters),
+          fetchJobs(this.jobFilters),
+          fetchTargetActivityGroups(this.ledgerFilters),
+          ...requestedStreams.map((stream) => fetchActivityEvents({ stream, ...activityFilters })),
         ]);
+        const activityByStream = Object.fromEntries(
+          requestedStreams.map((stream, index) => [stream, activityPayloads[index]?.items || []]),
+        );
         this.aliasScopes = aliasScopes.items || [];
         this.jobs = jobs.items || [];
-        this.recoveryEvents = runtimeLedger.recovery_timeline_items || [];
-        this.systemRuntimeEvents = runtimeLedger.system_runtime_timeline_items || [];
-        this.operatorActionEvents = runtimeLedger.operator_action_timeline_items || [];
-        this.targetActivityGroups = runtimeLedger.target_activity_groups || [];
-        this.lastRecoveryActionResult = runtimeLedger.latest_recovery_action_receipt || null;
+        this.recoveryEvents = activityByStream.recovery_timeline || [];
+        this.systemRuntimeEvents = activityByStream.system_runtime || [];
+        this.operatorActionEvents = activityByStream.operator_action || [];
+        this.targetActivityGroups = targetGroups.items || [];
+        this.lastRecoveryActionResult = latestRecoveryActionReceipt(this.recoveryEvents);
       } catch (error) {
         this.aliasScopes = [];
         this.jobs = [];

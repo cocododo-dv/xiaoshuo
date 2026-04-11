@@ -162,6 +162,25 @@ export function fetchKnowledgeDetail(objectType, lineageKey) {
   return apiGet(`/api/v1/knowledge/${encodeURIComponent(objectType)}/${encodeURIComponent(lineageKey)}`);
 }
 
+export function fetchKnowledgeEntries(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/knowledge-entries", filters, {
+      objectType: "object_type",
+      scopeRefId: "scope_ref_id",
+    }),
+  );
+}
+
+export function fetchKnowledgeEntryDetail(objectType, lineageKey) {
+  return apiGet(`/api/v1/knowledge-entries/${encodeURIComponent(objectType)}/${encodeURIComponent(lineageKey)}`);
+}
+
+export function fetchKnowledgeEntryWorkflow(objectType, lineageKey) {
+  return apiGet(
+    `/api/v1/knowledge-entries/${encodeURIComponent(objectType)}/${encodeURIComponent(lineageKey)}/workflow`,
+  );
+}
+
 export function fetchAliasScopes(filters = {}) {
   return apiGet(
     buildQueryPath("/api/v1/index/alias-scopes", filters, {
@@ -183,9 +202,48 @@ export function fetchIndexJobs(filters = {}) {
   );
 }
 
+export function fetchVectorAliasScopes(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/vector-alias-scopes", filters, {
+      objectType: "object_type",
+      scopeRefId: "scope_ref_id",
+      verifyStatus: "verify_status",
+    }),
+  );
+}
+
+export function fetchJobs(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/jobs", filters, {
+      objectType: "object_type",
+      jobType: "job_type",
+      reviewId: "review_id",
+      aliasScope: "alias_scope",
+    }),
+  );
+}
+
 export function fetchIndexRuntimeLedger(filters = {}) {
   return apiGet(
     buildQueryPath("/api/v1/index/runtime-ledger", filters, {
+      targetRef: "target_ref",
+      actorRef: "actor_ref",
+    }),
+  );
+}
+
+export function fetchActivityEvents(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/activity-events", filters, {
+      targetRef: "target_ref",
+      actorRef: "actor_ref",
+    }),
+  );
+}
+
+export function fetchTargetActivityGroups(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/target-activity-groups", filters, {
       targetRef: "target_ref",
       actorRef: "actor_ref",
     }),

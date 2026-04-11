@@ -4,9 +4,9 @@ import {
   actOnHumanReviewEvent,
   approveReview,
   createReviewItem,
-  fetchKnowledge,
-  fetchKnowledgeDetail,
-  fetchReviewItems,
+  fetchKnowledgeEntries,
+  fetchKnowledgeEntryDetail,
+  fetchKnowledgeEntryWorkflow,
   releaseReview,
   retryVerify,
 } from "../lib/api";
@@ -240,14 +240,9 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
       this.filters = normalizeFilters(nextFilters);
       const requestId = ++this.detailRequestId;
       try {
-        const [knowledgePayload, reviewPayload] = await Promise.all([
-          fetchKnowledge(this.filters),
-          fetchReviewItems(),
-        ]);
-        this.pendingReviewItems = reviewPayload.items || [];
-        this.items = mergeKnowledgeAndPendingReviews(knowledgePayload.items || [], this.pendingReviewItems).filter((item) =>
-          itemMatchesFilters(item, this.filters),
-        );
+        const knowledgePayload = await fetchKnowledgeEntries(this.filters);
+        this.pendingReviewItems = [];
+        this.items = (knowledgePayload.items || []).filter((item) => itemMatchesFilters(item, this.filters));
         this.supportedObjectTypes = Array.from(
           new Set([
             ...(knowledgePayload.supported_object_types || []),
@@ -260,12 +255,7 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
               (item) => item.object_type === this.selectedObjectType && item.lineage_key === this.selectedLineageKey,
             )
             : null;
-          const mergedDetail = this.detail
-            && this.detail.object_type === this.selectedObjectType
-            && this.detail.lineage_key === this.selectedLineageKey
-            ? mergeDetailWithPending(this.detail, this.pendingReviewItems)
-            : selectedItem;
-          this.detail = mergedDetail && itemMatchesFilters(mergedDetail, this.filters) ? mergedDetail : null;
+          this.detail = selectedItem && itemMatchesFilters(selectedItem, this.filters) ? selectedItem : null;
         }
       } catch (error) {
         this.items = [];
@@ -291,11 +281,14 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         if (requestId === this.detailRequestId && optimisticDetail) {
           this.detail = optimisticDetail;
         }
-        const detail = await fetchKnowledgeDetail(objectType, lineageKey);
+        const [detail, workflow] = await Promise.all([
+          fetchKnowledgeEntryDetail(objectType, lineageKey),
+          fetchKnowledgeEntryWorkflow(objectType, lineageKey),
+        ]);
         if (requestId !== this.detailRequestId) {
           return this.detail;
         }
-        const mergedDetail = mergeDetailWithPending(detail, this.pendingReviewItems);
+        const mergedDetail = { ...detail, workflow };
         this.detail = mergedDetail && itemMatchesFilters(mergedDetail, this.filters) ? mergedDetail : optimisticDetail;
         return this.detail;
       } catch (error) {

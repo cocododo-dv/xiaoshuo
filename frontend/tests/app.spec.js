@@ -463,7 +463,35 @@ describe("knowledge console store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      if (url.includes("/api/v1/knowledge/voice_card/VOICE_CHAR_A")) {
+      if (url.includes("/api/v1/knowledge-entries/voice_card/VOICE_CHAR_A/workflow")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              review_items: [
+                {
+                  review_id: "review_voice_card_candidate",
+                  status: "pending",
+                  materialize_status: "pending",
+                },
+              ],
+              jobs: [],
+              human_review_events: [],
+              target_activity_groups: [],
+              recommended_primary_action: {
+                kind: "review",
+                action: "approve_review",
+                review_id: "review_voice_card_candidate",
+                label: "Approve",
+                target_ref: "review_item:review_voice_card_candidate",
+              },
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/knowledge-entries/voice_card/VOICE_CHAR_A")) {
         return {
           ok: true,
           json: async () => ({
@@ -479,6 +507,8 @@ describe("knowledge console store", () => {
               candidate_version: {
                 review_id: "review_voice_card_candidate",
                 text: "candidate voice update",
+                scope: null,
+                scope_ref_id: null,
               },
               versions: [
                 {
@@ -504,24 +534,7 @@ describe("knowledge console store", () => {
         };
       }
 
-      if (url.includes("/api/v1/knowledge")) {
-        if (
-          url.includes("object_type=style_rule")
-          && url.includes("scope=global")
-          && url.includes("scope_ref_id=global")
-          && url.includes("status=candidate")
-        ) {
-          return {
-            ok: true,
-            json: async () => ({
-              ok: true,
-              data: {
-                items: [],
-                supported_object_types: ["voice_card", "style_rule", "calibration_line"],
-              },
-            }),
-          };
-        }
+      if (url.includes("/api/v1/knowledge-entries")) {
         return {
           ok: true,
           json: async () => ({
@@ -537,7 +550,12 @@ describe("knowledge console store", () => {
                     version: 1,
                     text: "short clipped lines; pressure makes the tone harder",
                   },
-                  candidate_version: null,
+                  candidate_version: {
+                    review_id: "review_voice_card_candidate",
+                    text: "candidate voice update",
+                    scope: null,
+                    scope_ref_id: null,
+                  },
                   versions: [
                     {
                       row_id: "voice_card_VOICE_CHAR_A_v1",
@@ -573,32 +591,6 @@ describe("knowledge console store", () => {
               },
               status: "pending",
               target_collection: "voice_cards",
-            },
-          }),
-        };
-      }
-
-      if (url.includes("/api/v1/review-items")) {
-        return {
-          ok: true,
-          json: async () => ({
-            ok: true,
-            data: {
-              items: [
-                {
-                  review_id: "review_voice_card_candidate",
-                  item_type: "voice_card_candidate",
-                  candidate_text: "candidate voice update",
-                  candidate_payload_json: {
-                    lineage_key: "VOICE_CHAR_A",
-                    character_id: "CHAR_A",
-                    text: "candidate voice update",
-                  },
-                  status: "pending",
-                  materialize_status: "pending",
-                  target_collection: "voice_cards",
-                },
-              ],
             },
           }),
         };
@@ -670,7 +662,7 @@ describe("knowledge console store", () => {
     const store = useKnowledgeConsoleStore();
 
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      if (url.includes("/api/v1/knowledge")) {
+      if (url.includes("/api/v1/knowledge-entries")) {
         expect(url).toContain("object_type=style_rule");
         expect(url).toContain("scope=global");
         expect(url).toContain("scope_ref_id=global");
@@ -680,48 +672,25 @@ describe("knowledge console store", () => {
           json: async () => ({
             ok: true,
             data: {
-              items: [],
-              supported_object_types: ["voice_card", "style_rule", "calibration_line"],
-            },
-          }),
-        };
-      }
-
-      if (url.includes("/api/v1/review-items") && !options.method) {
-        return {
-          ok: true,
-          json: async () => ({
-            ok: true,
-            data: {
               items: [
                 {
-                  review_id: "review_style_rule_global_candidate",
-                  item_type: "style_rule_set",
-                  candidate_text: "keep the reunion tight and gesture-led",
-                  candidate_payload_json: {
-                    lineage_key: "STYLE_PENDING_GLOBAL",
+                  object_type: "style_rule",
+                  lineage_key: "STYLE_PENDING_GLOBAL",
+                  status: "candidate",
+                  active_version: null,
+                  candidate_version: {
+                    review_id: "review_style_rule_global_candidate",
+                    text: "keep the reunion tight and gesture-led",
                     scope: "global",
                     scope_ref_id: "global",
-                    text: "keep the reunion tight and gesture-led",
                   },
-                  status: "pending",
-                  materialize_status: "pending",
-                  target_collection: "style_rules",
-                },
-                {
-                  review_id: "review_voice_card_candidate",
-                  item_type: "voice_card_candidate",
-                  candidate_text: "candidate voice update",
-                  candidate_payload_json: {
-                    lineage_key: "VOICE_CHAR_A",
-                    character_id: "CHAR_A",
-                    text: "candidate voice update",
-                  },
-                  status: "pending",
-                  materialize_status: "pending",
-                  target_collection: "voice_cards",
+                  versions: [],
+                  runtime_refs: { mode: "pending_review" },
+                  review_refs: ["review_style_rule_global_candidate"],
+                  bundle_refs: [],
                 },
               ],
+              supported_object_types: ["voice_card", "style_rule", "calibration_line"],
             },
           }),
         };
@@ -760,13 +729,21 @@ describe("knowledge console store", () => {
   it("ignores stale detail responses after filters move to a different lineage", async () => {
     const store = useKnowledgeConsoleStore();
     let resolveOldDetail;
+    let resolveOldWorkflow;
     let resolveNewDetail;
+    let resolveNewWorkflow;
 
     const oldDetailPromise = new Promise((resolve) => {
       resolveOldDetail = resolve;
     });
+    const oldWorkflowPromise = new Promise((resolve) => {
+      resolveOldWorkflow = resolve;
+    });
     const newDetailPromise = new Promise((resolve) => {
       resolveNewDetail = resolve;
+    });
+    const newWorkflowPromise = new Promise((resolve) => {
+      resolveNewWorkflow = resolve;
     });
 
     store.items = [
@@ -784,16 +761,24 @@ describe("knowledge console store", () => {
     ];
 
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      if (url.includes("/api/v1/knowledge/style_observation/STY_DEMO_001")) {
+      if (url.includes("/api/v1/knowledge-entries/style_observation/STY_DEMO_001/workflow")) {
+        return oldWorkflowPromise;
+      }
+
+      if (url.includes("/api/v1/knowledge-entries/style_observation/STY_DEMO_001")) {
         return oldDetailPromise;
       }
 
-      if (url.includes("/api/v1/knowledge/style_rule/STYLE_KNOWLEDGE_E2E")) {
+      if (url.includes("/api/v1/knowledge-entries/style_rule/STYLE_KNOWLEDGE_E2E/workflow")) {
+        return newWorkflowPromise;
+      }
+
+      if (url.includes("/api/v1/knowledge-entries/style_rule/STYLE_KNOWLEDGE_E2E")) {
         return newDetailPromise;
       }
 
       if (
-        url.includes("/api/v1/knowledge")
+        url.includes("/api/v1/knowledge-entries")
         && url.includes("object_type=style_rule")
         && url.includes("scope=global")
         && url.includes("scope_ref_id=global")
@@ -825,16 +810,6 @@ describe("knowledge console store", () => {
               ],
               supported_object_types: ["style_rule", "style_observation"],
             },
-          }),
-        };
-      }
-
-      if (url.includes("/api/v1/review-items") && !options.method) {
-        return {
-          ok: true,
-          json: async () => ({
-            ok: true,
-            data: { items: [] },
           }),
         };
       }
@@ -874,6 +849,19 @@ describe("knowledge console store", () => {
         },
       }),
     });
+    resolveNewWorkflow({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        data: {
+          review_items: [],
+          jobs: [],
+          human_review_events: [],
+          target_activity_groups: [],
+          recommended_primary_action: null,
+        },
+      }),
+    });
 
     await activeSelection;
 
@@ -894,6 +882,19 @@ describe("knowledge console store", () => {
           runtime_refs: { mode: "pending_review" },
           review_refs: ["review_demo_style_observation"],
           bundle_refs: [],
+        },
+      }),
+    });
+    resolveOldWorkflow({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        data: {
+          review_items: [],
+          jobs: [],
+          human_review_events: [],
+          target_activity_groups: [],
+          recommended_primary_action: null,
         },
       }),
     });
@@ -952,7 +953,34 @@ describe("knowledge console store", () => {
     ];
 
     globalThis.fetch = vi.fn(async (url) => {
-      if (url.includes("/api/v1/knowledge/style_rule/STYLE_KNOWLEDGE_E2E")) {
+      if (url.includes("/api/v1/knowledge-entries/style_rule/STYLE_KNOWLEDGE_E2E/workflow")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              review_items: [
+                {
+                  review_id: "review_knowledge_style_rule",
+                  status: "pending",
+                  materialize_status: "pending",
+                },
+              ],
+              jobs: [],
+              human_review_events: [],
+              target_activity_groups: [],
+              recommended_primary_action: {
+                kind: "review",
+                action: "approve_review",
+                review_id: "review_knowledge_style_rule",
+                label: "Approve",
+              },
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/knowledge-entries/style_rule/STYLE_KNOWLEDGE_E2E")) {
         return {
           ok: true,
           json: async () => ({
@@ -972,24 +1000,6 @@ describe("knowledge console store", () => {
               runtime_refs: { mode: "pending_review" },
               review_refs: ["review_knowledge_style_rule"],
               bundle_refs: [],
-              workflow: {
-                review_items: [
-                  {
-                    review_id: "review_knowledge_style_rule",
-                    status: "pending",
-                    materialize_status: "pending",
-                  },
-                ],
-                jobs: [],
-                human_review_events: [],
-                target_activity_groups: [],
-                recommended_primary_action: {
-                  kind: "review",
-                  action: "approve_review",
-                  review_id: "review_knowledge_style_rule",
-                  label: "Approve",
-                },
-              },
             },
           }),
         };
@@ -1205,17 +1215,30 @@ describe("knowledge console store", () => {
     }
 
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      if (url.includes("/api/v1/knowledge/calibration_line/CAL_WORKFLOW")) {
+      if (url.includes("/api/v1/knowledge-entries/calibration_line/CAL_WORKFLOW/workflow")) {
+        const detail = workflowDetail();
         return {
           ok: true,
           json: async () => ({
             ok: true,
-            data: workflowDetail(),
+            data: detail.workflow,
           }),
         };
       }
 
-      if (url.includes("/api/v1/knowledge")) {
+      if (url.includes("/api/v1/knowledge-entries/calibration_line/CAL_WORKFLOW")) {
+        const detail = workflowDetail();
+        const { workflow, ...entry } = detail;
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: entry,
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/knowledge-entries")) {
         return {
           ok: true,
           json: async () => ({
@@ -1365,7 +1388,83 @@ describe("knowledge console store", () => {
     let eventStatus = "needs_followup";
 
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      if (url.includes("/api/v1/knowledge/style_observation/STY_WORKFLOW")) {
+      if (url.includes("/api/v1/knowledge-entries/style_observation/STY_WORKFLOW/workflow")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              review_items: [
+                {
+                  review_id: "review_workflow_style_observation",
+                  status: "approved",
+                  materialize_status: "succeeded",
+                  approved_item_row_id: "style_observation_STY_WORKFLOW_v1",
+                },
+              ],
+              jobs: [
+                {
+                  job_id: "verify_review_workflow_style_observation",
+                  review_id: "review_workflow_style_observation",
+                  status: "succeeded",
+                  job_type: "verify",
+                  target_ref: "verify_job:verify_review_workflow_style_observation",
+                },
+              ],
+              human_review_events: [
+                {
+                  event_id: "human_review_workflow_style_observation",
+                  status: eventStatus,
+                  default_action: eventStatus === "resolved" ? "inspect" : "release_review",
+                  allowed_actions_json: eventStatus === "resolved" ? ["inspect"] : ["inspect", "release_review"],
+                  linked_target: {
+                    target_type: "review_item",
+                    target_id: "review_workflow_style_observation",
+                    target_ref: "review_item:review_workflow_style_observation",
+                  },
+                  followup_target: eventStatus === "resolved"
+                    ? null
+                    : {
+                        target_type: "review_item",
+                        target_id: "review_workflow_style_observation",
+                        target_ref: "review_item:review_workflow_style_observation",
+                      },
+                  replay_target: {
+                    target_type: "verify_job",
+                    target_id: "verify_review_workflow_style_observation",
+                    target_ref: "verify_job:verify_review_workflow_style_observation",
+                  },
+                },
+              ],
+              target_activity_groups: [
+                {
+                  target: {
+                    target_type: "review_item",
+                    target_id: "review_workflow_style_observation",
+                    target_ref: "review_item:review_workflow_style_observation",
+                  },
+                  latest_at: "2026-04-11T13:20:00+00:00",
+                  activity_count: 1,
+                  sources: ["recovery_timeline"],
+                  activity_items: [],
+                },
+              ],
+              recommended_primary_action:
+                eventStatus === "resolved"
+                  ? null
+                  : {
+                      kind: "human_review_event",
+                      action: "release_review",
+                      event_id: "human_review_workflow_style_observation",
+                      label: "Release",
+                      target_ref: "human_review_event:human_review_workflow_style_observation",
+                    },
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/knowledge-entries/style_observation/STY_WORKFLOW")) {
         return {
           ok: true,
           json: async () => ({
@@ -1393,77 +1492,12 @@ describe("knowledge console store", () => {
               },
               review_refs: ["review_workflow_style_observation"],
               bundle_refs: [],
-              workflow: {
-                review_items: [
-                  {
-                    review_id: "review_workflow_style_observation",
-                    status: "approved",
-                    materialize_status: "succeeded",
-                    approved_item_row_id: "style_observation_STY_WORKFLOW_v1",
-                  },
-                ],
-                jobs: [
-                  {
-                    job_id: "verify_review_workflow_style_observation",
-                    review_id: "review_workflow_style_observation",
-                    status: "succeeded",
-                    job_type: "verify",
-                    target_ref: "verify_job:verify_review_workflow_style_observation",
-                  },
-                ],
-                human_review_events: [
-                  {
-                    event_id: "human_review_workflow_style_observation",
-                    status: eventStatus,
-                    default_action: eventStatus === "resolved" ? "inspect" : "release_review",
-                    allowed_actions_json: eventStatus === "resolved" ? ["inspect"] : ["inspect", "release_review"],
-                    linked_target: {
-                      target_type: "review_item",
-                      target_id: "review_workflow_style_observation",
-                      target_ref: "review_item:review_workflow_style_observation",
-                    },
-                    followup_target: eventStatus === "resolved" ? null : {
-                      target_type: "review_item",
-                      target_id: "review_workflow_style_observation",
-                      target_ref: "review_item:review_workflow_style_observation",
-                    },
-                    replay_target: {
-                      target_type: "verify_job",
-                      target_id: "verify_review_workflow_style_observation",
-                      target_ref: "verify_job:verify_review_workflow_style_observation",
-                    },
-                  },
-                ],
-                target_activity_groups: [
-                  {
-                    target: {
-                      target_type: "review_item",
-                      target_id: "review_workflow_style_observation",
-                      target_ref: "review_item:review_workflow_style_observation",
-                    },
-                    latest_at: "2026-04-11T13:20:00+00:00",
-                    activity_count: 1,
-                    sources: ["recovery_timeline"],
-                    activity_items: [],
-                  },
-                ],
-                recommended_primary_action:
-                  eventStatus === "resolved"
-                    ? null
-                    : {
-                        kind: "human_review_event",
-                        action: "release_review",
-                        event_id: "human_review_workflow_style_observation",
-                        label: "Release",
-                        target_ref: "human_review_event:human_review_workflow_style_observation",
-                      },
-              },
             },
           }),
         };
       }
 
-      if (url.includes("/api/v1/knowledge")) {
+      if (url.includes("/api/v1/knowledge-entries")) {
         return {
           ok: true,
           json: async () => ({
@@ -1501,34 +1535,6 @@ describe("knowledge console store", () => {
               event_id: "human_review_workflow_style_observation",
               action: "release_review",
               status: "resolved",
-            },
-          }),
-        };
-      }
-
-      if (url.includes("/api/v1/review-items") && !options.method) {
-        return {
-          ok: true,
-          json: async () => ({
-            ok: true,
-            data: {
-              items: [
-                {
-                  review_id: "review_workflow_style_observation",
-                  item_type: "style_observation",
-                  candidate_text: "hold the last line on a half-finished breath",
-                  candidate_payload_json: {
-                    lineage_key: "STY_WORKFLOW",
-                    scope: "global",
-                    scope_ref_id: "global",
-                    text: "hold the last line on a half-finished breath",
-                  },
-                  status: "approved",
-                  materialize_status: "succeeded",
-                  target_collection: "style_observations",
-                  approved_item_row_id: "style_observation_STY_WORKFLOW_v1",
-                },
-              ],
             },
           }),
         };
@@ -1661,7 +1667,7 @@ describe("index console store", () => {
         };
       }
 
-      if (url.includes("/index/alias-scopes")) {
+      if (url.includes("/vector-alias-scopes")) {
         return {
           ok: true,
           json: async () => ({
@@ -1680,7 +1686,7 @@ describe("index console store", () => {
         };
       }
 
-      if (url.includes("/index/jobs")) {
+      if (url.includes("/jobs")) {
         return {
           ok: true,
           json: async () => ({
@@ -1690,152 +1696,13 @@ describe("index console store", () => {
         };
       }
 
-      if (url.includes("/index/runtime-ledger")) {
+      if (url.includes("/target-activity-groups")) {
         return {
           ok: true,
           json: async () => ({
             ok: true,
             data: {
-              latest_recovery_action_receipt: {
-                event_id: "human_review_idempotency_recovery_release-review-stale",
-                event_source: "idempotency_recovery",
-                status: "resolved",
-                action: "release_review",
-                action_at: "2026-04-10T01:35:00+00:00",
-                actor_ref: "ops.duwei",
-                linked_target_ref: "review_item:review_style_released",
-                resolution_reason: "review released and active alias promoted",
-                followup_action: null,
-                followup_target_ref: null,
-                replay_result: {
-                  review_id: "review_style_released",
-                  released: true,
-                },
-                replay_target: {
-                  target_type: "review_item",
-                  target_id: "review_style_released",
-                  target_ref: "review_item:review_style_released",
-                },
-              },
-              recovery_timeline_items: [
-                {
-                  event_id: "human_review_idempotency_recovery_approve-review-stale",
-                  event_source: "idempotency_recovery",
-                  status: "needs_followup",
-                  last_action: "retry_request",
-                  last_action_at: "2026-04-10T01:30:00+00:00",
-                  last_actor_ref: "ops.duwei",
-                  linked_target_ref: "review_item:review_style_pending",
-                  resolution_reason: "review approved; verify job is ready to run",
-                  followup_action: "retry_verify",
-                  followup_target_ref: "verify_job:verify_review_style_pending",
-                  default_action: "retry_verify",
-                  details_json: {
-                    linked_target_ref: "review_item:review_style_pending",
-                    resolution_reason: "review approved; verify job is ready to run",
-                    last_action: "retry_request",
-                    last_action_at: "2026-04-10T01:30:00+00:00",
-                  },
-                },
-                {
-                  event_id: "human_review_idempotency_recovery_release-review-stale",
-                  event_source: "idempotency_recovery",
-                  status: "resolved",
-                  last_action: "release_review",
-                  last_action_at: "2026-04-10T01:35:00+00:00",
-                  last_actor_ref: "ops.duwei",
-                  linked_target_ref: "review_item:review_style_released",
-                  resolution_reason: "review released and active alias promoted",
-                  default_action: "inspect",
-                  replay_target: {
-                    target_type: "review_item",
-                    target_id: "review_style_released",
-                    target_ref: "review_item:review_style_released",
-                  },
-                  details_json: {
-                    linked_target_ref: "review_item:review_style_released",
-                    resolution_reason: "review released and active alias promoted",
-                    last_action: "release_review",
-                    last_action_at: "2026-04-10T01:35:00+00:00",
-                  },
-                },
-              ],
-              system_runtime_timeline_items: [
-                {
-                  operation_id: 12,
-                  event_type: "runtime_due_promotion",
-                  object_ref: "style_observation_STY_RELEASED_v1",
-                  actor_ref: "system/due_promotion",
-                  summary: "promoted verified future-effective candidate",
-                  created_at: "2026-04-10T01:40:00+00:00",
-                  target_refs: [
-                    {
-                      target_type: "review_item",
-                      target_id: "review_style_released",
-                      target_ref: "review_item:review_style_released",
-                    },
-                  ],
-                  payload_json: {
-                    actor_ref: "system/due_promotion",
-                    review_id: "review_style_released",
-                  },
-                },
-                {
-                  operation_id: 11,
-                  event_type: "runtime_job_reclaimed",
-                  object_ref: "verify_job_reclaimable",
-                  actor_ref: "system/recovery_sweep",
-                  summary: "reclaimed stale verify lease",
-                  created_at: "2026-04-10T01:20:00+00:00",
-                  target_refs: [
-                    {
-                      target_type: "verify_job",
-                      target_id: "verify_job_reclaimable",
-                      target_ref: "verify_job:verify_job_reclaimable",
-                    },
-                  ],
-                  payload_json: {
-                    actor_ref: "system/recovery_sweep",
-                    job_id: "verify_job_reclaimable",
-                  },
-                },
-              ],
-              operator_action_timeline_items: [
-                {
-                  operation_id: 13,
-                  event_type: "human_review_action",
-                  event_id: "human_review_idempotency_recovery_approve-review-stale",
-                  object_ref: "human_review_idempotency_recovery_approve-review-stale",
-                  actor_ref: "ops.duwei",
-                  action: "retry_verify",
-                  status_before: "needs_followup",
-                  status_after: "needs_followup",
-                  resolution_reason: "verify succeeded but review still awaits manual release",
-                  created_at: "2026-04-10T01:32:00+00:00",
-                  target_refs: [
-                    {
-                      target_type: "human_review_event",
-                      target_id: "human_review_idempotency_recovery_approve-review-stale",
-                      target_ref: "human_review_event:human_review_idempotency_recovery_approve-review-stale",
-                    },
-                    {
-                      target_type: "review_item",
-                      target_id: "review_style_pending",
-                      target_ref: "review_item:review_style_pending",
-                    },
-                    {
-                      target_type: "verify_job",
-                      target_id: "verify_review_style_pending",
-                      target_ref: "verify_job:verify_review_style_pending",
-                    },
-                  ],
-                  payload_json: {
-                    actor_ref: "ops.duwei",
-                    action: "retry_verify",
-                  },
-                },
-              ],
-              target_activity_groups: [
+              items: [
                 {
                   target: {
                     target_type: "review_item",
@@ -1899,6 +1766,157 @@ describe("index console store", () => {
         };
       }
 
+      if (url.includes("/activity-events?stream=recovery_timeline")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  event_id: "human_review_idempotency_recovery_approve-review-stale",
+                  event_source: "idempotency_recovery",
+                  status: "needs_followup",
+                  last_action: "retry_request",
+                  last_action_at: "2026-04-10T01:30:00+00:00",
+                  last_actor_ref: "ops.duwei",
+                  linked_target_ref: "review_item:review_style_pending",
+                  resolution_reason: "review approved; verify job is ready to run",
+                  followup_action: "retry_verify",
+                  followup_target_ref: "verify_job:verify_review_style_pending",
+                  default_action: "retry_verify",
+                  details_json: {
+                    linked_target_ref: "review_item:review_style_pending",
+                    resolution_reason: "review approved; verify job is ready to run",
+                    last_action: "retry_request",
+                    last_action_at: "2026-04-10T01:30:00+00:00",
+                  },
+                },
+                {
+                  event_id: "human_review_idempotency_recovery_release-review-stale",
+                  event_source: "idempotency_recovery",
+                  status: "resolved",
+                  last_action: "release_review",
+                  last_action_at: "2026-04-10T01:35:00+00:00",
+                  last_actor_ref: "ops.duwei",
+                  linked_target_ref: "review_item:review_style_released",
+                  resolution_reason: "review released and active alias promoted",
+                  default_action: "inspect",
+                  replay_target: {
+                    target_type: "review_item",
+                    target_id: "review_style_released",
+                    target_ref: "review_item:review_style_released",
+                  },
+                  details_json: {
+                    linked_target_ref: "review_item:review_style_released",
+                    resolution_reason: "review released and active alias promoted",
+                    last_action: "release_review",
+                    last_action_at: "2026-04-10T01:35:00+00:00",
+                  },
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/activity-events?stream=system_runtime")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  operation_id: 12,
+                  event_type: "runtime_due_promotion",
+                  object_ref: "style_observation_STY_RELEASED_v1",
+                  actor_ref: "system/due_promotion",
+                  summary: "promoted verified future-effective candidate",
+                  created_at: "2026-04-10T01:40:00+00:00",
+                  target_refs: [
+                    {
+                      target_type: "review_item",
+                      target_id: "review_style_released",
+                      target_ref: "review_item:review_style_released",
+                    },
+                  ],
+                  payload_json: {
+                    actor_ref: "system/due_promotion",
+                    review_id: "review_style_released",
+                  },
+                },
+                {
+                  operation_id: 11,
+                  event_type: "runtime_job_reclaimed",
+                  object_ref: "verify_job_reclaimable",
+                  actor_ref: "system/recovery_sweep",
+                  summary: "reclaimed stale verify lease",
+                  created_at: "2026-04-10T01:20:00+00:00",
+                  target_refs: [
+                    {
+                      target_type: "verify_job",
+                      target_id: "verify_job_reclaimable",
+                      target_ref: "verify_job:verify_job_reclaimable",
+                    },
+                  ],
+                  payload_json: {
+                    actor_ref: "system/recovery_sweep",
+                    job_id: "verify_job_reclaimable",
+                  },
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/activity-events?stream=operator_action")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  operation_id: 13,
+                  event_type: "human_review_action",
+                  event_id: "human_review_idempotency_recovery_approve-review-stale",
+                  object_ref: "human_review_idempotency_recovery_approve-review-stale",
+                  actor_ref: "ops.duwei",
+                  action: "retry_verify",
+                  status_before: "needs_followup",
+                  status_after: "needs_followup",
+                  resolution_reason: "verify succeeded but review still awaits manual release",
+                  created_at: "2026-04-10T01:32:00+00:00",
+                  target_refs: [
+                    {
+                      target_type: "human_review_event",
+                      target_id: "human_review_idempotency_recovery_approve-review-stale",
+                      target_ref: "human_review_event:human_review_idempotency_recovery_approve-review-stale",
+                    },
+                    {
+                      target_type: "review_item",
+                      target_id: "review_style_pending",
+                      target_ref: "review_item:review_style_pending",
+                    },
+                    {
+                      target_type: "verify_job",
+                      target_id: "verify_review_style_pending",
+                      target_ref: "verify_job:verify_review_style_pending",
+                    },
+                  ],
+                  payload_json: {
+                    actor_ref: "ops.duwei",
+                    action: "retry_verify",
+                  },
+                },
+              ],
+            },
+          }),
+        };
+      }
+
       throw new Error(`Unexpected fetch: ${url}`);
     });
   });
@@ -1936,7 +1954,7 @@ describe("index console store", () => {
         status: "resolved",
       }),
     );
-    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(7);
   });
 
   it("runs recovery sweep, keeps the latest receipt, and refreshes the index console state", async () => {
@@ -1995,10 +2013,10 @@ describe("index console store", () => {
         ]),
       }),
     );
-    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(7);
   });
 
-  it("rehydrates the latest recovery follow-up receipt from the backend runtime ledger", async () => {
+  it("rehydrates the latest recovery follow-up receipt from the backend activity streams", async () => {
     const store = useIndexConsoleStore();
 
     await store.load();
@@ -2019,7 +2037,7 @@ describe("index console store", () => {
     expect(store.systemRuntimeTimelineItems).toHaveLength(2);
     expect(store.operatorActionTimelineItems).toHaveLength(1);
     expect(store.targetActivityGroups).toHaveLength(2);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(6);
   });
 
   it("records the latest recovery follow-up action receipt", () => {
@@ -2066,7 +2084,7 @@ describe("index console store", () => {
           }),
         };
       }
-      if (url.includes("/index/alias-scopes")) {
+      if (url.includes("/vector-alias-scopes")) {
         return {
           ok: true,
           json: async () => ({
@@ -2075,7 +2093,7 @@ describe("index console store", () => {
           }),
         };
       }
-      if (url.includes("/index/jobs")) {
+      if (url.includes("/jobs")) {
         return {
           ok: true,
           json: async () => ({
@@ -2084,14 +2102,44 @@ describe("index console store", () => {
           }),
         };
       }
-      if (url.includes("/index/runtime-ledger")) {
+      if (url.includes("/target-activity-groups")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: { items: [] },
+          }),
+        };
+      }
+      if (url.includes("/activity-events?stream=recovery_timeline")) {
         return {
           ok: true,
           json: async () => ({
             ok: true,
             data: {
-              latest_recovery_action_receipt: null,
-              recovery_timeline_items: [],
+              items: [],
+            },
+          }),
+        };
+      }
+      if (url.includes("/activity-events?stream=system_runtime")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [],
+            },
+          }),
+        };
+      }
+      if (url.includes("/activity-events?stream=operator_action")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [],
             },
           }),
         };
