@@ -56,8 +56,16 @@ describe("query filter helpers", () => {
       "http://127.0.0.1:8000/api/v1/review-items?status=pending&item_type=style_observation&target_collection=style_observations&scene_id=CH001_SC01&chapter_id=CH001",
     );
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:8000/api/v1/human-review-events?status=needs_followup&event_source=idempotency_recovery&priority=high&owner=ops.duwei",
+    );
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
       3,
       "http://127.0.0.1:8000/api/v1/index/alias-scopes?object_type=style_observation&scope=global&scope_ref_id=global&verify_status=succeeded",
+    );
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      4,
+      "http://127.0.0.1:8000/api/v1/index/jobs?job_type=verify&status=failed&review_id=review_scene_pending",
     );
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
       5,
