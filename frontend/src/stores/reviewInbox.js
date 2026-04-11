@@ -2,8 +2,31 @@ import { defineStore } from "pinia";
 
 import { actOnHumanReviewEvent, approveReview, fetchHumanReviewEvents, fetchReviewItems, releaseReview } from "../lib/api";
 
+function createReviewFilters() {
+  return {
+    status: "",
+    itemType: "",
+    targetCollection: "",
+    sceneId: "",
+    chapterId: "",
+  };
+}
+
+function createHumanReviewFilters() {
+  return {
+    status: "",
+    eventSource: "",
+    priority: "",
+    owner: "",
+    sceneId: "",
+    chapterId: "",
+  };
+}
+
 export const useReviewInboxStore = defineStore("reviewInbox", {
   state: () => ({
+    reviewFilters: createReviewFilters(),
+    humanReviewFilters: createHumanReviewFilters(),
     items: [],
     humanReviewItems: [],
     lastActionResult: null,
@@ -18,11 +41,20 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       ),
   },
   actions: {
+    clearReviewFilters() {
+      this.reviewFilters = createReviewFilters();
+    },
+    clearHumanReviewFilters() {
+      this.humanReviewFilters = createHumanReviewFilters();
+    },
     async load() {
       this.loading = true;
       this.error = "";
       try {
-        const [reviewPayload, humanReviewPayload] = await Promise.all([fetchReviewItems(), fetchHumanReviewEvents()]);
+        const [reviewPayload, humanReviewPayload] = await Promise.all([
+          fetchReviewItems(this.reviewFilters),
+          fetchHumanReviewEvents(this.humanReviewFilters),
+        ]);
         this.items = reviewPayload.items || [];
         this.humanReviewItems = humanReviewPayload.items || [];
       } catch (error) {

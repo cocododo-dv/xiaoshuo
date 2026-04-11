@@ -9,6 +9,33 @@ import {
   runRecoverySweep,
 } from "../lib/api";
 
+function createAliasFilters() {
+  return {
+    objectType: "",
+    scope: "",
+    scopeRefId: "",
+    verifyStatus: "",
+  };
+}
+
+function createJobFilters() {
+  return {
+    jobType: "",
+    status: "",
+    objectType: "",
+    reviewId: "",
+    aliasScope: "",
+  };
+}
+
+function createLedgerFilters() {
+  return {
+    targetRef: "",
+    source: "",
+    actorRef: "",
+  };
+}
+
 function recoveryEventTimestamp(item) {
   return item?.details_json?.last_action_at || item?.last_action_at || item?.created_at || "";
 }
@@ -19,6 +46,9 @@ function systemRuntimeTimestamp(item) {
 
 export const useIndexConsoleStore = defineStore("indexConsole", {
   state: () => ({
+    aliasFilters: createAliasFilters(),
+    jobFilters: createJobFilters(),
+    ledgerFilters: createLedgerFilters(),
     aliasScopes: [],
     jobs: [],
     recoveryEvents: [],
@@ -55,14 +85,23 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
       }),
   },
   actions: {
+    clearAliasFilters() {
+      this.aliasFilters = createAliasFilters();
+    },
+    clearJobFilters() {
+      this.jobFilters = createJobFilters();
+    },
+    clearLedgerFilters() {
+      this.ledgerFilters = createLedgerFilters();
+    },
     async load() {
       this.loading = true;
       this.error = "";
       try {
         const [aliasScopes, jobs, runtimeLedger] = await Promise.all([
-          fetchAliasScopes(),
-          fetchIndexJobs(),
-          fetchIndexRuntimeLedger(),
+          fetchAliasScopes(this.aliasFilters),
+          fetchIndexJobs(this.jobFilters),
+          fetchIndexRuntimeLedger(this.ledgerFilters),
         ]);
         this.aliasScopes = aliasScopes.items || [];
         this.jobs = jobs.items || [];

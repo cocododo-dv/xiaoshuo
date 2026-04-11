@@ -41,6 +41,18 @@ function buildIdempotencyKey(path) {
   return `${path}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function buildQueryPath(path, filters = {}, aliases = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters || {}).forEach(([key, value]) => {
+    if (value === null || value === undefined || value === "") {
+      return;
+    }
+    params.set(aliases[key] || key, value);
+  });
+  const query = params.toString();
+  return query ? `${path}?${query}` : path;
+}
+
 async function parseEnvelope(response) {
   const payload = await response.json();
   if (!response.ok || payload.ok === false) {
@@ -95,8 +107,15 @@ export function fetchReplayDraft(rowId) {
   return apiGet(`/api/v1/replay/draft/${encodeURIComponent(rowId)}`);
 }
 
-export function fetchReviewItems() {
-  return apiGet("/api/v1/review-items");
+export function fetchReviewItems(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/review-items", filters, {
+      itemType: "item_type",
+      targetCollection: "target_collection",
+      sceneId: "scene_id",
+      chapterId: "chapter_id",
+    }),
+  );
 }
 
 export function createReviewItem(payload) {
@@ -143,16 +162,34 @@ export function fetchKnowledgeDetail(objectType, lineageKey) {
   return apiGet(`/api/v1/knowledge/${encodeURIComponent(objectType)}/${encodeURIComponent(lineageKey)}`);
 }
 
-export function fetchAliasScopes() {
-  return apiGet("/api/v1/index/alias-scopes");
+export function fetchAliasScopes(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/index/alias-scopes", filters, {
+      objectType: "object_type",
+      scopeRefId: "scope_ref_id",
+      verifyStatus: "verify_status",
+    }),
+  );
 }
 
-export function fetchIndexJobs() {
-  return apiGet("/api/v1/index/jobs");
+export function fetchIndexJobs(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/index/jobs", filters, {
+      objectType: "object_type",
+      jobType: "job_type",
+      reviewId: "review_id",
+      aliasScope: "alias_scope",
+    }),
+  );
 }
 
-export function fetchIndexRuntimeLedger() {
-  return apiGet("/api/v1/index/runtime-ledger");
+export function fetchIndexRuntimeLedger(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/index/runtime-ledger", filters, {
+      targetRef: "target_ref",
+      actorRef: "actor_ref",
+    }),
+  );
 }
 
 export function retryVerify(jobId) {
@@ -167,8 +204,14 @@ export function runDuePromotions() {
   return apiPost("/api/v1/runtime/promotions/run-due");
 }
 
-export function fetchHumanReviewEvents() {
-  return apiGet("/api/v1/human-review-events");
+export function fetchHumanReviewEvents(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/human-review-events", filters, {
+      eventSource: "event_source",
+      sceneId: "scene_id",
+      chapterId: "chapter_id",
+    }),
+  );
 }
 
 export function actOnHumanReviewEvent(eventId, action) {
