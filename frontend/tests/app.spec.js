@@ -883,6 +883,654 @@ describe("knowledge console store", () => {
       }),
     );
   });
+
+  it("preserves the selected detail when unrelated pending reviews are merged in", async () => {
+    const store = useKnowledgeConsoleStore();
+
+    store.items = [
+      {
+        object_type: "style_rule",
+        lineage_key: "STYLE_KNOWLEDGE_E2E",
+        status: "candidate",
+        active_version: null,
+        candidate_version: { review_id: "review_knowledge_style_rule" },
+        versions: [],
+        runtime_refs: { mode: "pending_review" },
+        review_refs: ["review_knowledge_style_rule"],
+        bundle_refs: [],
+      },
+    ];
+    store.pendingReviewItems = [
+      {
+        review_id: "review_demo_style_observation",
+        item_type: "style_observation",
+        status: "pending",
+        materialize_status: "pending",
+        candidate_text: "leave the final beat compressed",
+        candidate_payload_json: {
+          lineage_key: "STY_DEMO_001",
+          scope: "global",
+          scope_ref_id: "global",
+        },
+      },
+      {
+        review_id: "review_knowledge_style_rule",
+        item_type: "style_rule_set",
+        status: "pending",
+        materialize_status: "pending",
+        candidate_text: "keep the reunion tight and gesture-led",
+        candidate_payload_json: {
+          lineage_key: "STYLE_KNOWLEDGE_E2E",
+          scope: "global",
+          scope_ref_id: "global",
+        },
+      },
+    ];
+
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes("/api/v1/knowledge/style_rule/STYLE_KNOWLEDGE_E2E")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              object_type: "style_rule",
+              lineage_key: "STYLE_KNOWLEDGE_E2E",
+              status: "candidate",
+              active_version: null,
+              candidate_version: {
+                review_id: "review_knowledge_style_rule",
+                text: "keep the reunion tight and gesture-led",
+                scope: "global",
+                scope_ref_id: "global",
+              },
+              versions: [],
+              runtime_refs: { mode: "pending_review" },
+              review_refs: ["review_knowledge_style_rule"],
+              bundle_refs: [],
+              workflow: {
+                review_items: [
+                  {
+                    review_id: "review_knowledge_style_rule",
+                    status: "pending",
+                    materialize_status: "pending",
+                  },
+                ],
+                jobs: [],
+                human_review_events: [],
+                target_activity_groups: [],
+                recommended_primary_action: {
+                  kind: "review",
+                  action: "approve_review",
+                  review_id: "review_knowledge_style_rule",
+                  label: "Approve",
+                },
+              },
+            },
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    await store.selectItem("style_rule", "STYLE_KNOWLEDGE_E2E");
+
+    expect(store.detail).toEqual(
+      expect.objectContaining({
+        object_type: "style_rule",
+        lineage_key: "STYLE_KNOWLEDGE_E2E",
+      }),
+    );
+    expect(store.detail.workflow.review_items[0].review_id).toBe("review_knowledge_style_rule");
+  });
+
+  it("approves, verifies, and releases the selected knowledge lineage while keeping detail refreshed", async () => {
+    const store = useKnowledgeConsoleStore();
+    let phase = "pending";
+
+    function workflowDetail() {
+      const base = {
+        object_type: "calibration_line",
+        lineage_key: "CAL_WORKFLOW",
+        status: phase === "released" ? "active" : "candidate",
+        active_version:
+          phase === "released"
+            ? {
+                row_id: "calibration_line_CAL_WORKFLOW_v1",
+                version: 1,
+                text: "the gate sighed shut on the unfinished question",
+                scope: "global",
+                scope_ref_id: "global",
+              }
+            : null,
+        candidate_version:
+          phase === "released"
+            ? null
+            : {
+                review_id: "review_workflow_calibration",
+                text: "the gate sighed shut on the unfinished question",
+                scope: "global",
+                scope_ref_id: "global",
+              },
+        versions:
+          phase === "pending"
+            ? []
+            : [
+                {
+                  row_id: "calibration_line_CAL_WORKFLOW_v1",
+                  version: 1,
+                  text: "the gate sighed shut on the unfinished question",
+                },
+              ],
+        runtime_refs:
+          phase === "pending"
+            ? { mode: "pending_review" }
+            : {
+                mode: "vector",
+                alias_scope: "calibration_line:global:global",
+                active_alias: phase === "released" ? "calibration_line_global_global__candidate__calibration_line_CAL_WORKFLOW_v1" : null,
+                candidate_alias:
+                  phase === "released" ? null : "calibration_line_global_global__candidate__calibration_line_CAL_WORKFLOW_v1",
+                verify_status: phase === "verified" || phase === "released" ? "succeeded" : "pending",
+              },
+        review_refs: ["review_workflow_calibration"],
+        bundle_refs: [],
+      };
+
+      if (phase === "pending") {
+        return {
+          ...base,
+          workflow: {
+            review_items: [
+              {
+                review_id: "review_workflow_calibration",
+                status: "pending",
+                materialize_status: "pending",
+                approved_item_row_id: null,
+              },
+            ],
+            jobs: [],
+            human_review_events: [],
+            target_activity_groups: [],
+            recommended_primary_action: {
+              kind: "review",
+              action: "approve_review",
+              review_id: "review_workflow_calibration",
+              label: "Approve",
+              target_ref: "review_item:review_workflow_calibration",
+            },
+          },
+        };
+      }
+
+      if (phase === "approved") {
+        return {
+          ...base,
+          workflow: {
+            review_items: [
+              {
+                review_id: "review_workflow_calibration",
+                status: "approved",
+                materialize_status: "succeeded",
+                approved_item_row_id: "calibration_line_CAL_WORKFLOW_v1",
+              },
+            ],
+            jobs: [
+              {
+                job_id: "reindex_review_workflow_calibration",
+                review_id: "review_workflow_calibration",
+                status: "succeeded",
+                job_type: "reindex",
+                target_ref: "reindex_job:reindex_review_workflow_calibration",
+              },
+              {
+                job_id: "verify_review_workflow_calibration",
+                review_id: "review_workflow_calibration",
+                status: "queued",
+                job_type: "verify",
+                target_ref: "verify_job:verify_review_workflow_calibration",
+              },
+            ],
+            human_review_events: [],
+            target_activity_groups: [],
+            recommended_primary_action: {
+              kind: "verify_job",
+              action: "retry_verify",
+              job_id: "verify_review_workflow_calibration",
+              label: "Retry Verify",
+              target_ref: "verify_job:verify_review_workflow_calibration",
+            },
+          },
+        };
+      }
+
+      if (phase === "verified") {
+        return {
+          ...base,
+          workflow: {
+            review_items: [
+              {
+                review_id: "review_workflow_calibration",
+                status: "approved",
+                materialize_status: "succeeded",
+                approved_item_row_id: "calibration_line_CAL_WORKFLOW_v1",
+              },
+            ],
+            jobs: [
+              {
+                job_id: "reindex_review_workflow_calibration",
+                review_id: "review_workflow_calibration",
+                status: "succeeded",
+                job_type: "reindex",
+                target_ref: "reindex_job:reindex_review_workflow_calibration",
+              },
+              {
+                job_id: "verify_review_workflow_calibration",
+                review_id: "review_workflow_calibration",
+                status: "succeeded",
+                job_type: "verify",
+                target_ref: "verify_job:verify_review_workflow_calibration",
+              },
+            ],
+            human_review_events: [],
+            target_activity_groups: [],
+            recommended_primary_action: {
+              kind: "review",
+              action: "release_review",
+              review_id: "review_workflow_calibration",
+              label: "Release",
+              target_ref: "review_item:review_workflow_calibration",
+            },
+          },
+        };
+      }
+
+      return {
+        ...base,
+        workflow: {
+          review_items: [
+            {
+              review_id: "review_workflow_calibration",
+              status: "approved",
+              materialize_status: "succeeded",
+              approved_item_row_id: "calibration_line_CAL_WORKFLOW_v1",
+            },
+          ],
+          jobs: [
+            {
+              job_id: "reindex_review_workflow_calibration",
+              review_id: "review_workflow_calibration",
+              status: "succeeded",
+              job_type: "reindex",
+              target_ref: "reindex_job:reindex_review_workflow_calibration",
+            },
+            {
+              job_id: "verify_review_workflow_calibration",
+              review_id: "review_workflow_calibration",
+              status: "succeeded",
+              job_type: "verify",
+              target_ref: "verify_job:verify_review_workflow_calibration",
+            },
+          ],
+          human_review_events: [],
+          target_activity_groups: [],
+          recommended_primary_action: null,
+        },
+      };
+    }
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.includes("/api/v1/knowledge/calibration_line/CAL_WORKFLOW")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: workflowDetail(),
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/knowledge")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  object_type: "calibration_line",
+                  lineage_key: "CAL_WORKFLOW",
+                  status: phase === "released" ? "active" : "candidate",
+                  active_version:
+                    phase === "released"
+                      ? {
+                          row_id: "calibration_line_CAL_WORKFLOW_v1",
+                          version: 1,
+                          text: "the gate sighed shut on the unfinished question",
+                        }
+                      : null,
+                  candidate_version:
+                    phase === "released"
+                      ? null
+                      : {
+                          review_id: "review_workflow_calibration",
+                          text: "the gate sighed shut on the unfinished question",
+                        },
+                  versions: [],
+                  runtime_refs:
+                    phase === "pending"
+                      ? { mode: "pending_review" }
+                      : { alias_scope: "calibration_line:global:global", mode: "vector" },
+                  review_refs: ["review_workflow_calibration"],
+                  bundle_refs: [],
+                },
+              ],
+              supported_object_types: ["calibration_line"],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/review-items/review_workflow_calibration/approve")) {
+        phase = "approved";
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              review_id: "review_workflow_calibration",
+              actor_ref: "ops.duwei",
+              approved_item_row_id: "calibration_line_CAL_WORKFLOW_v1",
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/index/verify/verify_review_workflow_calibration/retry")) {
+        phase = "verified";
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              job_id: "verify_review_workflow_calibration",
+              status: "succeeded",
+              actor_ref: "ops.duwei",
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/review-items/review_workflow_calibration/release")) {
+        phase = "released";
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              review_id: "review_workflow_calibration",
+              released: true,
+              actor_ref: "ops.duwei",
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/review-items") && !options.method) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  review_id: "review_workflow_calibration",
+                  item_type: "calibration_candidate",
+                  candidate_text: "the gate sighed shut on the unfinished question",
+                  candidate_payload_json: {
+                    lineage_key: "CAL_WORKFLOW",
+                    scope: "global",
+                    scope_ref_id: "global",
+                    text: "the gate sighed shut on the unfinished question",
+                  },
+                  status: phase === "pending" ? "pending" : "approved",
+                  materialize_status: phase === "pending" ? "pending" : "succeeded",
+                  target_collection: "calibration_lines",
+                  approved_item_row_id: phase === "pending" ? null : "calibration_line_CAL_WORKFLOW_v1",
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    await store.load();
+    await store.selectItem("calibration_line", "CAL_WORKFLOW");
+
+    expect(store.detail.workflow.recommended_primary_action.action).toBe("approve_review");
+
+    const approveMessage = await store.approveReview("review_workflow_calibration");
+    expect(approveMessage).toContain("review_workflow_calibration");
+    expect(approveMessage).toContain("ops.duwei");
+    expect(store.detail.lineage_key).toBe("CAL_WORKFLOW");
+    expect(store.detail.workflow.recommended_primary_action.action).toBe("retry_verify");
+
+    const verifyMessage = await store.retryVerifyJob("verify_review_workflow_calibration");
+    expect(verifyMessage).toContain("verify_review_workflow_calibration");
+    expect(verifyMessage).toContain("ops.duwei");
+    expect(store.detail.workflow.recommended_primary_action.action).toBe("release_review");
+
+    const releaseMessage = await store.releaseReview("review_workflow_calibration");
+    expect(releaseMessage).toContain("review_workflow_calibration");
+    expect(releaseMessage).toContain("ops.duwei");
+    expect(store.detail.lineage_key).toBe("CAL_WORKFLOW");
+    expect(store.detail.active_version).toEqual(
+      expect.objectContaining({
+        row_id: "calibration_line_CAL_WORKFLOW_v1",
+      }),
+    );
+    expect(store.detail.workflow.recommended_primary_action).toBeNull();
+  });
+
+  it("applies related human review actions from the workflow detail and refreshes the selected lineage", async () => {
+    const store = useKnowledgeConsoleStore();
+    let eventStatus = "needs_followup";
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.includes("/api/v1/knowledge/style_observation/STY_WORKFLOW")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              object_type: "style_observation",
+              lineage_key: "STY_WORKFLOW",
+              status: "candidate",
+              active_version: null,
+              candidate_version: {
+                review_id: "review_workflow_style_observation",
+                text: "hold the last line on a half-finished breath",
+              },
+              versions: [
+                {
+                  row_id: "style_observation_STY_WORKFLOW_v1",
+                  version: 1,
+                  text: "hold the last line on a half-finished breath",
+                },
+              ],
+              runtime_refs: {
+                mode: "vector",
+                alias_scope: "style_observation:global:global",
+                verify_status: "succeeded",
+              },
+              review_refs: ["review_workflow_style_observation"],
+              bundle_refs: [],
+              workflow: {
+                review_items: [
+                  {
+                    review_id: "review_workflow_style_observation",
+                    status: "approved",
+                    materialize_status: "succeeded",
+                    approved_item_row_id: "style_observation_STY_WORKFLOW_v1",
+                  },
+                ],
+                jobs: [
+                  {
+                    job_id: "verify_review_workflow_style_observation",
+                    review_id: "review_workflow_style_observation",
+                    status: "succeeded",
+                    job_type: "verify",
+                    target_ref: "verify_job:verify_review_workflow_style_observation",
+                  },
+                ],
+                human_review_events: [
+                  {
+                    event_id: "human_review_workflow_style_observation",
+                    status: eventStatus,
+                    default_action: eventStatus === "resolved" ? "inspect" : "release_review",
+                    allowed_actions_json: eventStatus === "resolved" ? ["inspect"] : ["inspect", "release_review"],
+                    linked_target: {
+                      target_type: "review_item",
+                      target_id: "review_workflow_style_observation",
+                      target_ref: "review_item:review_workflow_style_observation",
+                    },
+                    followup_target: eventStatus === "resolved" ? null : {
+                      target_type: "review_item",
+                      target_id: "review_workflow_style_observation",
+                      target_ref: "review_item:review_workflow_style_observation",
+                    },
+                    replay_target: {
+                      target_type: "verify_job",
+                      target_id: "verify_review_workflow_style_observation",
+                      target_ref: "verify_job:verify_review_workflow_style_observation",
+                    },
+                  },
+                ],
+                target_activity_groups: [
+                  {
+                    target: {
+                      target_type: "review_item",
+                      target_id: "review_workflow_style_observation",
+                      target_ref: "review_item:review_workflow_style_observation",
+                    },
+                    latest_at: "2026-04-11T13:20:00+00:00",
+                    activity_count: 1,
+                    sources: ["recovery_timeline"],
+                    activity_items: [],
+                  },
+                ],
+                recommended_primary_action:
+                  eventStatus === "resolved"
+                    ? null
+                    : {
+                        kind: "human_review_event",
+                        action: "release_review",
+                        event_id: "human_review_workflow_style_observation",
+                        label: "Release",
+                        target_ref: "human_review_event:human_review_workflow_style_observation",
+                      },
+              },
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/knowledge")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  object_type: "style_observation",
+                  lineage_key: "STY_WORKFLOW",
+                  status: "candidate",
+                  active_version: null,
+                  candidate_version: {
+                    review_id: "review_workflow_style_observation",
+                    text: "hold the last line on a half-finished breath",
+                  },
+                  versions: [],
+                  runtime_refs: { alias_scope: "style_observation:global:global", mode: "vector" },
+                  review_refs: ["review_workflow_style_observation"],
+                  bundle_refs: [],
+                },
+              ],
+              supported_object_types: ["style_observation"],
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/human-review-events/human_review_workflow_style_observation/actions")) {
+        eventStatus = "resolved";
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              event_id: "human_review_workflow_style_observation",
+              action: "release_review",
+              status: "resolved",
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/api/v1/review-items") && !options.method) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [
+                {
+                  review_id: "review_workflow_style_observation",
+                  item_type: "style_observation",
+                  candidate_text: "hold the last line on a half-finished breath",
+                  candidate_payload_json: {
+                    lineage_key: "STY_WORKFLOW",
+                    scope: "global",
+                    scope_ref_id: "global",
+                    text: "hold the last line on a half-finished breath",
+                  },
+                  status: "approved",
+                  materialize_status: "succeeded",
+                  target_collection: "style_observations",
+                  approved_item_row_id: "style_observation_STY_WORKFLOW_v1",
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    await store.load();
+    await store.selectItem("style_observation", "STY_WORKFLOW");
+
+    const message = await store.actOnHumanReviewEvent(
+      "human_review_workflow_style_observation",
+      "release_review",
+    );
+
+    expect(message).toContain("human_review_workflow_style_observation");
+    expect(message).toContain("resolved");
+    expect(store.detail.lineage_key).toBe("STY_WORKFLOW");
+    expect(store.detail.workflow.human_review_events[0]).toEqual(
+      expect.objectContaining({
+        status: "resolved",
+      }),
+    );
+    expect(store.detail.workflow.recommended_primary_action).toBeNull();
+  });
 });
 
 describe("scene workbench source", () => {
@@ -907,6 +1555,19 @@ describe("knowledge console source", () => {
     expect(source).toContain("knowledge-open-review-ref-");
     expect(source).toContain("knowledge-open-bundle-ref-");
     expect(source).toContain("Open Scene Workbench");
+  });
+
+  it("ships workflow status, actions, and related activity sections in the detail drawer", () => {
+    const source = readFileSync(new URL("../src/views/KnowledgeConsoleView.vue", import.meta.url), "utf8");
+
+    expect(source).toContain("Workflow Status");
+    expect(source).toContain("knowledge-workflow-primary-action");
+    expect(source).toContain("knowledge-approve-review-");
+    expect(source).toContain("knowledge-retry-verify-");
+    expect(source).toContain("knowledge-release-review-");
+    expect(source).toContain("Related Human Review");
+    expect(source).toContain("Related Jobs");
+    expect(source).toContain("Target Activity");
   });
 });
 

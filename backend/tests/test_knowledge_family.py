@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from novel_system.db.models import HumanReviewEvent
+
 
 def _seed_story(client) -> None:
     assert client.post(
@@ -503,3 +505,180 @@ def test_bundle_builder_includes_new_knowledge_sources_in_snapshot(client) -> No
     assert snapshot["inline_digests"]["calibration_line"] == "the door closed like a sentence left unfinished"
     assert snapshot["inline_digests"]["world_rule"] == "public spellcasting inside the city is forbidden"
     assert snapshot["inline_digests"]["foreshadow"] == "the old letter sender clue is now in play"
+
+
+def test_knowledge_detail_workflow_includes_pending_review_and_recommended_approve(client) -> None:
+    _seed_story(client)
+    _create_review_item(
+        client,
+        _review_payload(
+            "review_pending_style_rule_workflow",
+            "style_rule_set",
+            candidate_text="keep the reunion tight and gesture-led",
+            candidate_payload_json={
+                "scope": "global",
+                "scope_ref_id": "global",
+                "lineage_key": "STYLE_WORKFLOW_PENDING",
+                "text": "keep the reunion tight and gesture-led",
+            },
+        ),
+        key="create-pending-style-rule-workflow",
+    )
+
+    response = client.get("/api/v1/knowledge/style_rule/STYLE_WORKFLOW_PENDING")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["lineage_key"] == "STYLE_WORKFLOW_PENDING"
+    assert data["workflow"]["review_items"] == [
+        {
+            "review_id": "review_pending_style_rule_workflow",
+            "scene_id": "CH001_SC01",
+            "chapter_id": "CH001",
+            "item_type": "style_rule_set",
+            "target_collection": "style_rules",
+            "status": "pending",
+            "candidate_text": "keep the reunion tight and gesture-led",
+            "candidate_payload_json": {
+                "scope": "global",
+                "scope_ref_id": "global",
+                "lineage_key": "STYLE_WORKFLOW_PENDING",
+                "text": "keep the reunion tight and gesture-led",
+            },
+            "active_on_approve": 1,
+            "materialize_status": "pending",
+            "approved_item_row_id": None,
+        }
+    ]
+    assert data["workflow"]["jobs"] == []
+    assert data["workflow"]["human_review_events"] == []
+    assert data["workflow"]["target_activity_groups"] == []
+    assert data["workflow"]["recommended_primary_action"] == {
+        "kind": "review",
+        "action": "approve_review",
+        "review_id": "review_pending_style_rule_workflow",
+        "label": "Approve",
+        "target_ref": "review_item:review_pending_style_rule_workflow",
+    }
+
+
+def test_knowledge_detail_workflow_includes_verify_release_followup_and_target_activity(client, session) -> None:
+    _seed_story(client)
+    _create_review_item(
+        client,
+        _review_payload(
+            "review_workflow_calibration",
+            "calibration_candidate",
+            candidate_text="the gate sighed shut on the unfinished question",
+            candidate_payload_json={
+                "scope": "global",
+                "scope_ref_id": "global",
+                "lineage_key": "CAL_WORKFLOW",
+                "text": "the gate sighed shut on the unfinished question",
+            },
+            active_on_approve=0,
+        ),
+        key="create-workflow-calibration",
+    )
+    _approve_review(client, "review_workflow_calibration", key="approve-workflow-calibration")
+
+    verify_jobs = [
+        item
+        for item in client.get("/api/v1/index/jobs").json()["data"]["items"]
+        if item["review_id"] == "review_workflow_calibration"
+    ]
+    verify_job = next(item for item in verify_jobs if item["job_type"] == "verify")
+    reindex_job = next(item for item in verify_jobs if item["job_type"] == "reindex")
+
+    _verify_review_candidate(client, "review_workflow_calibration", key="verify-workflow-calibration")
+
+    session.add(
+        HumanReviewEvent(
+            event_id="human_review_workflow_calibration_release",
+            scene_id="CH001_SC01",
+            chapter_id="CH001",
+            object_ref="review_workflow_calibration",
+            event_source="idempotency_recovery",
+            priority="high",
+            status="needs_followup",
+            allowed_actions_json=["inspect", "release_review"],
+            result_status_map_json={"inspect": "needs_followup", "release_review": "resolved"},
+            details_json={
+                "linked_target_ref": "review_item:review_workflow_calibration",
+                "followup_action": "release_review",
+                "followup_target_ref": "review_item:review_workflow_calibration",
+                "last_action": "retry_verify",
+                "last_action_at": "2026-04-11T13:20:00+00:00",
+                "last_actor_ref": "ops.workflow",
+                "last_replay_result": {
+                    "job_id": verify_job["job_id"],
+                    "job_type": "verify",
+                    "status": "succeeded",
+                },
+                "resolution_reason": "verify succeeded but review still awaits manual release",
+            },
+            default_action="release_review",
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/v1/knowledge/calibration_line/CAL_WORKFLOW")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["runtime_refs"]["alias_scope"] == "calibration_line:global:global"
+    assert {item["review_id"] for item in data["workflow"]["review_items"]} == {"review_workflow_calibration"}
+    assert {(item["job_id"], item["job_type"]) for item in data["workflow"]["jobs"]} == {
+        (verify_job["job_id"], "verify"),
+        (reindex_job["job_id"], "reindex"),
+    }
+    assert [item["event_id"] for item in data["workflow"]["human_review_events"]] == [
+        "human_review_workflow_calibration_release"
+    ]
+    assert {group["target"]["target_ref"] for group in data["workflow"]["target_activity_groups"]} >= {
+        "review_item:review_workflow_calibration",
+        f"verify_job:{verify_job['job_id']}",
+    }
+    assert data["workflow"]["recommended_primary_action"] == {
+        "kind": "human_review_event",
+        "action": "release_review",
+        "event_id": "human_review_workflow_calibration_release",
+        "label": "Release",
+        "target_ref": "human_review_event:human_review_workflow_calibration_release",
+    }
+
+
+def test_knowledge_detail_workflow_recommends_release_after_verify_before_activation(client) -> None:
+    _seed_story(client)
+    _create_review_item(
+        client,
+        _review_payload(
+            "review_workflow_release_ready",
+            "calibration_candidate",
+            candidate_text="the gate sighed shut on the unfinished question",
+            candidate_payload_json={
+                "scope": "global",
+                "scope_ref_id": "global",
+                "lineage_key": "CAL_RELEASE_READY",
+                "text": "the gate sighed shut on the unfinished question",
+            },
+            active_on_approve=0,
+        ),
+        key="create-workflow-release-ready",
+    )
+    _approve_review(client, "review_workflow_release_ready", key="approve-workflow-release-ready")
+    _verify_review_candidate(client, "review_workflow_release_ready", key="verify-workflow-release-ready")
+
+    response = client.get("/api/v1/knowledge/calibration_line/CAL_RELEASE_READY")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["active_version"] is None
+    assert data["candidate_version"]["review_id"] == "review_workflow_release_ready"
+    assert data["workflow"]["recommended_primary_action"] == {
+        "kind": "review",
+        "action": "release_review",
+        "review_id": "review_workflow_release_ready",
+        "label": "Release",
+        "target_ref": "review_item:review_workflow_release_ready",
+    }

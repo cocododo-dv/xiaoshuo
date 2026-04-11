@@ -1,6 +1,15 @@
 import { defineStore } from "pinia";
 
-import { createReviewItem, fetchKnowledge, fetchKnowledgeDetail, fetchReviewItems } from "../lib/api";
+import {
+  actOnHumanReviewEvent,
+  approveReview,
+  createReviewItem,
+  fetchKnowledge,
+  fetchKnowledgeDetail,
+  fetchReviewItems,
+  releaseReview,
+  retryVerify,
+} from "../lib/api";
 
 const ITEM_TYPE_TO_OBJECT_TYPE = {
   style_observation: "style_observation",
@@ -108,7 +117,11 @@ function mergeDetailWithPending(detail, reviewItems) {
     return null;
   }
   const mergedList = mergeKnowledgeAndPendingReviews([detail], reviewItems);
-  return mergedList[0] || detail;
+  return (
+    mergedList.find(
+      (item) => item.object_type === detail.object_type && item.lineage_key === detail.lineage_key,
+    ) || detail
+  );
 }
 
 function normalizeFilters(value = EMPTY_FILTERS) {
@@ -209,12 +222,15 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
     items: [],
     pendingReviewItems: [],
     detail: null,
+    selectedObjectType: "",
+    selectedLineageKey: "",
     supportedObjectTypes: [],
     filters: { ...EMPTY_FILTERS },
     detailRequestId: 0,
     loading: false,
     actionId: "",
     lastCreateResult: null,
+    lastActionResult: null,
     error: "",
   }),
   actions: {
@@ -238,11 +254,18 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
             ...Object.values(ITEM_TYPE_TO_OBJECT_TYPE),
           ]),
         ).sort();
-        if (this.detail) {
-          const mergedDetail = mergeDetailWithPending(this.detail, this.pendingReviewItems);
-          if (requestId === this.detailRequestId) {
-            this.detail = mergedDetail && itemMatchesFilters(mergedDetail, this.filters) ? mergedDetail : null;
-          }
+        if (requestId === this.detailRequestId) {
+          const selectedItem = this.selectedObjectType && this.selectedLineageKey
+            ? this.items.find(
+              (item) => item.object_type === this.selectedObjectType && item.lineage_key === this.selectedLineageKey,
+            )
+            : null;
+          const mergedDetail = this.detail
+            && this.detail.object_type === this.selectedObjectType
+            && this.detail.lineage_key === this.selectedLineageKey
+            ? mergeDetailWithPending(this.detail, this.pendingReviewItems)
+            : selectedItem;
+          this.detail = mergedDetail && itemMatchesFilters(mergedDetail, this.filters) ? mergedDetail : null;
         }
       } catch (error) {
         this.items = [];
@@ -258,6 +281,8 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
       const requestId = ++this.detailRequestId;
       this.actionId = `detail:${objectType}:${lineageKey}`;
       this.error = "";
+      this.selectedObjectType = objectType;
+      this.selectedLineageKey = lineageKey;
       try {
         const existing = this.items.find(
           (item) => item.object_type === objectType && item.lineage_key === lineageKey,
@@ -265,9 +290,6 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         const optimisticDetail = existing && itemMatchesFilters(existing, this.filters) ? existing : null;
         if (requestId === this.detailRequestId && optimisticDetail) {
           this.detail = optimisticDetail;
-        }
-        if (existing && (!existing.versions || existing.versions.length === 0)) {
-          return optimisticDetail;
         }
         const detail = await fetchKnowledgeDetail(objectType, lineageKey);
         if (requestId !== this.detailRequestId) {
@@ -289,6 +311,13 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         }
       }
     },
+    async refreshSelection(objectType = this.selectedObjectType, lineageKey = this.selectedLineageKey) {
+      await this.load(this.filters);
+      if (!objectType || !lineageKey) {
+        return null;
+      }
+      return this.selectItem(objectType, lineageKey);
+    },
     async createCandidate(form) {
       this.actionId = "create";
       this.error = "";
@@ -296,8 +325,74 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         const payload = buildCreatePayload(form);
         const result = await createReviewItem(payload);
         this.lastCreateResult = result;
-        await this.load(this.filters);
+        const objectType = objectTypeForItemType(payload.item_type);
+        const lineageKey =
+          payload.candidate_payload_json?.lineage_key
+          || payload.candidate_payload_json?.scene_id
+          || payload.candidate_payload_json?.chapter_id
+          || payload.review_id;
+        await this.refreshSelection(objectType, lineageKey);
         return `Created candidate ${result.review_id}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async approveReview(reviewId) {
+      this.actionId = `approve:${reviewId}`;
+      this.error = "";
+      try {
+        const result = await approveReview(reviewId);
+        this.lastActionResult = result;
+        await this.refreshSelection();
+        return `Approved ${reviewId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async retryVerifyJob(jobId) {
+      this.actionId = `verify:${jobId}`;
+      this.error = "";
+      try {
+        const result = await retryVerify(jobId);
+        this.lastActionResult = result;
+        await this.refreshSelection();
+        return `Retried verify for ${jobId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async releaseReview(reviewId) {
+      this.actionId = `release:${reviewId}`;
+      this.error = "";
+      try {
+        const result = await releaseReview(reviewId);
+        this.lastActionResult = result;
+        await this.refreshSelection();
+        return `Released ${reviewId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async actOnHumanReviewEvent(eventId, action) {
+      this.actionId = `human-review:${eventId}:${action}`;
+      this.error = "";
+      try {
+        const result = await actOnHumanReviewEvent(eventId, action);
+        this.lastActionResult = result;
+        await this.refreshSelection();
+        return `Applied ${action} to ${eventId} (${result.status || "updated"})`;
       } catch (error) {
         this.error = error.message;
         throw error;

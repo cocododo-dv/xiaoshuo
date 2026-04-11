@@ -21,7 +21,7 @@ export default defineConfig({
       timeout: 120000,
     },
     {
-      command: "npm run build && python -m http.server 8081 -d dist",
+      command: "cmd /c \"npm run build && npx vite preview --host 127.0.0.1 --port 8081 --strictPort\"",
       url: "http://127.0.0.1:8081",
       reuseExistingServer: false,
       timeout: 120000,

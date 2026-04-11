@@ -16,13 +16,11 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-lineage-key").fill("STYLE_KNOWLEDGE_E2E");
   await page.getByTestId("knowledge-candidate-text").fill("keep the reunion tight and gesture-led");
   await page.getByTestId("knowledge-create-button").click();
-
-  const styleRuleReview = page.getByTestId("review-card-review_knowledge_style_rule");
-  await expect(styleRuleReview).toBeVisible();
-  await styleRuleReview.getByTestId("review-approve-review_knowledge_style_rule").click();
+  await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
+  await expect(page.getByTestId("knowledge-detail-lineage")).toContainText("STYLE_KNOWLEDGE_E2E");
+  await page.getByTestId("knowledge-approve-review-review_knowledge_style_rule").click();
   await expect(page.getByTestId("notice-stack")).toContainText("Approved review_knowledge_style_rule as ops.knowledge.e2e");
 
-  await page.getByTestId("nav-knowledge").click();
   await page.getByTestId("knowledge-filter-select").selectOption("style_rule");
   await page.getByTestId("knowledge-scope-filter").fill("global");
   await page.getByTestId("knowledge-scope-ref-filter").fill("global");
@@ -45,6 +43,11 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-open-review-ref-review_knowledge_style_rule").click();
   await expect(page.getByTestId("review-card-review_knowledge_style_rule")).toHaveClass(/focused-card/);
   await page.getByTestId("nav-knowledge").click();
+  await page.getByTestId("knowledge-filter-select").selectOption("");
+  await page.getByTestId("knowledge-scope-filter").fill("");
+  await page.getByTestId("knowledge-scope-ref-filter").fill("");
+  await page.getByTestId("knowledge-status-filter").selectOption("");
+  await page.getByTestId("knowledge-refresh-button").click();
 
   await page.getByTestId("knowledge-review-id").fill("review_knowledge_calibration");
   await page.getByTestId("knowledge-item-type").selectOption("calibration_candidate");
@@ -52,22 +55,14 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-candidate-text").fill("the gate sighed shut on the unfinished question");
   await page.getByTestId("knowledge-active-on-approve").selectOption("0");
   await page.getByTestId("knowledge-create-button").click();
-
-  const calibrationReview = page.getByTestId("review-card-review_knowledge_calibration");
-  await expect(calibrationReview).toBeVisible();
-  await calibrationReview.getByTestId("review-approve-review_knowledge_calibration").click();
+  await page.getByTestId("knowledge-view-detail-calibration_line-CAL_KNOWLEDGE_E2E").click();
+  await page.getByTestId("knowledge-approve-review-review_knowledge_calibration").click();
   await expect(page.getByTestId("notice-stack")).toContainText("Approved review_knowledge_calibration as ops.knowledge.e2e");
-
-  await page.getByTestId("nav-index").click();
-  const verifyJob = page.getByTestId("verify-job-verify_review_knowledge_calibration");
-  await expect(verifyJob).toBeVisible();
-  await verifyJob.getByTestId("retry-verify-job-verify_review_knowledge_calibration").click();
+  await page.getByTestId("knowledge-retry-verify-verify_review_knowledge_calibration").click();
   await expect(page.getByTestId("notice-stack")).toContainText(
     "Retried verify for verify_review_knowledge_calibration as ops.knowledge.e2e",
   );
-
-  await page.getByTestId("nav-review").click();
-  await calibrationReview.getByTestId("review-release-review_knowledge_calibration").click();
+  await page.getByTestId("knowledge-release-review-review_knowledge_calibration").click();
   await expect(page.getByTestId("notice-stack")).toContainText("Released review_knowledge_calibration as ops.knowledge.e2e");
 
   await page.getByTestId("nav-workbench").click();

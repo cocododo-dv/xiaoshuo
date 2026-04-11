@@ -1,14 +1,32 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from collections import defaultdict
 from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SceneBundle, VectorAliasRegistry, VersionRegistry
+from novel_system.db.models import (
+    HumanReviewEvent,
+    OperationLog,
+    ReindexJob,
+    ReviewItem,
+    SceneBundle,
+    VectorAliasRegistry,
+    VerifyJob,
+    VersionRegistry,
+)
 from novel_system.services.errors import DomainError
-from novel_system.services.knowledge_registry import all_descriptors, descriptor_for_object_type
+from novel_system.services.human_review_support import (
+    human_review_followup_target,
+    human_review_linked_target,
+    structured_target,
+    structured_target_from_ref,
+    structured_target_from_replay_result,
+)
+from novel_system.services.knowledge_registry import all_descriptors, descriptor_for_item_type, descriptor_for_object_type
 
 
 def list_knowledge(
@@ -50,7 +68,7 @@ def list_knowledge(
 
 def get_knowledge(session: Session, *, object_type: str, lineage_key: str) -> dict[str, Any]:
     try:
-        descriptor_for_object_type(object_type)
+        descriptor = descriptor_for_object_type(object_type)
     except KeyError as exc:
         raise DomainError("KNOWLEDGE_OBJECT_TYPE_NOT_FOUND", f"unknown object type {object_type}", status_code=404) from exc
 
@@ -62,9 +80,41 @@ def get_knowledge(session: Session, *, object_type: str, lineage_key: str) -> di
         )
         .order_by(VersionRegistry.version.desc())
     ).scalars().all()
-    if not registries:
+    related_reviews = _related_reviews(
+        session,
+        object_type=object_type,
+        lineage_key=lineage_key,
+        review_refs=[],
+    )
+    if not registries and not related_reviews:
         raise DomainError("KNOWLEDGE_NOT_FOUND", f"{object_type}/{lineage_key} not found", status_code=404)
-    return _serialize_entry(session, object_type, lineage_key, registries)
+
+    if registries:
+        payload = _serialize_entry(session, object_type, lineage_key, registries)
+        related_reviews = _related_reviews(
+            session,
+            object_type=object_type,
+            lineage_key=lineage_key,
+            review_refs=payload.get("review_refs", []),
+        )
+        if related_reviews:
+            payload["review_refs"] = list(
+                dict.fromkeys([*payload.get("review_refs", []), *(review.review_id for review in related_reviews)])
+            )
+            pending_candidate = _candidate_version_from_reviews(related_reviews)
+            if pending_candidate is not None:
+                payload["candidate_version"] = pending_candidate
+    else:
+        payload = _serialize_pending_entry(descriptor.object_type, lineage_key, related_reviews)
+
+    payload["workflow"] = _serialize_workflow(
+        session,
+        object_type=descriptor.object_type,
+        lineage_key=lineage_key,
+        payload=payload,
+        reviews=related_reviews,
+    )
+    return payload
 
 
 def _serialize_entry(
@@ -215,3 +265,652 @@ def _matches_filters(
 
 def supported_object_types() -> list[str]:
     return [descriptor.object_type for descriptor in all_descriptors()]
+
+
+def _serialize_pending_entry(object_type: str, lineage_key: str, reviews: list[ReviewItem]) -> dict[str, Any]:
+    candidate_version = _candidate_version_from_reviews(reviews)
+    return {
+        "object_type": object_type,
+        "lineage_key": lineage_key,
+        "status": "candidate" if candidate_version is not None else "unknown",
+        "active_version": None,
+        "candidate_version": candidate_version,
+        "versions": [],
+        "review_refs": [review.review_id for review in reviews],
+        "runtime_refs": {"mode": "pending_review"},
+        "bundle_refs": [],
+    }
+
+
+def _candidate_version_from_reviews(reviews: list[ReviewItem]) -> dict[str, Any] | None:
+    for review in reviews:
+        if review.status == "rejected":
+            continue
+        return _serialize_review_candidate(review)
+    return None
+
+
+def _serialize_review_candidate(review: ReviewItem) -> dict[str, Any]:
+    payload = review.candidate_payload_json or {}
+    return {
+        "review_id": review.review_id,
+        "text": review.candidate_text,
+        "active_flag": False,
+        "runtime_eligible": False,
+        "review_status": review.status,
+        "materialize_status": review.materialize_status,
+        "target_collection": review.target_collection,
+        "scope": payload.get("scope"),
+        "scope_ref_id": payload.get("scope_ref_id"),
+        "character_id": payload.get("character_id"),
+        "left_character_id": payload.get("left_character_id"),
+        "right_character_id": payload.get("right_character_id"),
+        "chapter_id": payload.get("chapter_id") or review.chapter_id,
+        "scene_id": payload.get("scene_id") or review.scene_id,
+        "lineage_key": _review_lineage_key(review),
+    }
+
+
+def _related_reviews(
+    session: Session,
+    *,
+    object_type: str,
+    lineage_key: str,
+    review_refs: list[str],
+) -> list[ReviewItem]:
+    related: list[ReviewItem] = []
+    review_ref_set = set(review_refs)
+    items = session.execute(
+        select(ReviewItem).order_by(ReviewItem.created_at.desc(), ReviewItem.review_id.desc())
+    ).scalars().all()
+    for item in items:
+        if item.review_id in review_ref_set:
+            related.append(item)
+            continue
+        try:
+            descriptor = descriptor_for_item_type(item.item_type)
+        except KeyError:
+            continue
+        if descriptor.object_type != object_type:
+            continue
+        if _review_lineage_key(item) == lineage_key:
+            related.append(item)
+    deduped: list[ReviewItem] = []
+    seen_review_ids: set[str] = set()
+    for item in related:
+        if item.review_id in seen_review_ids:
+            continue
+        seen_review_ids.add(item.review_id)
+        deduped.append(item)
+    return deduped
+
+
+def _review_lineage_key(review: ReviewItem) -> str:
+    payload = review.candidate_payload_json or {}
+    return payload.get("lineage_key") or payload.get("scene_id") or payload.get("chapter_id") or review.review_id
+
+
+def _serialize_workflow(
+    session: Session,
+    *,
+    object_type: str,
+    lineage_key: str,
+    payload: dict[str, Any],
+    reviews: list[ReviewItem],
+) -> dict[str, Any]:
+    serialized_reviews = [_serialize_review_item(review) for review in reviews]
+    review_ids = [review.review_id for review in reviews]
+    alias_scope = payload.get("runtime_refs", {}).get("alias_scope")
+    serialized_jobs = _related_jobs(session, review_ids=review_ids, alias_scope=alias_scope)
+    target_refs = {
+        *(f"review_item:{review_id}" for review_id in review_ids),
+        *(item["target_ref"] for item in serialized_jobs),
+    }
+    serialized_events = _related_human_review_events(session, target_refs=target_refs)
+    return {
+        "review_items": serialized_reviews,
+        "jobs": serialized_jobs,
+        "human_review_events": serialized_events,
+        "target_activity_groups": _related_target_activity_groups(session, target_refs=target_refs),
+        "recommended_primary_action": _recommended_primary_action(
+            payload=payload,
+            reviews=serialized_reviews,
+            jobs=serialized_jobs,
+            events=serialized_events,
+        ),
+    }
+
+
+def _serialize_review_item(item: ReviewItem) -> dict[str, Any]:
+    return {
+        "review_id": item.review_id,
+        "scene_id": item.scene_id,
+        "chapter_id": item.chapter_id,
+        "item_type": item.item_type,
+        "target_collection": item.target_collection,
+        "status": item.status,
+        "candidate_text": item.candidate_text,
+        "candidate_payload_json": item.candidate_payload_json,
+        "active_on_approve": item.active_on_approve,
+        "materialize_status": item.materialize_status,
+        "approved_item_row_id": item.approved_item_row_id,
+    }
+
+
+def _related_jobs(session: Session, *, review_ids: list[str], alias_scope: str | None) -> list[dict[str, Any]]:
+    related: list[dict[str, Any]] = []
+    seen_job_ids: set[str] = set()
+    review_id_set = set(review_ids)
+    for job in session.execute(select(ReindexJob)).scalars().all():
+        if job.review_id in review_id_set or (alias_scope and job.alias_scope == alias_scope):
+            if job.job_id in seen_job_ids:
+                continue
+            seen_job_ids.add(job.job_id)
+            related.append(_serialize_reindex_job(job))
+    for job in session.execute(select(VerifyJob)).scalars().all():
+        if job.review_id in review_id_set or (alias_scope and job.alias_scope == alias_scope):
+            if job.job_id in seen_job_ids:
+                continue
+            seen_job_ids.add(job.job_id)
+            related.append(_serialize_verify_job(job))
+    related.sort(key=lambda item: (item["job_type"], item["job_id"]))
+    return related
+
+
+def _serialize_reindex_job(job: ReindexJob) -> dict[str, Any]:
+    return {
+        "job_id": job.job_id,
+        "review_id": job.review_id,
+        "status": job.status,
+        "job_type": "reindex",
+        "object_type": job.object_type,
+        "alias_scope": job.alias_scope,
+        "target_snapshot_version": job.target_snapshot_version,
+        "target_embedding_version": job.target_embedding_version,
+        "worker_id": job.worker_id,
+        "attempt_no": job.attempt_no,
+        "heartbeat_at": job.heartbeat_at,
+        "lease_expires_at": job.lease_expires_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "error_text": job.error_text,
+        "target_ref": f"reindex_job:{job.job_id}",
+    }
+
+
+def _serialize_verify_job(job: VerifyJob) -> dict[str, Any]:
+    return {
+        "job_id": job.job_id,
+        "review_id": job.review_id,
+        "status": job.status,
+        "job_type": "verify",
+        "object_type": job.object_type,
+        "alias_scope": job.alias_scope,
+        "target_snapshot_version": job.target_snapshot_version,
+        "target_embedding_version": job.target_embedding_version,
+        "worker_id": job.worker_id,
+        "attempt_no": job.attempt_no,
+        "heartbeat_at": job.heartbeat_at,
+        "lease_expires_at": job.lease_expires_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "error_text": job.error_text,
+        "target_ref": f"verify_job:{job.job_id}",
+    }
+
+
+def _related_human_review_events(session: Session, *, target_refs: set[str]) -> list[dict[str, Any]]:
+    if not target_refs:
+        return []
+    related: list[dict[str, Any]] = []
+    events = session.execute(
+        select(HumanReviewEvent).order_by(HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc())
+    ).scalars().all()
+    for item in events:
+        serialized = _serialize_human_review_event(item)
+        candidate_refs = {
+            target["target_ref"]
+            for target in (
+                serialized.get("linked_target"),
+                serialized.get("followup_target"),
+                serialized.get("replay_target"),
+            )
+            if target is not None
+        }
+        if candidate_refs & target_refs:
+            related.append(serialized)
+    return related
+
+
+def _serialize_human_review_event(item: HumanReviewEvent) -> dict[str, Any]:
+    details = dict(item.details_json or {})
+    return {
+        "event_id": item.event_id,
+        "scene_id": item.scene_id,
+        "chapter_id": item.chapter_id,
+        "object_ref": item.object_ref,
+        "event_source": item.event_source,
+        "priority": item.priority,
+        "owner": item.owner,
+        "status": item.status,
+        "allowed_actions_json": item.allowed_actions_json,
+        "result_status_map_json": item.result_status_map_json,
+        "details_json": details,
+        "linked_target": human_review_linked_target(details, item.scene_id),
+        "followup_target": human_review_followup_target(details),
+        "replay_target": structured_target_from_replay_result(details.get("last_replay_result")),
+        "default_action": item.default_action,
+    }
+
+
+def _related_target_activity_groups(session: Session, *, target_refs: set[str]) -> list[dict[str, Any]]:
+    if not target_refs:
+        return []
+    groups = _serialize_target_activity_groups(
+        _serialize_recovery_timeline(session),
+        _serialize_system_runtime_timeline(session),
+        _serialize_operator_action_timeline(session),
+    )
+    return [group for group in groups if group["target"]["target_ref"] in target_refs]
+
+
+def _recommended_primary_action(
+    *,
+    payload: dict[str, Any],
+    reviews: list[dict[str, Any]],
+    jobs: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for event in events:
+        if event["status"] == "resolved":
+            continue
+        action = event.get("default_action")
+        if not action or action == "inspect":
+            continue
+        return {
+            "kind": "human_review_event",
+            "action": action,
+            "event_id": event["event_id"],
+            "label": _action_label(action),
+            "target_ref": f"human_review_event:{event['event_id']}",
+        }
+
+    for review in reviews:
+        if review["status"] == "pending":
+            return {
+                "kind": "review",
+                "action": "approve_review",
+                "review_id": review["review_id"],
+                "label": "Approve",
+                "target_ref": f"review_item:{review['review_id']}",
+            }
+
+    for job in jobs:
+        if job["job_type"] == "verify" and job["status"] != "succeeded":
+            return {
+                "kind": "verify_job",
+                "action": "retry_verify",
+                "job_id": job["job_id"],
+                "label": "Retry Verify",
+                "target_ref": job["target_ref"],
+            }
+
+    active_row_id = (payload.get("active_version") or {}).get("row_id")
+    for review in reviews:
+        if review["status"] != "approved" or review["materialize_status"] != "succeeded":
+            continue
+        if not review.get("approved_item_row_id") or review["approved_item_row_id"] == active_row_id:
+            continue
+        verify_jobs = [
+            job
+            for job in jobs
+            if job["job_type"] == "verify" and job.get("review_id") == review["review_id"]
+        ]
+        if verify_jobs and not any(job["status"] == "succeeded" for job in verify_jobs):
+            continue
+        if not _effective_at_is_due((payload.get("candidate_version") or {}).get("effective_at")):
+            continue
+        return {
+            "kind": "review",
+            "action": "release_review",
+            "review_id": review["review_id"],
+            "label": "Release",
+            "target_ref": f"review_item:{review['review_id']}",
+        }
+    return None
+
+
+def _effective_at_is_due(effective_at: str | None) -> bool:
+    if not effective_at:
+        return True
+    try:
+        return datetime.fromisoformat(effective_at.replace("Z", "+00:00")) <= datetime.now(UTC)
+    except ValueError:
+        return True
+
+
+def _action_label(action: str) -> str:
+    return {
+        "approve_review": "Approve",
+        "retry_verify": "Retry Verify",
+        "release_review": "Release",
+        "retry_request": "Retry Request",
+        "inspect": "Inspect",
+    }.get(action, action.replace("_", " ").title())
+
+
+def _serialize_recovery_timeline(session: Session) -> list[dict[str, Any]]:
+    items = session.execute(
+        select(HumanReviewEvent)
+        .where(HumanReviewEvent.event_source == "idempotency_recovery")
+    ).scalars().all()
+    serialized = [_serialize_recovery_event(item) for item in items]
+    serialized.sort(
+        key=lambda item: (
+            item["last_action_at"] or "",
+            item["created_at"] or "",
+            item["event_id"] or "",
+        ),
+        reverse=True,
+    )
+    return serialized
+
+
+def _serialize_recovery_event(item: HumanReviewEvent) -> dict[str, Any]:
+    details = dict(item.details_json or {})
+    linked_target = human_review_linked_target(details, item.scene_id)
+    followup_target = human_review_followup_target(details)
+    replay_target = structured_target_from_replay_result(details.get("last_replay_result"))
+    return {
+        "event_id": item.event_id,
+        "event_source": item.event_source,
+        "priority": item.priority,
+        "status": item.status,
+        "object_ref": item.object_ref,
+        "default_action": item.default_action,
+        "linked_target": linked_target,
+        "allowed_actions_json": item.allowed_actions_json,
+        "result_status_map_json": item.result_status_map_json,
+        "linked_target_ref": linked_target["target_ref"] if linked_target else details.get("linked_target_ref"),
+        "resolution_reason": details.get("resolution_reason"),
+        "followup_action": details.get("followup_action"),
+        "followup_target": followup_target,
+        "followup_target_ref": followup_target["target_ref"] if followup_target else details.get("followup_target_ref"),
+        "last_action": details.get("last_action"),
+        "last_action_at": details.get("last_action_at"),
+        "last_action_status": details.get("last_action_status"),
+        "last_actor_ref": details.get("last_actor_ref"),
+        "last_replay_result": details.get("last_replay_result"),
+        "replay_target": replay_target,
+        "details_json": details,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
+def _serialize_system_runtime_timeline(session: Session) -> list[dict[str, Any]]:
+    items = session.execute(
+        select(OperationLog)
+        .where(OperationLog.object_type == "runtime_activity")
+        .order_by(OperationLog.created_at.desc(), OperationLog.operation_id.desc())
+    ).scalars().all()
+    return [_serialize_system_runtime_activity(item) for item in items]
+
+
+def _serialize_operator_action_timeline(session: Session) -> list[dict[str, Any]]:
+    items = session.execute(
+        select(OperationLog)
+        .where(or_(OperationLog.event_type == "human_review_action", OperationLog.event_type == "operator_action"))
+        .order_by(OperationLog.created_at.desc(), OperationLog.operation_id.desc())
+    ).scalars().all()
+    return [_serialize_operator_action(item) for item in items]
+
+
+def _serialize_system_runtime_activity(item: OperationLog) -> dict[str, Any]:
+    payload = dict(item.payload_json or {})
+    return {
+        "operation_id": item.operation_id,
+        "event_type": item.event_type,
+        "object_ref": item.object_ref,
+        "actor_ref": payload.get("actor_ref"),
+        "summary": payload.get("summary"),
+        "created_at": item.created_at,
+        "target_refs": _operation_log_target_refs(item.object_type, item.event_type, item.object_ref, payload),
+        "payload_json": payload,
+    }
+
+
+def _serialize_operator_action(item: OperationLog) -> dict[str, Any]:
+    payload = dict(item.payload_json or {})
+    data = {
+        "operation_id": item.operation_id,
+        "event_type": item.event_type,
+        "event_id": item.object_ref if item.object_type == "human_review_event" else None,
+        "object_ref": item.object_ref,
+        "actor_ref": payload.get("actor_ref"),
+        "action": payload.get("action"),
+        "status_before": payload.get("status_before"),
+        "status_after": payload.get("status_after"),
+        "resolution_reason": payload.get("resolution_reason") or payload.get("summary"),
+        "created_at": item.created_at,
+        "target_refs": _operation_log_target_refs(item.object_type, item.event_type, item.object_ref, payload),
+        "payload_json": payload,
+    }
+    if item.event_type == "operator_action":
+        data["summary"] = payload.get("summary")
+    return data
+
+
+def _operation_log_target_refs(
+    object_type: str,
+    event_type: str,
+    object_ref: str,
+    payload: dict[str, Any],
+) -> list[dict[str, str]]:
+    targets: list[dict[str, str]] = []
+
+    if object_type == "human_review_event" and object_ref:
+        event_target = structured_target("human_review_event", object_ref)
+        if event_target is not None:
+            targets.append(event_target)
+
+    for value in payload.get("target_refs") or []:
+        target = _coerce_target(value)
+        if target is not None:
+            targets.append(target)
+
+    if object_type in {"review_item", "scene_card", "verify_job", "reindex_job"} and object_ref:
+        direct_target = structured_target(object_type, object_ref)
+        if direct_target is not None:
+            targets.append(direct_target)
+
+    review_id = payload.get("review_id")
+    if isinstance(review_id, str) and review_id:
+        targets.append(
+            {
+                "target_type": "review_item",
+                "target_id": review_id,
+                "target_ref": f"review_item:{review_id}",
+            }
+        )
+
+    event_id = payload.get("event_id")
+    if isinstance(event_id, str) and event_id:
+        targets.append(
+            {
+                "target_type": "human_review_event",
+                "target_id": event_id,
+                "target_ref": f"human_review_event:{event_id}",
+            }
+        )
+
+    job_id = payload.get("job_id")
+    job_type = payload.get("job_type")
+    if isinstance(job_id, str) and job_id:
+        if job_type == "reindex" or job_id.startswith("reindex_"):
+            target_type = "reindex_job"
+        else:
+            target_type = "verify_job"
+        targets.append(
+            {
+                "target_type": target_type,
+                "target_id": job_id,
+                "target_ref": f"{target_type}:{job_id}",
+            }
+        )
+    elif event_type == "runtime_job_reclaimed":
+        if object_ref.startswith("reindex_"):
+            target_type = "reindex_job"
+        else:
+            target_type = "verify_job"
+        targets.append(
+            {
+                "target_type": target_type,
+                "target_id": object_ref,
+                "target_ref": f"{target_type}:{object_ref}",
+            }
+        )
+
+    for key in ("linked_target", "followup_target", "replay_target"):
+        target = _coerce_target(payload.get(key))
+        if target is not None:
+            targets.append(target)
+
+    for key in ("linked_target_ref", "followup_target_ref", "replay_target_ref"):
+        target = structured_target_from_ref(payload.get(key))
+        if target is not None:
+            targets.append(target)
+
+    deduped: list[dict[str, str]] = []
+    seen_refs: set[str] = set()
+    for target in targets:
+        target_ref = target["target_ref"]
+        if target_ref in seen_refs:
+            continue
+        seen_refs.add(target_ref)
+        deduped.append(target)
+    return deduped
+
+
+def _coerce_target(value: object) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    return structured_target(value.get("target_type"), value.get("target_id"), value.get("target_ref"))
+
+
+def _serialize_target_activity_groups(
+    recovery_timeline: list[dict[str, Any]],
+    system_runtime_timeline: list[dict[str, Any]],
+    operator_action_timeline: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+
+    for item in recovery_timeline:
+        targets = _dedupe_targets([item.get("linked_target"), item.get("followup_target"), item.get("replay_target")])
+        entry = {
+            "activity_key": f"recovery_timeline:{item['event_id']}",
+            "source": "recovery_timeline",
+            "timestamp": item.get("last_action_at") or item.get("created_at"),
+            "actor_ref": item.get("last_actor_ref"),
+            "label": item.get("last_action") or item.get("default_action"),
+            "status": item.get("status"),
+            "summary": item.get("resolution_reason"),
+            "object_ref": item.get("object_ref"),
+            "target_refs": targets,
+        }
+        _append_target_group_entries(groups, targets, entry)
+
+    for item in system_runtime_timeline:
+        targets = _dedupe_targets(item.get("target_refs") or [])
+        entry = {
+            "activity_key": f"system_runtime:{item['operation_id']}",
+            "source": "system_runtime",
+            "timestamp": item.get("created_at"),
+            "actor_ref": item.get("actor_ref"),
+            "label": item.get("event_type"),
+            "status": None,
+            "summary": item.get("summary"),
+            "object_ref": item.get("object_ref"),
+            "target_refs": targets,
+        }
+        _append_target_group_entries(groups, targets, entry)
+
+    for item in operator_action_timeline:
+        targets = _dedupe_targets(item.get("target_refs") or [])
+        entry = {
+            "activity_key": f"operator_action:{item['operation_id']}",
+            "source": "operator_action",
+            "timestamp": item.get("created_at"),
+            "actor_ref": item.get("actor_ref"),
+            "label": item.get("action") or item.get("event_type"),
+            "status": item.get("status_after"),
+            "summary": item.get("resolution_reason"),
+            "object_ref": item.get("object_ref"),
+            "target_refs": targets,
+        }
+        _append_target_group_entries(groups, targets, entry)
+
+    serialized: list[dict[str, Any]] = []
+    for group in groups.values():
+        activity_items = sorted(
+            group["activity_items"],
+            key=lambda item: ((item.get("timestamp") or ""), item.get("activity_key") or ""),
+            reverse=True,
+        )
+        sources: list[str] = []
+        seen_sources: set[str] = set()
+        for item in activity_items:
+            source = item["source"]
+            if source in seen_sources:
+                continue
+            seen_sources.add(source)
+            sources.append(source)
+        serialized.append(
+            {
+                "target": group["target"],
+                "latest_at": activity_items[0].get("timestamp") if activity_items else None,
+                "activity_count": len(activity_items),
+                "sources": sources,
+                "activity_items": activity_items,
+            }
+        )
+    serialized.sort(key=lambda item: ((item.get("latest_at") or ""), item["target"]["target_ref"]), reverse=True)
+    return serialized
+
+
+def _append_target_group_entries(
+    groups: dict[str, dict[str, Any]],
+    targets: list[dict[str, str]],
+    entry: dict[str, Any],
+) -> None:
+    for target in targets:
+        if target["target_type"] == "human_review_event":
+            continue
+        target_ref = target["target_ref"]
+        group = groups.setdefault(
+            target_ref,
+            {
+                "target": target,
+                "activity_items": [],
+                "_seen_keys": set(),
+            },
+        )
+        activity_key = entry["activity_key"]
+        if activity_key in group["_seen_keys"]:
+            continue
+        group["_seen_keys"].add(activity_key)
+        group["activity_items"].append(entry)
+
+
+def _dedupe_targets(targets: list[dict[str, str] | None]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    seen_refs: set[str] = set()
+    for target in targets:
+        if target is None:
+            continue
+        target_ref = target["target_ref"]
+        if target_ref in seen_refs:
+            continue
+        seen_refs.add(target_ref)
+        deduped.append(target)
+    return deduped

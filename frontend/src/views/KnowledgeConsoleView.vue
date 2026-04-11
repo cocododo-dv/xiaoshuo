@@ -34,18 +34,75 @@ const draft = reactive({
 });
 
 const selectedEntryKey = computed(() =>
-  knowledgeConsole.detail ? `${knowledgeConsole.detail.object_type}:${knowledgeConsole.detail.lineage_key}` : "",
+  knowledgeConsole.selectedObjectType && knowledgeConsole.selectedLineageKey
+    ? `${knowledgeConsole.selectedObjectType}:${knowledgeConsole.selectedLineageKey}`
+    : "",
 );
 
 const catalogItems = computed(() => knowledgeConsole.items || []);
 const detailReviewRefs = computed(() => knowledgeConsole.detail?.review_refs || []);
 const detailBundleRefs = computed(() => knowledgeConsole.detail?.bundle_refs || []);
+const detailWorkflow = computed(() => knowledgeConsole.detail?.workflow || {});
+const workflowReviewItems = computed(() => detailWorkflow.value.review_items || []);
+const workflowJobs = computed(() => detailWorkflow.value.jobs || []);
+const workflowHumanReviewEvents = computed(() => detailWorkflow.value.human_review_events || []);
+const workflowTargetActivityGroups = computed(() => detailWorkflow.value.target_activity_groups || []);
+const primaryWorkflowAction = computed(() => detailWorkflow.value.recommended_primary_action || null);
+const workflowStatusItems = computed(() => {
+  const reviewStatus = workflowReviewItems.value[0]?.status || "clear";
+  const verifyJob = workflowJobs.value.find((job) => job.job_type === "verify");
+  const verifyStatus = verifyJob?.status || knowledgeConsole.detail?.runtime_refs?.verify_status || "not_required";
+  const unresolvedHumanReview = workflowHumanReviewEvents.value.find((item) => item.status !== "resolved");
+  return [
+    { label: "Knowledge", value: knowledgeConsole.detail?.status || "unknown" },
+    { label: "Review", value: reviewStatus },
+    { label: "Verify", value: verifyStatus },
+    {
+      label: "Human Review",
+      value: unresolvedHumanReview?.status || (workflowHumanReviewEvents.value.length ? "resolved" : "clear"),
+    },
+  ];
+});
 
 function previewText(version) {
   if (!version?.text) {
     return "No staged text";
   }
   return version.text;
+}
+
+function actionLabel(action) {
+  return {
+    approve_review: "Approve",
+    retry_verify: "Retry Verify",
+    release_review: "Release",
+    retry_request: "Retry Request",
+    inspect: "Inspect",
+  }[action] || action?.replaceAll("_", " ") || "Action";
+}
+
+function canReleaseReview(review) {
+  if (!review?.approved_item_row_id) {
+    return false;
+  }
+  if (knowledgeConsole.detail?.active_version?.row_id === review.approved_item_row_id) {
+    return false;
+  }
+  return !workflowJobs.value.some(
+    (job) => job.job_type === "verify" && job.review_id === review.review_id && job.status !== "succeeded",
+  );
+}
+
+function jobTarget(job) {
+  if (!job?.job_id || !job?.job_type) {
+    return null;
+  }
+  const targetType = job.job_type === "reindex" ? "reindex_job" : "verify_job";
+  return {
+    target_type: targetType,
+    target_id: job.job_id,
+    target_ref: `${targetType}:${job.job_id}`,
+  };
 }
 
 function selectEntry(item) {
@@ -55,8 +112,9 @@ function selectEntry(item) {
 }
 
 async function refreshKnowledge() {
+  const hadSelection = Boolean(knowledgeConsole.selectedObjectType && knowledgeConsole.selectedLineageKey);
   await knowledgeConsole.load(filters);
-  if (!knowledgeConsole.detail && knowledgeConsole.items.length) {
+  if (!hadSelection && !knowledgeConsole.selectedObjectType && !knowledgeConsole.selectedLineageKey && !knowledgeConsole.detail && knowledgeConsole.items.length) {
     await knowledgeConsole.selectItem(knowledgeConsole.items[0].object_type, knowledgeConsole.items[0].lineage_key);
   }
   if (knowledgeConsole.error) {
@@ -67,20 +125,6 @@ async function refreshKnowledge() {
 async function submitCandidate() {
   try {
     const message = await knowledgeConsole.createCandidate(draft);
-    if (knowledgeConsole.lastCreateResult?.review_id) {
-      openTarget(
-        {
-          target_type: "review_item",
-          target_id: knowledgeConsole.lastCreateResult.review_id,
-          target_ref: `review_item:${knowledgeConsole.lastCreateResult.review_id}`,
-        },
-        {
-          view_id: "review",
-          source_type: "knowledge_create",
-          source_id: knowledgeConsole.lastCreateResult.review_id,
-        },
-      );
-    }
     emit("notice", message);
   } catch (error) {
     emit("notice", error.message);
@@ -164,6 +208,102 @@ function openBundleWorkbench(bundleRef) {
   emit("notice", `Opened scene_card:${bundleRef.scene_id}`);
 }
 
+function openJobTarget(job) {
+  const target = jobTarget(job);
+  if (!target) {
+    return;
+  }
+  openTarget(target, {
+    source_type: "knowledge_workflow_job",
+    source_id: job.job_id,
+  });
+  emit("notice", `Opened ${target.target_ref}`);
+}
+
+function openHumanReviewEvent(event) {
+  if (!event?.event_id) {
+    return;
+  }
+  openTarget(
+    {
+      target_type: "human_review_event",
+      target_id: event.event_id,
+      target_ref: `human_review_event:${event.event_id}`,
+    },
+    {
+      view_id: "review",
+      source_type: "knowledge_workflow_event",
+      source_id: event.event_id,
+    },
+  );
+  emit("notice", `Opened human_review_event:${event.event_id}`);
+}
+
+function openActivityTarget(group) {
+  if (!group?.target) {
+    return;
+  }
+  openTarget(group.target, {
+    source_type: "knowledge_target_activity",
+    source_id: group.target.target_ref,
+  });
+  emit("notice", `Opened ${group.target.target_ref}`);
+}
+
+async function runApprove(reviewId) {
+  try {
+    emit("notice", await knowledgeConsole.approveReview(reviewId));
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function runRetryVerify(jobId) {
+  try {
+    emit("notice", await knowledgeConsole.retryVerifyJob(jobId));
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function runRelease(reviewId) {
+  try {
+    emit("notice", await knowledgeConsole.releaseReview(reviewId));
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function runHumanReviewAction(eventId, action) {
+  try {
+    emit("notice", await knowledgeConsole.actOnHumanReviewEvent(eventId, action));
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function runPrimaryWorkflowAction() {
+  const action = primaryWorkflowAction.value;
+  if (!action) {
+    return;
+  }
+  if (action.kind === "review" && action.action === "approve_review") {
+    await runApprove(action.review_id);
+    return;
+  }
+  if (action.kind === "review" && action.action === "release_review") {
+    await runRelease(action.review_id);
+    return;
+  }
+  if (action.kind === "verify_job" && action.action === "retry_verify") {
+    await runRetryVerify(action.job_id);
+    return;
+  }
+  if (action.kind === "human_review_event") {
+    await runHumanReviewAction(action.event_id, action.action);
+  }
+}
+
 onMounted(() => {
   refreshKnowledge();
 });
@@ -236,7 +376,7 @@ watch(
           <div class="receipt-head">
             <div>
               <h3>New Candidate</h3>
-              <p class="muted receipt-copy">Create a review candidate here, then finish approval in Review Inbox and vector ops in Index Console.</p>
+              <p class="muted receipt-copy">Create a review candidate here, then finish approval, verify, release, and follow-up from the detail drawer.</p>
             </div>
             <span class="badge">POST /review-items</span>
           </div>
@@ -370,7 +510,7 @@ watch(
           <div class="receipt-head">
             <div>
               <h3>Detail Drawer</h3>
-              <p class="muted receipt-copy">Inspect active and candidate state, then jump to review or indexing workflows.</p>
+              <p class="muted receipt-copy">Inspect active and candidate state, then drive review, verify, release, and follow-up without leaving Knowledge Console.</p>
             </div>
             <span v-if="knowledgeConsole.detail" class="badge">{{ knowledgeConsole.detail.object_type }}</span>
           </div>
@@ -382,6 +522,56 @@ watch(
             <p data-testid="knowledge-detail-lineage"><strong>Lineage</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
             <p><strong>Active Version</strong><br />{{ previewText(knowledgeConsole.detail.active_version) }}</p>
             <p><strong>Candidate Version</strong><br />{{ previewText(knowledgeConsole.detail.candidate_version) }}</p>
+            <div class="history-stack">
+              <p class="history-title">Workflow Status</p>
+              <div class="card-actions">
+                <span v-for="item in workflowStatusItems" :key="item.label" class="badge">{{ item.label }}: {{ item.value }}</span>
+              </div>
+            </div>
+            <div class="history-stack">
+              <p class="history-title">Workflow Actions</p>
+              <div class="card-actions">
+                <button
+                  v-if="primaryWorkflowAction"
+                  class="ghost"
+                  data-testid="knowledge-workflow-primary-action"
+                  :disabled="Boolean(knowledgeConsole.actionId)"
+                  @click="runPrimaryWorkflowAction"
+                >
+                  {{ primaryWorkflowAction.label }}
+                </button>
+                <button
+                  v-for="review in workflowReviewItems.filter((item) => item.status === 'pending')"
+                  :key="`approve-${review.review_id}`"
+                  class="ghost"
+                  :data-testid="`knowledge-approve-review-${review.review_id}`"
+                  :disabled="Boolean(knowledgeConsole.actionId)"
+                  @click="runApprove(review.review_id)"
+                >
+                  Approve
+                </button>
+                <button
+                  v-for="job in workflowJobs.filter((item) => item.job_type === 'verify' && item.status !== 'succeeded')"
+                  :key="`verify-${job.job_id}`"
+                  class="ghost"
+                  :data-testid="`knowledge-retry-verify-${job.job_id}`"
+                  :disabled="Boolean(knowledgeConsole.actionId)"
+                  @click="runRetryVerify(job.job_id)"
+                >
+                  Retry Verify
+                </button>
+                <button
+                  v-for="review in workflowReviewItems.filter((item) => item.status === 'approved' && item.materialize_status === 'succeeded' && canReleaseReview(item))"
+                  :key="`release-${review.review_id}`"
+                  class="ghost"
+                  :data-testid="`knowledge-release-review-${review.review_id}`"
+                  :disabled="Boolean(knowledgeConsole.actionId)"
+                  @click="runRelease(review.review_id)"
+                >
+                  Release
+                </button>
+              </div>
+            </div>
             <div class="history-stack">
               <p class="history-title">Runtime refs</p>
               <pre class="json-block">{{ JSON.stringify(knowledgeConsole.detail.runtime_refs || {}, null, 2) }}</pre>
@@ -397,6 +587,92 @@ watch(
                   <p>{{ version.text || "-" }}</p>
                 </li>
               </ol>
+            </div>
+            <div class="history-stack">
+              <p class="history-title">Related Reviews</p>
+              <ol v-if="workflowReviewItems.length" class="history-list">
+                <li v-for="review in workflowReviewItems" :key="review.review_id" class="history-entry">
+                  <p class="history-meta">
+                    <strong>{{ review.review_id }}</strong>
+                    <span>{{ review.status }}</span>
+                  </p>
+                  <p class="muted">{{ review.materialize_status || "pending" }}</p>
+                  <div class="card-actions">
+                    <button
+                      class="ghost"
+                      :data-testid="`knowledge-open-related-review-${review.review_id}`"
+                      @click="openReviewRef(review.review_id)"
+                    >
+                      Open Review Inbox
+                    </button>
+                  </div>
+                </li>
+              </ol>
+              <p v-else class="muted">No related reviews yet.</p>
+            </div>
+            <div class="history-stack">
+              <p class="history-title">Related Jobs</p>
+              <ol v-if="workflowJobs.length" class="history-list">
+                <li v-for="job in workflowJobs" :key="job.job_id" class="history-entry">
+                  <p class="history-meta">
+                    <strong>{{ job.job_id }}</strong>
+                    <span>{{ job.status }}</span>
+                  </p>
+                  <p class="muted">{{ job.job_type }} / {{ job.alias_scope || "direct" }}</p>
+                  <div class="card-actions">
+                    <button class="ghost" @click="openJobTarget(job)">
+                      Open Index Console
+                    </button>
+                  </div>
+                </li>
+              </ol>
+              <p v-else class="muted">No related jobs yet.</p>
+            </div>
+            <div class="history-stack">
+              <p class="history-title">Related Human Review</p>
+              <ol v-if="workflowHumanReviewEvents.length" class="history-list">
+                <li v-for="event in workflowHumanReviewEvents" :key="event.event_id" class="history-entry">
+                  <p class="history-meta">
+                    <strong>{{ event.event_id }}</strong>
+                    <span>{{ event.status }}</span>
+                  </p>
+                  <p class="muted">{{ event.default_action || "inspect" }}</p>
+                  <div class="card-actions">
+                    <button class="ghost" @click="openHumanReviewEvent(event)">
+                      Open Review Inbox
+                    </button>
+                    <button
+                      v-for="action in event.allowed_actions_json || []"
+                      :key="`${event.event_id}-${action}`"
+                      class="ghost"
+                      :data-testid="`knowledge-human-review-action-${event.event_id}-${action}`"
+                      :disabled="Boolean(knowledgeConsole.actionId)"
+                      @click="runHumanReviewAction(event.event_id, action)"
+                    >
+                      {{ actionLabel(action) }}
+                    </button>
+                  </div>
+                </li>
+              </ol>
+              <p v-else class="muted">No related human review follow-up items.</p>
+            </div>
+            <div class="history-stack">
+              <p class="history-title">Target Activity</p>
+              <ol v-if="workflowTargetActivityGroups.length" class="history-list">
+                <li v-for="group in workflowTargetActivityGroups" :key="group.target.target_ref" class="history-entry">
+                  <p class="history-meta">
+                    <strong>{{ group.target.target_ref }}</strong>
+                    <span>{{ group.activity_count }} activities</span>
+                  </p>
+                  <p class="muted">{{ (group.sources || []).join(", ") || "activity" }}</p>
+                  <div class="card-actions">
+                    <button class="ghost" @click="openActivityTarget(group)">
+                      Open Target
+                    </button>
+                  </div>
+                </li>
+              </ol>
+              <p v-else class="muted">No related target activity yet.</p>
             </div>
             <div class="history-stack">
               <p class="history-title">Review refs</p>
