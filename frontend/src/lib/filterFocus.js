@@ -1,3 +1,10 @@
+export function getVisibleHumanReviewItems(humanReviewItems, selectedEventSource, recoveryItems) {
+  if (selectedEventSource) {
+    return (humanReviewItems || []).filter((item) => item.event_source === selectedEventSource);
+  }
+  return [...(recoveryItems || [])];
+}
+
 export function isReviewFocusVisible(focusTarget, reviewItems, humanReviewItems) {
   if (focusTarget?.target_type === "review_item") {
     return (reviewItems || []).some((item) => item.review_id === focusTarget.target_id);

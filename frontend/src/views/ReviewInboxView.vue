@@ -4,7 +4,7 @@ import { computed, onMounted, watch } from "vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ReviewCard from "../components/ReviewCard.vue";
-import { isReviewFocusVisible } from "../lib/filterFocus";
+import { getVisibleHumanReviewItems, isReviewFocusVisible } from "../lib/filterFocus";
 import { useShellRouter } from "../router";
 import { useIndexConsoleStore } from "../stores/indexConsole";
 import { useReviewInboxStore } from "../stores/reviewInbox";
@@ -13,11 +13,40 @@ const emit = defineEmits(["notice"]);
 
 const reviewInbox = useReviewInboxStore();
 const indexConsole = useIndexConsoleStore();
-const { activeView, focusTarget, openTarget, clearFocus } = useShellRouter();
+const shellRouter = useShellRouter();
+// const { activeView, focusTarget, openTarget } = useShellRouter()
+const { activeView, focusTarget, openTarget, clearFocus } = shellRouter;
 
-const prioritizedRecoveryItems = computed(() => {
+const visibleHumanReviewItems = computed(() =>
+  getVisibleHumanReviewItems(
+    reviewInbox.humanReviewItems,
+    reviewInbox.humanReviewFilters.eventSource,
+    reviewInbox.systemRecoveryItems,
+  ),
+);
+
+const humanReviewSection = computed(() => {
+  if (reviewInbox.humanReviewFilters.eventSource === "manual_scene_review") {
+    return {
+      title: "Manual Scene Review",
+      description: "Manual scene review events that match the current filters appear here.",
+      badge: "manual_scene_review",
+      countLabel: "manual review event",
+      empty: "No manual scene review events match the current filters.",
+    };
+  }
+  return {
+    title: "System Recovery",
+    description: "Recovery-generated human review events are surfaced here first for operator triage.",
+    badge: "idempotency_recovery",
+    countLabel: "recovery event",
+    empty: "No recovery-generated human review events match the current filters.",
+  };
+});
+
+const prioritizedHumanReviewItems = computed(() => {
   const focusEventId = focusTarget.value?.target_type === "human_review_event" ? focusTarget.value.target_id : null;
-  const items = [...reviewInbox.systemRecoveryItems];
+  const items = [...visibleHumanReviewItems.value];
   if (!focusEventId) {
     return items;
   }
@@ -158,9 +187,9 @@ watch(
 );
 
 watch(
-  () => [focusTarget.value, reviewInbox.items, reviewInbox.humanReviewItems],
+  () => [focusTarget.value, reviewInbox.items, visibleHumanReviewItems.value],
   () => {
-    if (!isReviewFocusVisible(focusTarget.value, reviewInbox.items, reviewInbox.humanReviewItems)) {
+    if (!isReviewFocusVisible(focusTarget.value, reviewInbox.items, visibleHumanReviewItems.value)) {
       clearFocus();
     }
   },
@@ -178,9 +207,9 @@ watch(
       <template #actions>
         <div class="field-inline">
           <button @click="refreshReviews">Refresh</button>
-          <span v-if="reviewInbox.systemRecoveryItems.length" class="badge">
-            {{ reviewInbox.systemRecoveryItems.length }} recovery event{{
-              reviewInbox.systemRecoveryItems.length === 1 ? "" : "s"
+          <span v-if="visibleHumanReviewItems.length" class="badge">
+            {{ visibleHumanReviewItems.length }} {{ humanReviewSection.countLabel }}{{
+              visibleHumanReviewItems.length === 1 ? "" : "s"
             }}
           </span>
         </div>
@@ -208,16 +237,16 @@ watch(
           <button data-testid="human-review-filter-refresh" @click="refreshReviews">Refresh</button>
           <button data-testid="human-review-filter-clear" @click="clearHumanReviewFilters">Clear</button>
         </div>
-        <article v-if="reviewInbox.systemRecoveryItems.length" class="paper inline-error">
+        <article v-if="visibleHumanReviewItems.length" class="paper inline-error">
           <div class="receipt-head">
             <div>
-              <h3>System Recovery</h3>
-              <p class="muted receipt-copy">Recovery-generated human review events are surfaced here first for operator triage.</p>
+              <h3>{{ humanReviewSection.title }}</h3>
+              <p class="muted receipt-copy">{{ humanReviewSection.description }}</p>
             </div>
-            <span class="badge">idempotency_recovery</span>
+            <span class="badge">{{ humanReviewSection.badge }}</span>
           </div>
           <HumanReviewDrawer
-            :items="prioritizedRecoveryItems"
+            :items="prioritizedHumanReviewItems"
             :action-id="reviewInbox.actionId"
             :focus-event-id="focusedRecoveryEventId()"
             interactive
@@ -225,6 +254,9 @@ watch(
             @open-target="handleOpenTarget"
           />
         </article>
+        <div v-else-if="reviewInbox.humanReviewFilters.eventSource" class="empty">
+          {{ humanReviewSection.empty }}
+        </div>
 
         <div v-if="!reviewInbox.items.length" class="empty">No review items are waiting.</div>
         <div v-else class="review-list">

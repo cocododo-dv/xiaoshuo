@@ -9,7 +9,7 @@ import {
   fetchIndexRuntimeLedger,
   fetchReviewItems,
 } from "../src/lib/api";
-import { isIndexFocusVisible, isReviewFocusVisible } from "../src/lib/filterFocus";
+import { getVisibleHumanReviewItems, isIndexFocusVisible, isReviewFocusVisible } from "../src/lib/filterFocus";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 
@@ -96,12 +96,34 @@ describe("query filter helpers", () => {
 });
 
 describe("focus visibility helpers", () => {
+  it("uses the selected supported human-review source when deciding which events stay visible", () => {
+    expect(
+      getVisibleHumanReviewItems(
+        [
+          { event_id: "recovery_event", event_source: "idempotency_recovery", status: "open" },
+          { event_id: "manual_event", event_source: "manual_scene_review", status: "pending" },
+        ],
+        "manual_scene_review",
+      ),
+    ).toEqual([{ event_id: "manual_event", event_source: "manual_scene_review", status: "pending" }]);
+  });
+
   it("drops review focus when the filtered payload no longer contains the focused row", () => {
     expect(
       isReviewFocusVisible(
         { target_type: "review_item", target_id: "review_scene_pending", target_ref: "review_item:review_scene_pending" },
         [{ review_id: "review_other" }],
         [],
+      ),
+    ).toBe(false);
+  });
+
+  it("drops human review focus when the focused event is not in the rendered event list", () => {
+    expect(
+      isReviewFocusVisible(
+        { target_type: "human_review_event", target_id: "manual_event", target_ref: "human_review_event:manual_event" },
+        [],
+        [{ event_id: "recovery_event", event_source: "idempotency_recovery" }],
       ),
     ).toBe(false);
   });
@@ -125,6 +147,7 @@ describe("filter controls", () => {
 
     expect(reviewSource).toContain('data-testid="review-filter-status"');
     expect(reviewSource).toContain('data-testid="human-review-filter-clear"');
+    expect(reviewSource).toContain("const { activeView, focusTarget, openTarget } = useShellRouter()");
     expect(indexSource).toContain('data-testid="index-alias-filter-verify-status"');
     expect(indexSource).toContain('data-testid="index-job-filter-review-id"');
     expect(indexSource).toContain('data-testid="index-ledger-filter-target-ref"');
