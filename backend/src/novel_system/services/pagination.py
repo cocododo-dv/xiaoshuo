@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import base64
+import json
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any, TypeVar
+
+T = TypeVar("T")
+
+DEFAULT_PAGE_SIZE = 25
+MAX_PAGE_SIZE = 100
+
+
+@dataclass(frozen=True)
+class PaginationRequest:
+    mode: str
+    limit: int
+    page: int | None
+    page_size: int | None
+    cursor: str | None
+
+
+def resolve_pagination_request(
+    *,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> PaginationRequest:
+    if cursor is not None or (limit is not None and page is None and page_size is None):
+        effective_limit = _normalize_limit(limit if limit is not None else page_size)
+        return PaginationRequest(
+            mode="cursor",
+            limit=effective_limit,
+            page=None,
+            page_size=None,
+            cursor=cursor or None,
+        )
+
+    effective_limit = _normalize_limit(page_size if page_size is not None else limit)
+    return PaginationRequest(
+        mode="page",
+        limit=effective_limit,
+        page=max(page or 1, 1),
+        page_size=effective_limit,
+        cursor=None,
+    )
+
+
+def paginate_items(
+    items: Sequence[T],
+    *,
+    request: PaginationRequest,
+    cursor_values: Callable[[T], Sequence[Any]],
+) -> tuple[list[T], dict[str, Any]]:
+    total = len(items)
+
+    if request.mode == "page":
+        assert request.page is not None
+        start = max(request.page - 1, 0) * request.limit
+        end = start + request.limit
+        page_items = list(items[start:end])
+        has_next = end < total
+        next_cursor = _encode_cursor(cursor_values(page_items[-1])) if has_next and page_items else None
+        return page_items, {
+            "mode": "page",
+            "limit": request.limit,
+            "page": request.page,
+            "page_size": request.page_size,
+            "returned": len(page_items),
+            "total": total,
+            "has_next": has_next,
+            "next_cursor": next_cursor,
+        }
+
+    start = 0
+    decoded_cursor = _decode_cursor(request.cursor)
+    if decoded_cursor is not None:
+        for index, item in enumerate(items):
+            if list(cursor_values(item)) == decoded_cursor:
+                start = index + 1
+                break
+
+    end = start + request.limit
+    page_items = list(items[start:end])
+    has_next = end < total
+    next_cursor = _encode_cursor(cursor_values(page_items[-1])) if has_next and page_items else None
+    return page_items, {
+        "mode": "cursor",
+        "limit": request.limit,
+        "page": None,
+        "page_size": None,
+        "returned": len(page_items),
+        "total": total,
+        "has_next": has_next,
+        "next_cursor": next_cursor,
+    }
+
+
+def _normalize_limit(raw_limit: int | None) -> int:
+    if raw_limit is None:
+        return DEFAULT_PAGE_SIZE
+    return max(1, min(raw_limit, MAX_PAGE_SIZE))
+
+
+def _encode_cursor(values: Sequence[Any]) -> str:
+    payload = json.dumps({"values": list(values)}, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str | None) -> list[Any] | None:
+    if not cursor:
+        return None
+
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode(f"{cursor}{padding}".encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    values = payload.get("values")
+    return values if isinstance(values, list) else None

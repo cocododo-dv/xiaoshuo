@@ -20,6 +20,7 @@ from novel_system.db.models import (
     VersionRegistry,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.human_review_support import (
     human_review_followup_target,
     human_review_linked_target,
@@ -124,7 +125,13 @@ def list_jobs(
     object_type: str | None = None,
     review_id: str | None = None,
     alias_scope: str | None = None,
-) -> list[dict[str, Any]]:
+    worker_id: str | None = None,
+    stuck_only: bool | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
     reindex_query = select(ReindexJob)
     verify_query = select(VerifyJob)
     if status:
@@ -139,11 +146,22 @@ def list_jobs(
     if alias_scope:
         reindex_query = reindex_query.where(ReindexJob.alias_scope == alias_scope)
         verify_query = verify_query.where(VerifyJob.alias_scope == alias_scope)
+    if worker_id:
+        reindex_query = reindex_query.where(ReindexJob.worker_id == worker_id)
+        verify_query = verify_query.where(VerifyJob.worker_id == worker_id)
     reindex_jobs = [] if job_type == "verify" else session.execute(reindex_query).scalars().all()
     verify_jobs = [] if job_type == "reindex" else session.execute(verify_query).scalars().all()
     items = [_serialize_reindex_job(job) for job in reindex_jobs] + [_serialize_verify_job(job) for job in verify_jobs]
-    items.sort(key=lambda item: item["job_id"])
-    return items
+    if stuck_only:
+        items = [item for item in items if _job_is_stuck(item)]
+    items.sort(key=lambda item: (item["job_type"], item["job_id"]))
+    request = resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit)
+    page_items, pagination = paginate_items(
+        items,
+        request=request,
+        cursor_values=lambda item: [item["job_type"], item["job_id"]],
+    )
+    return {"items": page_items, "pagination": pagination}
 
 
 def get_job(session: Session, job_id: str) -> dict[str, Any] | None:
@@ -229,6 +247,26 @@ def latest_recovery_action_receipt(
     )
     latest_receipt = next((item for item in recovery_timeline if item["last_action_at"]), None)
     return _serialize_recovery_receipt(latest_receipt)
+
+
+def _job_is_stuck(item: dict[str, Any]) -> bool:
+    lease_expires_at = item.get("lease_expires_at")
+    if item.get("status") != "running" or not lease_expires_at:
+        return False
+    expires_at = _parse_datetime(lease_expires_at)
+    if expires_at is None:
+        return False
+    return expires_at <= datetime.now(UTC)
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
 
 
 def _list_knowledge_items(

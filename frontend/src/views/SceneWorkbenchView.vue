@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 
 import AttemptTimeline from "../components/AttemptTimeline.vue";
 import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
+import CursorPager from "../components/CursorPager.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import { useShellRouter } from "../router";
@@ -56,6 +57,20 @@ function selectedStrategyFor(stageId) {
 
 async function loadWorkbench() {
   await workbench.refreshAll(resolveSceneId());
+  if (workbench.error) {
+    emit("notice", workbench.error);
+  }
+}
+
+async function nextAttemptsPage() {
+  await workbench.nextAttemptsPage();
+  if (workbench.error) {
+    emit("notice", workbench.error);
+  }
+}
+
+async function previousAttemptsPage() {
+  await workbench.previousAttemptsPage();
   if (workbench.error) {
     emit("notice", workbench.error);
   }
@@ -260,7 +275,7 @@ onMounted(() => {
                   :data-testid="`chapter-backfill-item-${item.stage_id}`"
                 >
                   <p><strong>{{ item.marker_text }}</strong></p>
-                  <p class="muted">Marker {{ item.marker_id }} - {{ item.stage_id }}</p>
+                  <p class="muted">Marker {{ item.marker_id }} · {{ item.stage_id }}</p>
                   <div class="field-inline">
                     <select
                       :data-testid="`chapter-backfill-strategy-${item.stage_id}`"
@@ -360,7 +375,16 @@ onMounted(() => {
     </PanelShell>
 
     <PanelShell eyebrow="Attempt Timeline" title="Execution trail">
-      <AttemptTimeline :items="workbench.data?.attempts || []" />
+      <AttemptTimeline :items="workbench.attempts" />
+      <CursorPager
+        test-id-prefix="attempts-pager"
+        :pagination="workbench.attemptPagination"
+        :can-previous="Boolean(workbench.attemptCursorStack.length)"
+        :can-next="Boolean(workbench.attemptPagination?.has_next)"
+        :disabled="workbench.attemptLoading"
+        @previous="previousAttemptsPage"
+        @next="nextAttemptsPage"
+      />
     </PanelShell>
 
     <PanelShell eyebrow="Human Review Drawer" title="Manual backflow">

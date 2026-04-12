@@ -3,6 +3,114 @@ from __future__ import annotations
 from novel_system.db.models import HumanReviewEvent, OperationLog, ReindexJob, VectorAliasRegistry, VerifyJob
 
 
+def test_jobs_support_page_cursor_worker_and_stuck_filters_on_both_routes(client, session) -> None:
+    session.add_all(
+        [
+            ReindexJob(
+                job_id="reindex_job_001",
+                review_id="review_job_001",
+                status="running",
+                object_type="style_observation",
+                alias_scope="style_observation:global:global",
+                target_snapshot_version="snapshot__review_job_001",
+                target_embedding_version="embed__review_job_001",
+                worker_id="worker-alpha",
+                attempt_no=1,
+                lease_expires_at="2026-04-11T08:00:00Z",
+            ),
+            ReindexJob(
+                job_id="reindex_job_002",
+                review_id="review_job_002",
+                status="running",
+                object_type="style_observation",
+                alias_scope="style_observation:scene:CH001_SC01",
+                target_snapshot_version="snapshot__review_job_002",
+                target_embedding_version="embed__review_job_002",
+                worker_id="worker-beta",
+                attempt_no=1,
+                lease_expires_at="2099-04-11T12:00:00Z",
+            ),
+            VerifyJob(
+                job_id="verify_job_001",
+                review_id="review_job_003",
+                status="failed",
+                object_type="style_observation",
+                alias_scope="style_observation:global:global",
+                target_snapshot_version="snapshot__review_job_003",
+                target_embedding_version="embed__review_job_003",
+            ),
+            VerifyJob(
+                job_id="verify_job_002",
+                review_id="review_job_004",
+                status="running",
+                object_type="style_observation",
+                alias_scope="style_observation:scene:CH001_SC02",
+                target_snapshot_version="snapshot__review_job_004",
+                target_embedding_version="embed__review_job_004",
+                worker_id="worker-alpha",
+                attempt_no=2,
+                lease_expires_at="2026-04-11T07:00:00Z",
+            ),
+        ]
+    )
+    session.commit()
+
+    index_page = client.get("/api/v1/index/jobs", params={"page": 1, "page_size": 2})
+    domain_page = client.get("/api/v1/jobs", params={"page": 1, "page_size": 2})
+
+    assert index_page.status_code == 200
+    assert domain_page.status_code == 200
+    index_page_data = index_page.json()["data"]
+    domain_page_data = domain_page.json()["data"]
+    assert [item["job_id"] for item in index_page_data["items"]] == ["reindex_job_001", "reindex_job_002"]
+    assert domain_page_data == index_page_data
+    assert index_page_data["pagination"]["mode"] == "page"
+    assert index_page_data["pagination"]["limit"] == 2
+    assert index_page_data["pagination"]["page"] == 1
+    assert index_page_data["pagination"]["page_size"] == 2
+    assert index_page_data["pagination"]["returned"] == 2
+    assert index_page_data["pagination"]["total"] == 4
+    assert index_page_data["pagination"]["has_next"] is True
+    assert isinstance(index_page_data["pagination"]["next_cursor"], str)
+    assert index_page_data["pagination"]["next_cursor"]
+
+    cursor_page = client.get("/api/v1/index/jobs", params={"limit": 2})
+    assert cursor_page.status_code == 200
+    cursor_page_data = cursor_page.json()["data"]
+    assert [item["job_id"] for item in cursor_page_data["items"]] == ["reindex_job_001", "reindex_job_002"]
+    assert cursor_page_data["pagination"]["mode"] == "cursor"
+    assert cursor_page_data["pagination"]["page"] is None
+    assert cursor_page_data["pagination"]["page_size"] is None
+    assert cursor_page_data["pagination"]["returned"] == 2
+    assert cursor_page_data["pagination"]["total"] == 4
+    assert cursor_page_data["pagination"]["has_next"] is True
+    assert isinstance(cursor_page_data["pagination"]["next_cursor"], str)
+    assert cursor_page_data["pagination"]["next_cursor"]
+
+    next_cursor_page = client.get(
+        "/api/v1/index/jobs",
+        params={"cursor": cursor_page_data["pagination"]["next_cursor"], "limit": 2},
+    )
+    assert next_cursor_page.status_code == 200
+    next_cursor_data = next_cursor_page.json()["data"]
+    assert [item["job_id"] for item in next_cursor_data["items"]] == ["verify_job_001", "verify_job_002"]
+    assert next_cursor_data["pagination"]["has_next"] is False
+    assert next_cursor_data["pagination"]["next_cursor"] is None
+
+    invalid_cursor_page = client.get("/api/v1/index/jobs", params={"cursor": "bad-jobs-cursor", "limit": 2})
+    assert invalid_cursor_page.status_code == 200
+    invalid_cursor_data = invalid_cursor_page.json()["data"]
+    assert [item["job_id"] for item in invalid_cursor_data["items"]] == ["reindex_job_001", "reindex_job_002"]
+
+    worker_filter = client.get("/api/v1/index/jobs", params={"worker_id": "worker-alpha"})
+    assert worker_filter.status_code == 200
+    assert [item["job_id"] for item in worker_filter.json()["data"]["items"]] == ["reindex_job_001", "verify_job_002"]
+
+    stuck_filter = client.get("/api/v1/index/jobs", params={"stuck_only": "true"})
+    assert stuck_filter.status_code == 200
+    assert [item["job_id"] for item in stuck_filter.json()["data"]["items"]] == ["reindex_job_001", "verify_job_002"]
+
+
 def test_alias_scopes_and_jobs_apply_supported_filters(client, session) -> None:
     session.add_all(
         [

@@ -19,6 +19,7 @@ from novel_system.db.models import (
 from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.pagination import paginate_items, resolve_pagination_request
 
 router = APIRouter(tags=["scenes"])
 
@@ -91,12 +92,25 @@ def scene_status(scene_id: str, request: Request, session: Session = Depends(get
 
 
 @router.get("/api/v1/scenes/{scene_id}/attempts")
-def scene_attempts(scene_id: str, request: Request, session: Session = Depends(get_session)):
+def scene_attempts(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+):
     items = session.execute(
         select(AttemptTracker).where(AttemptTracker.scene_id == scene_id).order_by(AttemptTracker.attempt_id.desc())
     ).scalars().all()
+    page_items, pagination = paginate_items(
+        items,
+        request=resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit),
+        cursor_values=lambda item: [item.attempt_id],
+    )
     return ok(
-        {"items": [_serialize_attempt(item) for item in items]},
+        {"items": [_serialize_attempt(item) for item in page_items], "pagination": pagination},
         req_id=getattr(request.state, "request_id", None),
     )
 

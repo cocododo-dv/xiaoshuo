@@ -191,7 +191,9 @@ pre {
 .job-row,
 .review-meta,
 .card-actions,
-.field-inline {
+.field-inline,
+.cursor-pager,
+.checkbox-inline {
   display: flex;
   gap: 1rem;
 }
@@ -565,6 +567,26 @@ pre {
   border-radius: 999px;
   background: rgba(163, 63, 47, 0.12);
   color: var(--accent);
+}
+
+.cursor-pager {
+  margin-top: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.cursor-pager-summary {
+  min-width: 10rem;
+}
+
+.checkbox-inline {
+  align-items: center;
+  padding: 0.35rem 0.2rem;
+}
+
+.checkbox-inline input {
+  width: auto;
 }
 
 .job-row {

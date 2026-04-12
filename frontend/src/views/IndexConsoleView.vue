@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 
 import AliasScopeCard from "../components/AliasScopeCard.vue";
+import CursorPager from "../components/CursorPager.vue";
 import PanelShell from "../components/PanelShell.vue";
 import { shouldClearIndexFocus } from "../lib/filterFocus";
 import {
@@ -362,6 +363,20 @@ async function refreshIndex() {
   }
 }
 
+async function nextJobPage() {
+  await indexConsole.nextJobPage();
+  if (indexConsole.error) {
+    emit("notice", indexConsole.error);
+  }
+}
+
+async function previousJobPage() {
+  await indexConsole.previousJobPage();
+  if (indexConsole.error) {
+    emit("notice", indexConsole.error);
+  }
+}
+
 function clearAliasFilters() {
   indexConsole.clearAliasFilters();
   refreshIndex();
@@ -509,6 +524,11 @@ watch(
             <option value="reindex">reindex</option>
           </select>
           <input v-model="indexConsole.jobFilters.reviewId" data-testid="index-job-filter-review-id" />
+          <input v-model="indexConsole.jobFilters.workerId" data-testid="index-job-filter-worker-id" />
+          <label class="checkbox-inline">
+            <input v-model="indexConsole.jobFilters.stuckOnly" data-testid="index-job-filter-stuck-only" type="checkbox" />
+            <span>Stuck only</span>
+          </label>
           <button data-testid="index-job-filter-refresh" @click="refreshIndex">Refresh</button>
           <button data-testid="index-job-filter-clear" @click="clearJobFilters">Clear</button>
         </div>
@@ -958,6 +978,15 @@ watch(
           </div>
         </div>
       </div>
+      <CursorPager
+        test-id-prefix="jobs-pager"
+        :pagination="indexConsole.jobPagination"
+        :can-previous="Boolean(indexConsole.jobCursorStack.length)"
+        :can-next="Boolean(indexConsole.jobPagination?.has_next)"
+        :disabled="indexConsole.loading"
+        @previous="previousJobPage"
+        @next="nextJobPage"
+      />
     </PanelShell>
   </section>
 </template>

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 
+import CursorPager from "../components/CursorPager.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ReviewCard from "../components/ReviewCard.vue";
@@ -104,6 +105,34 @@ function reviewFocusDeferred() {
 
 async function refreshReviews() {
   await reviewInbox.load();
+  if (reviewInbox.error) {
+    emit("notice", reviewInbox.error);
+  }
+}
+
+async function nextReviewPage() {
+  await reviewInbox.nextReviewPage();
+  if (reviewInbox.error) {
+    emit("notice", reviewInbox.error);
+  }
+}
+
+async function previousReviewPage() {
+  await reviewInbox.previousReviewPage();
+  if (reviewInbox.error) {
+    emit("notice", reviewInbox.error);
+  }
+}
+
+async function nextHumanReviewPage() {
+  await reviewInbox.nextHumanReviewPage();
+  if (reviewInbox.error) {
+    emit("notice", reviewInbox.error);
+  }
+}
+
+async function previousHumanReviewPage() {
+  await reviewInbox.previousHumanReviewPage();
   if (reviewInbox.error) {
     emit("notice", reviewInbox.error);
   }
@@ -296,6 +325,15 @@ watch(
         <div v-else-if="reviewInbox.humanReviewFilters.eventSource" class="empty">
           {{ humanReviewSection.empty }}
         </div>
+        <CursorPager
+          test-id-prefix="human-review-pager"
+          :pagination="reviewInbox.humanReviewPagination"
+          :can-previous="Boolean(reviewInbox.humanReviewCursorStack.length)"
+          :can-next="Boolean(reviewInbox.humanReviewPagination?.has_next)"
+          :disabled="reviewInbox.loading"
+          @previous="previousHumanReviewPage"
+          @next="nextHumanReviewPage"
+        />
 
         <div v-if="!reviewInbox.items.length" class="empty">No review items are waiting.</div>
         <div v-else class="review-list">
@@ -311,6 +349,15 @@ watch(
             @open-target="handleReviewOpenTarget"
           />
         </div>
+        <CursorPager
+          test-id-prefix="review-items-pager"
+          :pagination="reviewInbox.reviewPagination"
+          :can-previous="Boolean(reviewInbox.reviewCursorStack.length)"
+          :can-next="Boolean(reviewInbox.reviewPagination?.has_next)"
+          :disabled="reviewInbox.loading"
+          @previous="previousReviewPage"
+          @next="nextReviewPage"
+        />
       </template>
     </PanelShell>
   </section>

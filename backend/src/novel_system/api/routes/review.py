@@ -15,6 +15,7 @@ from novel_system.services.human_review_support import (
     structured_target_from_replay_result,
 )
 from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.versioning import PromotionService, ReviewMaterializationService
 
 router = APIRouter(tags=["review"])
@@ -29,6 +30,10 @@ def list_review_items(
     target_collection: str | None = None,
     scene_id: str | None = None,
     chapter_id: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
 ):
     query = select(ReviewItem)
     if status:
@@ -42,8 +47,13 @@ def list_review_items(
     if chapter_id:
         query = query.where(ReviewItem.chapter_id == chapter_id)
     items = session.execute(query.order_by(ReviewItem.created_at.desc(), ReviewItem.review_id.desc())).scalars().all()
+    page_items, pagination = paginate_items(
+        items,
+        request=resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit),
+        cursor_values=lambda item: [item.created_at, item.review_id],
+    )
     return ok(
-        {"items": [_serialize_review(item) for item in items]},
+        {"items": [_serialize_review(item) for item in page_items], "pagination": pagination},
         req_id=getattr(request.state, "request_id", None),
     )
 
@@ -175,6 +185,10 @@ def list_human_review_events(
     owner: str | None = None,
     scene_id: str | None = None,
     chapter_id: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
 ):
     query = select(HumanReviewEvent)
     if status:
@@ -190,8 +204,13 @@ def list_human_review_events(
     if chapter_id:
         query = query.where(HumanReviewEvent.chapter_id == chapter_id)
     items = session.execute(query.order_by(HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc())).scalars().all()
+    page_items, pagination = paginate_items(
+        items,
+        request=resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit),
+        cursor_values=lambda item: [item.created_at, item.event_id],
+    )
     return ok(
-        {"items": [_serialize_event(item) for item in items]},
+        {"items": [_serialize_event(item) for item in page_items], "pagination": pagination},
         req_id=getattr(request.state, "request_id", None),
     )
 

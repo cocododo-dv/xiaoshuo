@@ -3,6 +3,98 @@ from __future__ import annotations
 from novel_system.db.models import HumanReviewEvent, ReviewItem
 
 
+def test_review_items_support_page_and_cursor_pagination(client, session) -> None:
+    session.add_all(
+        [
+            ReviewItem(
+                review_id="review_page_001",
+                scene_id="CH100_SC01",
+                chapter_id="CH100",
+                item_type="style_observation",
+                status="pending",
+                candidate_text="first",
+                created_at="2026-04-11T09:00:00Z",
+            ),
+            ReviewItem(
+                review_id="review_page_002",
+                scene_id="CH100_SC01",
+                chapter_id="CH100",
+                item_type="style_observation",
+                status="pending",
+                candidate_text="second",
+                created_at="2026-04-11T09:01:00Z",
+            ),
+            ReviewItem(
+                review_id="review_page_003",
+                scene_id="CH100_SC01",
+                chapter_id="CH100",
+                item_type="style_observation",
+                status="pending",
+                candidate_text="third",
+                created_at="2026-04-11T09:02:00Z",
+            ),
+            ReviewItem(
+                review_id="review_page_004",
+                scene_id="CH100_SC01",
+                chapter_id="CH100",
+                item_type="style_observation",
+                status="pending",
+                candidate_text="fourth",
+                created_at="2026-04-11T09:03:00Z",
+            ),
+        ]
+    )
+    session.commit()
+
+    page_response = client.get("/api/v1/review-items", params={"page": 1, "page_size": 2})
+    assert page_response.status_code == 200
+    page_data = page_response.json()["data"]
+    assert [item["review_id"] for item in page_data["items"]] == ["review_page_004", "review_page_003"]
+    assert page_data["pagination"] == {
+        "mode": "page",
+        "limit": 2,
+        "page": 1,
+        "page_size": 2,
+        "returned": 2,
+        "total": 4,
+        "has_next": True,
+        "next_cursor": page_data["pagination"]["next_cursor"],
+    }
+    assert isinstance(page_data["pagination"]["next_cursor"], str)
+    assert page_data["pagination"]["next_cursor"]
+
+    cursor_response = client.get("/api/v1/review-items", params={"limit": 2})
+    assert cursor_response.status_code == 200
+    cursor_data = cursor_response.json()["data"]
+    assert [item["review_id"] for item in cursor_data["items"]] == ["review_page_004", "review_page_003"]
+    assert cursor_data["pagination"]["mode"] == "cursor"
+    assert cursor_data["pagination"]["limit"] == 2
+    assert cursor_data["pagination"]["page"] is None
+    assert cursor_data["pagination"]["page_size"] is None
+    assert cursor_data["pagination"]["returned"] == 2
+    assert cursor_data["pagination"]["total"] == 4
+    assert cursor_data["pagination"]["has_next"] is True
+    assert isinstance(cursor_data["pagination"]["next_cursor"], str)
+    assert cursor_data["pagination"]["next_cursor"]
+
+    next_cursor_response = client.get(
+        "/api/v1/review-items",
+        params={"cursor": cursor_data["pagination"]["next_cursor"], "limit": 2},
+    )
+    assert next_cursor_response.status_code == 200
+    next_cursor_data = next_cursor_response.json()["data"]
+    assert [item["review_id"] for item in next_cursor_data["items"]] == ["review_page_002", "review_page_001"]
+    assert next_cursor_data["pagination"]["mode"] == "cursor"
+    assert next_cursor_data["pagination"]["has_next"] is False
+    assert next_cursor_data["pagination"]["next_cursor"] is None
+
+    invalid_cursor_response = client.get("/api/v1/review-items", params={"cursor": "not-a-real-cursor", "limit": 2})
+    assert invalid_cursor_response.status_code == 200
+    invalid_cursor_data = invalid_cursor_response.json()["data"]
+    assert [item["review_id"] for item in invalid_cursor_data["items"]] == ["review_page_004", "review_page_003"]
+    assert invalid_cursor_data["pagination"]["mode"] == "cursor"
+
+
 def test_review_items_filter_by_status_scene_and_chapter(client, session) -> None:
     session.add_all(
         [
@@ -269,3 +361,119 @@ def test_human_review_events_apply_all_supported_filters(client, session) -> Non
 
     assert response.status_code == 200
     assert [item["event_id"] for item in response.json()["data"]["items"]] == ["human_review_filtered_match"]
+
+
+def test_human_review_events_support_page_and_cursor_pagination(client, session) -> None:
+    session.add_all(
+        [
+            HumanReviewEvent(
+                event_id="human_review_page_001",
+                scene_id="CH200_SC01",
+                chapter_id="CH200",
+                object_ref="review_page_001",
+                event_source="idempotency_recovery",
+                priority="normal",
+                owner="ops.alpha",
+                status="needs_followup",
+                allowed_actions_json=["inspect"],
+                result_status_map_json={"inspect": "needs_followup"},
+                details_json={},
+                default_action="inspect",
+                created_at="2026-04-11T10:00:00Z",
+            ),
+            HumanReviewEvent(
+                event_id="human_review_page_002",
+                scene_id="CH200_SC01",
+                chapter_id="CH200",
+                object_ref="review_page_002",
+                event_source="idempotency_recovery",
+                priority="normal",
+                owner="ops.alpha",
+                status="needs_followup",
+                allowed_actions_json=["inspect"],
+                result_status_map_json={"inspect": "needs_followup"},
+                details_json={},
+                default_action="inspect",
+                created_at="2026-04-11T10:01:00Z",
+            ),
+            HumanReviewEvent(
+                event_id="human_review_page_003",
+                scene_id="CH200_SC01",
+                chapter_id="CH200",
+                object_ref="review_page_003",
+                event_source="idempotency_recovery",
+                priority="normal",
+                owner="ops.alpha",
+                status="needs_followup",
+                allowed_actions_json=["inspect"],
+                result_status_map_json={"inspect": "needs_followup"},
+                details_json={},
+                default_action="inspect",
+                created_at="2026-04-11T10:02:00Z",
+            ),
+            HumanReviewEvent(
+                event_id="human_review_page_004",
+                scene_id="CH200_SC01",
+                chapter_id="CH200",
+                object_ref="review_page_004",
+                event_source="idempotency_recovery",
+                priority="normal",
+                owner="ops.alpha",
+                status="needs_followup",
+                allowed_actions_json=["inspect"],
+                result_status_map_json={"inspect": "needs_followup"},
+                details_json={},
+                default_action="inspect",
+                created_at="2026-04-11T10:03:00Z",
+            ),
+        ]
+    )
+    session.commit()
+
+    page_response = client.get("/api/v1/human-review-events", params={"page": 1, "page_size": 2})
+    assert page_response.status_code == 200
+    page_data = page_response.json()["data"]
+    assert [item["event_id"] for item in page_data["items"]] == ["human_review_page_004", "human_review_page_003"]
+    assert page_data["pagination"]["mode"] == "page"
+    assert page_data["pagination"]["limit"] == 2
+    assert page_data["pagination"]["page"] == 1
+    assert page_data["pagination"]["page_size"] == 2
+    assert page_data["pagination"]["returned"] == 2
+    assert page_data["pagination"]["total"] == 4
+    assert page_data["pagination"]["has_next"] is True
+    assert isinstance(page_data["pagination"]["next_cursor"], str)
+    assert page_data["pagination"]["next_cursor"]
+
+    cursor_response = client.get("/api/v1/human-review-events", params={"limit": 2})
+    assert cursor_response.status_code == 200
+    cursor_data = cursor_response.json()["data"]
+    assert [item["event_id"] for item in cursor_data["items"]] == ["human_review_page_004", "human_review_page_003"]
+    assert cursor_data["pagination"]["mode"] == "cursor"
+    assert cursor_data["pagination"]["page"] is None
+    assert cursor_data["pagination"]["page_size"] is None
+    assert cursor_data["pagination"]["returned"] == 2
+    assert cursor_data["pagination"]["total"] == 4
+    assert cursor_data["pagination"]["has_next"] is True
+    assert isinstance(cursor_data["pagination"]["next_cursor"], str)
+    assert cursor_data["pagination"]["next_cursor"]
+
+    next_cursor_response = client.get(
+        "/api/v1/human-review-events",
+        params={"cursor": cursor_data["pagination"]["next_cursor"], "limit": 2},
+    )
+    assert next_cursor_response.status_code == 200
+    next_cursor_data = next_cursor_response.json()["data"]
+    assert [item["event_id"] for item in next_cursor_data["items"]] == ["human_review_page_002", "human_review_page_001"]
+    assert next_cursor_data["pagination"]["has_next"] is False
+    assert next_cursor_data["pagination"]["next_cursor"] is None
+
+    invalid_cursor_response = client.get(
+        "/api/v1/human-review-events",
+        params={"cursor": "invalid-event-cursor", "limit": 2},
+    )
+    assert invalid_cursor_response.status_code == 200
+    invalid_cursor_data = invalid_cursor_response.json()["data"]
+    assert [item["event_id"] for item in invalid_cursor_data["items"]] == [
+        "human_review_page_004",
+        "human_review_page_003",
+    ]

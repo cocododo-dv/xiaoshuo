@@ -1,7 +1,14 @@
+import { CURSOR_PAGINATION_DEFAULT_LIMIT, normalizeListPayload } from "./cursorPagination";
+
 const API_BASE_KEY = "novel-system-api-base";
 const DEFAULT_API_BASE = "http://127.0.0.1:8000";
 const OPERATOR_REF_KEY = "novel-system-operator-ref";
 const DEFAULT_OPERATOR_REF = "operator";
+const LIST_QUERY_ALIASES = {
+  pageSize: "page_size",
+  workerId: "worker_id",
+  stuckOnly: "stuck_only",
+};
 
 export function getApiBase() {
   if (typeof window === "undefined") {
@@ -51,6 +58,13 @@ function buildQueryPath(path, filters = {}, aliases = {}) {
   });
   const query = params.toString();
   return query ? `${path}?${query}` : path;
+}
+
+function buildListQueryPath(path, filters = {}, aliases = {}) {
+  return buildQueryPath(path, filters, {
+    ...LIST_QUERY_ALIASES,
+    ...aliases,
+  });
 }
 
 async function parseEnvelope(response) {
@@ -125,13 +139,13 @@ export function fetchReplayDraft(rowId) {
 
 export function fetchReviewItems(filters = {}) {
   return apiGet(
-    buildQueryPath("/api/v1/review-items", filters, {
+    buildListQueryPath("/api/v1/review-items", filters, {
       itemType: "item_type",
       targetCollection: "target_collection",
       sceneId: "scene_id",
       chapterId: "chapter_id",
     }),
-  );
+  ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
 }
 
 export function createReviewItem(payload) {
@@ -209,13 +223,13 @@ export function fetchAliasScopes(filters = {}) {
 
 export function fetchIndexJobs(filters = {}) {
   return apiGet(
-    buildQueryPath("/api/v1/index/jobs", filters, {
+    buildListQueryPath("/api/v1/index/jobs", filters, {
       objectType: "object_type",
       jobType: "job_type",
       reviewId: "review_id",
       aliasScope: "alias_scope",
     }),
-  );
+  ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
 }
 
 export function fetchVectorAliasScopes(filters = {}) {
@@ -230,13 +244,13 @@ export function fetchVectorAliasScopes(filters = {}) {
 
 export function fetchJobs(filters = {}) {
   return apiGet(
-    buildQueryPath("/api/v1/jobs", filters, {
+    buildListQueryPath("/api/v1/jobs", filters, {
       objectType: "object_type",
       jobType: "job_type",
       reviewId: "review_id",
       aliasScope: "alias_scope",
     }),
-  );
+  ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
 }
 
 export function fetchIndexRuntimeLedger(filters = {}) {
@@ -280,14 +294,20 @@ export function runDuePromotions() {
 
 export function fetchHumanReviewEvents(filters = {}) {
   return apiGet(
-    buildQueryPath("/api/v1/human-review-events", filters, {
+    buildListQueryPath("/api/v1/human-review-events", filters, {
       eventSource: "event_source",
       sceneId: "scene_id",
       chapterId: "chapter_id",
     }),
-  );
+  ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
 }
 
 export function actOnHumanReviewEvent(eventId, action) {
   return apiPost(`/api/v1/human-review-events/${eventId}/actions`, { action });
+}
+
+export function fetchSceneAttempts(sceneId, filters = {}) {
+  return apiGet(
+    buildListQueryPath(`/api/v1/scenes/${sceneId}/attempts`, filters),
+  ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
 }

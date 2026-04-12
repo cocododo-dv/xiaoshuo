@@ -74,6 +74,28 @@ describe("workbench store", () => {
         };
       }
 
+      if (url.includes("/scenes/CH001_SC01/attempts")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [],
+              pagination: {
+                mode: "cursor",
+                limit: 25,
+                page: null,
+                page_size: null,
+                returned: 0,
+                total: 0,
+                has_next: false,
+                next_cursor: null,
+              },
+            },
+          }),
+        };
+      }
+
       throw new Error(`Unexpected fetch: ${url}`);
     });
 
@@ -157,6 +179,50 @@ describe("workbench store", () => {
         };
       }
 
+      if (url.includes("/scenes/CH001_SC01/attempts")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [],
+              pagination: {
+                mode: "cursor",
+                limit: 25,
+                page: null,
+                page_size: null,
+                returned: 0,
+                total: 0,
+                has_next: false,
+                next_cursor: null,
+              },
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/scenes/CH001_SC02/attempts")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [],
+              pagination: {
+                mode: "cursor",
+                limit: 25,
+                page: null,
+                page_size: null,
+                returned: 0,
+                total: 0,
+                has_next: false,
+                next_cursor: null,
+              },
+            },
+          }),
+        };
+      }
+
       throw new Error(`Unexpected fetch: ${url}`);
     });
 
@@ -226,6 +292,28 @@ describe("workbench store", () => {
         };
       }
 
+      if (url.includes("/scenes/CH001_SC01/attempts")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items: [],
+              pagination: {
+                mode: "cursor",
+                limit: 25,
+                page: null,
+                page_size: null,
+                returned: 0,
+                total: 0,
+                has_next: false,
+                next_cursor: null,
+              },
+            },
+          }),
+        };
+      }
+
       throw new Error(`Unexpected fetch: ${url}`);
     });
 
@@ -241,9 +329,12 @@ describe("workbench store", () => {
         scene_id: "CH001_SC01",
       }),
     ]);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/human-review-events?scene_id=CH001_SC01",
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/scenes/CH001_SC01/attempts?limit=25",
     );
   });
 

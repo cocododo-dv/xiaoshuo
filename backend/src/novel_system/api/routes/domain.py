@@ -103,18 +103,28 @@ def jobs(
     object_type: str | None = None,
     review_id: str | None = None,
     alias_scope: str | None = None,
+    worker_id: str | None = None,
+    stuck_only: bool | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
 ):
     return ok(
-        {
-            "items": list_jobs(
-                session,
-                job_type=job_type,
-                status=status,
-                object_type=object_type,
-                review_id=review_id,
-                alias_scope=alias_scope,
-            )
-        },
+        list_jobs(
+            session,
+            job_type=job_type,
+            status=status,
+            object_type=object_type,
+            review_id=review_id,
+            alias_scope=alias_scope,
+            worker_id=worker_id,
+            stuck_only=stuck_only,
+            page=page,
+            page_size=page_size,
+            cursor=cursor,
+            limit=limit,
+        ),
         req_id=getattr(request.state, "request_id", None),
     )
 
