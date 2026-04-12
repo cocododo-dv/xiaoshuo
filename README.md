@@ -33,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_release.ps1
 `scripts/verify_release.ps1` now runs three local lanes in order:
 
 - Windows-safe backend/frontend verification via `scripts/verify_windows.ps1`
-- Seeded runtime-ops + knowledge-console + interop-center browser E2E via `cd frontend && npm run test:e2e`
+- Seeded chapter-runtime + runtime-ops + knowledge-console + interop-center browser E2E via `cd frontend && npm run test:e2e`
 - WSL strict Chroma verification via `scripts/verify_wsl_strict.sh`
 
 GitHub Actions still covers the backend non-Chroma lane plus the frontend test/build lane only. The seeded browser E2E lane and the WSL strict Chroma lane remain required local release checks on this machine. Use [docs/release-checklist.md](docs/release-checklist.md) before marking a Draft PR ready.
@@ -79,9 +79,9 @@ Most recent successful verification:
 - `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
 - `cd frontend && npm run test:e2e`
 - `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
-- 2026-04-11 Windows lane result: backend `45 passed, 13 deselected`; frontend `45 passed`; production build succeeded.
-- 2026-04-11 seeded browser E2E result: Playwright `3 passed`, covering runtime-ops closeout, Knowledge Console filtering/detail refs/cross-view jumps, and Interop Center worksheet preview/import/export/replay.
-- 2026-04-11 WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `13 passed`; full backend suite `57 passed, 1 skipped`.
+- 2026-04-12 Windows lane result: backend `80 passed, 12 deselected`; frontend `79 passed`; production build succeeded.
+- 2026-04-12 seeded browser E2E result: Playwright `4 passed`, covering chapter runtime ops, runtime-ops closeout, Knowledge Console workflow/provenance, and Interop Center worksheet preview/import/export/replay.
+- 2026-04-12 WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `12 passed`; full backend suite `91 passed, 1 skipped`.
 
 ## Demo seed
 
@@ -127,14 +127,15 @@ cd frontend
 npm run test:e2e
 ```
 
-The Playwright lane seeds the `runtime_ops_e2e` fixture, forces the memory vector backend, and validates three browser paths with `Operator Ref = ops.runtime.e2e`, `Operator Ref = ops.knowledge.e2e`, and `Operator Ref = ops.interop.e2e`:
+The Playwright lane seeds the browser fixtures, forces the memory vector backend, and validates four browser paths with `Operator Ref = ops.chapter.e2e`, `Operator Ref = ops.runtime.e2e`, `Operator Ref = ops.knowledge.e2e`, and `Operator Ref = ops.interop.e2e`:
 
-- `Scene Workbench` loads `CH001_SC01` and runs the full scene pipeline
+- `Scene Workbench` chapter runtime path loads `CH200_SC01` and exercises staged backfill, manual hold, and final aggregate
+- `Scene Workbench` runtime path loads `CH001_SC01` and runs the full scene pipeline
 - `Review Inbox` approves, verifies, and releases `review_demo_style_observation`
 - `Index Console` retries verify jobs, runs due promotions, and runs recovery sweep
 - Recovery-generated human review follow-up actions progress through `retry_request`, `retry_verify`, and `release_review`
 - Receipts, runtime ledger views, target activity, and cross-view target focus all keep the expected actor / linked-target identity
-- `Knowledge Console` applies object / scope / scope-ref / status filters, clears stale detail state when filters exclude the current lineage, opens linked review refs in `Review Inbox`, and opens bundle refs in `Scene Workbench`
+- `Knowledge Console` creates candidates, runs approve / verify / release workflow, applies object / scope / scope-ref / status filters, clears stale detail state when filters exclude the current lineage, opens linked review refs in `Review Inbox`, and opens bundle refs in `Scene Workbench`
 - `Interop Center` previews strict YAML worksheets, imports validated bundles, exports bundle worksheets, replays final-scene envelopes, and surfaces version/text drift comparisons with cross-view jumps back into the shell
 
 If you want to inspect the seed manually instead, use the local dev servers above and inspect:
@@ -157,6 +158,28 @@ Use this walkthrough only when you need an extra manual spot-check beyond the au
 The runtime-ops slice is considered closed out only when the seeded demo path, the runtime ledger, and the cross-view target jumps all agree on actor and target identity.
 
 If you need strict real-Chroma verification, use the WSL lane above instead of native Windows.
+
+## Runtime Shell Read APIs
+
+The shell currently reads through a mix of stable compatibility endpoints and decomposed domain endpoints:
+
+- `Review Inbox` reads `GET /api/v1/review-items` and `GET /api/v1/human-review-events`
+- `Scene Workbench` reads `GET /api/v1/scenes/{scene_id}/workbench`, `GET /api/v1/scenes/{scene_id}/attempts`, and scene-scoped human review reads
+- `Knowledge Console` reads `GET /api/v1/knowledge-entries` plus its detail/workflow endpoints
+- `Index Console` reads `GET /api/v1/vector-alias-scopes`, `GET /api/v1/jobs`, `GET /api/v1/activity-events`, and `GET /api/v1/target-activity-groups`
+
+The legacy `GET /api/v1/index/alias-scopes`, `GET /api/v1/index/jobs`, and `GET /api/v1/index/runtime-ledger` routes remain available as compatibility surfaces, but the current shell's primary read path for knowledge/index workflows has moved to the decomposed domain endpoints above.
+
+## Pagination
+
+The runtime shell now uses dual-stack pagination on the list endpoints that need operator paging:
+
+- `GET /api/v1/review-items`
+- `GET /api/v1/human-review-events`
+- `GET /api/v1/jobs`
+- `GET /api/v1/scenes/{scene_id}/attempts`
+
+Each endpoint accepts both `page` / `page_size` and `cursor` / `limit`. `Scene Workbench` still includes the full attempt list inside `/api/v1/scenes/{scene_id}/workbench` for compatibility, while the dedicated `/attempts` endpoint is the paged source used by the UI pager.
 
 ## Frontend
 
