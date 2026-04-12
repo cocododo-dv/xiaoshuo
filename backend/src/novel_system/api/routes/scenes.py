@@ -17,6 +17,7 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
+from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
@@ -41,11 +42,29 @@ def create_scene(payload: dict, request: Request, session: Session = Depends(get
 
 
 def _create_scene(session: Session, payload: dict) -> dict:
+    chapter_id = payload.get("chapter_id")
+    if not isinstance(chapter_id, str) or not chapter_id:
+        raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+
+    chapter = session.get(ChapterGoal, chapter_id)
+    if chapter is None:
+        raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+
     scene = session.get(SceneCard, payload["scene_id"])
     if scene is None:
+        if payload.get("scene_seq") is None:
+            payload = {
+                **payload,
+                "scene_seq": _next_scene_seq(session, chapter_id),
+            }
         scene = SceneCard(**payload)
         session.add(scene)
     else:
+        if payload.get("scene_seq") is None:
+            payload = {
+                **payload,
+                "scene_seq": scene.scene_seq,
+            }
         for key, value in payload.items():
             setattr(scene, key, value)
 
@@ -181,3 +200,10 @@ def _serialize_attempt(item: AttemptTracker) -> dict:
         "details_json": item.details_json,
         "created_at": item.created_at,
     }
+
+
+def _next_scene_seq(session: Session, chapter_id: str) -> int:
+    scenes = session.execute(select(SceneCard).where(SceneCard.chapter_id == chapter_id)).scalars().all()
+    if not scenes:
+        return 1
+    return max(scene.scene_seq for scene in scenes) + 1

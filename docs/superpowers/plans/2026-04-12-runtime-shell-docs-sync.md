@@ -1,5 +1,7 @@
 # Runtime Shell Docs Sync Implementation Plan
 
+**Status:** docs-only closeout
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Sync the repository's runtime shell documentation and release handoff material to the verified 2026-04-12 implementation state without changing product behavior.
@@ -31,7 +33,7 @@
 - Create: `docs/superpowers/specs/2026-04-12-runtime-shell-docs-sync-design.md`
 - Create: `docs/superpowers/plans/2026-04-12-runtime-shell-docs-sync.md`
 
-- [ ] **Step 1: Write the current-state design doc**
+- [x] **Step 1: Write the current-state design doc**
 
 Create the design doc with these sections:
 
@@ -49,7 +51,7 @@ The contract section must explicitly name:
 - the dual-stack pagination endpoints and parameter pairs
 - the four Playwright specs and four operator refs
 
-- [ ] **Step 2: Write the implementation plan**
+- [x] **Step 2: Write the implementation plan**
 
 Create this plan file so it lists:
 
@@ -67,7 +69,7 @@ Create this plan file so it lists:
 - Modify: `docs/release-checklist.md`
 - Modify: `.github/pull_request_template.md`
 
-- [ ] **Step 1: Refresh README verification evidence**
+- [x] **Step 1: Refresh README verification evidence**
 
 Update `README.md` so it records the 2026-04-12 results from:
 
@@ -84,7 +86,7 @@ The README update must also:
 - document the chapter runtime lane and the current domain read API split
 - document the dual pagination contract for review items, human review events, jobs, and scene attempts
 
-- [ ] **Step 2: Refresh the release checklist**
+- [x] **Step 2: Refresh the release checklist**
 
 Update `docs/release-checklist.md` so it requires PR authors to record:
 
@@ -94,7 +96,7 @@ Update `docs/release-checklist.md` so it requires PR authors to record:
 - the 2026-04-12 Windows and WSL results
 - where domain API decomposition and pagination were revalidated
 
-- [ ] **Step 3: Refresh the PR template**
+- [x] **Step 3: Refresh the PR template**
 
 Update `.github/pull_request_template.md` so it requires:
 
@@ -111,7 +113,7 @@ Update `.github/pull_request_template.md` so it requires:
 **Files:**
 - Modify: none unless the re-run exposes a doc mismatch
 
-- [ ] **Step 1: Re-run Windows verification**
+- [x] **Step 1: Re-run Windows verification**
 
 Run:
 
@@ -125,7 +127,7 @@ Expected:
 - frontend `79 passed`
 - frontend build succeeds
 
-- [ ] **Step 2: Re-run seeded browser E2E**
+- [x] **Step 2: Re-run seeded browser E2E**
 
 Run:
 
@@ -139,7 +141,7 @@ Expected:
 - Playwright `4 passed`
 - evidence maps to `ops.chapter.e2e`, `ops.runtime.e2e`, `ops.knowledge.e2e`, and `ops.interop.e2e`
 
-- [ ] **Step 3: Re-run WSL strict Chroma verification**
+- [x] **Step 3: Re-run WSL strict Chroma verification**
 
 Run:
 
@@ -153,7 +155,7 @@ Expected:
 - focused Chroma suite `12 passed`
 - full backend suite `91 passed, 1 skipped`
 
-- [ ] **Step 4: Proofread the final text**
+- [x] **Step 4: Proofread the final text**
 
 Confirm the updated docs explicitly mention:
 
@@ -170,6 +172,6 @@ Confirm the updated docs explicitly mention:
 - `page/page_size`
 - `cursor/limit`
 
-- [ ] **Step 5: Review the final diff**
+- [x] **Step 5: Review the final diff**
 
 Check that the diff is documentation-only and that the historical 2026-04-10 and 2026-04-11 spec files were not rewritten in place.

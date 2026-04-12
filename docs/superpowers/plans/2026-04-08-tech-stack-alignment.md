@@ -1,5 +1,7 @@
 # Tech Stack Alignment Implementation Plan
 
+**Status:** implemented
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the temporary vector adapter with real Chroma integration, add an idempotent first-chapter demo seed, and rebuild the frontend as Vue 3 + Pinia without changing the current API contract or verify-gate semantics.
@@ -48,7 +50,7 @@
 - Test: `backend/tests/test_review_release.py`
 - Test: `backend/tests/test_vector_verify_gate.py`
 
-- [ ] **Step 1: Write the failing Chroma-backed vector tests**
+- [x] **Step 1: Write the failing Chroma-backed vector tests**
 
 ```python
 def test_chroma_store_round_trip(tmp_path: Path) -> None:
@@ -56,13 +58,13 @@ def test_chroma_store_round_trip(tmp_path: Path) -> None:
     store.write_collection(
         "style_obs_candidate_v1",
         [
-            {"id": "obs_1", "text": "收束时保留余波", "scope": "global", "lineage_key": "STY_001"},
-            {"id": "obs_2", "text": "对白结尾要有停顿", "scope": "global", "lineage_key": "STY_002"},
+            {"id": "obs_1", "text": "闁衡偓閼稿灚灏嗛柡鍐╂构缁绘岸鎮惧▎搴ｇ▏婵?, "scope": "global", "lineage_key": "STY_001"},
+            {"id": "obs_2", "text": "閻庨潧婀卞▍褏绱掗幘宕囧暡閻熸洑鐒﹀﹢渚€宕戝鍫涒偓?, "scope": "global", "lineage_key": "STY_002"},
         ],
     )
 
     assert store.collection_exists("style_obs_candidate_v1") is True
-    results = store.query("style_obs_candidate_v1", "余波", top_k=2)
+    results = store.query("style_obs_candidate_v1", "濞达絾鐟︾亸?, top_k=2)
     assert [item["id"] for item in results] == ["obs_1"]
 
 
@@ -80,7 +82,7 @@ def test_verify_failure_keeps_old_active_alias_when_candidate_query_is_empty(cli
     assert alias.json()["data"]["active_alias"] == "style_observation_global_global_candidate_v1"
 ```
 
-- [ ] **Step 2: Run the focused backend tests to verify they fail**
+- [x] **Step 2: Run the focused backend tests to verify they fail**
 
 Run: `cd backend && python -m pytest tests/test_chroma_vector_store.py tests/test_review_release.py tests/test_vector_verify_gate.py -q`
 
@@ -88,7 +90,7 @@ Expected:
 - `ModuleNotFoundError` or `AttributeError` for `ChromaVectorStore`
 - Existing release/verify tests fail because `VersionManager` still depends on the file-only implementation
 
-- [ ] **Step 3: Add Chroma as a backend dependency and expose backend settings**
+- [x] **Step 3: Add Chroma as a backend dependency and expose backend settings**
 
 ```toml
 [project]
@@ -112,7 +114,7 @@ class Settings:
     chroma_collection_prefix: str = "novel_system"
 ```
 
-- [ ] **Step 4: Implement a vector abstraction with both Chroma and test adapters**
+- [x] **Step 4: Implement a vector abstraction with both Chroma and test adapters**
 
 ```python
 class VectorStore(Protocol):
@@ -140,7 +142,7 @@ class ChromaVectorStore:
         )
 ```
 
-- [ ] **Step 5: Inject the vector store into `VersionManager` and keep alias semantics unchanged**
+- [x] **Step 5: Inject the vector store into `VersionManager` and keep alias semantics unchanged**
 
 ```python
 class VersionManager:
@@ -165,13 +167,13 @@ if not results:
     raise DomainError("VECTOR_VERIFY_FAILED", "candidate alias verify failed", status_code=409)
 ```
 
-- [ ] **Step 6: Re-run the focused tests**
+- [x] **Step 6: Re-run the focused tests**
 
 Run: `cd backend && python -m pytest tests/test_chroma_vector_store.py tests/test_review_release.py tests/test_vector_verify_gate.py -q`
 
 Expected: PASS
 
-- [ ] **Step 7: Re-run the full backend suite to catch regressions**
+- [x] **Step 7: Re-run the full backend suite to catch regressions**
 
 Run: `cd backend && python -m pytest -q`
 
@@ -189,7 +191,7 @@ Expected: PASS with the existing 12 tests plus the new Chroma tests all green.
 - Test: `backend/tests/test_seed_demo.py`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write the failing demo-seed tests**
+- [x] **Step 1: Write the failing demo-seed tests**
 
 ```python
 def test_seed_demo_creates_first_chapter_and_review_item(tmp_path: Path) -> None:
@@ -209,13 +211,13 @@ def test_seed_demo_is_idempotent(tmp_path: Path) -> None:
     assert count_rows("review_items") == 1
 ```
 
-- [ ] **Step 2: Run the seed tests to verify they fail**
+- [x] **Step 2: Run the seed tests to verify they fail**
 
 Run: `cd backend && python -m pytest tests/test_seed_demo.py -q`
 
 Expected: FAIL because the `novel_system.tools.seed_demo` module does not exist yet.
 
-- [ ] **Step 3: Implement the seed CLI and the idempotent upsert path**
+- [x] **Step 3: Implement the seed CLI and the idempotent upsert path**
 
 ```python
 def seed_demo() -> dict:
@@ -225,10 +227,10 @@ def seed_demo() -> dict:
             {
                 "chapter_id": "CH001",
                 "planned_scene_count": 3,
-                "chapter_goal": "重逢与试探成立",
-                "main_plot_push": "旧信寄件人线索被正式打开",
-                "emotional_target": "由迟疑转为警觉",
-                "ending_effect": "以余波收束",
+                "chapter_goal": "闂佹彃绉归埀顒夋線缁楀瞼鎷犻弴鐔疯荡闁瑰瓨鍔楅悵?,
+                "main_plot_push": "闁哄唲鍌欑箚閻庨潧瀚▎銏＄閾忕懓娈犵紒渚垮灱椤箑顫㈤敐鍛闁瑰灚鎸哥槐?,
+                "emotional_target": "闁汇垼绮剧换婊堟偪閹达絾绁☉鎾荤細椤掔喓鎲?,
+                "ending_effect": "濞寸姰鍎扮紞鎴濃枖閵忊剝鏆柡?,
             },
         )
         for payload in DEMO_SCENES:
@@ -248,13 +250,13 @@ if __name__ == "__main__":
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 ```
 
-- [ ] **Step 4: Re-run the seed tests**
+- [x] **Step 4: Re-run the seed tests**
 
 Run: `cd backend && python -m pytest tests/test_seed_demo.py -q`
 
 Expected: PASS
 
-- [ ] **Step 5: Document the demo flow in the README**
+- [x] **Step 5: Document the demo flow in the README**
 
 ```md
 ## Demo seed
@@ -265,7 +267,7 @@ Expected: PASS
 4. `cd ../frontend && npm run dev`
 ```
 
-- [ ] **Step 6: Verify the seed still preserves the backend contract**
+- [x] **Step 6: Verify the seed still preserves the backend contract**
 
 Run: `cd backend && python -m pytest -q`
 
@@ -298,7 +300,7 @@ Expected: PASS
 - Test: `frontend/tests/app.spec.js`
 - Modify: `frontend/tests/smoke.mjs`
 
-- [ ] **Step 1: Write the failing frontend component/store tests**
+- [x] **Step 1: Write the failing frontend component/store tests**
 
 ```js
 import { describe, expect, it } from "vitest";
@@ -331,7 +333,7 @@ it("renders the three required views from the Vue shell", async () => {
 });
 ```
 
-- [ ] **Step 2: Install the missing frontend dependencies and run tests to verify they fail**
+- [x] **Step 2: Install the missing frontend dependencies and run tests to verify they fail**
 
 Run: `cd frontend && npm install vue pinia @vitejs/plugin-vue vitest`
 
@@ -341,7 +343,7 @@ Expected:
 - the new Vue/Pinia store tests fail because `src/` does not exist yet
 - the current smoke test fails once `index.html` points to a non-existent Vue entry
 
-- [ ] **Step 3: Set up Vite + Vue and the API client**
+- [x] **Step 3: Set up Vite + Vue and the API client**
 
 ```js
 import { defineConfig } from "vite";
@@ -379,7 +381,7 @@ export async function apiPost(path, body = {}) {
 }
 ```
 
-- [ ] **Step 4: Implement the Pinia stores before the views**
+- [x] **Step 4: Implement the Pinia stores before the views**
 
 ```js
 export const useWorkbenchStore = defineStore("workbench", {
@@ -406,11 +408,11 @@ export const useWorkbenchStore = defineStore("workbench", {
 });
 ```
 
-- [ ] **Step 5: Build the Vue views and reusable components**
+- [x] **Step 5: Build the Vue views and reusable components**
 
 ```vue
 <template>
-  <PanelShell eyebrow="Scene Workbench" title="场景闭环与回放">
+  <PanelShell eyebrow="Scene Workbench" title="闁革妇鍎ゅ▍娆撴⒒椤撶姴绠氬☉鎾抽濞叉牠寮?>
     <div class="stats">
       <div class="stat">
         <span>Bundle</span>
@@ -428,7 +430,7 @@ export const useWorkbenchStore = defineStore("workbench", {
 
 ```vue
 <template>
-  <PanelShell eyebrow="Index Console" title="Alias、Verify 与 Recovery">
+  <PanelShell eyebrow="Index Console" title="Alias闁靛棔绠揺rify 濞?Recovery">
     <div class="alias-grid">
       <AliasScopeCard
         v-for="item in indexStore.aliasScopes"
@@ -440,13 +442,13 @@ export const useWorkbenchStore = defineStore("workbench", {
 </template>
 ```
 
-- [ ] **Step 6: Re-run the frontend tests**
+- [x] **Step 6: Re-run the frontend tests**
 
 Run: `cd frontend && npm test`
 
 Expected: PASS
 
-- [ ] **Step 7: Build the Vue frontend**
+- [x] **Step 7: Build the Vue frontend**
 
 Run: `cd frontend && npm run build`
 
@@ -461,19 +463,19 @@ Expected: PASS with a production bundle emitted into `frontend/dist`
 - Modify: `docs/superpowers/specs/2026-04-08-tech-stack-alignment-design.md`
 - Modify: `docs/superpowers/plans/2026-04-08-tech-stack-alignment.md`
 
-- [ ] **Step 1: Re-run the full backend suite**
+- [x] **Step 1: Re-run the full backend suite**
 
 Run: `cd backend && python -m pytest -q`
 
 Expected: PASS
 
-- [ ] **Step 2: Re-run Alembic migration**
+- [x] **Step 2: Re-run Alembic migration**
 
 Run: `cd backend && alembic upgrade head`
 
 Expected: PASS
 
-- [ ] **Step 3: Re-run the demo seed against a clean database**
+- [x] **Step 3: Re-run the demo seed against a clean database**
 
 Run: `cd backend && python -m novel_system.tools.seed_demo`
 
@@ -487,7 +489,7 @@ Expected:
 }
 ```
 
-- [ ] **Step 4: Re-run the full frontend checks**
+- [x] **Step 4: Re-run the full frontend checks**
 
 Run: `cd frontend && npm test`
 
@@ -497,7 +499,7 @@ Run: `cd frontend && npm run build`
 
 Expected: PASS
 
-- [ ] **Step 5: Update the README handoff section**
+- [x] **Step 5: Update the README handoff section**
 
 ```md
 ## End-to-end demo

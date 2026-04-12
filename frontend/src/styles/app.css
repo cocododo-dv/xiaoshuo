@@ -169,7 +169,11 @@ pre {
 .job-table,
 .knowledge-layout,
 .knowledge-list,
-.knowledge-form-grid {
+.knowledge-form-grid,
+.author-layout,
+.author-list,
+.author-form-grid,
+.author-scene-list {
   display: grid;
   gap: 1.4rem;
 }
@@ -641,6 +645,90 @@ pre {
   align-items: start;
 }
 
+.author-layout {
+  margin-top: 1rem;
+  grid-template-columns: minmax(15rem, 0.7fr) minmax(0, 1fr) minmax(0, 1.15fr);
+  align-items: start;
+}
+
+.author-sidebar,
+.author-editor-card {
+  min-height: 100%;
+}
+
+.author-list {
+  margin-top: 1rem;
+}
+
+.author-list-item {
+  display: grid;
+  gap: 0.25rem;
+  text-align: left;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--ink);
+}
+
+.author-list-item.active {
+  background: linear-gradient(135deg, rgba(163, 63, 47, 0.16), rgba(213, 112, 73, 0.28));
+  color: var(--ink);
+}
+
+.author-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 1rem;
+}
+
+.author-form-grid label {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.author-wide {
+  grid-column: 1 / -1;
+}
+
+.author-runtime-summary {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.author-scene-list {
+  margin-top: 1rem;
+}
+
+.author-scene-row {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.author-scene-row.active {
+  border-color: rgba(163, 63, 47, 0.38);
+  box-shadow: 0 0 0 2px rgba(163, 63, 47, 0.12);
+}
+
+.author-scene-meta {
+  display: grid;
+  gap: 0.2rem;
+  cursor: pointer;
+}
+
+.author-scene-actions {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.author-scene-form {
+  margin-top: 1rem;
+}
+
 .interop-layout,
 .interop-query-grid,
 .comparison-list,
@@ -760,12 +848,14 @@ pre {
   }
 
   .knowledge-layout,
+  .author-layout,
   .interop-layout,
   .interop-query-grid,
   .comparison-diff-grid,
   .comparison-copy-grid,
   .knowledge-filter-grid,
-  .knowledge-form-grid {
+  .knowledge-form-grid,
+  .author-form-grid {
     grid-template-columns: 1fr;
   }
 
