@@ -39,37 +39,52 @@ TARGET_COLLECTION_SQL = (
 
 def upgrade() -> None:
     bind = op.get_bind()
+    inspector = sa.inspect(bind)
 
     with op.batch_alter_table("review_items", recreate="always") as batch_op:
         batch_op.drop_column("target_collection")
         batch_op.add_column(sa.Column("target_collection", sa.String(), sa.Computed(TARGET_COLLECTION_SQL, persisted=True)))
 
-    with op.batch_alter_table("voice_profiles") as batch_op:
-        batch_op.add_column(sa.Column("runtime_eligible", sa.Integer(), nullable=False, server_default="0"))
-        batch_op.add_column(
-            sa.Column("runtime_eligibility_basis", sa.String(), nullable=False, server_default="stage_blocked")
-        )
-        batch_op.add_column(sa.Column("effective_at", sa.String(), nullable=True))
-        batch_op.add_column(sa.Column("source_review_id", sa.String(), nullable=True))
+    _add_missing_columns(
+        inspector,
+        "voice_profiles",
+        [
+            sa.Column("runtime_eligible", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("runtime_eligibility_basis", sa.String(), nullable=False, server_default="stage_blocked"),
+            sa.Column("effective_at", sa.String(), nullable=True),
+            sa.Column("source_review_id", sa.String(), nullable=True),
+        ],
+    )
 
-    with op.batch_alter_table("relation_profiles") as batch_op:
-        batch_op.add_column(sa.Column("runtime_eligible", sa.Integer(), nullable=False, server_default="0"))
-        batch_op.add_column(
-            sa.Column("runtime_eligibility_basis", sa.String(), nullable=False, server_default="stage_blocked")
-        )
-        batch_op.add_column(sa.Column("effective_at", sa.String(), nullable=True))
-        batch_op.add_column(sa.Column("source_review_id", sa.String(), nullable=True))
+    _add_missing_columns(
+        inspector,
+        "relation_profiles",
+        [
+            sa.Column("runtime_eligible", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("runtime_eligibility_basis", sa.String(), nullable=False, server_default="stage_blocked"),
+            sa.Column("effective_at", sa.String(), nullable=True),
+            sa.Column("source_review_id", sa.String(), nullable=True),
+        ],
+    )
 
-    with op.batch_alter_table("scene_memories") as batch_op:
-        batch_op.add_column(sa.Column("source_review_id", sa.String(), nullable=True))
-        batch_op.add_column(sa.Column("effective_at", sa.String(), nullable=True))
+    _add_missing_columns(
+        inspector,
+        "scene_memories",
+        [
+            sa.Column("source_review_id", sa.String(), nullable=True),
+            sa.Column("effective_at", sa.String(), nullable=True),
+        ],
+    )
 
-    with op.batch_alter_table("chapter_memories") as batch_op:
-        batch_op.add_column(sa.Column("source_review_id", sa.String(), nullable=True))
-        batch_op.add_column(
-            sa.Column("runtime_eligibility_basis", sa.String(), nullable=False, server_default="stage_blocked")
-        )
-        batch_op.add_column(sa.Column("effective_at", sa.String(), nullable=True))
+    _add_missing_columns(
+        inspector,
+        "chapter_memories",
+        [
+            sa.Column("source_review_id", sa.String(), nullable=True),
+            sa.Column("runtime_eligibility_basis", sa.String(), nullable=False, server_default="stage_blocked"),
+            sa.Column("effective_at", sa.String(), nullable=True),
+        ],
+    )
 
     Base.metadata.create_all(
         bind=bind,
@@ -81,6 +96,17 @@ def upgrade() -> None:
             Base.metadata.tables["foreshadow_tracker"],
         ],
     )
+
+
+def _add_missing_columns(inspector: sa.Inspector, table_name: str, columns: list[sa.Column]) -> None:
+    existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+    missing_columns = [column for column in columns if column.name not in existing_columns]
+    if not missing_columns:
+        return
+
+    with op.batch_alter_table(table_name) as batch_op:
+        for column in missing_columns:
+            batch_op.add_column(column)
 
 
 def downgrade() -> None:

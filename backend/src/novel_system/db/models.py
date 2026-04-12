@@ -121,8 +121,31 @@ class ChapterState(Base):
     chapter_backfill_pending_count: Mapped[int] = mapped_column(Integer, default=0)
     mid_aggregate_enabled_effective: Mapped[int] = mapped_column(Integer, default=0)
     aggregate_block_reason: Mapped[str] = mapped_column(String, default="none")
+    manual_hold_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_interim_memory_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     last_final_memory_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StagedBackfill(Base):
+    __tablename__ = "staged_backfill"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','completed','deferred','abandoned')",
+            name="ck_staged_backfill_status",
+        ),
+    )
+
+    stage_id: Mapped[str] = mapped_column(String, primary_key=True)
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"))
+    scene_id: Mapped[str] = mapped_column(ForeignKey("scene_cards.scene_id"))
+    marker_id: Mapped[str] = mapped_column(String)
+    marker_text: Mapped[str] = mapped_column(Text)
+    marker_token: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    linked_tracker_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 

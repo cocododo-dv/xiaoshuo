@@ -113,6 +113,33 @@ def test_seed_demo_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_st
     assert failed_verify.error_text == "candidate alias verify failed"
 
 
+def test_seed_demo_chapter_ops_e2e_fixture_creates_independent_chapter_runtime_seed(session) -> None:
+    summary = seed_demo(session, fixture="chapter_ops_e2e")
+    session.commit()
+
+    assert summary["extra_chapter_ids"] == ["CH200"]
+    assert summary["extra_scene_ids"] == ["CH200_SC01"]
+    assert summary["extra_review_ids"] == ["review_chapter_ops_pending"]
+
+    chapter = session.get(ChapterGoal, "CH200")
+    scene = session.get(SceneCard, "CH200_SC01")
+    scene_state = session.get(SceneRunState, "CH200_SC01")
+    final_scene = session.get(FinalScene, "final_scene_CH200_SC01_seed")
+    scene_memory = session.get(SceneMemory, "scene_memory_CH200_SC01_seed")
+    review_item = session.get(ReviewItem, "review_chapter_ops_pending")
+
+    assert chapter is not None
+    assert scene is not None
+    assert scene.must_include_text == '{{backfill id=F200 text="旧信寄件人线索"}}'
+    assert scene_state is not None
+    assert scene_state.scene_status == "archived"
+    assert scene_state.current_final_scene_row_id == "final_scene_CH200_SC01_seed"
+    assert final_scene is not None
+    assert scene_memory is not None
+    assert review_item is not None
+    assert review_item.status == "pending"
+
+
 def test_seed_demo_cli_accepts_runtime_ops_e2e_fixture(capsys) -> None:
     main(["--fixture", "runtime_ops_e2e"])
 

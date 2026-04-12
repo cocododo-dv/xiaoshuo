@@ -1,6 +1,14 @@
 import { defineStore } from "pinia";
 
-import { fetchHumanReviewEvents, fetchWorkbench, runFullScene } from "../lib/api";
+import {
+  clearChapterManualHold,
+  fetchHumanReviewEvents,
+  fetchWorkbench,
+  runChapterBackfill as postChapterBackfill,
+  runChapterFinalAggregate as postChapterFinalAggregate,
+  runFullScene,
+  setChapterManualHold as postChapterManualHold,
+} from "../lib/api";
 
 export const useWorkbenchStore = defineStore("workbench", {
   state: () => ({
@@ -11,6 +19,7 @@ export const useWorkbenchStore = defineStore("workbench", {
     humanReviewLoading: false,
     actionId: "",
     lastRunResult: null,
+    lastChapterActionResult: null,
     error: "",
   }),
   actions: {
@@ -53,6 +62,66 @@ export const useWorkbenchStore = defineStore("workbench", {
         return `Ran ${sceneId} through full scene pipeline`;
       } catch (error) {
         this.sceneId = previousSceneId;
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async runChapterBackfill(chapterId, stageId, strategy, sceneId = this.sceneId) {
+      this.actionId = `chapter-backfill:${stageId}`;
+      this.error = "";
+      try {
+        const result = await postChapterBackfill(chapterId, stageId, strategy);
+        this.lastChapterActionResult = result.receipt;
+        await this.refreshAll(sceneId);
+        return `Applied ${strategy} to ${stageId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async runChapterFinalAggregate(chapterId, sceneId = this.sceneId) {
+      this.actionId = "chapter-final-aggregate";
+      this.error = "";
+      try {
+        const result = await postChapterFinalAggregate(chapterId);
+        this.lastChapterActionResult = result.receipt;
+        await this.refreshAll(sceneId);
+        return `Ran final aggregate for ${chapterId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async setChapterManualHold(chapterId, reason, sceneId = this.sceneId) {
+      this.actionId = "chapter-manual-hold-set";
+      this.error = "";
+      try {
+        const result = await postChapterManualHold(chapterId, reason);
+        this.lastChapterActionResult = result.receipt;
+        await this.refreshAll(sceneId);
+        return `Set manual hold for ${chapterId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async clearChapterManualHold(chapterId, sceneId = this.sceneId) {
+      this.actionId = "chapter-manual-hold-clear";
+      this.error = "";
+      try {
+        const result = await clearChapterManualHold(chapterId);
+        this.lastChapterActionResult = result.receipt;
+        await this.refreshAll(sceneId);
+        return `Cleared manual hold for ${chapterId}`;
+      } catch (error) {
         this.error = error.message;
         throw error;
       } finally {

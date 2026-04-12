@@ -223,6 +223,41 @@ pre {
   margin-bottom: 0.8rem;
 }
 
+.chapter-runtime-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--line);
+}
+
+.chapter-runtime-section h4 {
+  margin: 0 0 0.7rem;
+}
+
+.chapter-backfill-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.chapter-backfill-item {
+  padding: 0.85rem 0.95rem;
+  border-radius: 0.95rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.chapter-backfill-item p,
+.chapter-receipt p {
+  margin: 0.2rem 0;
+}
+
+.chapter-backfill-item select {
+  min-width: 14rem;
+}
+
+.chapter-manual-hold-controls .control-input {
+  min-width: 14rem;
+}
+
 .json-block {
   margin: 0.75rem 0 0;
   padding: 0.85rem 1rem;

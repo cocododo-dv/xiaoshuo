@@ -34,7 +34,7 @@ const seedResult = spawnSync(
       "from novel_system.tools.seed_demo import seed_demo",
       "reset_engine()",
       "Base.metadata.create_all(bind=engine())",
-      'seed_demo(fixture="runtime_ops_e2e")',
+      'seed_demo(fixture="all_e2e")',
     ].join("; "),
   ],
   {

@@ -28,6 +28,7 @@ from novel_system.db.models import (
     SceneDraft,
     SceneMemory,
     SceneRunState,
+    StagedBackfill,
     StyleObservation,
     StyleRule,
     VectorAliasRegistry,
@@ -509,6 +510,69 @@ DEMO_RUNTIME_OPS_E2E_ALIAS_SCOPES = [
     ("scene", "CH001_SC02"),
     ("scene", "CH001_SC03"),
 ]
+DEMO_CHAPTER_OPS_E2E_FIXTURE = "chapter_ops_e2e"
+DEMO_ALL_E2E_FIXTURE = "all_e2e"
+CHAPTER_OPS_MARKER_TOKEN = '{{backfill id=F200 text="旧信寄件人线索"}}'
+CHAPTER_OPS_CHAPTER = {
+    "chapter_id": "CH200",
+    "planned_scene_count": 1,
+    "chapter_goal": "补齐章节运行治理闭环",
+    "main_plot_push": "把 backfill 和 final aggregate 走通",
+    "emotional_target": "让卡住的线索重新可操作",
+    "ending_effect": "形成新的 final aggregate 摘要",
+}
+CHAPTER_OPS_SCENES = [
+    {
+        "scene_id": "CH200_SC01",
+        "chapter_id": "CH200",
+        "scene_seq": 1,
+        "pov_character_id": "CHAR_A",
+        "onstage_chars_json": ["CHAR_A", "CHAR_B"],
+        "location": "旧城门洞",
+        "scene_goal": "把模板 marker 治理成 staged backfill",
+        "beats_json": ["重逢", "试探", "收束"],
+        "must_include_text": CHAPTER_OPS_MARKER_TOKEN,
+        "target_length_band": "short",
+        "scene_type": "reunion",
+        "is_chapter_last": 1,
+    }
+]
+CHAPTER_OPS_FINAL_SCENE = {
+    "row_id": "final_scene_CH200_SC01_seed",
+    "scene_id": "CH200_SC01",
+    "chapter_id": "CH200",
+    "content": f"归档里仍然保留 {CHAPTER_OPS_MARKER_TOKEN}",
+    "status": "approved",
+    "source_bundle_id": "bundle_chapter_ops_seed",
+    "source_bundle_hash": "hash_chapter_ops_seed",
+}
+CHAPTER_OPS_SCENE_MEMORY = {
+    "row_id": "scene_memory_CH200_SC01_seed",
+    "scene_id": "CH200_SC01",
+    "chapter_id": "CH200",
+    "content": f"场景记忆仍然写着 {CHAPTER_OPS_MARKER_TOKEN}",
+    "carry_notes_json": [],
+    "source_bundle_id": "bundle_chapter_ops_seed",
+    "final_scene_row_id": "final_scene_CH200_SC01_seed",
+    "source_review_id": None,
+    "active_flag": 1,
+    "runtime_eligible": 1,
+    "runtime_eligibility_basis": "direct_read",
+}
+CHAPTER_OPS_PENDING_REVIEW = {
+    "review_id": "review_chapter_ops_pending",
+    "scene_id": "CH200_SC01",
+    "chapter_id": "CH200",
+    "item_type": "scene_summary",
+    "status": "pending",
+    "candidate_text": f"待审摘要仍然引用 {CHAPTER_OPS_MARKER_TOKEN}",
+    "candidate_payload_json": {
+        "lineage_key": "CH200_SC01",
+        "scene_id": "CH200_SC01",
+        "text": f"待审摘要仍然引用 {CHAPTER_OPS_MARKER_TOKEN}",
+    },
+    "active_on_approve": 1,
+}
 
 
 def _upsert(session: Any, model: type[Any], identity: str, payload: dict[str, Any]) -> Any:
@@ -535,6 +599,7 @@ def _upsert_chapter(session: Any, payload: dict[str, Any]) -> None:
             "chapter_backfill_pending_count": 0,
             "mid_aggregate_enabled_effective": 0,
             "aggregate_block_reason": "none",
+            "manual_hold_reason": None,
             "last_interim_memory_row_id": None,
             "last_final_memory_row_id": None,
         },
@@ -641,6 +706,7 @@ def _cleanup_demo_runtime(session: Session) -> None:
     session.execute(delete(SceneMemory).where(SceneMemory.chapter_id == chapter_id))
     session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id == chapter_id))
     session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id == chapter_id))
+    session.execute(delete(StagedBackfill).where(StagedBackfill.chapter_id == chapter_id))
     session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id == chapter_id))
     session.execute(delete(OperationLog).where(OperationLog.object_ref.in_(all_demo_operation_refs)))
     session.execute(delete(IdempotencyKey).where(IdempotencyKey.idempotency_key == DEMO_RUNTIME_OPS_E2E_RECOVERY_IDEMPOTENCY_KEY))
@@ -750,6 +816,49 @@ def _seed_runtime_ops_e2e(session: Session) -> list[str]:
     ]
 
 
+def _cleanup_chapter_ops_runtime(session: Session) -> None:
+    chapter_id = CHAPTER_OPS_CHAPTER["chapter_id"]
+    scene_ids = [item["scene_id"] for item in CHAPTER_OPS_SCENES]
+
+    session.execute(delete(AttemptTracker).where(AttemptTracker.chapter_id == chapter_id))
+    session.execute(delete(SceneBundle).where(SceneBundle.chapter_id == chapter_id))
+    session.execute(delete(SceneDraft).where(SceneDraft.chapter_id == chapter_id))
+    session.execute(delete(FinalScene).where(FinalScene.chapter_id == chapter_id))
+    session.execute(delete(SceneMemory).where(SceneMemory.chapter_id == chapter_id))
+    session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id == chapter_id))
+    session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id == chapter_id))
+    session.execute(delete(StagedBackfill).where(StagedBackfill.chapter_id == chapter_id))
+    session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id == chapter_id))
+    session.execute(delete(ReviewItem).where(ReviewItem.chapter_id == chapter_id))
+    session.execute(delete(ForeshadowTracker).where(ForeshadowTracker.chapter_id == chapter_id))
+    session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
+    session.execute(delete(SceneCard).where(SceneCard.scene_id.in_(scene_ids)))
+    session.execute(delete(ChapterState).where(ChapterState.chapter_id == chapter_id))
+    session.execute(delete(ChapterGoal).where(ChapterGoal.chapter_id == chapter_id))
+
+
+def _seed_chapter_ops_e2e(session: Session) -> dict[str, list[str] | str]:
+    _cleanup_chapter_ops_runtime(session)
+    _upsert_chapter(session, CHAPTER_OPS_CHAPTER)
+    for payload in CHAPTER_OPS_SCENES:
+        _upsert_scene(session, payload)
+    session.flush()
+    _upsert(session, FinalScene, "row_id", CHAPTER_OPS_FINAL_SCENE)
+    _upsert(session, SceneMemory, "row_id", CHAPTER_OPS_SCENE_MEMORY)
+    _upsert_review_item(session, CHAPTER_OPS_PENDING_REVIEW)
+
+    scene_state = session.get(SceneRunState, CHAPTER_OPS_SCENES[0]["scene_id"])
+    if scene_state is not None:
+        scene_state.scene_status = "archived"
+        scene_state.current_final_scene_row_id = CHAPTER_OPS_FINAL_SCENE["row_id"]
+
+    return {
+        "chapter_id": CHAPTER_OPS_CHAPTER["chapter_id"],
+        "scene_ids": [item["scene_id"] for item in CHAPTER_OPS_SCENES],
+        "review_ids": [CHAPTER_OPS_PENDING_REVIEW["review_id"]],
+    }
+
+
 def _seed_demo(session: Session, *, fixture: str | None = None) -> dict[str, list[str] | str]:
     _cleanup_demo_runtime(session)
     _upsert_chapter(session, DEMO_CHAPTER)
@@ -778,17 +887,36 @@ def _seed_demo(session: Session, *, fixture: str | None = None) -> dict[str, lis
     _upsert(session, VectorAliasRegistry, "alias_scope", DEMO_CALIBRATION_ALIAS)
     _upsert_review_item(session, DEMO_STYLE_OBSERVATION_REVIEW)
     review_ids = [DEMO_STYLE_OBSERVATION_REVIEW["review_id"]]
+    extra_chapter_ids: list[str] = []
+    extra_scene_ids: list[str] = []
+    extra_review_ids: list[str] = []
     if fixture is None:
         pass
     elif fixture == DEMO_RUNTIME_OPS_E2E_FIXTURE:
         review_ids.extend(_seed_runtime_ops_e2e(session))
+    elif fixture == DEMO_CHAPTER_OPS_E2E_FIXTURE:
+        chapter_ops_summary = _seed_chapter_ops_e2e(session)
+        extra_chapter_ids.append(chapter_ops_summary["chapter_id"])
+        extra_scene_ids.extend(chapter_ops_summary["scene_ids"])
+        extra_review_ids.extend(chapter_ops_summary["review_ids"])
+    elif fixture == DEMO_ALL_E2E_FIXTURE:
+        review_ids.extend(_seed_runtime_ops_e2e(session))
+        chapter_ops_summary = _seed_chapter_ops_e2e(session)
+        extra_chapter_ids.append(chapter_ops_summary["chapter_id"])
+        extra_scene_ids.extend(chapter_ops_summary["scene_ids"])
+        extra_review_ids.extend(chapter_ops_summary["review_ids"])
     else:
         raise ValueError(f"Unsupported demo fixture: {fixture}")
-    return {
+    summary = {
         "chapter_id": DEMO_CHAPTER["chapter_id"],
         "scene_ids": [item["scene_id"] for item in DEMO_SCENES],
         "review_ids": review_ids,
     }
+    if extra_chapter_ids:
+        summary["extra_chapter_ids"] = extra_chapter_ids
+        summary["extra_scene_ids"] = extra_scene_ids
+        summary["extra_review_ids"] = extra_review_ids
+    return summary
 
 
 def seed_demo(session: Session | None = None, *, fixture: str | None = None) -> dict[str, list[str] | str]:
@@ -803,7 +931,7 @@ def seed_demo(session: Session | None = None, *, fixture: str | None = None) -> 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fixture", choices=[DEMO_RUNTIME_OPS_E2E_FIXTURE])
+    parser.add_argument("--fixture", choices=[DEMO_RUNTIME_OPS_E2E_FIXTURE, DEMO_CHAPTER_OPS_E2E_FIXTURE, DEMO_ALL_E2E_FIXTURE])
     args = parser.parse_args(argv)
     print(json.dumps(seed_demo(fixture=args.fixture), ensure_ascii=False, indent=2))
 

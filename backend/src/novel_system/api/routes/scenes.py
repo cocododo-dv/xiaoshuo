@@ -6,7 +6,17 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
-from novel_system.db.models import AttemptTracker, ChapterGoal, ChapterState, FinalScene, SceneBundle, SceneCard, SceneDraft, SceneMemory, SceneRunState
+from novel_system.db.models import (
+    AttemptTracker,
+    ChapterGoal,
+    FinalScene,
+    SceneBundle,
+    SceneCard,
+    SceneDraft,
+    SceneMemory,
+    SceneRunState,
+)
+from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.orchestrator import Orchestrator
 
@@ -96,7 +106,8 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     scene = session.get(SceneCard, scene_id)
     chapter = session.get(ChapterGoal, scene.chapter_id)
     state = session.get(SceneRunState, scene_id)
-    chapter_state = session.get(ChapterState, scene.chapter_id)
+    runtime_service = ChapterRuntimeService(session)
+    chapter_state = runtime_service.chapter_state_payload(scene.chapter_id)
     bundle = session.get(SceneBundle, state.current_bundle_id) if state.current_bundle_id else None
     neutral = session.get(SceneDraft, state.current_neutral_draft_row_id) if state.current_neutral_draft_row_id else None
     style = session.get(SceneDraft, state.current_style_draft_row_id) if state.current_style_draft_row_id else None
@@ -107,7 +118,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     attempts = session.execute(
         select(AttemptTracker).where(AttemptTracker.scene_id == scene_id).order_by(AttemptTracker.attempt_id.asc())
     ).scalars().all()
-    return ok(
+    response = ok(
         {
             "chapter_goal": {
                 "chapter_id": chapter.chapter_id,
@@ -120,7 +131,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
                 "scene_id": scene.scene_id,
                 "scene_goal": scene.scene_goal,
                 "beats_json": scene.beats_json,
-                "must_include_text": scene.must_include_text,
+                "must_include_text": clean_backfill_markers(scene.must_include_text),
                 "location": scene.location,
             },
             "scene_run_state": {
@@ -129,11 +140,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
                 "current_bundle_hash": state.current_bundle_hash,
                 "current_final_scene_row_id": state.current_final_scene_row_id,
             },
-            "chapter_state": {
-                "chapter_backfill_pending_count": chapter_state.chapter_backfill_pending_count,
-                "aggregate_block_reason": chapter_state.aggregate_block_reason,
-                "mid_aggregate_enabled_effective": chapter_state.mid_aggregate_enabled_effective,
-            },
+            "chapter_state": chapter_state,
             "bundle": {
                 "bundle_id": bundle.bundle_id if bundle else None,
                 "bundle_snapshot_hash": bundle.bundle_snapshot_hash if bundle else None,
@@ -147,6 +154,8 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
         },
         req_id=getattr(request.state, "request_id", None),
     )
+    session.commit()
+    return response
 
 
 def _serialize_attempt(item: AttemptTracker) -> dict:

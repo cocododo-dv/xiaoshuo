@@ -13,8 +13,15 @@ const emit = defineEmits(["notice"]);
 const workbench = useWorkbenchStore();
 const { focusTarget, openTarget } = useShellRouter();
 const requestedSceneId = ref(workbench.sceneId);
+const manualHoldReason = ref("");
+const selectedStrategies = ref({});
 
 const hasData = computed(() => Boolean(workbench.data));
+const chapterState = computed(() => workbench.data?.chapter_state || {});
+const chapterId = computed(() => workbench.data?.chapter_goal?.chapter_id || "");
+const pendingStagedBackfillItems = computed(() =>
+  (chapterState.value.staged_backfill_items || []).filter((item) => item.status === "pending"),
+);
 const focusedSceneId = computed(() =>
   focusTarget.value?.target_type === "scene_card" ? focusTarget.value.target_id : "",
 );
@@ -40,6 +47,13 @@ function sceneCardTarget(sceneId = resolveSceneId()) {
   };
 }
 
+function selectedStrategyFor(stageId) {
+  if (!selectedStrategies.value[stageId]) {
+    selectedStrategies.value[stageId] = "create_tracker_now";
+  }
+  return selectedStrategies.value[stageId];
+}
+
 async function loadWorkbench() {
   await workbench.refreshAll(resolveSceneId());
   if (workbench.error) {
@@ -56,6 +70,47 @@ async function runScene() {
       source_type: "scene_run_receipt",
       source_id: sceneId,
     });
+    emit("notice", message);
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function runChapterBackfill(stageId) {
+  try {
+    const message = await workbench.runChapterBackfill(
+      chapterId.value,
+      stageId,
+      selectedStrategyFor(stageId),
+      resolveSceneId(),
+    );
+    emit("notice", message);
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function runChapterFinalAggregate() {
+  try {
+    const message = await workbench.runChapterFinalAggregate(chapterId.value, resolveSceneId());
+    emit("notice", message);
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function setManualHold() {
+  try {
+    const message = await workbench.setChapterManualHold(chapterId.value, manualHoldReason.value, resolveSceneId());
+    emit("notice", message);
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function clearManualHold() {
+  try {
+    const message = await workbench.clearChapterManualHold(chapterId.value, resolveSceneId());
     emit("notice", message);
   } catch (error) {
     emit("notice", error.message);
@@ -79,6 +134,14 @@ watch(
       await loadWorkbench();
     }
   },
+);
+
+watch(
+  () => workbench.data?.chapter_state?.manual_hold_reason,
+  (value) => {
+    manualHoldReason.value = value || "";
+  },
+  { immediate: true },
 );
 
 onMounted(() => {
@@ -184,6 +247,109 @@ onMounted(() => {
               Backfill pending: {{ workbench.data.chapter_state.chapter_backfill_pending_count }}
             </p>
             <p class="muted">Aggregate gate: {{ workbench.data.chapter_state.aggregate_block_reason }}</p>
+            <p class="muted">Manual hold: {{ workbench.data.chapter_state.manual_hold_reason || "-" }}</p>
+            <p class="muted">Final memory row: {{ workbench.data.chapter_state.last_final_memory_row_id || "-" }}</p>
+
+            <div class="chapter-runtime-section">
+              <h4>Pending Backfill</h4>
+              <div v-if="pendingStagedBackfillItems.length" class="chapter-backfill-list">
+                <article
+                  v-for="item in pendingStagedBackfillItems"
+                  :key="item.stage_id"
+                  class="chapter-backfill-item"
+                  :data-testid="`chapter-backfill-item-${item.stage_id}`"
+                >
+                  <p><strong>{{ item.marker_text }}</strong></p>
+                  <p class="muted">Marker {{ item.marker_id }} - {{ item.stage_id }}</p>
+                  <div class="field-inline">
+                    <select
+                      :data-testid="`chapter-backfill-strategy-${item.stage_id}`"
+                      :value="selectedStrategyFor(item.stage_id)"
+                      @change="selectedStrategies[item.stage_id] = $event.target.value"
+                    >
+                      <option value="create_tracker_now">create_tracker_now</option>
+                      <option value="run_backfill_again">run_backfill_again</option>
+                      <option value="explicit_defer_with_tracker">explicit_defer_with_tracker</option>
+                      <option value="mark_staged_abandoned">mark_staged_abandoned</option>
+                    </select>
+                    <button
+                      :disabled="workbench.actionId === `chapter-backfill:${item.stage_id}`"
+                      :data-testid="`chapter-backfill-run-${item.stage_id}`"
+                      @click="runChapterBackfill(item.stage_id)"
+                    >
+                      {{ workbench.actionId === `chapter-backfill:${item.stage_id}` ? "Running..." : "Run" }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <p v-else class="muted" data-testid="chapter-backfill-empty">No pending staged backfill.</p>
+            </div>
+
+            <div class="chapter-runtime-section">
+              <h4>Chapter Ops</h4>
+              <div class="field-inline">
+                <button
+                  :disabled="workbench.actionId === 'chapter-final-aggregate'"
+                  data-testid="chapter-final-aggregate-button"
+                  @click="runChapterFinalAggregate"
+                >
+                  {{ workbench.actionId === "chapter-final-aggregate" ? "Aggregating..." : "Run Final Aggregate" }}
+                </button>
+              </div>
+              <div class="field-inline chapter-manual-hold-controls">
+                <input
+                  v-model="manualHoldReason"
+                  class="control-input"
+                  data-testid="chapter-manual-hold-reason-input"
+                  placeholder="Manual hold reason"
+                />
+                <button
+                  :disabled="workbench.actionId === 'chapter-manual-hold-set'"
+                  data-testid="chapter-manual-hold-set-button"
+                  @click="setManualHold"
+                >
+                  {{ workbench.actionId === "chapter-manual-hold-set" ? "Saving..." : "Set Hold" }}
+                </button>
+                <button
+                  class="ghost"
+                  :disabled="workbench.actionId === 'chapter-manual-hold-clear'"
+                  data-testid="chapter-manual-hold-clear-button"
+                  @click="clearManualHold"
+                >
+                  {{ workbench.actionId === "chapter-manual-hold-clear" ? "Clearing..." : "Clear Hold" }}
+                </button>
+              </div>
+            </div>
+
+            <article
+              v-if="workbench.lastChapterActionResult"
+              class="paper mini receipt-card chapter-receipt"
+              data-testid="chapter-action-receipt"
+            >
+              <div class="receipt-head">
+                <div>
+                  <h4>Chapter Action Receipt</h4>
+                  <p class="muted receipt-copy">Latest chapter runtime action and returned receipt.</p>
+                </div>
+                <span class="badge">{{ workbench.lastChapterActionResult.action }}</span>
+              </div>
+              <p class="muted">Chapter {{ workbench.lastChapterActionResult.chapter_id }}</p>
+              <p v-if="workbench.lastChapterActionResult.stage_id" class="muted">
+                Stage {{ workbench.lastChapterActionResult.stage_id }}
+              </p>
+              <p v-if="workbench.lastChapterActionResult.strategy" class="muted">
+                Strategy {{ workbench.lastChapterActionResult.strategy }}
+              </p>
+              <p v-if="workbench.lastChapterActionResult.reason" class="muted">
+                Reason {{ workbench.lastChapterActionResult.reason }}
+              </p>
+              <p v-if="workbench.lastChapterActionResult.chapter_memory_row_id" class="muted">
+                Final {{ workbench.lastChapterActionResult.chapter_memory_row_id }}
+              </p>
+              <p v-if="workbench.lastChapterActionResult.status" class="muted">
+                Status {{ workbench.lastChapterActionResult.status }}
+              </p>
+            </article>
           </article>
         </div>
 

@@ -22,7 +22,18 @@ class Aggregator:
             return None
 
         content = "\n".join(memory.content for memory in scene_memories)
-        row_id = f"chapter_memory_final_{chapter_id}"
+        existing_finals = self.session.execute(
+            select(ChapterMemory)
+            .where(ChapterMemory.chapter_id == chapter_id, ChapterMemory.aggregate_stage == "final")
+            .order_by(ChapterMemory.row_id.asc())
+        ).scalars().all()
+        for existing in existing_finals:
+            if existing.active_flag == 1:
+                existing.active_flag = 0
+                existing.runtime_eligible = 0
+                existing.runtime_eligibility_basis = "superseded"
+
+        row_id = f"chapter_memory_final_{chapter_id}_v{len(existing_finals) + 1}"
         memory = ChapterMemory(
             row_id=row_id,
             chapter_id=chapter_id,
@@ -30,7 +41,8 @@ class Aggregator:
             content=content,
             active_flag=1,
             runtime_eligible=1,
+            runtime_eligibility_basis="direct_read",
         )
-        self.session.merge(memory)
+        self.session.add(memory)
         chapter_state.last_final_memory_row_id = row_id
         return {"chapter_memory_row_id": row_id}

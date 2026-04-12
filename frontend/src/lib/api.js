@@ -87,6 +87,22 @@ export function runFullScene(sceneId) {
   return apiPost(`/api/v1/scenes/${sceneId}/run/full`);
 }
 
+export function runChapterBackfill(chapterId, stageId, strategy) {
+  return apiPost(`/api/v1/chapters/${chapterId}/runtime/backfill/${stageId}`, { strategy });
+}
+
+export function runChapterFinalAggregate(chapterId) {
+  return apiPost(`/api/v1/chapters/${chapterId}/runtime/aggregate/final`);
+}
+
+export function setChapterManualHold(chapterId, reason) {
+  return apiPost(`/api/v1/chapters/${chapterId}/runtime/manual-hold`, { reason });
+}
+
+export function clearChapterManualHold(chapterId) {
+  return apiPost(`/api/v1/chapters/${chapterId}/runtime/manual-hold/clear`);
+}
+
 export function previewBundleWorksheet(worksheetYaml) {
   return apiPost("/api/v1/interop/preview/bundle-worksheet", { worksheet_yaml: worksheetYaml });
 }
