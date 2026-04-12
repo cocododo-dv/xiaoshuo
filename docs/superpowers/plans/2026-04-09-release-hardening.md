@@ -1,5 +1,9 @@
 # Release Hardening Implementation Plan
 
+**Status:** implemented
+
+> Closeout note: the repository still ships the verification scripts, CI workflow, checklist, and README guidance from this slice. Historical git publication steps were later absorbed by follow-on closeout work and are recorded as superseded notes below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add stable local verification entry points, baseline GitHub CI, release-facing docs, and a review-ready Draft PR workflow for the current Novel System baseline.
@@ -36,7 +40,7 @@
 - Create: `scripts/verify_wsl_strict.sh`
 - Create: `scripts/verify_release.ps1`
 
-- [ ] **Step 1: Run the missing-script checks to confirm the entry points do not exist yet**
+- [x] **Step 1: Run the missing-script checks to confirm the entry points do not exist yet**
 
 Run:
 
@@ -48,7 +52,7 @@ Test-Path scripts/verify_release.ps1
 
 Expected: all three commands print `False`
 
-- [ ] **Step 2: Add the Windows verification wrapper**
+- [x] **Step 2: Add the Windows verification wrapper**
 
 ```powershell
 param(
@@ -103,7 +107,7 @@ if (-not $BackendOnly) {
 }
 ```
 
-- [ ] **Step 3: Add the strict WSL verification wrapper and a release orchestrator**
+- [x] **Step 3: Add the strict WSL verification wrapper and a release orchestrator**
 
 ```bash
 #!/usr/bin/env bash
@@ -137,7 +141,7 @@ Write-Host "==> WSL strict Chroma verification lane" -ForegroundColor Cyan
 wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"
 ```
 
-- [ ] **Step 4: Run the Windows verification wrapper**
+- [x] **Step 4: Run the Windows verification wrapper**
 
 Run:
 
@@ -147,7 +151,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1
 
 Expected: backend non-Chroma tests pass, then frontend test/build pass
 
-- [ ] **Step 5: Run the strict WSL wrapper directly**
+- [x] **Step 5: Run the strict WSL wrapper directly**
 
 Run:
 
@@ -164,7 +168,7 @@ Expected: `chroma_smoke`, focused Chroma suite, and full backend `pytest -q` all
 **Files:**
 - Create: `.github/workflows/ci.yml`
 
-- [ ] **Step 1: Confirm no root CI workflow exists yet**
+- [x] **Step 1: Confirm no root CI workflow exists yet**
 
 Run:
 
@@ -174,7 +178,7 @@ Test-Path .github/workflows/ci.yml
 
 Expected: `False`
 
-- [ ] **Step 2: Add the GitHub Actions workflow**
+- [x] **Step 2: Add the GitHub Actions workflow**
 
 ```yaml
 name: CI
@@ -225,7 +229,7 @@ jobs:
         run: npm run build
 ```
 
-- [ ] **Step 3: Validate the workflow file shape locally**
+- [x] **Step 3: Validate the workflow file shape locally**
 
 Run:
 
@@ -244,7 +248,7 @@ Expected: workflow contains both `backend` and `frontend` jobs with the commands
 - Create: `docs/release-checklist.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Confirm the current docs do not mention the new repository-level verification scripts**
+- [x] **Step 1: Confirm the current docs do not mention the new repository-level verification scripts**
 
 Run:
 
@@ -254,7 +258,7 @@ Select-String -Path README.md -Pattern "verify_windows.ps1|verify_wsl_strict.sh|
 
 Expected: no matches
 
-- [ ] **Step 2: Add the PR template**
+- [x] **Step 2: Add the PR template**
 
 ```markdown
 ## Summary
@@ -263,8 +267,8 @@ Expected: no matches
 
 ## Validation
 
-- [ ] `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
-- [ ] `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
+- [x] `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
+- [x] `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
 
 ## WSL Strict Chroma Notes
 
@@ -275,7 +279,7 @@ Expected: no matches
 - Record any known residual risk or leave `None`.
 ```
 
-- [ ] **Step 3: Add the release checklist document**
+- [x] **Step 3: Add the release checklist document**
 
 ```markdown
 # Release Checklist
@@ -296,7 +300,7 @@ Expected: no matches
 - Confirm any remaining risk is documented before marking the PR ready
 ```
 
-- [ ] **Step 4: Update the README to point at the script entry points and explain the CI/manual boundary**
+- [x] **Step 4: Update the README to point at the script entry points and explain the CI/manual boundary**
 
 ```markdown
 ## Verification
@@ -309,7 +313,7 @@ Use the repository-level scripts for the current validation flow:
 GitHub Actions covers the Windows-safe backend lane and the frontend lane. The strict Chroma lane remains a required local release check on this machine.
 ```
 
-- [ ] **Step 5: Re-read the updated docs to make sure the commands match the scripts exactly**
+- [x] **Step 5: Re-read the updated docs to make sure the commands match the scripts exactly**
 
 Run:
 
@@ -334,7 +338,7 @@ Expected: the commands, environments, and release gates match the scripts and CI
 - Modify: `scripts/verify_wsl_strict.sh`
 - Modify: `scripts/verify_release.ps1`
 
-- [ ] **Step 1: Run the repository-level Windows verification script**
+- [x] **Step 1: Run the repository-level Windows verification script**
 
 Run:
 
@@ -344,7 +348,7 @@ powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1
 
 Expected: exit code `0`
 
-- [ ] **Step 2: Run the repository-level strict WSL verification script**
+- [x] **Step 2: Run the repository-level strict WSL verification script**
 
 Run:
 
@@ -354,7 +358,7 @@ wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/ver
 
 Expected: exit code `0`
 
-- [ ] **Step 3: Review the final diff**
+- [x] **Step 3: Review the final diff**
 
 Run:
 
@@ -365,33 +369,4 @@ git diff --stat
 
 Expected: only the intended release-hardening files are modified
 
-- [ ] **Step 4: Commit the release-hardening changes**
-
-Run:
-
-```powershell
-git add .github/workflows/ci.yml .github/pull_request_template.md README.md docs/release-checklist.md scripts/verify_windows.ps1 scripts/verify_wsl_strict.sh scripts/verify_release.ps1
-git commit -m "build: harden release verification workflow"
-```
-
-Expected: one clean commit with the release-hardening changes
-
-- [ ] **Step 5: Push the current branch**
-
-Run:
-
-```powershell
-git push -u origin HEAD
-```
-
-Expected: branch updates on `origin`
-
-- [ ] **Step 6: Open the draft PR with validation evidence**
-
-Run:
-
-```powershell
-gh pr create --draft --fill
-```
-
-Expected: a new Draft PR URL is returned and can be shared back to the user
+- Supersede note: git commit, push, and Draft PR publication for this slice were absorbed by the later runtime closeout/doc-sync slices and are not backfilled here as completed historical checklist items.

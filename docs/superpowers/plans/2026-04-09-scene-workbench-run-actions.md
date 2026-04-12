@@ -1,5 +1,7 @@
 # Scene Workbench Run Actions Implementation Plan
 
+**Status:** implemented
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the Scene Workbench trigger the existing `run/full` pipeline and refresh the current scene board in place.
@@ -33,7 +35,7 @@
 - Modify: `frontend/tests/app.spec.js`
 - Modify: `frontend/tests/bundleProvenance.spec.js`
 
-- [ ] **Step 1: Write the failing store test**
+- [x] **Step 1: Write the failing store test**
 
 ```js
 it("runs a full scene and refreshes the workbench state", async () => {
@@ -78,7 +80,7 @@ it("runs a full scene and refreshes the workbench state", async () => {
 });
 ```
 
-- [ ] **Step 2: Write the failing view integration test**
+- [x] **Step 2: Write the failing view integration test**
 
 ```js
 it("wires a run action and receipt section into the scene workbench", () => {
@@ -90,7 +92,7 @@ it("wires a run action and receipt section into the scene workbench", () => {
 });
 ```
 
-- [ ] **Step 3: Run the targeted tests to verify RED**
+- [x] **Step 3: Run the targeted tests to verify RED**
 
 Run: `npx vitest run tests/app.spec.js tests/bundleProvenance.spec.js`
 Expected: FAIL because the store and view do not yet expose run action behavior.
@@ -103,7 +105,7 @@ Expected: FAIL because the store and view do not yet expose run action behavior.
 - Modify: `frontend/src/lib/api.js`
 - Modify: `frontend/src/stores/workbench.js`
 
-- [ ] **Step 1: Add the API helper**
+- [x] **Step 1: Add the API helper**
 
 ```js
 export function runFullScene(sceneId) {
@@ -111,7 +113,7 @@ export function runFullScene(sceneId) {
 }
 ```
 
-- [ ] **Step 2: Add store run state and action**
+- [x] **Step 2: Add store run state and action**
 
 ```js
 state: () => ({
@@ -145,7 +147,7 @@ async runScene(sceneId = this.sceneId) {
 }
 ```
 
-- [ ] **Step 3: Run the targeted tests to verify GREEN for store behavior**
+- [x] **Step 3: Run the targeted tests to verify GREEN for store behavior**
 
 Run: `npx vitest run tests/app.spec.js tests/bundleProvenance.spec.js`
 Expected: still FAIL because the view has not been updated yet.
@@ -158,7 +160,7 @@ Expected: still FAIL because the view has not been updated yet.
 - Modify: `frontend/src/views/SceneWorkbenchView.vue`
 - Modify: `frontend/src/styles/app.css`
 
-- [ ] **Step 1: Add the run button and handler**
+- [x] **Step 1: Add the run button and handler**
 
 ```vue
 async function runScene() {
@@ -177,7 +179,7 @@ async function runScene() {
 </button>
 ```
 
-- [ ] **Step 2: Add the receipt panel**
+- [x] **Step 2: Add the receipt panel**
 
 ```vue
 <article v-if="workbench.lastRunResult" class="paper receipt-card">
@@ -189,7 +191,7 @@ async function runScene() {
 </article>
 ```
 
-- [ ] **Step 3: Add minimal styles for the action strip and receipt card**
+- [x] **Step 3: Add minimal styles for the action strip and receipt card**
 
 ```css
 .receipt-card {
@@ -206,7 +208,7 @@ async function runScene() {
 }
 ```
 
-- [ ] **Step 4: Run the targeted tests to verify GREEN**
+- [x] **Step 4: Run the targeted tests to verify GREEN**
 
 Run: `npx vitest run tests/app.spec.js tests/bundleProvenance.spec.js`
 Expected: PASS
@@ -218,12 +220,12 @@ Expected: PASS
 **Files:**
 - Modify: none
 
-- [ ] **Step 1: Run frontend test suite**
+- [x] **Step 1: Run frontend test suite**
 
 Run: `npm test`
 Expected: PASS
 
-- [ ] **Step 2: Run production build**
+- [x] **Step 2: Run production build**
 
 Run: `npm run build`
 Expected: PASS

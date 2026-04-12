@@ -1,5 +1,9 @@
 # Human Review Runtime Ops Closeout Implementation Plan
 
+**Status:** docs-only closeout
+
+> Closeout note: this plan captured documentation and release-handoff work for an already-implemented runtime shell. The shipped docs remain, while git publication moved into the subsequent runtime-shell documentation sync.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close out the current L3 runtime-ops slice by syncing repository docs, release handoff material, and publish-ready validation evidence with the already-implemented operator, recovery, promotion, and human review flows.
@@ -34,7 +38,7 @@
 - Create: `docs/superpowers/plans/2026-04-10-human-review-runtime-ops-closeout.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Record the closeout design**
+- [x] **Step 1: Record the closeout design**
 
 Write the design doc so it captures:
 
@@ -44,7 +48,7 @@ Write the design doc so it captures:
 - the seeded acceptance path
 - the release handoff expectations
 
-- [ ] **Step 2: Record the closeout implementation plan**
+- [x] **Step 2: Record the closeout implementation plan**
 
 Write the plan doc so it captures:
 
@@ -53,7 +57,7 @@ Write the plan doc so it captures:
 - the seeded acceptance steps
 - the publish-prep expectations for commit, push, and draft PR creation
 
-- [ ] **Step 3: Update the README demo path**
+- [x] **Step 3: Update the README demo path**
 
 Document:
 
@@ -70,7 +74,7 @@ Document:
 - Modify: `.github/pull_request_template.md`
 - Modify: `.gitignore`
 
-- [ ] **Step 1: Update the release checklist**
+- [x] **Step 1: Update the release checklist**
 
 Add requirements to record:
 
@@ -79,7 +83,7 @@ Add requirements to record:
 - recovery / promotion / human-review follow-up outcomes
 - actor and target confirmation in receipts and runtime ledger views
 
-- [ ] **Step 2: Update the PR template**
+- [x] **Step 2: Update the PR template**
 
 Add explicit PR fields for:
 
@@ -87,7 +91,7 @@ Add explicit PR fields for:
 - operator ref notes
 - runtime-ops validation coverage
 
-- [ ] **Step 3: Ignore local runtime artifacts**
+- [x] **Step 3: Ignore local runtime artifacts**
 
 Add `.codex-run/` to `.gitignore` so local agent-run artifacts stay out of the PR scope.
 
@@ -98,26 +102,19 @@ Add `.codex-run/` to `.gitignore` so local agent-run artifacts stay out of the P
 **Files:**
 - Modify: none unless seeded acceptance exposes a real mismatch
 
-- [ ] **Step 1: Re-run the seed command**
+- [x] **Step 1: Re-run the seed command**
 
 Run: `cd backend && alembic upgrade head && python -m novel_system.tools.seed_demo`
 Expected: succeeds without creating duplicate seeded content.
 
-- [ ] **Step 2: Re-run the Windows verification lane**
+- [x] **Step 2: Re-run the Windows verification lane**
 
 Run: `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
 Expected: backend tests pass, frontend tests pass, frontend build succeeds.
 
-- [ ] **Step 3: Re-run the WSL strict lane**
+- [x] **Step 3: Re-run the WSL strict lane**
 
 Run: `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
 Expected: Chroma smoke succeeds, focused Chroma suite passes, full backend suite passes.
 
-- [ ] **Step 4: Stage, commit, push, and open a Draft PR**
-
-Use a closeout commit and a draft PR that summarizes:
-
-- the runtime-ops contract closeout
-- the synced docs and release material
-- the Windows and WSL verification evidence
-- the seeded manual acceptance scope still expected from reviewers, if any UI-only checks remain manual
+- Supersede note: publication of this docs-only closeout was absorbed by the later 2026-04-12 runtime-shell doc sync and is not backfilled here as a completed historical checklist item.

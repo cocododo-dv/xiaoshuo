@@ -2,12 +2,14 @@
 import { ref } from "vue";
 
 import { getApiBase, getOperatorRef, setApiBase, setOperatorRef } from "./lib/api";
+import { useAuthorWorkspaceStore } from "./stores/authorWorkspace";
 import { useIndexConsoleStore } from "./stores/indexConsole";
 import { useInteropCenterStore } from "./stores/interopCenter";
 import { useKnowledgeConsoleStore } from "./stores/knowledgeConsole";
 import { useReviewInboxStore } from "./stores/reviewInbox";
 import { useWorkbenchStore } from "./stores/workbench";
 import { useShellRouter } from "./router";
+import AuthorWorkspaceView from "./views/AuthorWorkspaceView.vue";
 import IndexConsoleView from "./views/IndexConsoleView.vue";
 import InteropCenterView from "./views/InteropCenterView.vue";
 import KnowledgeConsoleView from "./views/KnowledgeConsoleView.vue";
@@ -19,6 +21,7 @@ const apiBase = ref(getApiBase());
 const operatorRef = ref(getOperatorRef());
 const notices = ref([]);
 
+const authorWorkspace = useAuthorWorkspaceStore();
 const workbench = useWorkbenchStore();
 const reviewInbox = useReviewInboxStore();
 const indexConsole = useIndexConsoleStore();
@@ -43,13 +46,20 @@ function updateOperator() {
 }
 
 async function reloadAll() {
-  await Promise.all([workbench.refreshAll(), reviewInbox.load(), indexConsole.load(), knowledgeConsole.load()]);
+  await Promise.all([
+    authorWorkspace.initialize(),
+    workbench.refreshAll(),
+    reviewInbox.load(),
+    indexConsole.load(),
+    knowledgeConsole.load(),
+  ]);
+  if (authorWorkspace.error) pushNotice(authorWorkspace.error);
   if (workbench.error) pushNotice(workbench.error);
   if (reviewInbox.error) pushNotice(reviewInbox.error);
   if (indexConsole.error) pushNotice(indexConsole.error);
   if (knowledgeConsole.error) pushNotice(knowledgeConsole.error);
   if (interopCenter.error) pushNotice(interopCenter.error);
-  if (!workbench.error && !reviewInbox.error && !indexConsole.error && !knowledgeConsole.error && !interopCenter.error) {
+  if (!authorWorkspace.error && !workbench.error && !reviewInbox.error && !indexConsole.error && !knowledgeConsole.error && !interopCenter.error) {
     pushNotice("Reloaded all views");
   }
 }
@@ -57,7 +67,7 @@ async function reloadAll() {
 
 <template>
   <div class="shell">
-    <!-- Scene Workbench / Review Inbox / Index Console / Knowledge Console / Interop Center -->
+    <!-- Author Workspace / Scene Workbench / Review Inbox / Index Console / Knowledge Console / Interop Center -->
     <aside class="rail">
       <div class="brand">
         <div class="eyebrow">P2 Editorial Ops</div>
@@ -99,6 +109,10 @@ async function reloadAll() {
 
     <main class="stage">
       <div class="view-stack">
+        <AuthorWorkspaceView
+          v-show="activeView === 'author'"
+          @notice="pushNotice"
+        />
         <SceneWorkbenchView
           v-show="activeView === 'workbench'"
           @notice="pushNotice"

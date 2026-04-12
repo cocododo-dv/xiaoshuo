@@ -1,5 +1,7 @@
 # Scene Bundle Traceability Implementation Plan
 
+**Status:** implemented
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add real version-backed `voice/relation` sources for scene bundle construction and fail scene runs when those traceable sources are missing.
@@ -35,7 +37,7 @@
 - Modify: `backend/tests/test_orchestrator_flow.py`
 - Modify: `backend/tests/test_seed_demo.py`
 
-- [ ] **Step 1: Write the failing provenance and failure-path tests**
+- [x] **Step 1: Write the failing provenance and failure-path tests**
 
 ```python
 def test_run_full_scene_records_voice_and_relation_bundle_provenance(client) -> None:
@@ -85,7 +87,7 @@ def test_seed_demo_creates_traceable_voice_and_relation_profiles(session) -> Non
     assert relation is not None and relation.active_flag == 1
 ```
 
-- [ ] **Step 2: Run the targeted tests to verify they fail**
+- [x] **Step 2: Run the targeted tests to verify they fail**
 
 Run: `cd backend; python -m pytest tests/test_orchestrator_flow.py tests/test_seed_demo.py -q`
 Expected: FAIL because the new tables, seed rows, and bundle provenance fields do not exist yet.
@@ -98,7 +100,7 @@ Expected: FAIL because the new tables, seed rows, and bundle provenance fields d
 - Modify: `backend/src/novel_system/db/models.py`
 - Create: `backend/alembic/versions/20260409_0002_bundle_traceability_sources.py`
 
-- [ ] **Step 1: Add the new SQLAlchemy models**
+- [x] **Step 1: Add the new SQLAlchemy models**
 
 ```python
 class VoiceProfile(Base):
@@ -130,7 +132,7 @@ class RelationProfile(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 ```
 
-- [ ] **Step 2: Add the Alembic migration**
+- [x] **Step 2: Add the Alembic migration**
 
 ```python
 """bundle traceability sources
@@ -155,7 +157,7 @@ def downgrade() -> None:
     Base.metadata.tables["voice_profiles"].drop(bind=bind, checkfirst=True)
 ```
 
-- [ ] **Step 3: Re-run the targeted tests**
+- [x] **Step 3: Re-run the targeted tests**
 
 Run: `cd backend; python -m pytest tests/test_orchestrator_flow.py tests/test_seed_demo.py -q`
 Expected: FAIL because runtime services still do not read or seed the new source rows.
@@ -168,7 +170,7 @@ Expected: FAIL because runtime services still do not read or seed the new source
 - Modify: `backend/src/novel_system/services/resolver.py`
 - Modify: `backend/src/novel_system/services/bundle_builder.py`
 
-- [ ] **Step 1: Upgrade the resolver to load active version rows**
+- [x] **Step 1: Upgrade the resolver to load active version rows**
 
 ```python
 class Resolver:
@@ -188,7 +190,7 @@ class Resolver:
         ).scalars().first()
 ```
 
-- [ ] **Step 2: Make bundle building record provenance and fail on missing required sources**
+- [x] **Step 2: Make bundle building record provenance and fail on missing required sources**
 
 ```python
 voice_profile = self.resolver.resolve_active_voice_profile(self.session, scene)
@@ -203,7 +205,7 @@ if voice_profile:
     inline_digests["voice_card"] = voice_profile.content
 ```
 
-- [ ] **Step 3: Re-run the targeted tests**
+- [x] **Step 3: Re-run the targeted tests**
 
 Run: `cd backend; python -m pytest tests/test_orchestrator_flow.py tests/test_seed_demo.py -q`
 Expected: FAIL because the seed path still does not populate the new source rows.
@@ -216,7 +218,7 @@ Expected: FAIL because the seed path still does not populate the new source rows
 - Modify: `backend/src/novel_system/tools/seed_demo.py`
 - Modify: `backend/tests/test_orchestrator_flow.py`
 
-- [ ] **Step 1: Seed active voice/relation rows in the demo tool and test helper**
+- [x] **Step 1: Seed active voice/relation rows in the demo tool and test helper**
 
 ```python
 voice = session.get(VoiceProfile, "voice_profile_VOICE_CHAR_A_v1")
@@ -251,7 +253,7 @@ if relation is None:
     )
 ```
 
-- [ ] **Step 2: Re-run the targeted tests**
+- [x] **Step 2: Re-run the targeted tests**
 
 Run: `cd backend; python -m pytest tests/test_orchestrator_flow.py tests/test_seed_demo.py -q`
 Expected: PASS
@@ -271,12 +273,12 @@ Expected: PASS
 - Modify: `backend/tests/test_seed_demo.py`
 - Create: `backend/alembic/versions/20260409_0002_bundle_traceability_sources.py`
 
-- [ ] **Step 1: Run the backend regression slice**
+- [x] **Step 1: Run the backend regression slice**
 
 Run: `cd backend; python -m pytest tests/test_orchestrator_flow.py tests/test_seed_demo.py tests/test_hash_engine.py tests/test_acceptance_flow.py -q`
 Expected: PASS on the targeted backend bundle/replay/demo coverage.
 
-- [ ] **Step 2: Run the Windows-safe backend lane**
+- [x] **Step 2: Run the Windows-safe backend lane**
 
 Run: `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1 -BackendOnly`
 Expected: PASS with all non-`chroma_integration` backend tests green.

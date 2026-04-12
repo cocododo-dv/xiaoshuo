@@ -97,6 +97,26 @@ export function fetchWorkbench(sceneId) {
   return apiGet(`/api/v1/scenes/${sceneId}/workbench`);
 }
 
+export function fetchChapters() {
+  return apiGet("/api/v1/chapters");
+}
+
+export function fetchAuthorWorkspace(chapterId) {
+  return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/author-workspace`);
+}
+
+export function saveChapter(payload) {
+  return apiPost("/api/v1/chapters", payload);
+}
+
+export function saveScene(payload) {
+  return apiPost("/api/v1/scenes", payload);
+}
+
+export function reorderChapterScenes(chapterId, payload) {
+  return apiPost(`/api/v1/chapters/${encodeURIComponent(chapterId)}/scene-order`, payload);
+}
+
 export function runFullScene(sceneId) {
   return apiPost(`/api/v1/scenes/${sceneId}/run/full`);
 }

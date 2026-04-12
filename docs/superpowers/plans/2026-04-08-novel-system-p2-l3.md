@@ -1,5 +1,7 @@
 # Novel System P2 L3 Implementation Plan
 
+**Status:** implemented
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a runnable FastAPI + SQLite + Chroma-backed novel workflow that reaches the L3 milestone defined in `2026-04-07-novel-system-p2-design_v1_3_5.md`, including scene orchestration, review materialization, vector verify gates, replay/interop APIs, and the three required frontend consoles.
@@ -27,7 +29,7 @@
 - Create: `config/models.yaml`
 - Create: `config/hash_contract.yaml`
 
-- [ ] **Step 1: Write the failing schema tests**
+- [x] **Step 1: Write the failing schema tests**
 
 ```python
 def test_migration_creates_required_tables(sqlite_engine):
@@ -45,12 +47,12 @@ def test_review_items_exposes_derived_target_collection(sqlite_session):
     assert refreshed.target_collection == "style_observations"
 ```
 
-- [ ] **Step 2: Run the backend tests to verify they fail**
+- [x] **Step 2: Run the backend tests to verify they fail**
 
 Run: `cd backend; python -m pytest tests/test_schema_contracts.py -q`
 Expected: FAIL because the package, models, and migration do not exist yet.
 
-- [ ] **Step 3: Implement settings, SQLAlchemy metadata, and the initial Alembic migration**
+- [x] **Step 3: Implement settings, SQLAlchemy metadata, and the initial Alembic migration**
 
 ```python
 class ReviewItem(Base):
@@ -71,12 +73,12 @@ class ReviewItem(Base):
     )
 ```
 
-- [ ] **Step 4: Re-run schema tests**
+- [x] **Step 4: Re-run schema tests**
 
 Run: `cd backend; python -m pytest tests/test_schema_contracts.py -q`
 Expected: PASS
 
-- [ ] **Step 5: Validate migration end-to-end**
+- [x] **Step 5: Validate migration end-to-end**
 
 Run: `cd backend; python -m alembic upgrade head`
 Expected: exit code 0 with the initial schema applied to the local SQLite database.
@@ -96,7 +98,7 @@ Expected: exit code 0 with the initial schema applied to the local SQLite databa
 - Create: `backend/tests/test_qc_validator.py`
 - Create: `backend/tests/test_bundle_builder.py`
 
-- [ ] **Step 1: Write the failing deterministic service tests**
+- [x] **Step 1: Write the failing deterministic service tests**
 
 ```python
 def test_bundle_hash_matches_golden_vector():
@@ -116,12 +118,12 @@ def test_soft_qc_waive_requires_carry_note():
         })
 ```
 
-- [ ] **Step 2: Run the service tests to verify they fail**
+- [x] **Step 2: Run the service tests to verify they fail**
 
 Run: `cd backend; python -m pytest tests/test_hash_engine.py tests/test_qc_validator.py tests/test_bundle_builder.py -q`
 Expected: FAIL because the contracts and services are not implemented yet.
 
-- [ ] **Step 3: Implement canonical bundle projection hashing, QC schemas, resolver cache, and bundle building**
+- [x] **Step 3: Implement canonical bundle projection hashing, QC schemas, resolver cache, and bundle building**
 
 ```python
 def compute_bundle_hash_projection(payload: BundleSnapshotHashProjection) -> str:
@@ -137,7 +139,7 @@ def validate_qc_report(qc_type: str, payload: dict) -> ValidatedQCReport:
     return parsed
 ```
 
-- [ ] **Step 4: Re-run the deterministic service tests**
+- [x] **Step 4: Re-run the deterministic service tests**
 
 Run: `cd backend; python -m pytest tests/test_hash_engine.py tests/test_qc_validator.py tests/test_bundle_builder.py -q`
 Expected: PASS
@@ -165,7 +167,7 @@ Expected: PASS
 - Create: `backend/tests/test_vector_verify_gate.py`
 - Create: `backend/tests/test_review_release.py`
 
-- [ ] **Step 1: Write the failing API and workflow tests**
+- [x] **Step 1: Write the failing API and workflow tests**
 
 ```python
 def test_run_full_scene_archives_memory_and_updates_status(client):
@@ -192,12 +194,12 @@ def test_verify_failure_keeps_old_alias_serving(client):
     assert alias.json()["data"]["active_alias"] == "style_obs_active_v1"
 ```
 
-- [ ] **Step 2: Run the workflow tests to verify they fail**
+- [x] **Step 2: Run the workflow tests to verify they fail**
 
 Run: `cd backend; python -m pytest tests/test_orchestrator_flow.py tests/test_idempotency_contract.py tests/test_vector_verify_gate.py tests/test_review_release.py -q`
 Expected: FAIL because the services and API routes do not exist yet.
 
-- [ ] **Step 3: Implement the workflow, release/promotion, recovery sweep, replay/interop, and REST API**
+- [x] **Step 3: Implement the workflow, release/promotion, recovery sweep, replay/interop, and REST API**
 
 ```python
 @router.post("/api/v1/scenes/{scene_id}/run/full")
@@ -220,7 +222,7 @@ def run_verify(job_id: str) -> VerifyResult:
     return verify_gate.flip_alias(job)
 ```
 
-- [ ] **Step 4: Re-run the workflow tests**
+- [x] **Step 4: Re-run the workflow tests**
 
 Run: `cd backend; python -m pytest tests/test_orchestrator_flow.py tests/test_idempotency_contract.py tests/test_vector_verify_gate.py tests/test_review_release.py -q`
 Expected: PASS
@@ -254,7 +256,7 @@ Expected: PASS
 - Create: `frontend/src/components/AliasScopeCard.vue`
 - Create: `frontend/tests/app.spec.ts`
 
-- [ ] **Step 1: Write the failing frontend smoke tests**
+- [x] **Step 1: Write the failing frontend smoke tests**
 
 ```ts
 it("renders the three required consoles from API-backed stores", async () => {
@@ -265,12 +267,12 @@ it("renders the three required consoles from API-backed stores", async () => {
 })
 ```
 
-- [ ] **Step 2: Run the frontend tests to verify they fail**
+- [x] **Step 2: Run the frontend tests to verify they fail**
 
 Run: `cd frontend; npm test -- --run`
 Expected: FAIL because the app does not exist yet.
 
-- [ ] **Step 3: Implement the SPA with a clear editorial-console visual direction**
+- [x] **Step 3: Implement the SPA with a clear editorial-console visual direction**
 
 ```vue
 <PanelShell title="Review Inbox" eyebrow="Materialize / release / reject">
@@ -285,12 +287,12 @@ Expected: FAIL because the app does not exist yet.
 </PanelShell>
 ```
 
-- [ ] **Step 4: Re-run the frontend tests**
+- [x] **Step 4: Re-run the frontend tests**
 
 Run: `cd frontend; npm test -- --run`
 Expected: PASS
 
-- [ ] **Step 5: Build the frontend bundle**
+- [x] **Step 5: Build the frontend bundle**
 
 Run: `cd frontend; npm run build`
 Expected: exit code 0 with a production build in `frontend/dist`.
@@ -303,7 +305,7 @@ Expected: exit code 0 with a production build in `frontend/dist`.
 - Create: `backend/tests/test_acceptance_flow.py`
 - Create: `README.md`
 
-- [ ] **Step 1: Write the failing acceptance test**
+- [x] **Step 1: Write the failing acceptance test**
 
 ```python
 def test_l3_acceptance_smoke(client):
@@ -317,12 +319,12 @@ def test_l3_acceptance_smoke(client):
     assert worksheet.status_code == 200
 ```
 
-- [ ] **Step 2: Run the acceptance test to verify it fails**
+- [x] **Step 2: Run the acceptance test to verify it fails**
 
 Run: `cd backend; python -m pytest tests/test_acceptance_flow.py -q`
 Expected: FAIL until the seeded flow and interop endpoints are fully wired together.
 
-- [ ] **Step 3: Implement the missing glue and docs**
+- [x] **Step 3: Implement the missing glue and docs**
 
 ```md
 ## Local development
@@ -333,7 +335,7 @@ Expected: FAIL until the seeded flow and interop endpoints are fully wired toget
 4. `npm run dev`
 ```
 
-- [ ] **Step 4: Run the complete verification suite**
+- [x] **Step 4: Run the complete verification suite**
 
 Run: `cd backend; python -m pytest -q`
 Expected: PASS
@@ -343,4 +345,3 @@ Expected: PASS
 
 Run: `cd frontend; npm run build`
 Expected: PASS
-

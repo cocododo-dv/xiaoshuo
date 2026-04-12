@@ -11,6 +11,7 @@ const focusTarget = ref({
 const pendingFocusView = ref(null);
 
 const views = [
+  { id: "author", label: "Author Workspace" },
   { id: "workbench", label: "Scene Workbench" },
   { id: "review", label: "Review Inbox" },
   { id: "index", label: "Index Console" },
@@ -48,6 +49,9 @@ export function useShellRouter() {
   }
 
   function targetView(targetType) {
+    if (targetType === "chapter_goal") {
+      return "author";
+    }
     if (workbenchTargetTypes.has(targetType)) {
       return "workbench";
     }
