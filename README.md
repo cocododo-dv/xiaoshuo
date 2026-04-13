@@ -80,7 +80,7 @@ Most recent successful verification:
 - `cd frontend && npm run test:e2e`
 - `wsl -d Ubuntu-24.04 bash -lc "cd /mnt/e/codex/xiaoshuo/codex && bash scripts/verify_wsl_strict.sh"`
 - 2026-04-12 Windows lane result: backend `80 passed, 12 deselected`; frontend `79 passed`; production build succeeded.
-- 2026-04-12 seeded browser E2E result: Playwright `4 passed`, covering chapter runtime ops, runtime-ops closeout, Knowledge Console workflow/provenance, and Interop Center worksheet preview/import/export/replay.
+- 2026-04-12 seeded browser E2E result: Playwright `4 passed`, covering chapter runtime ops, runtime-ops closeout, `知识控制台` workflow/provenance, and `互操作中心` worksheet preview/import/export/replay.
 - 2026-04-12 WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `12 passed`; full backend suite `91 passed, 1 skipped`.
 
 ## Demo seed
@@ -108,6 +108,42 @@ Runtime-ops closeout note:
 - The shell persists the operator identity in local storage under `novel-system-operator-ref`.
 - Every mutating frontend POST request sends `X-Operator-Ref`, so receipts, runtime ledger entries, and human review follow-up actions can be traced back to the active operator.
 
+## One-click Windows Dev Lifecycle
+
+Use the root launchers when you want the local demo stack to bootstrap and run without manually opening separate backend/frontend terminals.
+
+Start both services:
+
+```powershell
+.\start-dev.cmd
+```
+
+Stop the tracked backend/frontend process trees:
+
+```powershell
+.\stop-dev.cmd
+```
+
+Restart the full stack:
+
+```powershell
+.\restart-dev.cmd
+```
+
+What the lifecycle wrapper does:
+
+- runs `alembic upgrade head` in `backend`
+- reruns the idempotent demo seed
+- starts FastAPI on `http://127.0.0.1:8000`
+- starts Vite on `http://127.0.0.1:5173`
+- records logs under `.codex-run/`
+
+If you want to re-verify the wrapper itself, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/test_dev_lifecycle.ps1
+```
+
 ## End-to-end Demo
 
 ```powershell
@@ -129,30 +165,32 @@ npm run test:e2e
 
 The Playwright lane seeds the browser fixtures, forces the memory vector backend, and validates four browser paths with `Operator Ref = ops.chapter.e2e`, `Operator Ref = ops.runtime.e2e`, `Operator Ref = ops.knowledge.e2e`, and `Operator Ref = ops.interop.e2e`:
 
-- `Scene Workbench` chapter runtime path loads `CH200_SC01` and exercises staged backfill, manual hold, and final aggregate
-- `Scene Workbench` runtime path loads `CH001_SC01` and runs the full scene pipeline
-- `Review Inbox` approves, verifies, and releases `review_demo_style_observation`
-- `Index Console` retries verify jobs, runs due promotions, and runs recovery sweep
+- `场景工作台` chapter runtime path loads `CH200_SC01` and exercises staged backfill, manual hold, and final aggregate
+- `场景工作台` runtime path loads `CH001_SC01` and runs the full scene pipeline
+- `审核收件箱` approves, verifies, and releases `review_demo_style_observation`
+- `索引控制台` retries verify jobs, runs due promotions, and runs recovery sweep
 - Recovery-generated human review follow-up actions progress through `retry_request`, `retry_verify`, and `release_review`
 - Receipts, runtime ledger views, target activity, and cross-view target focus all keep the expected actor / linked-target identity
-- `Knowledge Console` creates candidates, runs approve / verify / release workflow, applies object / scope / scope-ref / status filters, clears stale detail state when filters exclude the current lineage, opens linked review refs in `Review Inbox`, and opens bundle refs in `Scene Workbench`
-- `Interop Center` previews strict YAML worksheets, imports validated bundles, exports bundle worksheets, replays final-scene envelopes, and surfaces version/text drift comparisons with cross-view jumps back into the shell
+- `知识控制台` creates candidates, runs approve / verify / release workflow, applies object / scope / scope-ref / status filters, clears stale detail state when filters exclude the current lineage, opens linked review refs in `审核收件箱`, and opens bundle refs in `场景工作台`
+- `互操作中心` previews strict YAML worksheets, imports validated bundles, exports bundle worksheets, replays final-scene envelopes, and surfaces version/text drift comparisons with cross-view jumps back into the shell
 
 If you want to inspect the seed manually instead, use the local dev servers above and inspect:
 
-- `Scene Workbench` with `CH001_SC01`
-- `Review Inbox` with `review_demo_style_observation`
-- `Index Console` after approve / verify / release actions create alias and job activity
-- `Interop Center` with a strict YAML worksheet targeting existing `CH001` / `CH001_SC01` records
+- `作者工作台` for chapter/scene source-of-truth editing and handoff into runtime
+- `作者回收站` for restore / purge behavior after author-side trash actions
+- `场景工作台` with `CH001_SC01`
+- `审核收件箱` with `review_demo_style_observation`
+- `索引控制台` after approve / verify / release actions create alias and job activity
+- `互操作中心` with a strict YAML worksheet targeting existing `CH001` / `CH001_SC01` records
 
 ## Runtime Ops Closeout Demo
 
 Use this walkthrough only when you need an extra manual spot-check beyond the automated `npm run test:e2e` lane:
 
 1. Start from the seeded flow above, including `alembic upgrade head`, and set `Operator Ref` in the shell rail before taking any mutating action.
-2. In `Scene Workbench`, load `CH001_SC01`, run the full scene pipeline, and confirm the run receipt updates in place.
-3. In `Review Inbox`, approve and release `review_demo_style_observation`, then inspect any surfaced human review events and trigger the available retry action.
-4. In `Index Console`, exercise verify retry, `run due promotions`, and `recovery sweep`.
+2. In `场景工作台`, load `CH001_SC01`, run the full scene pipeline, and confirm the run receipt updates in place.
+3. In `审核收件箱`, approve and release `review_demo_style_observation`, then inspect any surfaced human review events and trigger the available retry action.
+4. In `索引控制台`, exercise verify retry, `run due promotions`, and `recovery sweep`.
 5. Confirm the latest receipts, runtime ledger, and target activity groups all retain the correct actor and linked targets.
 
 The runtime-ops slice is considered closed out only when the seeded demo path, the runtime ledger, and the cross-view target jumps all agree on actor and target identity.
@@ -163,10 +201,10 @@ If you need strict real-Chroma verification, use the WSL lane above instead of n
 
 The shell currently reads through a mix of stable compatibility endpoints and decomposed domain endpoints:
 
-- `Review Inbox` reads `GET /api/v1/review-items` and `GET /api/v1/human-review-events`
-- `Scene Workbench` reads `GET /api/v1/scenes/{scene_id}/workbench`, `GET /api/v1/scenes/{scene_id}/attempts`, and scene-scoped human review reads
-- `Knowledge Console` reads `GET /api/v1/knowledge-entries` plus its detail/workflow endpoints
-- `Index Console` reads `GET /api/v1/vector-alias-scopes`, `GET /api/v1/jobs`, `GET /api/v1/activity-events`, and `GET /api/v1/target-activity-groups`
+- `审核收件箱` reads `GET /api/v1/review-items` and `GET /api/v1/human-review-events`
+- `场景工作台` reads `GET /api/v1/scenes/{scene_id}/workbench`, `GET /api/v1/scenes/{scene_id}/attempts`, and scene-scoped human review reads
+- `知识控制台` reads `GET /api/v1/knowledge-entries` plus its detail/workflow endpoints
+- `索引控制台` reads `GET /api/v1/vector-alias-scopes`, `GET /api/v1/jobs`, `GET /api/v1/activity-events`, and `GET /api/v1/target-activity-groups`
 
 The legacy `GET /api/v1/index/alias-scopes`, `GET /api/v1/index/jobs`, and `GET /api/v1/index/runtime-ledger` routes remain available as compatibility surfaces, but the current shell's primary read path for knowledge/index workflows has moved to the decomposed domain endpoints above.
 
@@ -191,4 +229,4 @@ npm install
 npm run dev
 ```
 
-The shell currently exposes `Scene Workbench`, `Review Inbox`, `Index Console`, `Knowledge Console`, and `Interop Center`. `Interop Center` is the worksheet workstation for strict YAML preview/import/export/replay flows and cross-view provenance inspection.
+The shell currently exposes `作者工作台`, `作者回收站`, `场景工作台`, `审核收件箱`, `索引控制台`, `知识控制台`, and `互操作中心`. `互操作中心` is the worksheet workstation for strict YAML preview/import/export/replay flows and cross-view provenance inspection, while `作者工作台` / `作者回收站` cover the author-side source-of-truth and recycle lifecycle.

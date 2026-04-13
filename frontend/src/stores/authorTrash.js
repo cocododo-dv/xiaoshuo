@@ -60,7 +60,7 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
     },
     async restoreChapters(chapterIds) {
       if (!chapterIds?.length) {
-        return "No chapters selected.";
+        return "尚未选择章节。";
       }
       this.actionId = "restore-chapters";
       this.error = "";
@@ -68,7 +68,7 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
         const result = await postRestoreChapters(chapterIds);
         await refreshAuthorWorkspaceStore();
         await this.load();
-        return batchMessage("Restored", "chapters", result, "chapter_id");
+        return batchMessage("已恢复", "章节", result, "chapter_id");
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -78,7 +78,7 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
     },
     async restoreScenes(sceneIds) {
       if (!sceneIds?.length) {
-        return "No scenes selected.";
+        return "尚未选择场景。";
       }
       this.actionId = "restore-scenes";
       this.error = "";
@@ -86,7 +86,7 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
         const result = await postRestoreScenes(sceneIds);
         await refreshAuthorWorkspaceStore();
         await this.load();
-        return batchMessage("Restored", "scenes", result, "scene_id");
+        return batchMessage("已恢复", "场景", result, "scene_id");
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -96,7 +96,7 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
     },
     async purgeChapters(chapterIds) {
       if (!chapterIds?.length) {
-        return "No chapters selected.";
+        return "尚未选择章节。";
       }
       this.actionId = "purge-chapters";
       this.error = "";
@@ -104,7 +104,7 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
         const result = await postPurgeChapters(chapterIds);
         await refreshAuthorWorkspaceStore();
         await this.load();
-        return batchMessage("Purged", "chapters", result, "chapter_id");
+        return batchMessage("已彻底清理", "章节", result, "chapter_id");
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -114,7 +114,7 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
     },
     async purgeScenes(sceneIds) {
       if (!sceneIds?.length) {
-        return "No scenes selected.";
+        return "尚未选择场景。";
       }
       this.actionId = "purge-scenes";
       this.error = "";
@@ -122,7 +122,7 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
         const result = await postPurgeScenes(sceneIds);
         await refreshAuthorWorkspaceStore();
         await this.load();
-        return batchMessage("Purged", "scenes", result, "scene_id");
+        return batchMessage("已彻底清理", "场景", result, "scene_id");
       } catch (error) {
         this.error = error.message;
         throw error;

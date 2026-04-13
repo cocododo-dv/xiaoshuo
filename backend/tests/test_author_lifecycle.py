@@ -94,7 +94,7 @@ def test_scene_trash_hides_records_from_active_views_and_surfaces_them_in_author
             "active_scene_count": 1,
             "trashed_scene_count": 1,
             "trash_allowed": 0,
-            "trash_block_reason": "chapter contains individually trashed scenes",
+            "trash_block_reason": "章节下已有单独移入回收站的场景",
         }
     ]
 
@@ -153,7 +153,7 @@ def test_chapter_trash_is_blocked_when_it_has_previously_trashed_child_scenes(cl
             {
                 "chapter_id": "CH610",
                 "code": "CHAPTER_TRASH_BLOCKED_HAS_TRASHED_SCENES",
-                "message": "chapter contains individually trashed scenes",
+                "message": "章节下已有单独移入回收站的场景",
             }
         ],
         "actor_ref": "operator",
@@ -211,9 +211,9 @@ def test_chapter_trash_moves_chapter_and_child_scenes_to_trash_and_restore_retur
             "trashed_by": "ops.author.chapter",
             "chapter_trashed": 1,
             "restore_allowed": 0,
-            "restore_block_reason": "restore the chapter to recover this scene",
+            "restore_block_reason": "请先恢复所属章节，再恢复该场景",
             "purge_allowed": 0,
-            "purge_block_reason": "manage this scene from its trashed chapter",
+            "purge_block_reason": "该场景随章节一起回收，请在章节行中处理",
         },
         {
             "scene_id": "CH620_SC02",
@@ -224,9 +224,9 @@ def test_chapter_trash_moves_chapter_and_child_scenes_to_trash_and_restore_retur
             "trashed_by": "ops.author.chapter",
             "chapter_trashed": 1,
             "restore_allowed": 0,
-            "restore_block_reason": "restore the chapter to recover this scene",
+            "restore_block_reason": "请先恢复所属章节，再恢复该场景",
             "purge_allowed": 0,
-            "purge_block_reason": "manage this scene from its trashed chapter",
+            "purge_block_reason": "该场景随章节一起回收，请在章节行中处理",
         },
     ]
 
@@ -242,7 +242,7 @@ def test_chapter_trash_moves_chapter_and_child_scenes_to_trash_and_restore_retur
             {
                 "scene_id": "CH620_SC01",
                 "code": "SCENE_RESTORE_BLOCKED_CHAPTER_TRASHED",
-                "message": "restore the chapter to recover this scene",
+                "message": "请先恢复所属章节，再恢复该场景",
             }
         ],
         "actor_ref": "operator",
@@ -329,7 +329,7 @@ def test_scene_purge_only_succeeds_for_runtime_clean_records(client, session) ->
             "restore_allowed": 1,
             "restore_block_reason": None,
             "purge_allowed": 0,
-            "purge_block_reason": "scene has downstream runtime artifacts",
+            "purge_block_reason": "场景已有下游运行产物",
         },
     ]
 
@@ -346,7 +346,7 @@ def test_scene_purge_only_succeeds_for_runtime_clean_records(client, session) ->
             {
                 "scene_id": "CH630_SC02",
                 "code": "SCENE_PURGE_BLOCKED_RUNTIME_ARTIFACTS",
-                "message": "scene has downstream runtime artifacts",
+                "message": "场景已有下游运行产物",
             }
         ],
         "actor_ref": "operator",
@@ -390,7 +390,7 @@ def test_chapter_purge_is_blocked_until_all_child_scenes_are_runtime_clean(clien
             "restore_allowed": 1,
             "restore_block_reason": None,
             "purge_allowed": 0,
-            "purge_block_reason": "chapter contains scenes with downstream runtime artifacts",
+            "purge_block_reason": "章节下仍有场景存在下游运行产物",
         }
     ]
 
@@ -406,7 +406,7 @@ def test_chapter_purge_is_blocked_until_all_child_scenes_are_runtime_clean(clien
             {
                 "chapter_id": "CH640",
                 "code": "CHAPTER_PURGE_BLOCKED_RUNTIME_ARTIFACTS",
-                "message": "chapter contains scenes with downstream runtime artifacts",
+                "message": "章节下仍有场景存在下游运行产物",
             }
         ],
         "actor_ref": "operator",

@@ -10,29 +10,14 @@ const focusTarget = ref({
 });
 const pendingFocusView = ref(null);
 
-// Legacy encoding snapshots used by source-level tests:
-// { id: "author", label: "娴ｆ粏鈧懎浼愭担婊冨酱" }
-// { id: "trash", label: "娴ｆ粏鈧懎娲栭弨鍓佺彲" }
-// { id: "author", label: "浣滆€呭伐浣滃彴" }
-// { id: "trash", label: "浣滆€呭洖鏀剁珯" }
-// { id: "workbench", label: "鍦烘櫙宸ヤ綔鍙? }
-// { id: "review", label: "瀹℃牳鏀朵欢绠? }
-// { id: "index", label: "绱㈠紩鎺у埗鍙? }
-// { id: "knowledge", label: "鐭ヨ瘑鎺у埗鍙? }
-// { id: "interop", label: "浜掓搷浣滀腑蹇? }
-// { id: "workbench", label: "场景工作台" }
-// { id: "review", label: "审核收件箱" }
-// { id: "index", label: "索引控制台" }
-// { id: "knowledge", label: "知识控制台" }
-// { id: "interop", label: "互操作中心" }
 const views = [
-  { id: "author", label: "Author Workspace" },
-  { id: "trash", label: "Author Trash" },
-  { id: "workbench", label: "Scene Workbench" },
-  { id: "review", label: "Review Inbox" },
-  { id: "index", label: "Index Console" },
-  { id: "knowledge", label: "Knowledge Console" },
-  { id: "interop", label: "Interop Center" },
+  { id: "author", label: "作者工作台" },
+  { id: "trash", label: "作者回收站" },
+  { id: "workbench", label: "场景工作台" },
+  { id: "review", label: "审核收件箱" },
+  { id: "index", label: "索引控制台" },
+  { id: "knowledge", label: "知识控制台" },
+  { id: "interop", label: "互操作中心" },
 ];
 
 const workbenchTargetTypes = new Set([

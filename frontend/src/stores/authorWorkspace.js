@@ -120,7 +120,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       try {
         const result = await postChapter(payload);
         await this.refreshActiveData(result.chapter_id);
-        return `Saved chapter ${result.chapter_id}`;
+        return `已保存章节 ${result.chapter_id}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -138,7 +138,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
           chapter_id: chapterId,
         });
         await this.refreshActiveData(chapterId);
-        return `Saved scene ${result.scene_id}`;
+        return `已保存场景 ${result.scene_id}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -155,7 +155,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
           last_scene_id: lastSceneId,
         });
         await this.loadWorkspace(this.selectedChapterId);
-        return `Reordered ${sceneIds.length} scenes`;
+        return `已调整 ${sceneIds.length} 个场景的顺序`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -165,7 +165,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
     },
     async trashScenes(sceneIds) {
       if (!sceneIds?.length) {
-        return "No scenes selected.";
+        return "尚未选择场景。";
       }
       this.actionId = "trash-scenes";
       this.error = "";
@@ -173,7 +173,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         const result = await postTrashScenes(sceneIds);
         await this.refreshActiveData(this.selectedChapterId);
         await refreshAuthorTrashStore();
-        return batchMessage("Moved to author trash", "scenes", result, "scene_id");
+        return batchMessage("已移入作者回收站", "场景", result, "scene_id");
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -183,7 +183,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
     },
     async trashChapters(chapterIds) {
       if (!chapterIds?.length) {
-        return "No chapters selected.";
+        return "尚未选择章节。";
       }
       this.actionId = "trash-chapters";
       this.error = "";
@@ -193,7 +193,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
           this.selectedChapterId && !chapterIds.includes(this.selectedChapterId) ? this.selectedChapterId : "";
         await this.refreshActiveData(nextChapterId);
         await refreshAuthorTrashStore();
-        return batchMessage("Moved to author trash", "chapters", result, "chapter_id");
+        return batchMessage("已移入作者回收站", "章节", result, "chapter_id");
       } catch (error) {
         this.error = error.message;
         throw error;

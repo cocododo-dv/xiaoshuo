@@ -23,11 +23,11 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 
-TRASH_BLOCK_REASON_HAS_TRASHED_SCENES = "chapter contains individually trashed scenes"
-SCENE_RUNTIME_ARTIFACTS_REASON = "scene has downstream runtime artifacts"
-CHAPTER_RUNTIME_ARTIFACTS_REASON = "chapter contains scenes with downstream runtime artifacts"
-SCENE_CHAPTER_TRASHED_RESTORE_REASON = "restore the chapter to recover this scene"
-SCENE_CHAPTER_TRASHED_PURGE_REASON = "manage this scene from its trashed chapter"
+TRASH_BLOCK_REASON_HAS_TRASHED_SCENES = "章节下已有单独移入回收站的场景"
+SCENE_RUNTIME_ARTIFACTS_REASON = "场景已有下游运行产物"
+CHAPTER_RUNTIME_ARTIFACTS_REASON = "章节下仍有场景存在下游运行产物"
+SCENE_CHAPTER_TRASHED_RESTORE_REASON = "请先恢复所属章节，再恢复该场景"
+SCENE_CHAPTER_TRASHED_PURGE_REASON = "该场景随章节一起回收，请在章节行中处理"
 
 
 class AuthorLifecycleService:

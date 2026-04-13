@@ -40,12 +40,12 @@ function pushNotice(message) {
 
 function updateApiBase() {
   apiBase.value = setApiBase(apiBase.value);
-  pushNotice(`Saved API base: ${apiBase.value}`);
+  pushNotice(`已保存 API 地址：${apiBase.value}`);
 }
 
 function updateOperator() {
   operatorRef.value = setOperatorRef(operatorRef.value);
-  pushNotice(`Saved operator ref: ${operatorRef.value}`);
+  pushNotice(`已保存操作员标识：${operatorRef.value}`);
 }
 
 async function reloadAll() {
@@ -73,7 +73,7 @@ async function reloadAll() {
     && !knowledgeConsole.error
     && !interopCenter.error
   ) {
-    pushNotice("Refreshed all views.");
+    pushNotice("已刷新全部视图。");
   }
 }
 </script>
@@ -82,18 +82,18 @@ async function reloadAll() {
   <div class="shell">
     <aside class="rail">
       <div class="brand">
-        <div class="eyebrow">P2 Editorial Ops</div>
-        <h1>Novel System Console</h1>
-        <p>Keep authoring, runtime review, and index operations in one shared control room.</p>
+        <div class="eyebrow">P2 编辑运营台</div>
+        <h1>小说系统控制台</h1>
+        <p>把作者编排、运行时审核与索引协作收拢到同一个共享指挥台。</p>
       </div>
 
       <label class="api-label">
-        <span>API Base</span>
+        <span>API 地址</span>
         <input v-model="apiBase" class="control-input" data-testid="api-base-input" @change="updateApiBase" />
       </label>
 
       <label class="api-label">
-        <span>Operator Ref / 操作员标识</span>
+        <span>操作员标识</span>
         <input v-model="operatorRef" class="control-input" data-testid="operator-ref-input" @change="updateOperator" />
       </label>
 
@@ -110,7 +110,7 @@ async function reloadAll() {
         </button>
       </nav>
 
-      <button class="ghost" @click="reloadAll">Refresh Everything</button>
+      <button class="ghost" @click="reloadAll">刷新全部视图</button>
 
       <div class="notice-stack" data-testid="notice-stack">
         <div v-for="notice in notices" :key="notice" class="notice">

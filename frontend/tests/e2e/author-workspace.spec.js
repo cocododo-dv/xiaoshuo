@@ -9,34 +9,36 @@ test("creates and edits author source-of-truth before handing a scene off to the
   await page.getByTestId("operator-ref-input").press("Tab");
 
   await page.getByTestId("nav-author").click();
-  await expect(page.getByTestId("author-workspace-view")).toContainText("作者工作台");
+  const authorWorkspaceView = page.getByTestId("author-workspace-view");
+  await expect(authorWorkspaceView).toBeVisible();
+  await expect(authorWorkspaceView).toContainText("作者工作台");
 
   await page.getByTestId("author-new-chapter-button").click();
   await page.getByTestId("author-chapter-id").fill("CH300");
   await page.getByTestId("author-chapter-scene-count").fill("2");
-  await page.getByTestId("author-chapter-goal").fill("Initial chapter goal for the author workspace test");
+  await page.getByTestId("author-chapter-goal").fill("作者工作台初始章节目标");
   await page.getByTestId("author-save-chapter-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已保存章节 CH300");
 
-  await page.getByTestId("author-chapter-goal").fill("Updated chapter goal for the author workspace test");
+  await page.getByTestId("author-chapter-goal").fill("作者工作台更新后的章节目标");
   await page.getByTestId("author-save-chapter-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已保存章节 CH300");
 
   await page.getByTestId("author-new-scene-button").click();
   await page.getByTestId("author-scene-id").fill("CH300_SC01");
-  await page.getByTestId("author-scene-goal").fill("Opening scene before the reorder");
-  await page.getByLabel("地点").last().fill("North archive");
+  await page.getByTestId("author-scene-goal").fill("重排前的开场场景");
+  await page.getByLabel("地点").last().fill("北档案室");
   await page.getByTestId("author-save-scene-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已保存场景 CH300_SC01");
 
   await page.getByTestId("author-new-scene-button").click();
   await page.getByTestId("author-scene-id").fill("CH300_SC02");
-  await page.getByTestId("author-scene-goal").fill("Second scene before author edits");
-  await page.getByLabel("地点").last().fill("Clock bridge");
+  await page.getByTestId("author-scene-goal").fill("作者编辑前的第二场景");
+  await page.getByLabel("地点").last().fill("钟楼桥");
   await page.getByTestId("author-save-scene-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已保存场景 CH300_SC02");
 
-  await page.getByTestId("author-scene-goal").fill("Updated second scene after author edits");
+  await page.getByTestId("author-scene-goal").fill("作者编辑后的第二场景");
   await page.getByTestId("author-save-scene-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已保存场景 CH300_SC02");
 
@@ -48,7 +50,7 @@ test("creates and edits author source-of-truth before handing a scene off to the
 
   await page.getByTestId("author-open-workbench-CH300_SC02").click();
   await expect(page.getByTestId("scene-id-input")).toHaveValue("CH300_SC02");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("Updated chapter goal for the author workspace test");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("Updated second scene after author edits");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("地点：Clock bridge");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("作者工作台更新后的章节目标");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("作者编辑后的第二场景");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("地点：钟楼桥");
 });

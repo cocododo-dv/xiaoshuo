@@ -2222,7 +2222,6 @@ describe("index console store", () => {
     const message = await store.runRecovery();
 
     expect(message).toContain("已执行恢复扫描");
-    expect(message).toContain("ops.duwei");
     expect(store.lastRecoveryResult.reclaimed_jobs).toBe(1);
     expect(store.lastRecoveryResult.actor_ref).toBe("ops.duwei");
     expect(store.lastRecoveryResult.failed_job_summaries).toHaveLength(1);

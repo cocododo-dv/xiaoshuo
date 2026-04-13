@@ -43,7 +43,7 @@ function confirmAction(message) {
 
 function formatTimestamp(value) {
   if (!value) {
-    return "Unknown time";
+    return "未知时间";
   }
   return String(value).replace("T", " ").replace("Z", "");
 }
@@ -73,7 +73,7 @@ async function refreshTrash() {
 
 async function restoreSelectedChapters() {
   const chapterIds = [...selectedRestorableChapterIds.value];
-  if (!chapterIds.length || !confirmAction(`Restore ${chapterIds.length} selected chapter(s)?`)) {
+  if (!chapterIds.length || !confirmAction(`确认恢复选中的 ${chapterIds.length} 个章节吗？`)) {
     return;
   }
   try {
@@ -87,7 +87,7 @@ async function restoreSelectedChapters() {
 
 async function purgeSelectedChapters() {
   const chapterIds = [...selectedPurgeableChapterIds.value];
-  if (!chapterIds.length || !confirmAction(`Permanently purge ${chapterIds.length} selected chapter(s)?`)) {
+  if (!chapterIds.length || !confirmAction(`确认永久清除选中的 ${chapterIds.length} 个章节吗？此操作不可撤销。`)) {
     return;
   }
   try {
@@ -101,7 +101,7 @@ async function purgeSelectedChapters() {
 
 async function restoreSelectedScenes() {
   const sceneIds = [...selectedRestorableSceneIds.value];
-  if (!sceneIds.length || !confirmAction(`Restore ${sceneIds.length} selected scene(s)?`)) {
+  if (!sceneIds.length || !confirmAction(`确认恢复选中的 ${sceneIds.length} 个场景吗？`)) {
     return;
   }
   try {
@@ -115,7 +115,7 @@ async function restoreSelectedScenes() {
 
 async function purgeSelectedScenes() {
   const sceneIds = [...selectedPurgeableSceneIds.value];
-  if (!sceneIds.length || !confirmAction(`Permanently purge ${sceneIds.length} selected scene(s)?`)) {
+  if (!sceneIds.length || !confirmAction(`确认永久清除选中的 ${sceneIds.length} 个场景吗？此操作不可撤销。`)) {
     return;
   }
   try {
@@ -146,27 +146,27 @@ onMounted(() => {
 <template>
   <section class="panel-grid" data-testid="author-trash-view">
     <PanelShell
-      eyebrow="Author Trash"
-      title="Restore or permanently purge author records"
-      description="Trashed chapters and scenes stay out of normal authoring and runtime flows until they are restored. Purge remains conservative and respects downstream runtime artifacts."
+      eyebrow="作者回收站"
+      title="恢复或永久清除作者记录"
+      description="移入回收站的章节与场景会暂时退出常规创作与运行时流程，只有恢复后才会重新参与。永久清除仍会谨慎校验下游运行时产物。"
     >
       <template #actions>
         <div class="field-inline">
-          <button @click="refreshTrash">Refresh Trash</button>
-          <span class="badge">{{ chapters.length }} chapters</span>
-          <span class="badge">{{ scenes.length }} scenes</span>
+          <button @click="refreshTrash">刷新回收站</button>
+          <span class="badge">{{ chapters.length }} 个章节</span>
+          <span class="badge">{{ scenes.length }} 个场景</span>
         </div>
       </template>
 
-      <div v-if="authorTrash.loading" class="empty">Loading author trash...</div>
+      <div v-if="authorTrash.loading" class="empty">正在加载作者回收站...</div>
       <div v-else-if="authorTrash.error" class="empty">{{ authorTrash.error }}</div>
-      <div v-else-if="!hasTrash" class="empty" data-testid="author-trash-empty">Author trash is empty.</div>
+      <div v-else-if="!hasTrash" class="empty" data-testid="author-trash-empty">作者回收站为空。</div>
       <div v-else class="trash-layout">
         <article class="paper trash-section">
           <div class="receipt-head">
             <div>
-              <h3>Trashed Chapters</h3>
-              <p class="muted receipt-copy">Restore a whole chapter cascade, or purge only when every child scene is runtime-clean.</p>
+              <h3>已回收章节</h3>
+              <p class="muted receipt-copy">可以整章恢复，也可以在所有子场景都没有运行时残留时再执行永久清除。</p>
             </div>
             <span class="badge">{{ chapters.length }}</span>
           </div>
@@ -177,7 +177,7 @@ onMounted(() => {
               :disabled="!selectedRestorableChapterIds.length || authorTrash.actionId === 'restore-chapters'"
               @click="restoreSelectedChapters"
             >
-              Restore Selected Chapters
+              恢复所选章节
             </button>
             <button
               class="danger-button"
@@ -185,11 +185,11 @@ onMounted(() => {
               :disabled="!selectedPurgeableChapterIds.length || authorTrash.actionId === 'purge-chapters'"
               @click="purgeSelectedChapters"
             >
-              Purge Selected Chapters
+              永久清除所选章节
             </button>
           </div>
 
-          <div v-if="!chapters.length" class="empty">No trashed chapters.</div>
+          <div v-if="!chapters.length" class="empty">当前没有已回收章节。</div>
           <div v-else class="trash-list">
             <article
               v-for="chapter in chapters"
@@ -213,14 +213,14 @@ onMounted(() => {
                 <div class="trash-row-head">
                   <div>
                     <strong>{{ chapter.chapter_id }}</strong>
-                    <p class="trash-copy">{{ chapter.chapter_goal || "No chapter goal saved." }}</p>
+                    <p class="trash-copy">{{ chapter.chapter_goal || "尚未保存章节目标。" }}</p>
                   </div>
                   <div class="trash-meta">
-                    <span class="badge">{{ chapter.scene_count }} scenes</span>
-                    <span class="badge">trashed {{ formatTimestamp(chapter.trashed_at) }}</span>
+                    <span class="badge">{{ chapter.scene_count }} 个场景</span>
+                    <span class="badge">回收于 {{ formatTimestamp(chapter.trashed_at) }}</span>
                   </div>
                 </div>
-                <p class="muted">by {{ chapter.trashed_by || "unknown operator" }}</p>
+                <p class="muted">操作员：{{ chapter.trashed_by || "未知操作员" }}</p>
                 <div class="trash-reason-list">
                   <p v-if="chapter.restore_block_reason" class="trash-reason">{{ chapter.restore_block_reason }}</p>
                   <p v-if="chapter.purge_block_reason" class="trash-reason">{{ chapter.purge_block_reason }}</p>
@@ -233,8 +233,8 @@ onMounted(() => {
         <article class="paper trash-section">
           <div class="receipt-head">
             <div>
-              <h3>Trashed Scenes</h3>
-              <p class="muted receipt-copy">Scenes trashed with their parent chapter stay managed from the chapter row until the chapter is restored.</p>
+              <h3>已回收场景</h3>
+              <p class="muted receipt-copy">如果场景是随所属章节一起回收的，需要先恢复章节，再从章节行统一管理。</p>
             </div>
             <span class="badge">{{ scenes.length }}</span>
           </div>
@@ -245,7 +245,7 @@ onMounted(() => {
               :disabled="!selectedRestorableSceneIds.length || authorTrash.actionId === 'restore-scenes'"
               @click="restoreSelectedScenes"
             >
-              Restore Selected Scenes
+              恢复所选场景
             </button>
             <button
               class="danger-button"
@@ -253,11 +253,11 @@ onMounted(() => {
               :disabled="!selectedPurgeableSceneIds.length || authorTrash.actionId === 'purge-scenes'"
               @click="purgeSelectedScenes"
             >
-              Purge Selected Scenes
+              永久清除所选场景
             </button>
           </div>
 
-          <div v-if="!scenes.length" class="empty">No trashed scenes.</div>
+          <div v-if="!scenes.length" class="empty">当前没有已回收场景。</div>
           <div v-else class="trash-list">
             <article
               v-for="scene in scenes"
@@ -281,15 +281,15 @@ onMounted(() => {
                 <div class="trash-row-head">
                   <div>
                     <strong>{{ scene.scene_id }}</strong>
-                    <p class="trash-copy">{{ scene.scene_goal || "No scene goal saved." }}</p>
+                    <p class="trash-copy">{{ scene.scene_goal || "尚未保存场景目标。" }}</p>
                   </div>
                   <div class="trash-meta">
-                    <span class="badge">chapter {{ scene.chapter_id }}</span>
-                    <span class="badge">seq {{ scene.scene_seq }}</span>
-                    <span v-if="scene.chapter_trashed" class="badge">chapter trashed</span>
+                    <span class="badge">章节 {{ scene.chapter_id }}</span>
+                    <span class="badge">顺序 {{ scene.scene_seq }}</span>
+                    <span v-if="scene.chapter_trashed" class="badge">所属章节已回收</span>
                   </div>
                 </div>
-                <p class="muted">trashed {{ formatTimestamp(scene.trashed_at) }} by {{ scene.trashed_by || "unknown operator" }}</p>
+                <p class="muted">回收于 {{ formatTimestamp(scene.trashed_at) }}，操作员：{{ scene.trashed_by || "未知操作员" }}</p>
                 <div class="trash-reason-list">
                   <p v-if="scene.restore_block_reason" class="trash-reason">{{ scene.restore_block_reason }}</p>
                   <p v-if="scene.purge_block_reason" class="trash-reason">{{ scene.purge_block_reason }}</p>

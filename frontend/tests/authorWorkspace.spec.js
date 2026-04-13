@@ -14,13 +14,19 @@ describe("author shell registration", () => {
   it("adds Author Workspace and Author Trash to the shell navigation", () => {
     const appSource = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
     const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
+    const viewsBlock = routerSource.match(/const views = \[[\s\S]*?\];/);
 
     expect(appSource).toContain("AuthorWorkspaceView");
     expect(appSource).toContain("AuthorTrashView");
     expect(appSource).toContain("activeView === 'author'");
     expect(appSource).toContain("activeView === 'trash'");
-    expect(routerSource).toContain('{ id: "author", label: "浣滆€呭伐浣滃彴" }');
-    expect(routerSource).toContain('{ id: "trash", label: "浣滆€呭洖鏀剁珯" }');
+    expect(viewsBlock?.[0]).toBeTruthy();
+    expect(viewsBlock[0]).toMatch(
+      /(?:id:\s*"author"[\s\S]*?label:\s*"作者工作台"|label:\s*"作者工作台"[\s\S]*?id:\s*"author")/,
+    );
+    expect(viewsBlock[0]).toMatch(
+      /(?:id:\s*"trash"[\s\S]*?label:\s*"作者回收站"|label:\s*"作者回收站"[\s\S]*?id:\s*"trash")/,
+    );
   });
 
   it("ships dedicated author workspace and author trash files", () => {
@@ -225,7 +231,7 @@ describe("author workspace store", () => {
             active_scene_count: state.workspace.scenes.length,
             trashed_scene_count: state.trash.scenes.length,
             trash_allowed: state.trash.scenes.length ? 0 : 1,
-            trash_block_reason: state.trash.scenes.length ? "chapter contains individually trashed scenes" : null,
+            trash_block_reason: state.trash.scenes.length ? "章节下已有单独移入回收站的场景" : null,
           },
         ];
         state.workspace.chapter = {
@@ -287,7 +293,7 @@ describe("author workspace store", () => {
           active_scene_count: state.workspace.scenes.length,
           trashed_scene_count: state.trash.scenes.length,
           trash_allowed: 0,
-          trash_block_reason: "chapter contains individually trashed scenes",
+          trash_block_reason: "章节下已有单独移入回收站的场景",
         }));
         return {
           ok: true,
@@ -324,9 +330,9 @@ describe("author workspace store", () => {
           trashed_by: "ops.author",
           chapter_trashed: 1,
           restore_allowed: 0,
-          restore_block_reason: "restore the chapter to recover this scene",
+          restore_block_reason: "请先恢复所属章节，再恢复该场景",
           purge_allowed: 0,
-          purge_block_reason: "manage this scene from its trashed chapter",
+          purge_block_reason: "该场景随章节一起回收，请在章节行中处理",
         }));
         state.workspace.chapter = null;
         state.workspace.chapter_state = null;
@@ -409,12 +415,12 @@ describe("author workspace store", () => {
     await store.reorderScenes(["CH900_SC02", "CH900_SC01"], "CH900_SC01");
 
     const sceneTrashMessage = await store.trashScenes(["CH900_SC02"]);
-    expect(sceneTrashMessage).toContain("1");
+    expect(sceneTrashMessage).toContain("已移入作者回收站");
     expect(store.chapters[0].trash_allowed).toBe(0);
-    expect(store.chapters[0].trash_block_reason).toContain("trashed scenes");
+    expect(store.chapters[0].trash_block_reason).toBe("章节下已有单独移入回收站的场景");
 
     const chapterTrashMessage = await store.trashChapters(["CH900"]);
-    expect(chapterTrashMessage).toContain("CH900");
+    expect(chapterTrashMessage).toContain("已移入作者回收站");
     expect(store.chapters).toEqual([]);
     expect(store.chapter).toBeNull();
     expect(store.scenes).toEqual([]);
@@ -458,9 +464,9 @@ describe("author trash store", () => {
           trashed_by: "ops.author",
           chapter_trashed: 1,
           restore_allowed: 0,
-          restore_block_reason: "restore the chapter to recover this scene",
+          restore_block_reason: "请先恢复所属章节，再恢复该场景",
           purge_allowed: 0,
-          purge_block_reason: "manage this scene from its trashed chapter",
+          purge_block_reason: "该场景随章节一起回收，请在章节行中处理",
         },
       ],
     };
@@ -498,7 +504,7 @@ describe("author trash store", () => {
     expect(store.scenes).toHaveLength(1);
 
     const restoreMessage = await store.restoreChapters(["CH950"]);
-    expect(restoreMessage).toContain("CH950");
+    expect(restoreMessage).toContain("已恢复");
     expect(store.chapters).toEqual([]);
 
     store.chapters = [
@@ -515,7 +521,7 @@ describe("author trash store", () => {
       },
     ];
     const purgeMessage = await store.purgeChapters(["CH950"]);
-    expect(purgeMessage).toContain("CH950");
+    expect(purgeMessage).toContain("已彻底清理");
   });
 });
 
