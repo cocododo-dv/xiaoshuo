@@ -59,6 +59,7 @@ describe("author lifecycle api helpers", () => {
   it("calls the dedicated author lifecycle endpoints", async () => {
     expect(typeof api.fetchChapters).toBe("function");
     expect(typeof api.fetchAuthorWorkspace).toBe("function");
+    expect(typeof api.fetchSceneDraft).toBe("function");
     expect(typeof api.fetchAuthorTrash).toBe("function");
     expect(typeof api.saveChapter).toBe("function");
     expect(typeof api.saveScene).toBe("function");
@@ -72,6 +73,7 @@ describe("author lifecycle api helpers", () => {
 
     await api.fetchChapters();
     await api.fetchAuthorWorkspace("CH900");
+    await api.fetchSceneDraft("CH900");
     await api.fetchAuthorTrash();
     await api.saveChapter({ chapter_id: "CH900", chapter_goal: "Author a new chapter" });
     await api.saveScene({ scene_id: "CH900_SC01", chapter_id: "CH900", scene_goal: "Write the opening scene" });
@@ -88,6 +90,7 @@ describe("author lifecycle api helpers", () => {
 
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/chapters");
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/chapters/CH900/author-workspace");
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/chapters/CH900/scene-draft");
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/author-trash");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/chapters/trash",
@@ -243,6 +246,31 @@ describe("author workspace store", () => {
       if (url.endsWith("/api/v1/chapters/CH900/author-workspace")) {
         return { ok: true, json: async () => ({ ok: true, data: state.workspace }) };
       }
+      if (url.endsWith("/api/v1/chapters/CH900/scene-draft")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              scene_id: "CH900_SC03",
+              chapter_id: "CH900",
+              scene_seq: 3,
+              pov_character_id: "CHAR_B",
+              onstage_chars_json: ["CHAR_B"],
+              location: "Clock tower",
+              scene_goal: "承接上一场景变化：旧钟楼重逢后的紧张升级；推进本章目标：Updated push",
+              beats_json: [],
+              must_include_text: "",
+              forbidden_text: "Updated must not",
+              exit_change: "",
+              hook: "朝向本章结尾效果：Updated ending",
+              target_length_band: "medium",
+              scene_type: "bridge",
+              is_chapter_last: 0,
+            },
+          }),
+        };
+      }
       if (url.endsWith("/api/v1/scenes") && options.method === "POST") {
         const payload = JSON.parse(options.body);
         const existingIndex = state.workspace.scenes.findIndex((scene) => scene.scene_id === payload.scene_id);
@@ -386,6 +414,16 @@ describe("author workspace store", () => {
 
     await store.loadChapters();
     await store.loadWorkspace("CH900");
+    const sceneDraft = await store.loadSceneDraft();
+    expect(sceneDraft.scene_id).toBe("CH900_SC03");
+    expect(sceneDraft.scene_seq).toBe(3);
+    expect(sceneDraft.pov_character_id).toBe("CHAR_B");
+    expect(sceneDraft.location).toBe("Clock tower");
+    expect(sceneDraft.scene_goal).toBe("承接上一场景变化：旧钟楼重逢后的紧张升级；推进本章目标：Updated push");
+    expect(sceneDraft.forbidden_text).toBe("Updated must not");
+    expect(sceneDraft.hook).toBe("朝向本章结尾效果：Updated ending");
+    expect(store.sceneDraft.scene_id).toBe("CH900_SC03");
+    expect(store.sceneDraft.scene_type).toBe("bridge");
     await store.saveChapter({
       chapter_id: "CH900",
       planned_scene_count: 2,
@@ -530,6 +568,12 @@ describe("author lifecycle source", () => {
     const source = readFileSync(AUTHOR_VIEW_PATH, "utf8");
     expect(source).toContain("author-trash-selected-chapters-button");
     expect(source).toContain("author-trash-selected-scenes-button");
+    expect(source).toContain("author-quick-scene-button");
+    expect(source).toContain("author-new-scene-button");
+    expect(source).toContain("loadSceneDraft");
+    expect(source).toContain("智能草稿");
+    expect(source).toMatch(/function startNewScene\(\)\s*\{[\s\S]*assignSceneForm\(null\);[\s\S]*\}/);
+    expect(source).toMatch(/async function startQuickScene\(\)\s*\{[\s\S]*loadSceneDraft\(\);[\s\S]*\}/);
     expect(source).toContain("chapter.trash_block_reason");
     expect(source).toContain("scene_card");
   });

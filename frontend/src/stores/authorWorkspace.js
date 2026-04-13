@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 
 import {
+  fetchSceneDraft,
   fetchAuthorWorkspace,
   fetchChapters,
   reorderChapterScenes,
@@ -43,6 +44,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
     chapter: null,
     chapterState: null,
     scenes: [],
+    sceneDraft: null,
     loading: false,
     actionId: "",
     error: "",
@@ -52,6 +54,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       this.chapter = null;
       this.chapterState = null;
       this.scenes = [];
+      this.sceneDraft = null;
     },
     async loadChapters() {
       const payload = await fetchChapters();
@@ -76,6 +79,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       this.chapter = payload.chapter || null;
       this.chapterState = payload.chapter_state || null;
       this.scenes = payload.scenes || [];
+      this.sceneDraft = null;
     },
     async refreshActiveData(preferredChapterId = this.selectedChapterId) {
       await this.loadChapters();
@@ -140,6 +144,21 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         await this.refreshActiveData(chapterId);
         return `已保存场景 ${result.scene_id}`;
       } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async loadSceneDraft(chapterId = this.selectedChapterId) {
+      this.actionId = "load-scene-draft";
+      this.error = "";
+      try {
+        const payload = await fetchSceneDraft(chapterId);
+        this.sceneDraft = payload;
+        return payload;
+      } catch (error) {
+        this.sceneDraft = null;
         this.error = error.message;
         throw error;
       } finally {

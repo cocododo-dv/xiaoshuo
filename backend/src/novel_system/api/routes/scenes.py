@@ -256,7 +256,4 @@ def _serialize_attempt(item: AttemptTracker) -> dict:
 
 
 def _next_scene_seq(session: Session, chapter_id: str) -> int:
-    scenes = session.execute(select(SceneCard).where(SceneCard.chapter_id == chapter_id)).scalars().all()
-    if not scenes:
-        return 1
-    return max(scene.scene_seq for scene in scenes) + 1
+    return AuthorLifecycleService(session).next_scene_append_seq(chapter_id)

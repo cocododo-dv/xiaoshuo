@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -97,6 +99,65 @@ class AuthorLifecycleService:
             "chapter_state": self.serialize_chapter_state(chapter_state, chapter_id),
             "scenes": [self.serialize_author_scene(scene, scene_states.get(scene.scene_id)) for scene in scenes],
         }
+
+    def scene_draft_payload(self, chapter_id: str) -> dict:
+        chapter = self.require_active_chapter(chapter_id)
+        draft = self._empty_scene_draft_payload(chapter_id)
+        previous_scene = self._last_active_scene(chapter_id)
+        if previous_scene is not None:
+            draft.update(
+                {
+                    "pov_character_id": previous_scene.pov_character_id or "",
+                    "onstage_chars_json": list(previous_scene.onstage_chars_json or []),
+                    "location": previous_scene.location or "",
+                    "target_length_band": previous_scene.target_length_band or "medium",
+                    "scene_type": previous_scene.scene_type or "reunion",
+                }
+            )
+        draft["scene_goal"] = self._smart_scene_goal(chapter, previous_scene)
+        draft["forbidden_text"] = chapter.must_not or ""
+        draft["hook"] = self._smart_scene_hook(chapter)
+        return draft
+
+    def _empty_scene_draft_payload(self, chapter_id: str) -> dict:
+        return {
+            "scene_id": self._suggest_next_scene_id(chapter_id),
+            "chapter_id": chapter_id,
+            "scene_seq": self.next_scene_append_seq(chapter_id),
+            "pov_character_id": "",
+            "onstage_chars_json": [],
+            "location": "",
+            "scene_goal": "",
+            "beats_json": [],
+            "must_include_text": "",
+            "forbidden_text": "",
+            "exit_change": "",
+            "hook": "",
+            "target_length_band": "medium",
+            "scene_type": "reunion",
+            "is_chapter_last": 0,
+        }
+
+    def _smart_scene_goal(self, chapter: ChapterGoal, previous_scene: SceneCard | None) -> str:
+        goal_text = (chapter.main_plot_push or chapter.chapter_goal or "").strip()
+        previous_exit_change = (previous_scene.exit_change if previous_scene is not None else "") or ""
+        previous_exit_change = previous_exit_change.strip()
+        if previous_exit_change and goal_text:
+            return f"承接上一场景变化：{previous_exit_change}；推进本章目标：{goal_text}"
+        if previous_exit_change:
+            return f"承接上一场景变化：{previous_exit_change}"
+        if goal_text:
+            return f"推进本章目标：{goal_text}"
+        return ""
+
+    def _smart_scene_hook(self, chapter: ChapterGoal) -> str:
+        ending_effect = (chapter.ending_effect or "").strip()
+        if ending_effect:
+            return f"朝向本章结尾效果：{ending_effect}"
+        emotional_target = (chapter.emotional_target or "").strip()
+        if emotional_target:
+            return f"维持情绪目标：{emotional_target}"
+        return ""
 
     def author_trash_payload(self) -> dict:
         chapters = self.session.execute(
@@ -470,6 +531,36 @@ class AuthorLifecycleService:
         if not active_scenes:
             return 1
         return max(scene.scene_seq for scene in active_scenes) + 1
+
+    def next_scene_append_seq(self, chapter_id: str) -> int:
+        chapter_scenes = self._chapter_scenes(chapter_id)
+        if not chapter_scenes:
+            return 1
+        return max(scene.scene_seq for scene in chapter_scenes) + 1
+
+    def _last_active_scene(self, chapter_id: str) -> SceneCard | None:
+        active_scenes = self._chapter_scenes(chapter_id, trashed_flag=0)
+        if not active_scenes:
+            return None
+        return active_scenes[-1]
+
+    def _suggest_next_scene_id(self, chapter_id: str) -> str:
+        pattern = re.compile(rf"^{re.escape(chapter_id)}_SC(\d+)$")
+        used_suffixes: set[int] = set()
+        suffix_width = 2
+        for scene in self._chapter_scenes(chapter_id):
+            match = pattern.match(scene.scene_id)
+            if match is None:
+                continue
+            used_suffixes.add(int(match.group(1)))
+            suffix_width = max(suffix_width, len(match.group(1)))
+
+        next_suffix = 1
+        while next_suffix in used_suffixes:
+            next_suffix += 1
+
+        width = max(suffix_width, len(str(next_suffix)), 2)
+        return f"{chapter_id}_SC{next_suffix:0{width}d}"
 
     def _has_rows(self, statement) -> bool:
         return self.session.execute(statement.limit(1)).first() is not None

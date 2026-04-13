@@ -234,6 +234,165 @@ def test_scene_upsert_rejects_missing_chapter(client) -> None:
     assert response.json()["error"]["code"] == "CHAPTER_NOT_FOUND"
 
 
+def test_scene_draft_uses_chapter_context_when_no_active_scene_exists(client) -> None:
+    _create_chapter(client, "CH350", goal="Draft the next scene")
+
+    response = client.get("/api/v1/chapters/CH350/scene-draft")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "scene_id": "CH350_SC01",
+        "chapter_id": "CH350",
+        "scene_seq": 1,
+        "pov_character_id": "",
+        "onstage_chars_json": [],
+        "location": "",
+        "scene_goal": "推进本章目标：push CH350",
+        "beats_json": [],
+        "must_include_text": "",
+        "forbidden_text": "avoid CH350",
+        "exit_change": "",
+        "hook": "朝向本章结尾效果：ending CH350",
+        "target_length_band": "medium",
+        "scene_type": "reunion",
+        "is_chapter_last": 0,
+    }
+
+
+def test_scene_draft_inherits_from_previous_active_scene_and_chapter_context(client) -> None:
+    _create_chapter(client, "CH351", goal="Draft the next scene")
+    _create_scene(client, "CH351_SC01", chapter_id="CH351", scene_seq=1, location="Bridge approach")
+
+    response = client.get("/api/v1/chapters/CH351/scene-draft")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "scene_id": "CH351_SC02",
+        "chapter_id": "CH351",
+        "scene_seq": 2,
+        "pov_character_id": "CHAR_A",
+        "onstage_chars_json": ["CHAR_A", "CHAR_B"],
+        "location": "Bridge approach",
+        "scene_goal": "承接上一场景变化：exit CH351_SC01；推进本章目标：push CH351",
+        "beats_json": [],
+        "must_include_text": "",
+        "forbidden_text": "avoid CH351",
+        "exit_change": "",
+        "hook": "朝向本章结尾效果：ending CH351",
+        "target_length_band": "medium",
+        "scene_type": "reunion",
+        "is_chapter_last": 0,
+    }
+
+
+def test_scene_draft_ignores_trashed_scene_for_prefill_but_keeps_global_append_sequence(client) -> None:
+    _create_chapter(client, "CH352", goal="Draft after trash")
+    _create_scene(client, "CH352_SC01", chapter_id="CH352", scene_seq=1, location="North gate")
+    _create_scene(client, "CH352_SC02", chapter_id="CH352", scene_seq=2, location="Hidden vault")
+
+    trash_response = client.post(
+        "/api/v1/scenes/trash",
+        json={"scene_ids": ["CH352_SC02"]},
+        headers={"X-Idempotency-Key": "trash-ch352-sc02"},
+    )
+    assert trash_response.status_code == 200
+
+    response = client.get("/api/v1/chapters/CH352/scene-draft")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "scene_id": "CH352_SC03",
+        "chapter_id": "CH352",
+        "scene_seq": 3,
+        "pov_character_id": "CHAR_A",
+        "onstage_chars_json": ["CHAR_A", "CHAR_B"],
+        "location": "North gate",
+        "scene_goal": "承接上一场景变化：exit CH352_SC01；推进本章目标：push CH352",
+        "beats_json": [],
+        "must_include_text": "",
+        "forbidden_text": "avoid CH352",
+        "exit_change": "",
+        "hook": "朝向本章结尾效果：ending CH352",
+        "target_length_band": "medium",
+        "scene_type": "reunion",
+        "is_chapter_last": 0,
+    }
+
+
+def test_scene_draft_keeps_default_blank_copy_when_chapter_and_scene_context_are_blank(client) -> None:
+    response = client.post(
+        "/api/v1/chapters",
+        json={
+            "chapter_id": "CH353",
+            "planned_scene_count": 1,
+            "chapter_goal": "",
+            "main_plot_push": "",
+            "emotional_target": "",
+            "ending_effect": "",
+            "must_not": "",
+            "notes": "",
+        },
+        headers={"X-Idempotency-Key": "create-blank-ch353"},
+    )
+    assert response.status_code == 200
+
+    response = client.get("/api/v1/chapters/CH353/scene-draft")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "scene_id": "CH353_SC01",
+        "chapter_id": "CH353",
+        "scene_seq": 1,
+        "pov_character_id": "",
+        "onstage_chars_json": [],
+        "location": "",
+        "scene_goal": "",
+        "beats_json": [],
+        "must_include_text": "",
+        "forbidden_text": "",
+        "exit_change": "",
+        "hook": "",
+        "target_length_band": "medium",
+        "scene_type": "reunion",
+        "is_chapter_last": 0,
+    }
+
+
+def test_scene_draft_suggests_next_available_id_and_next_append_sequence(client) -> None:
+    _create_chapter(client, "CH354", goal="Draft the next scene")
+    _create_scene(client, "CH354_SC01", chapter_id="CH354", scene_seq=1)
+    _create_scene(client, "LEGACY_SCENE_ALPHA", chapter_id="CH354", scene_seq=5)
+
+    response = client.get("/api/v1/chapters/CH354/scene-draft")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["scene_id"] == "CH354_SC02"
+    assert response.json()["data"]["scene_seq"] == 6
+
+
+def test_scene_draft_rejects_missing_chapter(client) -> None:
+    response = client.get("/api/v1/chapters/CH404/scene-draft")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "CHAPTER_NOT_FOUND"
+
+
+def test_scene_draft_rejects_trashed_chapter(client) -> None:
+    _create_chapter(client, "CH360", goal="Trash before drafting")
+
+    trash_response = client.post(
+        "/api/v1/chapters/trash",
+        json={"chapter_ids": ["CH360"]},
+        headers={"X-Idempotency-Key": "trash-ch360"},
+    )
+    assert trash_response.status_code == 200
+
+    response = client.get("/api/v1/chapters/CH360/scene-draft")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CHAPTER_TRASHED"
+
+
 def test_scene_order_rewrites_sequence_and_marks_single_last_scene(client, session) -> None:
     _create_chapter(client, "CH400", goal="Reorder chapter scenes")
     _create_scene(client, "CH400_SC01", chapter_id="CH400", scene_seq=1)

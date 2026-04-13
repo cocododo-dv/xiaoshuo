@@ -123,6 +123,19 @@ function startNewScene() {
   assignSceneForm(null);
 }
 
+async function startQuickScene() {
+  creatingScene.value = true;
+  selectedSceneId.value = "";
+  try {
+    const draft = await authorWorkspace.loadSceneDraft();
+    assignSceneForm(draft);
+    emit("notice", `已生成智能草稿 ${draft.scene_id}`);
+  } catch (error) {
+    creatingScene.value = false;
+    emit("notice", error.message);
+  }
+}
+
 function isChapterTrashAllowed(chapter) {
   return Number(chapter?.trash_allowed) === 1;
 }
@@ -337,6 +350,14 @@ onMounted(() => {
         <div class="field-inline">
           <button data-testid="author-refresh-button" @click="refreshAuthorWorkspace">刷新工作台</button>
           <button class="ghost" data-testid="author-new-chapter-button" @click="startNewChapter">新建章节</button>
+          <button
+            class="ghost"
+            data-testid="author-quick-scene-button"
+            :disabled="!authorWorkspace.selectedChapterId || authorWorkspace.actionId === 'load-scene-draft'"
+            @click="startQuickScene"
+          >
+            快速新建场景
+          </button>
           <button
             class="ghost"
             data-testid="author-new-scene-button"

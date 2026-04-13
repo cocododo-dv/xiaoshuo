@@ -135,6 +135,14 @@ def author_workspace(chapter_id: str, request: Request, session: Session = Depen
     )
 
 
+@router.get("/api/v1/chapters/{chapter_id}/scene-draft")
+def chapter_scene_draft(chapter_id: str, request: Request, session: Session = Depends(get_session)):
+    return ok(
+        AuthorLifecycleService(session).scene_draft_payload(chapter_id),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
 @router.post("/api/v1/chapters/{chapter_id}/runtime/backfill/{stage_id}")
 def chapter_runtime_backfill(
     chapter_id: str,

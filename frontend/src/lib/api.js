@@ -123,6 +123,10 @@ export function fetchAuthorWorkspace(chapterId) {
   return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/author-workspace`);
 }
 
+export function fetchSceneDraft(chapterId) {
+  return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/scene-draft`);
+}
+
 export function fetchAuthorTrash() {
   return apiGet("/api/v1/author-trash");
 }
