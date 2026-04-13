@@ -239,6 +239,43 @@ pre {
   margin: 0 0 0.7rem;
 }
 
+.preflight-card {
+  margin-top: 1rem;
+}
+
+.preflight-group {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.preflight-group h4 {
+  margin: 0;
+}
+
+.preflight-item {
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.preflight-item-blocking {
+  border-color: rgba(163, 63, 47, 0.35);
+  background: rgba(163, 63, 47, 0.08);
+}
+
+.preflight-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.preflight-item p {
+  margin: 0.45rem 0 0;
+}
+
 .chapter-backfill-list {
   display: grid;
   gap: 0.8rem;

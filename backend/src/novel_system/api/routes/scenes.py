@@ -22,6 +22,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
+from novel_system.services.scene_run_preflight import SceneRunPreflightService
 
 router = APIRouter(tags=["scenes"])
 
@@ -194,6 +195,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     state = session.get(SceneRunState, scene_id)
     runtime_service = ChapterRuntimeService(session)
     chapter_state = runtime_service.chapter_state_payload(scene.chapter_id)
+    run_preflight = SceneRunPreflightService(session).build(scene, chapter_state)
     bundle = session.get(SceneBundle, state.current_bundle_id) if state.current_bundle_id else None
     neutral = session.get(SceneDraft, state.current_neutral_draft_row_id) if state.current_neutral_draft_row_id else None
     style = session.get(SceneDraft, state.current_style_draft_row_id) if state.current_style_draft_row_id else None
@@ -227,6 +229,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
                 "current_final_scene_row_id": state.current_final_scene_row_id,
             },
             "chapter_state": chapter_state,
+            "run_preflight": run_preflight,
             "bundle": {
                 "bundle_id": bundle.bundle_id if bundle else None,
                 "bundle_snapshot_hash": bundle.bundle_snapshot_hash if bundle else None,

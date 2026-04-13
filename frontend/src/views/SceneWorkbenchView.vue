@@ -20,6 +20,13 @@ const selectedStrategies = ref({});
 const hasData = computed(() => Boolean(workbench.data));
 const chapterState = computed(() => workbench.data?.chapter_state || {});
 const chapterId = computed(() => workbench.data?.chapter_goal?.chapter_id || "");
+const runPreflight = computed(() => workbench.data?.run_preflight || {
+  can_run: true,
+  overall_status: "ready",
+  blocking_items: [],
+  warning_items: [],
+  context_items: [],
+});
 const pendingStagedBackfillItems = computed(() =>
   (chapterState.value.staged_backfill_items || []).filter((item) => item.status === "pending"),
 );
@@ -55,12 +62,22 @@ const ACTION_LABELS = {
   clear_manual_hold: "清除人工挂起",
 };
 
+const PREFLIGHT_STATUS_LABELS = {
+  ready: "鍙互杩愯",
+  warning: "鍙互杩愯锛屼絾寤鸿鍏堣ˉ鍏呬俊鎭?",
+  blocked: "鏆傛椂涓嶅彲杩愯",
+};
+
 function formatStatus(status) {
   return STATUS_LABELS[status] || status || "-";
 }
 
 function formatAction(action) {
   return ACTION_LABELS[action] || action || "-";
+}
+
+function formatPreflightStatus(status) {
+  return PREFLIGHT_STATUS_LABELS[status] || status || "-";
 }
 
 function resolveSceneId() {
@@ -205,7 +222,11 @@ onMounted(() => {
         <div class="field-inline">
           <input v-model="requestedSceneId" class="control-input" data-testid="scene-id-input" />
           <button data-testid="scene-load-button" @click="loadWorkbench">读取</button>
-          <button :disabled="workbench.actionId === 'run-scene'" data-testid="run-full-scene-button" @click="runScene">
+          <button
+            :disabled="workbench.actionId === 'run-scene' || !runPreflight.can_run"
+            data-testid="run-full-scene-button"
+            @click="runScene"
+          >
             {{ workbench.actionId === "run-scene" ? "运行中..." : "运行完整场景" }}
           </button>
         </div>
@@ -232,6 +253,92 @@ onMounted(() => {
             <strong>{{ formatStatus(workbench.data.scene_run_state.scene_status) }}</strong>
           </div>
         </div>
+
+        <article class="paper preflight-card" data-testid="scene-run-preflight-card">
+          <div class="receipt-head">
+            <div>
+              <h3>运行前检查</h3>
+              <p class="muted receipt-copy">在点击完整运行前，先确认当前场景依赖和输入状态是否到位。</p>
+            </div>
+            <span class="badge" data-testid="scene-run-preflight-status">
+              {{ formatPreflightStatus(runPreflight.overall_status) }}
+            </span>
+          </div>
+
+          <p class="muted">
+            {{ runPreflight.can_run ? "当前允许执行完整场景运行。" : "当前存在真实阻塞项，完整场景运行已被禁用。" }}
+          </p>
+
+          <div
+            v-if="runPreflight.blocking_items.length"
+            class="preflight-group"
+            data-testid="scene-run-preflight-blocking"
+          >
+            <h4>阻塞项</h4>
+            <article
+              v-for="item in runPreflight.blocking_items"
+              :key="item.code"
+              class="preflight-item preflight-item-blocking"
+              :data-testid="`scene-run-preflight-item-${item.code}`"
+            >
+              <div class="preflight-item-head">
+                <strong>{{ item.title }}</strong>
+                <span class="badge ghost">{{ item.code }}</span>
+              </div>
+              <p>{{ item.detail }}</p>
+              <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
+            </article>
+          </div>
+
+          <div
+            v-if="runPreflight.warning_items.length"
+            class="preflight-group"
+            data-testid="scene-run-preflight-warning"
+          >
+            <h4>建议补充</h4>
+            <article
+              v-for="item in runPreflight.warning_items"
+              :key="item.code"
+              class="preflight-item"
+              :data-testid="`scene-run-preflight-item-${item.code}`"
+            >
+              <div class="preflight-item-head">
+                <strong>{{ item.title }}</strong>
+                <span class="badge ghost">{{ item.code }}</span>
+              </div>
+              <p>{{ item.detail }}</p>
+              <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
+            </article>
+          </div>
+
+          <div
+            v-if="runPreflight.context_items.length"
+            class="preflight-group"
+            data-testid="scene-run-preflight-context"
+          >
+            <h4>章节上下文</h4>
+            <article
+              v-for="item in runPreflight.context_items"
+              :key="item.code"
+              class="preflight-item"
+              :data-testid="`scene-run-preflight-item-${item.code}`"
+            >
+              <div class="preflight-item-head">
+                <strong>{{ item.title }}</strong>
+                <span class="badge ghost">{{ item.code }}</span>
+              </div>
+              <p>{{ item.detail }}</p>
+              <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
+            </article>
+          </div>
+
+          <p
+            v-if="!runPreflight.blocking_items.length && !runPreflight.warning_items.length && !runPreflight.context_items.length"
+            class="muted"
+          >
+            当前没有预检提示，可以直接执行完整场景运行。
+          </p>
+        </article>
 
         <article
           v-if="workbench.lastRunResult"

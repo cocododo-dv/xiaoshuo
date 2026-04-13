@@ -512,6 +512,50 @@ DEMO_RUNTIME_OPS_E2E_ALIAS_SCOPES = [
 ]
 DEMO_CHAPTER_OPS_E2E_FIXTURE = "chapter_ops_e2e"
 DEMO_ALL_E2E_FIXTURE = "all_e2e"
+DEMO_PREFLIGHT_BLOCKED_CHAPTER = {
+    "chapter_id": "CH210",
+    "planned_scene_count": 1,
+    "chapter_goal": "Block scene run when POV voice is missing",
+    "main_plot_push": "Make the blocker obvious before operators click run",
+    "emotional_target": "Reduce avoidable runtime failures",
+    "ending_effect": "Stay blocked until source dependencies are restored",
+}
+DEMO_PREFLIGHT_BLOCKED_SCENE = {
+    "scene_id": "CH210_SC01",
+    "chapter_id": "CH210",
+    "scene_seq": 1,
+    "pov_character_id": "CHAR_MISSING",
+    "onstage_chars_json": ["CHAR_B"],
+    "location": "North archive gate",
+    "scene_goal": "Try to run a scene whose POV voice profile is missing",
+    "beats_json": ["approach", "inspect", "hesitate"],
+    "must_include_text": "missing voice profile should stop the run",
+    "target_length_band": "short",
+    "scene_type": "investigation",
+    "is_chapter_last": 1,
+}
+DEMO_PREFLIGHT_WARNING_CHAPTER = {
+    "chapter_id": "CH211",
+    "planned_scene_count": 1,
+    "chapter_goal": "Show warnings without blocking scene run",
+    "main_plot_push": "Let operators see incomplete author fields early",
+    "emotional_target": "Keep the panel informative without hard-stop gating",
+    "ending_effect": "Warnings remain visible while run stays available",
+}
+DEMO_PREFLIGHT_WARNING_SCENE = {
+    "scene_id": "CH211_SC01",
+    "chapter_id": "CH211",
+    "scene_seq": 1,
+    "pov_character_id": "",
+    "onstage_chars_json": [],
+    "location": "",
+    "scene_goal": "",
+    "beats_json": [],
+    "must_include_text": "",
+    "target_length_band": "short",
+    "scene_type": "bridge",
+    "is_chapter_last": 1,
+}
 CHAPTER_OPS_MARKER_TOKEN = '{{backfill id=F200 text="旧信寄件人线索"}}'
 CHAPTER_OPS_CHAPTER = {
     "chapter_id": "CH200",
@@ -837,6 +881,33 @@ def _cleanup_chapter_ops_runtime(session: Session) -> None:
     session.execute(delete(ChapterGoal).where(ChapterGoal.chapter_id == chapter_id))
 
 
+def _cleanup_preflight_e2e_runtime(session: Session) -> None:
+    chapter_ids = [
+        DEMO_PREFLIGHT_BLOCKED_CHAPTER["chapter_id"],
+        DEMO_PREFLIGHT_WARNING_CHAPTER["chapter_id"],
+    ]
+    scene_ids = [
+        DEMO_PREFLIGHT_BLOCKED_SCENE["scene_id"],
+        DEMO_PREFLIGHT_WARNING_SCENE["scene_id"],
+    ]
+
+    session.execute(delete(AttemptTracker).where(AttemptTracker.chapter_id.in_(chapter_ids)))
+    session.execute(delete(SceneBundle).where(SceneBundle.chapter_id.in_(chapter_ids)))
+    session.execute(delete(SceneDraft).where(SceneDraft.chapter_id.in_(chapter_ids)))
+    session.execute(delete(FinalScene).where(FinalScene.chapter_id.in_(chapter_ids)))
+    session.execute(delete(SceneMemory).where(SceneMemory.chapter_id.in_(chapter_ids)))
+    session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id.in_(chapter_ids)))
+    session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id.in_(chapter_ids)))
+    session.execute(delete(StagedBackfill).where(StagedBackfill.chapter_id.in_(chapter_ids)))
+    session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id.in_(chapter_ids)))
+    session.execute(delete(ReviewItem).where(ReviewItem.chapter_id.in_(chapter_ids)))
+    session.execute(delete(ForeshadowTracker).where(ForeshadowTracker.chapter_id.in_(chapter_ids)))
+    session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
+    session.execute(delete(SceneCard).where(SceneCard.scene_id.in_(scene_ids)))
+    session.execute(delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids)))
+    session.execute(delete(ChapterGoal).where(ChapterGoal.chapter_id.in_(chapter_ids)))
+
+
 def _seed_chapter_ops_e2e(session: Session) -> dict[str, list[str] | str]:
     _cleanup_chapter_ops_runtime(session)
     _upsert_chapter(session, CHAPTER_OPS_CHAPTER)
@@ -856,6 +927,24 @@ def _seed_chapter_ops_e2e(session: Session) -> dict[str, list[str] | str]:
         "chapter_id": CHAPTER_OPS_CHAPTER["chapter_id"],
         "scene_ids": [item["scene_id"] for item in CHAPTER_OPS_SCENES],
         "review_ids": [CHAPTER_OPS_PENDING_REVIEW["review_id"]],
+    }
+
+
+def _seed_preflight_e2e(session: Session) -> dict[str, list[str]]:
+    _cleanup_preflight_e2e_runtime(session)
+    _upsert_chapter(session, DEMO_PREFLIGHT_BLOCKED_CHAPTER)
+    _upsert_scene(session, DEMO_PREFLIGHT_BLOCKED_SCENE)
+    _upsert_chapter(session, DEMO_PREFLIGHT_WARNING_CHAPTER)
+    _upsert_scene(session, DEMO_PREFLIGHT_WARNING_SCENE)
+    return {
+        "chapter_ids": [
+            DEMO_PREFLIGHT_BLOCKED_CHAPTER["chapter_id"],
+            DEMO_PREFLIGHT_WARNING_CHAPTER["chapter_id"],
+        ],
+        "scene_ids": [
+            DEMO_PREFLIGHT_BLOCKED_SCENE["scene_id"],
+            DEMO_PREFLIGHT_WARNING_SCENE["scene_id"],
+        ],
     }
 
 
@@ -902,8 +991,11 @@ def _seed_demo(session: Session, *, fixture: str | None = None) -> dict[str, lis
     elif fixture == DEMO_ALL_E2E_FIXTURE:
         review_ids.extend(_seed_runtime_ops_e2e(session))
         chapter_ops_summary = _seed_chapter_ops_e2e(session)
+        preflight_summary = _seed_preflight_e2e(session)
         extra_chapter_ids.append(chapter_ops_summary["chapter_id"])
+        extra_chapter_ids.extend(preflight_summary["chapter_ids"])
         extra_scene_ids.extend(chapter_ops_summary["scene_ids"])
+        extra_scene_ids.extend(preflight_summary["scene_ids"])
         extra_review_ids.extend(chapter_ops_summary["review_ids"])
     else:
         raise ValueError(f"Unsupported demo fixture: {fixture}")
