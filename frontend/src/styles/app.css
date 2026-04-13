@@ -660,6 +660,50 @@ pre {
   margin-top: 1rem;
 }
 
+.author-list-toolbar,
+.trash-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.author-list-row,
+.trash-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.85rem;
+  align-items: start;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.author-list-row.disabled,
+.trash-row.disabled {
+  opacity: 0.7;
+}
+
+.author-select-cell {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 0.25rem;
+}
+
+.author-select-cell input {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.author-list-content,
+.trash-row-copy,
+.author-list-meta {
+  display: grid;
+  gap: 0.6rem;
+}
+
 .author-list-item {
   display: grid;
   gap: 0.25rem;
@@ -672,6 +716,18 @@ pre {
 .author-list-item.active {
   background: linear-gradient(135deg, rgba(163, 63, 47, 0.16), rgba(213, 112, 73, 0.28));
   color: var(--ink);
+}
+
+.author-list-meta {
+  grid-template-columns: repeat(auto-fit, minmax(8rem, max-content));
+  align-items: center;
+}
+
+.author-block-reason,
+.trash-reason {
+  margin: 0;
+  color: var(--accent);
+  line-height: 1.45;
 }
 
 .author-form-grid {
@@ -701,6 +757,7 @@ pre {
 
 .author-scene-row {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 0.85rem;
   padding: 0.95rem 1rem;
   border: 1px solid var(--line);
@@ -711,6 +768,11 @@ pre {
 .author-scene-row.active {
   border-color: rgba(163, 63, 47, 0.38);
   box-shadow: 0 0 0 2px rgba(163, 63, 47, 0.12);
+}
+
+.author-scene-body {
+  display: grid;
+  gap: 0.85rem;
 }
 
 .author-scene-meta {
@@ -727,6 +789,46 @@ pre {
 
 .author-scene-form {
   margin-top: 1rem;
+}
+
+.danger-button {
+  background: linear-gradient(135deg, var(--accent) 0%, #d57049 100%);
+}
+
+.trash-layout {
+  margin-top: 1rem;
+  display: grid;
+  gap: 1.4rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.trash-list {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.trash-section {
+  min-height: 100%;
+}
+
+.trash-row-head,
+.trash-meta {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.trash-copy {
+  margin: 0.35rem 0 0;
+}
+
+.trash-reason-list {
+  display: grid;
+  gap: 0.45rem;
 }
 
 .interop-layout,
@@ -849,6 +951,7 @@ pre {
 
   .knowledge-layout,
   .author-layout,
+  .trash-layout,
   .interop-layout,
   .interop-query-grid,
   .comparison-diff-grid,

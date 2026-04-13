@@ -25,6 +25,9 @@ class ChapterGoal(Base):
     ending_effect: Mapped[str | None] = mapped_column(Text, nullable=True)
     must_not: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trashed_flag: Mapped[int] = mapped_column(Integer, default=0)
+    trashed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    trashed_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
@@ -48,6 +51,9 @@ class SceneCard(Base):
     target_length_band: Mapped[str | None] = mapped_column(String, nullable=True)
     scene_type: Mapped[str | None] = mapped_column(String, nullable=True)
     is_chapter_last: Mapped[int] = mapped_column(Integer, default=0)
+    trashed_flag: Mapped[int] = mapped_column(Integer, default=0)
+    trashed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    trashed_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 

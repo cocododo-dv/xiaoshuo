@@ -1,6 +1,40 @@
 import { defineStore } from "pinia";
 
-import { fetchAuthorWorkspace, fetchChapters, reorderChapterScenes, saveChapter as postChapter, saveScene as postScene } from "../lib/api";
+import {
+  fetchAuthorWorkspace,
+  fetchChapters,
+  reorderChapterScenes,
+  saveChapter as postChapter,
+  saveScene as postScene,
+  trashChapters as postTrashChapters,
+  trashScenes as postTrashScenes,
+} from "../lib/api";
+
+function changedIds(result, key) {
+  return (result?.processed || []).map((item) => item?.[key]).filter(Boolean);
+}
+
+function batchMessage(actionLabel, itemLabel, result, key) {
+  const ids = changedIds(result, key);
+  const blockedCount = Array.isArray(result?.blocked) ? result.blocked.length : 0;
+  if (!ids.length && !blockedCount) {
+    return `No ${itemLabel} changed.`;
+  }
+  const parts = [];
+  if (ids.length) {
+    parts.push(`${actionLabel} ${ids.length} ${itemLabel}: ${ids.join(", ")}`);
+  }
+  if (blockedCount) {
+    parts.push(`blocked ${blockedCount}`);
+  }
+  return parts.join(" | ");
+}
+
+async function refreshAuthorTrashStore() {
+  const { useAuthorTrashStore } = await import("./authorTrash.js");
+  const authorTrash = useAuthorTrashStore();
+  await authorTrash.load();
+}
 
 export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
   state: () => ({
@@ -22,7 +56,12 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
     async loadChapters() {
       const payload = await fetchChapters();
       this.chapters = payload.items || [];
-      if (!this.selectedChapterId && this.chapters.length) {
+      if (!this.chapters.length) {
+        this.selectedChapterId = "";
+        return;
+      }
+      const hasSelectedChapter = this.chapters.some((chapter) => chapter.chapter_id === this.selectedChapterId);
+      if (!hasSelectedChapter) {
         this.selectedChapterId = this.chapters[0].chapter_id;
       }
     },
@@ -38,12 +77,22 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       this.chapterState = payload.chapter_state || null;
       this.scenes = payload.scenes || [];
     },
+    async refreshActiveData(preferredChapterId = this.selectedChapterId) {
+      await this.loadChapters();
+      if (preferredChapterId && this.chapters.some((chapter) => chapter.chapter_id === preferredChapterId)) {
+        this.selectedChapterId = preferredChapterId;
+      }
+      if (!this.selectedChapterId) {
+        this.clearWorkspace();
+        return;
+      }
+      await this.loadWorkspace(this.selectedChapterId);
+    },
     async initialize() {
       this.loading = true;
       this.error = "";
       try {
-        await this.loadChapters();
-        await this.loadWorkspace(this.selectedChapterId);
+        await this.refreshActiveData(this.selectedChapterId);
       } catch (error) {
         this.clearWorkspace();
         this.chapters = [];
@@ -70,9 +119,8 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       this.error = "";
       try {
         const result = await postChapter(payload);
-        await this.loadChapters();
-        await this.loadWorkspace(result.chapter_id);
-        return `已保存章节 ${result.chapter_id}`;
+        await this.refreshActiveData(result.chapter_id);
+        return `Saved chapter ${result.chapter_id}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -89,9 +137,8 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
           ...payload,
           chapter_id: chapterId,
         });
-        await this.loadWorkspace(chapterId);
-        await this.loadChapters();
-        return `已保存场景 ${result.scene_id}`;
+        await this.refreshActiveData(chapterId);
+        return `Saved scene ${result.scene_id}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -108,7 +155,45 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
           last_scene_id: lastSceneId,
         });
         await this.loadWorkspace(this.selectedChapterId);
-        return `已重排 ${sceneIds.length} 个场景`;
+        return `Reordered ${sceneIds.length} scenes`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async trashScenes(sceneIds) {
+      if (!sceneIds?.length) {
+        return "No scenes selected.";
+      }
+      this.actionId = "trash-scenes";
+      this.error = "";
+      try {
+        const result = await postTrashScenes(sceneIds);
+        await this.refreshActiveData(this.selectedChapterId);
+        await refreshAuthorTrashStore();
+        return batchMessage("Moved to author trash", "scenes", result, "scene_id");
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async trashChapters(chapterIds) {
+      if (!chapterIds?.length) {
+        return "No chapters selected.";
+      }
+      this.actionId = "trash-chapters";
+      this.error = "";
+      try {
+        const result = await postTrashChapters(chapterIds);
+        const nextChapterId =
+          this.selectedChapterId && !chapterIds.includes(this.selectedChapterId) ? this.selectedChapterId : "";
+        await this.refreshActiveData(nextChapterId);
+        await refreshAuthorTrashStore();
+        return batchMessage("Moved to author trash", "chapters", result, "chapter_id");
       } catch (error) {
         this.error = error.message;
         throw error;

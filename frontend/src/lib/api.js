@@ -123,6 +123,10 @@ export function fetchAuthorWorkspace(chapterId) {
   return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/author-workspace`);
 }
 
+export function fetchAuthorTrash() {
+  return apiGet("/api/v1/author-trash");
+}
+
 export function saveChapter(payload) {
   return apiPost("/api/v1/chapters", payload);
 }
@@ -133,6 +137,30 @@ export function saveScene(payload) {
 
 export function reorderChapterScenes(chapterId, payload) {
   return apiPost(`/api/v1/chapters/${encodeURIComponent(chapterId)}/scene-order`, payload);
+}
+
+export function trashChapters(chapterIds) {
+  return apiPost("/api/v1/chapters/trash", { chapter_ids: chapterIds });
+}
+
+export function restoreChapters(chapterIds) {
+  return apiPost("/api/v1/chapters/restore", { chapter_ids: chapterIds });
+}
+
+export function purgeChapters(chapterIds) {
+  return apiPost("/api/v1/chapters/purge", { chapter_ids: chapterIds });
+}
+
+export function trashScenes(sceneIds) {
+  return apiPost("/api/v1/scenes/trash", { scene_ids: sceneIds });
+}
+
+export function restoreScenes(sceneIds) {
+  return apiPost("/api/v1/scenes/restore", { scene_ids: sceneIds });
+}
+
+export function purgeScenes(sceneIds) {
+  return apiPost("/api/v1/scenes/purge", { scene_ids: sceneIds });
 }
 
 export function runFullScene(sceneId) {

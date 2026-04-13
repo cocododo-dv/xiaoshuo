@@ -25,6 +25,8 @@ def test_alembic_upgrade_respects_database_url_env(tmp_path: Path) -> None:
     connection = sqlite3.connect(db_path)
     try:
         columns = [row[1] for row in connection.execute("PRAGMA table_info(chapter_states)").fetchall()]
+        chapter_goal_columns = [row[1] for row in connection.execute("PRAGMA table_info(chapter_goals)").fetchall()]
+        scene_card_columns = [row[1] for row in connection.execute("PRAGMA table_info(scene_cards)").fetchall()]
         staged_backfill_exists = connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='staged_backfill'"
         ).fetchone()
@@ -32,4 +34,10 @@ def test_alembic_upgrade_respects_database_url_env(tmp_path: Path) -> None:
         connection.close()
 
     assert "manual_hold_reason" in columns
+    assert "trashed_flag" in chapter_goal_columns
+    assert "trashed_at" in chapter_goal_columns
+    assert "trashed_by" in chapter_goal_columns
+    assert "trashed_flag" in scene_card_columns
+    assert "trashed_at" in scene_card_columns
+    assert "trashed_by" in scene_card_columns
     assert staged_backfill_exists == ("staged_backfill",)

@@ -7,25 +7,31 @@ import * as api from "../src/lib/api";
 
 const AUTHOR_VIEW_PATH = new URL("../src/views/AuthorWorkspaceView.vue", import.meta.url);
 const AUTHOR_STORE_PATH = new URL("../src/stores/authorWorkspace.js", import.meta.url);
+const AUTHOR_TRASH_VIEW_PATH = new URL("../src/views/AuthorTrashView.vue", import.meta.url);
+const AUTHOR_TRASH_STORE_PATH = new URL("../src/stores/authorTrash.js", import.meta.url);
 
-describe("author workspace shell registration", () => {
-  it("adds Author Workspace to the shell navigation", () => {
-    const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+describe("author shell registration", () => {
+  it("adds Author Workspace and Author Trash to the shell navigation", () => {
+    const appSource = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
     const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-    expect(source).toContain("AuthorWorkspaceView");
-    expect(source).toContain("activeView === 'author'");
-    expect(routerSource).toContain('{ id: "author", label: "作者工作台" }');
-    expect(routerSource).not.toContain("formatViewLabel");
+    expect(appSource).toContain("AuthorWorkspaceView");
+    expect(appSource).toContain("AuthorTrashView");
+    expect(appSource).toContain("activeView === 'author'");
+    expect(appSource).toContain("activeView === 'trash'");
+    expect(routerSource).toContain('{ id: "author", label: "浣滆€呭伐浣滃彴" }');
+    expect(routerSource).toContain('{ id: "trash", label: "浣滆€呭洖鏀剁珯" }');
   });
 
-  it("ships dedicated author workspace view and store files", () => {
+  it("ships dedicated author workspace and author trash files", () => {
     expect(existsSync(AUTHOR_VIEW_PATH)).toBe(true);
     expect(existsSync(AUTHOR_STORE_PATH)).toBe(true);
+    expect(existsSync(AUTHOR_TRASH_VIEW_PATH)).toBe(true);
+    expect(existsSync(AUTHOR_TRASH_STORE_PATH)).toBe(true);
   });
 });
 
-describe("author workspace api helpers", () => {
+describe("author lifecycle api helpers", () => {
   beforeEach(() => {
     globalThis.fetch = vi.fn(async (url, options = {}) => ({
       ok: true,
@@ -44,41 +50,62 @@ describe("author workspace api helpers", () => {
     vi.restoreAllMocks();
   });
 
-  it("calls the dedicated author workspace endpoints", async () => {
+  it("calls the dedicated author lifecycle endpoints", async () => {
     expect(typeof api.fetchChapters).toBe("function");
     expect(typeof api.fetchAuthorWorkspace).toBe("function");
+    expect(typeof api.fetchAuthorTrash).toBe("function");
     expect(typeof api.saveChapter).toBe("function");
     expect(typeof api.saveScene).toBe("function");
     expect(typeof api.reorderChapterScenes).toBe("function");
+    expect(typeof api.trashChapters).toBe("function");
+    expect(typeof api.restoreChapters).toBe("function");
+    expect(typeof api.purgeChapters).toBe("function");
+    expect(typeof api.trashScenes).toBe("function");
+    expect(typeof api.restoreScenes).toBe("function");
+    expect(typeof api.purgeScenes).toBe("function");
 
     await api.fetchChapters();
     await api.fetchAuthorWorkspace("CH900");
+    await api.fetchAuthorTrash();
     await api.saveChapter({ chapter_id: "CH900", chapter_goal: "Author a new chapter" });
     await api.saveScene({ scene_id: "CH900_SC01", chapter_id: "CH900", scene_goal: "Write the opening scene" });
     await api.reorderChapterScenes("CH900", {
       scene_ids: ["CH900_SC02", "CH900_SC01"],
       last_scene_id: "CH900_SC02",
     });
+    await api.trashChapters(["CH900"]);
+    await api.restoreChapters(["CH900"]);
+    await api.purgeChapters(["CH900"]);
+    await api.trashScenes(["CH900_SC01"]);
+    await api.restoreScenes(["CH900_SC01"]);
+    await api.purgeScenes(["CH900_SC01"]);
 
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/chapters");
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/chapters/CH900/author-workspace");
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/author-trash");
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/v1/chapters",
-      expect.objectContaining({
-        method: "POST",
-      }),
+      "http://127.0.0.1:8000/api/v1/chapters/trash",
+      expect.objectContaining({ method: "POST" }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/v1/scenes",
-      expect.objectContaining({
-        method: "POST",
-      }),
+      "http://127.0.0.1:8000/api/v1/chapters/restore",
+      expect.objectContaining({ method: "POST" }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/v1/chapters/CH900/scene-order",
-      expect.objectContaining({
-        method: "POST",
-      }),
+      "http://127.0.0.1:8000/api/v1/chapters/purge",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/scenes/trash",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/scenes/restore",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/scenes/purge",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 });
@@ -92,13 +119,7 @@ describe("author workspace store", () => {
     vi.restoreAllMocks();
   });
 
-  it("loads chapters, saves author data, and reorders scenes without touching runtime mutation endpoints", async () => {
-    const hasStore = existsSync(AUTHOR_STORE_PATH);
-    expect(hasStore).toBe(true);
-    if (!hasStore) {
-      return;
-    }
-
+  it("loads chapters, saves author data, and moves selected rows into author trash", async () => {
     const state = {
       chapters: [
         {
@@ -113,6 +134,10 @@ describe("author workspace store", () => {
           current_phase: "drafting",
           chapter_passed_scene_count: 0,
           chapter_backfill_pending_count: 0,
+          active_scene_count: 2,
+          trashed_scene_count: 0,
+          trash_allowed: 1,
+          trash_block_reason: null,
         },
       ],
       workspace: {
@@ -178,6 +203,10 @@ describe("author workspace store", () => {
           },
         ],
       },
+      trash: {
+        chapters: [],
+        scenes: [],
+      },
     };
 
     globalThis.fetch = vi.fn(async (url, options = {}) => {
@@ -193,6 +222,10 @@ describe("author workspace store", () => {
             current_phase: "drafting",
             chapter_passed_scene_count: 0,
             chapter_backfill_pending_count: 0,
+            active_scene_count: state.workspace.scenes.length,
+            trashed_scene_count: state.trash.scenes.length,
+            trash_allowed: state.trash.scenes.length ? 0 : 1,
+            trash_block_reason: state.trash.scenes.length ? "chapter contains individually trashed scenes" : null,
           },
         ];
         state.workspace.chapter = {
@@ -225,6 +258,92 @@ describe("author workspace store", () => {
         }
         return { ok: true, json: async () => ({ ok: true, data: { scene_id: payload.scene_id } }) };
       }
+      if (url.endsWith("/api/v1/scenes/trash") && options.method === "POST") {
+        const payload = JSON.parse(options.body);
+        const trashedIds = new Set(payload.scene_ids);
+        const removed = [];
+        state.workspace.scenes = state.workspace.scenes.filter((scene) => {
+          if (!trashedIds.has(scene.scene_id)) {
+            return true;
+          }
+          removed.push({
+            scene_id: scene.scene_id,
+            chapter_id: scene.chapter_id,
+            scene_seq: scene.scene_seq,
+            scene_goal: scene.scene_goal,
+            trashed_at: "2026-04-13T03:00:00+00:00",
+            trashed_by: "ops.author",
+            chapter_trashed: 0,
+            restore_allowed: 1,
+            restore_block_reason: null,
+            purge_allowed: 1,
+            purge_block_reason: null,
+          });
+          return false;
+        });
+        state.trash.scenes = [...state.trash.scenes, ...removed];
+        state.chapters = state.chapters.map((chapter) => ({
+          ...chapter,
+          active_scene_count: state.workspace.scenes.length,
+          trashed_scene_count: state.trash.scenes.length,
+          trash_allowed: 0,
+          trash_block_reason: "chapter contains individually trashed scenes",
+        }));
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              processed: removed.map(({ scene_id }) => ({ scene_id })),
+              blocked: [],
+              actor_ref: "ops.author",
+            },
+          }),
+        };
+      }
+      if (url.endsWith("/api/v1/chapters/trash") && options.method === "POST") {
+        state.trash.chapters = [
+          {
+            chapter_id: "CH900",
+            chapter_goal: "Updated chapter goal",
+            trashed_at: "2026-04-13T04:00:00+00:00",
+            trashed_by: "ops.author",
+            scene_count: state.workspace.scenes.length,
+            restore_allowed: 1,
+            restore_block_reason: null,
+            purge_allowed: 1,
+            purge_block_reason: null,
+          },
+        ];
+        state.trash.scenes = state.workspace.scenes.map((scene) => ({
+          scene_id: scene.scene_id,
+          chapter_id: scene.chapter_id,
+          scene_seq: scene.scene_seq,
+          scene_goal: scene.scene_goal,
+          trashed_at: "2026-04-13T04:00:00+00:00",
+          trashed_by: "ops.author",
+          chapter_trashed: 1,
+          restore_allowed: 0,
+          restore_block_reason: "restore the chapter to recover this scene",
+          purge_allowed: 0,
+          purge_block_reason: "manage this scene from its trashed chapter",
+        }));
+        state.workspace.chapter = null;
+        state.workspace.chapter_state = null;
+        state.workspace.scenes = [];
+        state.chapters = [];
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              processed: [{ chapter_id: "CH900", scene_ids: ["CH900_SC01"] }],
+              blocked: [],
+              actor_ref: "ops.author",
+            },
+          }),
+        };
+      }
       if (url.endsWith("/api/v1/chapters/CH900/scene-order") && options.method === "POST") {
         const payload = JSON.parse(options.body);
         state.workspace.scenes = payload.scene_ids.map((sceneId, index) => {
@@ -250,7 +369,9 @@ describe("author workspace store", () => {
           }),
         };
       }
-
+      if (url.endsWith("/api/v1/author-trash")) {
+        return { ok: true, json: async () => ({ ok: true, data: state.trash }) };
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
 
@@ -287,27 +408,132 @@ describe("author workspace store", () => {
     });
     await store.reorderScenes(["CH900_SC02", "CH900_SC01"], "CH900_SC01");
 
-    expect(store.chapters[0].chapter_goal).toBe("Updated chapter goal");
-    expect(store.chapter.chapter_goal).toBe("Updated chapter goal");
-    expect(store.scenes[0].scene_id).toBe("CH900_SC02");
-    expect(store.scenes[1].scene_id).toBe("CH900_SC01");
-    expect(store.scenes[1].is_chapter_last).toBe(1);
+    const sceneTrashMessage = await store.trashScenes(["CH900_SC02"]);
+    expect(sceneTrashMessage).toContain("1");
+    expect(store.chapters[0].trash_allowed).toBe(0);
+    expect(store.chapters[0].trash_block_reason).toContain("trashed scenes");
+
+    const chapterTrashMessage = await store.trashChapters(["CH900"]);
+    expect(chapterTrashMessage).toContain("CH900");
+    expect(store.chapters).toEqual([]);
+    expect(store.chapter).toBeNull();
+    expect(store.scenes).toEqual([]);
     expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/run/full"), expect.anything());
     expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/runtime/recovery/sweep"), expect.anything());
     expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/runtime/promotions/run-due"), expect.anything());
   });
 });
 
-describe("author workspace source", () => {
-  it("offers an explicit handoff to Scene Workbench", () => {
-    const hasView = existsSync(AUTHOR_VIEW_PATH);
-    expect(hasView).toBe(true);
-    if (!hasView) {
-      return;
-    }
+describe("author trash store", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("loads trash data and routes restore and purge actions through the dedicated store", async () => {
+    const trashState = {
+      chapters: [
+        {
+          chapter_id: "CH950",
+          chapter_goal: "Archived chapter",
+          trashed_at: "2026-04-13T05:00:00+00:00",
+          trashed_by: "ops.author",
+          scene_count: 1,
+          restore_allowed: 1,
+          restore_block_reason: null,
+          purge_allowed: 1,
+          purge_block_reason: null,
+        },
+      ],
+      scenes: [
+        {
+          scene_id: "CH950_SC01",
+          chapter_id: "CH950",
+          scene_seq: 1,
+          scene_goal: "Archived scene",
+          trashed_at: "2026-04-13T05:00:00+00:00",
+          trashed_by: "ops.author",
+          chapter_trashed: 1,
+          restore_allowed: 0,
+          restore_block_reason: "restore the chapter to recover this scene",
+          purge_allowed: 0,
+          purge_block_reason: "manage this scene from its trashed chapter",
+        },
+      ],
+    };
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.endsWith("/api/v1/author-trash") && !options.method) {
+        return { ok: true, json: async () => ({ ok: true, data: trashState }) };
+      }
+      if (url.endsWith("/api/v1/chapters") && !options.method) {
+        return { ok: true, json: async () => ({ ok: true, data: { items: [] } }) };
+      }
+      if (url.endsWith("/api/v1/chapters/restore") && options.method === "POST") {
+        trashState.chapters = [];
+        trashState.scenes = [];
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { processed: [{ chapter_id: "CH950", scene_ids: ["CH950_SC01"] }], blocked: [] } }),
+        };
+      }
+      if (url.endsWith("/api/v1/chapters/purge") && options.method === "POST") {
+        trashState.chapters = [];
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { processed: [{ chapter_id: "CH950", scene_ids: ["CH950_SC01"] }], blocked: [] } }),
+        };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const { useAuthorTrashStore } = await import("../src/stores/authorTrash.js");
+    const store = useAuthorTrashStore();
+
+    await store.load();
+    expect(store.chapters).toHaveLength(1);
+    expect(store.scenes).toHaveLength(1);
+
+    const restoreMessage = await store.restoreChapters(["CH950"]);
+    expect(restoreMessage).toContain("CH950");
+    expect(store.chapters).toEqual([]);
+
+    store.chapters = [
+      {
+        chapter_id: "CH950",
+        chapter_goal: "Archived chapter",
+        trashed_at: "2026-04-13T05:00:00+00:00",
+        trashed_by: "ops.author",
+        scene_count: 1,
+        restore_allowed: 1,
+        restore_block_reason: null,
+        purge_allowed: 1,
+        purge_block_reason: null,
+      },
+    ];
+    const purgeMessage = await store.purgeChapters(["CH950"]);
+    expect(purgeMessage).toContain("CH950");
+  });
+});
+
+describe("author lifecycle source", () => {
+  it("offers batch trash actions and an explicit handoff to Scene Workbench", () => {
     const source = readFileSync(AUTHOR_VIEW_PATH, "utf8");
-    expect(source).toContain("在场景工作台打开");
+    expect(source).toContain("author-trash-selected-chapters-button");
+    expect(source).toContain("author-trash-selected-scenes-button");
+    expect(source).toContain("chapter.trash_block_reason");
     expect(source).toContain("scene_card");
+  });
+
+  it("ships a dedicated author trash view with restore and purge actions", () => {
+    const source = readFileSync(AUTHOR_TRASH_VIEW_PATH, "utf8");
+    expect(source).toContain("author-trash-view");
+    expect(source).toContain("author-trash-restore-chapters-button");
+    expect(source).toContain("author-trash-purge-chapters-button");
+    expect(source).toContain("author-trash-restore-scenes-button");
+    expect(source).toContain("author-trash-purge-scenes-button");
   });
 });

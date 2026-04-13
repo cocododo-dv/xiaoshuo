@@ -16,6 +16,7 @@ from novel_system.db.models import (
     SceneMemory,
     SceneRunState,
 )
+from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
@@ -23,6 +24,54 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 
 router = APIRouter(tags=["scenes"])
+
+
+@router.post("/api/v1/scenes/trash")
+def trash_scenes(payload: dict, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/trash",
+        payload=payload,
+        action=lambda: AuthorLifecycleService(session).trash_scenes(payload.get("scene_ids") or [], actor_ref),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/scenes/restore")
+def restore_scenes(payload: dict, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/restore",
+        payload=payload,
+        action=lambda: AuthorLifecycleService(session).restore_scenes(payload.get("scene_ids") or []),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/scenes/purge")
+def purge_scenes(payload: dict, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/purge",
+        payload=payload,
+        action=lambda: AuthorLifecycleService(session).purge_scenes(payload.get("scene_ids") or []),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/scenes")
@@ -42,13 +91,12 @@ def create_scene(payload: dict, request: Request, session: Session = Depends(get
 
 
 def _create_scene(session: Session, payload: dict) -> dict:
+    lifecycle = AuthorLifecycleService(session)
     chapter_id = payload.get("chapter_id")
     if not isinstance(chapter_id, str) or not chapter_id:
         raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
 
-    chapter = session.get(ChapterGoal, chapter_id)
-    if chapter is None:
-        raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+    chapter = lifecycle.require_active_chapter(chapter_id)
 
     scene = session.get(SceneCard, payload["scene_id"])
     if scene is None:
@@ -60,6 +108,8 @@ def _create_scene(session: Session, payload: dict) -> dict:
         scene = SceneCard(**payload)
         session.add(scene)
     else:
+        if scene.trashed_flag == 1:
+            raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
         if payload.get("scene_seq") is None:
             payload = {
                 **payload,
@@ -79,6 +129,7 @@ def _create_scene(session: Session, payload: dict) -> dict:
 @router.post("/api/v1/scenes/{scene_id}/run/full")
 def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    AuthorLifecycleService(session).require_active_scene(scene_id)
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -94,6 +145,7 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
 
 @router.get("/api/v1/scenes/{scene_id}/status")
 def scene_status(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    AuthorLifecycleService(session).require_active_scene(scene_id)
     state = session.get(SceneRunState, scene_id)
     return ok(
         {
@@ -120,6 +172,7 @@ def scene_attempts(
     cursor: str | None = None,
     limit: int | None = None,
 ):
+    AuthorLifecycleService(session).require_active_scene(scene_id)
     items = session.execute(
         select(AttemptTracker).where(AttemptTracker.scene_id == scene_id).order_by(AttemptTracker.attempt_id.desc())
     ).scalars().all()
@@ -136,7 +189,7 @@ def scene_attempts(
 
 @router.get("/api/v1/scenes/{scene_id}/workbench")
 def scene_workbench(scene_id: str, request: Request, session: Session = Depends(get_session)):
-    scene = session.get(SceneCard, scene_id)
+    scene = AuthorLifecycleService(session).require_active_scene(scene_id)
     chapter = session.get(ChapterGoal, scene.chapter_id)
     state = session.get(SceneRunState, scene_id)
     runtime_service = ChapterRuntimeService(session)

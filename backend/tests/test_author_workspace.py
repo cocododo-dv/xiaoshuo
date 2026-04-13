@@ -94,6 +94,10 @@ def test_chapter_list_and_author_workspace_include_author_and_runtime_state(clie
             "current_phase": "drafting",
             "chapter_passed_scene_count": 1,
             "chapter_backfill_pending_count": 2,
+            "active_scene_count": 2,
+            "trashed_scene_count": 0,
+            "trash_allowed": 1,
+            "trash_block_reason": None,
         },
         {
             "chapter_id": "CH200",
@@ -107,6 +111,10 @@ def test_chapter_list_and_author_workspace_include_author_and_runtime_state(clie
             "current_phase": "drafting",
             "chapter_passed_scene_count": 0,
             "chapter_backfill_pending_count": 0,
+            "active_scene_count": 1,
+            "trashed_scene_count": 0,
+            "trash_allowed": 1,
+            "trash_block_reason": None,
         },
     ]
 
