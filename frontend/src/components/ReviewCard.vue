@@ -19,6 +19,19 @@ const props = defineProps({
 });
 
 defineEmits(["approve", "release", "open-target"]);
+
+const STATUS_LABELS = {
+  pending: "待处理",
+  approved: "已批准",
+  rejected: "已拒绝",
+  succeeded: "成功",
+  failed: "失败",
+  released: "已发布",
+};
+
+function formatStatus(status) {
+  return STATUS_LABELS[status] || status || "-";
+}
 </script>
 
 <template>
@@ -32,7 +45,8 @@ defineEmits(["approve", "release", "open-target"]);
       <span class="muted">{{ props.item.review_id }}</span>
       <span v-if="props.sourceActionLabel" class="badge">{{ props.sourceActionLabel }}</span>
     </div>
-    <h3>{{ props.item.candidate_text || "Empty candidate" }}</h3>
+    <h3>{{ props.item.candidate_text || "空候选内容" }}</h3>
+    <p class="muted">状态：{{ formatStatus(props.item.status) }}</p>
     <pre>{{ JSON.stringify(props.item.candidate_payload_json, null, 2) }}</pre>
     <div class="card-actions">
       <button
@@ -40,21 +54,21 @@ defineEmits(["approve", "release", "open-target"]);
         :data-testid="`review-approve-${props.item.review_id}`"
         @click="$emit('approve', props.item.review_id)"
       >
-        Approve
+        批准
       </button>
       <button
         :disabled="loading || props.item.materialize_status !== 'succeeded'"
         :data-testid="`review-release-${props.item.review_id}`"
         @click="$emit('release', props.item.review_id)"
       >
-        Release
+        发布
       </button>
       <button
         class="ghost"
         :data-testid="`review-open-target-${props.item.review_id}`"
         @click='$emit("open-target", props.item.review_id)'
       >
-        Open In Index
+        在索引页打开
       </button>
     </div>
   </article>

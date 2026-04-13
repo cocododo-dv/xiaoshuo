@@ -20,20 +20,39 @@ const props = defineProps({
 
 defineEmits(["action", "open-target"]);
 
+const ACTION_LABELS = {
+  retry_request: "重试请求",
+  retry_verify: "重试校验",
+  release_review: "发布审核",
+  inspect: "查看详情",
+  approve_review: "批准审核",
+};
+
+const EVENT_SOURCE_LABELS = {
+  idempotency_recovery: "幂等恢复",
+  manual_scene_review: "手动场景审核",
+};
+
+const STATUS_LABELS = {
+  pending: "待处理",
+  resolved: "已解决",
+  approved: "已批准",
+  rejected: "已拒绝",
+  failed: "失败",
+  succeeded: "成功",
+  running: "进行中",
+};
+
 function actionLabel(action) {
-  if (action === "retry_request") {
-    return "Retry Request";
-  }
-  if (action === "retry_verify") {
-    return "Retry Verify";
-  }
-  if (action === "release_review") {
-    return "Release Review";
-  }
-  if (action === "inspect") {
-    return "Inspect";
-  }
-  return action || "-";
+  return ACTION_LABELS[action] || action || "-";
+}
+
+function eventSourceLabel(source) {
+  return EVENT_SOURCE_LABELS[source] || source || "-";
+}
+
+function formatStatus(status) {
+  return STATUS_LABELS[status] || status || "-";
 }
 
 function actionHistory(item) {
@@ -48,7 +67,7 @@ function replaySummary(replayResult) {
     return `${replayResult.review_id} -> ${replayResult.materialize_status}`;
   }
   if (replayResult.review_id && replayResult.released !== undefined) {
-    return `${replayResult.review_id} -> released=${replayResult.released}`;
+    return `${replayResult.review_id} -> 已发布=${replayResult.released ? "是" : "否"}`;
   }
   if (replayResult.job_id && replayResult.status) {
     return `${replayResult.job_id} -> ${replayResult.status}`;
@@ -151,7 +170,7 @@ function sourceFocusedTarget(target, eventId) {
 
 <template>
   <div class="drawer-body">
-    <div v-if="!items.length" class="empty">No human review events are queued.</div>
+    <div v-if="!items.length" class="empty">当前没有待处理的人工审核事件。</div>
     <article
       v-for="item in props.items"
       :key="item.event_id || item.status"
@@ -159,32 +178,32 @@ function sourceFocusedTarget(target, eventId) {
       :data-testid="`human-review-event-${item.event_id}`"
       :class="{ 'focused-card': props.focusEventId && item.event_id === props.focusEventId }"
     >
-      <h3>{{ item.event_source }}</h3>
-      <p class="muted">Status: {{ item.status }}</p>
-      <p class="muted">Object: {{ item.object_ref || "-" }}</p>
-      <p class="muted">Linked target: {{ targetSummary(item) }}</p>
+      <h3>{{ eventSourceLabel(item.event_source) }}</h3>
+      <p class="muted">状态：{{ formatStatus(item.status) }}</p>
+      <p class="muted">对象：{{ item.object_ref || "-" }}</p>
+      <p class="muted">关联目标：{{ targetSummary(item) }}</p>
       <p v-if="item.details_json?.created_by_ref" class="muted">
-        Created by: {{ item.details_json.created_by_ref }} | {{ item.details_json.created_reason || "-" }}
+        创建来源：{{ item.details_json.created_by_ref }} | {{ item.details_json.created_reason || "-" }}
       </p>
-      <p class="muted">Actions: {{ (item.allowed_actions_json || []).join(" / ") || "-" }}</p>
+      <p class="muted">可执行动作：{{ (item.allowed_actions_json || []).map(actionLabel).join(" / ") || "-" }}</p>
       <p v-if="item.default_action && item.default_action !== 'inspect'" class="muted">
-        Recommended next step: {{ actionLabel(item.default_action) }}
+        建议下一步：{{ actionLabel(item.default_action) }}
       </p>
       <p v-if="item.details_json?.last_action_at" class="muted">
-        Last action:
+        最近操作：
         {{ actionLabel(item.details_json.last_action) }}
         | {{ item.details_json.last_action_at }}
         | {{ item.details_json.last_actor_ref || "-" }}
-        | {{ item.details_json.last_action_status || item.status }}
+        | {{ formatStatus(item.details_json.last_action_status || item.status) }}
       </p>
       <p v-if="item.details_json?.resolution_reason" class="muted">
-        Resolution: {{ item.details_json.resolution_reason }}
+        处理结果：{{ item.details_json.resolution_reason }}
       </p>
       <p v-if="item.details_json?.request_path_template" class="muted">
-        Request: {{ item.details_json.request_method || "-" }} {{ item.details_json.request_path_template }}
+        请求：{{ item.details_json.request_method || "-" }} {{ item.details_json.request_path_template }}
       </p>
       <div v-if="actionHistory(item).length" class="history-stack">
-        <p class="history-title">Action history</p>
+        <p class="history-title">操作历史</p>
         <ul class="history-list">
           <li
             v-for="entry in actionHistory(item)"
@@ -193,16 +212,16 @@ function sourceFocusedTarget(target, eventId) {
           >
             <p class="history-meta">
               <strong>{{ actionLabel(entry.action) }}</strong>
-              <span>{{ entry.action_at }} | {{ entry.actor_ref || "-" }} | {{ entry.status_after || "-" }}</span>
+              <span>{{ entry.action_at }} | {{ entry.actor_ref || "-" }} | {{ formatStatus(entry.status_after) }}</span>
             </p>
             <p v-if="entry.linked_target_ref" class="muted history-replay">
-              Linked target: {{ entry.linked_target_ref }}
+              关联目标：{{ entry.linked_target_ref }}
             </p>
             <p v-if="entry.resolution_reason" class="muted history-replay">
-              Resolution: {{ entry.resolution_reason }}
+              处理结果：{{ entry.resolution_reason }}
             </p>
             <p v-if="entry.replay_result" class="muted history-replay">
-              Replay result: {{ replaySummary(entry.replay_result) }}
+              回放结果：{{ replaySummary(entry.replay_result) }}
             </p>
             <div v-if="historyReplayTarget(entry)" class="card-actions">
               <button
@@ -210,7 +229,7 @@ function sourceFocusedTarget(target, eventId) {
                 :data-testid="`human-review-open-history-replay-${item.event_id}`"
                 @click='$emit("open-target", sourceFocusedTarget(historyReplayTarget(entry), item.event_id))'
               >
-                Open Replay Result
+                打开回放结果
               </button>
             </div>
           </li>
@@ -226,7 +245,7 @@ function sourceFocusedTarget(target, eventId) {
           :data-testid="`human-review-open-linked-${item.event_id}`"
           @click='$emit("open-target", sourceFocusedTarget(linkedTarget(item), item.event_id))'
         >
-          Open Linked Target
+          打开关联目标
         </button>
         <button
           v-if="followupTarget(item)"
@@ -234,7 +253,7 @@ function sourceFocusedTarget(target, eventId) {
           :data-testid="`human-review-open-followup-${item.event_id}`"
           @click='$emit("open-target", sourceFocusedTarget(followupTarget(item), item.event_id))'
         >
-          Open Follow-up Target
+          打开后续目标
         </button>
         <button
           v-if="replayTarget(item)"
@@ -242,7 +261,7 @@ function sourceFocusedTarget(target, eventId) {
           :data-testid="`human-review-open-replay-${item.event_id}`"
           @click='$emit("open-target", sourceFocusedTarget(replayTarget(item), item.event_id))'
         >
-          Open Replay Result
+          打开回放结果
         </button>
       </div>
       <div v-if="props.interactive && item.allowed_actions_json?.length" class="card-actions">
@@ -255,7 +274,7 @@ function sourceFocusedTarget(target, eventId) {
         >
           {{
             props.actionId === `${item.event_id}:${action}`
-              ? "Working..."
+              ? "处理中..."
               : actionLabel(action)
           }}
         </button>

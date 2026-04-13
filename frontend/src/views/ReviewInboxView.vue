@@ -15,7 +15,6 @@ const emit = defineEmits(["notice"]);
 const reviewInbox = useReviewInboxStore();
 const indexConsole = useIndexConsoleStore();
 const shellRouter = useShellRouter();
-// const { activeView, focusTarget, openTarget } = useShellRouter()
 const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;
 const reviewFocusRefreshPending = ref(false);
 
@@ -30,19 +29,19 @@ const visibleHumanReviewItems = computed(() =>
 const humanReviewSection = computed(() => {
   if (reviewInbox.humanReviewFilters.eventSource === "manual_scene_review") {
     return {
-      title: "Manual Scene Review",
-      description: "Manual scene review events that match the current filters appear here.",
+      title: "手动场景审核",
+      description: "这里会展示符合当前筛选条件的手动场景审核事件。",
       badge: "manual_scene_review",
-      countLabel: "manual review event",
-      empty: "No manual scene review events match the current filters.",
+      countLabel: "条手动审核事件",
+      empty: "当前筛选条件下没有手动场景审核事件。",
     };
   }
   return {
-    title: "System Recovery",
-    description: "Recovery-generated human review events are surfaced here first for operator triage.",
+    title: "系统恢复",
+    description: "恢复流程产生的人工审核事件会优先汇总到这里，供操作员处理。",
     badge: "idempotency_recovery",
-    countLabel: "recovery event",
-    empty: "No recovery-generated human review events match the current filters.",
+    countLabel: "条恢复事件",
+    empty: "当前筛选条件下没有恢复流程生成的人工审核事件。",
   };
 });
 
@@ -88,13 +87,13 @@ function reviewSourceActionLabel(reviewId) {
     return "";
   }
   if (focusTarget.value?.source_type === "review_approve") {
-    return "Approved here";
+    return "已在此批准";
   }
   if (focusTarget.value?.source_type === "review_release") {
-    return "Released here";
+    return "已在此发布";
   }
   if (focusTarget.value?.source_type === "review_card_open") {
-    return "Opened in index";
+    return "已在索引页打开";
   }
   return "";
 }
@@ -191,7 +190,7 @@ async function handleHumanReviewAction({ eventId, action }) {
 
 function handleOpenTarget(target) {
   openTarget(target);
-  emit("notice", `Opened ${target.target_ref}`);
+  emit("notice", `已打开 ${target.target_ref}`);
 }
 
 function handleReviewOpenTarget(reviewId) {
@@ -204,7 +203,7 @@ function handleReviewOpenTarget(reviewId) {
     source_type: "review_card_open",
     source_id: reviewId,
   });
-  emit("notice", `Opened ${target.target_ref}`);
+  emit("notice", `已打开 ${target.target_ref}`);
 }
 
 onMounted(() => {
@@ -268,42 +267,40 @@ watch(
 <template>
   <section class="panel-grid" data-testid="review-inbox-view">
     <PanelShell
-      eyebrow="Review Inbox"
-      title="Approve, materialize, and release"
-      description="Keep a tight loop between review decisions and index state."
+      eyebrow="审核收件箱"
+      title="批准、落库与发布"
+      description="让审核决策与索引状态保持紧密闭环。"
     >
       <template #actions>
         <div class="field-inline">
-          <button @click="refreshReviews">Refresh</button>
+          <button @click="refreshReviews">刷新</button>
           <span v-if="visibleHumanReviewItems.length" class="badge">
-            {{ visibleHumanReviewItems.length }} {{ humanReviewSection.countLabel }}{{
-              visibleHumanReviewItems.length === 1 ? "" : "s"
-            }}
+            {{ visibleHumanReviewItems.length }}{{ humanReviewSection.countLabel }}
           </span>
         </div>
       </template>
 
-      <div v-if="reviewInbox.loading" class="empty">Loading review inbox...</div>
+      <div v-if="reviewInbox.loading" class="empty">正在加载审核收件箱...</div>
       <div v-else-if="reviewInbox.error" class="empty">{{ reviewInbox.error }}</div>
       <template v-else>
         <div class="field-inline">
           <select v-model="reviewInbox.reviewFilters.status" data-testid="review-filter-status">
-            <option value="">All review statuses</option>
-            <option value="pending">pending</option>
-            <option value="approved">approved</option>
-            <option value="rejected">rejected</option>
+            <option value="">所有审核状态</option>
+            <option value="pending">待处理</option>
+            <option value="approved">已批准</option>
+            <option value="rejected">已拒绝</option>
           </select>
-          <button data-testid="review-filter-refresh" @click="refreshReviews">Refresh</button>
-          <button data-testid="review-filter-clear" @click="clearReviewFilters">Clear</button>
+          <button data-testid="review-filter-refresh" @click="refreshReviews">刷新</button>
+          <button data-testid="review-filter-clear" @click="clearReviewFilters">清空</button>
         </div>
         <div class="field-inline">
           <select v-model="reviewInbox.humanReviewFilters.eventSource" data-testid="human-review-filter-event-source">
-            <option value="">All event sources</option>
-            <option value="idempotency_recovery">idempotency_recovery</option>
-            <option value="manual_scene_review">manual_scene_review</option>
+            <option value="">所有事件来源</option>
+            <option value="idempotency_recovery">幂等恢复</option>
+            <option value="manual_scene_review">手动场景审核</option>
           </select>
-          <button data-testid="human-review-filter-refresh" @click="refreshReviews">Refresh</button>
-          <button data-testid="human-review-filter-clear" @click="clearHumanReviewFilters">Clear</button>
+          <button data-testid="human-review-filter-refresh" @click="refreshReviews">刷新</button>
+          <button data-testid="human-review-filter-clear" @click="clearHumanReviewFilters">清空</button>
         </div>
         <article v-if="visibleHumanReviewItems.length" class="paper inline-error">
           <div class="receipt-head">
@@ -335,7 +332,7 @@ watch(
           @next="nextHumanReviewPage"
         />
 
-        <div v-if="!reviewInbox.items.length" class="empty">No review items are waiting.</div>
+        <div v-if="!reviewInbox.items.length" class="empty">当前没有待处理审核项。</div>
         <div v-else class="review-list">
           <ReviewCard
             v-for="item in prioritizedReviewItems"

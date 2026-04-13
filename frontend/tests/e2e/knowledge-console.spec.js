@@ -19,7 +19,7 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
   await expect(page.getByTestId("knowledge-detail-lineage")).toContainText("STYLE_KNOWLEDGE_E2E");
   await page.getByTestId("knowledge-approve-review-review_knowledge_style_rule").click();
-  await expect(page.getByTestId("notice-stack")).toContainText("Approved review_knowledge_style_rule as ops.knowledge.e2e");
+  await expect(page.getByTestId("notice-stack")).toContainText("已批准 review_knowledge_style_rule，操作员 ops.knowledge.e2e");
 
   await page.getByTestId("knowledge-filter-select").selectOption("style_rule");
   await page.getByTestId("knowledge-scope-filter").fill("global");
@@ -57,22 +57,22 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-create-button").click();
   await page.getByTestId("knowledge-view-detail-calibration_line-CAL_KNOWLEDGE_E2E").click();
   await page.getByTestId("knowledge-approve-review-review_knowledge_calibration").click();
-  await expect(page.getByTestId("notice-stack")).toContainText("Approved review_knowledge_calibration as ops.knowledge.e2e");
+  await expect(page.getByTestId("notice-stack")).toContainText("已批准 review_knowledge_calibration，操作员 ops.knowledge.e2e");
   await page.getByTestId("knowledge-retry-verify-verify_review_knowledge_calibration").click();
   await expect(page.getByTestId("notice-stack")).toContainText(
-    "Retried verify for verify_review_knowledge_calibration as ops.knowledge.e2e",
+    "已重试校验 verify_review_knowledge_calibration，操作员 ops.knowledge.e2e",
   );
   await page.getByTestId("knowledge-release-review-review_knowledge_calibration").click();
-  await expect(page.getByTestId("notice-stack")).toContainText("Released review_knowledge_calibration as ops.knowledge.e2e");
+  await expect(page.getByTestId("notice-stack")).toContainText("已发布 review_knowledge_calibration，操作员 ops.knowledge.e2e");
 
   await page.getByTestId("nav-workbench").click();
   await page.getByTestId("scene-id-input").fill("CH001_SC02");
   await page.getByTestId("scene-load-button").click();
   await page.getByTestId("run-full-scene-button").click();
   const workbench = page.getByTestId("scene-workbench-view");
-  await expect(workbench).toContainText("Bundle Provenance");
-  await expect(workbench).toContainText("Style rule set");
-  await expect(workbench).toContainText("Calibration line");
+  await expect(workbench).toContainText("构包溯源");
+  await expect(workbench).toContainText("风格规则集");
+  await expect(workbench).toContainText("校准句");
   await expect(workbench).toContainText("keep the reunion tight and gesture-led");
   await expect(workbench).toContainText("the gate sighed shut on the unfinished question");
 

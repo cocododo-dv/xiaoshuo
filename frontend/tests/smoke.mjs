@@ -6,14 +6,16 @@ const main = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const app = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
 const router = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-assert.ok(html.includes("Novel System P2 Console"));
+assert.ok(html.includes("小说系统 P2 控制台"));
 assert.ok(html.includes("/src/main.js"));
 assert.ok(main.includes("createPinia"));
-assert.ok(app.includes("Scene Workbench"));
-assert.ok(app.includes("Review Inbox"));
-assert.ok(app.includes("Index Console"));
-assert.ok(app.includes("Interop Center"));
-assert.ok(router.includes('label: "Knowledge Console"'));
-assert.ok(router.includes('label: "Interop Center"'));
+assert.ok(app.includes("SceneWorkbenchView"));
+assert.ok(app.includes("ReviewInboxView"));
+assert.ok(app.includes("IndexConsoleView"));
+assert.ok(app.includes("InteropCenterView"));
+assert.ok(router.includes('{ id: "knowledge", label: "知识控制台" }'));
+assert.ok(router.includes('{ id: "interop", label: "互操作中心" }'));
+assert.ok(!router.includes("formatViewLabel"));
+assert.ok(!router.includes("uiText"));
 
 console.log("frontend smoke ok");

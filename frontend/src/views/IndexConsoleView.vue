@@ -21,6 +21,62 @@ const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settl
 const expandedTargetRefs = ref([]);
 const indexFocusRefreshPending = ref(false);
 
+const ACTION_LABELS = {
+  approve_review: "批准审核",
+  release_review: "发布审核",
+  retry_request: "重试请求",
+  retry_verify: "重试校验",
+  inspect: "查看详情",
+};
+
+const JOB_TYPE_LABELS = {
+  verify: "校验任务",
+  reindex: "重建索引任务",
+};
+
+const SOURCE_STREAM_LABELS = {
+  recovery_timeline: "恢复时间线",
+  system_runtime: "系统活动",
+  operator_action: "人工操作活动",
+};
+
+const STATUS_LABELS = {
+  pending: "待处理",
+  failed: "失败",
+  succeeded: "成功",
+  approved: "已批准",
+  rejected: "已拒绝",
+  resolved: "已解决",
+  running: "进行中",
+  queued: "排队中",
+  idle: "空闲",
+  released: "已发布",
+  none: "无",
+  archived: "已归档",
+  blocked_waiting_backfill: "等待补写",
+  manual_hold: "人工挂起",
+};
+
+function formatActionWithCode(action, fallback = "-") {
+  return ACTION_LABELS[action] || action || fallback;
+}
+
+function formatJobTypeWithCode(jobType, fallback = "-") {
+  return JOB_TYPE_LABELS[jobType] || jobType || fallback;
+}
+
+function formatSourceStreamWithCode(source, fallback = "-") {
+  return SOURCE_STREAM_LABELS[source] || source || fallback;
+}
+
+function formatStatusWithCode(status, fallback = "-") {
+  return STATUS_LABELS[status] || status || fallback;
+}
+
+function formatValue(value, fallback = "-") {
+  return value === null || value === undefined || value === "" ? fallback : String(value);
+}
+
 const prioritizedJobs = computed(() => {
   const focusJobId =
     focusTarget.value?.target_type === "verify_job" || focusTarget.value?.target_type === "reindex_job"
@@ -138,11 +194,35 @@ function operatorActionTargets(item) {
 }
 
 function operatorActionSummary(item) {
-  return [item?.action || "-", item?.status_before || "-", "->", item?.status_after || "-"].join(" ");
+  return [
+    formatActionWithCode(item?.action, item?.action || "-"),
+    formatStatusWithCode(item?.status_before, item?.status_before || "-"),
+    "->",
+    formatStatusWithCode(item?.status_after, item?.status_after || "-"),
+  ].join(" ");
 }
 
 function targetActivitySummary(item) {
-  return [item?.source || "-", item?.status || "-", item?.actor_ref || "-", item?.timestamp || "-"].join(" | ");
+  return [
+    formatSourceStreamWithCode(item?.source, item?.source || "-"),
+    formatStatusWithCode(item?.status, item?.status || "-"),
+    formatValue(item?.actor_ref),
+    formatValue(item?.timestamp),
+  ].join(" | ");
+}
+
+function formatSourceList(sources) {
+  if (!sources?.length) {
+    return "-";
+  }
+  return sources.map((source) => formatSourceStreamWithCode(source, source)).join(", ");
+}
+
+function activityItemLabel(item) {
+  if (item?.label) {
+    return item.label;
+  }
+  return formatSourceStreamWithCode(item?.source, item?.source || "-");
 }
 
 function isTargetGroupExpanded(group) {
@@ -293,18 +373,18 @@ function promotedReviewTargets(result) {
 
 function systemTargetLabel(target) {
   if (target?.target_type === "review_item") {
-    return "Open Review";
+    return "打开审核";
   }
   if (target?.target_type === "human_review_event") {
-    return "Open Recovery Event";
+    return "打开恢复事件";
   }
   if (target?.target_type === "verify_job") {
-    return "Open Verify Job";
+    return "打开校验任务";
   }
   if (target?.target_type === "reindex_job") {
-    return "Open Reindex Job";
+    return "打开重建索引任务";
   }
-  return target?.target_ref || "Open Target";
+  return target?.target_ref ? `打开目标（${target.target_ref}）` : "打开目标";
 }
 
 function reviewTarget(reviewId) {
@@ -346,7 +426,7 @@ function jumpToTarget(target) {
     return;
   }
   openTarget(target);
-  emit("notice", `Opened ${target.target_ref}`);
+  emit("notice", `已打开目标：${target.target_ref}`);
 }
 
 function isFocusedJob(jobId) {
@@ -480,70 +560,82 @@ watch(
 <template>
   <section class="panel-grid" data-testid="index-console-view">
     <PanelShell
-      eyebrow="Index Console"
-      title="Alias, verify, and recovery"
-      description="Inspect alias scopes, verify jobs, and runtime recovery from one board."
+      eyebrow="索引控制台"
+      title="别名、校验与恢复"
+      description="在一个面板里查看别名范围、校验任务和运行时恢复链路。"
     >
       <template #actions>
         <div class="field-inline">
-          <button @click="refreshIndex">Refresh</button>
+          <button @click="refreshIndex">刷新</button>
           <button
             :disabled="indexConsole.actionId === 'promotions'"
             data-testid="run-due-promotions-button"
             @click="runDuePromotions"
           >
-            {{ indexConsole.actionId === "promotions" ? "Promoting..." : "Run Due Promotions" }}
+            {{ indexConsole.actionId === "promotions" ? "发布中..." : "运行到期发布" }}
           </button>
           <button
             :disabled="indexConsole.actionId === 'recovery'"
             data-testid="run-recovery-sweep-button"
             @click="runRecovery"
           >
-            {{ indexConsole.actionId === "recovery" ? "Recovering..." : "Recovery Sweep" }}
+            {{ indexConsole.actionId === "recovery" ? "恢复中..." : "恢复扫描" }}
           </button>
         </div>
       </template>
 
-      <div v-if="indexConsole.loading" class="empty">Loading alias scopes...</div>
+      <div v-if="indexConsole.loading" class="empty">正在加载别名范围...</div>
       <div v-else-if="indexConsole.error" class="empty">{{ indexConsole.error }}</div>
       <template v-else>
         <div class="field-inline">
           <select v-model="indexConsole.aliasFilters.verifyStatus" data-testid="index-alias-filter-verify-status">
-            <option value="">All alias verify states</option>
-            <option value="pending">pending</option>
-            <option value="failed">failed</option>
-            <option value="succeeded">succeeded</option>
+            <option value="">全部别名校验状态</option>
+            <option value="pending">待处理</option>
+            <option value="failed">失败</option>
+            <option value="succeeded">成功</option>
           </select>
-          <button data-testid="index-alias-filter-refresh" @click="refreshIndex">Refresh</button>
-          <button data-testid="index-alias-filter-clear" @click="clearAliasFilters">Clear</button>
+          <button data-testid="index-alias-filter-refresh" @click="refreshIndex">刷新</button>
+          <button data-testid="index-alias-filter-clear" @click="clearAliasFilters">清空</button>
         </div>
         <div class="field-inline">
           <select v-model="indexConsole.jobFilters.jobType" data-testid="index-job-filter-job-type">
-            <option value="">All jobs</option>
-            <option value="verify">verify</option>
-            <option value="reindex">reindex</option>
+            <option value="">全部任务</option>
+            <option value="verify">校验任务</option>
+            <option value="reindex">重建索引任务</option>
           </select>
-          <input v-model="indexConsole.jobFilters.reviewId" data-testid="index-job-filter-review-id" />
-          <input v-model="indexConsole.jobFilters.workerId" data-testid="index-job-filter-worker-id" />
+          <input
+            v-model="indexConsole.jobFilters.reviewId"
+            data-testid="index-job-filter-review-id"
+            placeholder="审核 ID"
+          />
+          <input
+            v-model="indexConsole.jobFilters.workerId"
+            data-testid="index-job-filter-worker-id"
+            placeholder="工作器 ID"
+          />
           <label class="checkbox-inline">
             <input v-model="indexConsole.jobFilters.stuckOnly" data-testid="index-job-filter-stuck-only" type="checkbox" />
-            <span>Stuck only</span>
+            <span>仅看卡住任务</span>
           </label>
-          <button data-testid="index-job-filter-refresh" @click="refreshIndex">Refresh</button>
-          <button data-testid="index-job-filter-clear" @click="clearJobFilters">Clear</button>
+          <button data-testid="index-job-filter-refresh" @click="refreshIndex">刷新</button>
+          <button data-testid="index-job-filter-clear" @click="clearJobFilters">清空</button>
         </div>
         <div class="field-inline">
-          <input v-model="indexConsole.ledgerFilters.targetRef" data-testid="index-ledger-filter-target-ref" />
+          <input
+            v-model="indexConsole.ledgerFilters.targetRef"
+            data-testid="index-ledger-filter-target-ref"
+            placeholder="目标引用"
+          />
           <select v-model="indexConsole.ledgerFilters.source" data-testid="index-ledger-filter-source">
-            <option value="">All sources</option>
-            <option value="recovery_timeline">recovery_timeline</option>
-            <option value="system_runtime">system_runtime</option>
-            <option value="operator_action">operator_action</option>
+            <option value="">全部来源</option>
+            <option value="recovery_timeline">恢复时间线</option>
+            <option value="system_runtime">系统活动</option>
+            <option value="operator_action">人工操作活动</option>
           </select>
-          <button data-testid="index-ledger-filter-refresh" @click="refreshIndex">Refresh</button>
-          <button data-testid="index-ledger-filter-clear" @click="clearLedgerFilters">Clear</button>
+          <button data-testid="index-ledger-filter-refresh" @click="refreshIndex">刷新</button>
+          <button data-testid="index-ledger-filter-clear" @click="clearLedgerFilters">清空</button>
         </div>
-        <div v-if="!indexConsole.aliasScopes.length" class="empty">No alias scopes exist yet.</div>
+        <div v-if="!indexConsole.aliasScopes.length" class="empty">还没有别名范围。</div>
         <div v-else class="alias-grid">
           <AliasScopeCard v-for="item in indexConsole.aliasScopes" :key="item.alias_scope" :item="item" />
         </div>
@@ -556,69 +648,60 @@ watch(
         >
           <div class="receipt-head">
             <div>
-              <h3>Recovery Receipt</h3>
-              <p class="muted receipt-copy">Shows the latest recovery sweep, including reclaimed leases and recent failures.</p>
+              <h3>恢复回执</h3>
+              <p class="muted receipt-copy">展示最近一次恢复扫描的结果，包括回收租约、失败任务和新建人工审核事件。</p>
             </div>
-            <span class="badge">recovery/sweep</span>
+            <span class="badge">恢复扫描</span>
           </div>
           <div class="receipt-grid">
-            <p><strong>Reclaimed Jobs</strong><br />{{ indexConsole.lastRecoveryResult.reclaimed_jobs ?? 0 }}</p>
-            <p><strong>Failed Jobs</strong><br />{{ indexConsole.lastRecoveryResult.failed_jobs ?? 0 }}</p>
-            <p><strong>Actor</strong><br />{{ indexConsole.lastRecoveryResult.actor_ref || "-" }}</p>
-            <p>
-              <strong>Reclaimed Keys</strong><br />
-              {{ indexConsole.lastRecoveryResult.reclaimed_idempotency_keys ?? 0 }}
-            </p>
-            <p>
-              <strong>Failed Keys</strong><br />
-              {{ indexConsole.lastRecoveryResult.failed_idempotency_keys ?? 0 }}
-            </p>
-            <p>
-              <strong>Human Review Events</strong><br />
-              {{ indexConsole.lastRecoveryResult.created_human_review_events ?? 0 }}
-            </p>
+            <p><strong>回收任务</strong><br />{{ indexConsole.lastRecoveryResult.reclaimed_jobs ?? 0 }}</p>
+            <p><strong>失败任务</strong><br />{{ indexConsole.lastRecoveryResult.failed_jobs ?? 0 }}</p>
+            <p><strong>执行者</strong><br />{{ indexConsole.lastRecoveryResult.actor_ref || "-" }}</p>
+            <p><strong>回收幂等键</strong><br />{{ indexConsole.lastRecoveryResult.reclaimed_idempotency_keys ?? 0 }}</p>
+            <p><strong>失败幂等键</strong><br />{{ indexConsole.lastRecoveryResult.failed_idempotency_keys ?? 0 }}</p>
+            <p><strong>人工审核事件</strong><br />{{ indexConsole.lastRecoveryResult.created_human_review_events ?? 0 }}</p>
           </div>
           <div
             v-if="indexConsole.lastRecoveryResult.reclaimed_job_summaries?.length"
             class="receipt-detail"
           >
-            <h4>Reclaimed Job Summaries</h4>
+            <h4>回收任务摘要</h4>
             <ul class="receipt-list">
               <li
                 v-for="item in indexConsole.lastRecoveryResult.reclaimed_job_summaries"
                 :key="`${item.job_type}-${item.job_id}`"
               >
-                <strong>{{ item.job_type }}</strong> {{ item.job_id }}<br />
+                <strong>{{ formatJobTypeWithCode(item.job_type, item.job_type || "-") }}</strong> {{ item.job_id }}<br />
                 {{ item.alias_scope }}<br />
-                Previous worker: {{ item.previous_worker_id || "-" }} | Attempt {{ item.attempt_no ?? 0 }} | Lease
+                上一工作器：{{ item.previous_worker_id || "-" }} | 尝试次数：{{ item.attempt_no ?? 0 }} | 租约到期：
                 {{ item.previous_lease_expires_at || "-" }}
                 <div class="card-actions">
                   <button
                     class="ghost"
                     @click="jumpToTarget(withSourceFocusTarget(jobSummaryTarget(item), 'recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__'))"
                   >
-                    Open Job
+                    打开任务
                   </button>
                 </div>
               </li>
             </ul>
           </div>
           <div v-if="indexConsole.lastRecoveryResult.failed_job_summaries?.length" class="receipt-detail">
-            <h4>Failed Job Summaries</h4>
+            <h4>失败任务摘要</h4>
             <ul class="receipt-list">
               <li
                 v-for="item in indexConsole.lastRecoveryResult.failed_job_summaries"
                 :key="`${item.job_type}-${item.job_id}`"
               >
-                <strong>{{ item.job_type }}</strong> {{ item.job_id }}<br />
+                <strong>{{ formatJobTypeWithCode(item.job_type, item.job_type || "-") }}</strong> {{ item.job_id }}<br />
                 {{ item.alias_scope }}<br />
-                {{ item.error_text || "-" }} | Finished {{ item.finished_at || "-" }}
+                {{ item.error_text || "-" }} | 完成时间：{{ item.finished_at || "-" }}
                 <div class="card-actions">
                   <button
                     class="ghost"
                     @click="jumpToTarget(withSourceFocusTarget(jobSummaryTarget(item), 'recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__'))"
                   >
-                    Open Job
+                    打开任务
                   </button>
                 </div>
               </li>
@@ -628,20 +711,20 @@ watch(
             v-if="indexConsole.lastRecoveryResult.reclaimed_idempotency_key_summaries?.length"
             class="receipt-detail"
           >
-            <h4>Reclaimed Idempotency Keys</h4>
+            <h4>回收幂等键</h4>
             <ul class="receipt-list">
               <li
                 v-for="item in indexConsole.lastRecoveryResult.reclaimed_idempotency_key_summaries"
                 :key="item.idempotency_key"
               >
                 <strong>{{ item.idempotency_key }}</strong><br />
-                Previous worker: {{ item.previous_worker_id || "-" }} | Attempt {{ item.attempt_no ?? 0 }} | Lease
+                上一工作器：{{ item.previous_worker_id || "-" }} | 尝试次数：{{ item.attempt_no ?? 0 }} | 租约到期：
                 {{ item.previous_lease_expires_at || "-" }}
               </li>
             </ul>
           </div>
           <div v-if="recoveryCreatedEventTargets(indexConsole.lastRecoveryResult).length" class="receipt-detail">
-            <h4>Created Human Review Events</h4>
+            <h4>新建人工审核事件</h4>
             <ul class="receipt-list">
               <li
                 v-for="item in recoveryCreatedEventTargets(indexConsole.lastRecoveryResult)"
@@ -654,7 +737,7 @@ watch(
                     :data-testid="`recovery-created-event-${item.event_id}`"
                     @click="jumpToTarget(withSourceFocusTarget(item.target, 'recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__'))"
                   >
-                    Open Recovery Event
+                    打开恢复事件
                   </button>
                 </div>
               </li>
@@ -670,19 +753,19 @@ watch(
         >
           <div class="receipt-head">
             <div>
-              <h3>Recovery Follow-up</h3>
-              <p class="muted receipt-copy">Tracks the latest operator action and the recovery timeline that now follows it.</p>
+              <h3>恢复后续</h3>
+              <p class="muted receipt-copy">跟踪最近一次人工处理，以及它后面串联起来的恢复时间线。</p>
             </div>
-            <span class="badge">recovery/follow-up</span>
+            <span class="badge">恢复后续</span>
           </div>
           <div v-if="indexConsole.lastRecoveryActionResult" class="receipt-grid">
-            <p><strong>Event</strong><br />{{ indexConsole.lastRecoveryActionResult.event_id || "-" }}</p>
-            <p><strong>Action</strong><br />{{ indexConsole.lastRecoveryActionResult.action || "-" }}</p>
-            <p><strong>Actor</strong><br />{{ recoveryEventActor(indexConsole.lastRecoveryActionResult) }}</p>
-            <p><strong>Status</strong><br />{{ indexConsole.lastRecoveryActionResult.status || "-" }}</p>
-            <p><strong>Linked Target</strong><br />{{ recoveryEventTarget(indexConsole.lastRecoveryActionResult) }}</p>
-            <p><strong>Resolution</strong><br />{{ recoveryEventResolution(indexConsole.lastRecoveryActionResult) }}</p>
-            <p><strong>Replay Result</strong><br />{{ indexConsole.lastRecoveryActionResult.replay_result?.review_id || indexConsole.lastRecoveryActionResult.replay_result?.job_id || "-" }}</p>
+            <p><strong>事件</strong><br />{{ indexConsole.lastRecoveryActionResult.event_id || "-" }}</p>
+            <p><strong>动作</strong><br />{{ formatActionWithCode(indexConsole.lastRecoveryActionResult.action, indexConsole.lastRecoveryActionResult.action || "-") }}</p>
+            <p><strong>执行者</strong><br />{{ recoveryEventActor(indexConsole.lastRecoveryActionResult) }}</p>
+            <p><strong>状态</strong><br />{{ formatStatusWithCode(indexConsole.lastRecoveryActionResult.status, indexConsole.lastRecoveryActionResult.status || "-") }}</p>
+            <p><strong>关联目标</strong><br />{{ recoveryEventTarget(indexConsole.lastRecoveryActionResult) }}</p>
+            <p><strong>处理结论</strong><br />{{ recoveryEventResolution(indexConsole.lastRecoveryActionResult) }}</p>
+            <p><strong>回放结果</strong><br />{{ indexConsole.lastRecoveryActionResult.replay_result?.review_id || indexConsole.lastRecoveryActionResult.replay_result?.job_id || "-" }}</p>
           </div>
           <div
             v-if="recoveryLinkedTarget(indexConsole.lastRecoveryActionResult) || recoveryFollowupTarget(indexConsole.lastRecoveryActionResult) || recoveryReplayTarget(indexConsole.lastRecoveryActionResult)"
@@ -694,7 +777,7 @@ watch(
               data-testid="recovery-followup-open-linked-target"
               @click="jumpToTarget(withSourceFocusTarget(recoveryLinkedTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
             >
-              Open Linked Target
+              打开关联目标
             </button>
             <button
               v-if="recoveryFollowupTarget(indexConsole.lastRecoveryActionResult)"
@@ -702,7 +785,7 @@ watch(
               data-testid="recovery-followup-open-followup-target"
               @click="jumpToTarget(withSourceFocusTarget(recoveryFollowupTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
             >
-              Open Follow-up Target
+              打开后续目标
             </button>
             <button
               v-if="recoveryReplayTarget(indexConsole.lastRecoveryActionResult)"
@@ -710,11 +793,11 @@ watch(
               data-testid="recovery-followup-open-replay-result"
               @click="jumpToTarget(withSourceFocusTarget(recoveryReplayTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
             >
-              Open Replay Result
+              打开回放结果
             </button>
           </div>
           <div v-if="indexConsole.recoveryTimelineItems.length" class="receipt-detail">
-            <h4>Recovery Timeline</h4>
+            <h4>恢复时间线</h4>
             <ul class="receipt-list">
               <li
                 v-for="item in indexConsole.recoveryTimelineItems"
@@ -722,31 +805,34 @@ watch(
                 :class="{ 'focused-card': isFocusedRecoveryTimelineItem(item) }"
               >
                 <strong>{{ item.event_id }}</strong><br />
-                {{ item.status || "-" }} | {{ recoveryEventAction(item) }} | {{ recoveryEventActor(item) }} | {{ recoveryEventTimestamp(item) }}<br />
-                Target: {{ recoveryEventTarget(item) }}<br />
-                Resolution: {{ recoveryEventResolution(item) }}<br />
-                Next: {{ recoveryEventFollowup(item) }}
+                {{ formatStatusWithCode(item.status, item.status || "-") }} |
+                {{ formatActionWithCode(recoveryEventAction(item), recoveryEventAction(item)) }} |
+                {{ recoveryEventActor(item) }} |
+                {{ recoveryEventTimestamp(item) }}<br />
+                目标：{{ recoveryEventTarget(item) }}<br />
+                处理结论：{{ recoveryEventResolution(item) }}<br />
+                下一步：{{ recoveryEventFollowup(item) }}
                 <div v-if="recoveryLinkedTarget(item) || recoveryFollowupTarget(item) || recoveryReplayTarget(item)" class="card-actions">
                   <button
                     v-if="recoveryLinkedTarget(item)"
                     class="ghost"
                     @click="jumpToTarget(withSourceFocusTarget(recoveryLinkedTarget(item), 'recovery_timeline', item.event_id))"
                   >
-                    Open Linked Target
+                    打开关联目标
                   </button>
                   <button
                     v-if="recoveryFollowupTarget(item)"
                     class="ghost"
                     @click="jumpToTarget(withSourceFocusTarget(recoveryFollowupTarget(item), 'recovery_timeline', item.event_id))"
                   >
-                    Open Follow-up Target
+                    打开后续目标
                   </button>
                   <button
                     v-if="recoveryReplayTarget(item)"
                     class="ghost"
                     @click="jumpToTarget(withSourceFocusTarget(recoveryReplayTarget(item), 'recovery_timeline', item.event_id))"
                   >
-                    Open Replay Result
+                    打开回放结果
                   </button>
                 </div>
               </li>
@@ -762,26 +848,17 @@ watch(
         >
           <div class="receipt-head">
             <div>
-              <h3>Promotion Receipt</h3>
-              <p class="muted receipt-copy">Tracks the most recent runtime promotion sweep from this console.</p>
+              <h3>发布回执</h3>
+              <p class="muted receipt-copy">记录最近一次从本控制台触发的到期发布扫描。</p>
             </div>
-            <span class="badge">promotions/run-due</span>
+            <span class="badge">到期发布</span>
           </div>
           <div class="receipt-grid">
-            <p><strong>Promoted</strong><br />{{ indexConsole.lastPromotionResult.promoted ?? 0 }}</p>
-            <p><strong>Actor</strong><br />{{ indexConsole.lastPromotionResult.actor_ref || "-" }}</p>
-            <p>
-              <strong>Alias Scopes</strong><br />
-              {{ indexConsole.lastPromotionResult.promoted_alias_scopes?.join(", ") || "-" }}
-            </p>
-            <p>
-              <strong>Review IDs</strong><br />
-              {{ indexConsole.lastPromotionResult.promoted_review_ids?.join(", ") || "-" }}
-            </p>
-            <p>
-              <strong>Rows</strong><br />
-              {{ indexConsole.lastPromotionResult.promoted_row_ids?.join(", ") || "-" }}
-            </p>
+            <p><strong>已发布数量</strong><br />{{ indexConsole.lastPromotionResult.promoted ?? 0 }}</p>
+            <p><strong>执行者</strong><br />{{ indexConsole.lastPromotionResult.actor_ref || "-" }}</p>
+            <p><strong>别名范围</strong><br />{{ indexConsole.lastPromotionResult.promoted_alias_scopes?.join(", ") || "-" }}</p>
+            <p><strong>审核 ID</strong><br />{{ indexConsole.lastPromotionResult.promoted_review_ids?.join(", ") || "-" }}</p>
+            <p><strong>行 ID</strong><br />{{ indexConsole.lastPromotionResult.promoted_row_ids?.join(", ") || "-" }}</p>
           </div>
           <div v-if="promotedReviewTargets(indexConsole.lastPromotionResult).length" class="card-actions">
             <button
@@ -791,7 +868,7 @@ watch(
               :data-testid="`promotion-open-review-${item.review_id}`"
               @click="jumpToTarget(withSourceFocusTarget(item.target, 'promotion_receipt', indexConsole.lastPromotionResult?.actor_ref || '__promotion_receipt__'))"
             >
-              Open Review
+              打开审核
             </button>
           </div>
         </article>
@@ -799,10 +876,10 @@ watch(
         <article v-if="indexConsole.systemRuntimeTimelineItems.length" class="paper receipt-card">
           <div class="receipt-head">
             <div>
-              <h3>System Activity</h3>
-              <p class="muted receipt-copy">Shows system-triggered runtime work alongside the operator receipts above.</p>
+              <h3>系统活动</h3>
+              <p class="muted receipt-copy">展示系统自动触发的运行时事件，和上面的人工回执一起查看更完整。</p>
             </div>
-            <span class="badge">runtime/system</span>
+            <span class="badge">系统运行时</span>
           </div>
           <div class="receipt-detail">
             <ul class="receipt-list">
@@ -813,8 +890,8 @@ watch(
               >
                 <strong>{{ item.event_type }}</strong><br />
                 {{ systemActivitySummary(item) }}<br />
-                Actor: {{ systemActivityActor(item) }} | When: {{ item.created_at || "-" }}<br />
-                Ref: {{ item.object_ref || "-" }} | Detail: {{ systemActivityDetail(item) }}
+                执行者：{{ systemActivityActor(item) }} | 时间：{{ item.created_at || "-" }}<br />
+                引用：{{ item.object_ref || "-" }} | 细节：{{ systemActivityDetail(item) }}
                 <div v-if="systemActivityTargets(item).length" class="card-actions">
                   <button
                     v-for="target in systemActivityTargets(item)"
@@ -833,10 +910,10 @@ watch(
         <article v-if="indexConsole.operatorActionTimelineItems.length" class="paper receipt-card">
           <div class="receipt-head">
             <div>
-              <h3>Operator Activity</h3>
-              <p class="muted receipt-copy">Shows persisted operator actions with the same target graph used by recovery receipts.</p>
+              <h3>人工操作活动</h3>
+              <p class="muted receipt-copy">展示已落库的人工处理动作，并沿用恢复回执里的同一套目标链路。</p>
             </div>
-            <span class="badge">runtime/operator</span>
+            <span class="badge">人工操作</span>
           </div>
           <div class="receipt-detail">
             <ul class="receipt-list">
@@ -846,10 +923,10 @@ watch(
                 :class="{ 'focused-card': isFocusedOperatorActionItem(item) }"
               >
                 <strong>{{ item.action || item.event_type }}</strong><br />
-                Event: {{ item.event_id || item.object_ref || "-" }}<br />
-                Actor: {{ item.actor_ref || "-" }} | When: {{ item.created_at || "-" }}<br />
+                事件：{{ item.event_id || item.object_ref || "-" }}<br />
+                执行者：{{ item.actor_ref || "-" }} | 时间：{{ item.created_at || "-" }}<br />
                 {{ operatorActionSummary(item) }}<br />
-                Resolution: {{ item.resolution_reason || "-" }}
+                处理结论：{{ item.resolution_reason || "-" }}
                 <div v-if="operatorActionTargets(item).length" class="card-actions">
                   <button
                     v-for="target in operatorActionTargets(item)"
@@ -868,10 +945,10 @@ watch(
         <article v-if="indexConsole.targetActivityGroups.length" class="paper receipt-card">
           <div class="receipt-head">
             <div>
-              <h3>Target Activity</h3>
-              <p class="muted receipt-copy">Aggregates recovery, system, and operator history by target so one object shows its full handling chain.</p>
+              <h3>目标活动</h3>
+              <p class="muted receipt-copy">按目标聚合恢复、系统和人工三类历史，让一个对象的完整处理链路一眼可见。</p>
             </div>
-            <span class="badge">runtime/target-view</span>
+            <span class="badge">目标聚合</span>
           </div>
           <div class="receipt-detail">
             <ul class="receipt-list">
@@ -884,15 +961,15 @@ watch(
                 <div class="target-group-head">
                   <div class="target-group-meta">
                     <strong>{{ group.target.target_ref }}</strong><br />
-                    Latest: {{ group.latest_at || "-" }} | Count: {{ group.activity_count ?? 0 }} | Sources:
-                    {{ group.sources?.join(", ") || "-" }}
+                    最新时间：{{ group.latest_at || "-" }} | 数量：{{ group.activity_count ?? 0 }} | 来源：
+                    {{ formatSourceList(group.sources) }}
                   </div>
                     <button
                       class="ghost target-group-toggle"
                       :data-testid="`target-activity-toggle-${group.target.target_ref}`"
                       @click="toggleTargetGroup(group)"
                     >
-                      {{ isTargetGroupExpanded(group) ? "Hide Activity" : "Show Activity" }}
+                      {{ isTargetGroupExpanded(group) ? "收起活动" : "显示活动" }}
                     </button>
                   </div>
                 <div class="card-actions">
@@ -912,9 +989,9 @@ watch(
                         'focused-activity-item': isFocusedActivityItem(group, item),
                       }"
                     >
-                      <strong>{{ item.label || item.source }}</strong>
-                      <span v-if="isFocusedActivityItem(group, item)" class="badge">Latest linked activity</span><br />
-                      <span v-if="!isFocusedActivityItem(group, item) && isSourceLinkedActivityItem(item)" class="badge">Source-linked activity</span><br v-if="!isFocusedActivityItem(group, item)" />
+                      <strong>{{ activityItemLabel(item) }}</strong>
+                      <span v-if="isFocusedActivityItem(group, item)" class="badge">最新关联活动</span><br />
+                      <span v-if="!isFocusedActivityItem(group, item) && isSourceLinkedActivityItem(item)" class="badge">来源关联活动</span><br v-if="!isFocusedActivityItem(group, item)" />
                       {{ targetActivitySummary(item) }}<br />
                       {{ item.summary || "-" }}
                       <div v-if="item.target_refs?.length" class="card-actions">
@@ -930,7 +1007,7 @@ watch(
                     </li>
                   </ul>
                 </div>
-                <p v-else-if="isTargetGroupExpanded(group)" class="muted target-group-empty">No activity items for this target yet.</p>
+                <p v-else-if="isTargetGroupExpanded(group)" class="muted target-group-empty">这个目标还没有活动记录。</p>
               </li>
             </ul>
           </div>
@@ -938,8 +1015,8 @@ watch(
       </template>
     </PanelShell>
 
-    <PanelShell eyebrow="Jobs" title="Reindex / Verify">
-      <div v-if="!indexConsole.jobs.length" class="empty">No index jobs are queued.</div>
+    <PanelShell eyebrow="任务" title="重建索引与校验">
+      <div v-if="!indexConsole.jobs.length" class="empty">当前没有排队中的索引任务。</div>
       <div v-else class="job-table">
         <div
           v-for="item in prioritizedJobs"
@@ -949,21 +1026,21 @@ watch(
           :class="{ 'focused-card': isFocusedJob(item.job_id) }"
         >
           <div class="job-main">
-            <strong>{{ item.job_type }}</strong>
+            <strong>{{ formatJobTypeWithCode(item.job_type, item.job_type || "-") }}</strong>
             <div class="muted">{{ item.job_id }}</div>
             <div class="muted">{{ item.alias_scope }}</div>
           </div>
           <div class="job-diagnostics">
-            <p><strong>Status</strong><br />{{ item.status }}</p>
-            <p><strong>Target Snapshot</strong><br />{{ item.target_snapshot_version || "-" }}</p>
-            <p><strong>Target Embedding</strong><br />{{ item.target_embedding_version || "-" }}</p>
-            <p><strong>Worker</strong><br />{{ item.worker_id || "-" }}</p>
-            <p><strong>Attempt</strong><br />{{ item.attempt_no ?? 0 }}</p>
-            <p><strong>Heartbeat</strong><br />{{ item.heartbeat_at || "-" }}</p>
-            <p><strong>Lease Expires</strong><br />{{ item.lease_expires_at || "-" }}</p>
-            <p><strong>Started</strong><br />{{ item.started_at || "-" }}</p>
-            <p><strong>Finished</strong><br />{{ item.finished_at || "-" }}</p>
-            <p><strong>Error</strong><br />{{ item.error_text || "-" }}</p>
+            <p><strong>状态</strong><br />{{ formatStatusWithCode(item.status, item.status || "-") }}</p>
+            <p><strong>目标快照</strong><br />{{ item.target_snapshot_version || "-" }}</p>
+            <p><strong>目标嵌入</strong><br />{{ item.target_embedding_version || "-" }}</p>
+            <p><strong>工作器</strong><br />{{ item.worker_id || "-" }}</p>
+            <p><strong>尝试次数</strong><br />{{ item.attempt_no ?? 0 }}</p>
+            <p><strong>心跳时间</strong><br />{{ item.heartbeat_at || "-" }}</p>
+            <p><strong>租约到期</strong><br />{{ item.lease_expires_at || "-" }}</p>
+            <p><strong>开始时间</strong><br />{{ item.started_at || "-" }}</p>
+            <p><strong>完成时间</strong><br />{{ item.finished_at || "-" }}</p>
+            <p><strong>错误</strong><br />{{ item.error_text || "-" }}</p>
           </div>
           <div class="job-actions">
             <button
@@ -972,9 +1049,9 @@ watch(
               :data-testid="`retry-verify-job-${item.job_id}`"
               @click="retry(item.job_id)"
             >
-              Retry Verify
+              重试校验
             </button>
-            <span v-else class="muted">auto built</span>
+            <span v-else class="muted">自动生成</span>
           </div>
         </div>
       </div>

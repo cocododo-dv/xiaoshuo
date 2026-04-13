@@ -13,7 +13,7 @@ const props = defineProps({
 const provenance = computed(() => buildBundleProvenance(props.snapshot));
 
 function formatVersion(version) {
-  return version == null ? "Reference" : `v${version}`;
+  return version == null ? "引用" : `v${version}`;
 }
 </script>
 
@@ -21,18 +21,18 @@ function formatVersion(version) {
   <article class="paper provenance-card">
     <div class="provenance-head">
       <div>
-        <h3>Bundle Provenance</h3>
+        <h3>构包溯源</h3>
         <p class="muted provenance-copy">
-          Trace which source rows fed the bundle and the exact order they were injected into the scene run.
+          追踪哪些源数据行参与了构包，以及它们进入场景运行时的精确顺序。
         </p>
       </div>
-      <span v-if="provenance.available" class="badge">Snapshot live</span>
+      <span v-if="provenance.available" class="badge">快照已就绪</span>
     </div>
 
-    <div v-if="!provenance.available" class="empty">Run the scene once to capture a traceable bundle snapshot.</div>
+    <div v-if="!provenance.available" class="empty">先运行一次场景，才能捕获可追踪的构包快照。</div>
     <div v-else class="provenance-grid">
       <section class="provenance-section">
-        <div class="provenance-label">Traceable sources</div>
+        <div class="provenance-label">可追踪来源</div>
         <div v-if="provenance.sources.length" class="source-stack">
           <article v-for="source in provenance.sources" :key="source.key" class="source-card">
             <div class="source-top">
@@ -40,15 +40,15 @@ function formatVersion(version) {
               <span class="source-version">{{ formatVersion(source.version) }}</span>
             </div>
             <p class="source-id">{{ source.logicalId }}</p>
-            <p class="muted source-row">Row: {{ source.rowId || "bundle-local reference" }}</p>
+            <p class="muted source-row">数据行：{{ source.rowId || "构包内本地引用" }}</p>
             <p class="source-digest">{{ source.digest }}</p>
           </article>
         </div>
-        <p v-else class="empty">This bundle only contains base chapter and scene references right now.</p>
+        <p v-else class="empty">当前这个构包里只有基础章节和场景引用。</p>
       </section>
 
       <section class="provenance-section">
-        <div class="provenance-label">Injection order</div>
+        <div class="provenance-label">注入顺序</div>
         <ol class="injection-list">
           <li
             v-for="(injection, index) in provenance.injections"

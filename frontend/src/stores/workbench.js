@@ -111,7 +111,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         this.lastRunResult = result;
         this.syncAttemptPager(sceneId, { reset: true });
         await this.refreshAll(sceneId);
-        return `Ran ${sceneId} through full scene pipeline`;
+        return `已运行 ${sceneId} 的完整场景流程`;
       } catch (error) {
         this.sceneId = previousSceneId;
         this.error = error.message;
@@ -127,7 +127,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         const result = await postChapterBackfill(chapterId, stageId, strategy);
         this.lastChapterActionResult = result.receipt;
         await this.refreshAll(sceneId);
-        return `Applied ${strategy} to ${stageId}`;
+        return `已对 ${stageId} 应用策略 ${strategy}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -142,7 +142,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         const result = await postChapterFinalAggregate(chapterId);
         this.lastChapterActionResult = result.receipt;
         await this.refreshAll(sceneId);
-        return `Ran final aggregate for ${chapterId}`;
+        return `已运行 ${chapterId} 的最终聚合`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -157,7 +157,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         const result = await postChapterManualHold(chapterId, reason);
         this.lastChapterActionResult = result.receipt;
         await this.refreshAll(sceneId);
-        return `Set manual hold for ${chapterId}`;
+        return `已为 ${chapterId} 设置人工挂起`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -172,7 +172,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         const result = await clearChapterManualHold(chapterId);
         this.lastChapterActionResult = result.receipt;
         await this.refreshAll(sceneId);
-        return `Cleared manual hold for ${chapterId}`;
+        return `已清除 ${chapterId} 的人工挂起`;
       } catch (error) {
         this.error = error.message;
         throw error;

@@ -40,7 +40,7 @@ describe("buildBundleProvenance", () => {
     expect(provenance.sources).toEqual([
       {
         key: "voice_profile",
-        label: "Voice profile",
+        label: "声线档案",
         logicalId: "VOICE_CHAR_A",
         rowId: "voice_profile_VOICE_CHAR_A_v1",
         version: 1,
@@ -48,7 +48,7 @@ describe("buildBundleProvenance", () => {
       },
       {
         key: "relation_profile",
-        label: "Relation profile",
+        label: "关系档案",
         logicalId: "REL_CHAR_A_CHAR_B",
         rowId: "relation_profile_REL_CHAR_A_CHAR_B_v1",
         version: 1,
@@ -56,7 +56,7 @@ describe("buildBundleProvenance", () => {
       },
       {
         key: "scene_memory_prev",
-        label: "Previous scene memory",
+        label: "上一场景记忆",
         logicalId: "CH000_SC03",
         rowId: null,
         version: null,
@@ -65,14 +65,14 @@ describe("buildBundleProvenance", () => {
     ]);
     expect(provenance.injections[2]).toEqual({
       slot: "pov_voice",
-      slotLabel: "POV voice",
+      slotLabel: "视角声线",
       refId: "VOICE_CHAR_A",
       digestKey: "voice_card",
       digest: "short clipped lines; pressure makes the tone harder",
     });
     expect(provenance.injections[4]).toEqual({
       slot: "prev_scene_memory",
-      slotLabel: "Previous scene memory",
+      slotLabel: "上一场景记忆",
       refId: "CH000_SC03",
       digestKey: "scene_memory",
       digest: "They last separated without resolving the letter",
@@ -127,31 +127,31 @@ describe("buildBundleProvenance", () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: "style_rule",
-          label: "Style rule set",
+          label: "风格规则集",
           logicalId: "STYLE_GLOBAL_MAIN",
           digest: "keep emotion in gesture and pause",
         }),
         expect.objectContaining({
           key: "banned_rule",
-          label: "Banned rule cluster",
+          label: "禁忌规则簇",
           logicalId: "BAN_REUNION_V1",
           digest: "do not explain the whole backstory at reunion time",
         }),
         expect.objectContaining({
           key: "calibration_line",
-          label: "Calibration line",
+          label: "校准句",
           logicalId: "CAL_002",
           digest: "the door closed like a sentence left unfinished",
         }),
         expect.objectContaining({
           key: "world_rule",
-          label: "World rule",
+          label: "世界规则",
           logicalId: "WR_GLOBAL_014",
           digest: "public spellcasting inside the city is forbidden",
         }),
         expect.objectContaining({
           key: "foreshadow",
-          label: "Open foreshadow",
+          label: "开放伏笔",
           logicalId: "F014",
           digest: "the old letter sender clue is now in play",
         }),
@@ -159,9 +159,9 @@ describe("buildBundleProvenance", () => {
     );
     expect(provenance.injections).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ slot: "style_rules", slotLabel: "Style rules", digest: "keep emotion in gesture and pause" }),
-        expect.objectContaining({ slot: "world_rules", slotLabel: "World rules", digest: "public spellcasting inside the city is forbidden" }),
-        expect.objectContaining({ slot: "chapter_summary", slotLabel: "Chapter summary", digest: "chapter summary for the first reunion chapter" }),
+        expect.objectContaining({ slot: "style_rules", slotLabel: "风格规则", digest: "keep emotion in gesture and pause" }),
+        expect.objectContaining({ slot: "world_rules", slotLabel: "世界规则", digest: "public spellcasting inside the city is forbidden" }),
+        expect.objectContaining({ slot: "chapter_summary", slotLabel: "章节摘要", digest: "chapter summary for the first reunion chapter" }),
       ]),
     );
   });
@@ -178,14 +178,14 @@ describe("scene workbench source", () => {
   it("wires a run action and receipt section into the scene workbench", () => {
     const source = readFileSync(new URL("../src/views/SceneWorkbenchView.vue", import.meta.url), "utf8");
 
-    expect(source).toContain("Run Full Scene");
+    expect(source).toContain("运行完整场景");
     expect(source).toContain("workbench.runScene");
     expect(source).toContain("lastRunResult");
     expect(source).toContain("focusTarget");
     expect(source).toContain("focused-card");
     expect(source).toContain('source_type: "scene_run_receipt"');
     expect(source).toContain("isFocusedRunReceipt");
-    expect(source).toContain("Open Scene Card");
+    expect(source).toContain("打开场景卡片");
   });
 
   it("keeps populated workbench content visible ahead of the error-only branch", () => {
@@ -207,15 +207,15 @@ describe("scene workbench source", () => {
   it("renders human review action audit details for recovery-generated events", () => {
     const source = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
 
-    expect(source).toContain("Last action");
+    expect(source).toContain("最近操作");
     expect(source).toContain("last_action_at");
     expect(source).toContain("action_history");
     expect(source).toContain("linked_target_ref");
     expect(source).toContain("resolution_reason");
-    expect(source).toContain("Recommended next step");
-    expect(source).toContain("Open Linked Target");
-    expect(source).toContain("Open Follow-up Target");
-    expect(source).toContain("Open Replay Result");
+    expect(source).toContain("建议下一步");
+    expect(source).toContain("打开关联目标");
+    expect(source).toContain("打开后续目标");
+    expect(source).toContain("打开回放结果");
     expect(source).toContain('$emit("open-target"');
     expect(source).toContain("item.linked_target");
     expect(source).toContain("item.followup_target");
@@ -231,11 +231,12 @@ describe("review inbox source", () => {
     const cardSource = readFileSync(new URL("../src/components/ReviewCard.vue", import.meta.url), "utf8");
     const drawerSource = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
 
-    expect(source).toContain("System Recovery");
+    expect(source).toContain("系统恢复");
     expect(source).toContain("HumanReviewDrawer");
     expect(source).toContain("reviewInbox.systemRecoveryItems");
     expect(source).toContain("focusTarget");
-    expect(source).toContain("const { activeView, focusTarget, openTarget } = useShellRouter()");
+    expect(source).toContain("const shellRouter = useShellRouter();");
+    expect(source).toContain("const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;");
     expect(source).toContain('@open-target="handleOpenTarget"');
     expect(source).toContain("reviewSourceActionLabel");
     expect(source).toContain('if (nextView === "review" && previousView !== "review")');
@@ -246,7 +247,7 @@ describe("review inbox source", () => {
     expect(source).toContain("openTarget");
     expect(cardSource).toContain("highlighted");
     expect(cardSource).toContain("sourceActionLabel");
-    expect(cardSource).toContain("Open In Index");
+    expect(cardSource).toContain("在索引页打开");
     expect(cardSource).toContain('$emit("open-target"');
     expect(drawerSource).toContain("focusEventId");
   });
@@ -259,9 +260,8 @@ describe("review inbox source", () => {
     expect(viewSource).toContain("actOnHumanReviewEvent");
     expect(viewSource).toContain("recordRecoveryAction");
     expect(viewSource).toContain('@action="handleHumanReviewAction"');
-    expect(drawerSource).toContain("retry_request");
-    expect(drawerSource).toContain("retry_verify");
-    expect(drawerSource).toContain("release_review");
+    expect(drawerSource).not.toContain("formatAction");
+    expect(drawerSource).toContain("allowed_actions_json");
     expect(drawerSource).toContain('$emit("action"');
     expect(storeSource).toContain('item.status !== "resolved"');
   });
@@ -272,7 +272,7 @@ describe("shell source", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
     const apiSource = readFileSync(new URL("../src/lib/api.js", import.meta.url), "utf8");
 
-    expect(source).toContain("Operator Ref");
+    expect(source).toContain("操作员标识");
     expect(source).toContain("setOperatorRef");
     expect(apiSource).toContain("X-Operator-Ref");
     expect(apiSource).toContain("getOperatorRef");
@@ -283,7 +283,7 @@ describe("index console source", () => {
   it("wires due promotions into the index console panel", () => {
     const source = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
 
-    expect(source).toContain("Run Due Promotions");
+    expect(source).toContain("运行到期发布");
     expect(source).toContain("indexConsole.runDuePromotions");
     expect(source).toContain("lastPromotionResult");
   });
@@ -291,12 +291,12 @@ describe("index console source", () => {
   it("renders a recovery receipt alongside recovery sweep controls", () => {
     const source = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
 
-    expect(source).toContain("Recovery Sweep");
-    expect(source).toContain("Recovery Receipt");
-    expect(source).toContain("Recovery Follow-up");
-    expect(source).toContain("System Activity");
-    expect(source).toContain("Operator Activity");
-    expect(source).toContain("Target Activity");
+    expect(source).toContain("恢复扫描");
+    expect(source).toContain("恢复回执");
+    expect(source).toContain("恢复后续");
+    expect(source).toContain("系统活动");
+    expect(source).toContain("人工操作活动");
+    expect(source).toContain("目标活动");
     expect(source).toContain("lastRecoveryResult");
     expect(source).toContain("lastRecoveryActionResult");
     expect(source).toContain("recoveryTimelineItems");
@@ -308,9 +308,9 @@ describe("index console source", () => {
     expect(source).toContain("latest_at");
     expect(source).toContain("target_refs");
     expect(source).toContain("openTarget");
-    expect(source).toContain("Open Linked Target");
-    expect(source).toContain("Open Follow-up Target");
-    expect(source).toContain("Open Replay Result");
+    expect(source).toContain("打开关联目标");
+    expect(source).toContain("打开后续目标");
+    expect(source).toContain("打开回放结果");
     expect(source).toContain("linked_target");
     expect(source).toContain("followup_target");
     expect(source).toContain("replay_target");
@@ -324,28 +324,28 @@ describe("index console source", () => {
     expect(source).toContain("created_human_review_event_ids");
     expect(source).toContain("created_human_review_event_targets");
     expect(source).toContain("promoted_review_targets");
-    expect(source).toContain("Open Job");
-    expect(source).toContain("Open Review");
-    expect(source).toContain("Open Recovery Event");
+    expect(source).toContain("打开任务");
+    expect(source).toContain("打开审核");
+    expect(source).toContain("打开恢复事件");
     expect(source).toContain("status_before");
     expect(source).toContain("status_after");
     expect(source).toContain("expandedTargetRefs");
     expect(source).toContain("toggleTargetGroup");
     expect(source).toContain("isTargetGroupExpanded");
-    expect(source).toContain("Show Activity");
-    expect(source).toContain("Hide Activity");
+    expect(source).toContain("显示活动");
+    expect(source).toContain("收起活动");
     expect(source).toContain("focusedActivityKey");
     expect(source).toContain("orderedActivityItems");
     expect(source).toContain("focusedActivityKeyForGroup");
     expect(source).toContain("scrollIntoView");
-    expect(source).toContain("Latest linked activity");
+    expect(source).toContain("最新关联活动");
     expect(source).toContain("withSourceFocusTarget");
     expect(source).toContain("source_type");
     expect(source).toContain("source_id");
     expect(source).toContain("isFocusedRecoveryTimelineItem");
     expect(source).toContain("isFocusedSystemActivityItem");
     expect(source).toContain("isFocusedOperatorActionItem");
-    expect(source).toContain("Source-linked activity");
+    expect(source).toContain("来源关联活动");
   });
 
   it("renders job diagnostics and stale-fault summaries in the index console", () => {
@@ -380,12 +380,12 @@ describe("interop center source", () => {
     const source = readFileSync(viewPath, "utf8");
 
     expect(source).toContain("worksheet_yaml");
-    expect(source).toContain("Preview Worksheet");
-    expect(source).toContain("Import Worksheet");
-    expect(source).toContain("Bundle Export");
-    expect(source).toContain("Replay Final Scene");
-    expect(source).toContain("Version Drift");
-    expect(source).toContain("Text Drift");
+    expect(source).toContain("预览工作表");
+    expect(source).toContain("导入工作表");
+    expect(source).toContain("包导出与回放");
+    expect(source).toContain("回放终稿场景");
+    expect(source).toContain("版本偏差");
+    expect(source).toContain("文本偏差");
     expect(source).toContain("source_ref_comparisons");
   });
 });

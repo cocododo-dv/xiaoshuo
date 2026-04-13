@@ -48,37 +48,92 @@ const workflowJobs = computed(() => detailWorkflow.value.jobs || []);
 const workflowHumanReviewEvents = computed(() => detailWorkflow.value.human_review_events || []);
 const workflowTargetActivityGroups = computed(() => detailWorkflow.value.target_activity_groups || []);
 const primaryWorkflowAction = computed(() => detailWorkflow.value.recommended_primary_action || null);
+const ITEM_TYPE_LABELS = {
+  style_rule: "风格规则",
+  style_observation: "风格观察",
+  banned_rule_cluster: "禁忌规则簇",
+  voice_card: "声线卡",
+  relation_card: "关系卡",
+  world_rule: "世界规则",
+  calibration_line: "校准句",
+  foreshadow: "伏笔",
+  scene_summary: "场景摘要",
+  chapter_summary: "章节摘要",
+};
+
+const STATUS_LABELS = {
+  active: "生效中",
+  candidate: "候选中",
+  resolved: "已解决",
+  pending: "待处理",
+  approved: "已批准",
+  rejected: "已拒绝",
+  clear: "正常",
+  not_required: "无需校验",
+  unknown: "未知",
+  succeeded: "成功",
+  failed: "失败",
+  running: "进行中",
+  tracked: "已跟踪",
+  released: "已发布",
+};
+
+const JOB_TYPE_LABELS = {
+  verify: "校验任务",
+  reindex: "重建索引任务",
+};
+
+const ACTION_LABELS = {
+  approve_review: "批准审核",
+  retry_verify: "重试校验",
+  release_review: "发布审核",
+  retry_request: "重试请求",
+  inspect: "查看详情",
+};
+
+function formatItemType(itemType) {
+  return ITEM_TYPE_LABELS[itemType] || itemType || "-";
+}
+
+function formatStatus(status) {
+  return STATUS_LABELS[status] || status || "-";
+}
+
+function formatJobType(jobType) {
+  return JOB_TYPE_LABELS[jobType] || jobType || "-";
+}
+
+function formatAction(action) {
+  return ACTION_LABELS[action] || action || "-";
+}
+
 const workflowStatusItems = computed(() => {
   const reviewStatus = workflowReviewItems.value[0]?.status || "clear";
   const verifyJob = workflowJobs.value.find((job) => job.job_type === "verify");
   const verifyStatus = verifyJob?.status || knowledgeConsole.detail?.runtime_refs?.verify_status || "not_required";
   const unresolvedHumanReview = workflowHumanReviewEvents.value.find((item) => item.status !== "resolved");
   return [
-    { label: "Knowledge", value: knowledgeConsole.detail?.status || "unknown" },
-    { label: "Review", value: reviewStatus },
-    { label: "Verify", value: verifyStatus },
+    { label: "知识", value: formatStatus(knowledgeConsole.detail?.status || "unknown") },
+    { label: "审核", value: formatStatus(reviewStatus) },
+    { label: "校验", value: formatStatus(verifyStatus) },
     {
-      label: "Human Review",
-      value: unresolvedHumanReview?.status || (workflowHumanReviewEvents.value.length ? "resolved" : "clear"),
+      label: "人工审核",
+      value: formatStatus(
+        unresolvedHumanReview?.status || (workflowHumanReviewEvents.value.length ? "resolved" : "clear"),
+      ),
     },
   ];
 });
 
 function previewText(version) {
   if (!version?.text) {
-    return "No staged text";
+    return "暂无文本";
   }
   return version.text;
 }
 
 function actionLabel(action) {
-  return {
-    approve_review: "Approve",
-    retry_verify: "Retry Verify",
-    release_review: "Release",
-    retry_request: "Retry Request",
-    inspect: "Inspect",
-  }[action] || action?.replaceAll("_", " ") || "Action";
+  return formatAction(action);
 }
 
 function canReleaseReview(review) {
@@ -135,7 +190,7 @@ function openReviewInbox(item) {
   const reviewId = item?.candidate_version?.review_id || item?.review_refs?.[0];
   if (!reviewId) {
     navigate("review");
-    emit("notice", "Opened Review Inbox");
+    emit("notice", "已打开审核收件箱");
     return;
   }
   openTarget(
@@ -150,12 +205,12 @@ function openReviewInbox(item) {
       source_id: reviewId,
     },
   );
-  emit("notice", `Opened review_item:${reviewId}`);
+  emit("notice", `已打开审核收件箱：review_item:${reviewId}`);
 }
 
 function openIndexConsole(item) {
   navigate("index");
-  emit("notice", `Opened Index Console for ${item.object_type}:${item.lineage_key}`);
+  emit("notice", `已打开索引控制台：${item.object_type}:${item.lineage_key}`);
 }
 
 function parseKnowledgeTarget(targetRef) {
@@ -186,7 +241,7 @@ function openReviewRef(reviewId) {
       source_id: reviewId,
     },
   );
-  emit("notice", `Opened review_item:${reviewId}`);
+  emit("notice", `已打开审核收件箱：review_item:${reviewId}`);
 }
 
 function openBundleWorkbench(bundleRef) {
@@ -205,7 +260,7 @@ function openBundleWorkbench(bundleRef) {
       source_id: bundleRef.bundle_id,
     },
   );
-  emit("notice", `Opened scene_card:${bundleRef.scene_id}`);
+  emit("notice", `已打开场景工作台：scene_card:${bundleRef.scene_id}`);
 }
 
 function openJobTarget(job) {
@@ -217,7 +272,7 @@ function openJobTarget(job) {
     source_type: "knowledge_workflow_job",
     source_id: job.job_id,
   });
-  emit("notice", `Opened ${target.target_ref}`);
+  emit("notice", `已打开索引任务：${target.target_ref}`);
 }
 
 function openHumanReviewEvent(event) {
@@ -236,7 +291,7 @@ function openHumanReviewEvent(event) {
       source_id: event.event_id,
     },
   );
-  emit("notice", `Opened human_review_event:${event.event_id}`);
+  emit("notice", `已打开人工审核事件：human_review_event:${event.event_id}`);
 }
 
 function openActivityTarget(group) {
@@ -247,7 +302,7 @@ function openActivityTarget(group) {
     source_type: "knowledge_target_activity",
     source_id: group.target.target_ref,
   });
-  emit("notice", `Opened ${group.target.target_ref}`);
+  emit("notice", `已打开目标：${group.target.target_ref}`);
 }
 
 async function runApprove(reviewId) {
@@ -330,27 +385,27 @@ watch(
 <template>
   <section class="panel-grid" data-testid="knowledge-console-view">
     <PanelShell
-      eyebrow="Knowledge Console"
-      title="Stage new candidates and inspect active knowledge"
-      description="Track active rows, pending review candidates, version history, and runtime references for each knowledge family."
+      eyebrow="知识控制台"
+      title="新建候选并查看生效知识"
+      description="按知识家族查看生效行、待审核候选、版本历史和运行时引用。"
     >
       <template #actions>
         <div class="knowledge-filter-grid">
           <label>
-            <span>Object Type</span>
+            <span>对象类型</span>
             <select v-model="filters.objectType" class="control-input" data-testid="knowledge-filter-select">
-              <option value="">All families</option>
+              <option value="">全部家族</option>
               <option v-for="objectType in knowledgeConsole.supportedObjectTypes" :key="objectType" :value="objectType">
-                {{ objectType }}
+                {{ formatItemType(objectType) }}
               </option>
             </select>
           </label>
           <label>
-            <span>Scope</span>
+            <span>作用域</span>
             <input v-model="filters.scope" class="control-input" data-testid="knowledge-scope-filter" placeholder="global" />
           </label>
           <label>
-            <span>Scope Ref</span>
+            <span>作用域引用</span>
             <input
               v-model="filters.scopeRefId"
               class="control-input"
@@ -359,15 +414,15 @@ watch(
             />
           </label>
           <label>
-            <span>Status</span>
+            <span>状态</span>
             <select v-model="filters.status" class="control-input" data-testid="knowledge-status-filter">
-              <option value="">All statuses</option>
-              <option value="active">active</option>
-              <option value="candidate">candidate</option>
-              <option value="resolved">resolved</option>
+              <option value="">全部状态</option>
+              <option value="active">生效中</option>
+              <option value="candidate">候选中</option>
+              <option value="resolved">已解决</option>
             </select>
           </label>
-          <button data-testid="knowledge-refresh-button" @click="refreshKnowledge">Refresh</button>
+          <button data-testid="knowledge-refresh-button" @click="refreshKnowledge">刷新</button>
         </div>
       </template>
 
@@ -375,88 +430,88 @@ watch(
         <article class="paper knowledge-form-card">
           <div class="receipt-head">
             <div>
-              <h3>New Candidate</h3>
-              <p class="muted receipt-copy">Create a review candidate here, then finish approval, verify, release, and follow-up from the detail drawer.</p>
+              <h3>新建候选</h3>
+              <p class="muted receipt-copy">先在这里创建审核候选，再在右侧详情抽屉里完成批准、校验、发布和后续处理。</p>
             </div>
-            <span class="badge">POST /review-items</span>
+            <span class="badge">创建接口</span>
           </div>
           <div class="knowledge-form-grid">
             <label>
-              <span>Review ID</span>
+              <span>审核 ID</span>
               <input v-model="draft.reviewId" class="control-input" data-testid="knowledge-review-id" />
             </label>
             <label>
-              <span>Item Type</span>
+              <span>条目类型</span>
               <select v-model="draft.itemType" class="control-input" data-testid="knowledge-item-type">
-                <option value="style_rule_set">style_rule_set</option>
-                <option value="banned_rule_cluster">banned_rule_cluster</option>
-                <option value="voice_card_candidate">voice_card_candidate</option>
-                <option value="relation_card_candidate">relation_card_candidate</option>
-                <option value="world_rule">world_rule</option>
-                <option value="calibration_candidate">calibration_candidate</option>
-                <option value="foreshadow_open">foreshadow_open</option>
-                <option value="foreshadow_touch">foreshadow_touch</option>
-                <option value="foreshadow_resolve">foreshadow_resolve</option>
-                <option value="scene_summary">scene_summary</option>
-                <option value="chapter_summary">chapter_summary</option>
-                <option value="style_observation">style_observation</option>
+                <option value="style_rule_set">风格规则集</option>
+                <option value="banned_rule_cluster">禁忌规则簇</option>
+                <option value="voice_card_candidate">声线卡候选</option>
+                <option value="relation_card_candidate">关系卡候选</option>
+                <option value="world_rule">世界规则</option>
+                <option value="calibration_candidate">校准句候选</option>
+                <option value="foreshadow_open">伏笔开启</option>
+                <option value="foreshadow_touch">伏笔触发</option>
+                <option value="foreshadow_resolve">伏笔回收</option>
+                <option value="scene_summary">场景摘要</option>
+                <option value="chapter_summary">章节摘要</option>
+                <option value="style_observation">风格观察</option>
               </select>
             </label>
             <label>
-              <span>Lineage Key</span>
+              <span>血缘键</span>
               <input v-model="draft.lineageKey" class="control-input" data-testid="knowledge-lineage-key" />
             </label>
             <label>
-              <span>Active On Approve</span>
+              <span>批准后生效</span>
               <select v-model.number="draft.activeOnApprove" class="control-input" data-testid="knowledge-active-on-approve">
-                <option :value="1">Yes</option>
-                <option :value="0">No</option>
+                <option :value="1">是</option>
+                <option :value="0">否</option>
               </select>
             </label>
             <label>
-              <span>Scope</span>
+              <span>作用域</span>
               <input v-model="draft.scope" class="control-input" />
             </label>
             <label>
-              <span>Scope Ref</span>
+              <span>作用域引用</span>
               <input v-model="draft.scopeRefId" class="control-input" />
             </label>
             <label>
-              <span>Chapter ID</span>
+              <span>章节 ID</span>
               <input v-model="draft.chapterId" class="control-input" />
             </label>
             <label>
-              <span>Scene ID</span>
+              <span>场景 ID</span>
               <input v-model="draft.sceneId" class="control-input" />
             </label>
             <label>
-              <span>Character ID</span>
+              <span>角色 ID</span>
               <input v-model="draft.characterId" class="control-input" />
             </label>
             <label>
-              <span>Left Character</span>
+              <span>左角色</span>
               <input v-model="draft.leftCharacterId" class="control-input" />
             </label>
             <label>
-              <span>Right Character</span>
+              <span>右角色</span>
               <input v-model="draft.rightCharacterId" class="control-input" />
             </label>
             <label>
-              <span>Rule Tier</span>
+              <span>规则层级</span>
               <input v-model="draft.ruleTier" class="control-input" />
             </label>
             <label class="knowledge-wide">
-              <span>Candidate Text</span>
+              <span>候选文本</span>
               <textarea v-model="draft.candidateText" class="control-input control-textarea" data-testid="knowledge-candidate-text" />
             </label>
             <label class="knowledge-wide">
-              <span>Extra Payload JSON</span>
+              <span>附加载荷 JSON</span>
               <textarea v-model="draft.extraPayload" class="control-input control-textarea" placeholder='{"expires_at":"2099-01-01T00:00:00+00:00"}' />
             </label>
           </div>
           <div class="card-actions">
             <button :disabled="knowledgeConsole.actionId === 'create'" data-testid="knowledge-create-button" @click="submitCandidate">
-              {{ knowledgeConsole.actionId === "create" ? "Creating..." : "Create Candidate" }}
+              {{ knowledgeConsole.actionId === "create" ? "创建中..." : "创建候选" }}
             </button>
           </div>
         </article>
@@ -464,15 +519,15 @@ watch(
         <article class="paper knowledge-catalog-card">
           <div class="receipt-head">
             <div>
-              <h3>Catalog</h3>
-              <p class="muted receipt-copy">Active rows and staged candidates are merged into one lineage-first view.</p>
+              <h3>目录</h3>
+              <p class="muted receipt-copy">把生效行和暂存候选合并成一份按血缘优先排序的视图。</p>
             </div>
-            <span class="badge">{{ catalogItems.length }} lineages</span>
+            <span class="badge">{{ catalogItems.length }} 条血缘</span>
           </div>
 
-          <div v-if="knowledgeConsole.loading" class="empty">Loading knowledge catalog...</div>
+          <div v-if="knowledgeConsole.loading" class="empty">正在加载知识目录...</div>
           <div v-else-if="knowledgeConsole.error" class="empty">{{ knowledgeConsole.error }}</div>
-          <div v-else-if="!catalogItems.length" class="empty">No knowledge rows or staged candidates match this filter.</div>
+          <div v-else-if="!catalogItems.length" class="empty">当前筛选下没有匹配的知识行或候选项。</div>
           <div v-else class="knowledge-list">
             <article
               v-for="item in catalogItems"
@@ -483,24 +538,24 @@ watch(
             >
               <div class="source-top">
                 <div>
-                  <div class="eyebrow">{{ item.object_type }}</div>
+                  <div class="eyebrow">{{ formatItemType(item.object_type) }}</div>
                   <h3>{{ item.lineage_key }}</h3>
                 </div>
-                <span class="badge">{{ item.status || "tracked" }}</span>
+                <span class="badge">{{ formatStatus(item.status || "tracked") }}</span>
               </div>
-              <p><strong>Active</strong><br />{{ previewText(item.active_version) }}</p>
-              <p><strong>Candidate</strong><br />{{ previewText(item.candidate_version) }}</p>
-              <p class="muted">Runtime: {{ item.runtime_refs?.alias_scope || item.runtime_refs?.mode || "-" }}</p>
+              <p><strong>生效文本</strong><br />{{ previewText(item.active_version) }}</p>
+              <p><strong>候选文本</strong><br />{{ previewText(item.candidate_version) }}</p>
+              <p class="muted">运行时引用：{{ item.runtime_refs?.alias_scope || item.runtime_refs?.mode || "-" }}</p>
               <div class="card-actions">
                 <button
                   class="ghost"
                   :data-testid="`knowledge-view-detail-${item.object_type}-${item.lineage_key}`"
                   @click="selectEntry(item)"
                 >
-                  View Detail
+                  查看详情
                 </button>
-                <button class="ghost" @click="openReviewInbox(item)">View Review Inbox</button>
-                <button class="ghost" @click="openIndexConsole(item)">Open Index Console</button>
+                <button class="ghost" @click="openReviewInbox(item)">查看审核收件箱</button>
+                <button class="ghost" @click="openIndexConsole(item)">打开索引控制台</button>
               </div>
             </article>
           </div>
@@ -509,27 +564,27 @@ watch(
         <article class="paper knowledge-detail-card" data-testid="knowledge-detail-drawer">
           <div class="receipt-head">
             <div>
-              <h3>Detail Drawer</h3>
-              <p class="muted receipt-copy">Inspect active and candidate state, then drive review, verify, release, and follow-up without leaving Knowledge Console.</p>
+              <h3>详情抽屉</h3>
+              <p class="muted receipt-copy">在不离开知识控制台的前提下查看生效态、候选态，并继续做审核、校验、发布和后续处理。</p>
             </div>
-            <span v-if="knowledgeConsole.detail" class="badge">{{ knowledgeConsole.detail.object_type }}</span>
+            <span v-if="knowledgeConsole.detail" class="badge">{{ formatItemType(knowledgeConsole.detail.object_type) }}</span>
           </div>
 
           <div v-if="!knowledgeConsole.detail" class="empty" data-testid="knowledge-detail-empty">
-            Select a lineage to inspect version history and runtime refs.
+            先选择一条血缘，再查看版本历史和运行时引用。
           </div>
           <template v-else>
-            <p data-testid="knowledge-detail-lineage"><strong>Lineage</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
-            <p><strong>Active Version</strong><br />{{ previewText(knowledgeConsole.detail.active_version) }}</p>
-            <p><strong>Candidate Version</strong><br />{{ previewText(knowledgeConsole.detail.candidate_version) }}</p>
+            <p data-testid="knowledge-detail-lineage"><strong>血缘</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
+            <p><strong>生效版本</strong><br />{{ previewText(knowledgeConsole.detail.active_version) }}</p>
+            <p><strong>候选版本</strong><br />{{ previewText(knowledgeConsole.detail.candidate_version) }}</p>
             <div class="history-stack">
-              <p class="history-title">Workflow Status</p>
+              <p class="history-title">流程状态</p>
               <div class="card-actions">
                 <span v-for="item in workflowStatusItems" :key="item.label" class="badge">{{ item.label }}: {{ item.value }}</span>
               </div>
             </div>
             <div class="history-stack">
-              <p class="history-title">Workflow Actions</p>
+              <p class="history-title">流程动作</p>
               <div class="card-actions">
                 <button
                   v-if="primaryWorkflowAction"
@@ -538,7 +593,7 @@ watch(
                   :disabled="Boolean(knowledgeConsole.actionId)"
                   @click="runPrimaryWorkflowAction"
                 >
-                  {{ primaryWorkflowAction.label }}
+                  {{ actionLabel(primaryWorkflowAction.action) }}
                 </button>
                 <button
                   v-for="review in workflowReviewItems.filter((item) => item.status === 'pending')"
@@ -548,7 +603,7 @@ watch(
                   :disabled="Boolean(knowledgeConsole.actionId)"
                   @click="runApprove(review.review_id)"
                 >
-                  Approve
+                  批准审核
                 </button>
                 <button
                   v-for="job in workflowJobs.filter((item) => item.job_type === 'verify' && item.status !== 'succeeded')"
@@ -558,7 +613,7 @@ watch(
                   :disabled="Boolean(knowledgeConsole.actionId)"
                   @click="runRetryVerify(job.job_id)"
                 >
-                  Retry Verify
+                  重试校验
                 </button>
                 <button
                   v-for="review in workflowReviewItems.filter((item) => item.status === 'approved' && item.materialize_status === 'succeeded' && canReleaseReview(item))"
@@ -568,78 +623,78 @@ watch(
                   :disabled="Boolean(knowledgeConsole.actionId)"
                   @click="runRelease(review.review_id)"
                 >
-                  Release
+                  发布审核
                 </button>
               </div>
             </div>
             <div class="history-stack">
-              <p class="history-title">Runtime refs</p>
+              <p class="history-title">运行时引用</p>
               <pre class="json-block">{{ JSON.stringify(knowledgeConsole.detail.runtime_refs || {}, null, 2) }}</pre>
             </div>
             <div class="history-stack">
-              <p class="history-title">Version history</p>
+              <p class="history-title">版本历史</p>
               <ol class="history-list">
                 <li v-for="version in knowledgeConsole.detail.versions || []" :key="version.row_id" class="history-entry">
                   <p class="history-meta">
                     <strong>{{ version.row_id }}</strong>
-                    <span>v{{ version.version || "candidate" }}</span>
+                    <span>v{{ version.version || "候选" }}</span>
                   </p>
                   <p>{{ version.text || "-" }}</p>
                 </li>
               </ol>
             </div>
             <div class="history-stack">
-              <p class="history-title">Related Reviews</p>
+              <p class="history-title">关联审核</p>
               <ol v-if="workflowReviewItems.length" class="history-list">
                 <li v-for="review in workflowReviewItems" :key="review.review_id" class="history-entry">
                   <p class="history-meta">
                     <strong>{{ review.review_id }}</strong>
-                    <span>{{ review.status }}</span>
+                    <span>{{ formatStatus(review.status) }}</span>
                   </p>
-                  <p class="muted">{{ review.materialize_status || "pending" }}</p>
+                  <p class="muted">{{ formatStatus(review.materialize_status || "pending") }}</p>
                   <div class="card-actions">
                     <button
                       class="ghost"
                       :data-testid="`knowledge-open-related-review-${review.review_id}`"
                       @click="openReviewRef(review.review_id)"
                     >
-                      Open Review Inbox
+                      打开审核收件箱
                     </button>
                   </div>
                 </li>
               </ol>
-              <p v-else class="muted">No related reviews yet.</p>
+              <p v-else class="muted">还没有关联审核。</p>
             </div>
             <div class="history-stack">
-              <p class="history-title">Related Jobs</p>
+              <p class="history-title">关联任务</p>
               <ol v-if="workflowJobs.length" class="history-list">
                 <li v-for="job in workflowJobs" :key="job.job_id" class="history-entry">
                   <p class="history-meta">
                     <strong>{{ job.job_id }}</strong>
-                    <span>{{ job.status }}</span>
+                    <span>{{ formatStatus(job.status) }}</span>
                   </p>
-                  <p class="muted">{{ job.job_type }} / {{ job.alias_scope || "direct" }}</p>
+                  <p class="muted">{{ formatJobType(job.job_type) }} / {{ job.alias_scope || "直接读取" }}</p>
                   <div class="card-actions">
                     <button class="ghost" @click="openJobTarget(job)">
-                      Open Index Console
+                      打开索引控制台
                     </button>
                   </div>
                 </li>
               </ol>
-              <p v-else class="muted">No related jobs yet.</p>
+              <p v-else class="muted">还没有关联任务。</p>
             </div>
             <div class="history-stack">
-              <p class="history-title">Related Human Review</p>
+              <p class="history-title">关联人工审核</p>
               <ol v-if="workflowHumanReviewEvents.length" class="history-list">
                 <li v-for="event in workflowHumanReviewEvents" :key="event.event_id" class="history-entry">
                   <p class="history-meta">
                     <strong>{{ event.event_id }}</strong>
-                    <span>{{ event.status }}</span>
+                    <span>{{ formatStatus(event.status) }}</span>
                   </p>
-                  <p class="muted">{{ event.default_action || "inspect" }}</p>
+                  <p class="muted">{{ formatAction(event.default_action || "inspect") }}</p>
                   <div class="card-actions">
                     <button class="ghost" @click="openHumanReviewEvent(event)">
-                      Open Review Inbox
+                      打开审核收件箱
                     </button>
                     <button
                       v-for="action in event.allowed_actions_json || []"
@@ -654,28 +709,28 @@ watch(
                   </div>
                 </li>
               </ol>
-              <p v-else class="muted">No related human review follow-up items.</p>
+              <p v-else class="muted">还没有关联的人工审核后续项。</p>
             </div>
             <div class="history-stack">
-              <p class="history-title">Target Activity</p>
+              <p class="history-title">目标活动</p>
               <ol v-if="workflowTargetActivityGroups.length" class="history-list">
                 <li v-for="group in workflowTargetActivityGroups" :key="group.target.target_ref" class="history-entry">
                   <p class="history-meta">
                     <strong>{{ group.target.target_ref }}</strong>
-                    <span>{{ group.activity_count }} activities</span>
+                    <span>{{ group.activity_count }} 条活动</span>
                   </p>
-                  <p class="muted">{{ (group.sources || []).join(", ") || "activity" }}</p>
+                  <p class="muted">{{ (group.sources || []).join(", ") || "活动" }}</p>
                   <div class="card-actions">
                     <button class="ghost" @click="openActivityTarget(group)">
-                      Open Target
+                      打开目标
                     </button>
                   </div>
                 </li>
               </ol>
-              <p v-else class="muted">No related target activity yet.</p>
+              <p v-else class="muted">还没有关联目标活动。</p>
             </div>
             <div class="history-stack">
-              <p class="history-title">Review refs</p>
+              <p class="history-title">审核引用</p>
               <ol v-if="detailReviewRefs.length" class="history-list">
                 <li v-for="reviewRef in detailReviewRefs" :key="reviewRef" class="history-entry">
                   <p class="history-meta">
@@ -688,34 +743,34 @@ watch(
                       :data-testid="`knowledge-open-review-ref-${reviewRef}`"
                       @click="openReviewRef(reviewRef)"
                     >
-                      Open Review Inbox
+                      打开审核收件箱
                     </button>
                   </div>
                 </li>
               </ol>
-              <p v-else class="muted">No linked review refs yet.</p>
+              <p v-else class="muted">还没有关联审核引用。</p>
             </div>
             <div class="history-stack">
-              <p class="history-title">Bundle refs</p>
+              <p class="history-title">包引用</p>
               <ol v-if="detailBundleRefs.length" class="history-list">
                 <li v-for="bundleRef in detailBundleRefs" :key="bundleRef.bundle_id" class="history-entry">
                   <p class="history-meta">
                     <strong>{{ bundleRef.bundle_id }}</strong>
                     <span>{{ bundleRef.scene_id }}</span>
                   </p>
-                  <p class="muted">Chapter {{ bundleRef.chapter_id || "-" }}</p>
+                  <p class="muted">章节 {{ bundleRef.chapter_id || "-" }}</p>
                   <div class="card-actions">
                     <button
                       class="ghost"
                       :data-testid="`knowledge-open-bundle-ref-${bundleRef.bundle_id}`"
                       @click="openBundleWorkbench(bundleRef)"
                     >
-                      Open Scene Workbench
+                      打开场景工作台
                     </button>
                   </div>
                 </li>
               </ol>
-              <p v-else class="muted">No bundle refs yet.</p>
+              <p v-else class="muted">还没有包引用。</p>
             </div>
           </template>
         </article>

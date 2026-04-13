@@ -1,7 +1,7 @@
 const SOURCE_DEFINITIONS = [
   {
     key: "voice_profile",
-    label: "Voice profile",
+    label: "声线档案",
     collection: "source_version_refs",
     logicalIdKey: "voice_profile_id",
     rowIdKey: "voice_profile_row_id",
@@ -10,7 +10,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "relation_profile",
-    label: "Relation profile",
+    label: "关系档案",
     collection: "source_version_refs",
     logicalIdKey: "relation_profile_id",
     rowIdKey: "relation_profile_row_id",
@@ -19,7 +19,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "scene_memory_prev",
-    label: "Previous scene memory",
+    label: "上一场景记忆",
     collection: "source_version_refs",
     logicalIdKey: "scene_memory_prev",
     rowIdKey: null,
@@ -28,7 +28,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "style_rule",
-    label: "Style rule set",
+    label: "风格规则集",
     collection: "source_version_refs",
     logicalIdKey: "style_rule_set_id",
     rowIdKey: null,
@@ -37,7 +37,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "banned_rule",
-    label: "Banned rule cluster",
+    label: "禁忌规则簇",
     collection: "source_version_refs",
     logicalIdKey: "banned_cluster_id",
     rowIdKey: null,
@@ -46,7 +46,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "calibration_line",
-    label: "Calibration line",
+    label: "校准句",
     collection: "source_version_refs",
     logicalIdKey: "calibration_line_ids",
     rowIdKey: null,
@@ -56,7 +56,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "scene_summary",
-    label: "Scene summary",
+    label: "场景摘要",
     collection: "source_version_refs",
     logicalIdKey: "scene_summary_id",
     rowIdKey: null,
@@ -65,7 +65,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "chapter_summary",
-    label: "Chapter summary",
+    label: "章节摘要",
     collection: "source_version_refs",
     logicalIdKey: "chapter_summary_id",
     rowIdKey: null,
@@ -74,7 +74,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "world_rule",
-    label: "World rule",
+    label: "世界规则",
     collection: "resolved_ref_ids",
     logicalIdKey: "world_rule_ids",
     rowIdKey: null,
@@ -84,7 +84,7 @@ const SOURCE_DEFINITIONS = [
   },
   {
     key: "foreshadow",
-    label: "Open foreshadow",
+    label: "开放伏笔",
     collection: "resolved_ref_ids",
     logicalIdKey: "open_foreshadow_ids",
     rowIdKey: null,
@@ -95,18 +95,18 @@ const SOURCE_DEFINITIONS = [
 ];
 
 const SLOT_LABELS = {
-  chapter_goal: "Chapter goal",
-  scene_card: "Scene card",
-  pov_voice: "POV voice",
-  relation: "Relation",
-  prev_scene_memory: "Previous scene memory",
-  style_rules: "Style rules",
-  banned_rules: "Banned rules",
-  calibration_lines: "Calibration lines",
-  world_rules: "World rules",
-  foreshadow: "Foreshadow",
-  scene_summary: "Scene summary",
-  chapter_summary: "Chapter summary",
+  chapter_goal: "章节目标",
+  scene_card: "场景卡片",
+  pov_voice: "视角声线",
+  relation: "关系设定",
+  prev_scene_memory: "上一场景记忆",
+  style_rules: "风格规则",
+  banned_rules: "禁忌规则",
+  calibration_lines: "校准句",
+  world_rules: "世界规则",
+  foreshadow: "伏笔",
+  scene_summary: "场景摘要",
+  chapter_summary: "章节摘要",
 };
 
 export function buildBundleProvenance(snapshot) {

@@ -242,7 +242,7 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
         this.lastRecoveryResult = result;
         this.syncJobPager({ reset: true });
         await this.load();
-        return `Ran recovery sweep: reclaimed ${result.reclaimed_jobs ?? 0} stale job${result.reclaimed_jobs === 1 ? "" : "s"}, surfaced ${result.failed_jobs ?? 0} failed job${result.failed_jobs === 1 ? "" : "s"}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+        return `已执行恢复扫描：回收 ${result.reclaimed_jobs ?? 0} 个过期任务，发现 ${result.failed_jobs ?? 0} 个失败任务${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -258,7 +258,7 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
         this.lastPromotionResult = result;
         this.syncJobPager({ reset: true });
         await this.load();
-        return `Promoted ${result.promoted} due candidate${result.promoted === 1 ? "" : "s"}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+        return `已发布 ${result.promoted} 个到期候选${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -273,7 +273,7 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
         const result = await retryVerify(jobId);
         this.syncJobPager({ reset: true });
         await this.load();
-        return `Retried verify for ${jobId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+        return `已重试校验 ${jobId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;

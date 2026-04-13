@@ -339,12 +339,12 @@ describe("workbench chapter runtime store", () => {
 
     const store = useWorkbenchStore();
     const setMessage = await store.setChapterManualHold("CH200", "等待作者确认 backfill 处理策略", "CH200_SC01");
-    expect(setMessage).toContain("Set manual hold");
+    expect(setMessage).toContain("设置人工挂起");
     expect(store.data.chapter_state.aggregate_block_reason).toBe("manual_hold");
     expect(store.data.chapter_state.manual_hold_reason).toBe("等待作者确认 backfill 处理策略");
 
     const clearMessage = await store.clearChapterManualHold("CH200", "CH200_SC01");
-    expect(clearMessage).toContain("Cleared manual hold");
+    expect(clearMessage).toContain("清除");
     expect(store.lastChapterActionResult).toEqual(
       expect.objectContaining({
         action: "clear_manual_hold",

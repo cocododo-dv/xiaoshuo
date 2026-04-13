@@ -67,30 +67,48 @@ function buildListQueryPath(path, filters = {}, aliases = {}) {
   });
 }
 
+function normalizeRequestError(error) {
+  if (error instanceof Error) {
+    if (error.message === "Failed to fetch") {
+      return new Error("连接接口失败，请确认 API 地址和后端服务是否可用。");
+    }
+    return error;
+  }
+  return new Error("请求失败。");
+}
+
 async function parseEnvelope(response) {
   const payload = await response.json();
   if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error?.message || `Request failed: ${response.status}`);
+    throw new Error(payload.error?.message || `请求失败：${response.status}`);
   }
   return payload.data;
 }
 
 export async function apiGet(path) {
-  const response = await fetch(buildUrl(path));
-  return parseEnvelope(response);
+  try {
+    const response = await fetch(buildUrl(path));
+    return parseEnvelope(response);
+  } catch (error) {
+    throw normalizeRequestError(error);
+  }
 }
 
 export async function apiPost(path, body = {}) {
-  const response = await fetch(buildUrl(path), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Idempotency-Key": buildIdempotencyKey(path),
-      "X-Operator-Ref": getOperatorRef(),
-    },
-    body: JSON.stringify(body),
-  });
-  return parseEnvelope(response);
+  try {
+    const response = await fetch(buildUrl(path), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Idempotency-Key": buildIdempotencyKey(path),
+        "X-Operator-Ref": getOperatorRef(),
+      },
+      body: JSON.stringify(body),
+    });
+    return parseEnvelope(response);
+  } catch (error) {
+    throw normalizeRequestError(error);
+  }
 }
 
 export function fetchWorkbench(sceneId) {

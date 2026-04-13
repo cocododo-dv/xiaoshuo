@@ -72,7 +72,7 @@ export const useInteropCenterStore = defineStore("interopCenter", {
         this.activeMode = "preview";
         this.lastPreviewedWorksheet = this.worksheetYaml;
         this.exportBundleId = result.envelope?.bundle_id || this.exportBundleId;
-        return `Previewed ${result.envelope?.bundle_id || "worksheet"}`;
+        return `已预览 ${result.envelope?.bundle_id || "工作表"}`;
       } catch (error) {
         this.previewResult = null;
         this.activeEnvelope = null;
@@ -97,7 +97,7 @@ export const useInteropCenterStore = defineStore("interopCenter", {
         this.activeSourceComparisons = sourceComparisons(result);
         this.activeMode = "import";
         this.exportBundleId = result.bundle?.bundle_id || this.exportBundleId;
-        return `Imported ${result.bundle?.bundle_id || "worksheet bundle"}`;
+        return `已导入 ${result.bundle?.bundle_id || "工作表构包"}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -115,7 +115,7 @@ export const useInteropCenterStore = defineStore("interopCenter", {
         this.activeSourceComparisons = sourceComparisons(result);
         this.activeMode = "export";
         this.exportBundleId = bundleId.trim();
-        return `Loaded export for ${this.exportBundleId}`;
+        return `已加载 ${this.exportBundleId} 的导出结果`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -133,7 +133,7 @@ export const useInteropCenterStore = defineStore("interopCenter", {
         this.activeSourceComparisons = sourceComparisons(result);
         this.activeMode = "replay-final";
         this.replayFinalRowId = rowId.trim();
-        return `Loaded replay for ${this.replayFinalRowId}`;
+        return `已加载 ${this.replayFinalRowId} 的最终场景回放`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -151,7 +151,7 @@ export const useInteropCenterStore = defineStore("interopCenter", {
         this.activeSourceComparisons = sourceComparisons(result);
         this.activeMode = "replay-draft";
         this.replayDraftRowId = rowId.trim();
-        return `Loaded draft replay for ${this.replayDraftRowId}`;
+        return `已加载 ${this.replayDraftRowId} 的草稿回放`;
       } catch (error) {
         this.error = error.message;
         throw error;

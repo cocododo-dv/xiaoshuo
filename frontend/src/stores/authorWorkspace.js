@@ -72,7 +72,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         const result = await postChapter(payload);
         await this.loadChapters();
         await this.loadWorkspace(result.chapter_id);
-        return `Saved chapter ${result.chapter_id}`;
+        return `已保存章节 ${result.chapter_id}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -91,7 +91,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         });
         await this.loadWorkspace(chapterId);
         await this.loadChapters();
-        return `Saved scene ${result.scene_id}`;
+        return `已保存场景 ${result.scene_id}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -108,7 +108,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
           last_scene_id: lastSceneId,
         });
         await this.loadWorkspace(this.selectedChapterId);
-        return `Reordered ${sceneIds.length} scenes`;
+        return `已重排 ${sceneIds.length} 个场景`;
       } catch (error) {
         this.error = error.message;
         throw error;

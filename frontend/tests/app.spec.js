@@ -376,19 +376,27 @@ describe("workbench store", () => {
 describe("vue shell", () => {
   it("renders the three required views from the Vue shell", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+    const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-    expect(source).toContain("Scene Workbench");
-    expect(source).toContain("Review Inbox");
-    expect(source).toContain("Index Console");
-    expect(source).toContain("Knowledge Console");
+    expect(source).toContain("SceneWorkbenchView");
+    expect(source).toContain("ReviewInboxView");
+    expect(source).toContain("IndexConsoleView");
+    expect(source).toContain("KnowledgeConsoleView");
+    expect(routerSource).toContain('{ id: "workbench", label: "场景工作台" }');
+    expect(routerSource).toContain('{ id: "review", label: "审核收件箱" }');
+    expect(routerSource).toContain('{ id: "index", label: "索引控制台" }');
+    expect(routerSource).toContain('{ id: "knowledge", label: "知识控制台" }');
+    expect(routerSource).not.toContain("formatViewLabel");
+    expect(routerSource).not.toContain("uiText");
   });
 
   it("adds an interop center entry point to the shell", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+    const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-    expect(source).toContain("Interop Center");
     expect(source).toContain("InteropCenterView");
     expect(source).toContain("activeView === 'interop'");
+    expect(routerSource).toContain('{ id: "interop", label: "互操作中心" }');
   });
 });
 
@@ -497,7 +505,7 @@ describe("shell router", () => {
   it("ships interop and knowledge-specific target routing", () => {
     const source = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-    expect(source).toContain('{ id: "interop", label: "Interop Center" }');
+    expect(source).toContain('{ id: "interop", label: "互操作中心" }');
     expect(source).toContain('if (targetType === "knowledge_entry")');
     expect(source).toContain('return "knowledge"');
   });
@@ -677,7 +685,7 @@ describe("review inbox store", () => {
 
     const message = await store.approve("review_style_pending");
 
-    expect(message).toContain("Approved review_style_pending");
+    expect(message).toContain("已批准 review_style_pending");
     expect(message).toContain("ops.duwei");
   });
 
@@ -1831,24 +1839,24 @@ describe("knowledge console source", () => {
     expect(source).toContain("knowledge-status-filter");
     expect(source).toContain("knowledge-detail-drawer");
     expect(source).toContain("knowledge-detail-empty");
-    expect(source).toContain("Review refs");
-    expect(source).toContain("Bundle refs");
+    expect(source).toContain("审核引用");
+    expect(source).toContain("包引用");
     expect(source).toContain("knowledge-open-review-ref-");
     expect(source).toContain("knowledge-open-bundle-ref-");
-    expect(source).toContain("Open Scene Workbench");
+    expect(source).toContain("打开场景工作台");
   });
 
   it("ships workflow status, actions, and related activity sections in the detail drawer", () => {
     const source = readFileSync(new URL("../src/views/KnowledgeConsoleView.vue", import.meta.url), "utf8");
 
-    expect(source).toContain("Workflow Status");
+    expect(source).toContain("流程状态");
     expect(source).toContain("knowledge-workflow-primary-action");
     expect(source).toContain("knowledge-approve-review-");
     expect(source).toContain("knowledge-retry-verify-");
     expect(source).toContain("knowledge-release-review-");
-    expect(source).toContain("Related Human Review");
-    expect(source).toContain("Related Jobs");
-    expect(source).toContain("Target Activity");
+    expect(source).toContain("关联人工审核");
+    expect(source).toContain("关联任务");
+    expect(source).toContain("目标活动");
   });
 });
 
@@ -2213,7 +2221,7 @@ describe("index console store", () => {
 
     const message = await store.runRecovery();
 
-    expect(message).toContain("recovery sweep");
+    expect(message).toContain("已执行恢复扫描");
     expect(message).toContain("ops.duwei");
     expect(store.lastRecoveryResult.reclaimed_jobs).toBe(1);
     expect(store.lastRecoveryResult.actor_ref).toBe("ops.duwei");

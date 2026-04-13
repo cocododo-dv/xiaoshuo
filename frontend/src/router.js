@@ -11,12 +11,12 @@ const focusTarget = ref({
 const pendingFocusView = ref(null);
 
 const views = [
-  { id: "author", label: "Author Workspace" },
-  { id: "workbench", label: "Scene Workbench" },
-  { id: "review", label: "Review Inbox" },
-  { id: "index", label: "Index Console" },
-  { id: "knowledge", label: "Knowledge Console" },
-  { id: "interop", label: "Interop Center" },
+  { id: "author", label: "作者工作台" },
+  { id: "workbench", label: "场景工作台" },
+  { id: "review", label: "审核收件箱" },
+  { id: "index", label: "索引控制台" },
+  { id: "knowledge", label: "知识控制台" },
+  { id: "interop", label: "互操作中心" },
 ];
 
 const workbenchTargetTypes = new Set([

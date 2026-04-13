@@ -33,6 +33,36 @@ const isFocusedRunReceipt = computed(
   () => focusTarget.value?.source_type === "scene_run_receipt" && focusTarget.value?.source_id === workbench.sceneId,
 );
 
+const STATUS_LABELS = {
+  ready: "就绪",
+  archived: "已归档",
+  pending: "待处理",
+  running: "进行中",
+  completed: "已完成",
+  none: "无",
+  blocked_waiting_backfill: "等待补写",
+  manual_hold: "人工挂起",
+};
+
+const ACTION_LABELS = {
+  run_backfill: "执行补写",
+  run_backfill_again: "重新执行补写",
+  create_tracker_now: "立即创建跟踪",
+  explicit_defer_with_tracker: "明确延后并跟踪",
+  mark_staged_abandoned: "标记暂存为放弃",
+  run_final_aggregate: "运行最终聚合",
+  set_manual_hold: "设置人工挂起",
+  clear_manual_hold: "清除人工挂起",
+};
+
+function formatStatus(status) {
+  return STATUS_LABELS[status] || status || "-";
+}
+
+function formatAction(action) {
+  return ACTION_LABELS[action] || action || "-";
+}
+
 function resolveSceneId() {
   return requestedSceneId.value.trim() || workbench.sceneId;
 }
@@ -134,7 +164,7 @@ async function clearManualHold() {
 
 function handleOpenTarget(target) {
   openTarget(target);
-  emit("notice", `Opened ${target.target_ref}`);
+  emit("notice", `已打开 ${target.target_ref}`);
 }
 
 watch(
@@ -167,39 +197,39 @@ onMounted(() => {
 <template>
   <section class="panel-grid" data-testid="scene-workbench-view">
     <PanelShell
-      eyebrow="Scene Workbench"
-      title="Scene loop and archive"
-      description="Track chapter intent, draft lineage, and archive state for a single scene."
+      eyebrow="场景工作台"
+      title="场景循环与归档"
+      description="跟踪单个场景的章节意图、草稿谱系和归档状态。"
     >
       <template #actions>
         <div class="field-inline">
           <input v-model="requestedSceneId" class="control-input" data-testid="scene-id-input" />
-          <button data-testid="scene-load-button" @click="loadWorkbench">Load</button>
+          <button data-testid="scene-load-button" @click="loadWorkbench">读取</button>
           <button :disabled="workbench.actionId === 'run-scene'" data-testid="run-full-scene-button" @click="runScene">
-            {{ workbench.actionId === "run-scene" ? "Running..." : "Run Full Scene" }}
+            {{ workbench.actionId === "run-scene" ? "运行中..." : "运行完整场景" }}
           </button>
         </div>
       </template>
 
-      <div v-if="workbench.loading" class="empty">Loading workbench...</div>
+      <div v-if="workbench.loading" class="empty">正在加载场景工作台...</div>
       <template v-else-if="hasData">
         <article v-if="workbench.error" class="paper inline-error">
-          <h3>Latest Error</h3>
+          <h3>最新错误</h3>
           <p>{{ workbench.error }}</p>
         </article>
 
         <div class="stats">
           <div class="stat">
-            <span>Bundle</span>
+            <span>构包</span>
             <strong>{{ workbench.data.bundle?.bundle_id || "-" }}</strong>
           </div>
           <div class="stat">
-            <span>Hash</span>
+            <span>哈希</span>
             <strong>{{ workbench.data.bundle?.bundle_snapshot_hash || "-" }}</strong>
           </div>
           <div class="stat">
-            <span>Status</span>
-            <strong>{{ workbench.data.scene_run_state.scene_status || "-" }}</strong>
+            <span>状态</span>
+            <strong>{{ formatStatus(workbench.data.scene_run_state.scene_status) }}</strong>
           </div>
         </div>
 
@@ -211,16 +241,16 @@ onMounted(() => {
         >
           <div class="receipt-head">
             <div>
-              <h3>Run Receipt</h3>
-              <p class="muted receipt-copy">Latest pipeline response captured before the board refresh.</p>
+              <h3>运行回执</h3>
+              <p class="muted receipt-copy">面板刷新前捕获的最近一次流水线返回结果。</p>
             </div>
-            <span class="badge">run/full</span>
+            <span class="badge">完整运行</span>
           </div>
           <div class="receipt-grid">
-            <p><strong>Status</strong><br />{{ workbench.lastRunResult.scene_status || "-" }}</p>
-            <p><strong>Bundle</strong><br />{{ workbench.lastRunResult.current_bundle_id || "-" }}</p>
-            <p><strong>Hash</strong><br />{{ workbench.lastRunResult.current_bundle_hash || "-" }}</p>
-            <p><strong>Final Scene</strong><br />{{ workbench.lastRunResult.current_final_scene_row_id || "-" }}</p>
+            <p><strong>状态</strong><br />{{ formatStatus(workbench.lastRunResult.scene_status) }}</p>
+            <p><strong>构包</strong><br />{{ workbench.lastRunResult.current_bundle_id || "-" }}</p>
+            <p><strong>哈希</strong><br />{{ workbench.lastRunResult.current_bundle_hash || "-" }}</p>
+            <p><strong>最终场景</strong><br />{{ workbench.lastRunResult.current_final_scene_row_id || "-" }}</p>
           </div>
           <div class="card-actions">
             <button
@@ -232,7 +262,7 @@ onMounted(() => {
                 view_id: 'workbench',
               })"
             >
-              Open Scene Card
+              打开场景卡片
             </button>
           </div>
         </article>
@@ -243,30 +273,28 @@ onMounted(() => {
             data-testid="scene-workbench-scene-card"
             :class="{ 'focused-card': (focusedSceneId && workbench.data.scene_card.scene_id === focusedSceneId) || isFocusedRunReceipt }"
           >
-            <h3>Chapter / Scene</h3>
+            <h3>章节 / 场景</h3>
             <p><strong>{{ workbench.data.chapter_goal.chapter_goal }}</strong></p>
             <p>{{ workbench.data.scene_card.scene_goal }}</p>
-            <p class="muted">Location: {{ workbench.data.scene_card.location || "-" }}</p>
-            <p class="muted">Must include: {{ workbench.data.scene_card.must_include_text || "-" }}</p>
+            <p class="muted">地点：{{ workbench.data.scene_card.location || "-" }}</p>
+            <p class="muted">必须包含：{{ workbench.data.scene_card.must_include_text || "-" }}</p>
           </article>
           <article class="paper">
-            <h3>Draft Lineage</h3>
-            <p><strong>Neutral</strong><br />{{ workbench.data.neutral_draft?.content || "-" }}</p>
-            <p><strong>Style</strong><br />{{ workbench.data.style_draft?.content || "-" }}</p>
-            <p><strong>Final</strong><br />{{ workbench.data.final_scene?.content || "-" }}</p>
+            <h3>草稿谱系</h3>
+            <p><strong>中性稿</strong><br />{{ workbench.data.neutral_draft?.content || "-" }}</p>
+            <p><strong>风格稿</strong><br />{{ workbench.data.style_draft?.content || "-" }}</p>
+            <p><strong>定稿</strong><br />{{ workbench.data.final_scene?.content || "-" }}</p>
           </article>
           <article class="paper">
-            <h3>Archive / Gate</h3>
-            <p><strong>Scene Memory</strong><br />{{ workbench.data.scene_memory?.content || "-" }}</p>
-            <p class="muted">
-              Backfill pending: {{ workbench.data.chapter_state.chapter_backfill_pending_count }}
-            </p>
-            <p class="muted">Aggregate gate: {{ workbench.data.chapter_state.aggregate_block_reason }}</p>
-            <p class="muted">Manual hold: {{ workbench.data.chapter_state.manual_hold_reason || "-" }}</p>
-            <p class="muted">Final memory row: {{ workbench.data.chapter_state.last_final_memory_row_id || "-" }}</p>
+            <h3>归档 / 门控</h3>
+            <p><strong>场景记忆</strong><br />{{ workbench.data.scene_memory?.content || "-" }}</p>
+            <p class="muted">待补写：{{ workbench.data.chapter_state.chapter_backfill_pending_count }}</p>
+            <p class="muted">聚合门控：{{ formatStatus(workbench.data.chapter_state.aggregate_block_reason) }}</p>
+            <p class="muted">人工挂起：{{ workbench.data.chapter_state.manual_hold_reason || "-" }}</p>
+            <p class="muted">最终记忆行：{{ workbench.data.chapter_state.last_final_memory_row_id || "-" }}</p>
 
             <div class="chapter-runtime-section">
-              <h4>Pending Backfill</h4>
+              <h4>待处理补写</h4>
               <div v-if="pendingStagedBackfillItems.length" class="chapter-backfill-list">
                 <article
                   v-for="item in pendingStagedBackfillItems"
@@ -275,40 +303,40 @@ onMounted(() => {
                   :data-testid="`chapter-backfill-item-${item.stage_id}`"
                 >
                   <p><strong>{{ item.marker_text }}</strong></p>
-                  <p class="muted">Marker {{ item.marker_id }} · {{ item.stage_id }}</p>
+                  <p class="muted">标记 {{ item.marker_id }} / 阶段 {{ item.stage_id }}</p>
                   <div class="field-inline">
                     <select
                       :data-testid="`chapter-backfill-strategy-${item.stage_id}`"
                       :value="selectedStrategyFor(item.stage_id)"
                       @change="selectedStrategies[item.stage_id] = $event.target.value"
                     >
-                      <option value="create_tracker_now">create_tracker_now</option>
-                      <option value="run_backfill_again">run_backfill_again</option>
-                      <option value="explicit_defer_with_tracker">explicit_defer_with_tracker</option>
-                      <option value="mark_staged_abandoned">mark_staged_abandoned</option>
+                      <option value="create_tracker_now">立即创建跟踪</option>
+                      <option value="run_backfill_again">重新执行补写</option>
+                      <option value="explicit_defer_with_tracker">明确延后并跟踪</option>
+                      <option value="mark_staged_abandoned">标记暂存为放弃</option>
                     </select>
                     <button
                       :disabled="workbench.actionId === `chapter-backfill:${item.stage_id}`"
                       :data-testid="`chapter-backfill-run-${item.stage_id}`"
                       @click="runChapterBackfill(item.stage_id)"
                     >
-                      {{ workbench.actionId === `chapter-backfill:${item.stage_id}` ? "Running..." : "Run" }}
+                      {{ workbench.actionId === `chapter-backfill:${item.stage_id}` ? "执行中..." : "执行" }}
                     </button>
                   </div>
                 </article>
               </div>
-              <p v-else class="muted" data-testid="chapter-backfill-empty">No pending staged backfill.</p>
+              <p v-else class="muted" data-testid="chapter-backfill-empty">当前没有待处理的暂存补写。</p>
             </div>
 
             <div class="chapter-runtime-section">
-              <h4>Chapter Ops</h4>
+              <h4>章节操作</h4>
               <div class="field-inline">
                 <button
                   :disabled="workbench.actionId === 'chapter-final-aggregate'"
                   data-testid="chapter-final-aggregate-button"
                   @click="runChapterFinalAggregate"
                 >
-                  {{ workbench.actionId === "chapter-final-aggregate" ? "Aggregating..." : "Run Final Aggregate" }}
+                  {{ workbench.actionId === "chapter-final-aggregate" ? "聚合中..." : "运行最终聚合" }}
                 </button>
               </div>
               <div class="field-inline chapter-manual-hold-controls">
@@ -316,14 +344,14 @@ onMounted(() => {
                   v-model="manualHoldReason"
                   class="control-input"
                   data-testid="chapter-manual-hold-reason-input"
-                  placeholder="Manual hold reason"
+                  placeholder="人工挂起原因"
                 />
                 <button
                   :disabled="workbench.actionId === 'chapter-manual-hold-set'"
                   data-testid="chapter-manual-hold-set-button"
                   @click="setManualHold"
                 >
-                  {{ workbench.actionId === "chapter-manual-hold-set" ? "Saving..." : "Set Hold" }}
+                  {{ workbench.actionId === "chapter-manual-hold-set" ? "保存中..." : "设置挂起" }}
                 </button>
                 <button
                   class="ghost"
@@ -331,7 +359,7 @@ onMounted(() => {
                   data-testid="chapter-manual-hold-clear-button"
                   @click="clearManualHold"
                 >
-                  {{ workbench.actionId === "chapter-manual-hold-clear" ? "Clearing..." : "Clear Hold" }}
+                  {{ workbench.actionId === "chapter-manual-hold-clear" ? "清除中..." : "清除挂起" }}
                 </button>
               </div>
             </div>
@@ -343,26 +371,26 @@ onMounted(() => {
             >
               <div class="receipt-head">
                 <div>
-                  <h4>Chapter Action Receipt</h4>
-                  <p class="muted receipt-copy">Latest chapter runtime action and returned receipt.</p>
+                  <h4>章节操作回执</h4>
+                  <p class="muted receipt-copy">最近一次章节运行时操作及返回回执。</p>
                 </div>
-                <span class="badge">{{ workbench.lastChapterActionResult.action }}</span>
+                <span class="badge">{{ formatAction(workbench.lastChapterActionResult.action) }}</span>
               </div>
-              <p class="muted">Chapter {{ workbench.lastChapterActionResult.chapter_id }}</p>
+              <p class="muted">章节 {{ workbench.lastChapterActionResult.chapter_id }}</p>
               <p v-if="workbench.lastChapterActionResult.stage_id" class="muted">
-                Stage {{ workbench.lastChapterActionResult.stage_id }}
+                阶段 {{ workbench.lastChapterActionResult.stage_id }}
               </p>
               <p v-if="workbench.lastChapterActionResult.strategy" class="muted">
-                Strategy {{ workbench.lastChapterActionResult.strategy }}
+                策略 {{ formatAction(workbench.lastChapterActionResult.strategy) }}
               </p>
               <p v-if="workbench.lastChapterActionResult.reason" class="muted">
-                Reason {{ workbench.lastChapterActionResult.reason }}
+                原因 {{ workbench.lastChapterActionResult.reason }}
               </p>
               <p v-if="workbench.lastChapterActionResult.chapter_memory_row_id" class="muted">
-                Final {{ workbench.lastChapterActionResult.chapter_memory_row_id }}
+                最终记忆 {{ workbench.lastChapterActionResult.chapter_memory_row_id }}
               </p>
               <p v-if="workbench.lastChapterActionResult.status" class="muted">
-                Status {{ workbench.lastChapterActionResult.status }}
+                状态 {{ formatStatus(workbench.lastChapterActionResult.status) }}
               </p>
             </article>
           </article>
@@ -371,10 +399,10 @@ onMounted(() => {
         <BundleProvenanceCard :snapshot="workbench.data.bundle?.snapshot" />
       </template>
       <div v-else-if="workbench.error" class="empty">{{ workbench.error }}</div>
-      <div v-else class="empty">Enter a scene ID to load the workbench.</div>
+      <div v-else class="empty">输入场景 ID 后即可加载工作台。</div>
     </PanelShell>
 
-    <PanelShell eyebrow="Attempt Timeline" title="Execution trail">
+    <PanelShell eyebrow="尝试时间线" title="执行轨迹">
       <AttemptTimeline :items="workbench.attempts" />
       <CursorPager
         test-id-prefix="attempts-pager"
@@ -387,7 +415,7 @@ onMounted(() => {
       />
     </PanelShell>
 
-    <PanelShell eyebrow="Human Review Drawer" title="Manual backflow">
+    <PanelShell eyebrow="人工审核抽屉" title="人工回流">
       <HumanReviewDrawer
         :items="workbench.humanReviewItems"
         :focus-event-id="focusedHumanReviewEventId"

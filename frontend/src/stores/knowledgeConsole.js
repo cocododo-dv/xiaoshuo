@@ -167,7 +167,7 @@ function parseJsonField(extraPayload) {
   try {
     return JSON.parse(extraPayload);
   } catch (error) {
-    throw new Error("Extra payload must be valid JSON");
+    throw new Error("附加载荷必须是有效的 JSON");
   }
 }
 
@@ -325,7 +325,7 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
           || payload.candidate_payload_json?.chapter_id
           || payload.review_id;
         await this.refreshSelection(objectType, lineageKey);
-        return `Created candidate ${result.review_id}`;
+        return `已创建候选 ${result.review_id}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -340,7 +340,7 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         const result = await approveReview(reviewId);
         this.lastActionResult = result;
         await this.refreshSelection();
-        return `Approved ${reviewId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+        return `已批准 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -355,7 +355,7 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         const result = await retryVerify(jobId);
         this.lastActionResult = result;
         await this.refreshSelection();
-        return `Retried verify for ${jobId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+        return `已重试校验 ${jobId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -370,7 +370,7 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         const result = await releaseReview(reviewId);
         this.lastActionResult = result;
         await this.refreshSelection();
-        return `Released ${reviewId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+        return `已发布 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -385,7 +385,7 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         const result = await actOnHumanReviewEvent(eventId, action);
         this.lastActionResult = result;
         await this.refreshSelection();
-        return `Applied ${action} to ${eventId} (${result.status || "updated"})`;
+        return `已对 ${eventId} 执行动作 ${action}（${result.status || "已更新"}）`;
       } catch (error) {
         this.error = error.message;
         throw error;

@@ -226,7 +226,8 @@ describe("filter controls", () => {
 
     expect(reviewSource).toContain('data-testid="review-filter-status"');
     expect(reviewSource).toContain('data-testid="human-review-filter-clear"');
-    expect(reviewSource).toContain("const { activeView, focusTarget, openTarget } = useShellRouter()");
+    expect(reviewSource).toContain("const shellRouter = useShellRouter();");
+    expect(reviewSource).toContain("const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;");
     expect(indexSource).toContain('data-testid="index-alias-filter-verify-status"');
     expect(indexSource).toContain('data-testid="index-job-filter-review-id"');
     expect(indexSource).toContain('data-testid="index-ledger-filter-target-ref"');

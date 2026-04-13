@@ -175,7 +175,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         const result = await approveReview(reviewId);
         this.lastActionResult = result;
         await this.load({ resetReview: true, resetHumanReview: true });
-        return `Approved ${reviewId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+        return `已批准 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -190,7 +190,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         const result = await releaseReview(reviewId);
         this.lastActionResult = result;
         await this.load({ resetReview: true, resetHumanReview: true });
-        return `Released ${reviewId}${result.actor_ref ? ` as ${result.actor_ref}` : ""}`;
+        return `已发布 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -205,7 +205,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         const result = await actOnHumanReviewEvent(eventId, action);
         this.lastActionResult = result;
         await this.load({ resetReview: true, resetHumanReview: true });
-        return `Applied ${action} to ${eventId} (${result.status || "updated"})`;
+        return `已对 ${eventId} 执行动作 ${action}（${result.status || "已更新"}）`;
       } catch (error) {
         this.error = error.message;
         throw error;

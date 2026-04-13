@@ -13,10 +13,10 @@ describe("author workspace shell registration", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
     const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-    expect(source).toContain("Author Workspace");
     expect(source).toContain("AuthorWorkspaceView");
     expect(source).toContain("activeView === 'author'");
-    expect(routerSource).toContain('{ id: "author", label: "Author Workspace" }');
+    expect(routerSource).toContain('{ id: "author", label: "作者工作台" }');
+    expect(routerSource).not.toContain("formatViewLabel");
   });
 
   it("ships dedicated author workspace view and store files", () => {
@@ -307,7 +307,7 @@ describe("author workspace source", () => {
     }
 
     const source = readFileSync(AUTHOR_VIEW_PATH, "utf8");
-    expect(source).toContain("Open in Scene Workbench");
+    expect(source).toContain("在场景工作台打开");
     expect(source).toContain("scene_card");
   });
 });

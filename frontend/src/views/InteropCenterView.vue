@@ -22,6 +22,18 @@ const previewSummary = computed(() => interopCenter.previewResult?.summary || nu
 const prettyEnvelope = computed(() =>
   activeEnvelope.value ? JSON.stringify(activeEnvelope.value, null, 2) : "",
 );
+const ACTIVE_MODE_LABELS = {
+  preview: "预览结果",
+  import: "导入结果",
+  export: "导出结果",
+  "replay-final": "终稿回放",
+  "replay-draft": "草稿回放",
+  idle: "未加载",
+};
+
+function formatActiveMode(mode) {
+  return ACTIVE_MODE_LABELS[mode || "idle"] || mode || "未加载";
+}
 
 function syncQueryState() {
   query.exportBundleId = interopCenter.exportBundleId || query.exportBundleId;
@@ -88,7 +100,7 @@ function openComparisonTarget(item) {
     source_type: "interop_comparison",
     source_id: item.target.target_ref,
   });
-  emit("notice", `Opened ${item.target.target_ref}`);
+  emit("notice", `已打开目标：${item.target.target_ref}`);
 }
 
 function openBundleScene() {
@@ -108,28 +120,28 @@ function openBundleScene() {
       source_id: activeEnvelope.value.bundle_id,
     },
   );
-  emit("notice", `Opened scene_card:${activeEnvelope.value.scene_id}`);
+  emit("notice", `已打开场景工作台：scene_card:${activeEnvelope.value.scene_id}`);
 }
 </script>
 
 <template>
   <section class="panel-grid" data-testid="interop-center-view">
     <PanelShell
-      eyebrow="Interop Center"
-      title="Preview, import, export, and replay bundle worksheets"
-      description="Validate worksheet_yaml envelopes, import P0/P1 bundles, and inspect source_ref_comparisons against the current runtime state."
+      eyebrow="互操作中心"
+      title="预览、导入、导出与回放工作表"
+      description="校验 worksheet_yaml 信封，导入 P0/P1 包，并对照当前运行态查看 source_ref_comparisons。"
     >
       <div class="interop-layout">
         <article class="paper">
           <div class="receipt-head">
             <div>
-              <h3>Preview Worksheet</h3>
-              <p class="muted receipt-copy">Paste a strict YAML worksheet_yaml envelope, validate it on the backend, then unlock Import Worksheet.</p>
+              <h3>预览工作表</h3>
+              <p class="muted receipt-copy">粘贴严格的 YAML 格式 worksheet_yaml 信封，先让后端校验，通过后再解锁导入。</p>
             </div>
             <span class="badge">worksheet_yaml</span>
           </div>
           <label class="interop-wide">
-            <span>Worksheet YAML</span>
+            <span>工作表 YAML</span>
             <textarea
               v-model="interopCenter.worksheetYaml"
               class="control-input control-textarea interop-editor"
@@ -143,24 +155,24 @@ function openBundleScene() {
               data-testid="interop-preview-button"
               @click="runPreview"
             >
-              {{ interopCenter.actionId === "preview" ? "Previewing..." : "Preview Worksheet" }}
+              {{ interopCenter.actionId === "preview" ? "预览中..." : "预览工作表" }}
             </button>
             <button
               :disabled="!interopCenter.canImport || interopCenter.actionId === 'import'"
               data-testid="interop-import-button"
               @click="runImport"
             >
-              {{ interopCenter.actionId === "import" ? "Importing..." : "Import Worksheet" }}
+              {{ interopCenter.actionId === "import" ? "导入中..." : "导入工作表" }}
             </button>
           </div>
 
           <article v-if="previewSummary" class="paper mini" data-testid="interop-preview-summary">
-            <h4>Preview Worksheet</h4>
-            <p><strong>Bundle</strong><br />{{ previewSummary.bundle_id }}</p>
-            <p><strong>Scene / Chapter</strong><br />{{ previewSummary.scene_id }} / {{ previewSummary.chapter_id }}</p>
-            <p><strong>Execution Mode</strong><br />{{ previewSummary.execution_mode }}</p>
-            <p><strong>Comparisons</strong><br />{{ previewSummary.comparison_count }}</p>
-            <p><strong>Hash Contract</strong><br />{{ interopCenter.previewResult?.envelope?.hash_contract_version || "-" }}</p>
+            <h4>预览结果</h4>
+            <p><strong>包 ID</strong><br />{{ previewSummary.bundle_id }}</p>
+            <p><strong>场景 / 章节</strong><br />{{ previewSummary.scene_id }} / {{ previewSummary.chapter_id }}</p>
+            <p><strong>执行模式</strong><br />{{ previewSummary.execution_mode }}</p>
+            <p><strong>对比项数量</strong><br />{{ previewSummary.comparison_count }}</p>
+            <p><strong>哈希契约</strong><br />{{ interopCenter.previewResult?.envelope?.hash_contract_version || "-" }}</p>
           </article>
 
           <article
@@ -168,25 +180,25 @@ function openBundleScene() {
             class="paper mini"
             data-testid="interop-import-receipt"
           >
-            <h4>Import Worksheet</h4>
-            <p><strong>Bundle</strong><br />{{ activeEnvelope?.bundle_id || "-" }}</p>
-            <p><strong>Artifact Kind</strong><br />{{ activeArtifactReceipt.artifact_kind }}</p>
-            <p><strong>Artifact Path</strong><br />{{ activeArtifactReceipt.file_path }}</p>
+            <h4>导入回执</h4>
+            <p><strong>包 ID</strong><br />{{ activeEnvelope?.bundle_id || "-" }}</p>
+            <p><strong>产物类型</strong><br />{{ activeArtifactReceipt.artifact_kind }}</p>
+            <p><strong>产物路径</strong><br />{{ activeArtifactReceipt.file_path }}</p>
           </article>
         </article>
 
         <article class="paper">
           <div class="receipt-head">
             <div>
-              <h3>Bundle Export</h3>
-              <p class="muted receipt-copy">Load a bundle worksheet export or replay an existing final scene / draft into the result panel.</p>
+              <h3>包导出与回放</h3>
+              <p class="muted receipt-copy">加载已导出的 bundle worksheet，或者把已有 final scene / draft 回放到结果面板。</p>
             </div>
-            <span class="badge">GET interop/replay</span>
+            <span class="badge">回放接口</span>
           </div>
 
           <div class="interop-query-grid">
             <label>
-              <span>Bundle ID</span>
+              <span>包 ID</span>
               <input
                 v-model="query.exportBundleId"
                 class="control-input"
@@ -199,11 +211,11 @@ function openBundleScene() {
               data-testid="interop-export-button"
               @click="loadExport"
             >
-              {{ interopCenter.actionId === "export" ? "Loading..." : "Bundle Export" }}
+              {{ interopCenter.actionId === "export" ? "加载中..." : "加载导出结果" }}
             </button>
 
             <label>
-              <span>Final Scene Row ID</span>
+              <span>终稿场景行 ID</span>
               <input
                 v-model="query.replayFinalRowId"
                 class="control-input"
@@ -216,11 +228,11 @@ function openBundleScene() {
               data-testid="interop-replay-final-button"
               @click="loadReplayFinal"
             >
-              {{ interopCenter.actionId === "replay-final" ? "Loading..." : "Replay Final Scene" }}
+              {{ interopCenter.actionId === "replay-final" ? "加载中..." : "回放终稿场景" }}
             </button>
 
             <label>
-              <span>Draft Row ID</span>
+              <span>草稿行 ID</span>
               <input
                 v-model="query.replayDraftRowId"
                 class="control-input"
@@ -232,7 +244,7 @@ function openBundleScene() {
               :disabled="interopCenter.actionId === 'replay-draft'"
               @click="loadReplayDraft"
             >
-              {{ interopCenter.actionId === "replay-draft" ? "Loading..." : "Replay Draft" }}
+              {{ interopCenter.actionId === "replay-draft" ? "加载中..." : "回放草稿" }}
             </button>
           </div>
         </article>
@@ -240,39 +252,39 @@ function openBundleScene() {
         <article class="paper">
           <div class="receipt-head">
             <div>
-              <h3>Result Envelope</h3>
-              <p class="muted receipt-copy">source_ref_comparisons are rendered below with version and text drift summaries plus jump links.</p>
+              <h3>结果信封</h3>
+              <p class="muted receipt-copy">下面会渲染 source_ref_comparisons，并附带版本偏差、文本偏差和跳转入口。</p>
             </div>
-            <span class="badge">{{ interopCenter.activeMode || "idle" }}</span>
+            <span class="badge">{{ formatActiveMode(interopCenter.activeMode) }}</span>
           </div>
 
           <article v-if="interopCenter.error" class="paper mini inline-error">
-            <h4>Latest Error</h4>
+            <h4>最新错误</h4>
             <p>{{ interopCenter.error }}</p>
           </article>
 
           <div v-if="activeEnvelope" data-testid="interop-envelope-panel">
             <div class="receipt-grid">
-              <p><strong>Bundle</strong><br />{{ activeEnvelope.bundle_id }}</p>
-              <p><strong>Hash</strong><br />{{ activeEnvelope.bundle_snapshot_hash || "-" }}</p>
-              <p><strong>Execution</strong><br />{{ activeEnvelope.execution_mode || "-" }}</p>
-              <p><strong>Created By</strong><br />{{ activeEnvelope.created_by_action || "-" }}</p>
+              <p><strong>包 ID</strong><br />{{ activeEnvelope.bundle_id }}</p>
+              <p><strong>哈希</strong><br />{{ activeEnvelope.bundle_snapshot_hash || "-" }}</p>
+              <p><strong>执行模式</strong><br />{{ activeEnvelope.execution_mode || "-" }}</p>
+              <p><strong>创建动作</strong><br />{{ activeEnvelope.created_by_action || "-" }}</p>
             </div>
             <div class="card-actions">
-              <button class="ghost" @click="openBundleScene">Open Scene Workbench</button>
+              <button class="ghost" @click="openBundleScene">打开场景工作台</button>
             </div>
             <pre>{{ prettyEnvelope }}</pre>
           </div>
-          <div v-else class="empty">Preview or load a worksheet to inspect the normalized envelope.</div>
+          <div v-else class="empty">先预览或加载工作表，再查看归一化后的结果信封。</div>
 
           <article
             v-if="interopCenter.activeMode.startsWith('replay') && activeArtifactReceipt"
             class="paper mini"
             data-testid="interop-replay-receipt"
           >
-            <h4>Replay Final Scene</h4>
-            <p><strong>Artifact Kind</strong><br />{{ activeArtifactReceipt.artifact_kind }}</p>
-            <p><strong>Artifact Path</strong><br />{{ activeArtifactReceipt.file_path }}</p>
+            <h4>回放回执</h4>
+            <p><strong>产物类型</strong><br />{{ activeArtifactReceipt.artifact_kind }}</p>
+            <p><strong>产物路径</strong><br />{{ activeArtifactReceipt.file_path }}</p>
           </article>
 
           <div v-if="activeSourceComparisons.length" class="comparison-list">
@@ -290,24 +302,24 @@ function openBundleScene() {
                 <span class="badge">{{ item.source_ref_key }}</span>
               </div>
               <div class="comparison-diff-grid">
-                <p><strong>Version Drift</strong><br />{{ item.version_status }}</p>
-                <p><strong>Text Drift</strong><br />{{ item.text_status }}</p>
-                <p><strong>Source Row / Version</strong><br />{{ item.source_row_id || "-" }} / {{ item.source_version ?? "-" }}</p>
-                <p><strong>Active Row / Version</strong><br />{{ item.active_row_id || "-" }} / {{ item.active_version ?? "-" }}</p>
+                <p><strong>版本偏差</strong><br />{{ item.version_status }}</p>
+                <p><strong>文本偏差</strong><br />{{ item.text_status }}</p>
+                <p><strong>来源行 / 版本</strong><br />{{ item.source_row_id || "-" }} / {{ item.source_version ?? "-" }}</p>
+                <p><strong>生效行 / 版本</strong><br />{{ item.active_row_id || "-" }} / {{ item.active_version ?? "-" }}</p>
               </div>
               <div class="comparison-copy-grid">
                 <div>
-                  <div class="history-title">Source Text</div>
+                  <div class="history-title">来源文本</div>
                   <p>{{ item.source_text || "-" }}</p>
                 </div>
                 <div>
-                  <div class="history-title">Active Text</div>
+                  <div class="history-title">生效文本</div>
                   <p>{{ item.active_text || "-" }}</p>
                 </div>
               </div>
               <div class="card-actions">
                 <button v-if="item.target" class="ghost" @click="openComparisonTarget(item)">
-                  Open {{ item.target.view_id === "knowledge" ? "Knowledge Console" : "Scene Workbench" }}
+                  打开 {{ item.target.view_id === "knowledge" ? "知识控制台" : "场景工作台" }}
                 </button>
               </div>
             </article>

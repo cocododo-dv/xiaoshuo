@@ -37,12 +37,12 @@ function pushNotice(message) {
 
 function updateApiBase() {
   apiBase.value = setApiBase(apiBase.value);
-  pushNotice(`Saved API base: ${apiBase.value}`);
+  pushNotice(`已保存 API 地址：${apiBase.value}`);
 }
 
 function updateOperator() {
   operatorRef.value = setOperatorRef(operatorRef.value);
-  pushNotice(`Saved operator ref: ${operatorRef.value}`);
+  pushNotice(`已保存操作员标识：${operatorRef.value}`);
 }
 
 async function reloadAll() {
@@ -60,28 +60,27 @@ async function reloadAll() {
   if (knowledgeConsole.error) pushNotice(knowledgeConsole.error);
   if (interopCenter.error) pushNotice(interopCenter.error);
   if (!authorWorkspace.error && !workbench.error && !reviewInbox.error && !indexConsole.error && !knowledgeConsole.error && !interopCenter.error) {
-    pushNotice("Reloaded all views");
+    pushNotice("已刷新全部视图");
   }
 }
 </script>
 
 <template>
   <div class="shell">
-    <!-- Author Workspace / Scene Workbench / Review Inbox / Index Console / Knowledge Console / Interop Center -->
     <aside class="rail">
       <div class="brand">
-        <div class="eyebrow">P2 Editorial Ops</div>
-        <h1>Novel System Console</h1>
-        <p>Keep scene work, review decisions, and index operations on one board.</p>
+        <div class="eyebrow">P2 编辑运营</div>
+        <h1>小说系统控制台</h1>
+        <p>把场景生产、审核决策和索引操作集中在同一块面板里。</p>
       </div>
 
       <label class="api-label">
-        <span>API Base</span>
+        <span>API 地址</span>
         <input v-model="apiBase" class="control-input" data-testid="api-base-input" @change="updateApiBase" />
       </label>
 
       <label class="api-label">
-        <span>Operator Ref</span>
+        <span>操作员标识</span>
         <input v-model="operatorRef" class="control-input" data-testid="operator-ref-input" @change="updateOperator" />
       </label>
 
@@ -98,7 +97,7 @@ async function reloadAll() {
         </button>
       </nav>
 
-      <button class="ghost" @click="reloadAll">Reload all</button>
+      <button class="ghost" @click="reloadAll">全部刷新</button>
 
       <div class="notice-stack" data-testid="notice-stack">
         <div v-for="notice in notices" :key="notice" class="notice">

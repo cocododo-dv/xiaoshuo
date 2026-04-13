@@ -31,9 +31,9 @@ const summary = computed(() => {
   const returned = pagination.returned ?? 0;
   const total = pagination.total ?? 0;
   if (pagination.mode === "page" && pagination.page) {
-    return `Page ${pagination.page} - ${returned} of ${total}`;
+    return `第 ${pagination.page} 页，当前 ${returned} / 共 ${total}`;
   }
-  return `Showing ${returned} of ${total}`;
+  return `当前显示 ${returned} / 共 ${total}`;
 });
 </script>
 
@@ -45,7 +45,7 @@ const summary = computed(() => {
       :disabled="disabled || !canPrevious"
       @click="$emit('previous')"
     >
-      Previous
+      上一页
     </button>
     <span class="muted cursor-pager-summary" :data-testid="`${testIdPrefix}-summary`">
       {{ summary }}
@@ -55,7 +55,7 @@ const summary = computed(() => {
       :disabled="disabled || !canNext"
       @click="$emit('next')"
     >
-      Next
+      下一页
     </button>
   </div>
 </template>
