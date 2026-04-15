@@ -20,6 +20,45 @@ class HumanReviewManager:
         self.session = session
         self.version_manager = VersionManager(session)
 
+    def create_generation_blocker_event(
+        self,
+        *,
+        scene_id: str,
+        chapter_id: str,
+        object_ref: str,
+        target_type: str,
+        target_id: str,
+        target_ref: str,
+        failure_reason: str,
+        trigger_reason: str,
+        recommended_action: str,
+        replay_context: dict,
+    ) -> HumanReviewEvent:
+        event = HumanReviewEvent(
+            event_id=f"human_review_generation_{scene_id}_{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}",
+            scene_id=scene_id,
+            chapter_id=chapter_id,
+            object_ref=object_ref,
+            event_source="scene_generation",
+            priority="high",
+            status="needs_followup",
+            allowed_actions_json=["inspect"],
+            result_status_map_json={"inspect": "needs_followup"},
+            details_json={
+                "failure_reason": failure_reason,
+                "trigger_reason": trigger_reason,
+                "recommended_action": recommended_action,
+                "linked_target_type": target_type,
+                "linked_target_id": target_id,
+                "linked_target_ref": target_ref,
+                "replay_context": replay_context,
+            },
+            default_action="inspect",
+        )
+        self.session.add(event)
+        self.session.flush()
+        return event
+
     def run_action(self, event_id: str, action: str, *, actor_ref: str = "operator") -> dict:
         event = self.session.get(HumanReviewEvent, event_id)
         if event is None:

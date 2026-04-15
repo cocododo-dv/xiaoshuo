@@ -72,7 +72,7 @@ async function refreshTrash() {
 }
 
 async function ensureTrashLoaded() {
-  await authorTrash.ensureLoaded();
+  await authorTrash.ensureLoaded({ force: true });
   syncSelections();
   if (authorTrash.error) {
     emit("notice", authorTrash.error);

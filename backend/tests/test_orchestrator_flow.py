@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import RelationProfile, VoiceProfile
+from novel_system.db.models import FinalScene, RelationProfile, SceneRunState, VoiceProfile
 
 
 def seed_story(client, session: Session | None = None) -> None:
@@ -120,42 +120,88 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
 
     workbench = client.get("/api/v1/scenes/CH001_SC01/workbench")
     assert workbench.status_code == 200
-    data = workbench.json()["data"]
-    assert data["scene_memory"]
-    assert data["generation_summary"] == {
+    workbench_data = workbench.json()["data"]
+    assert workbench_data["scene_memory"]
+    assert workbench_data["generation_summary"] == {
+        "llm_call_id": workbench_data["generation_summary"]["llm_call_id"],
         "step": "style_draft",
         "raw_step": "style_draft",
         "provider": "offline_deterministic",
-        "model": data["generation_summary"]["model"],
-        "prompt_hash": data["generation_summary"]["prompt_hash"],
+        "model": workbench_data["generation_summary"]["model"],
+        "prompt_hash": workbench_data["generation_summary"]["prompt_hash"],
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
-        "latency_ms": data["generation_summary"]["latency_ms"],
+        "latency_ms": workbench_data["generation_summary"]["latency_ms"],
         "finish_reason": "offline_fallback",
         "error_code": None,
+        "created_at": workbench_data["generation_summary"]["created_at"],
     }
-    assert data["hard_qc_summary"] == {
+    assert workbench_data["hard_qc_summary"] == {
+        "qc_report_id": workbench_data["hard_qc_summary"]["qc_report_id"],
         "qc_type": "hard_qc",
         "pass_flag": True,
         "resolution_code": "hard_pass",
         "issue_keys": [],
         "next_action": "pass",
         "rewrite_brief": [],
+        "created_at": workbench_data["hard_qc_summary"]["created_at"],
     }
-    assert data["soft_qc_summary"] == {
+    assert workbench_data["soft_qc_summary"] == {
+        "qc_report_id": workbench_data["soft_qc_summary"]["qc_report_id"],
         "qc_type": "soft_qc",
         "pass_flag": True,
         "resolution_code": "soft_pass",
         "issue_keys": [],
         "next_action": "pass",
         "rewrite_brief": [],
+        "created_at": workbench_data["soft_qc_summary"]["created_at"],
     }
-    assert data["rewrite_counters"] == {
+    assert workbench_data["rewrite_counters"] == {
         "hard_partial_rewrite_count": 0,
         "hard_full_rewrite_count": 0,
         "soft_patch_count": 0,
         "repeat_issue_key": None,
         "repeat_issue_count": 0,
     }
-    assert data["human_review_summary"] is None
+    assert workbench_data["human_review_summary"] is None
+
+
+def test_workbench_generation_summary_can_resolve_from_current_final_scene_provenance(client, session) -> None:
+    seed_story(client, session=session)
+
+    response = client.post(
+        "/api/v1/scenes/CH001_SC01/run/full",
+        headers={"X-Idempotency-Key": "scene-run-final-scene-provenance"},
+    )
+
+    assert response.status_code == 200
+
+    state = session.get(SceneRunState, "CH001_SC01")
+    final_scene = session.get(FinalScene, state.current_final_scene_row_id)
+    assert final_scene is not None
+    assert final_scene.generation_llm_call_id
+
+    state.current_neutral_draft_row_id = None
+    state.current_style_draft_row_id = None
+    session.commit()
+
+    workbench = client.get("/api/v1/scenes/CH001_SC01/workbench")
+
+    assert workbench.status_code == 200
+    generation_summary = workbench.json()["data"]["generation_summary"]
+    assert generation_summary == {
+        "llm_call_id": final_scene.generation_llm_call_id,
+        "step": "style_draft",
+        "raw_step": "style_draft",
+        "provider": "offline_deterministic",
+        "model": generation_summary["model"],
+        "prompt_hash": generation_summary["prompt_hash"],
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "latency_ms": generation_summary["latency_ms"],
+        "finish_reason": "offline_fallback",
+        "error_code": None,
+        "created_at": generation_summary["created_at"],
+    }

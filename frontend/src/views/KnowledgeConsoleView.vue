@@ -762,7 +762,11 @@ watch(
               </ol>
               <p v-else class="muted">还没有关联目标活动。</p>
             </LazySection>
-            <LazySection :key="`review-refs-${selectedEntryKey}`" title="审核引用">
+              <LazySection
+                :key="`review-refs-${selectedEntryKey}`"
+                title="审核引用"
+                toggle-test-id="knowledge-toggle-review-refs"
+              >
               <ol v-if="detailReviewRefs.length" class="history-list">
                 <li v-for="reviewRef in detailReviewRefs" :key="reviewRef" class="history-entry">
                   <p class="history-meta">
@@ -782,7 +786,11 @@ watch(
               </ol>
               <p v-else class="muted">还没有关联审核引用。</p>
             </LazySection>
-            <LazySection :key="`bundle-refs-${selectedEntryKey}`" title="包引用">
+              <LazySection
+                :key="`bundle-refs-${selectedEntryKey}`"
+                title="包引用"
+                toggle-test-id="knowledge-toggle-bundle-refs"
+              >
               <ol v-if="detailBundleRefs.length" class="history-list">
                 <li v-for="bundleRef in detailBundleRefs" :key="bundleRef.bundle_id" class="history-entry">
                   <p class="history-meta">

@@ -432,6 +432,7 @@ def test_runtime_ledger_exposes_latest_recovery_followup_receipt_and_timeline(cl
         "latest_at": "2026-04-10T01:40:00+00:00",
         "activity_count": 2,
         "sources": ["system_runtime", "recovery_timeline"],
+        "latest_activity_key": "system_runtime:2",
         "activity_items": [
             {
                 "activity_key": "system_runtime:2",

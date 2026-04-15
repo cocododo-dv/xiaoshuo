@@ -20,7 +20,7 @@ function formatStatus(status) {
 </script>
 
 <template>
-  <div class="timeline">
+  <div class="timeline" data-testid="attempt-timeline">
     <div v-if="!items.length" class="empty">还没有执行尝试记录。</div>
     <div v-for="item in items" :key="item.attempt_id || item.step" class="attempt">
       <div class="attempt-step">{{ item.step }}</div>

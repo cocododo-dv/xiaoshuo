@@ -212,6 +212,17 @@ describe("author workspace store", () => {
           },
         ],
       },
+      runStatus: {
+        job_id: null,
+        chapter_id: "CH900",
+        job_type: "chapter_run_full",
+        status: "idle",
+        scene_ids: ["CH900_SC01", "CH900_SC02"],
+        current_scene_id: null,
+        completed_scene_ids: [],
+        blocked_scene_id: null,
+        latest_error: null,
+      },
       trash: {
         chapters: [],
         scenes: [],
@@ -245,6 +256,9 @@ describe("author workspace store", () => {
       }
       if (url.endsWith("/api/v1/chapters/CH900/author-workspace")) {
         return { ok: true, json: async () => ({ ok: true, data: state.workspace }) };
+      }
+      if (url.endsWith("/api/v1/chapters/CH900/run-status")) {
+        return { ok: true, json: async () => ({ ok: true, data: state.runStatus }) };
       }
       if (url.endsWith("/api/v1/chapters/CH900/scene-draft")) {
         return {
@@ -424,6 +438,7 @@ describe("author workspace store", () => {
     expect(sceneDraft.hook).toBe("朝向本章结尾效果：Updated ending");
     expect(store.sceneDraft.scene_id).toBe("CH900_SC03");
     expect(store.sceneDraft.scene_type).toBe("bridge");
+    expect(store.chapterRunStatus).toEqual(state.runStatus);
     await store.saveChapter({
       chapter_id: "CH900",
       planned_scene_count: 2,

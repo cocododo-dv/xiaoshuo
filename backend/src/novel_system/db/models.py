@@ -202,6 +202,23 @@ class SceneDraft(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class QcReport(Base):
+    __tablename__ = "qc_reports"
+
+    qc_report_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    qc_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_draft_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    pass_flag: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    next_action: Mapped[str | None] = mapped_column(String, nullable=True)
+    issues_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    rewrite_brief_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
 class FinalScene(Base):
     __tablename__ = "final_scenes"
 
@@ -212,6 +229,7 @@ class FinalScene(Base):
     status: Mapped[str] = mapped_column(String, default="approved")
     source_bundle_id: Mapped[str] = mapped_column(String)
     source_bundle_hash: Mapped[str] = mapped_column(String)
+    generation_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
@@ -271,6 +289,27 @@ class AttemptTracker(Base):
     source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class ChapterRunJob(Base):
+    __tablename__ = "chapter_run_jobs"
+
+    job_id: Mapped[str] = mapped_column(String, primary_key=True)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String)
+    job_type: Mapped[str] = mapped_column(String)
+    payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    result_summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    attempt_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    heartbeat_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    lease_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
 class ReviewItem(Base):

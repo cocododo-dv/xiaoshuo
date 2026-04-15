@@ -115,6 +115,10 @@ export function fetchWorkbench(sceneId) {
   return apiGet(`/api/v1/scenes/${sceneId}/workbench`);
 }
 
+export function fetchSceneGenerationHistory(sceneId) {
+  return apiGet(`/api/v1/scenes/${sceneId}/generation-history`);
+}
+
 export function fetchChapters() {
   return apiGet("/api/v1/chapters");
 }
@@ -125,6 +129,10 @@ export function fetchAuthorWorkspace(chapterId) {
 
 export function fetchSceneDraft(chapterId) {
   return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/scene-draft`);
+}
+
+export function fetchChapterRunStatus(chapterId) {
+  return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/run-status`);
 }
 
 export function fetchAuthorTrash() {
@@ -185,6 +193,10 @@ export function setChapterManualHold(chapterId, reason) {
 
 export function clearChapterManualHold(chapterId) {
   return apiPost(`/api/v1/chapters/${chapterId}/runtime/manual-hold/clear`);
+}
+
+export function runChapterFull(chapterId) {
+  return apiPost(`/api/v1/chapters/${encodeURIComponent(chapterId)}/run/full`);
 }
 
 export function previewBundleWorksheet(worksheetYaml) {

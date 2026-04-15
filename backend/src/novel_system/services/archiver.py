@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,7 +19,14 @@ class Archiver:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def archive_final_scene(self, scene_id: str, final_scene_row_id: str, qc_report_id: str | None = None) -> dict:
+    def archive_final_scene(
+        self,
+        scene_id: str,
+        final_scene_row_id: str,
+        qc_report_id: str | None = None,
+        *,
+        carry_notes_json: list[dict[str, Any]] | None = None,
+    ) -> dict:
         final_scene = self.session.get(FinalScene, final_scene_row_id)
         state = self.session.get(SceneRunState, scene_id)
         chapter_state = self.session.get(ChapterState, final_scene.chapter_id)
@@ -35,7 +44,7 @@ class Archiver:
             scene_id=scene_id,
             chapter_id=final_scene.chapter_id,
             content=final_scene.content,
-            carry_notes_json=[],
+            carry_notes_json=carry_notes_json or [],
             source_bundle_id=final_scene.source_bundle_id,
             final_scene_row_id=final_scene_row_id,
             active_flag=1,
