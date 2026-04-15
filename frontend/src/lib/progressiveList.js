@@ -1,4 +1,4 @@
-export function shouldProgressivelyRender({ enabled, itemCount, threshold }) {
+export function shouldProgressivelyRender({ enabled, itemCount, threshold = 12 }) {
   return enabled && itemCount > threshold;
 }
 
@@ -6,7 +6,13 @@ export function nextProgressiveCount({ renderedCount, itemCount, batchSize }) {
   return Math.min(renderedCount + batchSize, itemCount);
 }
 
-export function buildProgressivePlan({ items, enabled, initialCount, batchSize, threshold }) {
+export function buildProgressivePlan({
+  items,
+  enabled,
+  initialCount = 8,
+  batchSize = 8,
+  threshold = 12,
+}) {
   const itemCount = items.length;
 
   if (!shouldProgressivelyRender({ enabled, itemCount, threshold })) {

@@ -36,6 +36,22 @@ describe("shouldProgressivelyRender", () => {
       }),
     ).toBe(true);
   });
+
+  it("uses the default threshold when one is omitted", () => {
+    expect(
+      shouldProgressivelyRender({
+        enabled: true,
+        itemCount: 12,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldProgressivelyRender({
+        enabled: true,
+        itemCount: 13,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("nextProgressiveCount", () => {
@@ -79,6 +95,42 @@ describe("buildProgressivePlan", () => {
       pending: false,
       batchSize: 2,
       threshold: 10,
+    });
+  });
+
+  it("uses the default batch size and threshold when omitted", () => {
+    const items = Array.from({ length: 13 }, (_, index) => ({ id: `row-${index}` }));
+
+    expect(
+      buildProgressivePlan({
+        items,
+        enabled: true,
+      }),
+    ).toEqual({
+      items,
+      renderedItems: items.slice(0, 8),
+      renderedCount: 8,
+      pending: true,
+      batchSize: 8,
+      threshold: 12,
+    });
+  });
+
+  it("keeps stable metadata defaults on the non-progressive path", () => {
+    const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+    expect(
+      buildProgressivePlan({
+        items,
+        enabled: false,
+      }),
+    ).toEqual({
+      items,
+      renderedItems: items,
+      renderedCount: 3,
+      pending: false,
+      batchSize: 8,
+      threshold: 12,
     });
   });
 
