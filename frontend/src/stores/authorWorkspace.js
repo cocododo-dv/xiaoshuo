@@ -3,8 +3,10 @@ import { defineStore } from "pinia";
 import {
   fetchSceneDraft,
   fetchAuthorWorkspace,
+  fetchChapterRunStatus,
   fetchChapters,
   reorderChapterScenes,
+  runChapterFull,
   saveChapter as postChapter,
   saveScene as postScene,
   trashChapters as postTrashChapters,
@@ -43,6 +45,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
     selectedChapterId: "",
     chapter: null,
     chapterState: null,
+    chapterRunStatus: null,
     scenes: [],
     sceneDraft: null,
     loading: false,
@@ -53,6 +56,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
     clearWorkspace() {
       this.chapter = null;
       this.chapterState = null;
+      this.chapterRunStatus = null;
       this.scenes = [];
       this.sceneDraft = null;
     },
@@ -74,10 +78,14 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         this.clearWorkspace();
         return;
       }
-      const payload = await fetchAuthorWorkspace(chapterId);
+      const [payload, runStatus] = await Promise.all([
+        fetchAuthorWorkspace(chapterId),
+        fetchChapterRunStatus(chapterId),
+      ]);
       this.selectedChapterId = chapterId;
       this.chapter = payload.chapter || null;
       this.chapterState = payload.chapter_state || null;
+      this.chapterRunStatus = runStatus || null;
       this.scenes = payload.scenes || [];
       this.sceneDraft = null;
     },
@@ -175,6 +183,20 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         });
         await this.loadWorkspace(this.selectedChapterId);
         return `已调整 ${sceneIds.length} 个场景的顺序`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async runChapter(chapterId = this.selectedChapterId) {
+      this.actionId = "run-chapter";
+      this.error = "";
+      try {
+        const result = await runChapterFull(chapterId);
+        await this.refreshActiveData(chapterId);
+        return `Chapter run ${result.status}: ${chapterId}`;
       } catch (error) {
         this.error = error.message;
         throw error;

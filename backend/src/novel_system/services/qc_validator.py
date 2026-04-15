@@ -16,8 +16,8 @@ VALID_HARD_COMBOS = {
 
 VALID_SOFT_COMBOS = {
     ("soft_pass", True, "pass"),
+    ("soft_patch", False, "patch"),
     ("soft_waive", True, "pass_with_notes"),
-    ("soft_fail_partial", False, "partial_rewrite"),
     ("soft_block_human", False, "human_review_required"),
 }
 
@@ -33,6 +33,8 @@ def validate_qc_report(qc_type: str, payload: dict):
         report = SoftQCOutput.model_validate(payload)
         if (report.resolution_code, report.pass_flag, report.next_action) not in VALID_SOFT_COMBOS:
             raise QCValidationError("illegal soft qc combo")
+        if report.resolution_code == "soft_patch" and not report.rewrite_brief:
+            raise QCValidationError("soft patch requires rewrite brief")
         if report.resolution_code == "soft_waive":
             if not report.carry_forward_note or report.note_scope is None or not report.carry_note_text:
                 raise QCValidationError("soft waive requires carry note")

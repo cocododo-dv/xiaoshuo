@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class QCIssue(BaseModel):
@@ -27,6 +27,7 @@ class SoftQCOutput(BaseModel):
     pass_flag: bool
     next_action: str
     issues: list[QCIssue]
+    rewrite_brief: list[str] = Field(default_factory=list)
     carry_forward_note: bool = False
     note_scope: str | None = None
     carry_note_text: str | None = None

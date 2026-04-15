@@ -52,6 +52,7 @@ const creatingScene = ref(false);
 
 const chapters = computed(() => authorWorkspace.chapters || []);
 const scenes = computed(() => authorWorkspace.scenes || []);
+const chapterRunStatus = computed(() => authorWorkspace.chapterRunStatus || null);
 const selectedScene = computed(() => scenes.value.find((scene) => scene.scene_id === selectedSceneId.value) || null);
 const selectedChapterTrashIds = computed(() =>
   selectedChapterIdsForTrash.value.filter((chapterId) =>
@@ -61,6 +62,27 @@ const selectedChapterTrashIds = computed(() =>
 const selectedSceneTrashIds = computed(() =>
   selectedSceneIdsForTrash.value.filter((sceneId) => scenes.value.some((scene) => scene.scene_id === sceneId)),
 );
+const chapterRunCompletedCount = computed(() => chapterRunStatus.value?.completed_scene_ids?.length || 0);
+const chapterRunActionLabel = computed(() =>
+  chapterRunStatus.value?.status === "blocked" ? "Resume chapter run" : "Run chapter",
+);
+
+function sceneBatchState(sceneId) {
+  if (chapterRunStatus.value?.blocked_scene_id === sceneId) {
+    return "blocked";
+  }
+  if ((chapterRunStatus.value?.completed_scene_ids || []).includes(sceneId)) {
+    return "completed";
+  }
+  if (chapterRunStatus.value?.current_scene_id === sceneId && chapterRunStatus.value?.status === "running") {
+    return "running";
+  }
+  return "pending";
+}
+
+function sceneBatchLabel(sceneId) {
+  return `Batch ${sceneBatchState(sceneId)}`;
+}
 
 function assignChapterForm(nextChapter) {
   Object.assign(chapterForm, createEmptyChapterForm(), nextChapter || {});
@@ -203,6 +225,14 @@ async function saveScene() {
     creatingScene.value = false;
     selectedSceneId.value = sceneForm.scene_id;
     emit("notice", message);
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function runChapter() {
+  try {
+    emit("notice", await authorWorkspace.runChapter());
   } catch (error) {
     emit("notice", error.message);
   }
@@ -478,6 +508,21 @@ onMounted(() => {
               <span class="badge">已通过 {{ authorWorkspace.chapterState.chapter_passed_scene_count }}</span>
               <span class="badge">待回填 {{ authorWorkspace.chapterState.chapter_backfill_pending_count }}</span>
             </div>
+            <div
+              v-if="authorWorkspace.selectedChapterId"
+              class="author-runtime-summary"
+              data-testid="chapter-run-status-panel"
+            >
+              <span class="badge">Batch {{ chapterRunStatus?.status || "idle" }}</span>
+              <span class="badge">Current {{ chapterRunStatus?.current_scene_id || "none" }}</span>
+              <span class="badge">Done {{ chapterRunCompletedCount }}/{{ scenes.length }}</span>
+              <span v-if="chapterRunStatus?.blocked_scene_id" class="badge">
+                Blocked {{ chapterRunStatus.blocked_scene_id }}
+              </span>
+              <p v-if="chapterRunStatus?.latest_error" class="author-block-reason">
+                {{ chapterRunStatus.latest_error.code }}: {{ chapterRunStatus.latest_error.message }}
+              </p>
+            </div>
             <label class="author-wide">
               <span>章节目标</span>
               <textarea v-model="chapterForm.chapter_goal" class="control-input" data-testid="author-chapter-goal" />
@@ -511,6 +556,14 @@ onMounted(() => {
               @click="saveChapter"
             >
               {{ authorWorkspace.actionId === "save-chapter" ? "保存中..." : "保存章节" }}
+            </button>
+            <button
+              class="ghost"
+              :disabled="!authorWorkspace.selectedChapterId || authorWorkspace.actionId === 'run-chapter'"
+              data-testid="author-run-chapter-button"
+              @click="runChapter"
+            >
+              {{ authorWorkspace.actionId === "run-chapter" ? "Running..." : chapterRunActionLabel }}
             </button>
           </div>
         </article>
@@ -562,6 +615,9 @@ onMounted(() => {
                     <strong>{{ scene.scene_seq }}. {{ scene.scene_id }}</strong>
                     <span>{{ scene.scene_goal }}</span>
                     <span class="muted">{{ scene.scene_status }} · {{ scene.location || "未设置地点" }}</span>
+                    <span class="badge" :data-testid="`author-scene-batch-state-${scene.scene_id}`">
+                      {{ sceneBatchLabel(scene.scene_id) }}
+                    </span>
                   </div>
 
                   <div class="author-scene-actions">

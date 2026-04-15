@@ -4,8 +4,10 @@ import { computed, onMounted, ref, watch } from "vue";
 import AttemptTimeline from "../components/AttemptTimeline.vue";
 import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
 import CursorPager from "../components/CursorPager.vue";
+import GenerationSummaryCard from "../components/GenerationSummaryCard.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
+import QcReportCard from "../components/QcReportCard.vue";
 import { useShellRouter } from "../router";
 import { useWorkbenchStore } from "../stores/workbench";
 
@@ -27,6 +29,11 @@ const runPreflight = computed(() => workbench.data?.run_preflight || {
   warning_items: [],
   context_items: [],
 });
+const generationSummary = computed(() => workbench.data?.generation_summary || null);
+const hardQcSummary = computed(() => workbench.data?.hard_qc_summary || null);
+const softQcSummary = computed(() => workbench.data?.soft_qc_summary || null);
+const rewriteCounters = computed(() => workbench.data?.rewrite_counters || null);
+const humanReviewSummary = computed(() => workbench.data?.human_review_summary || null);
 const pendingStagedBackfillItems = computed(() =>
   (chapterState.value.staged_backfill_items || []).filter((item) => item.status === "pending"),
 );
@@ -63,9 +70,9 @@ const ACTION_LABELS = {
 };
 
 const PREFLIGHT_STATUS_LABELS = {
-  ready: "鍙互杩愯",
-  warning: "鍙互杩愯锛屼絾寤鸿鍏堣ˉ鍏呬俊鎭?",
-  blocked: "鏆傛椂涓嶅彲杩愯",
+  ready: "可以运行",
+  warning: "可以运行，但建议先补充信息",
+  blocked: "暂时不可运行",
 };
 
 function formatStatus(status) {
@@ -373,6 +380,20 @@ onMounted(() => {
             </button>
           </div>
         </article>
+
+        <div class="workbench-columns" data-testid="scene-workbench-summary-row">
+          <GenerationSummaryCard
+            data-testid="scene-generation-summary-card"
+            :summary="generationSummary"
+          />
+          <QcReportCard
+            data-testid="scene-qc-report-card"
+            :hard-summary="hardQcSummary"
+            :soft-summary="softQcSummary"
+            :rewrite-counters="rewriteCounters"
+            :human-review-summary="humanReviewSummary"
+          />
+        </div>
 
         <div class="workbench-columns">
           <article

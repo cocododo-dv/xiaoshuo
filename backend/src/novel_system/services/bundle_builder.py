@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
 from novel_system.db.models import ChapterGoal, SceneBundle, SceneCard, SceneMemory, SceneRunState
+from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
 from novel_system.services.resolver import Resolver
@@ -96,6 +97,27 @@ class BundleBuilder:
                 {"slot": "style_rules", "ref_id": style_rule_ids[0], "digest_key": "style_rule"}
             )
             inline_digests["style_rule"] = self._combined_text(style_rules, "content")
+
+        style_observations = self.session.execute(
+            select(StyleObservation)
+            .where(
+                StyleObservation.active_flag == 1,
+                StyleObservation.runtime_eligible == 1,
+                self.resolver._scoped_clause(StyleObservation, scene),
+            )
+            .order_by(StyleObservation.created_at.asc(), StyleObservation.row_id.asc())
+        ).scalars().all()
+        if style_observations:
+            style_observation_ids = [row.style_observation_id for row in style_observations]
+            source_version_refs["style_observation_ids"] = style_observation_ids
+            ordered_injections.append(
+                {
+                    "slot": "style_observations",
+                    "ref_id": style_observation_ids[0],
+                    "digest_key": "style_observation",
+                }
+            )
+            inline_digests["style_observation"] = self._combined_text(style_observations, "text")
 
         banned_rule_clusters = self.resolver.resolve_active_banned_rule_clusters(self.session, scene)
         if banned_rule_clusters:

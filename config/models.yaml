@@ -1,11 +1,46 @@
 task_routing:
-  extraction: cheap
-  neutral_draft: medium
-  hard_qc: medium
-  stylize: strong
-  soft_qc: medium
-  archive: cheap
-  chapter_aggregate: medium
+  extraction:
+    provider: openai_compatible
+    model: gpt-5-mini
+    temperature: 0.1
+    max_output_tokens: 1200
+    response_format: json_object
+  neutral_draft:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.6
+    max_output_tokens: 6000
+    response_format: json_object
+  hard_qc:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 2200
+    response_format: json_object
+  stylize:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.8
+    max_output_tokens: 6000
+    response_format: json_object
+  soft_qc:
+    provider: openai_compatible
+    model: gpt-5-mini
+    temperature: 0.2
+    max_output_tokens: 1800
+    response_format: json_object
+  archive:
+    provider: openai_compatible
+    model: gpt-5-mini
+    temperature: 0.1
+    max_output_tokens: 1200
+    response_format: json_object
+  chapter_aggregate:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.4
+    max_output_tokens: 4000
+    response_format: json_object
 
 retry_budget:
   hard_partial_max: 2

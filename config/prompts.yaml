@@ -1,0 +1,178 @@
+templates:
+  neutral_draft:
+    version: "2026-04-14.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are drafting a neutral, continuity-safe web-novel scene.
+      Follow the supplied bundle facts exactly and preserve causal clarity.
+    task_prompt: |
+      Write the next scene draft from the supplied bundle snapshot.
+      Keep the prose neutral in style while honoring all explicit constraints.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - scene_text
+      properties:
+        scene_text:
+          type: string
+        continuity_notes:
+          type: array
+          items:
+            type: string
+
+  hard_qc:
+    version: "2026-04-14.v1"
+    input_token_budget: 2200
+    system_prompt: |
+      You are a hard continuity and requirements checker for scene drafts.
+      Fail any contradiction, missing hard constraint, or unsupported event.
+    task_prompt: |
+      Audit the scene draft against the bundle snapshot and return only structured findings.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - resolution_code
+        - pass_flag
+        - next_action
+        - issues
+      properties:
+        resolution_code:
+          type: string
+        pass_flag:
+          type: boolean
+        next_action:
+          type: string
+        issues:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - issue_key
+              - message
+            properties:
+              issue_key:
+                type: string
+              message:
+                type: string
+        rewrite_brief:
+          type: array
+          items:
+            type: string
+
+  style_draft:
+    version: "2026-04-14.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are drafting a stylistically tuned web-novel scene.
+      Preserve bundle facts while applying the supplied style guidance and avoiding banned moves.
+    task_prompt: |
+      Rewrite the scene draft with stronger style adherence without changing factual continuity.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - scene_text
+      properties:
+        scene_text:
+          type: string
+        style_notes:
+          type: array
+          items:
+            type: string
+
+  soft_qc:
+    version: "2026-04-14.v1"
+    input_token_budget: 1800
+    system_prompt: |
+      You are a soft quality-control reviewer for prose polish.
+      Focus on readability, cadence, emotional clarity, and whether the draft needs a controlled patch.
+    task_prompt: |
+      Review the draft for polish opportunities and return only structured soft QC guidance.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - resolution_code
+        - pass_flag
+        - next_action
+        - issues
+        - rewrite_brief
+      properties:
+        resolution_code:
+          type: string
+        pass_flag:
+          type: boolean
+        next_action:
+          type: string
+        issues:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - issue_key
+              - message
+            properties:
+              issue_key:
+                type: string
+              message:
+                type: string
+        rewrite_brief:
+          type: array
+          items:
+            type: string
+        carry_forward_note:
+          type: boolean
+        note_scope:
+          type: string
+        carry_note_text:
+          type: string
+
+  chapter_summary:
+    version: "2026-04-14.v1"
+    input_token_budget: 1800
+    system_prompt: |
+      You are summarizing a completed chapter for future continuity use.
+      Keep it factual, compressed, and easy to retrieve later.
+    task_prompt: |
+      Produce a compact chapter summary and carry-forward notes from the supplied bundle context.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - summary
+        - carry_forward
+      properties:
+        summary:
+          type: string
+        carry_forward:
+          type: array
+          items:
+            type: string
+
+  continuity_compression:
+    version: "2026-04-14.v1"
+    input_token_budget: 1400
+    system_prompt: |
+      You are compressing continuity context for downstream drafting.
+      Preserve hard facts, remove redundancy, and surface any split-scene recommendation clearly.
+    task_prompt: |
+      Compress the continuity payload while keeping essential carry-forward constraints intact.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - compressed_context
+        - split_scene_recommended
+      properties:
+        compressed_context:
+          type: string
+        dropped_sections:
+          type: array
+          items:
+            type: string
+        split_scene_recommended:
+          type: boolean

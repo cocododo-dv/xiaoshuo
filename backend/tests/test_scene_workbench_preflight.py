@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import RelationProfile, VoiceProfile
+from novel_system.db.models import HumanReviewEvent, LlmCall, QcReport, RelationProfile, SceneRunState, VoiceProfile
 
 
 def create_chapter(client, chapter_id: str = "CH910") -> None:
@@ -100,7 +100,8 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
     response = client.get("/api/v1/scenes/CH910_SC01/workbench")
 
     assert response.status_code == 200
-    preflight = response.json()["data"]["run_preflight"]
+    payload = response.json()["data"]
+    preflight = payload["run_preflight"]
     assert preflight == {
         "can_run": True,
         "overall_status": "ready",
@@ -108,6 +109,17 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
         "warning_items": [],
         "context_items": [],
     }
+    assert payload["generation_summary"] is None
+    assert payload["hard_qc_summary"] is None
+    assert payload["soft_qc_summary"] is None
+    assert payload["rewrite_counters"] == {
+        "hard_partial_rewrite_count": 0,
+        "hard_full_rewrite_count": 0,
+        "soft_patch_count": 0,
+        "repeat_issue_key": None,
+        "repeat_issue_count": 0,
+    }
+    assert payload["human_review_summary"] is None
 
 
 def test_workbench_preflight_blocks_when_voice_profile_is_missing(client, session: Session) -> None:
@@ -222,3 +234,129 @@ def test_workbench_preflight_keeps_manual_hold_and_backfill_as_context_only(clie
             "technical_hint": "pending staged backfill count: 1",
         },
     ]
+
+
+def test_workbench_does_not_resurrect_stale_human_review_event_when_current_pointer_is_cleared(
+    client,
+    session: Session,
+) -> None:
+    create_chapter(client, "CH915")
+    create_scene(client, chapter_id="CH915", scene_id="CH915_SC01")
+    seed_voice_profile(session)
+    seed_relation_profile(session)
+
+    state = session.get(SceneRunState, "CH915_SC01")
+    state.current_human_review_event_id = None
+    session.add(
+        HumanReviewEvent(
+            event_id="human_review_stale_CH915_SC01",
+            scene_id="CH915_SC01",
+            chapter_id="CH915",
+            object_ref="scene_draft:draft_style_old_CH915_SC01",
+            event_source="scene_generation",
+            priority="high",
+            status="open",
+            details_json={
+                "trigger_reason": "soft_qc_patch_cycle_limit",
+                "failure_reason": "stale blocker from a previous run",
+                "recommended_action": "human_review_required",
+                "linked_target_ref": "scene_draft:draft_style_old_CH915_SC01",
+            },
+            created_at="2026-04-15T00:00:00+00:00",
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/v1/scenes/CH915_SC01/workbench")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["human_review_summary"] is None
+
+
+def test_workbench_soft_qc_summary_only_uses_reports_from_the_active_run(client, session: Session) -> None:
+    create_chapter(client, "CH916")
+    create_scene(client, chapter_id="CH916", scene_id="CH916_SC01")
+    seed_voice_profile(session)
+    seed_relation_profile(session)
+
+    state = session.get(SceneRunState, "CH916_SC01")
+    state.current_bundle_id = "bundle_current_CH916_SC01"
+    state.current_bundle_hash = "hash_current_CH916_SC01"
+    state.current_qc_report_id = "qc_report_current_hard_CH916_SC01"
+    session.add_all(
+        [
+            QcReport(
+                qc_report_id="qc_report_old_soft_CH916_SC01",
+                scene_id="CH916_SC01",
+                chapter_id="CH916",
+                qc_type="soft_qc",
+                source_draft_row_id="draft_style_old_CH916_SC01",
+                source_bundle_id="bundle_previous_CH916_SC01",
+                resolution_code="soft_pass",
+                pass_flag=1,
+                next_action="pass",
+                issues_json=[],
+                rewrite_brief_json=[],
+                created_at="2026-04-15T00:20:00+00:00",
+            ),
+            QcReport(
+                qc_report_id="qc_report_current_hard_CH916_SC01",
+                scene_id="CH916_SC01",
+                chapter_id="CH916",
+                qc_type="hard_qc",
+                source_draft_row_id="draft_neutral_current_CH916_SC01",
+                source_bundle_id="bundle_current_CH916_SC01",
+                resolution_code="hard_pass",
+                pass_flag=1,
+                next_action="pass",
+                issues_json=[],
+                rewrite_brief_json=[],
+                created_at="2026-04-15T00:10:00+00:00",
+            ),
+        ]
+    )
+    session.commit()
+
+    response = client.get("/api/v1/scenes/CH916_SC01/workbench")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["hard_qc_summary"]["qc_report_id"] == "qc_report_current_hard_CH916_SC01"
+    assert payload["soft_qc_summary"] is None
+
+
+def test_workbench_generation_summary_stays_empty_when_current_run_has_no_generation_pointer(
+    client,
+    session: Session,
+) -> None:
+    create_chapter(client, "CH917")
+    create_scene(client, chapter_id="CH917", scene_id="CH917_SC01")
+    seed_voice_profile(session)
+    seed_relation_profile(session)
+
+    session.add(
+        LlmCall(
+            llm_call_id="llm_call_stale_CH917_SC01",
+            provider="offline_deterministic",
+            model="gpt-4.1-mini",
+            prompt_hash="prompt_hash_stale_CH917_SC01",
+            step="style_draft",
+            scene_id="CH917_SC01",
+            chapter_id="CH917",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            latency_ms=12,
+            finish_reason="offline_fallback",
+            error_code=None,
+            created_at="2026-04-15T00:30:00+00:00",
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/v1/scenes/CH917_SC01/workbench")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["generation_summary"] is None
