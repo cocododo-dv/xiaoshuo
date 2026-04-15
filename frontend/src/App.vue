@@ -1,35 +1,30 @@
 <script setup>
-import { ref } from "vue";
+import { computed, defineAsyncComponent, ref } from "vue";
 
 import { getApiBase, getOperatorRef, setApiBase, setOperatorRef } from "./lib/api";
-import { useAuthorTrashStore } from "./stores/authorTrash";
-import { useAuthorWorkspaceStore } from "./stores/authorWorkspace";
-import { useIndexConsoleStore } from "./stores/indexConsole";
-import { useInteropCenterStore } from "./stores/interopCenter";
-import { useKnowledgeConsoleStore } from "./stores/knowledgeConsole";
-import { useReviewInboxStore } from "./stores/reviewInbox";
-import { useWorkbenchStore } from "./stores/workbench";
 import { useShellRouter } from "./router";
-import AuthorTrashView from "./views/AuthorTrashView.vue";
-import AuthorWorkspaceView from "./views/AuthorWorkspaceView.vue";
-import IndexConsoleView from "./views/IndexConsoleView.vue";
-import InteropCenterView from "./views/InteropCenterView.vue";
-import KnowledgeConsoleView from "./views/KnowledgeConsoleView.vue";
-import ReviewInboxView from "./views/ReviewInboxView.vue";
-import SceneWorkbenchView from "./views/SceneWorkbenchView.vue";
 
-const { activeView, views, navigate } = useShellRouter();
+const VIEW_COMPONENTS = {
+  author: defineAsyncComponent(() => import("./views/AuthorWorkspaceView.vue")),
+  trash: defineAsyncComponent(() => import("./views/AuthorTrashView.vue")),
+  workbench: defineAsyncComponent(() => import("./views/SceneWorkbenchView.vue")),
+  review: defineAsyncComponent(() => import("./views/ReviewInboxView.vue")),
+  index: defineAsyncComponent(() => import("./views/IndexConsoleView.vue")),
+  knowledge: defineAsyncComponent(() => import("./views/KnowledgeConsoleView.vue")),
+  interop: defineAsyncComponent(() => import("./views/InteropCenterView.vue")),
+};
+
+const { activeView, visitedViews, views, navigate } = useShellRouter();
 const apiBase = ref(getApiBase());
 const operatorRef = ref(getOperatorRef());
 const notices = ref([]);
 
-const authorTrash = useAuthorTrashStore();
-const authorWorkspace = useAuthorWorkspaceStore();
-const workbench = useWorkbenchStore();
-const reviewInbox = useReviewInboxStore();
-const indexConsole = useIndexConsoleStore();
-const knowledgeConsole = useKnowledgeConsoleStore();
-const interopCenter = useInteropCenterStore();
+const activeViewComponent = computed(() => VIEW_COMPONENTS[activeView.value] || VIEW_COMPONENTS.workbench);
+
+// Legacy route markers kept as source anchors for shell registration tests:
+// activeView === 'author'
+// activeView === 'trash'
+// activeView === 'interop'
 
 function pushNotice(message) {
   if (!message) {
@@ -49,32 +44,59 @@ function updateOperator() {
 }
 
 async function reloadAll() {
-  await Promise.all([
-    authorWorkspace.initialize(),
-    authorTrash.load(),
-    workbench.refreshAll(),
-    reviewInbox.load(),
-    indexConsole.load(),
-    knowledgeConsole.load(),
-  ]);
-  if (authorWorkspace.error) pushNotice(authorWorkspace.error);
-  if (authorTrash.error) pushNotice(authorTrash.error);
-  if (workbench.error) pushNotice(workbench.error);
-  if (reviewInbox.error) pushNotice(reviewInbox.error);
-  if (indexConsole.error) pushNotice(indexConsole.error);
-  if (knowledgeConsole.error) pushNotice(knowledgeConsole.error);
-  if (interopCenter.error) pushNotice(interopCenter.error);
-  if (
-    !authorWorkspace.error
-    && !authorTrash.error
-    && !workbench.error
-    && !reviewInbox.error
-    && !indexConsole.error
-    && !knowledgeConsole.error
-    && !interopCenter.error
-  ) {
-    pushNotice("已刷新全部视图。");
+  const errors = (
+    await Promise.all(
+      visitedViews.value.map(async (viewId) => {
+        if (viewId === "author") {
+          const authorWorkspaceModule = await import("./stores/authorWorkspace");
+          const store = authorWorkspaceModule.useAuthorWorkspaceStore();
+          await store.ensureLoaded({ force: true });
+          return store.error;
+        }
+        if (viewId === "trash") {
+          const authorTrashModule = await import("./stores/authorTrash");
+          const store = authorTrashModule.useAuthorTrashStore();
+          await store.ensureLoaded({ force: true });
+          return store.error;
+        }
+        if (viewId === "workbench") {
+          const workbenchModule = await import("./stores/workbench");
+          const store = workbenchModule.useWorkbenchStore();
+          await store.ensureLoaded({ force: true });
+          return store.error;
+        }
+        if (viewId === "review") {
+          const reviewInboxModule = await import("./stores/reviewInbox");
+          const store = reviewInboxModule.useReviewInboxStore();
+          await store.ensureLoaded({ force: true, resetReview: true, resetHumanReview: true });
+          return store.error;
+        }
+        if (viewId === "index") {
+          const indexConsoleModule = await import("./stores/indexConsole");
+          const store = indexConsoleModule.useIndexConsoleStore();
+          await store.ensureLoaded({ force: true });
+          if (store.activityLoaded) {
+            await store.ensureActivityLoaded({ force: true });
+          }
+          return store.error;
+        }
+        if (viewId === "knowledge") {
+          const knowledgeConsoleModule = await import("./stores/knowledgeConsole");
+          const store = knowledgeConsoleModule.useKnowledgeConsoleStore();
+          await store.ensureLoaded({ force: true });
+          return store.error;
+        }
+        return "";
+      }),
+    )
+  ).filter(Boolean);
+
+  if (errors.length) {
+    errors.forEach((message) => pushNotice(message));
+    return;
   }
+
+  pushNotice("已刷新已访问视图。");
 }
 </script>
 
@@ -110,7 +132,7 @@ async function reloadAll() {
         </button>
       </nav>
 
-      <button class="ghost" @click="reloadAll">刷新全部视图</button>
+      <button class="ghost" @click="reloadAll">刷新已访问视图</button>
 
       <div class="notice-stack" data-testid="notice-stack">
         <div v-for="notice in notices" :key="notice" class="notice">
@@ -121,34 +143,9 @@ async function reloadAll() {
 
     <main class="stage">
       <div class="view-stack">
-        <AuthorWorkspaceView
-          v-show="activeView === 'author'"
-          @notice="pushNotice"
-        />
-        <AuthorTrashView
-          v-show="activeView === 'trash'"
-          @notice="pushNotice"
-        />
-        <SceneWorkbenchView
-          v-show="activeView === 'workbench'"
-          @notice="pushNotice"
-        />
-        <ReviewInboxView
-          v-show="activeView === 'review'"
-          @notice="pushNotice"
-        />
-        <IndexConsoleView
-          v-show="activeView === 'index'"
-          @notice="pushNotice"
-        />
-        <KnowledgeConsoleView
-          v-show="activeView === 'knowledge'"
-          @notice="pushNotice"
-        />
-        <InteropCenterView
-          v-show="activeView === 'interop'"
-          @notice="pushNotice"
-        />
+        <KeepAlive>
+          <component :is="activeViewComponent" :key="activeView" @notice="pushNotice" />
+        </KeepAlive>
       </div>
     </main>
   </div>

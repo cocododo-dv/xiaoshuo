@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onMounted, reactive, watch } from "vue";
+import { computed, onActivated, reactive, watch } from "vue";
 
+import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
 import { useShellRouter } from "../router";
 import { useKnowledgeConsoleStore } from "../stores/knowledgeConsole";
@@ -48,6 +49,15 @@ const workflowJobs = computed(() => detailWorkflow.value.jobs || []);
 const workflowHumanReviewEvents = computed(() => detailWorkflow.value.human_review_events || []);
 const workflowTargetActivityGroups = computed(() => detailWorkflow.value.target_activity_groups || []);
 const primaryWorkflowAction = computed(() => detailWorkflow.value.recommended_primary_action || null);
+const pendingWorkflowReviewItems = computed(() => workflowReviewItems.value.filter((item) => item.status === "pending"));
+const retryableWorkflowJobs = computed(() =>
+  workflowJobs.value.filter((item) => item.job_type === "verify" && item.status !== "succeeded"),
+);
+const releasableWorkflowReviews = computed(() =>
+  workflowReviewItems.value.filter(
+    (item) => item.status === "approved" && item.materialize_status === "succeeded" && canReleaseReview(item),
+  ),
+);
 const ITEM_TYPE_LABELS = {
   style_rule: "风格规则",
   style_observation: "风格观察",
@@ -132,8 +142,20 @@ function previewText(version) {
   return version.text;
 }
 
+function previewSummaryText(version) {
+  const text = previewText(version);
+  if (text === "暂无文本" || text.length <= 120) {
+    return text;
+  }
+  return `${text.slice(0, 120)}...`;
+}
+
 function actionLabel(action) {
   return formatAction(action);
+}
+
+function formatJsonPayload(value) {
+  return JSON.stringify(value ?? {}, null, 2);
 }
 
 function canReleaseReview(review) {
@@ -168,7 +190,18 @@ function selectEntry(item) {
 
 async function refreshKnowledge() {
   const hadSelection = Boolean(knowledgeConsole.selectedObjectType && knowledgeConsole.selectedLineageKey);
-  await knowledgeConsole.load(filters);
+  await knowledgeConsole.load(filters, { force: true });
+  if (!hadSelection && !knowledgeConsole.selectedObjectType && !knowledgeConsole.selectedLineageKey && !knowledgeConsole.detail && knowledgeConsole.items.length) {
+    await knowledgeConsole.selectItem(knowledgeConsole.items[0].object_type, knowledgeConsole.items[0].lineage_key);
+  }
+  if (knowledgeConsole.error) {
+    emit("notice", knowledgeConsole.error);
+  }
+}
+
+async function ensureKnowledgeLoaded() {
+  const hadSelection = Boolean(knowledgeConsole.selectedObjectType && knowledgeConsole.selectedLineageKey);
+  await knowledgeConsole.ensureLoaded({ filters });
   if (!hadSelection && !knowledgeConsole.selectedObjectType && !knowledgeConsole.selectedLineageKey && !knowledgeConsole.detail && knowledgeConsole.items.length) {
     await knowledgeConsole.selectItem(knowledgeConsole.items[0].object_type, knowledgeConsole.items[0].lineage_key);
   }
@@ -359,8 +392,8 @@ async function runPrimaryWorkflowAction() {
   }
 }
 
-onMounted(() => {
-  refreshKnowledge();
+onActivated(() => {
+  ensureKnowledgeLoaded();
 });
 
 watch(
@@ -543,8 +576,8 @@ watch(
                 </div>
                 <span class="badge">{{ formatStatus(item.status || "tracked") }}</span>
               </div>
-              <p><strong>生效文本</strong><br />{{ previewText(item.active_version) }}</p>
-              <p><strong>候选文本</strong><br />{{ previewText(item.candidate_version) }}</p>
+              <p><strong>生效文本</strong><br />{{ previewSummaryText(item.active_version) }}</p>
+              <p><strong>候选文本</strong><br />{{ previewSummaryText(item.candidate_version) }}</p>
               <p class="muted">运行时引用：{{ item.runtime_refs?.alias_scope || item.runtime_refs?.mode || "-" }}</p>
               <div class="card-actions">
                 <button
@@ -596,7 +629,7 @@ watch(
                   {{ actionLabel(primaryWorkflowAction.action) }}
                 </button>
                 <button
-                  v-for="review in workflowReviewItems.filter((item) => item.status === 'pending')"
+                  v-for="review in pendingWorkflowReviewItems"
                   :key="`approve-${review.review_id}`"
                   class="ghost"
                   :data-testid="`knowledge-approve-review-${review.review_id}`"
@@ -606,7 +639,7 @@ watch(
                   批准审核
                 </button>
                 <button
-                  v-for="job in workflowJobs.filter((item) => item.job_type === 'verify' && item.status !== 'succeeded')"
+                  v-for="job in retryableWorkflowJobs"
                   :key="`verify-${job.job_id}`"
                   class="ghost"
                   :data-testid="`knowledge-retry-verify-${job.job_id}`"
@@ -616,7 +649,7 @@ watch(
                   重试校验
                 </button>
                 <button
-                  v-for="review in workflowReviewItems.filter((item) => item.status === 'approved' && item.materialize_status === 'succeeded' && canReleaseReview(item))"
+                  v-for="review in releasableWorkflowReviews"
                   :key="`release-${review.review_id}`"
                   class="ghost"
                   :data-testid="`knowledge-release-review-${review.review_id}`"
@@ -627,12 +660,16 @@ watch(
                 </button>
               </div>
             </div>
-            <div class="history-stack">
-              <p class="history-title">运行时引用</p>
-              <pre class="json-block">{{ JSON.stringify(knowledgeConsole.detail.runtime_refs || {}, null, 2) }}</pre>
-            </div>
-            <div class="history-stack">
-              <p class="history-title">版本历史</p>
+            <LazySection
+              :key="`runtime-${selectedEntryKey}`"
+              title="运行时引用"
+              toggle-test-id="knowledge-toggle-runtime-refs"
+            >
+              <pre class="json-block" data-testid="knowledge-runtime-refs-json">{{
+                formatJsonPayload(knowledgeConsole.detail.runtime_refs)
+              }}</pre>
+            </LazySection>
+            <LazySection :key="`versions-${selectedEntryKey}`" title="版本历史">
               <ol class="history-list">
                 <li v-for="version in knowledgeConsole.detail.versions || []" :key="version.row_id" class="history-entry">
                   <p class="history-meta">
@@ -642,9 +679,8 @@ watch(
                   <p>{{ version.text || "-" }}</p>
                 </li>
               </ol>
-            </div>
-            <div class="history-stack">
-              <p class="history-title">关联审核</p>
+            </LazySection>
+            <LazySection :key="`reviews-${selectedEntryKey}`" title="关联审核">
               <ol v-if="workflowReviewItems.length" class="history-list">
                 <li v-for="review in workflowReviewItems" :key="review.review_id" class="history-entry">
                   <p class="history-meta">
@@ -664,9 +700,8 @@ watch(
                 </li>
               </ol>
               <p v-else class="muted">还没有关联审核。</p>
-            </div>
-            <div class="history-stack">
-              <p class="history-title">关联任务</p>
+            </LazySection>
+            <LazySection :key="`jobs-${selectedEntryKey}`" title="关联任务">
               <ol v-if="workflowJobs.length" class="history-list">
                 <li v-for="job in workflowJobs" :key="job.job_id" class="history-entry">
                   <p class="history-meta">
@@ -682,9 +717,8 @@ watch(
                 </li>
               </ol>
               <p v-else class="muted">还没有关联任务。</p>
-            </div>
-            <div class="history-stack">
-              <p class="history-title">关联人工审核</p>
+            </LazySection>
+            <LazySection :key="`human-review-${selectedEntryKey}`" title="关联人工审核">
               <ol v-if="workflowHumanReviewEvents.length" class="history-list">
                 <li v-for="event in workflowHumanReviewEvents" :key="event.event_id" class="history-entry">
                   <p class="history-meta">
@@ -710,9 +744,8 @@ watch(
                 </li>
               </ol>
               <p v-else class="muted">还没有关联的人工审核后续项。</p>
-            </div>
-            <div class="history-stack">
-              <p class="history-title">目标活动</p>
+            </LazySection>
+            <LazySection :key="`activity-${selectedEntryKey}`" title="目标活动">
               <ol v-if="workflowTargetActivityGroups.length" class="history-list">
                 <li v-for="group in workflowTargetActivityGroups" :key="group.target.target_ref" class="history-entry">
                   <p class="history-meta">
@@ -728,9 +761,8 @@ watch(
                 </li>
               </ol>
               <p v-else class="muted">还没有关联目标活动。</p>
-            </div>
-            <div class="history-stack">
-              <p class="history-title">审核引用</p>
+            </LazySection>
+            <LazySection :key="`review-refs-${selectedEntryKey}`" title="审核引用">
               <ol v-if="detailReviewRefs.length" class="history-list">
                 <li v-for="reviewRef in detailReviewRefs" :key="reviewRef" class="history-entry">
                   <p class="history-meta">
@@ -749,9 +781,8 @@ watch(
                 </li>
               </ol>
               <p v-else class="muted">还没有关联审核引用。</p>
-            </div>
-            <div class="history-stack">
-              <p class="history-title">包引用</p>
+            </LazySection>
+            <LazySection :key="`bundle-refs-${selectedEntryKey}`" title="包引用">
               <ol v-if="detailBundleRefs.length" class="history-list">
                 <li v-for="bundleRef in detailBundleRefs" :key="bundleRef.bundle_id" class="history-entry">
                   <p class="history-meta">
@@ -771,7 +802,7 @@ watch(
                 </li>
               </ol>
               <p v-else class="muted">还没有包引用。</p>
-            </div>
+            </LazySection>
           </template>
         </article>
       </div>

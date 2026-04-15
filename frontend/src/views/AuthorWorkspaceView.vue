@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onActivated, reactive, ref, watch } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
 import { useShellRouter } from "../router";
@@ -155,7 +155,16 @@ function syncSceneTrashSelection() {
 }
 
 async function refreshAuthorWorkspace() {
-  await authorWorkspace.initialize();
+  await authorWorkspace.ensureLoaded({ force: true });
+  syncChapterTrashSelection();
+  syncSceneTrashSelection();
+  if (authorWorkspace.error) {
+    emit("notice", authorWorkspace.error);
+  }
+}
+
+async function ensureAuthorWorkspaceLoaded() {
+  await authorWorkspace.ensureLoaded();
   syncChapterTrashSelection();
   syncSceneTrashSelection();
   if (authorWorkspace.error) {
@@ -334,8 +343,8 @@ watch(
   { immediate: true },
 );
 
-onMounted(() => {
-  refreshAuthorWorkspace();
+onActivated(() => {
+  ensureAuthorWorkspaceLoaded();
 });
 </script>
 

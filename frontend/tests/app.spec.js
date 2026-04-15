@@ -2187,6 +2187,10 @@ describe("index console store", () => {
   it("runs due promotions and refreshes the index console state", async () => {
     const store = useIndexConsoleStore();
 
+    await store.load();
+    await store.ensureActivityLoaded();
+    vi.clearAllMocks();
+
     const message = await store.runDuePromotions();
 
     expect(message).toContain("1");
@@ -2218,6 +2222,10 @@ describe("index console store", () => {
 
   it("runs recovery sweep, keeps the latest receipt, and refreshes the index console state", async () => {
     const store = useIndexConsoleStore();
+
+    await store.load();
+    await store.ensureActivityLoaded();
+    vi.clearAllMocks();
 
     const message = await store.runRecovery();
 
@@ -2278,6 +2286,15 @@ describe("index console store", () => {
     const store = useIndexConsoleStore();
 
     await store.load();
+
+    expect(store.lastRecoveryActionResult).toBeNull();
+    expect(store.recoveryTimelineItems).toHaveLength(0);
+    expect(store.systemRuntimeTimelineItems).toHaveLength(0);
+    expect(store.operatorActionTimelineItems).toHaveLength(0);
+    expect(store.targetActivityGroups).toHaveLength(0);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+    await store.ensureActivityLoaded();
 
     expect(store.lastRecoveryActionResult).toEqual(
       expect.objectContaining({

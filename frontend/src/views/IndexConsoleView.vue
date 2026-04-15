@@ -1,46 +1,43 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onActivated, reactive, ref, watch } from "vue";
 
+import ActivitySectionCard from "../components/ActivitySectionCard.vue";
 import AliasScopeCard from "../components/AliasScopeCard.vue";
 import CursorPager from "../components/CursorPager.vue";
 import PanelShell from "../components/PanelShell.vue";
+import TargetActivityGroupCard from "../components/TargetActivityGroupCard.vue";
 import { shouldClearIndexFocus } from "../lib/filterFocus";
-import {
-  focusedActivityKeyForGroup,
-  nextExpandedTargetRefs,
-  orderedActivityItems,
-  toggleExpandedTargetRef,
-} from "../lib/targetActivity";
+import { prioritizeMatchingItem } from "../lib/listPriority";
 import { useShellRouter } from "../router";
 import { useIndexConsoleStore } from "../stores/indexConsole";
 
 const emit = defineEmits(["notice"]);
-
 const indexConsole = useIndexConsoleStore();
 const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = useShellRouter();
-const expandedTargetRefs = ref([]);
+
+const expandedSections = reactive({
+  recovery_timeline: false,
+  system_runtime: false,
+  operator_action: false,
+  target_groups: false,
+});
+const activeTargetGroupRef = ref("");
 const indexFocusRefreshPending = ref(false);
 
-const ACTION_LABELS = {
+const actionLabels = {
   approve_review: "批准审核",
   release_review: "发布审核",
   retry_request: "重试请求",
   retry_verify: "重试校验",
   inspect: "查看详情",
 };
-
-const JOB_TYPE_LABELS = {
-  verify: "校验任务",
-  reindex: "重建索引任务",
-};
-
-const SOURCE_STREAM_LABELS = {
+const jobTypeLabels = { verify: "校验任务", reindex: "重建任务" };
+const sourceLabels = {
   recovery_timeline: "恢复时间线",
   system_runtime: "系统活动",
-  operator_action: "人工操作活动",
+  operator_action: "人工操作",
 };
-
-const STATUS_LABELS = {
+const statusLabels = {
   pending: "待处理",
   failed: "失败",
   succeeded: "成功",
@@ -49,589 +46,293 @@ const STATUS_LABELS = {
   resolved: "已解决",
   running: "进行中",
   queued: "排队中",
-  idle: "空闲",
   released: "已发布",
-  none: "无",
-  archived: "已归档",
-  blocked_waiting_backfill: "等待补写",
-  manual_hold: "人工挂起",
 };
 
-function formatActionWithCode(action, fallback = "-") {
-  return ACTION_LABELS[action] || action || fallback;
-}
-
-function formatJobTypeWithCode(jobType, fallback = "-") {
-  return JOB_TYPE_LABELS[jobType] || jobType || fallback;
-}
-
-function formatSourceStreamWithCode(source, fallback = "-") {
-  return SOURCE_STREAM_LABELS[source] || source || fallback;
-}
-
-function formatStatusWithCode(status, fallback = "-") {
-  return STATUS_LABELS[status] || status || fallback;
-}
-
-function formatValue(value, fallback = "-") {
-  return value === null || value === undefined || value === "" ? fallback : String(value);
-}
-
-const prioritizedJobs = computed(() => {
-  const focusJobId =
-    focusTarget.value?.target_type === "verify_job" || focusTarget.value?.target_type === "reindex_job"
-      ? focusTarget.value.target_id
-      : null;
-  const items = [...indexConsole.jobs];
-  if (!focusJobId) {
-    return items;
-  }
-  return items.sort((left, right) => Number(right.job_id === focusJobId) - Number(left.job_id === focusJobId));
-});
-
-const prioritizedTargetActivityGroups = computed(() => {
-  const focusRef = focusTarget.value?.target_ref || "";
-  const items = [...(indexConsole.targetActivityGroups || [])];
-  if (!focusRef) {
-    return items;
-  }
-  return items.sort((left, right) => Number(right.target?.target_ref === focusRef) - Number(left.target?.target_ref === focusRef));
-});
-
-const focusedActivityKey = computed(() => {
-  const focusRef = focusTarget.value?.target_ref || "";
-  if (!focusRef) {
-    return "";
-  }
-  const focusGroup = (indexConsole.targetActivityGroups || []).find((group) => group?.target?.target_ref === focusRef);
-  return focusedActivityKeyForGroup(focusGroup, focusRef);
-});
-
+const focusTargetType = computed(() => focusTarget.value?.target_type || "");
+const focusTargetId = computed(() => focusTarget.value?.target_id || "");
+const focusTargetRef = computed(() => focusTarget.value?.target_ref || "");
 const focusedSourceType = computed(() => focusTarget.value?.source_type || "");
 const focusedSourceId = computed(() => focusTarget.value?.source_id ?? null);
-
-function indexFocusDeferred() {
-  return indexFocusRefreshPending.value || pendingFocusView.value === "index";
-}
-
-watch(
-  () => [focusTarget.value?.target_ref || "", indexConsole.targetActivityGroups],
-  ([focusRef, groups]) => {
-    expandedTargetRefs.value = nextExpandedTargetRefs(expandedTargetRefs.value, groups || [], focusRef);
-  },
-  { immediate: true, deep: true },
+const targetGroupRefsSignature = computed(() =>
+  (indexConsole.targetActivityGroups || []).map((group) => group?.target?.target_ref || "").join("|"),
+);
+const indexFocusSignature = computed(() =>
+  [
+    activeView.value,
+    indexConsole.loading ? "1" : "0",
+    indexConsole.activityLoading ? "1" : "0",
+    pendingFocusView.value || "",
+    indexFocusRefreshPending.value ? "1" : "0",
+    focusTargetType.value,
+    focusTargetId.value,
+    focusTargetRef.value,
+    (indexConsole.jobs || []).map((item) => item.job_id || "").join("|"),
+    targetGroupRefsSignature.value,
+  ].join("::"),
 );
 
-watch(
-  focusedActivityKey,
-  async (activityKey) => {
-    if (!activityKey || typeof document === "undefined") {
-      return;
-    }
-    await nextTick();
-    document.querySelector(`[data-activity-key="${activityKey}"]`)?.scrollIntoView?.({
-      block: "nearest",
-      behavior: "smooth",
-    });
-  },
-  { immediate: true },
+const prioritizedJobs = computed(() => {
+  const focusJobId = ["verify_job", "reindex_job"].includes(focusTargetType.value) ? focusTargetId.value : null;
+  return prioritizeMatchingItem(indexConsole.jobs, (item) => item.job_id === focusJobId);
+});
+const prioritizedTargetGroups = computed(() =>
+  prioritizeMatchingItem(indexConsole.targetActivityGroups, (item) => item.target?.target_ref === focusTargetRef.value),
 );
-
-function recoveryEventTimestamp(item) {
-  return item?.details_json?.last_action_at || item?.last_action_at || item?.created_at || "-";
-}
-
-function recoveryEventTarget(item) {
-  return item?.linked_target_ref || item?.details_json?.linked_target_ref || "-";
-}
-
-function recoveryEventResolution(item) {
-  return item?.resolution_reason || item?.details_json?.resolution_reason || "-";
-}
-
-function recoveryEventAction(item) {
-  return item?.action || item?.last_action || item?.details_json?.last_action || item?.default_action || "inspect";
-}
-
-function recoveryEventActor(item) {
-  return item?.actor_ref || item?.last_actor_ref || item?.details_json?.last_actor_ref || "-";
-}
-
-function recoveryEventFollowup(item) {
-  const action = item?.followup_action || item?.details_json?.followup_action;
-  const target = item?.followup_target_ref || item?.details_json?.followup_target_ref;
-  if (!action && !target) {
-    return "-";
-  }
-  return [action, target].filter(Boolean).join(" -> ");
-}
-
-function systemActivityActor(item) {
-  return item?.actor_ref || item?.payload_json?.actor_ref || "-";
-}
-
-function systemActivitySummary(item) {
-  return item?.summary || item?.payload_json?.summary || "-";
-}
-
-function systemActivityDetail(item) {
-  return (
-    item?.payload_json?.review_id ||
-    item?.payload_json?.event_id ||
-    item?.payload_json?.job_id ||
-    item?.payload_json?.alias_scope ||
-    item?.object_ref ||
-    "-"
-  );
-}
-
-function systemActivityTargets(item) {
-  return item?.target_refs || [];
-}
-
-function operatorActionTargets(item) {
-  return item?.target_refs || [];
-}
-
-function operatorActionSummary(item) {
-  return [
-    formatActionWithCode(item?.action, item?.action || "-"),
-    formatStatusWithCode(item?.status_before, item?.status_before || "-"),
-    "->",
-    formatStatusWithCode(item?.status_after, item?.status_after || "-"),
-  ].join(" ");
-}
-
-function targetActivitySummary(item) {
-  return [
-    formatSourceStreamWithCode(item?.source, item?.source || "-"),
-    formatStatusWithCode(item?.status, item?.status || "-"),
-    formatValue(item?.actor_ref),
-    formatValue(item?.timestamp),
-  ].join(" | ");
-}
-
-function formatSourceList(sources) {
-  if (!sources?.length) {
-    return "-";
-  }
-  return sources.map((source) => formatSourceStreamWithCode(source, source)).join(", ");
-}
-
-function activityItemLabel(item) {
-  if (item?.label) {
-    return item.label;
-  }
-  return formatSourceStreamWithCode(item?.source, item?.source || "-");
-}
-
-function isTargetGroupExpanded(group) {
-  return expandedTargetRefs.value.includes(group?.target?.target_ref);
-}
-
-function toggleTargetGroup(group) {
-  expandedTargetRefs.value = toggleExpandedTargetRef(expandedTargetRefs.value, group?.target?.target_ref);
-}
-
-function orderedTargetActivityItems(group) {
-  return orderedActivityItems(group?.activity_items || []);
-}
-
-function isFocusedActivityItem(group, item) {
-  return item?.activity_key && item.activity_key === focusedActivityKeyForGroup(group, focusTarget.value?.target_ref || "");
-}
-
-function withSourceFocusTarget(target, sourceType, sourceId) {
-  if (!target) {
-    return null;
-  }
-  const keepInIndex = ["review_item", "verify_job", "reindex_job"].includes(target.target_type);
-  return {
-    ...target,
-    source_type: sourceType,
-    source_id: sourceId,
-    ...(keepInIndex ? { view_id: "index" } : {}),
-  };
-}
-
-function isFocusedSource(sourceType, sourceId) {
-  return focusedSourceType.value === sourceType && focusedSourceId.value === sourceId;
-}
-
-function isFocusedRecoverySweepReceipt() {
-  return isFocusedSource("recovery_sweep", indexConsole.lastRecoveryResult?.actor_ref || "__recovery_sweep__");
-}
-
-function isFocusedRecoveryReceipt() {
-  return isFocusedSource("recovery_receipt", indexConsole.lastRecoveryActionResult?.event_id || null);
-}
-
-function isFocusedPromotionReceipt() {
-  return isFocusedSource("promotion_receipt", indexConsole.lastPromotionResult?.actor_ref || "__promotion_receipt__");
-}
-
-function isFocusedRecoveryTimelineItem(item) {
-  return isFocusedSource("recovery_timeline", item?.event_id || null);
-}
-
-function isFocusedSystemActivityItem(item) {
-  return isFocusedSource("system_activity", item?.operation_id || null);
-}
-
-function isFocusedOperatorActionItem(item) {
-  return isFocusedSource("operator_action", item?.operation_id || null);
-}
-
-function isSourceLinkedActivityItem(item) {
-  if (!item?.activity_key) {
-    return false;
-  }
-  if (focusedSourceType.value === "recovery_receipt" || focusedSourceType.value === "recovery_timeline") {
-    return item.activity_key === `recovery_timeline:${focusedSourceId.value}`;
+const focusedTargetGroupMeta = computed(() => {
+  if (!focusTargetRef.value) return null;
+  return indexConsole.targetGroupMeta(focusTargetRef.value)
+    || indexConsole.targetActivityGroups.find((group) => group?.target?.target_ref === focusTargetRef.value)
+    || null;
+});
+const focusedActivityKey = computed(() => focusedTargetGroupMeta.value?.latestActivityKey || focusedTargetGroupMeta.value?.latest_activity_key || "");
+const sourceLinkedActivityKey = computed(() => {
+  if (["recovery_receipt", "recovery_timeline"].includes(focusedSourceType.value)) {
+    return focusedSourceId.value ? `recovery_timeline:${focusedSourceId.value}` : "";
   }
   if (focusedSourceType.value === "system_activity") {
-    return item.activity_key === `system_runtime:${focusedSourceId.value}`;
+    return focusedSourceId.value ? `system_runtime:${focusedSourceId.value}` : "";
   }
   if (focusedSourceType.value === "operator_action") {
-    return item.activity_key === `operator_action:${focusedSourceId.value}`;
+    return focusedSourceId.value ? `operator_action:${focusedSourceId.value}` : "";
   }
-  return false;
-}
-
-function parseTargetRef(targetRef) {
-  if (!targetRef || !targetRef.includes(":")) {
-    return null;
-  }
-  const [targetType, targetId] = targetRef.split(":", 2);
-  if (!targetType || !targetId) {
-    return null;
-  }
-  return {
-    target_type: targetType,
-    target_id: targetId,
-    target_ref: targetRef,
-  };
-}
-
-function recoveryLinkedTarget(item) {
-  return item?.linked_target || parseTargetRef(item?.linked_target_ref || item?.details_json?.linked_target_ref);
-}
-
-function recoveryFollowupTarget(item) {
-  return item?.followup_target || parseTargetRef(item?.followup_target_ref || item?.details_json?.followup_target_ref);
-}
-
-function replayTargetFromResult(replayResult) {
-  if (replayResult?.review_id) {
-    return {
-      target_type: "review_item",
-      target_id: replayResult.review_id,
-      target_ref: `review_item:${replayResult.review_id}`,
-    };
-  }
-  if (replayResult?.job_id) {
-    const targetType = replayResult.job_type === "reindex" ? "reindex_job" : "verify_job";
-    return {
-      target_type: targetType,
-      target_id: replayResult.job_id,
-      target_ref: `${targetType}:${replayResult.job_id}`,
-    };
-  }
-  return null;
-}
-
-function recoveryReplayTarget(item) {
-  if (item?.replay_target) {
-    return item.replay_target;
-  }
-  return replayTargetFromResult(item?.replay_result || item?.last_replay_result || item?.details_json?.last_replay_result);
-}
-
-function jobSummaryTarget(item) {
-  return item?.target || jobTarget(item);
-}
-
-function recoveryCreatedEventTargets(result) {
-  if (result?.created_human_review_event_targets?.length) {
-    return result.created_human_review_event_targets;
-  }
-  return (result?.created_human_review_event_ids || []).map((eventId) => ({
-    event_id: eventId,
-    target: recoveryEventById(eventId),
-  }));
-}
-
-function promotedReviewTargets(result) {
-  if (result?.promoted_review_targets?.length) {
-    return result.promoted_review_targets;
-  }
-  return (result?.promoted_review_ids || []).map((reviewId) => ({
-    review_id: reviewId,
-    target: reviewTarget(reviewId),
-  }));
-}
-
-function systemTargetLabel(target) {
-  if (target?.target_type === "review_item") {
-    return "打开审核";
-  }
-  if (target?.target_type === "human_review_event") {
-    return "打开恢复事件";
-  }
-  if (target?.target_type === "verify_job") {
-    return "打开校验任务";
-  }
-  if (target?.target_type === "reindex_job") {
-    return "打开重建索引任务";
-  }
-  return target?.target_ref ? `打开目标（${target.target_ref}）` : "打开目标";
-}
-
-function reviewTarget(reviewId) {
-  if (!reviewId) {
-    return null;
-  }
-  return {
-    target_type: "review_item",
-    target_id: reviewId,
-    target_ref: `review_item:${reviewId}`,
-  };
-}
-
-function recoveryEventById(eventId) {
-  if (!eventId) {
-    return null;
-  }
-  return {
-    target_type: "human_review_event",
-    target_id: eventId,
-    target_ref: `human_review_event:${eventId}`,
-  };
-}
-
-function jobTarget(item) {
-  if (!item?.job_id) {
-    return null;
-  }
-  const targetType = item.job_type === "reindex" ? "reindex_job" : "verify_job";
-  return {
-    target_type: targetType,
-    target_id: item.job_id,
-    target_ref: `${targetType}:${item.job_id}`,
-  };
-}
-
-function jumpToTarget(target) {
-  if (!target) {
-    return;
-  }
-  openTarget(target);
-  emit("notice", `已打开目标：${target.target_ref}`);
-}
-
-function isFocusedJob(jobId) {
-  return (
-    (focusTarget.value?.target_type === "verify_job" || focusTarget.value?.target_type === "reindex_job")
-    && focusTarget.value.target_id === jobId
-  );
-}
-
-async function refreshIndex() {
-  await indexConsole.load();
-  if (indexConsole.error) {
-    emit("notice", indexConsole.error);
-  }
-}
-
-async function nextJobPage() {
-  await indexConsole.nextJobPage();
-  if (indexConsole.error) {
-    emit("notice", indexConsole.error);
-  }
-}
-
-async function previousJobPage() {
-  await indexConsole.previousJobPage();
-  if (indexConsole.error) {
-    emit("notice", indexConsole.error);
-  }
-}
-
-function clearAliasFilters() {
-  indexConsole.clearAliasFilters();
-  refreshIndex();
-}
-
-function clearJobFilters() {
-  indexConsole.clearJobFilters();
-  refreshIndex();
-}
-
-function clearLedgerFilters() {
-  indexConsole.clearLedgerFilters();
-  refreshIndex();
-}
-
-async function runRecovery() {
-  try {
-    emit("notice", await indexConsole.runRecovery());
-  } catch (error) {
-    emit("notice", error.message);
-  }
-}
-
-async function runDuePromotions() {
-  try {
-    emit("notice", await indexConsole.runDuePromotions());
-  } catch (error) {
-    emit("notice", error.message);
-  }
-}
-
-async function retry(jobId) {
-  try {
-    emit("notice", await indexConsole.retryVerifyJob(jobId));
-  } catch (error) {
-    emit("notice", error.message);
-  }
-}
-
-onMounted(() => {
-  refreshIndex();
+  return "";
 });
 
-watch(
-  () => activeView.value,
-  async (nextView, previousView) => {
-    if (nextView === "index" && previousView !== "index") {
-      indexFocusRefreshPending.value = true;
-      try {
-        await refreshIndex();
-      } finally {
-        indexFocusRefreshPending.value = false;
-      }
-      settleFocusView("index");
-      if (
-        shouldClearIndexFocus(
-          activeView.value,
-          indexConsole.loading,
-          indexFocusDeferred(),
-          focusTarget.value,
-          indexConsole.aliasScopes,
-          indexConsole.jobs,
-          indexConsole.targetActivityGroups,
-        )
-      ) {
-        clearFocus();
-      }
-    }
-  },
-);
+const fmtAction = (value, fallback = "-") => actionLabels[value] || value || fallback;
+const fmtJobType = (value, fallback = "-") => jobTypeLabels[value] || value || fallback;
+const fmtSource = (value, fallback = "-") => sourceLabels[value] || value || fallback;
+const fmtStatus = (value, fallback = "-") => statusLabels[value] || value || fallback;
+const fmtValue = (value, fallback = "-") => (value === null || value === undefined || value === "" ? fallback : String(value));
+const sectionSummary = {
+  recovery_timeline: () => `已加载 ${indexConsole.recoveryTimelineItems.length} 条恢复活动`,
+  system_runtime: () => `已加载 ${indexConsole.systemRuntimeTimelineItems.length} 条系统活动`,
+  operator_action: () => `已加载 ${indexConsole.operatorActionTimelineItems.length} 条人工活动`,
+  target_groups: () => `已加载 ${indexConsole.targetActivityGroups.length} 个目标摘要`,
+};
+const recoveryTimestamp = (item) => item?.details_json?.last_action_at || item?.last_action_at || item?.created_at || "-";
+const recoveryActor = (item) => item?.actor_ref || item?.last_actor_ref || item?.details_json?.last_actor_ref || "-";
+const recoveryTargetRef = (item) => item?.linked_target_ref || item?.details_json?.linked_target_ref || "-";
+const recoveryResolution = (item) => item?.resolution_reason || item?.details_json?.resolution_reason || "-";
+const recoveryAction = (item) => item?.action || item?.last_action || item?.details_json?.last_action || item?.default_action || "inspect";
+const recoveryFollowup = (item) => [item?.followup_action || item?.details_json?.followup_action, item?.followup_target_ref || item?.details_json?.followup_target_ref].filter(Boolean).join(" -> ") || "-";
+const operatorSummary = (item) => [fmtAction(item?.action, item?.action || "-"), fmtStatus(item?.status_before, item?.status_before || "-"), "->", fmtStatus(item?.status_after, item?.status_after || "-")].join(" ");
+const targetSummary = (item) => [fmtSource(item?.source, item?.source || "-"), fmtStatus(item?.status, item?.status || "-"), fmtValue(item?.actor_ref), fmtValue(item?.timestamp)].join(" | ");
 
-watch(
-  () => [
-    focusTarget.value,
-    indexConsole.loading,
-    pendingFocusView.value,
-    indexFocusRefreshPending.value,
-    indexConsole.aliasScopes,
-    indexConsole.jobs,
-    indexConsole.targetActivityGroups,
-  ],
-  () => {
-    if (
-      shouldClearIndexFocus(
-        activeView.value,
-        indexConsole.loading,
-        indexFocusDeferred(),
-        focusTarget.value,
-        indexConsole.aliasScopes,
-        indexConsole.jobs,
-        indexConsole.targetActivityGroups,
-      )
-    ) {
-      clearFocus();
-    }
-  },
-  { deep: true },
-);
+function parseTargetRef(targetRef) {
+  if (!targetRef || !targetRef.includes(":")) return null;
+  const [targetType, targetId] = targetRef.split(":", 2);
+  return targetType && targetId ? { target_type: targetType, target_id: targetId, target_ref: targetRef } : null;
+}
+function replayTargetFromResult(result) {
+  if (result?.review_id) return { target_type: "review_item", target_id: result.review_id, target_ref: `review_item:${result.review_id}` };
+  if (!result?.job_id) return null;
+  const type = result.job_type === "reindex" ? "reindex_job" : "verify_job";
+  return { target_type: type, target_id: result.job_id, target_ref: `${type}:${result.job_id}` };
+}
+const recoveryLinkedTarget = (item) => item?.linked_target || parseTargetRef(item?.linked_target_ref || item?.details_json?.linked_target_ref);
+const recoveryFollowupTarget = (item) => item?.followup_target || parseTargetRef(item?.followup_target_ref || item?.details_json?.followup_target_ref);
+const recoveryReplayTarget = (item) => item?.replay_target || replayTargetFromResult(item?.replay_result || item?.last_replay_result || item?.details_json?.last_replay_result);
+const reviewTarget = (reviewId) => (reviewId ? { target_type: "review_item", target_id: reviewId, target_ref: `review_item:${reviewId}` } : null);
+const humanReviewTarget = (eventId) => (eventId ? { target_type: "human_review_event", target_id: eventId, target_ref: `human_review_event:${eventId}` } : null);
+const jobTarget = (item) => item?.job_id ? { target_type: item.job_type === "reindex" ? "reindex_job" : "verify_job", target_id: item.job_id, target_ref: `${item.job_type === "reindex" ? "reindex_job" : "verify_job"}:${item.job_id}` } : null;
+const activityItemKey = (sectionId, item) => {
+  if (item?.activity_key) return item.activity_key;
+  if (sectionId === "recovery_timeline" && item?.event_id) return `recovery_timeline:${item.event_id}`;
+  if (sectionId === "system_runtime" && item?.operation_id !== undefined) return `system_runtime:${item.operation_id}`;
+  if (sectionId === "operator_action" && item?.operation_id !== undefined) return `operator_action:${item.operation_id}`;
+  return "";
+};
+const activityTargets = (item) => {
+  if (Array.isArray(item?.target_refs) && item.target_refs.length) return item.target_refs;
+  const parsedTarget = parseTargetRef(item?.target_ref);
+  return parsedTarget ? [parsedTarget] : [];
+};
+
+function withSourceTarget(target, sourceType, sourceId) {
+  if (!target) return null;
+  return { ...target, source_type: sourceType, source_id: sourceId };
+}
+function withIndexFocusTarget(target, sourceType, sourceId) {
+  if (!target) return null;
+  return { ...withSourceTarget(target, sourceType, sourceId), view_id: "index" };
+}
+function jumpToTarget(target) {
+  if (!target) return;
+  openTarget(target);
+  if (target.view_id === "index") {
+    syncIndexFocus();
+  }
+  emit("notice", `已打开目标：${target.target_ref}`);
+}
+function targetActionLabel(target) {
+  if (target?.target_type === "review_item") return "打开审核";
+  if (target?.target_type === "human_review_event") return "打开恢复事件";
+  if (target?.target_type === "verify_job") return "打开校验任务";
+  if (target?.target_type === "reindex_job") return "打开重建任务";
+  return target?.target_ref || "打开目标";
+}
+function isFocusedSource(type, id) { return focusedSourceType.value === type && focusedSourceId.value === id; }
+function focusNeedsTargetGroups() { return Boolean(focusTargetRef.value) && !["verify_job", "reindex_job"].includes(focusTargetType.value); }
+function focusedSourceSection() {
+  if (["recovery_receipt", "recovery_timeline"].includes(focusedSourceType.value)) return "recovery_timeline";
+  if (focusedSourceType.value === "system_activity") return "system_runtime";
+  if (focusedSourceType.value === "operator_action") return "operator_action";
+  return "";
+}
+function groupItems(targetRef) { return indexConsole.targetGroupItemsByRef[targetRef] || []; }
+function groupLoading(targetRef) { return Boolean(indexConsole.targetGroupState(targetRef)?.loading); }
+function groupCanPrevious(targetRef) { return Boolean(indexConsole.targetGroupState(targetRef)?.pager?.cursorStack?.length); }
+function groupCanNext(targetRef) { return Boolean(indexConsole.targetGroupPagination(targetRef)?.has_next); }
+function sectionCanPrevious(sectionId) { return Boolean(indexConsole.activitySectionState(sectionId)?.pager?.cursorStack?.length); }
+function sectionCanNext(sectionId) { return Boolean(indexConsole.activitySectionPagination(sectionId)?.has_next); }
+
+async function openSection(sectionId, force = false) {
+  expandedSections[sectionId] = true;
+  await indexConsole.ensureActivitySectionLoaded(sectionId, { force });
+}
+async function toggleSection(sectionId) {
+  if (expandedSections[sectionId]) {
+    expandedSections[sectionId] = false;
+    if (sectionId === "target_groups") activeTargetGroupRef.value = "";
+    return;
+  }
+  await openSection(sectionId);
+}
+async function toggleTargetGroup(group) {
+  const targetRef = group?.target?.target_ref || "";
+  if (!targetRef) return;
+  if (activeTargetGroupRef.value === targetRef) {
+    activeTargetGroupRef.value = "";
+    return;
+  }
+  activeTargetGroupRef.value = targetRef;
+  await indexConsole.ensureTargetGroupItemsLoaded(targetRef);
+}
+async function ensureFocusSections(force = false) {
+  const sourceSection = focusedSourceSection();
+  if (sourceSection) await openSection(sourceSection, force);
+  if (!focusNeedsTargetGroups()) return;
+  await openSection("target_groups", force);
+  if ((indexConsole.targetActivityGroups || []).some((group) => group?.target?.target_ref === focusTargetRef.value)) {
+    activeTargetGroupRef.value = focusTargetRef.value;
+    await indexConsole.ensureTargetGroupItemsLoaded(focusTargetRef.value, { force });
+  }
+}
+async function syncIndexFocus(force = false) {
+  if (!focusTargetRef.value && !focusedSourceSection()) return;
+  indexFocusRefreshPending.value = true;
+  try {
+    await ensureFocusSections(force);
+  } finally {
+    indexFocusRefreshPending.value = false;
+  }
+}
+async function ensureVisibleSections(force = false) {
+  const openSections = Object.keys(expandedSections).filter((key) => expandedSections[key]);
+  await Promise.all(openSections.map((sectionId) => indexConsole.ensureActivitySectionLoaded(sectionId, { force })));
+  if (expandedSections.target_groups && activeTargetGroupRef.value) {
+    await indexConsole.ensureTargetGroupItemsLoaded(activeTargetGroupRef.value, { force });
+  }
+}
+async function ensureIndexLoaded() {
+  indexFocusRefreshPending.value = true;
+  try {
+    await indexConsole.ensureLoaded();
+    await ensureFocusSections();
+    await ensureVisibleSections();
+  } finally {
+    indexFocusRefreshPending.value = false;
+  }
+  if (indexConsole.error) emit("notice", indexConsole.error);
+  settleFocusView("index");
+  if (shouldClearIndexFocus(activeView.value, indexConsole.loading || indexConsole.activityLoading, indexFocusRefreshPending.value || pendingFocusView.value === "index", focusTarget.value, indexConsole.aliasScopes, indexConsole.jobs, indexConsole.targetActivityGroups)) clearFocus();
+}
+async function refreshIndex() {
+  indexFocusRefreshPending.value = true;
+  try {
+    await indexConsole.ensureLoaded({ force: true });
+    await ensureVisibleSections(true);
+    await ensureFocusSections(true);
+  } finally {
+    indexFocusRefreshPending.value = false;
+  }
+  if (indexConsole.error) emit("notice", indexConsole.error);
+}
+const previousJobPage = async () => { await indexConsole.previousJobPage(); if (indexConsole.error) emit("notice", indexConsole.error); };
+const nextJobPage = async () => { await indexConsole.nextJobPage(); if (indexConsole.error) emit("notice", indexConsole.error); };
+const previousSectionPage = async (sectionId) => { await indexConsole.previousActivitySectionPage(sectionId); if (indexConsole.error) emit("notice", indexConsole.error); };
+const nextSectionPage = async (sectionId) => { await indexConsole.nextActivitySectionPage(sectionId); if (indexConsole.error) emit("notice", indexConsole.error); };
+const previousGroupPage = async (targetRef) => { await indexConsole.previousTargetGroupItemsPage(targetRef); if (indexConsole.error) emit("notice", indexConsole.error); };
+const nextGroupPage = async (targetRef) => { await indexConsole.nextTargetGroupItemsPage(targetRef); if (indexConsole.error) emit("notice", indexConsole.error); };
+const clearAliasFilters = async () => { indexConsole.clearAliasFilters(); await refreshIndex(); };
+const clearJobFilters = async () => { indexConsole.clearJobFilters(); await refreshIndex(); };
+const clearLedgerFilters = async () => { indexConsole.clearLedgerFilters(); await refreshIndex(); };
+const runRecovery = async () => { try { emit("notice", await indexConsole.runRecovery()); await ensureVisibleSections(true); await ensureFocusSections(true); } catch (error) { emit("notice", error.message); } };
+const runDuePromotions = async () => { try { emit("notice", await indexConsole.runDuePromotions()); await ensureVisibleSections(true); await ensureFocusSections(true); } catch (error) { emit("notice", error.message); } };
+const retry = async (jobId) => { try { emit("notice", await indexConsole.retryVerifyJob(jobId)); await ensureVisibleSections(true); await ensureFocusSections(true); } catch (error) { emit("notice", error.message); } };
+
+watch(() => [activeView.value, focusTargetRef.value, focusedSourceType.value, focusedSourceId.value], async ([viewId]) => {
+  if (viewId !== "index") return;
+  if (!focusTargetRef.value && !focusedSourceSection()) return;
+  await syncIndexFocus();
+}, { immediate: true });
+
+watch(targetGroupRefsSignature, async () => {
+  if (activeTargetGroupRef.value && !(indexConsole.targetActivityGroups || []).some((group) => group?.target?.target_ref === activeTargetGroupRef.value)) {
+    activeTargetGroupRef.value = "";
+  }
+  if (activeView.value !== "index" || !focusNeedsTargetGroups()) return;
+  if (!(indexConsole.targetActivityGroups || []).some((group) => group?.target?.target_ref === focusTargetRef.value)) return;
+  activeTargetGroupRef.value = focusTargetRef.value;
+  await indexConsole.ensureTargetGroupItemsLoaded(focusTargetRef.value);
+}, { immediate: true });
+
+watch(() => [focusedActivityKey.value, sourceLinkedActivityKey.value, activeTargetGroupRef.value], async ([focusedKey, linkedKey, targetRef]) => {
+  if (!targetRef || typeof document === "undefined") return;
+  const activityKey = focusedKey || linkedKey;
+  if (!activityKey) return;
+  await nextTick();
+  document.querySelector(`[data-activity-key="${activityKey}"]`)?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+}, { immediate: true });
+
+watch(indexFocusSignature, () => {
+  if (shouldClearIndexFocus(activeView.value, indexConsole.loading || indexConsole.activityLoading, indexFocusRefreshPending.value || pendingFocusView.value === "index", focusTarget.value, indexConsole.aliasScopes, indexConsole.jobs, indexConsole.targetActivityGroups)) clearFocus();
+}, { immediate: true });
+
+onActivated(() => { ensureIndexLoaded(); });
 </script>
 
 <template>
   <section class="panel-grid" data-testid="index-console-view">
-    <PanelShell
-      eyebrow="索引控制台"
-      title="别名、校验与恢复"
-      description="在一个面板里查看别名范围、校验任务和运行时恢复链路。"
-    >
+    <PanelShell eyebrow="索引控制台" title="别名、校验与恢复" description="把长列表拆成摘要优先、明细按需的控制台。">
       <template #actions>
         <div class="field-inline">
           <button @click="refreshIndex">刷新</button>
-          <button
-            :disabled="indexConsole.actionId === 'promotions'"
-            data-testid="run-due-promotions-button"
-            @click="runDuePromotions"
-          >
-            {{ indexConsole.actionId === "promotions" ? "发布中..." : "运行到期发布" }}
-          </button>
-          <button
-            :disabled="indexConsole.actionId === 'recovery'"
-            data-testid="run-recovery-sweep-button"
-            @click="runRecovery"
-          >
-            {{ indexConsole.actionId === "recovery" ? "恢复中..." : "恢复扫描" }}
-          </button>
+          <button :disabled="indexConsole.actionId === 'promotions'" data-testid="run-due-promotions-button" @click="runDuePromotions">{{ indexConsole.actionId === "promotions" ? "发布中..." : "运行到期发布" }}</button>
+          <button :disabled="indexConsole.actionId === 'recovery'" data-testid="run-recovery-sweep-button" @click="runRecovery">{{ indexConsole.actionId === "recovery" ? "恢复中..." : "恢复扫描" }}</button>
         </div>
       </template>
 
       <div v-if="indexConsole.loading" class="empty">正在加载别名范围...</div>
-      <div v-else-if="indexConsole.error" class="empty">{{ indexConsole.error }}</div>
+      <div v-else-if="indexConsole.error && !indexConsole.aliasScopes.length && !indexConsole.jobs.length" class="empty">{{ indexConsole.error }}</div>
       <template v-else>
         <div class="field-inline">
-          <select v-model="indexConsole.aliasFilters.verifyStatus" data-testid="index-alias-filter-verify-status">
-            <option value="">全部别名校验状态</option>
-            <option value="pending">待处理</option>
-            <option value="failed">失败</option>
-            <option value="succeeded">成功</option>
-          </select>
+          <select v-model="indexConsole.aliasFilters.verifyStatus" data-testid="index-alias-filter-verify-status"><option value="">全部别名校验状态</option><option value="pending">待处理</option><option value="failed">失败</option><option value="succeeded">成功</option></select>
           <button data-testid="index-alias-filter-refresh" @click="refreshIndex">刷新</button>
           <button data-testid="index-alias-filter-clear" @click="clearAliasFilters">清空</button>
         </div>
         <div class="field-inline">
-          <select v-model="indexConsole.jobFilters.jobType" data-testid="index-job-filter-job-type">
-            <option value="">全部任务</option>
-            <option value="verify">校验任务</option>
-            <option value="reindex">重建索引任务</option>
-          </select>
-          <input
-            v-model="indexConsole.jobFilters.reviewId"
-            data-testid="index-job-filter-review-id"
-            placeholder="审核 ID"
-          />
-          <input
-            v-model="indexConsole.jobFilters.workerId"
-            data-testid="index-job-filter-worker-id"
-            placeholder="工作器 ID"
-          />
-          <label class="checkbox-inline">
-            <input v-model="indexConsole.jobFilters.stuckOnly" data-testid="index-job-filter-stuck-only" type="checkbox" />
-            <span>仅看卡住任务</span>
-          </label>
+          <select v-model="indexConsole.jobFilters.jobType" data-testid="index-job-filter-job-type"><option value="">全部任务</option><option value="verify">校验任务</option><option value="reindex">重建任务</option></select>
+          <input v-model="indexConsole.jobFilters.reviewId" data-testid="index-job-filter-review-id" placeholder="审核 ID" />
+          <input v-model="indexConsole.jobFilters.workerId" data-testid="index-job-filter-worker-id" placeholder="工作器 ID" />
+          <label class="checkbox-inline"><input v-model="indexConsole.jobFilters.stuckOnly" data-testid="index-job-filter-stuck-only" type="checkbox" /><span>仅看卡住任务</span></label>
           <button data-testid="index-job-filter-refresh" @click="refreshIndex">刷新</button>
           <button data-testid="index-job-filter-clear" @click="clearJobFilters">清空</button>
         </div>
         <div class="field-inline">
-          <input
-            v-model="indexConsole.ledgerFilters.targetRef"
-            data-testid="index-ledger-filter-target-ref"
-            placeholder="目标引用"
-          />
-          <select v-model="indexConsole.ledgerFilters.source" data-testid="index-ledger-filter-source">
-            <option value="">全部来源</option>
-            <option value="recovery_timeline">恢复时间线</option>
-            <option value="system_runtime">系统活动</option>
-            <option value="operator_action">人工操作活动</option>
-          </select>
+          <input v-model="indexConsole.ledgerFilters.targetRef" data-testid="index-ledger-filter-target-ref" placeholder="目标引用" />
+          <select v-model="indexConsole.ledgerFilters.source" data-testid="index-ledger-filter-source"><option value="">全部来源</option><option value="recovery_timeline">恢复时间线</option><option value="system_runtime">系统活动</option><option value="operator_action">人工操作活动</option></select>
           <button data-testid="index-ledger-filter-refresh" @click="refreshIndex">刷新</button>
           <button data-testid="index-ledger-filter-clear" @click="clearLedgerFilters">清空</button>
         </div>
@@ -640,398 +341,272 @@ watch(
           <AliasScopeCard v-for="item in indexConsole.aliasScopes" :key="item.alias_scope" :item="item" />
         </div>
 
-        <article
-          v-if="indexConsole.lastRecoveryResult"
-          class="paper receipt-card"
-          data-testid="recovery-receipt"
-          :class="{ 'focused-card': isFocusedRecoverySweepReceipt() }"
-        >
-          <div class="receipt-head">
-            <div>
-              <h3>恢复回执</h3>
-              <p class="muted receipt-copy">展示最近一次恢复扫描的结果，包括回收租约、失败任务和新建人工审核事件。</p>
-            </div>
-            <span class="badge">恢复扫描</span>
-          </div>
+        <!-- RECEIPTS -->
+        <article v-if="indexConsole.lastRecoveryResult" class="paper receipt-card" data-testid="recovery-receipt" :class="{ 'focused-card': isFocusedSource('recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__') }">
+          <div class="receipt-head"><div><h3>恢复回执</h3><p class="muted receipt-copy">记录最近一次恢复扫描的结果。</p></div><span class="badge">恢复扫描</span></div>
           <div class="receipt-grid">
             <p><strong>回收任务</strong><br />{{ indexConsole.lastRecoveryResult.reclaimed_jobs ?? 0 }}</p>
             <p><strong>失败任务</strong><br />{{ indexConsole.lastRecoveryResult.failed_jobs ?? 0 }}</p>
             <p><strong>执行者</strong><br />{{ indexConsole.lastRecoveryResult.actor_ref || "-" }}</p>
-            <p><strong>回收幂等键</strong><br />{{ indexConsole.lastRecoveryResult.reclaimed_idempotency_keys ?? 0 }}</p>
-            <p><strong>失败幂等键</strong><br />{{ indexConsole.lastRecoveryResult.failed_idempotency_keys ?? 0 }}</p>
             <p><strong>人工审核事件</strong><br />{{ indexConsole.lastRecoveryResult.created_human_review_events ?? 0 }}</p>
           </div>
-          <div
-            v-if="indexConsole.lastRecoveryResult.reclaimed_job_summaries?.length"
-            class="receipt-detail"
-          >
-            <h4>回收任务摘要</h4>
-            <ul class="receipt-list">
-              <li
-                v-for="item in indexConsole.lastRecoveryResult.reclaimed_job_summaries"
-                :key="`${item.job_type}-${item.job_id}`"
-              >
-                <strong>{{ formatJobTypeWithCode(item.job_type, item.job_type || "-") }}</strong> {{ item.job_id }}<br />
-                {{ item.alias_scope }}<br />
-                上一工作器：{{ item.previous_worker_id || "-" }} | 尝试次数：{{ item.attempt_no ?? 0 }} | 租约到期：
-                {{ item.previous_lease_expires_at || "-" }}
-                <div class="card-actions">
-                  <button
-                    class="ghost"
-                    @click="jumpToTarget(withSourceFocusTarget(jobSummaryTarget(item), 'recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__'))"
-                  >
-                    打开任务
-                  </button>
-                </div>
-              </li>
-            </ul>
-          </div>
-          <div v-if="indexConsole.lastRecoveryResult.failed_job_summaries?.length" class="receipt-detail">
-            <h4>失败任务摘要</h4>
-            <ul class="receipt-list">
-              <li
-                v-for="item in indexConsole.lastRecoveryResult.failed_job_summaries"
-                :key="`${item.job_type}-${item.job_id}`"
-              >
-                <strong>{{ formatJobTypeWithCode(item.job_type, item.job_type || "-") }}</strong> {{ item.job_id }}<br />
-                {{ item.alias_scope }}<br />
-                {{ item.error_text || "-" }} | 完成时间：{{ item.finished_at || "-" }}
-                <div class="card-actions">
-                  <button
-                    class="ghost"
-                    @click="jumpToTarget(withSourceFocusTarget(jobSummaryTarget(item), 'recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__'))"
-                  >
-                    打开任务
-                  </button>
-                </div>
-              </li>
-            </ul>
-          </div>
-          <div
-            v-if="indexConsole.lastRecoveryResult.reclaimed_idempotency_key_summaries?.length"
-            class="receipt-detail"
-          >
-            <h4>回收幂等键</h4>
-            <ul class="receipt-list">
-              <li
-                v-for="item in indexConsole.lastRecoveryResult.reclaimed_idempotency_key_summaries"
-                :key="item.idempotency_key"
-              >
-                <strong>{{ item.idempotency_key }}</strong><br />
-                上一工作器：{{ item.previous_worker_id || "-" }} | 尝试次数：{{ item.attempt_no ?? 0 }} | 租约到期：
-                {{ item.previous_lease_expires_at || "-" }}
-              </li>
-            </ul>
-          </div>
-          <div v-if="recoveryCreatedEventTargets(indexConsole.lastRecoveryResult).length" class="receipt-detail">
-            <h4>新建人工审核事件</h4>
-            <ul class="receipt-list">
-              <li
-                v-for="item in recoveryCreatedEventTargets(indexConsole.lastRecoveryResult)"
-                :key="item.event_id"
-              >
-                <strong>{{ item.event_id }}</strong>
-                <div class="card-actions">
-                  <button
-                    class="ghost"
-                    :data-testid="`recovery-created-event-${item.event_id}`"
-                    @click="jumpToTarget(withSourceFocusTarget(item.target, 'recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__'))"
-                  >
-                    打开恢复事件
-                  </button>
-                </div>
-              </li>
-            </ul>
+          <div v-if="(indexConsole.lastRecoveryResult.created_human_review_event_targets || []).length" class="receipt-detail">
+            <div class="card-actions">
+              <button v-for="item in indexConsole.lastRecoveryResult.created_human_review_event_targets" :key="item.event_id" type="button" class="ghost" :data-testid="`recovery-created-event-${item.event_id}`" @click="jumpToTarget(withSourceTarget(item.target, 'recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__'))">{{ item.event_id }}</button>
+            </div>
           </div>
         </article>
 
-        <article
-          v-if="indexConsole.lastRecoveryActionResult || indexConsole.recoveryTimelineItems.length"
-          class="paper receipt-card"
-          data-testid="recovery-followup-receipt"
-          :class="{ 'focused-card': isFocusedRecoveryReceipt() }"
-        >
-          <div class="receipt-head">
-            <div>
-              <h3>恢复后续</h3>
-              <p class="muted receipt-copy">跟踪最近一次人工处理，以及它后面串联起来的恢复时间线。</p>
-            </div>
-            <span class="badge">恢复后续</span>
-          </div>
-          <div v-if="indexConsole.lastRecoveryActionResult" class="receipt-grid">
+        <article v-if="indexConsole.lastRecoveryActionResult" class="paper receipt-card" data-testid="recovery-followup-receipt" :class="{ 'focused-card': isFocusedSource('recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null) }">
+          <div class="receipt-head"><div><h3>恢复后续</h3><p class="muted receipt-copy">显示最近一次人工处理及其后续目标。</p></div><span class="badge">恢复后续</span></div>
+          <div class="receipt-grid">
             <p><strong>事件</strong><br />{{ indexConsole.lastRecoveryActionResult.event_id || "-" }}</p>
-            <p><strong>动作</strong><br />{{ formatActionWithCode(indexConsole.lastRecoveryActionResult.action, indexConsole.lastRecoveryActionResult.action || "-") }}</p>
-            <p><strong>执行者</strong><br />{{ recoveryEventActor(indexConsole.lastRecoveryActionResult) }}</p>
-            <p><strong>状态</strong><br />{{ formatStatusWithCode(indexConsole.lastRecoveryActionResult.status, indexConsole.lastRecoveryActionResult.status || "-") }}</p>
-            <p><strong>关联目标</strong><br />{{ recoveryEventTarget(indexConsole.lastRecoveryActionResult) }}</p>
-            <p><strong>处理结论</strong><br />{{ recoveryEventResolution(indexConsole.lastRecoveryActionResult) }}</p>
-            <p><strong>回放结果</strong><br />{{ indexConsole.lastRecoveryActionResult.replay_result?.review_id || indexConsole.lastRecoveryActionResult.replay_result?.job_id || "-" }}</p>
+            <p><strong>动作</strong><br />{{ fmtAction(indexConsole.lastRecoveryActionResult.action, indexConsole.lastRecoveryActionResult.action || "-") }}</p>
+            <p><strong>执行者</strong><br />{{ recoveryActor(indexConsole.lastRecoveryActionResult) }}</p>
+            <p><strong>状态</strong><br />{{ fmtStatus(indexConsole.lastRecoveryActionResult.status, indexConsole.lastRecoveryActionResult.status || "-") }}</p>
+            <p><strong>关联目标</strong><br />{{ recoveryTargetRef(indexConsole.lastRecoveryActionResult) }}</p>
+            <p><strong>处理结论</strong><br />{{ recoveryResolution(indexConsole.lastRecoveryActionResult) }}</p>
           </div>
-          <div
-            v-if="recoveryLinkedTarget(indexConsole.lastRecoveryActionResult) || recoveryFollowupTarget(indexConsole.lastRecoveryActionResult) || recoveryReplayTarget(indexConsole.lastRecoveryActionResult)"
-            class="card-actions"
-          >
-            <button
-              v-if="recoveryLinkedTarget(indexConsole.lastRecoveryActionResult)"
-              class="ghost"
-              data-testid="recovery-followup-open-linked-target"
-              @click="jumpToTarget(withSourceFocusTarget(recoveryLinkedTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
-            >
-              打开关联目标
-            </button>
-            <button
-              v-if="recoveryFollowupTarget(indexConsole.lastRecoveryActionResult)"
-              class="ghost"
-              data-testid="recovery-followup-open-followup-target"
-              @click="jumpToTarget(withSourceFocusTarget(recoveryFollowupTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
-            >
-              打开后续目标
-            </button>
-            <button
-              v-if="recoveryReplayTarget(indexConsole.lastRecoveryActionResult)"
-              class="ghost"
-              data-testid="recovery-followup-open-replay-result"
-              @click="jumpToTarget(withSourceFocusTarget(recoveryReplayTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))"
-            >
-              打开回放结果
-            </button>
+          <div v-if="recoveryLinkedTarget(indexConsole.lastRecoveryActionResult) || recoveryFollowupTarget(indexConsole.lastRecoveryActionResult) || recoveryReplayTarget(indexConsole.lastRecoveryActionResult)" class="card-actions">
+            <button v-if="recoveryLinkedTarget(indexConsole.lastRecoveryActionResult)" type="button" class="ghost" data-testid="recovery-followup-open-linked-target" @click="jumpToTarget(withSourceTarget(recoveryLinkedTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))">打开关联目标</button>
+            <button v-if="recoveryFollowupTarget(indexConsole.lastRecoveryActionResult)" type="button" class="ghost" data-testid="recovery-followup-open-followup-target" @click="jumpToTarget(withSourceTarget(recoveryFollowupTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))">打开后续目标</button>
+            <button v-if="recoveryReplayTarget(indexConsole.lastRecoveryActionResult)" type="button" class="ghost" data-testid="recovery-followup-open-replay-result" @click="jumpToTarget(withSourceTarget(recoveryReplayTarget(indexConsole.lastRecoveryActionResult), 'recovery_receipt', indexConsole.lastRecoveryActionResult?.event_id || null))">打开回放结果</button>
           </div>
-          <div v-if="indexConsole.recoveryTimelineItems.length" class="receipt-detail">
-            <h4>恢复时间线</h4>
+        </article>
+
+        <article v-if="indexConsole.lastPromotionResult" class="paper receipt-card" data-testid="promotion-receipt" :class="{ 'focused-card': isFocusedSource('promotion_receipt', indexConsole.lastPromotionResult?.actor_ref || '__promotion_receipt__') }">
+          <div class="receipt-head"><div><h3>发布回执</h3><p class="muted receipt-copy">记录最近一次到期发布。</p></div><span class="badge">到期发布</span></div>
+          <div class="receipt-grid">
+            <p><strong>已发布数量</strong><br />{{ indexConsole.lastPromotionResult.promoted ?? 0 }}</p>
+            <p><strong>执行者</strong><br />{{ indexConsole.lastPromotionResult.actor_ref || "-" }}</p>
+            <p><strong>别名范围</strong><br />{{ indexConsole.lastPromotionResult.promoted_alias_scopes?.join(", ") || "-" }}</p>
+            <p><strong>审核 ID</strong><br />{{ indexConsole.lastPromotionResult.promoted_review_ids?.join(", ") || "-" }}</p>
+          </div>
+          <div v-if="(indexConsole.lastPromotionResult.promoted_review_targets || []).length" class="card-actions">
+            <button v-for="item in indexConsole.lastPromotionResult.promoted_review_targets" :key="item.review_id" type="button" class="ghost" :data-testid="`promotion-open-review-${item.review_id}`" @click="jumpToTarget(withIndexFocusTarget(item.target || reviewTarget(item.review_id), 'promotion_receipt', indexConsole.lastPromotionResult?.actor_ref || '__promotion_receipt__'))">打开审核 {{ item.review_id }}</button>
+          </div>
+        </article>
+
+        <ActivitySectionCard
+          title="恢复时间线"
+          description="恢复事件保持折叠，只有在需要排查时再展开读取。"
+          :summary="sectionSummary.recovery_timeline()"
+          badge="恢复"
+          :expanded="expandedSections.recovery_timeline"
+          :loading="indexConsole.activitySectionState('recovery_timeline').loading"
+          toggle-test-id="index-toggle-recovery-timeline"
+          @toggle="toggleSection('recovery_timeline')"
+        >
+          <div v-if="!indexConsole.recoveryTimelineItems.length" class="empty">当前没有恢复活动。</div>
+          <template v-else>
             <ul class="receipt-list">
               <li
                 v-for="item in indexConsole.recoveryTimelineItems"
-                :key="item.event_id"
-                :class="{ 'focused-card': isFocusedRecoveryTimelineItem(item) }"
+                :key="item.event_id || activityItemKey('recovery_timeline', item)"
+                :data-activity-key="activityItemKey('recovery_timeline', item)"
+                :class="{ 'focused-card': isFocusedSource('recovery_timeline', item.event_id) || isFocusedSource('recovery_receipt', item.event_id) }"
               >
-                <strong>{{ item.event_id }}</strong><br />
-                {{ formatStatusWithCode(item.status, item.status || "-") }} |
-                {{ formatActionWithCode(recoveryEventAction(item), recoveryEventAction(item)) }} |
-                {{ recoveryEventActor(item) }} |
-                {{ recoveryEventTimestamp(item) }}<br />
-                目标：{{ recoveryEventTarget(item) }}<br />
-                处理结论：{{ recoveryEventResolution(item) }}<br />
-                下一步：{{ recoveryEventFollowup(item) }}
-                <div v-if="recoveryLinkedTarget(item) || recoveryFollowupTarget(item) || recoveryReplayTarget(item)" class="card-actions">
+                <strong>{{ item.event_id || item.label || "恢复事件" }}</strong><br />
+                {{ recoveryTimestamp(item) }} | {{ fmtStatus(item.status, item.status || "-") }} | {{ recoveryActor(item) }}<br />
+                关联目标：{{ recoveryTargetRef(item) }} | 动作：{{ fmtAction(recoveryAction(item), recoveryAction(item)) }} | 结论：{{ recoveryResolution(item) }}
+                <p v-if="recoveryFollowup(item) !== '-'" class="muted activity-inline-copy">
+                  后续：{{ recoveryFollowup(item) }}
+                </p>
+                <div class="card-actions">
+                  <button
+                    v-if="humanReviewTarget(item.event_id)"
+                    type="button"
+                    class="ghost"
+                    @click="jumpToTarget(withSourceTarget(humanReviewTarget(item.event_id), 'recovery_timeline', item.event_id))"
+                  >
+                    打开恢复事件
+                  </button>
                   <button
                     v-if="recoveryLinkedTarget(item)"
+                    type="button"
                     class="ghost"
-                    @click="jumpToTarget(withSourceFocusTarget(recoveryLinkedTarget(item), 'recovery_timeline', item.event_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(recoveryLinkedTarget(item), 'recovery_timeline', item.event_id))"
                   >
                     打开关联目标
                   </button>
                   <button
                     v-if="recoveryFollowupTarget(item)"
+                    type="button"
                     class="ghost"
-                    @click="jumpToTarget(withSourceFocusTarget(recoveryFollowupTarget(item), 'recovery_timeline', item.event_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(recoveryFollowupTarget(item), 'recovery_timeline', item.event_id))"
                   >
                     打开后续目标
                   </button>
                   <button
                     v-if="recoveryReplayTarget(item)"
+                    type="button"
                     class="ghost"
-                    @click="jumpToTarget(withSourceFocusTarget(recoveryReplayTarget(item), 'recovery_timeline', item.event_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(recoveryReplayTarget(item), 'recovery_timeline', item.event_id))"
                   >
                     打开回放结果
                   </button>
                 </div>
               </li>
             </ul>
-          </div>
-        </article>
+            <CursorPager
+              test-id-prefix="recovery-timeline-pager"
+              :pagination="indexConsole.activitySectionPagination('recovery_timeline')"
+              :can-previous="sectionCanPrevious('recovery_timeline')"
+              :can-next="sectionCanNext('recovery_timeline')"
+              :disabled="indexConsole.activitySectionState('recovery_timeline').loading"
+              @previous="previousSectionPage('recovery_timeline')"
+              @next="nextSectionPage('recovery_timeline')"
+            />
+          </template>
+        </ActivitySectionCard>
 
-        <article
-          v-if="indexConsole.lastPromotionResult"
-          class="paper receipt-card"
-          data-testid="promotion-receipt"
-          :class="{ 'focused-card': isFocusedPromotionReceipt() }"
+        <ActivitySectionCard
+          title="系统活动"
+          description="系统运行时事件按需读取，避免首屏吞掉整包 payload。"
+          :summary="sectionSummary.system_runtime()"
+          badge="系统"
+          :expanded="expandedSections.system_runtime"
+          :loading="indexConsole.activitySectionState('system_runtime').loading"
+          toggle-test-id="index-toggle-system-runtime"
+          @toggle="toggleSection('system_runtime')"
         >
-          <div class="receipt-head">
-            <div>
-              <h3>发布回执</h3>
-              <p class="muted receipt-copy">记录最近一次从本控制台触发的到期发布扫描。</p>
-            </div>
-            <span class="badge">到期发布</span>
-          </div>
-          <div class="receipt-grid">
-            <p><strong>已发布数量</strong><br />{{ indexConsole.lastPromotionResult.promoted ?? 0 }}</p>
-            <p><strong>执行者</strong><br />{{ indexConsole.lastPromotionResult.actor_ref || "-" }}</p>
-            <p><strong>别名范围</strong><br />{{ indexConsole.lastPromotionResult.promoted_alias_scopes?.join(", ") || "-" }}</p>
-            <p><strong>审核 ID</strong><br />{{ indexConsole.lastPromotionResult.promoted_review_ids?.join(", ") || "-" }}</p>
-            <p><strong>行 ID</strong><br />{{ indexConsole.lastPromotionResult.promoted_row_ids?.join(", ") || "-" }}</p>
-          </div>
-          <div v-if="promotedReviewTargets(indexConsole.lastPromotionResult).length" class="card-actions">
-            <button
-              v-for="item in promotedReviewTargets(indexConsole.lastPromotionResult)"
-              :key="item.review_id"
-              class="ghost"
-              :data-testid="`promotion-open-review-${item.review_id}`"
-              @click="jumpToTarget(withSourceFocusTarget(item.target, 'promotion_receipt', indexConsole.lastPromotionResult?.actor_ref || '__promotion_receipt__'))"
-            >
-              打开审核
-            </button>
-          </div>
-        </article>
-
-        <article v-if="indexConsole.systemRuntimeTimelineItems.length" class="paper receipt-card">
-          <div class="receipt-head">
-            <div>
-              <h3>系统活动</h3>
-              <p class="muted receipt-copy">展示系统自动触发的运行时事件，和上面的人工回执一起查看更完整。</p>
-            </div>
-            <span class="badge">系统运行时</span>
-          </div>
-          <div class="receipt-detail">
+          <div v-if="!indexConsole.systemRuntimeTimelineItems.length" class="empty">当前没有系统活动。</div>
+          <template v-else>
             <ul class="receipt-list">
               <li
                 v-for="item in indexConsole.systemRuntimeTimelineItems"
-                :key="item.operation_id"
-                :class="{ 'focused-card': isFocusedSystemActivityItem(item) }"
+                :key="activityItemKey('system_runtime', item)"
+                :data-activity-key="activityItemKey('system_runtime', item)"
+                :class="{ 'focused-card': isFocusedSource('system_activity', item.operation_id) }"
               >
-                <strong>{{ item.event_type }}</strong><br />
-                {{ systemActivitySummary(item) }}<br />
-                执行者：{{ systemActivityActor(item) }} | 时间：{{ item.created_at || "-" }}<br />
-                引用：{{ item.object_ref || "-" }} | 细节：{{ systemActivityDetail(item) }}
-                <div v-if="systemActivityTargets(item).length" class="card-actions">
+                <strong>{{ item.label || item.event_type || "系统活动" }}</strong><br />
+                {{ targetSummary(item) }}<br />
+                {{ item.summary || item.description || "-" }}
+                <div v-if="activityTargets(item).length" class="card-actions">
                   <button
-                    v-for="target in systemActivityTargets(item)"
-                    :key="target.target_ref"
+                    v-for="target in activityTargets(item)"
+                    :key="`${activityItemKey('system_runtime', item)}:${target.target_ref}`"
+                    type="button"
                     class="ghost"
-                    @click="jumpToTarget(withSourceFocusTarget(target, 'system_activity', item.operation_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(target, 'system_activity', item.operation_id))"
                   >
-                    {{ systemTargetLabel(target) }}
+                    {{ targetActionLabel(target) }}
                   </button>
                 </div>
               </li>
             </ul>
-          </div>
-        </article>
+            <CursorPager
+              test-id-prefix="system-runtime-pager"
+              :pagination="indexConsole.activitySectionPagination('system_runtime')"
+              :can-previous="sectionCanPrevious('system_runtime')"
+              :can-next="sectionCanNext('system_runtime')"
+              :disabled="indexConsole.activitySectionState('system_runtime').loading"
+              @previous="previousSectionPage('system_runtime')"
+              @next="nextSectionPage('system_runtime')"
+            />
+          </template>
+        </ActivitySectionCard>
 
-        <article v-if="indexConsole.operatorActionTimelineItems.length" class="paper receipt-card">
-          <div class="receipt-head">
-            <div>
-              <h3>人工操作活动</h3>
-              <p class="muted receipt-copy">展示已落库的人工处理动作，并沿用恢复回执里的同一套目标链路。</p>
-            </div>
-            <span class="badge">人工操作</span>
-          </div>
-          <div class="receipt-detail">
+        <ActivitySectionCard
+          title="人工操作"
+          description="操作流保持收起，避免每次进入索引页都渲染长时间线。"
+          :summary="sectionSummary.operator_action()"
+          badge="操作"
+          :expanded="expandedSections.operator_action"
+          :loading="indexConsole.activitySectionState('operator_action').loading"
+          toggle-test-id="index-toggle-operator-action"
+          @toggle="toggleSection('operator_action')"
+        >
+          <div v-if="!indexConsole.operatorActionTimelineItems.length" class="empty">当前没有人工操作记录。</div>
+          <template v-else>
             <ul class="receipt-list">
               <li
                 v-for="item in indexConsole.operatorActionTimelineItems"
-                :key="item.operation_id"
-                :class="{ 'focused-card': isFocusedOperatorActionItem(item) }"
+                :key="activityItemKey('operator_action', item)"
+                :data-activity-key="activityItemKey('operator_action', item)"
+                :class="{ 'focused-card': isFocusedSource('operator_action', item.operation_id) }"
               >
-                <strong>{{ item.action || item.event_type }}</strong><br />
-                事件：{{ item.event_id || item.object_ref || "-" }}<br />
-                执行者：{{ item.actor_ref || "-" }} | 时间：{{ item.created_at || "-" }}<br />
-                {{ operatorActionSummary(item) }}<br />
-                处理结论：{{ item.resolution_reason || "-" }}
-                <div v-if="operatorActionTargets(item).length" class="card-actions">
+                <strong>{{ item.label || item.action || "人工操作" }}</strong><br />
+                {{ targetSummary(item) }}<br />
+                {{ item.summary || item.description || "-" }}
+                <div v-if="activityTargets(item).length" class="card-actions">
                   <button
-                    v-for="target in operatorActionTargets(item)"
-                    :key="target.target_ref"
+                    v-for="target in activityTargets(item)"
+                    :key="`${activityItemKey('operator_action', item)}:${target.target_ref}`"
+                    type="button"
                     class="ghost"
-                    @click="jumpToTarget(withSourceFocusTarget(target, 'operator_action', item.operation_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(target, 'operator_action', item.operation_id))"
                   >
-                    {{ systemTargetLabel(target) }}
+                    {{ targetActionLabel(target) }}
                   </button>
                 </div>
               </li>
             </ul>
-          </div>
-        </article>
+            <CursorPager
+              test-id-prefix="operator-action-pager"
+              :pagination="indexConsole.activitySectionPagination('operator_action')"
+              :can-previous="sectionCanPrevious('operator_action')"
+              :can-next="sectionCanNext('operator_action')"
+              :disabled="indexConsole.activitySectionState('operator_action').loading"
+              @previous="previousSectionPage('operator_action')"
+              @next="nextSectionPage('operator_action')"
+            />
+          </template>
+        </ActivitySectionCard>
 
-        <article v-if="indexConsole.targetActivityGroups.length" class="paper receipt-card">
-          <div class="receipt-head">
-            <div>
-              <h3>目标活动</h3>
-              <p class="muted receipt-copy">按目标聚合恢复、系统和人工三类历史，让一个对象的完整处理链路一眼可见。</p>
-            </div>
-            <span class="badge">目标聚合</span>
-          </div>
-          <div class="receipt-detail">
-            <ul class="receipt-list">
-              <li
-                v-for="group in prioritizedTargetActivityGroups"
+        <ActivitySectionCard
+          title="目标活动组"
+          description="先展示轻量摘要，展开单个目标时再读取该组明细。"
+          :summary="sectionSummary.target_groups()"
+          badge="目标"
+          :expanded="expandedSections.target_groups"
+          :loading="indexConsole.activitySectionState('target_groups').loading"
+          toggle-test-id="index-toggle-target-groups"
+          @toggle="toggleSection('target_groups')"
+        >
+          <div v-if="!prioritizedTargetGroups.length" class="empty">当前没有目标活动摘要。</div>
+          <template v-else>
+            <ul class="receipt-list target-group-list">
+              <TargetActivityGroupCard
+                v-for="group in prioritizedTargetGroups"
                 :key="group.target.target_ref"
-                :data-testid="`target-activity-group-${group.target.target_ref}`"
-                :class="{ 'focused-card': focusTarget?.target_ref === group.target.target_ref }"
-              >
-                <div class="target-group-head">
-                  <div class="target-group-meta">
-                    <strong>{{ group.target.target_ref }}</strong><br />
-                    最新时间：{{ group.latest_at || "-" }} | 数量：{{ group.activity_count ?? 0 }} | 来源：
-                    {{ formatSourceList(group.sources) }}
-                  </div>
-                    <button
-                      class="ghost target-group-toggle"
-                      :data-testid="`target-activity-toggle-${group.target.target_ref}`"
-                      @click="toggleTargetGroup(group)"
-                    >
-                      {{ isTargetGroupExpanded(group) ? "收起活动" : "显示活动" }}
-                    </button>
-                  </div>
-                <div class="card-actions">
-                  <button class="ghost" @click="jumpToTarget(group.target)">
-                    {{ systemTargetLabel(group.target) }}
-                  </button>
-                </div>
-                <div v-if="isTargetGroupExpanded(group) && group.activity_items?.length" class="receipt-detail">
-                  <ul class="receipt-list">
-                      <li
-                        v-for="item in orderedTargetActivityItems(group)"
-                        :key="item.activity_key"
-                        :data-testid="`target-activity-item-${item.activity_key}`"
-                        :data-activity-key="item.activity_key"
-                        :class="{
-                          'focused-card': isFocusedActivityItem(group, item) || isSourceLinkedActivityItem(item),
-                        'focused-activity-item': isFocusedActivityItem(group, item),
-                      }"
-                    >
-                      <strong>{{ activityItemLabel(item) }}</strong>
-                      <span v-if="isFocusedActivityItem(group, item)" class="badge">最新关联活动</span><br />
-                      <span v-if="!isFocusedActivityItem(group, item) && isSourceLinkedActivityItem(item)" class="badge">来源关联活动</span><br v-if="!isFocusedActivityItem(group, item)" />
-                      {{ targetActivitySummary(item) }}<br />
-                      {{ item.summary || "-" }}
-                      <div v-if="item.target_refs?.length" class="card-actions">
-                        <button
-                          v-for="target in item.target_refs"
-                          :key="`${item.activity_key}:${target.target_ref}`"
-                          class="ghost"
-                          @click="jumpToTarget(target)"
-                        >
-                          {{ systemTargetLabel(target) }}
-                        </button>
-                      </div>
-                    </li>
-                  </ul>
-                </div>
-                <p v-else-if="isTargetGroupExpanded(group)" class="muted target-group-empty">这个目标还没有活动记录。</p>
-              </li>
+                :group="group"
+                :expanded="activeTargetGroupRef === group.target.target_ref"
+                :loading="groupLoading(group.target.target_ref)"
+                :items="groupItems(group.target.target_ref)"
+                :pagination="indexConsole.targetGroupPagination(group.target.target_ref)"
+                :can-previous="groupCanPrevious(group.target.target_ref)"
+                :can-next="groupCanNext(group.target.target_ref)"
+                :focused="group.target.target_ref === focusTargetRef"
+                :focused-activity-key="group.target.target_ref === focusTargetRef ? focusedActivityKey : ''"
+                :source-linked-activity-key="group.target.target_ref === focusTargetRef ? sourceLinkedActivityKey : ''"
+                @toggle="toggleTargetGroup"
+                @open-target="jumpToTarget"
+                @previous="previousGroupPage"
+                @next="nextGroupPage"
+              />
             </ul>
-          </div>
-        </article>
+            <CursorPager
+              test-id-prefix="target-groups-pager"
+              :pagination="indexConsole.activitySectionPagination('target_groups')"
+              :can-previous="sectionCanPrevious('target_groups')"
+              :can-next="sectionCanNext('target_groups')"
+              :disabled="indexConsole.activitySectionState('target_groups').loading"
+              @previous="previousSectionPage('target_groups')"
+              @next="nextSectionPage('target_groups')"
+            />
+          </template>
+        </ActivitySectionCard>
       </template>
     </PanelShell>
 
     <PanelShell eyebrow="任务" title="重建索引与校验">
       <div v-if="!indexConsole.jobs.length" class="empty">当前没有排队中的索引任务。</div>
       <div v-else class="job-table">
-        <div
-          v-for="item in prioritizedJobs"
-          :key="item.job_id"
-          class="job-row"
-          :data-testid="`verify-job-${item.job_id}`"
-          :class="{ 'focused-card': isFocusedJob(item.job_id) }"
-        >
-          <div class="job-main">
-            <strong>{{ formatJobTypeWithCode(item.job_type, item.job_type || "-") }}</strong>
-            <div class="muted">{{ item.job_id }}</div>
-            <div class="muted">{{ item.alias_scope }}</div>
-          </div>
+        <div v-for="item in prioritizedJobs" :key="item.job_id" class="job-row" :data-testid="`verify-job-${item.job_id}`" :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === item.job_id }">
+          <div class="job-main"><strong>{{ fmtJobType(item.job_type, item.job_type || "-") }}</strong><div class="muted">{{ item.job_id }}</div><div class="muted">{{ item.alias_scope }}</div></div>
           <div class="job-diagnostics">
-            <p><strong>状态</strong><br />{{ formatStatusWithCode(item.status, item.status || "-") }}</p>
+            <p><strong>状态</strong><br />{{ fmtStatus(item.status, item.status || "-") }}</p>
             <p><strong>目标快照</strong><br />{{ item.target_snapshot_version || "-" }}</p>
             <p><strong>目标嵌入</strong><br />{{ item.target_embedding_version || "-" }}</p>
             <p><strong>工作器</strong><br />{{ item.worker_id || "-" }}</p>
@@ -1043,27 +618,12 @@ watch(
             <p><strong>错误</strong><br />{{ item.error_text || "-" }}</p>
           </div>
           <div class="job-actions">
-            <button
-              v-if="item.job_type === 'verify'"
-              :disabled="indexConsole.actionId === item.job_id"
-              :data-testid="`retry-verify-job-${item.job_id}`"
-              @click="retry(item.job_id)"
-            >
-              重试校验
-            </button>
+            <button v-if="item.job_type === 'verify'" :disabled="indexConsole.actionId === item.job_id" :data-testid="`retry-verify-job-${item.job_id}`" @click="retry(item.job_id)">重试校验</button>
             <span v-else class="muted">自动生成</span>
           </div>
         </div>
       </div>
-      <CursorPager
-        test-id-prefix="jobs-pager"
-        :pagination="indexConsole.jobPagination"
-        :can-previous="Boolean(indexConsole.jobCursorStack.length)"
-        :can-next="Boolean(indexConsole.jobPagination?.has_next)"
-        :disabled="indexConsole.loading"
-        @previous="previousJobPage"
-        @next="nextJobPage"
-      />
+      <CursorPager test-id-prefix="jobs-pager" :pagination="indexConsole.jobPagination" :can-previous="Boolean(indexConsole.jobCursorStack.length)" :can-next="Boolean(indexConsole.jobPagination?.has_next)" :disabled="indexConsole.loading" @previous="previousJobPage" @next="nextJobPage" />
     </PanelShell>
   </section>
 </template>

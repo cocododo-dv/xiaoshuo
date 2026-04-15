@@ -34,7 +34,7 @@ function batchMessage(actionLabel, itemLabel, result, key) {
 async function refreshAuthorTrashStore() {
   const { useAuthorTrashStore } = await import("./authorTrash.js");
   const authorTrash = useAuthorTrashStore();
-  await authorTrash.load();
+  authorTrash.markStale();
 }
 
 export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
@@ -45,11 +45,20 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
     chapterState: null,
     scenes: [],
     sceneDraft: null,
+    loaded: false,
+    stale: false,
     loading: false,
     actionId: "",
     error: "",
   }),
   actions: {
+    markStale() {
+      this.stale = true;
+    },
+    markFresh() {
+      this.loaded = true;
+      this.stale = false;
+    },
     clearWorkspace() {
       this.chapter = null;
       this.chapterState = null;
@@ -92,24 +101,33 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       }
       await this.loadWorkspace(this.selectedChapterId);
     },
-    async initialize() {
+    async initialize({ force = false } = {}) {
+      if (this.loaded && !this.stale && !force) {
+        return;
+      }
       this.loading = true;
       this.error = "";
       try {
         await this.refreshActiveData(this.selectedChapterId);
+        this.markFresh();
       } catch (error) {
         this.clearWorkspace();
         this.chapters = [];
+        this.loaded = false;
         this.error = error.message;
       } finally {
         this.loading = false;
       }
+    },
+    async ensureLoaded(options = {}) {
+      await this.initialize(options);
     },
     async selectChapter(chapterId) {
       this.loading = true;
       this.error = "";
       try {
         await this.loadWorkspace(chapterId);
+        this.markFresh();
       } catch (error) {
         this.clearWorkspace();
         this.error = error.message;
@@ -124,6 +142,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       try {
         const result = await postChapter(payload);
         await this.refreshActiveData(result.chapter_id);
+        this.markFresh();
         return `已保存章节 ${result.chapter_id}`;
       } catch (error) {
         this.error = error.message;
@@ -142,6 +161,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
           chapter_id: chapterId,
         });
         await this.refreshActiveData(chapterId);
+        this.markFresh();
         return `已保存场景 ${result.scene_id}`;
       } catch (error) {
         this.error = error.message;
@@ -174,6 +194,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
           last_scene_id: lastSceneId,
         });
         await this.loadWorkspace(this.selectedChapterId);
+        this.markFresh();
         return `已调整 ${sceneIds.length} 个场景的顺序`;
       } catch (error) {
         this.error = error.message;
@@ -191,6 +212,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       try {
         const result = await postTrashScenes(sceneIds);
         await this.refreshActiveData(this.selectedChapterId);
+        this.markFresh();
         await refreshAuthorTrashStore();
         return batchMessage("已移入作者回收站", "场景", result, "scene_id");
       } catch (error) {
@@ -211,6 +233,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         const nextChapterId =
           this.selectedChapterId && !chapterIds.includes(this.selectedChapterId) ? this.selectedChapterId : "";
         await this.refreshActiveData(nextChapterId);
+        this.markFresh();
         await refreshAuthorTrashStore();
         return batchMessage("已移入作者回收站", "章节", result, "chapter_id");
       } catch (error) {

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onActivated, ref, watch } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
 import { useAuthorTrashStore } from "../stores/authorTrash";
@@ -64,7 +64,15 @@ function syncSelections() {
 }
 
 async function refreshTrash() {
-  await authorTrash.load();
+  await authorTrash.ensureLoaded({ force: true });
+  syncSelections();
+  if (authorTrash.error) {
+    emit("notice", authorTrash.error);
+  }
+}
+
+async function ensureTrashLoaded() {
+  await authorTrash.ensureLoaded();
   syncSelections();
   if (authorTrash.error) {
     emit("notice", authorTrash.error);
@@ -138,8 +146,8 @@ watch(
   { immediate: true },
 );
 
-onMounted(() => {
-  refreshTrash();
+onActivated(() => {
+  ensureTrashLoaded();
 });
 </script>
 

@@ -10,10 +10,11 @@ from novel_system.api.response import ok
 from novel_system.services.knowledge_catalog import (
     get_knowledge_entry,
     get_knowledge_workflow,
-    list_activity_events,
+    list_paginated_activity_events,
     list_jobs,
     list_knowledge_entries,
-    list_target_activity_groups,
+    list_paginated_target_activity_groups,
+    list_target_activity_group_items,
     list_vector_alias_scopes,
     supported_object_types,
 )
@@ -136,9 +137,22 @@ def activity_events(
     session: Session = Depends(get_session),
     target_ref: str | None = None,
     actor_ref: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
 ):
     return ok(
-        {"items": list_activity_events(session, stream=stream, target_ref=target_ref, actor_ref=actor_ref)},
+        list_paginated_activity_events(
+            session,
+            stream=stream,
+            target_ref=target_ref,
+            actor_ref=actor_ref,
+            page=page,
+            page_size=page_size,
+            cursor=cursor,
+            limit=limit,
+        ),
         req_id=getattr(request.state, "request_id", None),
     )
 
@@ -150,15 +164,48 @@ def target_activity_groups(
     target_ref: str | None = None,
     source: Literal["recovery_timeline", "system_runtime", "operator_action"] | None = None,
     actor_ref: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
 ):
     return ok(
-        {
-            "items": list_target_activity_groups(
-                session,
-                target_ref=target_ref,
-                source=source,
-                actor_ref=actor_ref,
-            )
-        },
+        list_paginated_target_activity_groups(
+            session,
+            target_ref=target_ref,
+            source=source,
+            actor_ref=actor_ref,
+            page=page,
+            page_size=page_size,
+            cursor=cursor,
+            limit=limit,
+        ),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.get("/api/v1/target-activity-groups/{target_ref:path}/items")
+def target_activity_group_items(
+    target_ref: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    source: Literal["recovery_timeline", "system_runtime", "operator_action"] | None = None,
+    actor_ref: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+):
+    return ok(
+        list_target_activity_group_items(
+            session,
+            target_ref=target_ref,
+            source=source,
+            actor_ref=actor_ref,
+            page=page,
+            page_size=page_size,
+            cursor=cursor,
+            limit=limit,
+        ),
         req_id=getattr(request.state, "request_id", None),
     )

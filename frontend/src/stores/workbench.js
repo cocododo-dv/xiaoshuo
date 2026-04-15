@@ -27,6 +27,8 @@ export const useWorkbenchStore = defineStore("workbench", {
     attemptPager: createCursorPager(),
     attemptSceneId: "CH001_SC01",
     attempts: [],
+    loaded: false,
+    stale: false,
     loading: false,
     humanReviewLoading: false,
     attemptLoading: false,
@@ -41,6 +43,13 @@ export const useWorkbenchStore = defineStore("workbench", {
     attemptCursorStack: (state) => state.attemptPager.cursorStack,
   },
   actions: {
+    markStale() {
+      this.stale = true;
+    },
+    markFresh() {
+      this.loaded = true;
+      this.stale = false;
+    },
     async load(sceneId = this.sceneId) {
       this.loading = true;
       this.error = "";
@@ -86,21 +95,39 @@ export const useWorkbenchStore = defineStore("workbench", {
         this.attemptLoading = false;
       }
     },
-    async refreshAll(sceneId = this.sceneId) {
-      this.sceneId = sceneId;
-      await Promise.all([this.load(sceneId), this.loadHumanReview(sceneId), this.loadAttempts(sceneId)]);
+    async refreshAll(sceneId = this.sceneId, { force = false } = {}) {
+      const nextSceneId = sceneId || this.sceneId;
+      if (this.loaded && !this.stale && !force && nextSceneId === this.sceneId) {
+        return;
+      }
+      this.sceneId = nextSceneId;
+      await Promise.all([
+        this.load(nextSceneId),
+        this.loadHumanReview(nextSceneId),
+        this.loadAttempts(nextSceneId, { reset: force || nextSceneId !== this.attemptSceneId }),
+      ]);
+      if (!this.error) {
+        this.markFresh();
+      } else {
+        this.loaded = false;
+      }
+    },
+    async ensureLoaded({ force = false, sceneId = this.sceneId } = {}) {
+      await this.refreshAll(sceneId, { force });
     },
     async nextAttemptsPage() {
       if (!advanceCursorPager(this.attemptPager)) {
         return;
       }
       await this.loadAttempts(this.sceneId);
+      this.markFresh();
     },
     async previousAttemptsPage() {
       if (!retreatCursorPager(this.attemptPager)) {
         return;
       }
       await this.loadAttempts(this.sceneId);
+      this.markFresh();
     },
     async runScene(sceneId = this.sceneId) {
       const previousSceneId = this.sceneId;
@@ -110,7 +137,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         const result = await runFullScene(sceneId);
         this.lastRunResult = result;
         this.syncAttemptPager(sceneId, { reset: true });
-        await this.refreshAll(sceneId);
+        await this.refreshAll(sceneId, { force: true });
         return `已运行 ${sceneId} 的完整场景流程`;
       } catch (error) {
         this.sceneId = previousSceneId;
@@ -126,7 +153,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       try {
         const result = await postChapterBackfill(chapterId, stageId, strategy);
         this.lastChapterActionResult = result.receipt;
-        await this.refreshAll(sceneId);
+        await this.refreshAll(sceneId, { force: true });
         return `已对 ${stageId} 应用策略 ${strategy}`;
       } catch (error) {
         this.error = error.message;
@@ -141,7 +168,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       try {
         const result = await postChapterFinalAggregate(chapterId);
         this.lastChapterActionResult = result.receipt;
-        await this.refreshAll(sceneId);
+        await this.refreshAll(sceneId, { force: true });
         return `已运行 ${chapterId} 的最终聚合`;
       } catch (error) {
         this.error = error.message;
@@ -156,7 +183,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       try {
         const result = await postChapterManualHold(chapterId, reason);
         this.lastChapterActionResult = result.receipt;
-        await this.refreshAll(sceneId);
+        await this.refreshAll(sceneId, { force: true });
         return `已为 ${chapterId} 设置人工挂起`;
       } catch (error) {
         this.error = error.message;
@@ -171,7 +198,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       try {
         const result = await clearChapterManualHold(chapterId);
         this.lastChapterActionResult = result.receipt;
-        await this.refreshAll(sceneId);
+        await this.refreshAll(sceneId, { force: true });
         return `已清除 ${chapterId} 的人工挂起`;
       } catch (error) {
         this.error = error.message;

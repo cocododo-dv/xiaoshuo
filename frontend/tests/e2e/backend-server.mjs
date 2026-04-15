@@ -12,6 +12,7 @@ const backendDir = path.resolve(repoRoot, "backend");
 const runtimeRoot = path.resolve(os.tmpdir(), "novel-system-runtime-ops-e2e");
 const databasePath = path.resolve(runtimeRoot, "novel-system-e2e.sqlite");
 const vectorStoreDir = path.resolve(runtimeRoot, "vector-store");
+const backendPort = process.env.PLAYWRIGHT_BACKEND_PORT || "8000";
 
 rmSync(runtimeRoot, { recursive: true, force: true });
 mkdirSync(vectorStoreDir, { recursive: true });
@@ -58,7 +59,7 @@ const server = spawn(
     "--host",
     "127.0.0.1",
     "--port",
-    "8000",
+    backendPort,
   ],
   {
     cwd: backendDir,

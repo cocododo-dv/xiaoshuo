@@ -28,35 +28,52 @@ function batchMessage(actionLabel, itemLabel, result, key) {
   return parts.join(" | ");
 }
 
-async function refreshAuthorWorkspaceStore() {
+async function markAuthorWorkspaceStale() {
   const { useAuthorWorkspaceStore } = await import("./authorWorkspace.js");
   const authorWorkspace = useAuthorWorkspaceStore();
-  await authorWorkspace.initialize();
+  authorWorkspace.markStale();
 }
 
 export const useAuthorTrashStore = defineStore("authorTrash", {
   state: () => ({
     chapters: [],
     scenes: [],
+    loaded: false,
+    stale: false,
     loading: false,
     actionId: "",
     error: "",
   }),
   actions: {
-    async load() {
+    markStale() {
+      this.stale = true;
+    },
+    markFresh() {
+      this.loaded = true;
+      this.stale = false;
+    },
+    async load({ force = false } = {}) {
+      if (this.loaded && !this.stale && !force) {
+        return;
+      }
       this.loading = true;
       this.error = "";
       try {
         const payload = await fetchAuthorTrash();
         this.chapters = payload.chapters || [];
         this.scenes = payload.scenes || [];
+        this.markFresh();
       } catch (error) {
         this.chapters = [];
         this.scenes = [];
+        this.loaded = false;
         this.error = error.message;
       } finally {
         this.loading = false;
       }
+    },
+    async ensureLoaded(options = {}) {
+      await this.load(options);
     },
     async restoreChapters(chapterIds) {
       if (!chapterIds?.length) {
@@ -66,8 +83,8 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
       this.error = "";
       try {
         const result = await postRestoreChapters(chapterIds);
-        await refreshAuthorWorkspaceStore();
-        await this.load();
+        await markAuthorWorkspaceStale();
+        await this.load({ force: true });
         return batchMessage("已恢复", "章节", result, "chapter_id");
       } catch (error) {
         this.error = error.message;
@@ -84,8 +101,8 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
       this.error = "";
       try {
         const result = await postRestoreScenes(sceneIds);
-        await refreshAuthorWorkspaceStore();
-        await this.load();
+        await markAuthorWorkspaceStale();
+        await this.load({ force: true });
         return batchMessage("已恢复", "场景", result, "scene_id");
       } catch (error) {
         this.error = error.message;
@@ -102,8 +119,8 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
       this.error = "";
       try {
         const result = await postPurgeChapters(chapterIds);
-        await refreshAuthorWorkspaceStore();
-        await this.load();
+        await markAuthorWorkspaceStale();
+        await this.load({ force: true });
         return batchMessage("已彻底清理", "章节", result, "chapter_id");
       } catch (error) {
         this.error = error.message;
@@ -120,8 +137,8 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
       this.error = "";
       try {
         const result = await postPurgeScenes(sceneIds);
-        await refreshAuthorWorkspaceStore();
-        await this.load();
+        await markAuthorWorkspaceStale();
+        await this.load({ force: true });
         return batchMessage("已彻底清理", "场景", result, "scene_id");
       } catch (error) {
         this.error = error.message;

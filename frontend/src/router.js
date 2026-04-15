@@ -1,6 +1,7 @@
 import { ref } from "vue";
 
 const activeView = ref("workbench");
+const visitedViews = ref(["workbench"]);
 const focusTarget = ref({
   target_type: null,
   target_id: null,
@@ -28,6 +29,16 @@ const workbenchTargetTypes = new Set([
   "scene_attempt",
 ]);
 
+function ensureVisited(nextView) {
+  if (!views.some((view) => view.id === nextView)) {
+    return;
+  }
+  if (visitedViews.value.includes(nextView)) {
+    return;
+  }
+  visitedViews.value = [...visitedViews.value, nextView];
+}
+
 export function useShellRouter() {
   function clearFocus() {
     pendingFocusView.value = null;
@@ -42,6 +53,7 @@ export function useShellRouter() {
 
   function navigate(nextView) {
     if (views.some((view) => view.id === nextView)) {
+      ensureVisited(nextView);
       if (pendingFocusView.value && pendingFocusView.value !== nextView) {
         pendingFocusView.value = null;
       }
@@ -92,11 +104,13 @@ export function useShellRouter() {
 
   function reset() {
     activeView.value = "workbench";
+    visitedViews.value = ["workbench"];
     clearFocus();
   }
 
   return {
     activeView,
+    visitedViews,
     focusTarget,
     pendingFocusView,
     views,

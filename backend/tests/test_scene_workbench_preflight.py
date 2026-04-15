@@ -110,6 +110,29 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
     }
 
 
+def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_run(client, session: Session) -> None:
+    create_chapter(client, "CH915")
+    create_scene(client, chapter_id="CH915", scene_id="CH915_SC01")
+    seed_voice_profile(session)
+    seed_relation_profile(session)
+
+    response = client.get("/api/v1/scenes/CH915_SC01/workbench")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["generation_summary"] is None
+    assert data["hard_qc_summary"] is None
+    assert data["soft_qc_summary"] is None
+    assert data["rewrite_counters"] == {
+        "hard_partial_rewrite_count": 0,
+        "hard_full_rewrite_count": 0,
+        "soft_patch_count": 0,
+        "repeat_issue_key": None,
+        "repeat_issue_count": 0,
+    }
+    assert data["human_review_summary"] is None
+
+
 def test_workbench_preflight_blocks_when_voice_profile_is_missing(client, session: Session) -> None:
     create_chapter(client, "CH911")
     create_scene(client, chapter_id="CH911", scene_id="CH911_SC01")

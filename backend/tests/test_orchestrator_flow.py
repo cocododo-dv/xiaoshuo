@@ -120,4 +120,42 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
 
     workbench = client.get("/api/v1/scenes/CH001_SC01/workbench")
     assert workbench.status_code == 200
-    assert workbench.json()["data"]["scene_memory"]
+    data = workbench.json()["data"]
+    assert data["scene_memory"]
+    assert data["generation_summary"] == {
+        "step": "style_draft",
+        "raw_step": "style_draft",
+        "provider": "offline_deterministic",
+        "model": data["generation_summary"]["model"],
+        "prompt_hash": data["generation_summary"]["prompt_hash"],
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "latency_ms": data["generation_summary"]["latency_ms"],
+        "finish_reason": "offline_fallback",
+        "error_code": None,
+    }
+    assert data["hard_qc_summary"] == {
+        "qc_type": "hard_qc",
+        "pass_flag": True,
+        "resolution_code": "hard_pass",
+        "issue_keys": [],
+        "next_action": "pass",
+        "rewrite_brief": [],
+    }
+    assert data["soft_qc_summary"] == {
+        "qc_type": "soft_qc",
+        "pass_flag": True,
+        "resolution_code": "soft_pass",
+        "issue_keys": [],
+        "next_action": "pass",
+        "rewrite_brief": [],
+    }
+    assert data["rewrite_counters"] == {
+        "hard_partial_rewrite_count": 0,
+        "hard_full_rewrite_count": 0,
+        "soft_patch_count": 0,
+        "repeat_issue_key": None,
+        "repeat_issue_count": 0,
+    }
+    assert data["human_review_summary"] is None

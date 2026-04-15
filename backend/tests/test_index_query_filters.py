@@ -243,6 +243,169 @@ def _seed_runtime_ledger_filter_data(session) -> None:
     session.commit()
 
 
+def _seed_paginated_runtime_ledger_data(session) -> None:
+    session.add_all(
+        [
+            HumanReviewEvent(
+                event_id="human_review_paginated_003",
+                object_ref="approve-review-paginated-003",
+                event_source="idempotency_recovery",
+                priority="high",
+                status="needs_followup",
+                allowed_actions_json=["inspect"],
+                result_status_map_json={"inspect": "needs_followup"},
+                details_json={
+                    "linked_target_type": "review_item",
+                    "linked_target_id": "review_scene_pending",
+                    "linked_target_ref": "review_item:review_scene_pending",
+                    "last_action": "retry_verify",
+                    "last_action_at": "2026-04-11T09:03:00+00:00",
+                    "last_actor_ref": "ops.duwei",
+                },
+                default_action="inspect",
+            ),
+            HumanReviewEvent(
+                event_id="human_review_paginated_002",
+                object_ref="approve-review-paginated-002",
+                event_source="idempotency_recovery",
+                priority="high",
+                status="needs_followup",
+                allowed_actions_json=["inspect"],
+                result_status_map_json={"inspect": "needs_followup"},
+                details_json={
+                    "linked_target_type": "review_item",
+                    "linked_target_id": "review_scene_pending",
+                    "linked_target_ref": "review_item:review_scene_pending",
+                    "last_action": "inspect",
+                    "last_action_at": "2026-04-11T09:02:00+00:00",
+                    "last_actor_ref": "ops.duwei",
+                },
+                default_action="inspect",
+            ),
+            HumanReviewEvent(
+                event_id="human_review_paginated_001",
+                object_ref="approve-review-paginated-001",
+                event_source="idempotency_recovery",
+                priority="high",
+                status="needs_followup",
+                allowed_actions_json=["inspect"],
+                result_status_map_json={"inspect": "needs_followup"},
+                details_json={
+                    "linked_target_type": "review_item",
+                    "linked_target_id": "review_scene_pending",
+                    "linked_target_ref": "review_item:review_scene_pending",
+                    "last_action": "retry_request",
+                    "last_action_at": "2026-04-11T09:01:00+00:00",
+                    "last_actor_ref": "ops.duwei",
+                },
+                default_action="inspect",
+            ),
+            OperationLog(
+                event_type="runtime_due_promotion",
+                object_type="runtime_activity",
+                object_ref="style_observation_row_003",
+                payload_json={
+                    "actor_ref": "system/due_promotion",
+                    "summary": "promoted review_scene_pending newest",
+                    "review_id": "review_scene_pending",
+                },
+                created_at="2026-04-11T09:23:00+00:00",
+            ),
+            OperationLog(
+                event_type="runtime_due_promotion",
+                object_type="runtime_activity",
+                object_ref="style_observation_row_002",
+                payload_json={
+                    "actor_ref": "system/due_promotion",
+                    "summary": "promoted review_scene_pending middle",
+                    "review_id": "review_scene_pending",
+                },
+                created_at="2026-04-11T09:22:00+00:00",
+            ),
+            OperationLog(
+                event_type="runtime_due_promotion",
+                object_type="runtime_activity",
+                object_ref="style_observation_row_001",
+                payload_json={
+                    "actor_ref": "system/due_promotion",
+                    "summary": "promoted review_scene_pending oldest",
+                    "review_id": "review_scene_pending",
+                },
+                created_at="2026-04-11T09:21:00+00:00",
+            ),
+            OperationLog(
+                event_type="human_review_action",
+                object_type="human_review_event",
+                object_ref="human_review_paginated_003",
+                payload_json={
+                    "actor_ref": "ops.duwei",
+                    "action": "retry_verify",
+                    "target_refs": [
+                        {
+                            "target_type": "review_item",
+                            "target_id": "review_scene_pending",
+                            "target_ref": "review_item:review_scene_pending",
+                        }
+                    ],
+                },
+                created_at="2026-04-11T09:13:00+00:00",
+            ),
+            OperationLog(
+                event_type="human_review_action",
+                object_type="human_review_event",
+                object_ref="human_review_paginated_002",
+                payload_json={
+                    "actor_ref": "ops.duwei",
+                    "action": "retry_request",
+                    "target_refs": [
+                        {
+                            "target_type": "review_item",
+                            "target_id": "review_scene_pending",
+                            "target_ref": "review_item:review_scene_pending",
+                        }
+                    ],
+                },
+                created_at="2026-04-11T09:12:00+00:00",
+            ),
+            OperationLog(
+                event_type="operator_action",
+                object_type="review_item",
+                object_ref="review_scene_pending",
+                payload_json={
+                    "actor_ref": "ops.duwei",
+                    "action": "inspect",
+                    "target_refs": [
+                        {
+                            "target_type": "review_item",
+                            "target_id": "review_scene_pending",
+                            "target_ref": "review_item:review_scene_pending",
+                        }
+                    ],
+                },
+                created_at="2026-04-11T09:11:00+00:00",
+            ),
+            OperationLog(
+                event_type="operator_action",
+                object_type="review_item",
+                object_ref="review_scene_pending",
+                payload_json={
+                    "actor_ref": "ops.duwei",
+                    "action": "approve_review",
+                    "target_refs": [
+                        {
+                            "target_type": "review_item",
+                            "target_id": "review_scene_pending",
+                            "target_ref": "review_item:review_scene_pending",
+                        }
+                    ],
+                },
+                created_at="2026-04-11T09:10:00+00:00",
+            ),
+        ]
+    )
+    session.commit()
+
+
 def test_jobs_keep_job_id_ordering_when_filters_are_applied(client, session) -> None:
     session.add_all(
         [
@@ -378,3 +541,124 @@ def test_runtime_ledger_rejects_invalid_source_filter(client, session) -> None:
     response = client.get("/api/v1/index/runtime-ledger", params={"source": "all"})
 
     assert response.status_code == 422
+
+
+def test_activity_events_support_page_and_cursor_pagination(client, session) -> None:
+    _seed_paginated_runtime_ledger_data(session)
+
+    page_response = client.get(
+        "/api/v1/activity-events",
+        params={
+            "stream": "operator_action",
+            "target_ref": "review_item:review_scene_pending",
+            "actor_ref": "ops.duwei",
+            "page": 1,
+            "page_size": 2,
+        },
+    )
+
+    assert page_response.status_code == 200
+    page_data = page_response.json()["data"]
+    assert [item["action"] for item in page_data["items"]] == ["retry_verify", "retry_request"]
+    assert page_data["pagination"]["mode"] == "page"
+    assert page_data["pagination"]["returned"] == 2
+    assert page_data["pagination"]["total"] == 4
+    assert page_data["pagination"]["has_next"] is True
+
+    cursor_response = client.get(
+        "/api/v1/activity-events",
+        params={
+            "stream": "operator_action",
+            "target_ref": "review_item:review_scene_pending",
+            "actor_ref": "ops.duwei",
+            "limit": 2,
+        },
+    )
+
+    assert cursor_response.status_code == 200
+    cursor_data = cursor_response.json()["data"]
+    assert [item["action"] for item in cursor_data["items"]] == ["retry_verify", "retry_request"]
+    assert cursor_data["pagination"]["mode"] == "cursor"
+    assert cursor_data["pagination"]["has_next"] is True
+    assert isinstance(cursor_data["pagination"]["next_cursor"], str)
+
+    next_cursor_response = client.get(
+        "/api/v1/activity-events",
+        params={
+            "stream": "operator_action",
+            "target_ref": "review_item:review_scene_pending",
+            "actor_ref": "ops.duwei",
+            "cursor": cursor_data["pagination"]["next_cursor"],
+            "limit": 2,
+        },
+    )
+
+    assert next_cursor_response.status_code == 200
+    next_cursor_data = next_cursor_response.json()["data"]
+    assert [item["action"] for item in next_cursor_data["items"]] == ["inspect", "approve_review"]
+    assert next_cursor_data["pagination"]["has_next"] is False
+
+
+def test_target_activity_groups_return_paginated_summaries_and_items(client, session) -> None:
+    _seed_paginated_runtime_ledger_data(session)
+
+    summary_response = client.get(
+        "/api/v1/target-activity-groups",
+        params={
+            "source": "operator_action",
+            "actor_ref": "ops.duwei",
+            "page": 1,
+            "page_size": 1,
+        },
+    )
+
+    assert summary_response.status_code == 200
+    summary_data = summary_response.json()["data"]
+    assert summary_data["pagination"]["mode"] == "page"
+    assert summary_data["pagination"]["returned"] == 1
+    assert summary_data["pagination"]["total"] == 1
+    assert summary_data["items"] == [
+        {
+            "target": {
+                "target_type": "review_item",
+                "target_id": "review_scene_pending",
+                "target_ref": "review_item:review_scene_pending",
+            },
+            "latest_at": "2026-04-11T09:13:00+00:00",
+            "activity_count": 4,
+            "sources": ["operator_action"],
+            "latest_activity_key": summary_data["items"][0]["latest_activity_key"],
+        }
+    ]
+    assert summary_data["items"][0]["latest_activity_key"].startswith("operator_action:")
+
+    items_response = client.get(
+        "/api/v1/target-activity-groups/review_item:review_scene_pending/items",
+        params={
+            "source": "operator_action",
+            "actor_ref": "ops.duwei",
+            "limit": 2,
+        },
+    )
+
+    assert items_response.status_code == 200
+    items_data = items_response.json()["data"]
+    assert items_data["target"]["target_ref"] == "review_item:review_scene_pending"
+    assert items_data["latest_activity_key"] == summary_data["items"][0]["latest_activity_key"]
+    assert [item["label"] for item in items_data["items"]] == ["retry_verify", "retry_request"]
+    assert items_data["pagination"]["has_next"] is True
+
+    next_items_response = client.get(
+        "/api/v1/target-activity-groups/review_item:review_scene_pending/items",
+        params={
+            "source": "operator_action",
+            "actor_ref": "ops.duwei",
+            "cursor": items_data["pagination"]["next_cursor"],
+            "limit": 2,
+        },
+    )
+
+    assert next_items_response.status_code == 200
+    next_items_data = next_items_response.json()["data"]
+    assert [item["label"] for item in next_items_data["items"]] == ["inspect", "approve_review"]
+    assert next_items_data["pagination"]["has_next"] is False

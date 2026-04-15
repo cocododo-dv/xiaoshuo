@@ -97,6 +97,13 @@ describe("query filter helpers", () => {
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/human-review-events?event_source=idempotency_recovery"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/vector-alias-scopes"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/jobs?job_type=verify"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/target-activity-groups?target_ref=review_item%3Areview_scene_pending"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=recovery_timeline&target_ref=review_item%3Areview_scene_pending"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=system_runtime&target_ref=review_item%3Areview_scene_pending"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=operator_action&target_ref=review_item%3Areview_scene_pending"));
+
+    await indexStore.ensureActivityLoaded();
+
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/target-activity-groups?target_ref=review_item%3Areview_scene_pending"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=recovery_timeline&target_ref=review_item%3Areview_scene_pending"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=system_runtime&target_ref=review_item%3Areview_scene_pending"));

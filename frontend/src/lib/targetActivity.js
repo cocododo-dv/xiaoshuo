@@ -7,6 +7,29 @@ function activityTimestampValue(item) {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
+export function normalizeActivityItems(items) {
+  return [...(items || [])].sort((left, right) => {
+    const timestampDelta = activityTimestampValue(right) - activityTimestampValue(left);
+    if (timestampDelta !== 0) {
+      return timestampDelta;
+    }
+    return String(left?.activity_key || "").localeCompare(String(right?.activity_key || ""));
+  });
+}
+
+function normalizeTargetActivityGroup(group) {
+  const activityItems = normalizeActivityItems(group?.activity_items || []);
+  return {
+    ...(group || {}),
+    activity_items: activityItems,
+    latest_activity_key: activityItems[0]?.activity_key || group?.latest_activity_key || "",
+  };
+}
+
+export function normalizeTargetActivityGroups(groups) {
+  return (groups || []).map((group) => normalizeTargetActivityGroup(group));
+}
+
 export function nextExpandedTargetRefs(currentExpandedRefs, groups, focusTargetRef) {
   const validRefs = new Set((groups || []).map(groupTargetRef).filter(Boolean));
 
@@ -33,18 +56,15 @@ export function toggleExpandedTargetRef(currentExpandedRefs, targetRef) {
 }
 
 export function orderedActivityItems(items) {
-  return [...(items || [])].sort((left, right) => {
-    const timestampDelta = activityTimestampValue(right) - activityTimestampValue(left);
-    if (timestampDelta !== 0) {
-      return timestampDelta;
-    }
-    return String(left?.activity_key || "").localeCompare(String(right?.activity_key || ""));
-  });
+  return normalizeActivityItems(items);
 }
 
 export function focusedActivityKeyForGroup(group, focusTargetRef) {
   if (groupTargetRef(group) !== focusTargetRef) {
     return "";
   }
-  return orderedActivityItems(group?.activity_items || [])[0]?.activity_key || "";
+  if (group?.latest_activity_key) {
+    return group.latest_activity_key;
+  }
+  return normalizeActivityItems(group?.activity_items || [])[0]?.activity_key || "";
 }

@@ -190,6 +190,32 @@ def list_activity_events(
     raise DomainError("ACTIVITY_STREAM_INVALID", f"unsupported activity stream {stream}", status_code=400)
 
 
+def list_paginated_activity_events(
+    session: Session,
+    *,
+    stream: str,
+    target_ref: str | None = None,
+    actor_ref: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    items = list_activity_events(
+        session,
+        stream=stream,
+        target_ref=target_ref,
+        actor_ref=actor_ref,
+    )
+    request = resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit)
+    page_items, pagination = paginate_items(
+        items,
+        request=request,
+        cursor_values=lambda item: _activity_event_cursor_values(stream, item),
+    )
+    return {"items": page_items, "pagination": pagination}
+
+
 def list_target_activity_groups(
     session: Session,
     *,
@@ -231,6 +257,73 @@ def list_target_activity_groups(
         system_runtime_timeline,
         operator_action_timeline,
     )
+
+
+def list_paginated_target_activity_groups(
+    session: Session,
+    *,
+    target_ref: str | None = None,
+    source: str | None = None,
+    actor_ref: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    groups = list_target_activity_groups(
+        session,
+        target_ref=target_ref,
+        source=source,
+        actor_ref=actor_ref,
+    )
+    summaries = [_target_activity_group_summary(group) for group in groups]
+    request = resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit)
+    page_items, pagination = paginate_items(
+        summaries,
+        request=request,
+        cursor_values=lambda item: [item.get("latest_at") or "", item["target"]["target_ref"]],
+    )
+    return {"items": page_items, "pagination": pagination}
+
+
+def list_target_activity_group_items(
+    session: Session,
+    *,
+    target_ref: str,
+    source: str | None = None,
+    actor_ref: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    cursor: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    target = structured_target_from_ref(target_ref)
+    if target is None:
+        raise DomainError("TARGET_ACTIVITY_GROUP_INVALID", f"invalid target activity group ref {target_ref}", status_code=400)
+
+    groups = list_target_activity_groups(
+        session,
+        target_ref=target_ref,
+        source=source,
+        actor_ref=actor_ref,
+    )
+    group = next((item for item in groups if item["target"]["target_ref"] == target_ref), None)
+    activity_items = group.get("activity_items", []) if group else []
+    request = resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit)
+    page_items, pagination = paginate_items(
+        activity_items,
+        request=request,
+        cursor_values=lambda item: [item.get("timestamp") or "", item.get("activity_key") or ""],
+    )
+    return {
+        "target": group["target"] if group else target,
+        "latest_at": group.get("latest_at") if group else None,
+        "activity_count": group.get("activity_count", 0) if group else 0,
+        "sources": group.get("sources", []) if group else [],
+        "latest_activity_key": group.get("latest_activity_key") if group else "",
+        "items": page_items,
+        "pagination": pagination,
+    }
 
 
 def latest_recovery_action_receipt(
@@ -1031,6 +1124,19 @@ def _filter_activity_timeline(items: list[dict[str, Any]], *, target_ref: str | 
     return filtered
 
 
+def _activity_event_cursor_values(stream: str, item: dict[str, Any]) -> list[Any]:
+    if stream == "recovery_timeline":
+        return [
+            item.get("last_action_at") or "",
+            item.get("created_at") or "",
+            item.get("event_id") or "",
+        ]
+    return [
+        item.get("created_at") or "",
+        item.get("operation_id") or "",
+    ]
+
+
 def _serialize_system_runtime_timeline(session: Session) -> list[dict[str, Any]]:
     items = session.execute(
         select(OperationLog)
@@ -1254,11 +1360,22 @@ def _serialize_target_activity_groups(
                 "latest_at": activity_items[0].get("timestamp") if activity_items else None,
                 "activity_count": len(activity_items),
                 "sources": sources,
+                "latest_activity_key": activity_items[0].get("activity_key") if activity_items else "",
                 "activity_items": activity_items,
             }
         )
     serialized.sort(key=lambda item: ((item.get("latest_at") or ""), item["target"]["target_ref"]), reverse=True)
     return serialized
+
+
+def _target_activity_group_summary(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "target": group["target"],
+        "latest_at": group.get("latest_at"),
+        "activity_count": group.get("activity_count", 0),
+        "sources": group.get("sources", []),
+        "latest_activity_key": group.get("latest_activity_key") or "",
+    }
 
 
 def _append_target_group_entries(

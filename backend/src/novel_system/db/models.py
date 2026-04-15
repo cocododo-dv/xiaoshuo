@@ -167,6 +167,27 @@ class SceneBundle(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class LlmCall(Base):
+    __tablename__ = "llm_calls"
+
+    llm_call_id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    step: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    request_payload_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    response_payload_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    finish_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
 class SceneDraft(Base):
     __tablename__ = "scene_drafts"
 
@@ -177,6 +198,7 @@ class SceneDraft(Base):
     content: Mapped[str] = mapped_column(Text)
     source_bundle_id: Mapped[str] = mapped_column(String)
     source_bundle_hash: Mapped[str] = mapped_column(String)
+    generation_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 

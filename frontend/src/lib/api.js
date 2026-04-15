@@ -334,20 +334,28 @@ export function fetchIndexRuntimeLedger(filters = {}) {
 
 export function fetchActivityEvents(filters = {}) {
   return apiGet(
-    buildQueryPath("/api/v1/activity-events", filters, {
+    buildListQueryPath("/api/v1/activity-events", filters, {
       targetRef: "target_ref",
       actorRef: "actor_ref",
     }),
-  );
+  ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
 }
 
 export function fetchTargetActivityGroups(filters = {}) {
   return apiGet(
-    buildQueryPath("/api/v1/target-activity-groups", filters, {
+    buildListQueryPath("/api/v1/target-activity-groups", filters, {
       targetRef: "target_ref",
       actorRef: "actor_ref",
     }),
-  );
+  ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
+}
+
+export function fetchTargetActivityGroupItems(targetRef, filters = {}) {
+  return apiGet(
+    buildListQueryPath(`/api/v1/target-activity-groups/${encodeURIComponent(targetRef)}/items`, filters, {
+      actorRef: "actor_ref",
+    }),
+  ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
 }
 
 export function retryVerify(jobId) {

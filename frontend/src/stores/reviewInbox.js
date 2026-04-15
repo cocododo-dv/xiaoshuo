@@ -43,6 +43,8 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
     items: [],
     humanReviewItems: [],
     lastActionResult: null,
+    loaded: false,
+    stale: false,
     loading: false,
     actionId: "",
     error: "",
@@ -60,11 +62,20 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       ),
   },
   actions: {
+    markStale() {
+      this.stale = true;
+    },
+    markFresh() {
+      this.loaded = true;
+      this.stale = false;
+    },
     clearReviewFilters() {
       this.reviewFilters = createReviewFilters();
+      this.markStale();
     },
     clearHumanReviewFilters() {
       this.humanReviewFilters = createHumanReviewFilters();
+      this.markStale();
     },
     syncReviewPager({ reset = false } = {}) {
       const nextSignature = filtersSignature(this.reviewFilters);
@@ -96,7 +107,10 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       });
       this.humanReviewItems = applyCursorPayload(this.humanReviewPager, payload);
     },
-    async load({ resetReview = false, resetHumanReview = false } = {}) {
+    async load({ resetReview = false, resetHumanReview = false, force = false } = {}) {
+      if (this.loaded && !this.stale && !force && !resetReview && !resetHumanReview) {
+        return;
+      }
       this.loading = true;
       this.error = "";
       try {
@@ -104,13 +118,18 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
           this.loadReviewItems({ reset: resetReview }),
           this.loadHumanReviewItems({ reset: resetHumanReview }),
         ]);
+        this.markFresh();
       } catch (error) {
         this.items = [];
         this.humanReviewItems = [];
+        this.loaded = false;
         this.error = error.message;
       } finally {
         this.loading = false;
       }
+    },
+    async ensureLoaded(options = {}) {
+      await this.load(options);
     },
     async nextReviewPage() {
       if (!advanceCursorPager(this.reviewPager)) {
@@ -120,6 +139,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       this.error = "";
       try {
         await this.loadReviewItems();
+        this.markFresh();
       } catch (error) {
         this.error = error.message;
       } finally {
@@ -134,6 +154,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       this.error = "";
       try {
         await this.loadReviewItems();
+        this.markFresh();
       } catch (error) {
         this.error = error.message;
       } finally {
@@ -148,6 +169,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       this.error = "";
       try {
         await this.loadHumanReviewItems();
+        this.markFresh();
       } catch (error) {
         this.error = error.message;
       } finally {
@@ -162,6 +184,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       this.error = "";
       try {
         await this.loadHumanReviewItems();
+        this.markFresh();
       } catch (error) {
         this.error = error.message;
       } finally {
@@ -174,7 +197,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       try {
         const result = await approveReview(reviewId);
         this.lastActionResult = result;
-        await this.load({ resetReview: true, resetHumanReview: true });
+        await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已批准 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
@@ -189,7 +212,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       try {
         const result = await releaseReview(reviewId);
         this.lastActionResult = result;
-        await this.load({ resetReview: true, resetHumanReview: true });
+        await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已发布 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
         this.error = error.message;
@@ -204,7 +227,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       try {
         const result = await actOnHumanReviewEvent(eventId, action);
         this.lastActionResult = result;
-        await this.load({ resetReview: true, resetHumanReview: true });
+        await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已对 ${eventId} 执行动作 ${action}（${result.status || "已更新"}）`;
       } catch (error) {
         this.error = error.message;

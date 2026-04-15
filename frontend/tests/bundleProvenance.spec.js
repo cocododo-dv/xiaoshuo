@@ -207,16 +207,14 @@ describe("scene workbench source", () => {
   it("renders human review action audit details for recovery-generated events", () => {
     const source = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
 
-    expect(source).toContain("最近操作");
     expect(source).toContain("last_action_at");
     expect(source).toContain("action_history");
     expect(source).toContain("linked_target_ref");
     expect(source).toContain("resolution_reason");
-    expect(source).toContain("建议下一步");
-    expect(source).toContain("打开关联目标");
-    expect(source).toContain("打开后续目标");
-    expect(source).toContain("打开回放结果");
-    expect(source).toContain('$emit("open-target"');
+    expect(source).toContain("toggleDetails");
+    expect(source).toContain("toggleHistory");
+    expect(source).toContain('defineEmits(["action", "open-target"])');
+    expect(source).toContain("emit('open-target'");
     expect(source).toContain("item.linked_target");
     expect(source).toContain("item.followup_target");
     expect(source).toContain("item.replay_target");
@@ -231,7 +229,6 @@ describe("review inbox source", () => {
     const cardSource = readFileSync(new URL("../src/components/ReviewCard.vue", import.meta.url), "utf8");
     const drawerSource = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
 
-    expect(source).toContain("系统恢复");
     expect(source).toContain("HumanReviewDrawer");
     expect(source).toContain("reviewInbox.systemRecoveryItems");
     expect(source).toContain("focusTarget");
@@ -239,16 +236,18 @@ describe("review inbox source", () => {
     expect(source).toContain("const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;");
     expect(source).toContain('@open-target="handleOpenTarget"');
     expect(source).toContain("reviewSourceActionLabel");
-    expect(source).toContain('if (nextView === "review" && previousView !== "review")');
-    expect(source).toContain("refreshReviews()");
+    expect(source).toContain("onActivated(() => {");
+    expect(source).toContain("ensureReviewInboxLoaded()");
+    expect(source).toContain("markDependentViewsStale");
     expect(source).toContain('source_type: "review_approve"');
     expect(source).toContain('source_type: "review_release"');
     expect(source).toContain('source_type: "review_card_open"');
     expect(source).toContain("openTarget");
     expect(cardSource).toContain("highlighted");
     expect(cardSource).toContain("sourceActionLabel");
-    expect(cardSource).toContain("在索引页打开");
-    expect(cardSource).toContain('$emit("open-target"');
+    expect(cardSource).toContain("review-toggle-payload");
+    expect(cardSource).toContain('defineEmits(["approve", "release", "open-target"])');
+    expect(cardSource).toContain("payloadExpanded");
     expect(drawerSource).toContain("focusEventId");
   });
 
@@ -260,9 +259,11 @@ describe("review inbox source", () => {
     expect(viewSource).toContain("actOnHumanReviewEvent");
     expect(viewSource).toContain("recordRecoveryAction");
     expect(viewSource).toContain('@action="handleHumanReviewAction"');
+    expect(viewSource).toContain("markDependentViewsStale");
+    expect(viewSource).not.toContain("indexConsole.load()");
     expect(drawerSource).not.toContain("formatAction");
     expect(drawerSource).toContain("allowed_actions_json");
-    expect(drawerSource).toContain('$emit("action"');
+    expect(drawerSource).toContain("emit('action'");
     expect(storeSource).toContain('item.status !== "resolved"');
   });
 });

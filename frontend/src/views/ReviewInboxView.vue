@@ -1,22 +1,47 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onActivated, ref, watch } from "vue";
 
 import CursorPager from "../components/CursorPager.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ReviewCard from "../components/ReviewCard.vue";
 import { getVisibleHumanReviewItems, shouldClearReviewFocus } from "../lib/filterFocus";
+import { prioritizeMatchingItem } from "../lib/listPriority";
 import { useShellRouter } from "../router";
 import { useIndexConsoleStore } from "../stores/indexConsole";
+import { useKnowledgeConsoleStore } from "../stores/knowledgeConsole";
 import { useReviewInboxStore } from "../stores/reviewInbox";
+import { useWorkbenchStore } from "../stores/workbench";
 
 const emit = defineEmits(["notice"]);
 
 const reviewInbox = useReviewInboxStore();
 const indexConsole = useIndexConsoleStore();
+const knowledgeConsole = useKnowledgeConsoleStore();
+const workbench = useWorkbenchStore();
 const shellRouter = useShellRouter();
 const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;
 const reviewFocusRefreshPending = ref(false);
+const focusTargetType = computed(() => focusTarget.value?.target_type || "");
+const focusTargetId = computed(() => focusTarget.value?.target_id || "");
+const focusTargetRef = computed(() => focusTarget.value?.target_ref || "");
+const reviewIdsSignature = computed(() => (reviewInbox.items || []).map((item) => item.review_id || "").join("|"));
+const visibleHumanReviewIdsSignature = computed(() =>
+  visibleHumanReviewItems.value.map((item) => item.event_id || "").join("|"),
+);
+const reviewFocusSignature = computed(() =>
+  [
+    activeView.value,
+    reviewInbox.loading ? "1" : "0",
+    pendingFocusView.value || "",
+    reviewFocusRefreshPending.value ? "1" : "0",
+    focusTargetType.value,
+    focusTargetId.value,
+    focusTargetRef.value,
+    reviewIdsSignature.value,
+    visibleHumanReviewIdsSignature.value,
+  ].join("::"),
+);
 
 const visibleHumanReviewItems = computed(() =>
   getVisibleHumanReviewItems(
@@ -38,29 +63,21 @@ const humanReviewSection = computed(() => {
   }
   return {
     title: "系统恢复",
-    description: "恢复流程产生的人工审核事件会优先汇总到这里，供操作员处理。",
+    description: "恢复流程产生的人工作业会优先汇总到这里，供操作员继续处理。",
     badge: "idempotency_recovery",
     countLabel: "条恢复事件",
-    empty: "当前筛选条件下没有恢复流程生成的人工审核事件。",
+    empty: "当前筛选条件下没有恢复流程生成的人工作业事件。",
   };
 });
 
 const prioritizedHumanReviewItems = computed(() => {
-  const focusEventId = focusTarget.value?.target_type === "human_review_event" ? focusTarget.value.target_id : null;
-  const items = [...visibleHumanReviewItems.value];
-  if (!focusEventId) {
-    return items;
-  }
-  return items.sort((left, right) => Number(right.event_id === focusEventId) - Number(left.event_id === focusEventId));
+  const focusEventId = focusTargetType.value === "human_review_event" ? focusTargetId.value : null;
+  return prioritizeMatchingItem(visibleHumanReviewItems.value, (item) => item.event_id === focusEventId);
 });
 
 const prioritizedReviewItems = computed(() => {
-  const focusReviewId = focusTarget.value?.target_type === "review_item" ? focusTarget.value.target_id : null;
-  const items = [...reviewInbox.items];
-  if (!focusReviewId) {
-    return items;
-  }
-  return items.sort((left, right) => Number(right.review_id === focusReviewId) - Number(left.review_id === focusReviewId));
+  const focusReviewId = focusTargetType.value === "review_item" ? focusTargetId.value : null;
+  return prioritizeMatchingItem(reviewInbox.items, (item) => item.review_id === focusReviewId);
 });
 
 function focusedReviewId(reviewId) {
@@ -102,10 +119,43 @@ function reviewFocusDeferred() {
   return reviewFocusRefreshPending.value || pendingFocusView.value === "review";
 }
 
+function markDependentViewsStale() {
+  indexConsole.markStale();
+  knowledgeConsole.markStale();
+  workbench.markStale();
+}
+
 async function refreshReviews() {
-  await reviewInbox.load();
+  await reviewInbox.load({ force: true });
   if (reviewInbox.error) {
     emit("notice", reviewInbox.error);
+  }
+}
+
+async function ensureReviewInboxLoaded() {
+  reviewFocusRefreshPending.value = true;
+  try {
+    await reviewInbox.ensureLoaded();
+  } finally {
+    reviewFocusRefreshPending.value = false;
+  }
+
+  if (reviewInbox.error) {
+    emit("notice", reviewInbox.error);
+  }
+
+  settleFocusView("review");
+  if (
+    shouldClearReviewFocus(
+      activeView.value,
+      reviewInbox.loading,
+      reviewFocusDeferred(),
+      focusTarget.value,
+      reviewInbox.items,
+      visibleHumanReviewItems.value,
+    )
+  ) {
+    clearFocus();
   }
 }
 
@@ -150,7 +200,7 @@ function clearHumanReviewFilters() {
 async function approve(reviewId) {
   try {
     const message = await reviewInbox.approve(reviewId);
-    await indexConsole.load();
+    markDependentViewsStale();
     openTarget(reviewTarget(reviewId), {
       view_id: "review",
       source_type: "review_approve",
@@ -165,7 +215,7 @@ async function approve(reviewId) {
 async function release(reviewId) {
   try {
     const message = await reviewInbox.release(reviewId);
-    await indexConsole.load();
+    markDependentViewsStale();
     openTarget(reviewTarget(reviewId), {
       view_id: "review",
       source_type: "review_release",
@@ -181,7 +231,7 @@ async function handleHumanReviewAction({ eventId, action }) {
   try {
     const message = await reviewInbox.actOnHumanReviewEvent(eventId, action);
     indexConsole.recordRecoveryAction(reviewInbox.lastActionResult);
-    await indexConsole.load();
+    markDependentViewsStale();
     emit("notice", message);
   } catch (error) {
     emit("notice", error.message);
@@ -206,46 +256,12 @@ function handleReviewOpenTarget(reviewId) {
   emit("notice", `已打开 ${target.target_ref}`);
 }
 
-onMounted(() => {
-  refreshReviews();
+onActivated(() => {
+  ensureReviewInboxLoaded();
 });
 
 watch(
-  () => activeView.value,
-  async (nextView, previousView) => {
-    if (nextView === "review" && previousView !== "review") {
-      reviewFocusRefreshPending.value = true;
-      try {
-        await refreshReviews();
-      } finally {
-        reviewFocusRefreshPending.value = false;
-      }
-      settleFocusView("review");
-      if (
-        shouldClearReviewFocus(
-          activeView.value,
-          reviewInbox.loading,
-          reviewFocusDeferred(),
-          focusTarget.value,
-          reviewInbox.items,
-          visibleHumanReviewItems.value,
-        )
-      ) {
-        clearFocus();
-      }
-    }
-  },
-);
-
-watch(
-  () => [
-    focusTarget.value,
-    reviewInbox.loading,
-    pendingFocusView.value,
-    reviewFocusRefreshPending.value,
-    reviewInbox.items,
-    visibleHumanReviewItems.value,
-  ],
+  reviewFocusSignature,
   () => {
     if (
       shouldClearReviewFocus(
@@ -260,7 +276,6 @@ watch(
       clearFocus();
     }
   },
-  { deep: true },
 );
 </script>
 
@@ -268,7 +283,7 @@ watch(
   <section class="panel-grid" data-testid="review-inbox-view">
     <PanelShell
       eyebrow="审核收件箱"
-      title="批准、落库与发布"
+      title="批准、落地与发布"
       description="让审核决策与索引状态保持紧密闭环。"
     >
       <template #actions>

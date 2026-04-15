@@ -234,12 +234,32 @@ def test_compatibility_index_wrappers_match_new_domain_reads(client, session) ->
             "actor_ref": "ops.duwei",
         },
     )
+    domain_group_items = client.get(
+        "/api/v1/target-activity-groups/review_item:review_scene_pending/items",
+        params={
+            "source": "operator_action",
+            "actor_ref": "ops.duwei",
+        },
+    )
 
     assert compat_jobs.status_code == 200
     assert domain_jobs.status_code == 200
     assert compat_ledger.status_code == 200
     assert domain_activity.status_code == 200
     assert domain_groups.status_code == 200
+    assert domain_group_items.status_code == 200
     assert compat_jobs.json()["data"]["items"] == domain_jobs.json()["data"]["items"]
     assert compat_ledger.json()["data"]["operator_action_timeline_items"] == domain_activity.json()["data"]["items"]
-    assert compat_ledger.json()["data"]["target_activity_groups"] == domain_groups.json()["data"]["items"]
+    compat_groups = compat_ledger.json()["data"]["target_activity_groups"]
+    domain_group_summaries = domain_groups.json()["data"]["items"]
+    assert [
+        {
+            "target": group["target"],
+            "latest_at": group["latest_at"],
+            "activity_count": group["activity_count"],
+            "sources": group["sources"],
+            "latest_activity_key": group["latest_activity_key"],
+        }
+        for group in compat_groups
+    ] == domain_group_summaries
+    assert domain_group_items.json()["data"]["items"] == compat_groups[0]["activity_items"]

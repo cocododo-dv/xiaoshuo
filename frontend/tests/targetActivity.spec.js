@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   focusedActivityKeyForGroup,
+  normalizeActivityItems,
+  normalizeTargetActivityGroups,
   nextExpandedTargetRefs,
   orderedActivityItems,
   toggleExpandedTargetRef,
@@ -89,5 +91,69 @@ describe("target activity helpers", () => {
         "review_item:review_style_pending",
       ),
     ).toBe("");
+  });
+
+  it("normalizes activity items once into newest-first order", () => {
+    expect(
+      normalizeActivityItems([
+        { activity_key: "recovery", timestamp: "2026-04-10T01:35:00+00:00" },
+        { activity_key: "system", timestamp: "2026-04-10T01:40:00+00:00" },
+        { activity_key: "operator", timestamp: "2026-04-10T01:32:00+00:00" },
+      ]).map((item) => item.activity_key),
+    ).toEqual(["system", "recovery", "operator"]);
+  });
+
+  it("normalizes target groups with sorted activity items and a cached latest key", () => {
+    expect(
+      normalizeTargetActivityGroups([
+        {
+          target: {
+            target_ref: "review_item:review_style_released",
+          },
+          activity_items: [
+            { activity_key: "recovery", timestamp: "2026-04-10T01:35:00+00:00" },
+            { activity_key: "system", timestamp: "2026-04-10T01:40:00+00:00" },
+          ],
+        },
+      ]),
+    ).toEqual([
+      {
+        target: {
+          target_ref: "review_item:review_style_released",
+        },
+        activity_items: [
+          { activity_key: "system", timestamp: "2026-04-10T01:40:00+00:00" },
+          { activity_key: "recovery", timestamp: "2026-04-10T01:35:00+00:00" },
+        ],
+        latest_activity_key: "system",
+      },
+    ]);
+  });
+
+  it("preserves summary-only target groups without synthesizing heavy activity arrays", () => {
+    expect(
+      normalizeTargetActivityGroups([
+        {
+          target: {
+            target_ref: "review_item:review_style_pending",
+          },
+          latest_activity_key: "operator_action:42",
+          latest_at: "2026-04-10T01:40:00+00:00",
+          activity_count: 3,
+          sources: ["operator_action"],
+        },
+      ]),
+    ).toEqual([
+      {
+        target: {
+          target_ref: "review_item:review_style_pending",
+        },
+        latest_activity_key: "operator_action:42",
+        latest_at: "2026-04-10T01:40:00+00:00",
+        activity_count: 3,
+        sources: ["operator_action"],
+        activity_items: [],
+      },
+    ]);
   });
 });

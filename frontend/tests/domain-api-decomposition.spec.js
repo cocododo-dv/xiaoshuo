@@ -7,6 +7,7 @@ import {
   fetchKnowledgeEntries,
   fetchKnowledgeEntryDetail,
   fetchKnowledgeEntryWorkflow,
+  fetchTargetActivityGroupItems,
   fetchTargetActivityGroups,
   fetchVectorAliasScopes,
 } from "../src/lib/api";
@@ -47,11 +48,18 @@ describe("domain api helpers", () => {
       stream: "operator_action",
       targetRef: "review_item:review_scene_pending",
       actorRef: "ops.duwei",
+      limit: 10,
     });
     await fetchTargetActivityGroups({
       targetRef: "review_item:review_scene_pending",
       source: "operator_action",
       actorRef: "ops.duwei",
+      pageSize: 10,
+    });
+    await fetchTargetActivityGroupItems("review_item:review_scene_pending", {
+      source: "operator_action",
+      actorRef: "ops.duwei",
+      limit: 5,
     });
 
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
@@ -76,11 +84,15 @@ describe("domain api helpers", () => {
     );
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
       6,
-      "http://127.0.0.1:8000/api/v1/activity-events?stream=operator_action&target_ref=review_item%3Areview_scene_pending&actor_ref=ops.duwei",
+      "http://127.0.0.1:8000/api/v1/activity-events?stream=operator_action&target_ref=review_item%3Areview_scene_pending&actor_ref=ops.duwei&limit=10",
     );
     expect(globalThis.fetch).toHaveBeenNthCalledWith(
       7,
-      "http://127.0.0.1:8000/api/v1/target-activity-groups?target_ref=review_item%3Areview_scene_pending&source=operator_action&actor_ref=ops.duwei",
+      "http://127.0.0.1:8000/api/v1/target-activity-groups?target_ref=review_item%3Areview_scene_pending&source=operator_action&actor_ref=ops.duwei&page_size=10",
+    );
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      8,
+      "http://127.0.0.1:8000/api/v1/target-activity-groups/review_item%3Areview_scene_pending/items?source=operator_action&actor_ref=ops.duwei&limit=5",
     );
   });
 });
@@ -278,6 +290,40 @@ describe("index console domain reads", () => {
         };
       }
 
+      if (url.includes("/api/v1/target-activity-groups/review_item%3Areview_scene_pending/items")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              target: {
+                target_type: "review_item",
+                target_id: "review_scene_pending",
+                target_ref: "review_item:review_scene_pending",
+              },
+              latest_activity_key: "operator_action:12",
+              items: [
+                {
+                  activity_key: "operator_action:12",
+                  source: "operator_action",
+                  label: "retry_verify",
+                  timestamp: "2026-04-11T09:03:00+00:00",
+                  actor_ref: "ops.duwei",
+                  target_refs: [
+                    {
+                      target_type: "review_item",
+                      target_id: "review_scene_pending",
+                      target_ref: "review_item:review_scene_pending",
+                    },
+                  ],
+                },
+              ],
+              pagination: { mode: "cursor", limit: 25, returned: 1, total: 1, has_next: false, next_cursor: null },
+            },
+          }),
+        };
+      }
+
       if (url.includes("/api/v1/target-activity-groups")) {
         return {
           ok: true,
@@ -292,9 +338,12 @@ describe("index console domain reads", () => {
                     target_ref: "review_item:review_scene_pending",
                   },
                   sources: ["operator_action", "recovery_timeline"],
-                  activity_items: [],
+                  latest_activity_key: "operator_action:12",
+                  activity_count: 1,
+                  latest_at: "2026-04-11T09:03:00+00:00",
                 },
               ],
+              pagination: { mode: "cursor", limit: 25, returned: 1, total: 1, has_next: false, next_cursor: null },
             },
           }),
         };
@@ -311,6 +360,20 @@ describe("index console domain reads", () => {
 
     expect(store.aliasScopes).toHaveLength(1);
     expect(store.jobs).toHaveLength(1);
+    expect(store.recoveryEvents).toHaveLength(0);
+    expect(store.systemRuntimeEvents).toHaveLength(0);
+    expect(store.operatorActionEvents).toHaveLength(0);
+    expect(store.lastRecoveryActionResult).toBeNull();
+    expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/vector-alias-scopes"));
+    expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/jobs"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=recovery_timeline"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=system_runtime"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=operator_action"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/target-activity-groups"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/index/runtime-ledger"));
+
+    await store.ensureActivityLoaded();
+
     expect(store.recoveryEvents).toHaveLength(1);
     expect(store.systemRuntimeEvents).toHaveLength(1);
     expect(store.operatorActionEvents).toHaveLength(1);
@@ -322,13 +385,10 @@ describe("index console domain reads", () => {
         linked_target_ref: "review_item:review_scene_pending",
       }),
     );
-    expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/vector-alias-scopes"));
-    expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/jobs"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=recovery_timeline"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=system_runtime"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=operator_action"));
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/target-activity-groups"));
-    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/index/runtime-ledger"));
   });
 
   it("requests only the selected activity stream when a source filter is active", async () => {
@@ -336,9 +396,41 @@ describe("index console domain reads", () => {
     store.ledgerFilters.source = "operator_action";
 
     await store.load();
+    await store.ensureActivityLoaded();
 
     expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=operator_action"));
     expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=recovery_timeline"));
     expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=system_runtime"));
+  });
+
+  it("loads activity sections and target-group items independently", async () => {
+    const store = useIndexConsoleStore();
+
+    await store.load();
+    await store.ensureActivitySectionLoaded("operator_action");
+
+    expect(store.operatorActionEvents).toHaveLength(1);
+    expect(store.recoveryEvents).toHaveLength(0);
+    expect(store.systemRuntimeEvents).toHaveLength(0);
+    expect(store.targetActivityGroups).toHaveLength(0);
+    expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/activity-events?stream=operator_action"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/v1/target-activity-groups?"));
+
+    await store.ensureActivitySectionLoaded("target_groups");
+
+    expect(store.targetActivityGroups).toHaveLength(1);
+    expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/target-activity-groups?"));
+    expect(globalThis.fetch).not.toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/target-activity-groups/review_item%3Areview_scene_pending/items"),
+    );
+
+    await store.ensureTargetGroupItemsLoaded("review_item:review_scene_pending");
+
+    expect(store.targetGroupItemsByRef["review_item:review_scene_pending"]).toEqual([
+      expect.objectContaining({ activity_key: "operator_action:12", label: "retry_verify" }),
+    ]);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/target-activity-groups/review_item%3Areview_scene_pending/items"),
+    );
   });
 });

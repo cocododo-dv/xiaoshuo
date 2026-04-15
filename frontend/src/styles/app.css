@@ -316,6 +316,28 @@ pre {
   margin-top: 0.85rem;
 }
 
+.lazy-section {
+  padding: 0.85rem 0.95rem;
+  border-radius: 1rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.lazy-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: center;
+}
+
+.lazy-section-toggle {
+  padding: 0.45rem 0.85rem;
+}
+
+.lazy-section-body {
+  margin-top: 0.75rem;
+}
+
 .history-title,
 .history-meta,
 .history-replay {
@@ -416,12 +438,40 @@ pre {
   margin: 0 0 0.7rem;
 }
 
+.activity-section-card {
+  margin-top: 1rem;
+}
+
+.activity-section-head {
+  align-items: center;
+}
+
+.activity-section-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.activity-section-summary,
+.activity-inline-copy {
+  margin: 0.45rem 0 0;
+}
+
 .receipt-list {
   list-style: none;
   padding: 0;
   margin: 0;
   display: grid;
   gap: 0.7rem;
+}
+
+.target-group-list {
+  margin-top: 0;
+}
+
+.target-activity-group-card {
+  list-style: none;
 }
 
 .receipt-list li {
@@ -903,6 +953,24 @@ pre {
 
 .comparison-card {
   background: rgba(255, 255, 255, 0.62);
+}
+
+.attempt,
+.review-card,
+.job-row,
+.history-entry,
+.comparison-card,
+.author-list-row,
+.author-scene-row,
+.trash-row,
+.preflight-item,
+.chapter-backfill-item,
+.receipt-list li,
+.source-card,
+.injection-item {
+  content-visibility: auto;
+  contain: layout style paint;
+  contain-intrinsic-size: 220px;
 }
 
 .comparison-diff-grid,

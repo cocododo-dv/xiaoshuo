@@ -1,5 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const backendPort = process.env.PLAYWRIGHT_BACKEND_PORT || "8000";
+const backendBaseUrl = `http://127.0.0.1:${backendPort}`;
+const reuseBackendServer = process.env.PLAYWRIGHT_REUSE_BACKEND === "1";
+
 export default defineConfig({
   testDir: "./tests/e2e",
   workers: 1,
@@ -16,8 +20,8 @@ export default defineConfig({
   webServer: [
     {
       command: "node tests/e2e/backend-server.mjs",
-      url: "http://127.0.0.1:8000/api/v1/review-items",
-      reuseExistingServer: false,
+      url: `${backendBaseUrl}/api/v1/review-items`,
+      reuseExistingServer: reuseBackendServer,
       timeout: 120000,
     },
     {

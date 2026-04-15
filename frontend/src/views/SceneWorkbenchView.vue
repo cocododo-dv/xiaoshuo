@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onActivated, ref, watch } from "vue";
 
 import AttemptTimeline from "../components/AttemptTimeline.vue";
 import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
 import CursorPager from "../components/CursorPager.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
+import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
 import { useShellRouter } from "../router";
 import { useWorkbenchStore } from "../stores/workbench";
@@ -103,7 +104,14 @@ function selectedStrategyFor(stageId) {
 }
 
 async function loadWorkbench() {
-  await workbench.refreshAll(resolveSceneId());
+  await workbench.refreshAll(resolveSceneId(), { force: true });
+  if (workbench.error) {
+    emit("notice", workbench.error);
+  }
+}
+
+async function ensureWorkbenchLoaded() {
+  await workbench.ensureLoaded({ sceneId: resolveSceneId() });
   if (workbench.error) {
     emit("notice", workbench.error);
   }
@@ -206,8 +214,8 @@ watch(
   { immediate: true },
 );
 
-onMounted(() => {
-  loadWorkbench();
+onActivated(() => {
+  ensureWorkbenchLoaded();
 });
 </script>
 
@@ -503,7 +511,13 @@ onMounted(() => {
           </article>
         </div>
 
-        <BundleProvenanceCard :snapshot="workbench.data.bundle?.snapshot" />
+        <LazySection
+          :key="`bundle-provenance-${workbench.data.bundle?.bundle_id || workbench.sceneId}`"
+          title="包谱系"
+          toggle-test-id="scene-toggle-bundle-provenance"
+        >
+          <BundleProvenanceCard :snapshot="workbench.data.bundle?.snapshot" />
+        </LazySection>
       </template>
       <div v-else-if="workbench.error" class="empty">{{ workbench.error }}</div>
       <div v-else class="empty">输入场景 ID 后即可加载工作台。</div>

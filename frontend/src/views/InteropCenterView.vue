@@ -1,6 +1,7 @@
 <script setup>
 import { computed, reactive } from "vue";
 
+import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
 import { useShellRouter } from "../router";
 import { useInteropCenterStore } from "../stores/interopCenter";
@@ -19,9 +20,6 @@ const activeEnvelope = computed(() => interopCenter.activeEnvelope);
 const activeArtifactReceipt = computed(() => interopCenter.activeArtifactReceipt);
 const activeSourceComparisons = computed(() => interopCenter.activeSourceComparisons || []);
 const previewSummary = computed(() => interopCenter.previewResult?.summary || null);
-const prettyEnvelope = computed(() =>
-  activeEnvelope.value ? JSON.stringify(activeEnvelope.value, null, 2) : "",
-);
 const ACTIVE_MODE_LABELS = {
   preview: "预览结果",
   import: "导入结果",
@@ -33,6 +31,10 @@ const ACTIVE_MODE_LABELS = {
 
 function formatActiveMode(mode) {
   return ACTIVE_MODE_LABELS[mode || "idle"] || mode || "未加载";
+}
+
+function formatJsonPayload(value) {
+  return JSON.stringify(value ?? {}, null, 2);
 }
 
 function syncQueryState() {
@@ -273,7 +275,13 @@ function openBundleScene() {
             <div class="card-actions">
               <button class="ghost" @click="openBundleScene">打开场景工作台</button>
             </div>
-            <pre>{{ prettyEnvelope }}</pre>
+            <LazySection
+              :key="`interop-envelope-${activeEnvelope.bundle_id || interopCenter.activeMode}`"
+              title="结果信封详情"
+              toggle-test-id="interop-toggle-envelope"
+            >
+              <pre class="json-block">{{ formatJsonPayload(activeEnvelope) }}</pre>
+            </LazySection>
           </div>
           <div v-else class="empty">先预览或加载工作表，再查看归一化后的结果信封。</div>
 
