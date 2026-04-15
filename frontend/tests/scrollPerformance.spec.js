@@ -418,9 +418,11 @@ describe("index console scroll performance integration", () => {
       await animationFrames.flushAll();
 
       activityRows = mounted.container.querySelectorAll('[data-testid^="target-activity-item-operator_action:13:"]');
+      const lateFocusedActivity = mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:9"]');
       expect(activityRows).toHaveLength(10);
-      expect(mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:9"]')).not.toBeNull();
+      expect(lateFocusedActivity).not.toBeNull();
       expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "nearest", behavior: "smooth" });
+      expect(scrollIntoViewSpy.mock.instances.at(-1)).toBe(lateFocusedActivity);
     } finally {
       mounted.unmount();
     }

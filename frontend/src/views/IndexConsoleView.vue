@@ -495,6 +495,7 @@ onBeforeUnmount(() => {
             >
               <template #default="{ item }">
                 <article
+                  class="receipt-list-item"
                   :data-activity-key="activityItemKey('recovery_timeline', item)"
                   :class="{ 'focused-card': isFocusedSource('recovery_timeline', item.event_id) || isFocusedSource('recovery_receipt', item.event_id) }"
                 >

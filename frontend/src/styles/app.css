@@ -539,10 +539,7 @@ pre {
   margin-top: 0;
 }
 
-.target-activity-group-card {
-  list-style: none;
-}
-
+.receipt-list-item,
 .receipt-list li {
   margin: 0;
   padding: 0.8rem 0.95rem;
@@ -1034,6 +1031,7 @@ pre {
 .trash-row,
 .preflight-item,
 .chapter-backfill-item,
+.receipt-list-item,
 .receipt-list li,
 .source-card,
 .injection-item {

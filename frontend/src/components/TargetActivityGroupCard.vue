@@ -93,7 +93,7 @@ function isHighlighted(item) {
 
 <template>
   <article
-    class="target-activity-group-card"
+    class="target-activity-group-card receipt-list-item"
     :data-testid="`target-activity-group-${props.group.target.target_ref}`"
     :class="{ 'focused-card': props.focused }"
   >
