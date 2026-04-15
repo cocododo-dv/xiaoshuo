@@ -6,6 +6,7 @@ import AliasScopeCard from "../components/AliasScopeCard.vue";
 import CursorPager from "../components/CursorPager.vue";
 import PanelShell from "../components/PanelShell.vue";
 import TargetActivityGroupCard from "../components/TargetActivityGroupCard.vue";
+import VirtualList from "../components/VirtualList.vue";
 import { shouldClearIndexFocus } from "../lib/filterFocus";
 import { prioritizeMatchingItem } from "../lib/listPriority";
 import { useShellRouter } from "../router";
@@ -60,9 +61,21 @@ const prioritizedJobs = computed(() => {
   const focusJobId = ["verify_job", "reindex_job"].includes(focusTargetType.value) ? focusTargetId.value : null;
   return prioritizeMatchingItem(indexConsole.jobs, (item) => item.job_id === focusJobId);
 });
+const pinnedJobKeys = computed(() => {
+  if (!["verify_job", "reindex_job"].includes(focusTargetType.value) || !focusTargetId.value) {
+    return [];
+  }
+  return [focusTargetId.value];
+});
 const prioritizedTargetGroups = computed(() =>
   prioritizeMatchingItem(indexConsole.targetActivityGroups, (item) => item.target?.target_ref === focusTargetRef.value),
 );
+const pinnedTargetGroupKeys = computed(() => {
+  if (!focusNeedsTargetGroups() || !focusTargetRef.value) {
+    return [];
+  }
+  return [focusTargetRef.value];
+});
 const focusedTargetGroupMeta = computed(() => {
   if (!focusTargetRef.value) return null;
   return indexConsole.targetGroupMeta(focusTargetRef.value)
@@ -429,13 +442,20 @@ onDeactivated(() => {
         >
           <div v-if="!indexConsole.recoveryTimelineItems.length" class="empty">当前没有恢复活动。</div>
           <template v-else>
-            <ul class="receipt-list">
-              <li
-                v-for="item in indexConsole.recoveryTimelineItems"
-                :key="item.event_id || activityItemKey('recovery_timeline', item)"
-                :data-activity-key="activityItemKey('recovery_timeline', item)"
-                :class="{ 'focused-card': isFocusedSource('recovery_timeline', item.event_id) || isFocusedSource('recovery_receipt', item.event_id) }"
-              >
+            <VirtualList
+              class="receipt-list"
+              :items="indexConsole.recoveryTimelineItems"
+              :item-key="(item) => item.event_id || activityItemKey('recovery_timeline', item)"
+              :estimated-item-height="176"
+              :threshold="8"
+              :viewport-height="560"
+              test-id="index-recovery-virtual-list"
+            >
+              <template #default="{ item }">
+                <li
+                  :data-activity-key="activityItemKey('recovery_timeline', item)"
+                  :class="{ 'focused-card': isFocusedSource('recovery_timeline', item.event_id) || isFocusedSource('recovery_receipt', item.event_id) }"
+                >
                 <strong>{{ item.event_id || item.label || "恢复事件" }}</strong><br />
                 {{ recoveryTimestamp(item) }} | {{ fmtStatus(item.status, item.status || "-") }} | {{ recoveryActor(item) }}<br />
                 关联目标：{{ recoveryTargetRef(item) }} | 动作：{{ fmtAction(recoveryAction(item), recoveryAction(item)) }} | 结论：{{ recoveryResolution(item) }}
@@ -476,8 +496,9 @@ onDeactivated(() => {
                     打开回放结果
                   </button>
                 </div>
-              </li>
-            </ul>
+                </li>
+              </template>
+            </VirtualList>
             <CursorPager
               test-id-prefix="recovery-timeline-pager"
               :pagination="indexConsole.activitySectionPagination('recovery_timeline')"
@@ -596,26 +617,35 @@ onDeactivated(() => {
         >
           <div v-if="!prioritizedTargetGroups.length" class="empty">当前没有目标活动摘要。</div>
           <template v-else>
-            <ul class="receipt-list target-group-list">
-              <TargetActivityGroupCard
-                v-for="group in prioritizedTargetGroups"
-                :key="group.target.target_ref"
-                :group="group"
-                :expanded="activeTargetGroupRef === group.target.target_ref"
-                :loading="groupLoading(group.target.target_ref)"
-                :items="groupItems(group.target.target_ref)"
-                :pagination="indexConsole.targetGroupPagination(group.target.target_ref)"
-                :can-previous="groupCanPrevious(group.target.target_ref)"
-                :can-next="groupCanNext(group.target.target_ref)"
-                :focused="group.target.target_ref === focusTargetRef"
-                :focused-activity-key="group.target.target_ref === focusTargetRef ? focusedActivityKey : ''"
-                :source-linked-activity-key="group.target.target_ref === focusTargetRef ? sourceLinkedActivityKey : ''"
-                @toggle="toggleTargetGroup"
-                @open-target="jumpToTarget"
-                @previous="previousGroupPage"
-                @next="nextGroupPage"
-              />
-            </ul>
+            <VirtualList
+              class="receipt-list target-group-list"
+              :items="prioritizedTargetGroups"
+              :item-key="(group) => group.target.target_ref"
+              :estimated-item-height="220"
+              :threshold="8"
+              :viewport-height="640"
+              :pinned-keys="pinnedTargetGroupKeys"
+              test-id="index-target-groups-virtual-list"
+            >
+              <template #default="{ item: group }">
+                <TargetActivityGroupCard
+                  :group="group"
+                  :expanded="activeTargetGroupRef === group.target.target_ref"
+                  :loading="groupLoading(group.target.target_ref)"
+                  :items="groupItems(group.target.target_ref)"
+                  :pagination="indexConsole.targetGroupPagination(group.target.target_ref)"
+                  :can-previous="groupCanPrevious(group.target.target_ref)"
+                  :can-next="groupCanNext(group.target.target_ref)"
+                  :focused="group.target.target_ref === focusTargetRef"
+                  :focused-activity-key="group.target.target_ref === focusTargetRef ? focusedActivityKey : ''"
+                  :source-linked-activity-key="group.target.target_ref === focusTargetRef ? sourceLinkedActivityKey : ''"
+                  @toggle="toggleTargetGroup"
+                  @open-target="jumpToTarget"
+                  @previous="previousGroupPage"
+                  @next="nextGroupPage"
+                />
+              </template>
+            </VirtualList>
             <CursorPager
               test-id-prefix="target-groups-pager"
               :pagination="indexConsole.activitySectionPagination('target_groups')"
@@ -632,8 +662,19 @@ onDeactivated(() => {
 
     <PanelShell eyebrow="任务" title="重建索引与校验">
       <div v-if="!indexConsole.jobs.length" class="empty">当前没有排队中的索引任务。</div>
-      <div v-else class="job-table">
-        <div v-for="item in prioritizedJobs" :key="item.job_id" class="job-row" :data-testid="`verify-job-${item.job_id}`" :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === item.job_id }">
+      <VirtualList
+        v-else
+        class="job-table"
+        :items="prioritizedJobs"
+        item-key="job_id"
+        :estimated-item-height="240"
+        :threshold="8"
+        :viewport-height="640"
+        :pinned-keys="pinnedJobKeys"
+        test-id="index-jobs-virtual-list"
+      >
+        <template #default="{ item }">
+          <div class="job-row" :data-testid="`verify-job-${item.job_id}`" :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === item.job_id }">
           <div class="job-main"><strong>{{ fmtJobType(item.job_type, item.job_type || "-") }}</strong><div class="muted">{{ item.job_id }}</div><div class="muted">{{ item.alias_scope }}</div></div>
           <div class="job-diagnostics">
             <p><strong>状态</strong><br />{{ fmtStatus(item.status, item.status || "-") }}</p>
@@ -651,8 +692,9 @@ onDeactivated(() => {
             <button v-if="item.job_type === 'verify'" :disabled="indexConsole.actionId === item.job_id" :data-testid="`retry-verify-job-${item.job_id}`" @click="retry(item.job_id)">重试校验</button>
             <span v-else class="muted">自动生成</span>
           </div>
-        </div>
-      </div>
+          </div>
+        </template>
+      </VirtualList>
       <CursorPager test-id-prefix="jobs-pager" :pagination="indexConsole.jobPagination" :can-previous="Boolean(indexConsole.jobCursorStack.length)" :can-next="Boolean(indexConsole.jobPagination?.has_next)" :disabled="indexConsole.loading" @previous="previousJobPage" @next="nextJobPage" />
     </PanelShell>
   </section>

@@ -74,6 +74,23 @@ describe("shell smoothness architecture", () => {
     expect(humanReviewSource).toContain("human-review-toggle-details");
   });
 
+  it("routes index console long lists through the shared virtual and progressive list drivers", () => {
+    const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+    const targetGroupCardSource = readFileSync(new URL("../src/components/TargetActivityGroupCard.vue", import.meta.url), "utf8");
+
+    expect(indexSource).toContain('import VirtualList from "../components/VirtualList.vue"');
+    expect(indexSource).toContain('test-id="index-jobs-virtual-list"');
+    expect(indexSource).toContain('test-id="index-recovery-virtual-list"');
+    expect(indexSource).toContain('test-id="index-target-groups-virtual-list"');
+    expect(indexSource).toContain("const pinnedJobKeys = computed(() =>");
+    expect(indexSource).toContain("const pinnedTargetGroupKeys = computed(() =>");
+    expect(targetGroupCardSource).toContain('import ProgressiveList from "./ProgressiveList.vue"');
+    expect(targetGroupCardSource).toContain('test-id="target-group-progressive-list"');
+    expect(targetGroupCardSource).toContain(":initial-count=\"8\"");
+    expect(targetGroupCardSource).toContain(":batch-size=\"6\"");
+    expect(targetGroupCardSource).toContain(":threshold=\"8\"");
+  });
+
   it("avoids deep watchers in the heaviest cached views", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");

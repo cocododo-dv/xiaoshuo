@@ -4,6 +4,9 @@ import { createApp, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import IndexConsoleView from "../src/views/IndexConsoleView.vue";
+import { useShellRouter } from "../src/router";
+import { useIndexConsoleStore } from "../src/stores/indexConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 import ReviewInboxView from "../src/views/ReviewInboxView.vue";
 
@@ -103,6 +106,161 @@ async function mountReviewInboxView({ reviewCount = 15, humanReviewCount = 10 } 
   };
 }
 
+function createIndexJob(index) {
+  return {
+    job_id: `verify-job-${index}`,
+    job_type: "verify",
+    status: index % 2 === 0 ? "pending" : "running",
+    alias_scope: `style_rule:global:${index}`,
+    target_snapshot_version: `snapshot-${index}`,
+    target_embedding_version: `embedding-${index}`,
+    worker_id: `worker-${index}`,
+    attempt_no: index,
+    heartbeat_at: `2026-04-15T00:${String(index).padStart(2, "0")}:00+00:00`,
+    lease_expires_at: `2026-04-15T01:${String(index).padStart(2, "0")}:00+00:00`,
+    started_at: `2026-04-15T00:${String(index).padStart(2, "0")}:00+00:00`,
+    finished_at: index % 3 === 0 ? `2026-04-15T02:${String(index).padStart(2, "0")}:00+00:00` : "",
+    error_text: "",
+  };
+}
+
+function createRecoveryItem(index) {
+  return {
+    event_id: `recovery-${index}`,
+    event_source: "idempotency_recovery",
+    status: index % 2 === 0 ? "pending" : "resolved",
+    actor_ref: `operator-${index}`,
+    linked_target_ref: `review_item:review-${index}`,
+    action: "inspect",
+    resolution_reason: `resolution-${index}`,
+    created_at: `2026-04-15T00:${String(index).padStart(2, "0")}:00+00:00`,
+    last_action_at: `2026-04-15T00:${String(index).padStart(2, "0")}:30+00:00`,
+  };
+}
+
+function createTargetGroup(index) {
+  return {
+    target: {
+      target_type: "review_item",
+      target_id: `review-${index}`,
+      target_ref: `review_item:review-${index}`,
+    },
+    latest_at: `2026-04-15T03:${String(index).padStart(2, "0")}:00+00:00`,
+    activity_count: 10,
+    sources: ["operator_action", "recovery_timeline"],
+    latest_activity_key: `operator_action:${index}:9`,
+  };
+}
+
+function createTargetGroupItem(groupIndex, itemIndex) {
+  return {
+    activity_key: `operator_action:${groupIndex}:${itemIndex}`,
+    source: itemIndex % 2 === 0 ? "operator_action" : "recovery_timeline",
+    status: itemIndex % 2 === 0 ? "resolved" : "pending",
+    actor_ref: `operator-${groupIndex}-${itemIndex}`,
+    timestamp: `2026-04-15T04:${String(itemIndex).padStart(2, "0")}:00+00:00`,
+    label: `Activity ${groupIndex}-${itemIndex}`,
+    summary: `Summary ${groupIndex}-${itemIndex}`,
+    target_refs: [
+      {
+        target_type: "review_item",
+        target_id: `review-${groupIndex}`,
+        target_ref: `review_item:review-${groupIndex}`,
+      },
+    ],
+  };
+}
+
+async function mountIndexConsoleView({
+  jobCount = 15,
+  recoveryCount = 15,
+  targetGroupCount = 14,
+  targetGroupItemCount = 10,
+  focusTarget,
+} = {}) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+
+  const router = useShellRouter();
+  router.reset();
+  router.navigate("index");
+  if (focusTarget) {
+    router.openTarget(focusTarget);
+  }
+
+  const store = useIndexConsoleStore();
+  store.aliasScopes = [{ alias_scope: "style_rule:global:global" }];
+  store.jobs = Array.from({ length: jobCount }, (_, index) => createIndexJob(index));
+  store.jobsVersion = 1;
+  store.jobLookup = Object.fromEntries(store.jobs.map((item) => [item.job_id, true]));
+  store.recoveryTimelineItems = Array.from({ length: recoveryCount }, (_, index) => createRecoveryItem(index));
+  store.targetActivityGroups = Array.from({ length: targetGroupCount }, (_, index) => createTargetGroup(index));
+  store.targetGroupsVersion = 1;
+  store.targetGroupLookup = Object.fromEntries(store.targetActivityGroups.map((group) => [group.target.target_ref, true]));
+  store.targetGroupItemsByRef = Object.fromEntries(
+    store.targetActivityGroups.map((group, index) => [
+      group.target.target_ref,
+      Array.from({ length: targetGroupItemCount }, (_, itemIndex) => createTargetGroupItem(index, itemIndex)),
+    ]),
+  );
+  store.targetGroupMetaByRef = Object.fromEntries(
+    store.targetActivityGroups.map((group) => [group.target.target_ref, {
+      target: group.target,
+      latestAt: group.latest_at,
+      activityCount: group.activity_count,
+      sources: group.sources,
+      latestActivityKey: group.latest_activity_key,
+    }]),
+  );
+  store.activitySections.recovery_timeline.loaded = true;
+  store.activitySections.target_groups.loaded = true;
+  store.targetActivityGroups.forEach((group) => {
+    store.targetGroupStatesByRef[group.target.target_ref] = {
+      pager: {
+        cursor: null,
+        cursorStack: [],
+        pagination: {
+          has_next: false,
+          next_cursor: null,
+          returned: targetGroupItemCount,
+          total: targetGroupItemCount,
+          limit: 25,
+          mode: "cursor",
+        },
+      },
+      loaded: true,
+      stale: false,
+      loading: false,
+    };
+  });
+  store.loaded = true;
+  store.loading = false;
+  store.activityLoaded = true;
+  store.activityLoading = false;
+  store.error = "";
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const app = createApp(IndexConsoleView, {
+    onNotice: vi.fn(),
+  });
+  app.use(pinia);
+  app.mount(container);
+  await flushUi();
+
+  return {
+    container,
+    app,
+    store,
+    router,
+    unmount() {
+      app.unmount();
+      container.remove();
+    },
+  };
+}
+
 describe("review inbox scroll performance integration", () => {
   let animationFrames;
 
@@ -143,6 +301,105 @@ describe("review inbox scroll performance integration", () => {
       humanReviewCards = mounted.container.querySelectorAll('[data-testid^="human-review-event-"]');
       expect(humanReviewCards).toHaveLength(mounted.store.systemRecoveryItems.length);
       expect(mounted.container.querySelector('[data-testid="human-review-event-event-9"]')).not.toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+describe("index console scroll performance integration", () => {
+  let animationFrames;
+
+  beforeEach(() => {
+    animationFrames = createAnimationFrameController();
+    setActivePinia(createPinia());
+    document.body.innerHTML = "";
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("mounts index console through VirtualList and ProgressiveList while keeping focused rows available", async () => {
+    const mounted = await mountIndexConsoleView({
+      focusTarget: {
+        target_type: "verify_job",
+        target_id: "verify-job-14",
+        target_ref: "verify_job:verify-job-14",
+      },
+    });
+
+    try {
+      const jobsVirtualList = mounted.container.querySelector('[data-testid="index-jobs-virtual-list"]');
+      expect(jobsVirtualList).not.toBeNull();
+      expect(jobsVirtualList.style.maxHeight).toBe("640px");
+
+      const jobRows = mounted.container.querySelectorAll('[data-testid^="verify-job-"]');
+      expect(jobRows.length).toBeGreaterThan(0);
+      expect(jobRows.length).toBeLessThan(mounted.store.jobs.length);
+      expect(mounted.container.querySelector('[data-testid="verify-job-verify-job-14"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="retry-verify-job-verify-job-14"]')).not.toBeNull();
+
+      mounted.container.querySelector('[data-testid="index-toggle-recovery-timeline"]').click();
+      await flushUi();
+
+      const recoveryVirtualList = mounted.container.querySelector('[data-testid="index-recovery-virtual-list"]');
+      expect(recoveryVirtualList).not.toBeNull();
+      expect(recoveryVirtualList.style.maxHeight).toBe("560px");
+
+      const recoveryRows = recoveryVirtualList.querySelectorAll("li");
+      expect(recoveryRows.length).toBeGreaterThan(0);
+      expect(recoveryRows.length).toBeLessThan(mounted.store.recoveryTimelineItems.length);
+      expect(mounted.container.querySelector('[data-activity-key="recovery_timeline:recovery-0"]')).not.toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("pins focused target groups and progressively reveals expanded activity items", async () => {
+    const mounted = await mountIndexConsoleView({
+      focusTarget: {
+        target_type: "review_item",
+        target_id: "review-13",
+        target_ref: "review_item:review-13",
+      },
+    });
+
+    try {
+      mounted.container.querySelector('[data-testid="index-toggle-target-groups"]').click();
+      await flushUi();
+
+      const groupVirtualList = mounted.container.querySelector('[data-testid="index-target-groups-virtual-list"]');
+      expect(groupVirtualList).not.toBeNull();
+      expect(groupVirtualList.style.maxHeight).toBe("640px");
+
+      const groupCards = mounted.container.querySelectorAll('[data-testid^="target-activity-group-review_item:review-"]');
+      expect(groupCards.length).toBeGreaterThan(0);
+      expect(groupCards.length).toBeLessThan(mounted.store.targetActivityGroups.length);
+      expect(mounted.container.querySelector('[data-testid="target-activity-group-review_item:review-13"]')).not.toBeNull();
+
+      mounted.container.querySelector('[data-testid="target-activity-toggle-review_item:review-13"]').click();
+      await flushUi();
+
+      let activityRows = mounted.container.querySelectorAll('[data-testid^="target-activity-item-operator_action:13:"]');
+      expect(mounted.container.querySelector('[data-testid="target-group-progressive-list"]')).not.toBeNull();
+      expect(activityRows).toHaveLength(8);
+      expect(mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:8"]')).toBeNull();
+
+      await animationFrames.flushAll();
+
+      activityRows = mounted.container.querySelectorAll('[data-testid^="target-activity-item-operator_action:13:"]');
+      expect(activityRows).toHaveLength(10);
+      expect(mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:9"]')).not.toBeNull();
     } finally {
       mounted.unmount();
     }

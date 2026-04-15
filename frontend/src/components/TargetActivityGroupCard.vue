@@ -1,5 +1,6 @@
 <script setup>
 import CursorPager from "./CursorPager.vue";
+import ProgressiveList from "./ProgressiveList.vue";
 
 const props = defineProps({
   group: {
@@ -120,33 +121,44 @@ function isHighlighted(item) {
     <div v-if="props.expanded" class="receipt-detail">
       <div v-if="props.loading" class="empty">正在加载活动详情...</div>
       <template v-else-if="props.items.length">
-        <ul class="receipt-list">
-          <li
-            v-for="item in props.items"
-            :key="item.activity_key"
-            :data-activity-key="item.activity_key"
-            :data-testid="`target-activity-item-${item.activity_key}`"
-            :class="{
-              'focused-card': isHighlighted(item),
-              'focused-activity-item': item.activity_key === props.focusedActivityKey,
-            }"
-          >
-            <strong>{{ item.label || item.source || "-" }}</strong><br />
-            {{ activitySummary(item) }}<br />
-            {{ item.summary || "-" }}
-            <div v-if="item.target_refs?.length" class="card-actions">
-              <button
-                v-for="target in item.target_refs"
-                :key="`${item.activity_key}:${target.target_ref}`"
-                type="button"
-                class="ghost"
-                @click="emit('open-target', target)"
+        <ProgressiveList
+          :items="props.items"
+          :enabled="props.items.length > 8"
+          :initial-count="8"
+          :batch-size="6"
+          :threshold="8"
+          test-id="target-group-progressive-list"
+        >
+          <template #default="{ items }">
+            <ul class="receipt-list">
+              <li
+                v-for="item in items"
+                :key="item.activity_key"
+                :data-activity-key="item.activity_key"
+                :data-testid="`target-activity-item-${item.activity_key}`"
+                :class="{
+                  'focused-card': isHighlighted(item),
+                  'focused-activity-item': item.activity_key === props.focusedActivityKey,
+                }"
               >
-                {{ targetButtonLabel(target) }}
-              </button>
-            </div>
-          </li>
-        </ul>
+                <strong>{{ item.label || item.source || "-" }}</strong><br />
+                {{ activitySummary(item) }}<br />
+                {{ item.summary || "-" }}
+                <div v-if="item.target_refs?.length" class="card-actions">
+                  <button
+                    v-for="target in item.target_refs"
+                    :key="`${item.activity_key}:${target.target_ref}`"
+                    type="button"
+                    class="ghost"
+                    @click="emit('open-target', target)"
+                  >
+                    {{ targetButtonLabel(target) }}
+                  </button>
+                </div>
+              </li>
+            </ul>
+          </template>
+        </ProgressiveList>
         <CursorPager
           :test-id-prefix="`target-group-pager-${props.group.target.target_ref}`"
           :pagination="props.pagination"
