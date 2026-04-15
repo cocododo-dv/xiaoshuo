@@ -1,6 +1,8 @@
 <script setup>
 import { reactive } from "vue";
 
+import ProgressiveList from "./ProgressiveList.vue";
+
 const props = defineProps({
   items: {
     type: Array,
@@ -198,135 +200,143 @@ function formattedDetails(item) {
   <div class="drawer-body">
     <div v-if="!props.items.length" class="empty">当前没有待处理的人工作业事件。</div>
 
-    <article
-      v-for="item in props.items"
-      :key="item.event_id || item.status"
-      class="paper mini"
-      :data-testid="`human-review-event-${item.event_id}`"
-      :class="{ 'focused-card': props.focusEventId && item.event_id === props.focusEventId }"
+    <ProgressiveList
+      :items="props.items"
+      :enabled="props.items.length > 12"
+      test-id="human-review-progressive-list"
     >
-      <h3>{{ eventSourceLabel(item.event_source) }}</h3>
-      <p class="muted">状态：{{ formatStatus(item.status) }}</p>
-      <p class="muted">对象：{{ item.object_ref || "-" }}</p>
-      <p class="muted">关联目标：{{ targetSummary(item) }}</p>
-
-      <p v-if="item.details_json?.request_path_template" class="muted">
-        请求模板：{{ item.details_json.request_path_template }}
-      </p>
-
-      <p v-if="item.details_json?.created_by_ref" class="muted">
-        创建来源：{{ item.details_json.created_by_ref }} | {{ item.details_json.created_reason || "-" }}
-      </p>
-
-      <p class="muted">可执行动作：{{ (item.allowed_actions_json || []).map(actionLabel).join(" / ") || "-" }}</p>
-
-      <p v-if="item.default_action && item.default_action !== 'inspect'" class="muted">
-        建议下一步：{{ actionLabel(item.default_action) }} ({{ item.default_action }})
-      </p>
-
-      <p v-if="item.details_json?.last_action_at" class="muted">
-        最近操作：
-        {{ actionLabel(item.details_json.last_action) }}
-        | {{ item.details_json.last_action_at }}
-        | {{ item.details_json.last_actor_ref || "-" }}
-        | {{ formatStatus(item.details_json.last_action_status || item.status) }}
-      </p>
-
-      <div class="card-actions">
-        <button
-          v-if="item.details_json && Object.keys(item.details_json).length"
-          class="ghost"
-          :data-testid="`human-review-toggle-details-${item.event_id}`"
-          @click="toggleDetails(item.event_id)"
+      <template #default="{ items }">
+        <article
+          v-for="item in items"
+          :key="item.event_id || item.status"
+          class="paper mini"
+          :data-testid="`human-review-event-${item.event_id}`"
+          :class="{ 'focused-card': props.focusEventId && item.event_id === props.focusEventId }"
         >
-          {{ expandedDetails[item.event_id] ? "收起详情" : "展开详情" }}
-        </button>
+          <h3>{{ eventSourceLabel(item.event_source) }}</h3>
+          <p class="muted">状态：{{ formatStatus(item.status) }}</p>
+          <p class="muted">对象：{{ item.object_ref || "-" }}</p>
+          <p class="muted">关联目标：{{ targetSummary(item) }}</p>
 
-        <button
-          v-if="actionHistory(item).length"
-          class="ghost"
-          :data-testid="`human-review-toggle-history-${item.event_id}`"
-          @click="toggleHistory(item.event_id)"
-        >
-          {{ expandedHistory[item.event_id] ? "收起历史" : "展开历史" }}
-        </button>
-      </div>
+          <p v-if="item.details_json?.request_path_template" class="muted">
+            请求模板：{{ item.details_json.request_path_template }}
+          </p>
 
-      <div v-if="expandedHistory[item.event_id] && actionHistory(item).length" class="history-stack">
-        <p class="history-title">操作历史</p>
-        <ul class="history-list">
-          <li
-            v-for="entry in actionHistory(item)"
-            :key="`${item.event_id}:${entry.action_at}:${entry.action}`"
-            class="history-entry"
-          >
-            <p class="history-meta">
-              <strong>{{ actionLabel(entry.action) }}</strong>
-              <span>{{ entry.action_at }} | {{ entry.actor_ref || "-" }} | {{ formatStatus(entry.status_after) }}</span>
-            </p>
+          <p v-if="item.details_json?.created_by_ref" class="muted">
+            创建来源：{{ item.details_json.created_by_ref }} | {{ item.details_json.created_reason || "-" }}
+          </p>
 
-            <p v-if="entry.linked_target_ref" class="muted history-replay">关联目标：{{ entry.linked_target_ref }}</p>
-            <p v-if="entry.resolution_reason" class="muted history-replay">处理结果：{{ entry.resolution_reason }}</p>
-            <p v-if="entry.replay_result" class="muted history-replay">回放结果：{{ replaySummary(entry.replay_result) }}</p>
+          <p class="muted">可执行动作：{{ (item.allowed_actions_json || []).map(actionLabel).join(" / ") || "-" }}</p>
 
-            <div v-if="historyReplayTarget(entry)" class="card-actions">
-              <button
-                class="ghost"
-                :data-testid="`human-review-open-history-replay-${item.event_id}`"
-                @click="emit('open-target', sourceFocusedTarget(historyReplayTarget(entry), item.event_id))"
+          <p v-if="item.default_action && item.default_action !== 'inspect'" class="muted">
+            建议下一步：{{ actionLabel(item.default_action) }} ({{ item.default_action }})
+          </p>
+
+          <p v-if="item.details_json?.last_action_at" class="muted">
+            最近操作：
+            {{ actionLabel(item.details_json.last_action) }}
+            | {{ item.details_json.last_action_at }}
+            | {{ item.details_json.last_actor_ref || "-" }}
+            | {{ formatStatus(item.details_json.last_action_status || item.status) }}
+          </p>
+
+          <div class="card-actions">
+            <button
+              v-if="item.details_json && Object.keys(item.details_json).length"
+              class="ghost"
+              :data-testid="`human-review-toggle-details-${item.event_id}`"
+              @click="toggleDetails(item.event_id)"
+            >
+              {{ expandedDetails[item.event_id] ? "收起详情" : "展开详情" }}
+            </button>
+
+            <button
+              v-if="actionHistory(item).length"
+              class="ghost"
+              :data-testid="`human-review-toggle-history-${item.event_id}`"
+              @click="toggleHistory(item.event_id)"
+            >
+              {{ expandedHistory[item.event_id] ? "收起历史" : "展开历史" }}
+            </button>
+          </div>
+
+          <div v-if="expandedHistory[item.event_id] && actionHistory(item).length" class="history-stack">
+            <p class="history-title">操作历史</p>
+            <ul class="history-list">
+              <li
+                v-for="entry in actionHistory(item)"
+                :key="`${item.event_id}:${entry.action_at}:${entry.action}`"
+                class="history-entry"
               >
-                打开回放结果
-              </button>
-            </div>
-          </li>
-        </ul>
-      </div>
+                <p class="history-meta">
+                  <strong>{{ actionLabel(entry.action) }}</strong>
+                  <span>{{ entry.action_at }} | {{ entry.actor_ref || "-" }} | {{ formatStatus(entry.status_after) }}</span>
+                </p>
 
-      <pre
-        v-if="expandedDetails[item.event_id] && item.details_json && Object.keys(item.details_json).length"
-        class="json-block"
-      >{{ formattedDetails(item) }}</pre>
+                <p v-if="entry.linked_target_ref" class="muted history-replay">关联目标：{{ entry.linked_target_ref }}</p>
+                <p v-if="entry.resolution_reason" class="muted history-replay">处理结果：{{ entry.resolution_reason }}</p>
+                <p v-if="entry.replay_result" class="muted history-replay">回放结果：{{ replaySummary(entry.replay_result) }}</p>
 
-      <div v-if="linkedTarget(item) || followupTarget(item) || replayTarget(item)" class="card-actions">
-        <button
-          v-if="linkedTarget(item)"
-          class="ghost"
-          :data-testid="`human-review-open-linked-${item.event_id}`"
-          @click="emit('open-target', sourceFocusedTarget(linkedTarget(item), item.event_id))"
-        >
-          打开关联目标
-        </button>
+                <div v-if="historyReplayTarget(entry)" class="card-actions">
+                  <button
+                    class="ghost"
+                    :data-testid="`human-review-open-history-replay-${item.event_id}`"
+                    @click="emit('open-target', sourceFocusedTarget(historyReplayTarget(entry), item.event_id))"
+                  >
+                    打开回放结果
+                  </button>
+                </div>
+              </li>
+            </ul>
+          </div>
 
-        <button
-          v-if="followupTarget(item)"
-          class="ghost"
-          :data-testid="`human-review-open-followup-${item.event_id}`"
-          @click="emit('open-target', sourceFocusedTarget(followupTarget(item), item.event_id))"
-        >
-          打开后续目标
-        </button>
+          <pre
+            v-if="expandedDetails[item.event_id] && item.details_json && Object.keys(item.details_json).length"
+            class="json-block"
+          >{{ formattedDetails(item) }}</pre>
 
-        <button
-          v-if="replayTarget(item)"
-          class="ghost"
-          :data-testid="`human-review-open-replay-${item.event_id}`"
-          @click="emit('open-target', sourceFocusedTarget(replayTarget(item), item.event_id))"
-        >
-          打开回放结果
-        </button>
-      </div>
+          <div v-if="linkedTarget(item) || followupTarget(item) || replayTarget(item)" class="card-actions">
+            <button
+              v-if="linkedTarget(item)"
+              class="ghost"
+              :data-testid="`human-review-open-linked-${item.event_id}`"
+              @click="emit('open-target', sourceFocusedTarget(linkedTarget(item), item.event_id))"
+            >
+              打开关联目标
+            </button>
 
-      <div v-if="props.interactive && item.allowed_actions_json?.length" class="card-actions">
-        <button
-          v-for="action in item.allowed_actions_json"
-          :key="`${item.event_id}:${action}`"
-          :disabled="props.actionId === `${item.event_id}:${action}`"
-          :data-testid="`human-review-action-${item.event_id}-${action}`"
-          @click="emit('action', { eventId: item.event_id, action })"
-        >
-          {{ props.actionId === `${item.event_id}:${action}` ? "处理中..." : actionLabel(action) }}
-        </button>
-      </div>
-    </article>
+            <button
+              v-if="followupTarget(item)"
+              class="ghost"
+              :data-testid="`human-review-open-followup-${item.event_id}`"
+              @click="emit('open-target', sourceFocusedTarget(followupTarget(item), item.event_id))"
+            >
+              打开后续目标
+            </button>
+
+            <button
+              v-if="replayTarget(item)"
+              class="ghost"
+              :data-testid="`human-review-open-replay-${item.event_id}`"
+              @click="emit('open-target', sourceFocusedTarget(replayTarget(item), item.event_id))"
+            >
+              打开回放结果
+            </button>
+          </div>
+
+          <div v-if="props.interactive && item.allowed_actions_json?.length" class="card-actions">
+            <button
+              v-for="action in item.allowed_actions_json"
+              :key="`${item.event_id}:${action}`"
+              :disabled="props.actionId === `${item.event_id}:${action}`"
+              :data-testid="`human-review-action-${item.event_id}-${action}`"
+              @click="emit('action', { eventId: item.event_id, action })"
+            >
+              {{ props.actionId === `${item.event_id}:${action}` ? "处理中..." : actionLabel(action) }}
+            </button>
+          </div>
+        </article>
+      </template>
+    </ProgressiveList>
   </div>
 </template>

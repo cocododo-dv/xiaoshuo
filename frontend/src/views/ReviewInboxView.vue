@@ -5,6 +5,7 @@ import CursorPager from "../components/CursorPager.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ReviewCard from "../components/ReviewCard.vue";
+import VirtualList from "../components/VirtualList.vue";
 import { getVisibleHumanReviewItems, shouldClearReviewFocus } from "../lib/filterFocus";
 import { prioritizeMatchingItem } from "../lib/listPriority";
 import { useShellRouter } from "../router";
@@ -62,6 +63,14 @@ const prioritizedHumanReviewItems = computed(() => {
 const prioritizedReviewItems = computed(() => {
   const focusReviewId = focusTargetType.value === "review_item" ? focusTargetId.value : null;
   return prioritizeMatchingItem(reviewInbox.items, (item) => item.review_id === focusReviewId);
+});
+
+const pinnedReviewKeys = computed(() => {
+  if (focusTargetType.value !== "review_item" || !focusTargetId.value) {
+    return [];
+  }
+
+  return [focusTargetId.value];
 });
 
 function focusedReviewId(reviewId) {
@@ -353,19 +362,29 @@ watch(
         />
 
         <div v-if="!reviewInbox.items.length" class="empty">当前没有待处理审核项。</div>
-        <div v-else class="review-list">
-          <ReviewCard
-            v-for="item in prioritizedReviewItems"
-            :key="item.review_id"
-            :item="item"
-            :highlighted="focusedReviewId(item.review_id)"
-            :source-action-label="reviewSourceActionLabel(item.review_id)"
-            :loading="reviewInbox.actionId === item.review_id"
-            @approve="approve"
-            @release="release"
-            @open-target="handleReviewOpenTarget"
-          />
-        </div>
+        <VirtualList
+          v-else
+          class="review-list"
+          :items="prioritizedReviewItems"
+          item-key="review_id"
+          :estimated-item-height="220"
+          :pinned-keys="pinnedReviewKeys"
+          :threshold="10"
+          :viewport-height="720"
+          test-id="review-inbox-virtual-list"
+        >
+          <template #default="{ item }">
+            <ReviewCard
+              :item="item"
+              :highlighted="focusedReviewId(item.review_id)"
+              :source-action-label="reviewSourceActionLabel(item.review_id)"
+              :loading="reviewInbox.actionId === item.review_id"
+              @approve="approve"
+              @release="release"
+              @open-target="handleReviewOpenTarget"
+            />
+          </template>
+        </VirtualList>
         <CursorPager
           test-id-prefix="review-items-pager"
           :pagination="reviewInbox.reviewPagination"
