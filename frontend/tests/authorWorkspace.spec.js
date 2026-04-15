@@ -593,6 +593,22 @@ describe("author lifecycle source", () => {
     expect(source).toContain("scene_card");
   });
 
+  it("virtualizes author chapter and scene lists while keeping forms outside the list surfaces", () => {
+    const source = readFileSync(AUTHOR_VIEW_PATH, "utf8");
+
+    expect(source).toContain('import VirtualList from "../components/VirtualList.vue"');
+    expect(source).toContain("const pinnedChapterKeys = computed(() =>");
+    expect(source).toContain("authorWorkspace.selectedChapterId");
+    expect(source).toContain("const pinnedSceneKeys = computed(() =>");
+    expect(source).toContain("selectedSceneId.value");
+    expect(source).toContain('test-id="author-chapter-virtual-list"');
+    expect(source).toContain('test-id="author-scene-virtual-list"');
+    expect(source).toContain(':pinned-keys="pinnedChapterKeys"');
+    expect(source).toContain(':pinned-keys="pinnedSceneKeys"');
+    expect(source).toContain('data-testid="author-chapter-form"');
+    expect(source).toContain('data-testid="author-scene-form"');
+  });
+
   it("ships a dedicated author trash view with restore and purge actions", () => {
     const source = readFileSync(AUTHOR_TRASH_VIEW_PATH, "utf8");
     expect(source).toContain("author-trash-view");

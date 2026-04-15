@@ -2,6 +2,7 @@
 import { computed, onActivated, reactive, ref, watch } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
+import VirtualList from "../components/VirtualList.vue";
 import { useShellRouter } from "../router";
 import { useAuthorWorkspaceStore } from "../stores/authorWorkspace";
 
@@ -52,6 +53,8 @@ const creatingScene = ref(false);
 
 const chapters = computed(() => authorWorkspace.chapters || []);
 const scenes = computed(() => authorWorkspace.scenes || []);
+const pinnedChapterKeys = computed(() => (authorWorkspace.selectedChapterId ? [authorWorkspace.selectedChapterId] : []));
+const pinnedSceneKeys = computed(() => (selectedSceneId.value ? [selectedSceneId.value] : []));
 const chapterRunStatus = computed(() => authorWorkspace.chapterRunStatus || null);
 const selectedScene = computed(() => scenes.value.find((scene) => scene.scene_id === selectedSceneId.value) || null);
 const selectedChapterTrashIds = computed(() =>
@@ -432,13 +435,21 @@ onActivated(() => {
           </div>
 
           <div v-if="!chapters.length" class="empty">当前还没有活跃章节。</div>
-          <div v-else class="author-list">
-            <article
-              v-for="chapter in chapters"
-              :key="chapter.chapter_id"
-              class="author-list-row"
-              :class="{ disabled: !isChapterTrashAllowed(chapter) }"
-            >
+          <VirtualList
+            v-else
+            class="author-list"
+            :items="chapters"
+            item-key="chapter_id"
+            :estimated-item-height="144"
+            :viewport-height="640"
+            :pinned-keys="pinnedChapterKeys"
+            test-id="author-chapter-virtual-list"
+          >
+            <template #default="{ item: chapter }">
+              <article
+                class="author-list-row"
+                :class="{ disabled: !isChapterTrashAllowed(chapter) }"
+              >
               <label class="author-select-cell" :for="`chapter-trash-${chapter.chapter_id}`">
                 <input
                   :id="`chapter-trash-${chapter.chapter_id}`"
@@ -475,8 +486,9 @@ onActivated(() => {
                   </p>
                 </div>
               </div>
-            </article>
-          </div>
+              </article>
+            </template>
+          </VirtualList>
         </article>
 
         <article class="paper author-editor-card">
@@ -488,7 +500,7 @@ onActivated(() => {
             <span class="badge">{{ creatingChapter ? "新建中" : "编辑中" }}</span>
           </div>
 
-          <div class="author-form-grid">
+          <div class="author-form-grid" data-testid="author-chapter-form">
             <label>
               <span>章节 ID</span>
               <input
@@ -599,14 +611,21 @@ onActivated(() => {
 
           <div v-if="!authorWorkspace.selectedChapterId" class="empty">请先选择或新建章节，再编辑场景。</div>
           <template v-else>
-            <div class="author-scene-list">
-              <article
-                v-for="(scene, index) in scenes"
-                :key="scene.scene_id"
-                class="author-scene-row"
-                :class="{ active: selectedSceneId === scene.scene_id }"
-                :data-testid="`author-scene-row-${scene.scene_id}`"
-              >
+            <VirtualList
+              class="author-scene-list"
+              :items="scenes"
+              item-key="scene_id"
+              :estimated-item-height="184"
+              :viewport-height="640"
+              :pinned-keys="pinnedSceneKeys"
+              test-id="author-scene-virtual-list"
+            >
+              <template #default="{ item: scene }">
+                <article
+                  class="author-scene-row"
+                  :class="{ active: selectedSceneId === scene.scene_id }"
+                  :data-testid="`author-scene-row-${scene.scene_id}`"
+                >
                 <label class="author-select-cell" :for="`scene-trash-${scene.scene_id}`">
                   <input
                     :id="`scene-trash-${scene.scene_id}`"
@@ -632,7 +651,7 @@ onActivated(() => {
                   <div class="author-scene-actions">
                     <button
                       class="ghost"
-                      :disabled="index === 0 || authorWorkspace.actionId === 'reorder-scenes'"
+                      :disabled="scene.scene_seq === 1 || authorWorkspace.actionId === 'reorder-scenes'"
                       :data-testid="`author-scene-move-up-${scene.scene_id}`"
                       @click="moveScene(scene.scene_id, -1)"
                     >
@@ -640,7 +659,7 @@ onActivated(() => {
                     </button>
                     <button
                       class="ghost"
-                      :disabled="index === scenes.length - 1 || authorWorkspace.actionId === 'reorder-scenes'"
+                      :disabled="scene.scene_seq === scenes.length || authorWorkspace.actionId === 'reorder-scenes'"
                       :data-testid="`author-scene-move-down-${scene.scene_id}`"
                       @click="moveScene(scene.scene_id, 1)"
                     >
@@ -663,10 +682,11 @@ onActivated(() => {
                     </button>
                   </div>
                 </div>
-              </article>
-            </div>
+                </article>
+              </template>
+            </VirtualList>
 
-            <div class="author-form-grid author-scene-form">
+            <div class="author-form-grid author-scene-form" data-testid="author-scene-form">
               <label>
                 <span>场景 ID</span>
                 <input

@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { KeepAlive, createApp, h, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -426,5 +429,19 @@ describe("index console scroll performance integration", () => {
     } finally {
       mounted.unmount();
     }
+  });
+});
+
+describe("author workspace scroll performance integration", () => {
+  it("routes chapter and scene collections through VirtualList with pinned active selections", async () => {
+    const source = readFileSync(path.join(process.cwd(), "src/views/AuthorWorkspaceView.vue"), "utf8");
+
+    expect(source).toContain('import VirtualList from "../components/VirtualList.vue"');
+    expect(source).toContain('test-id="author-chapter-virtual-list"');
+    expect(source).toContain('test-id="author-scene-virtual-list"');
+    expect(source).toContain(':pinned-keys="pinnedChapterKeys"');
+    expect(source).toContain(':pinned-keys="pinnedSceneKeys"');
+    expect(source).toContain('data-testid="author-chapter-form"');
+    expect(source).toContain('data-testid="author-scene-form"');
   });
 });
