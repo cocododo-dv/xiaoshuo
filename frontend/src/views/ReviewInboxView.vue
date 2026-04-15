@@ -370,7 +370,7 @@ watch(
           :estimated-item-height="220"
           :pinned-keys="pinnedReviewKeys"
           :threshold="10"
-          :viewport-height="720"
+          :viewport-height="640"
           test-id="review-inbox-virtual-list"
         >
           <template #default="{ item }">

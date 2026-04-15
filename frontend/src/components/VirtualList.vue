@@ -43,6 +43,7 @@ const measuredHeights = ref({});
 const rowElements = new Map();
 const rowObservers = new Map();
 const measureFrameId = ref(0);
+const pendingMeasurements = new Map();
 
 const windowState = computed(() =>
   buildVirtualWindow({
@@ -75,6 +76,20 @@ function cancelMeasureFrame() {
   measureFrameId.value = 0;
 }
 
+function flushPendingMeasurements() {
+  measureFrameId.value = 0;
+  const queuedMeasurements = [...pendingMeasurements.entries()];
+  pendingMeasurements.clear();
+
+  queuedMeasurements.forEach(([key, element]) => {
+    if (!element?.isConnected) {
+      return;
+    }
+
+    commitMeasuredHeight(key, element.offsetHeight);
+  });
+}
+
 function commitMeasuredHeight(key, height) {
   if (key === null || key === undefined) {
     return;
@@ -93,15 +108,14 @@ function commitMeasuredHeight(key, height) {
 }
 
 function queueMeasure(key, element) {
-  cancelMeasureFrame();
+  pendingMeasurements.set(key, element);
+
+  if (measureFrameId.value) {
+    return;
+  }
+
   measureFrameId.value = requestAnimationFrame(() => {
-    measureFrameId.value = 0;
-
-    if (!element?.isConnected) {
-      return;
-    }
-
-    commitMeasuredHeight(key, element.offsetHeight);
+    flushPendingMeasurements();
   });
 }
 
@@ -175,6 +189,7 @@ watch(
 
 onBeforeUnmount(() => {
   cancelMeasureFrame();
+  pendingMeasurements.clear();
   rowObservers.forEach((observer) => observer.disconnect());
   rowObservers.clear();
   rowElements.clear();

@@ -202,7 +202,10 @@ function formattedDetails(item) {
 
     <ProgressiveList
       :items="props.items"
-      :enabled="props.items.length > 12"
+      :enabled="props.items.length > 6"
+      :initial-count="6"
+      :batch-size="4"
+      :threshold="6"
       test-id="human-review-progressive-list"
     >
       <template #default="{ items }">
