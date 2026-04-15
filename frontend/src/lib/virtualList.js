@@ -13,6 +13,40 @@ function resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItem
   return measuredHeights[key] ?? estimatedItemHeight;
 }
 
+function findViewportStartIndex(offsets, scrollTop) {
+  let low = 0;
+  let high = offsets.length - 2;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+
+    if (offsets[mid + 1] <= scrollTop) {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return low;
+}
+
+function findViewportEndIndex(offsets, viewportBottom) {
+  let low = 0;
+  let high = offsets.length - 2;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+
+    if (offsets[mid] < viewportBottom) {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return low;
+}
+
 export function buildHeightProfile(items, itemKey, measuredHeights, estimatedItemHeight) {
   const heights = new Array(items.length);
   const offsets = new Array(items.length + 1);
@@ -79,11 +113,21 @@ export function resolveVisibleIndexes({
   heightProfile,
 }) {
   if (!items.length) {
-    return { startIndex: 0, endIndex: 0 };
+    return {
+      viewportStartIndex: 0,
+      viewportEndIndex: 0,
+      renderStartIndex: 0,
+      renderEndIndex: 0,
+    };
   }
 
   if (viewportHeight <= 0) {
-    return { startIndex: 0, endIndex: 0 };
+    return {
+      viewportStartIndex: 0,
+      viewportEndIndex: 0,
+      renderStartIndex: 0,
+      renderEndIndex: 0,
+    };
   }
 
   const profile = heightProfile ?? buildHeightProfile(items, itemKey, measuredHeights, estimatedItemHeight);
@@ -91,25 +135,16 @@ export function resolveVisibleIndexes({
   const clampedScrollTop = Math.min(Math.max(scrollTop, 0), maxScrollTop);
   const viewportBottom = clampedScrollTop + viewportHeight;
 
-  let startVisibleIndex = 0;
-  while (
-    startVisibleIndex < items.length &&
-    profile.offsets[startVisibleIndex + 1] <= clampedScrollTop
-  ) {
-    startVisibleIndex += 1;
-  }
-
-  let endVisibleIndex = startVisibleIndex;
-  while (endVisibleIndex < items.length && profile.offsets[endVisibleIndex] < viewportBottom) {
-    endVisibleIndex += 1;
-  }
-
-  const rawStart = Math.max(startVisibleIndex - overscan, 0);
-  const rawEnd = Math.min(endVisibleIndex + overscan, items.length);
+  const viewportStartIndex = findViewportStartIndex(profile.offsets, clampedScrollTop);
+  const viewportEndIndex = findViewportEndIndex(profile.offsets, viewportBottom);
+  const renderStartIndex = Math.max(viewportStartIndex - overscan, 0);
+  const renderEndIndex = Math.min(viewportEndIndex + overscan, items.length);
 
   return {
-    startIndex: rawStart,
-    endIndex: rawEnd,
+    viewportStartIndex,
+    viewportEndIndex,
+    renderStartIndex,
+    renderEndIndex,
   };
 }
 
@@ -133,20 +168,31 @@ export function buildVirtualWindow({
   const totalHeight = resolvedHeightProfile.totalHeight;
 
   if (items.length <= threshold) {
+    const { viewportStartIndex, viewportEndIndex } = resolveVisibleIndexes({
+      items,
+      itemKey,
+      viewportHeight,
+      scrollTop,
+      estimatedItemHeight,
+      measuredHeights,
+      heightProfile: resolvedHeightProfile,
+    });
     const renderedEntries = buildRenderedEntries({
       items,
       indexes: Array.from({ length: items.length }, (_, index) => index),
       itemKey,
       heightProfile: resolvedHeightProfile,
       pinnedIndexes: resolvedPinnedIndexes,
-      visibleStartIndex: 0,
-      visibleEndIndex: items.length,
+      visibleStartIndex: viewportStartIndex,
+      visibleEndIndex: viewportEndIndex,
     });
 
     return {
       virtualized: false,
-      visibleItems: items,
-      visibleKeys: items.map((item) => resolveItemKey(item, itemKey)),
+      visibleItems: items.slice(viewportStartIndex, viewportEndIndex),
+      visibleKeys: items
+        .slice(viewportStartIndex, viewportEndIndex)
+        .map((item) => resolveItemKey(item, itemKey)),
       topSpacerHeight: 0,
       bottomSpacerHeight: 0,
       totalHeight,
@@ -154,7 +200,12 @@ export function buildVirtualWindow({
     };
   }
 
-  const { startIndex, endIndex } = resolveVisibleIndexes({
+  const {
+    viewportStartIndex,
+    viewportEndIndex,
+    renderStartIndex,
+    renderEndIndex,
+  } = resolveVisibleIndexes({
     items,
     itemKey,
     viewportHeight,
@@ -165,7 +216,7 @@ export function buildVirtualWindow({
     heightProfile: resolvedHeightProfile,
   });
   const indexes = new Set([
-    ...Array.from({ length: endIndex - startIndex }, (_, offset) => startIndex + offset),
+    ...Array.from({ length: renderEndIndex - renderStartIndex }, (_, offset) => renderStartIndex + offset),
     ...resolvedPinnedIndexes,
   ]);
   const orderedIndexes = [...indexes].sort((left, right) => left - right);
@@ -175,14 +226,14 @@ export function buildVirtualWindow({
     itemKey,
     heightProfile: resolvedHeightProfile,
     pinnedIndexes: resolvedPinnedIndexes,
-    visibleStartIndex: startIndex,
-    visibleEndIndex: endIndex,
+    visibleStartIndex: viewportStartIndex,
+    visibleEndIndex: viewportEndIndex,
   });
-  const visibleItems = items.slice(startIndex, endIndex);
-  const hasVisibleSlice = endIndex > startIndex;
-  const topSpacerHeight = hasVisibleSlice ? resolvedHeightProfile.offsets[startIndex] : 0;
+  const visibleItems = items.slice(viewportStartIndex, viewportEndIndex);
+  const hasVisibleSlice = viewportEndIndex > viewportStartIndex;
+  const topSpacerHeight = hasVisibleSlice ? resolvedHeightProfile.offsets[viewportStartIndex] : 0;
   const bottomSpacerHeight = hasVisibleSlice
-    ? totalHeight - resolvedHeightProfile.offsets[endIndex]
+    ? totalHeight - resolvedHeightProfile.offsets[viewportEndIndex]
     : totalHeight;
 
   return {

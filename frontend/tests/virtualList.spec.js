@@ -39,7 +39,12 @@ describe("resolveVisibleIndexes", () => {
         overscan: 0,
         measuredHeights: { "row-0": 60 },
       }),
-    ).toEqual({ startIndex: 0, endIndex: 1 });
+    ).toEqual({
+      viewportStartIndex: 0,
+      viewportEndIndex: 1,
+      renderStartIndex: 0,
+      renderEndIndex: 1,
+    });
   });
 
   it("defaults overscan safely when omitted", () => {
@@ -53,7 +58,12 @@ describe("resolveVisibleIndexes", () => {
         scrollTop: 5,
         estimatedItemHeight: 10,
       }),
-    ).toEqual({ startIndex: 0, endIndex: 2 });
+    ).toEqual({
+      viewportStartIndex: 0,
+      viewportEndIndex: 2,
+      renderStartIndex: 0,
+      renderEndIndex: 2,
+    });
   });
 
   it("clamps stale scroll positions instead of returning an empty tail slice", () => {
@@ -68,7 +78,12 @@ describe("resolveVisibleIndexes", () => {
         estimatedItemHeight: 10,
         overscan: 0,
       }),
-    ).toEqual({ startIndex: 2, endIndex: 4 });
+    ).toEqual({
+      viewportStartIndex: 2,
+      viewportEndIndex: 4,
+      renderStartIndex: 2,
+      renderEndIndex: 4,
+    });
   });
 });
 
@@ -89,12 +104,60 @@ describe("buildVirtualWindow", () => {
     });
 
     expect(state.virtualized).toBe(false);
-    expect(state.visibleItems.map((item) => item.id)).toEqual(items.map((item) => item.id));
-    expect(state.visibleKeys).toEqual(items.map((item) => item.id));
+    expect(state.visibleItems.map((item) => item.id)).toEqual([
+      "row-0",
+      "row-1",
+      "row-2",
+      "row-3",
+      "row-4",
+    ]);
+    expect(state.visibleKeys).toEqual(["row-0", "row-1", "row-2", "row-3", "row-4"]);
     expect(state.topSpacerHeight).toBe(0);
     expect(state.bottomSpacerHeight).toBe(0);
     expect(state.totalHeight).toBe(6 * 48);
     expect(state.renderedEntries.map((entry) => entry.index)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it("keeps visibleItems contiguous while rendering overscan and pinned rows separately", () => {
+    const items = Array.from({ length: 6 }, (_, index) => ({ id: `row-${index}` }));
+
+    const state = buildVirtualWindow({
+      items,
+      itemKey: "id",
+      viewportHeight: 10,
+      scrollTop: 10,
+      estimatedItemHeight: 10,
+      overscan: 1,
+      threshold: 0,
+      measuredHeights: {},
+      pinnedKeys: ["row-5"],
+    });
+
+    expect(state.visibleItems.map((item) => item.id)).toEqual(["row-1"]);
+    expect(state.visibleKeys).toEqual(["row-1"]);
+    expect(state.totalHeight).toBe(60);
+    expect(state.renderedEntries.map((entry) => entry.index)).toEqual([0, 1, 2, 5]);
+    expect(state.renderedEntries.map((entry) => entry.offsetTop)).toEqual([0, 10, 20, 50]);
+    expect(state.renderedEntries.find((entry) => entry.index === 0)).toMatchObject({
+      pinned: false,
+      inViewport: false,
+      offsetTop: 0,
+      height: 10,
+    });
+    expect(state.renderedEntries.find((entry) => entry.index === 2)).toMatchObject({
+      pinned: false,
+      inViewport: false,
+      offsetTop: 20,
+      height: 10,
+    });
+    expect(state.renderedEntries.find((entry) => entry.index === 5)).toMatchObject({
+      pinned: true,
+      inViewport: false,
+      offsetTop: 50,
+      height: 10,
+    });
+    expect(state.topSpacerHeight).toBe(10);
+    expect(state.bottomSpacerHeight).toBe(40);
   });
 
   it("supports cached geometry inputs and function item keys", () => {
