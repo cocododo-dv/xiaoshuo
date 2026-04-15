@@ -441,6 +441,12 @@ describe("author workspace scroll performance integration", () => {
     expect(source).toContain('test-id="author-scene-virtual-list"');
     expect(source).toContain(':pinned-keys="pinnedChapterKeys"');
     expect(source).toContain(':pinned-keys="pinnedSceneKeys"');
+    expect(source).toContain(':estimated-item-height="128"');
+    expect(source).toContain(':threshold="8"');
+    expect(source).toContain(':viewport-height="520"');
+    expect(source).toContain(':estimated-item-height="188"');
+    expect(source).toContain(':threshold="10"');
+    expect(source).toContain(':viewport-height="560"');
     expect(source).toContain('data-testid="author-chapter-form"');
     expect(source).toContain('data-testid="author-scene-form"');
   });

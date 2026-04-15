@@ -440,8 +440,9 @@ onActivated(() => {
             class="author-list"
             :items="chapters"
             item-key="chapter_id"
-            :estimated-item-height="144"
-            :viewport-height="640"
+            :estimated-item-height="128"
+            :threshold="8"
+            :viewport-height="520"
             :pinned-keys="pinnedChapterKeys"
             test-id="author-chapter-virtual-list"
           >
@@ -615,8 +616,9 @@ onActivated(() => {
               class="author-scene-list"
               :items="scenes"
               item-key="scene_id"
-              :estimated-item-height="184"
-              :viewport-height="640"
+              :estimated-item-height="188"
+              :threshold="10"
+              :viewport-height="560"
               :pinned-keys="pinnedSceneKeys"
               test-id="author-scene-virtual-list"
             >
