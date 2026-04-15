@@ -1,14 +1,13 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-
 import { KeepAlive, createApp, h, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import AuthorWorkspaceView from "../src/views/AuthorWorkspaceView.vue";
 import IndexConsoleView from "../src/views/IndexConsoleView.vue";
 import { useShellRouter } from "../src/router";
+import { useAuthorWorkspaceStore } from "../src/stores/authorWorkspace";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 import ReviewInboxView from "../src/views/ReviewInboxView.vue";
@@ -274,6 +273,128 @@ async function mountIndexConsoleView({
   };
 }
 
+function createAuthorChapter(index, sceneCount) {
+  return {
+    chapter_id: `CH${String(index).padStart(3, "0")}`,
+    planned_scene_count: 2,
+    chapter_goal: `Chapter goal ${index}`,
+    main_plot_push: `Push ${index}`,
+    emotional_target: `Emotion ${index}`,
+    ending_effect: `Ending ${index}`,
+    must_not: `Avoid ${index}`,
+    notes: `Notes ${index}`,
+    current_phase: "drafting",
+    chapter_passed_scene_count: 0,
+    chapter_backfill_pending_count: 0,
+    active_scene_count: sceneCount,
+    trashed_scene_count: 0,
+    trash_allowed: 1,
+    trash_block_reason: null,
+  };
+}
+
+function createAuthorScene(index, chapterId) {
+  return {
+    scene_id: `${chapterId}_SC${String(index).padStart(2, "0")}`,
+    chapter_id: chapterId,
+    scene_seq: index,
+    pov_character_id: `CHAR_${index}`,
+    onstage_chars_json: [`CHAR_${index}`],
+    location: `Location ${index}`,
+    scene_goal: `Scene goal ${index}`,
+    beats_json: [`Beat ${index}`],
+    must_include_text: `Include ${index}`,
+    forbidden_text: `Avoid ${index}`,
+    exit_change: `Change ${index}`,
+    hook: `Hook ${index}`,
+    target_length_band: "medium",
+    scene_type: "reunion",
+    is_chapter_last: Number(index === 16),
+    scene_status: "ready",
+    current_bundle_id: null,
+    current_final_scene_row_id: null,
+  };
+}
+
+async function mountAuthorWorkspaceView({ chapterCount = 14, sceneCount = 30, selectedChapterIndex = 14 } = {}) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+
+  const router = useShellRouter();
+  router.reset();
+  router.navigate("author");
+
+  const store = useAuthorWorkspaceStore();
+  const chapters = Array.from({ length: chapterCount }, (_, index) => createAuthorChapter(index + 1, sceneCount));
+  const selectedChapter = chapters[selectedChapterIndex - 1];
+  const scenes = Array.from({ length: sceneCount }, (_, index) => createAuthorScene(index + 1, selectedChapter.chapter_id));
+
+  store.chapters = chapters;
+  store.chapterListVersion = 1;
+  store.selectedChapterId = selectedChapter.chapter_id;
+  store.chapter = {
+    chapter_id: selectedChapter.chapter_id,
+    planned_scene_count: 2,
+    mid_aggregate_enabled: 0,
+    chapter_goal: selectedChapter.chapter_goal,
+    main_plot_push: selectedChapter.main_plot_push,
+    emotional_target: selectedChapter.emotional_target,
+    ending_effect: selectedChapter.ending_effect,
+    must_not: selectedChapter.must_not,
+    notes: selectedChapter.notes,
+  };
+  store.chapterState = {
+    chapter_id: selectedChapter.chapter_id,
+    current_phase: "drafting",
+    chapter_passed_scene_count: 0,
+    chapter_backfill_pending_count: 0,
+  };
+  store.chapterRunStatus = {
+    job_id: null,
+    chapter_id: selectedChapter.chapter_id,
+    job_type: "chapter_run_full",
+    status: "idle",
+    scene_ids: scenes.map((scene) => scene.scene_id),
+    current_scene_id: null,
+    completed_scene_ids: [],
+    blocked_scene_id: null,
+    latest_error: null,
+  };
+  store.scenes = scenes;
+  store.sceneListVersion = 1;
+  store.loaded = true;
+  store.stale = false;
+  store.loading = false;
+  store.error = "";
+  store.actionId = "";
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const app = createApp({
+    render() {
+      return h(KeepAlive, null, [
+        h(AuthorWorkspaceView, {
+          onNotice: vi.fn(),
+        }),
+      ]);
+    },
+  });
+  app.use(pinia);
+  app.mount(container);
+  await flushUi();
+
+  return {
+    container,
+    app,
+    store,
+    unmount() {
+      app.unmount();
+      container.remove();
+    },
+  };
+}
+
 describe("review inbox scroll performance integration", () => {
   let animationFrames;
 
@@ -433,21 +554,74 @@ describe("index console scroll performance integration", () => {
 });
 
 describe("author workspace scroll performance integration", () => {
-  it("routes chapter and scene collections through VirtualList with pinned active selections", async () => {
-    const source = readFileSync(path.join(process.cwd(), "src/views/AuthorWorkspaceView.vue"), "utf8");
+  let animationFrames;
 
-    expect(source).toContain('import VirtualList from "../components/VirtualList.vue"');
-    expect(source).toContain('test-id="author-chapter-virtual-list"');
-    expect(source).toContain('test-id="author-scene-virtual-list"');
-    expect(source).toContain(':pinned-keys="pinnedChapterKeys"');
-    expect(source).toContain(':pinned-keys="pinnedSceneKeys"');
-    expect(source).toContain(':estimated-item-height="128"');
-    expect(source).toContain(':threshold="8"');
-    expect(source).toContain(':viewport-height="520"');
-    expect(source).toContain(':estimated-item-height="188"');
-    expect(source).toContain(':threshold="10"');
-    expect(source).toContain(':viewport-height="560"');
-    expect(source).toContain('data-testid="author-chapter-form"');
-    expect(source).toContain('data-testid="author-scene-form"');
+  beforeEach(() => {
+    animationFrames = createAnimationFrameController();
+    setActivePinia(createPinia());
+    document.body.innerHTML = "";
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("mounts author workspace through VirtualList, keeps pinned rows rendered, and keeps forms outside the scroll surfaces", async () => {
+    const mounted = await mountAuthorWorkspaceView();
+
+    try {
+      const chapterVirtualList = mounted.container.querySelector('[data-testid="author-chapter-virtual-list"]');
+      const sceneVirtualList = mounted.container.querySelector('[data-testid="author-scene-virtual-list"]');
+      const chapterForm = mounted.container.querySelector('[data-testid="author-chapter-form"]');
+      const sceneForm = mounted.container.querySelector('[data-testid="author-scene-form"]');
+      const chapterTrack = chapterVirtualList.firstElementChild;
+      const sceneTrack = sceneVirtualList.firstElementChild;
+
+      expect(chapterVirtualList).not.toBeNull();
+      expect(sceneVirtualList).not.toBeNull();
+      expect(chapterVirtualList.style.maxHeight).toBe("520px");
+      expect(sceneVirtualList.style.maxHeight).toBe("560px");
+      expect(chapterTrack.style.height).toBe(`${mounted.store.chapters.length * 128}px`);
+      expect(sceneTrack.style.height).toBe(`${mounted.store.scenes.length * 188}px`);
+      expect(chapterTrack.style.position).toBe("relative");
+      expect(sceneTrack.style.position).toBe("relative");
+      expect(chapterTrack.firstElementChild.style.position).toBe("absolute");
+      expect(sceneTrack.firstElementChild.style.position).toBe("absolute");
+
+      const chapterRows = mounted.container.querySelectorAll('[data-testid^="author-chapter-select-CH"]');
+      expect(chapterRows.length).toBeGreaterThan(0);
+      expect(chapterRows.length).toBeLessThan(mounted.store.chapters.length);
+      expect(mounted.container.querySelector('[data-testid="author-chapter-select-CH014"]')).not.toBeNull();
+
+      let sceneRows = mounted.container.querySelectorAll('[data-testid^="author-scene-row-CH014_SC"]');
+      expect(sceneRows.length).toBeGreaterThan(0);
+      expect(mounted.container.querySelector('[data-testid="author-scene-row-CH014_SC01"]')).not.toBeNull();
+
+      sceneVirtualList.scrollTop = 10000;
+      sceneVirtualList.dispatchEvent(new Event("scroll"));
+      await flushUi();
+      await animationFrames.flushAll();
+
+      sceneRows = mounted.container.querySelectorAll('[data-testid^="author-scene-row-CH014_SC"]');
+      expect(sceneRows.length).toBeGreaterThan(0);
+      expect(mounted.container.querySelector('[data-testid="author-scene-row-CH014_SC01"]')).not.toBeNull();
+
+      expect(chapterForm).not.toBeNull();
+      expect(sceneForm).not.toBeNull();
+      expect(chapterVirtualList.contains(chapterForm)).toBe(false);
+      expect(chapterVirtualList.contains(sceneForm)).toBe(false);
+      expect(sceneVirtualList.contains(chapterForm)).toBe(false);
+      expect(sceneVirtualList.contains(sceneForm)).toBe(false);
+    } finally {
+      mounted.unmount();
+    }
   });
 });
