@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createApp, nextTick } from "vue";
+import { KeepAlive, createApp, h, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -185,7 +185,11 @@ async function mountIndexConsoleView({
   router.reset();
   router.navigate("index");
   if (focusTarget) {
-    router.openTarget(focusTarget);
+    router.openTarget(focusTarget, {
+      view_id: "index",
+      source_type: focusTarget.source_type,
+      source_id: focusTarget.source_id,
+    });
   }
 
   const store = useIndexConsoleStore();
@@ -242,8 +246,14 @@ async function mountIndexConsoleView({
   const container = document.createElement("div");
   document.body.appendChild(container);
 
-  const app = createApp(IndexConsoleView, {
-    onNotice: vi.fn(),
+  const app = createApp({
+    render() {
+      return h(KeepAlive, null, [
+        h(IndexConsoleView, {
+          onNotice: vi.fn(),
+        }),
+      ]);
+    },
   });
   app.use(pinia);
   app.mount(container);
@@ -309,6 +319,7 @@ describe("review inbox scroll performance integration", () => {
 
 describe("index console scroll performance integration", () => {
   let animationFrames;
+  let scrollIntoViewSpy;
 
   beforeEach(() => {
     animationFrames = createAnimationFrameController();
@@ -320,7 +331,8 @@ describe("index console scroll performance integration", () => {
       observe() {}
       disconnect() {}
     });
-    Element.prototype.scrollIntoView = vi.fn();
+    scrollIntoViewSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoViewSpy;
   });
 
   afterEach(() => {
@@ -356,7 +368,7 @@ describe("index console scroll performance integration", () => {
       expect(recoveryVirtualList).not.toBeNull();
       expect(recoveryVirtualList.style.maxHeight).toBe("560px");
 
-      const recoveryRows = recoveryVirtualList.querySelectorAll("li");
+      const recoveryRows = recoveryVirtualList.querySelectorAll("[data-activity-key]");
       expect(recoveryRows.length).toBeGreaterThan(0);
       expect(recoveryRows.length).toBeLessThan(mounted.store.recoveryTimelineItems.length);
       expect(mounted.container.querySelector('[data-activity-key="recovery_timeline:recovery-0"]')).not.toBeNull();
@@ -371,14 +383,17 @@ describe("index console scroll performance integration", () => {
         target_type: "review_item",
         target_id: "review-13",
         target_ref: "review_item:review-13",
+        view_id: "index",
       },
     });
 
     try {
-      mounted.container.querySelector('[data-testid="index-toggle-target-groups"]').click();
-      await flushUi();
-
-      const groupVirtualList = mounted.container.querySelector('[data-testid="index-target-groups-virtual-list"]');
+      let groupVirtualList = mounted.container.querySelector('[data-testid="index-target-groups-virtual-list"]');
+      if (!groupVirtualList) {
+        mounted.container.querySelector('[data-testid="index-toggle-target-groups"]').click();
+        await flushUi();
+        groupVirtualList = mounted.container.querySelector('[data-testid="index-target-groups-virtual-list"]');
+      }
       expect(groupVirtualList).not.toBeNull();
       expect(groupVirtualList.style.maxHeight).toBe("640px");
 
@@ -387,19 +402,25 @@ describe("index console scroll performance integration", () => {
       expect(groupCards.length).toBeLessThan(mounted.store.targetActivityGroups.length);
       expect(mounted.container.querySelector('[data-testid="target-activity-group-review_item:review-13"]')).not.toBeNull();
 
-      mounted.container.querySelector('[data-testid="target-activity-toggle-review_item:review-13"]').click();
-      await flushUi();
+      if (!mounted.container.querySelector('[data-testid="target-group-progressive-list"]')) {
+        mounted.container.querySelector('[data-testid="target-activity-toggle-review_item:review-13"]').click();
+        await flushUi();
+      }
+
+      expect(mounted.container.querySelector('[data-testid="target-group-progressive-list"]')).not.toBeNull();
 
       let activityRows = mounted.container.querySelectorAll('[data-testid^="target-activity-item-operator_action:13:"]');
-      expect(mounted.container.querySelector('[data-testid="target-group-progressive-list"]')).not.toBeNull();
       expect(activityRows).toHaveLength(8);
       expect(mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:8"]')).toBeNull();
+      expect(mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:9"]')).toBeNull();
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
 
       await animationFrames.flushAll();
 
       activityRows = mounted.container.querySelectorAll('[data-testid^="target-activity-item-operator_action:13:"]');
       expect(activityRows).toHaveLength(10);
       expect(mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:9"]')).not.toBeNull();
+      expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "nearest", behavior: "smooth" });
     } finally {
       mounted.unmount();
     }

@@ -92,7 +92,7 @@ function isHighlighted(item) {
 </script>
 
 <template>
-  <li
+  <article
     class="target-activity-group-card"
     :data-testid="`target-activity-group-${props.group.target.target_ref}`"
     :class="{ 'focused-card': props.focused }"
@@ -171,5 +171,5 @@ function isHighlighted(item) {
       </template>
       <p v-else class="muted target-group-empty">这个目标下还没有活动记录。</p>
     </div>
-  </li>
+  </article>
 </template>

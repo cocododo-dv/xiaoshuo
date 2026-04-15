@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onActivated, onDeactivated, reactive, ref, watch } from "vue";
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, reactive, ref, watch } from "vue";
 
 import ActivitySectionCard from "../components/ActivitySectionCard.vue";
 import AliasScopeCard from "../components/AliasScopeCard.vue";
@@ -25,6 +25,8 @@ const expandedSections = reactive({
 });
 const activeTargetGroupRef = ref("");
 const indexFocusRefreshPending = ref(false);
+const focusedActivityScrollFrameId = ref(0);
+const maxFocusedActivityScrollAttempts = 12;
 
 const actionLabels = {
   approve_review: "批准审核",
@@ -184,6 +186,33 @@ function groupCanNext(targetRef) { return Boolean(indexConsole.targetGroupPagina
 function sectionCanPrevious(sectionId) { return Boolean(indexConsole.activitySectionState(sectionId)?.pager?.cursorStack?.length); }
 function sectionCanNext(sectionId) { return Boolean(indexConsole.activitySectionPagination(sectionId)?.has_next); }
 
+function cancelFocusedActivityScroll() {
+  if (!focusedActivityScrollFrameId.value) return;
+  cancelAnimationFrame(focusedActivityScrollFrameId.value);
+  focusedActivityScrollFrameId.value = 0;
+}
+
+function scheduleFocusedActivityScroll(activityKey, targetRef, attempt = 0) {
+  cancelFocusedActivityScroll();
+  if (!activityKey || !targetRef || typeof document === "undefined") return;
+
+  focusedActivityScrollFrameId.value = requestAnimationFrame(async () => {
+    focusedActivityScrollFrameId.value = 0;
+    if (!isViewActive.value || activeView.value !== "index" || !expandedSections.target_groups) return;
+    if (activeTargetGroupRef.value !== targetRef) return;
+
+    await nextTick();
+    const activityElement = document.querySelector(`[data-activity-key="${activityKey}"]`);
+    if (activityElement?.scrollIntoView) {
+      activityElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      return;
+    }
+
+    if (attempt + 1 >= maxFocusedActivityScrollAttempts) return;
+    scheduleFocusedActivityScroll(activityKey, targetRef, attempt + 1);
+  });
+}
+
 async function openSection(sectionId, force = false) {
   expandedSections[sectionId] = true;
   await indexConsole.ensureActivitySectionLoaded(sectionId, { force });
@@ -298,13 +327,21 @@ watch(() => indexConsole.targetGroupsVersion, async () => {
   await indexConsole.ensureTargetGroupItemsLoaded(focusTargetRef.value);
 }, { immediate: true });
 
-watch(() => [focusedActivityKey.value, sourceLinkedActivityKey.value, activeTargetGroupRef.value], async ([focusedKey, linkedKey, targetRef]) => {
-  if (!isViewActive.value || activeView.value !== "index" || !expandedSections.target_groups) return;
-  if (!targetRef || typeof document === "undefined") return;
+watch(() => [focusedActivityKey.value, sourceLinkedActivityKey.value, activeTargetGroupRef.value, groupItems(activeTargetGroupRef.value).length], ([focusedKey, linkedKey, targetRef]) => {
+  if (!isViewActive.value || activeView.value !== "index" || !expandedSections.target_groups) {
+    cancelFocusedActivityScroll();
+    return;
+  }
+  if (!targetRef || typeof document === "undefined") {
+    cancelFocusedActivityScroll();
+    return;
+  }
   const activityKey = focusedKey || linkedKey;
-  if (!activityKey) return;
-  await nextTick();
-  document.querySelector(`[data-activity-key="${activityKey}"]`)?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  if (!activityKey) {
+    cancelFocusedActivityScroll();
+    return;
+  }
+  scheduleFocusedActivityScroll(activityKey, targetRef);
 }, { immediate: true });
 
 watch(() => [
@@ -343,6 +380,11 @@ onActivated(() => {
 onDeactivated(() => {
   isViewActive.value = false;
   indexFocusRefreshPending.value = false;
+  cancelFocusedActivityScroll();
+});
+
+onBeforeUnmount(() => {
+  cancelFocusedActivityScroll();
 });
 </script>
 
@@ -452,7 +494,7 @@ onDeactivated(() => {
               test-id="index-recovery-virtual-list"
             >
               <template #default="{ item }">
-                <li
+                <article
                   :data-activity-key="activityItemKey('recovery_timeline', item)"
                   :class="{ 'focused-card': isFocusedSource('recovery_timeline', item.event_id) || isFocusedSource('recovery_receipt', item.event_id) }"
                 >
@@ -496,7 +538,7 @@ onDeactivated(() => {
                     打开回放结果
                   </button>
                 </div>
-                </li>
+                </article>
               </template>
             </VirtualList>
             <CursorPager
