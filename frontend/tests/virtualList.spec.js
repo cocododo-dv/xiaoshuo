@@ -46,7 +46,6 @@ describe("resolveVisibleIndexes", () => {
         scrollTop: 150,
         estimatedItemHeight: 50,
         overscan: 1,
-        measuredHeights: {},
       }),
     ).toEqual({ startIndex: 2, endIndex: 7 });
   });
@@ -72,13 +71,15 @@ describe("buildVirtualWindow", () => {
     expect(state.visibleItems.map((item) => item.id)).toEqual(items.map((item) => item.id));
     expect(state.topSpacerHeight).toBe(0);
     expect(state.bottomSpacerHeight).toBe(0);
+    expect(state.totalHeight).toBe(6 * 48);
+    expect(state.renderedEntries.map((entry) => entry.index)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
-  it("keeps pinned rows mounted while preserving total scroll height", () => {
+  it("keeps pinned rows mounted while preserving total scroll geometry", () => {
     const items = Array.from({ length: 40 }, (_, index) => ({ id: `row-${index}` }));
     const estimatedItemHeight = 18;
-    const viewportHeight = 180;
-    const scrollTop = 18 * 12;
+    const viewportHeight = 54;
+    const scrollTop = 54;
     const visibleRange = resolveVisibleIndexes({
       items,
       viewportHeight,
@@ -97,17 +98,26 @@ describe("buildVirtualWindow", () => {
       overscan: 1,
       threshold: 10,
       measuredHeights: {},
-      pinnedKeys: ["row-2", "row-35"],
+      pinnedKeys: ["row-1", "row-35"],
     });
 
     expect(state.virtualized).toBe(true);
-    expect(state.visibleKeys).toContain("row-2");
+    expect(state.visibleKeys).toEqual(["row-1", "row-2", "row-3", "row-4", "row-5", "row-6", "row-35"]);
     expect(state.visibleKeys).toContain("row-35");
+    expect(state.totalHeight).toBe(items.length * estimatedItemHeight);
+    expect(state.renderedEntries.map((entry) => entry.index)).toEqual([1, 2, 3, 4, 5, 6, 35]);
+    expect(state.renderedEntries.map((entry) => entry.offsetTop)).toEqual([18, 36, 54, 72, 90, 108, 630]);
+    expect(state.renderedEntries.find((entry) => entry.index === 35)).toMatchObject({
+      pinned: true,
+      inViewport: false,
+      offsetTop: 630,
+      height: estimatedItemHeight,
+    });
     expect(
       state.topSpacerHeight +
         sumHeights(visibleRange.startIndex, visibleRange.endIndex, estimatedItemHeight) +
         state.bottomSpacerHeight,
-    ).toBe(items.length * estimatedItemHeight);
+    ).toBe(state.totalHeight);
   });
 
   it("preserves total height when the visible range is empty", () => {
@@ -126,7 +136,11 @@ describe("buildVirtualWindow", () => {
     });
 
     expect(state.virtualized).toBe(true);
+    expect(state.visibleItems).toEqual([]);
+    expect(state.visibleKeys).toEqual([]);
     expect(state.topSpacerHeight).toBe(0);
     expect(state.bottomSpacerHeight).toBe(items.length * estimatedItemHeight);
+    expect(state.totalHeight).toBe(items.length * estimatedItemHeight);
+    expect(state.renderedEntries).toEqual([]);
   });
 });

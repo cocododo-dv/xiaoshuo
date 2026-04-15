@@ -23,6 +23,34 @@ function sumItemHeights(items, startIndex, endIndex, itemKey, measuredHeights, e
   return total;
 }
 
+function buildRenderedEntries({
+  items,
+  indexes,
+  itemKey,
+  measuredHeights,
+  estimatedItemHeight,
+  pinnedIndexes,
+  visibleStartIndex,
+  visibleEndIndex,
+}) {
+  return indexes
+    .sort((left, right) => left - right)
+    .map((index) => {
+      const item = items[index];
+      const height = resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItemHeight);
+
+      return {
+        index,
+        key: resolveItemKey(item, itemKey),
+        item,
+        offsetTop: sumItemHeights(items, 0, index, itemKey, measuredHeights, estimatedItemHeight),
+        height,
+        pinned: pinnedIndexes.includes(index),
+        inViewport: index >= visibleStartIndex && index < visibleEndIndex,
+      };
+    });
+}
+
 export function resolvePinnedIndexes(items, itemKey, pinnedKeys = []) {
   const pinned = new Set(pinnedKeys.filter((key) => key !== null && key !== undefined));
 
@@ -65,13 +93,28 @@ export function buildVirtualWindow({
   measuredHeights = {},
   pinnedKeys = [],
 }) {
+  const totalHeight = sumItemHeights(items, 0, items.length, itemKey, measuredHeights, estimatedItemHeight);
+
   if (items.length <= threshold) {
+    const renderedEntries = buildRenderedEntries({
+      items,
+      indexes: Array.from({ length: items.length }, (_, index) => index),
+      itemKey,
+      measuredHeights,
+      estimatedItemHeight,
+      pinnedIndexes: resolvePinnedIndexes(items, itemKey, pinnedKeys),
+      visibleStartIndex: 0,
+      visibleEndIndex: items.length,
+    });
+
     return {
       virtualized: false,
       visibleItems: items,
       visibleKeys: items.map((item) => resolveItemKey(item, itemKey)),
       topSpacerHeight: 0,
       bottomSpacerHeight: 0,
+      totalHeight,
+      renderedEntries,
     };
   }
 
@@ -88,7 +131,17 @@ export function buildVirtualWindow({
     ...pinnedIndexes,
   ]);
   const orderedIndexes = [...indexes].sort((left, right) => left - right);
-  const visibleItems = orderedIndexes.map((index) => items[index]);
+  const renderedEntries = buildRenderedEntries({
+    items,
+    indexes: orderedIndexes,
+    itemKey,
+    measuredHeights,
+    estimatedItemHeight,
+    pinnedIndexes,
+    visibleStartIndex: startIndex,
+    visibleEndIndex: endIndex,
+  });
+  const visibleItems = renderedEntries.map((entry) => entry.item);
   const hasVisibleSlice = endIndex > startIndex;
   const topSpacerHeight = hasVisibleSlice
     ? sumItemHeights(items, 0, startIndex, itemKey, measuredHeights, estimatedItemHeight)
@@ -103,5 +156,7 @@ export function buildVirtualWindow({
     visibleKeys: visibleItems.map((item) => resolveItemKey(item, itemKey)),
     topSpacerHeight,
     bottomSpacerHeight,
+    totalHeight,
+    renderedEntries,
   };
 }
