@@ -134,6 +134,16 @@ function selectedActivityStreams(source) {
   return source ? [source] : ["recovery_timeline", "system_runtime", "operator_action"];
 }
 
+function buildLookup(items, keySelector) {
+  return (items || []).reduce((lookup, item) => {
+    const key = typeof keySelector === "function" ? keySelector(item) : item?.[keySelector];
+    if (key) {
+      lookup[key] = true;
+    }
+    return lookup;
+  }, {});
+}
+
 function activitySectionStateFor(store, sectionId) {
   return store.activitySections[sectionId] || null;
 }
@@ -157,6 +167,8 @@ function clearActivitySectionItems(store, sectionId) {
   }
   if (sectionId === "target_groups") {
     store.targetActivityGroups = [];
+    store.targetGroupLookup = {};
+    store.targetGroupsVersion += 1;
   }
 }
 
@@ -178,6 +190,8 @@ function assignActivitySectionItems(store, sectionId, items) {
   }
   if (sectionId === "target_groups") {
     store.targetActivityGroups = normalizeTargetActivityGroups(items);
+    store.targetGroupLookup = buildLookup(store.targetActivityGroups, (group) => group?.target?.target_ref);
+    store.targetGroupsVersion += 1;
   }
 }
 
@@ -204,6 +218,8 @@ function resetActivityState(store) {
   store.targetGroupItemsByRef = {};
   store.targetGroupMetaByRef = {};
   store.targetGroupStatesByRef = {};
+  store.targetGroupLookup = {};
+  store.targetGroupsVersion += 1;
   store.lastRecoveryActionResult = null;
   syncDerivedActivityFlags(store);
 }
@@ -242,6 +258,8 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
     activitySections: createActivitySections(),
     aliasScopes: [],
     jobs: [],
+    jobsVersion: 0,
+    jobLookup: {},
     recoveryEvents: [],
     systemRuntimeEvents: [],
     operatorActionEvents: [],
@@ -249,6 +267,8 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
     systemRuntimeTimelineItems: [],
     operatorActionTimelineItems: [],
     targetActivityGroups: [],
+    targetGroupsVersion: 0,
+    targetGroupLookup: {},
     targetGroupItemsByRef: {},
     targetGroupMetaByRef: {},
     targetGroupStatesByRef: {},
@@ -275,6 +295,8 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
     targetGroupPagination: (state) => (targetRef) =>
       state.targetGroupStatesByRef[targetRef]?.pager?.pagination || createCursorPagination(),
     targetGroupMeta: (state) => (targetRef) => state.targetGroupMetaByRef[targetRef] || null,
+    hasJob: (state) => (jobId) => Boolean(jobId && state.jobLookup[jobId]),
+    hasTargetActivityGroup: (state) => (targetRef) => Boolean(targetRef && state.targetGroupLookup[targetRef]),
   },
   actions: {
     markStale({ summary = true, activity = true } = {}) {
@@ -327,6 +349,11 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
       this.activityFilterSignature = nextSignature;
       resetActivityState(this);
     },
+    assignJobs(items) {
+      this.jobs = items;
+      this.jobLookup = buildLookup(items, "job_id");
+      this.jobsVersion += 1;
+    },
     async loadJobs({ reset = false } = {}) {
       this.syncJobPager({ reset });
       const filters = {
@@ -340,7 +367,7 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
         delete filters.stuckOnly;
       }
       const payload = await fetchJobs(filters);
-      this.jobs = applyCursorPayload(this.jobPager, payload);
+      this.assignJobs(applyCursorPayload(this.jobPager, payload));
     },
     async loadSummary({ force = false } = {}) {
       if (this.loaded && !this.stale && !force) {
@@ -357,7 +384,7 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
         this.markFresh();
       } catch (error) {
         this.aliasScopes = [];
-        this.jobs = [];
+        this.assignJobs([]);
         this.loaded = false;
         this.error = error.message;
       } finally {

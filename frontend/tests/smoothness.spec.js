@@ -36,10 +36,14 @@ describe("shell smoothness architecture", () => {
 
   it("ships async cached shell mounting instead of eager v-show views", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+    const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
     expect(source).toContain("defineAsyncComponent");
     expect(source).toContain("KeepAlive");
     expect(source).toContain("activeViewComponent");
+    expect(source).toContain("stage-chrome");
+    expect(source).toContain("view-fade");
+    expect(routerSource).toContain('cacheMode: "light"');
     expect(source).not.toContain("v-show=\"activeView === 'author'\"");
     expect(source).not.toContain("v-show=\"activeView === 'workbench'\"");
   });
@@ -73,9 +77,19 @@ describe("shell smoothness architecture", () => {
   it("avoids deep watchers in the heaviest cached views", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
+    const authorSource = readFileSync(new URL("../src/views/AuthorWorkspaceView.vue", import.meta.url), "utf8");
+    const trashSource = readFileSync(new URL("../src/views/AuthorTrashView.vue", import.meta.url), "utf8");
 
     expect(indexSource).not.toContain("deep: true");
     expect(reviewSource).not.toContain("deep: true");
+    expect(indexSource).toContain("onDeactivated");
+    expect(reviewSource).toContain("onDeactivated");
+    expect(indexSource).not.toContain('map((group) => group?.target?.target_ref || "").join("|")');
+    expect(indexSource).not.toContain('map((item) => item.job_id || "").join("|")');
+    expect(reviewSource).not.toContain('map((item) => item.review_id || "").join("|")');
+    expect(reviewSource).not.toContain('map((item) => item.event_id || "").join("|")');
+    expect(authorSource).not.toContain('scenes.value.map((scene) => scene.scene_id).join("|")');
+    expect(trashSource).not.toContain('chapters.value.map((chapter) => `${chapter.chapter_id}:${chapter.restore_allowed}:${chapter.purge_allowed}`).join("|")');
   });
 
   it("moves knowledge and interop heavy detail work behind lazy explicit toggles", () => {

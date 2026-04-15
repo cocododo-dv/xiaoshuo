@@ -1,6 +1,7 @@
 <script setup>
 import { computed, defineAsyncComponent, ref } from "vue";
 
+import PanelShell from "./components/PanelShell.vue";
 import { getApiBase, getOperatorRef, setApiBase, setOperatorRef } from "./lib/api";
 import { useShellRouter } from "./router";
 
@@ -14,7 +15,7 @@ const VIEW_COMPONENTS = {
   interop: defineAsyncComponent(() => import("./views/InteropCenterView.vue")),
 };
 
-const { activeView, visitedViews, views, navigate } = useShellRouter();
+const { activeView, activeViewMeta, visitedViews, views, navigate } = useShellRouter();
 const apiBase = ref(getApiBase());
 const operatorRef = ref(getOperatorRef());
 const notices = ref([]);
@@ -76,13 +77,19 @@ async function reloadAll() {
           const store = indexConsoleModule.useIndexConsoleStore();
           await store.ensureLoaded({ force: true });
           if (store.activityLoaded) {
-            await store.ensureActivityLoaded({ force: true });
+            await store.ensureActivityLoaded({ force: true, reset: true });
           }
           return store.error;
         }
         if (viewId === "knowledge") {
           const knowledgeConsoleModule = await import("./stores/knowledgeConsole");
           const store = knowledgeConsoleModule.useKnowledgeConsoleStore();
+          await store.ensureLoaded({ force: true });
+          return store.error;
+        }
+        if (viewId === "interop") {
+          const interopCenterModule = await import("./stores/interopCenter");
+          const store = interopCenterModule.useInteropCenterStore();
           await store.ensureLoaded({ force: true });
           return store.error;
         }
@@ -109,16 +116,6 @@ async function reloadAll() {
         <p>把作者编排、运行时审核与索引协作收拢到同一个共享指挥台。</p>
       </div>
 
-      <label class="api-label">
-        <span>API 地址</span>
-        <input v-model="apiBase" class="control-input" data-testid="api-base-input" @change="updateApiBase" />
-      </label>
-
-      <label class="api-label">
-        <span>操作员标识</span>
-        <input v-model="operatorRef" class="control-input" data-testid="operator-ref-input" @change="updateOperator" />
-      </label>
-
       <nav class="nav">
         <button
           v-for="view in views"
@@ -131,21 +128,52 @@ async function reloadAll() {
           {{ view.label }}
         </button>
       </nav>
-
-      <button class="ghost" @click="reloadAll">刷新已访问视图</button>
-
-      <div class="notice-stack" data-testid="notice-stack">
-        <div v-for="notice in notices" :key="notice" class="notice">
-          {{ notice }}
-        </div>
-      </div>
     </aside>
 
     <main class="stage">
+      <PanelShell
+        class="stage-chrome"
+        compact
+        :eyebrow="activeViewMeta.chromeEyebrow"
+        :title="activeViewMeta.chromeTitle"
+        :description="activeViewMeta.chromeDescription"
+      >
+        <template #actions>
+          <div class="stage-settings">
+            <label class="api-label stage-setting">
+              <span>API 地址</span>
+              <input v-model="apiBase" class="control-input" data-testid="api-base-input" @change="updateApiBase" />
+            </label>
+
+            <label class="api-label stage-setting">
+              <span>操作员标识</span>
+              <input
+                v-model="operatorRef"
+                class="control-input"
+                data-testid="operator-ref-input"
+                @change="updateOperator"
+              />
+            </label>
+
+            <div class="stage-utility">
+              <button class="ghost" @click="reloadAll">刷新已访问视图</button>
+            </div>
+          </div>
+        </template>
+
+        <div v-if="notices.length" class="notice-stack stage-notices" data-testid="notice-stack">
+          <div v-for="notice in notices" :key="notice" class="notice">
+            {{ notice }}
+          </div>
+        </div>
+      </PanelShell>
+
       <div class="view-stack">
-        <KeepAlive>
-          <component :is="activeViewComponent" :key="activeView" @notice="pushNotice" />
-        </KeepAlive>
+        <Transition name="view-fade" mode="out-in">
+          <KeepAlive>
+            <component :is="activeViewComponent" :key="activeView" class="view-frame" @notice="pushNotice" />
+          </KeepAlive>
+        </Transition>
       </div>
     </main>
   </div>

@@ -352,7 +352,7 @@ watch(
 );
 
 watch(
-  () => scenes.value.map((scene) => scene.scene_id).join("|"),
+  () => authorWorkspace.sceneListVersion,
   () => {
     syncSceneTrashSelection();
     if (!selectedSceneId.value && scenes.value.length && !creatingScene.value) {
@@ -366,7 +366,7 @@ watch(
 );
 
 watch(
-  () => chapters.value.map((chapter) => `${chapter.chapter_id}:${chapter.trash_allowed}`).join("|"),
+  () => authorWorkspace.chapterListVersion,
   () => {
     syncChapterTrashSelection();
   },

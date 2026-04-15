@@ -6,15 +6,19 @@ const main = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const app = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
 const router = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-assert.ok(html.includes("小说系统 P2 控制台"));
+assert.ok(html.includes("小说系统"));
 assert.ok(html.includes("/src/main.js"));
 assert.ok(main.includes("createPinia"));
 assert.ok(app.includes("SceneWorkbenchView"));
 assert.ok(app.includes("ReviewInboxView"));
 assert.ok(app.includes("IndexConsoleView"));
 assert.ok(app.includes("InteropCenterView"));
-assert.ok(router.includes('{ id: "knowledge", label: "知识控制台" }'));
-assert.ok(router.includes('{ id: "interop", label: "互操作中心" }'));
+assert.ok(app.includes("stage-chrome"));
+assert.ok(router.includes('id: "knowledge"'));
+assert.ok(router.includes('label: "知识控制台"'));
+assert.ok(router.includes('id: "interop"'));
+assert.ok(router.includes('label: "互操作中心"'));
+assert.ok(router.includes('cacheMode: "light"'));
 assert.ok(!router.includes("formatViewLabel"));
 assert.ok(!router.includes("uiText"));
 

@@ -382,10 +382,16 @@ describe("vue shell", () => {
     expect(source).toContain("ReviewInboxView");
     expect(source).toContain("IndexConsoleView");
     expect(source).toContain("KnowledgeConsoleView");
-    expect(routerSource).toContain('{ id: "workbench", label: "场景工作台" }');
-    expect(routerSource).toContain('{ id: "review", label: "审核收件箱" }');
-    expect(routerSource).toContain('{ id: "index", label: "索引控制台" }');
-    expect(routerSource).toContain('{ id: "knowledge", label: "知识控制台" }');
+    expect(routerSource).toContain('id: "workbench"');
+    expect(routerSource).toContain('label: "场景工作台"');
+    expect(routerSource).toContain('id: "review"');
+    expect(routerSource).toContain('label: "审核收件箱"');
+    expect(routerSource).toContain('id: "index"');
+    expect(routerSource).toContain('label: "索引控制台"');
+    expect(routerSource).toContain('id: "knowledge"');
+    expect(routerSource).toContain('label: "知识控制台"');
+    expect(routerSource).toContain('cacheMode: "light"');
+    expect(routerSource).toContain("chromeTitle");
     expect(routerSource).not.toContain("formatViewLabel");
     expect(routerSource).not.toContain("uiText");
   });
@@ -396,7 +402,8 @@ describe("vue shell", () => {
 
     expect(source).toContain("InteropCenterView");
     expect(source).toContain("activeView === 'interop'");
-    expect(routerSource).toContain('{ id: "interop", label: "互操作中心" }');
+    expect(routerSource).toContain('id: "interop"');
+    expect(routerSource).toContain('label: "互操作中心"');
   });
 });
 
@@ -505,7 +512,8 @@ describe("shell router", () => {
   it("ships interop and knowledge-specific target routing", () => {
     const source = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-    expect(source).toContain('{ id: "interop", label: "互操作中心" }');
+    expect(source).toContain('id: "interop"');
+    expect(source).toContain('label: "互操作中心"');
     expect(source).toContain('if (targetType === "knowledge_entry")');
     expect(source).toContain('return "knowledge"');
   });

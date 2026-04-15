@@ -136,10 +136,7 @@ async function purgeSelectedScenes() {
 }
 
 watch(
-  () => [
-    chapters.value.map((chapter) => `${chapter.chapter_id}:${chapter.restore_allowed}:${chapter.purge_allowed}`).join("|"),
-    scenes.value.map((scene) => `${scene.scene_id}:${scene.restore_allowed}:${scene.purge_allowed}`).join("|"),
-  ],
+  () => [authorTrash.chapterListVersion, authorTrash.sceneListVersion],
   () => {
     syncSelections();
   },

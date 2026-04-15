@@ -34,10 +34,22 @@ async function markAuthorWorkspaceStale() {
   authorWorkspace.markStale();
 }
 
+function assignChapterList(store, chapters) {
+  store.chapters = chapters;
+  store.chapterListVersion += 1;
+}
+
+function assignSceneList(store, scenes) {
+  store.scenes = scenes;
+  store.sceneListVersion += 1;
+}
+
 export const useAuthorTrashStore = defineStore("authorTrash", {
   state: () => ({
     chapters: [],
+    chapterListVersion: 0,
     scenes: [],
+    sceneListVersion: 0,
     loaded: false,
     stale: false,
     loading: false,
@@ -60,12 +72,12 @@ export const useAuthorTrashStore = defineStore("authorTrash", {
       this.error = "";
       try {
         const payload = await fetchAuthorTrash();
-        this.chapters = payload.chapters || [];
-        this.scenes = payload.scenes || [];
+        assignChapterList(this, payload.chapters || []);
+        assignSceneList(this, payload.scenes || []);
         this.markFresh();
       } catch (error) {
-        this.chapters = [];
-        this.scenes = [];
+        assignChapterList(this, []);
+        assignSceneList(this, []);
         this.loaded = false;
         this.error = error.message;
       } finally {

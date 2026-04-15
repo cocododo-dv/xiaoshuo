@@ -5,12 +5,19 @@ export function getVisibleHumanReviewItems(humanReviewItems, selectedEventSource
   return [...(recoveryItems || [])];
 }
 
+function hasVisibleItem(source, targetId, key) {
+  if (typeof source === "function") {
+    return source(targetId);
+  }
+  return (source || []).some((item) => item?.[key] === targetId);
+}
+
 export function isReviewFocusVisible(focusTarget, reviewItems, humanReviewItems) {
   if (focusTarget?.target_type === "review_item") {
-    return (reviewItems || []).some((item) => item.review_id === focusTarget.target_id);
+    return hasVisibleItem(reviewItems, focusTarget.target_id, "review_id");
   }
   if (focusTarget?.target_type === "human_review_event") {
-    return (humanReviewItems || []).some((item) => item.event_id === focusTarget.target_id);
+    return hasVisibleItem(humanReviewItems, focusTarget.target_id, "event_id");
   }
   return true;
 }
@@ -31,9 +38,12 @@ export function shouldClearReviewFocus(
 
 export function isIndexFocusVisible(focusTarget, aliasScopes, jobs, targetActivityGroups) {
   if (focusTarget?.target_type === "verify_job" || focusTarget?.target_type === "reindex_job") {
-    return (jobs || []).some((item) => item.job_id === focusTarget.target_id);
+    return hasVisibleItem(jobs, focusTarget.target_id, "job_id");
   }
   if (focusTarget?.target_ref) {
+    if (typeof targetActivityGroups === "function") {
+      return targetActivityGroups(focusTarget.target_ref);
+    }
     return (targetActivityGroups || []).some((group) => group?.target?.target_ref === focusTarget.target_ref);
   }
   return true;

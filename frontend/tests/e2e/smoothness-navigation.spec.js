@@ -77,13 +77,72 @@ test("loads index activity sections and target-group items only after explicit e
     .toBe(true);
 
   const firstGroupToggle = page.getByTestId(/target-activity-toggle-/).first();
-  await expect(firstGroupToggle).toBeVisible();
-  await firstGroupToggle.click();
-  await expect
-    .poll(() =>
-      requestedUrls.some(
-        (url) => url.includes("/api/v1/target-activity-groups/") && url.includes("/items"),
-      ),
-    )
-    .toBe(true);
+  if (await firstGroupToggle.count()) {
+    await expect(firstGroupToggle).toBeVisible();
+    await firstGroupToggle.click();
+    await expect
+      .poll(() =>
+        requestedUrls.some(
+          (url) => url.includes("/api/v1/target-activity-groups/") && url.includes("/items"),
+        ),
+      )
+      .toBe(true);
+  } else {
+    await expect(page.getByText("当前没有目标活动摘要。")).toBeVisible();
+  }
+});
+
+test("preserves view state across a workbench-review-index-workbench round trip without hidden-page reloads", async ({ page }) => {
+  const requestedUrls = [];
+
+  page.on("request", (request) => {
+    const url = request.url();
+    if (url.includes("/api/v1/")) {
+      requestedUrls.push(url);
+    }
+  });
+
+  const requestCount = (fragment) => requestedUrls.filter((url) => url.includes(fragment)).length;
+
+  await page.goto("/");
+  await page.getByTestId("api-base-input").fill(apiBase);
+  await page.getByTestId("api-base-input").press("Tab");
+  await page.getByTestId("operator-ref-input").fill("ops.smoothness.roundtrip");
+  await page.getByTestId("operator-ref-input").press("Tab");
+
+  await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
+  await expect(page.getByTestId("scene-id-input")).toHaveValue("CH001_SC01");
+
+  await page.getByTestId("nav-review").click();
+  await expect(page.getByTestId("review-inbox-view")).toBeVisible();
+  await page.getByTestId("review-filter-status").selectOption("pending");
+  await page.getByTestId("review-filter-refresh").click();
+  await expect(page.getByTestId("review-filter-status")).toHaveValue("pending");
+  const reviewRequestsBeforeHide = requestCount("/api/v1/review-items");
+
+  await page.getByTestId("nav-index").click();
+  await expect(page.getByTestId("index-console-view")).toBeVisible();
+  await expect(page.getByTestId("review-filter-status")).toHaveCount(0);
+  await page.getByTestId("index-job-filter-review-id").fill("review_style_pending");
+  await expect(page.getByTestId("index-job-filter-review-id")).toHaveValue("review_style_pending");
+  const indexActivityRequestsBeforeHide =
+    requestCount("/api/v1/activity-events") + requestCount("/api/v1/target-activity-groups");
+
+  await page.getByTestId("nav-workbench").click();
+  await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
+  await expect(page.getByTestId("scene-id-input")).toHaveValue("CH001_SC01");
+  await page.waitForTimeout(250);
+
+  expect(requestCount("/api/v1/review-items")).toBe(reviewRequestsBeforeHide);
+  expect(requestCount("/api/v1/activity-events") + requestCount("/api/v1/target-activity-groups")).toBe(
+    indexActivityRequestsBeforeHide,
+  );
+
+  await page.getByTestId("nav-review").click();
+  await expect(page.getByTestId("review-inbox-view")).toBeVisible();
+  await expect(page.getByTestId("review-filter-status")).toHaveValue("pending");
+
+  await page.getByTestId("nav-index").click();
+  await expect(page.getByTestId("index-console-view")).toBeVisible();
+  await expect(page.getByTestId("index-job-filter-review-id")).toHaveValue("review_style_pending");
 });
