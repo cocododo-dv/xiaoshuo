@@ -10,11 +10,21 @@ function resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItem
   const item = items[index];
   const key = resolveItemKey(item, itemKey);
 
-  return measuredHeights[key] || estimatedItemHeight;
+  return measuredHeights[key] ?? estimatedItemHeight;
+}
+
+function sumItemHeights(items, startIndex, endIndex, itemKey, measuredHeights, estimatedItemHeight) {
+  let total = 0;
+
+  for (let index = startIndex; index < endIndex; index += 1) {
+    total += resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItemHeight);
+  }
+
+  return total;
 }
 
 export function resolvePinnedIndexes(items, itemKey, pinnedKeys = []) {
-  const pinned = new Set(pinnedKeys.filter(Boolean));
+  const pinned = new Set(pinnedKeys.filter((key) => key !== null && key !== undefined));
 
   return items
     .map((item, index) => ({ index, key: resolveItemKey(item, itemKey) }))
@@ -29,7 +39,6 @@ export function resolveVisibleIndexes({
   scrollTop,
   estimatedItemHeight,
   overscan,
-  measuredHeights,
 }) {
   if (!items.length) {
     return { startIndex: 0, endIndex: 0 };
@@ -72,7 +81,6 @@ export function buildVirtualWindow({
     scrollTop,
     estimatedItemHeight,
     overscan,
-    measuredHeights,
   });
   const pinnedIndexes = resolvePinnedIndexes(items, itemKey, pinnedKeys);
   const indexes = new Set([
@@ -81,18 +89,13 @@ export function buildVirtualWindow({
   ]);
   const orderedIndexes = [...indexes].sort((left, right) => left - right);
   const visibleItems = orderedIndexes.map((index) => items[index]);
-  const firstRenderedIndex = orderedIndexes[0] || 0;
-  const lastRenderedIndex = orderedIndexes[orderedIndexes.length - 1] || 0;
-
-  let topSpacerHeight = 0;
-  for (let index = 0; index < firstRenderedIndex; index += 1) {
-    topSpacerHeight += resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItemHeight);
-  }
-
-  let bottomSpacerHeight = 0;
-  for (let index = lastRenderedIndex + 1; index < items.length; index += 1) {
-    bottomSpacerHeight += resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItemHeight);
-  }
+  const hasVisibleSlice = endIndex > startIndex;
+  const topSpacerHeight = hasVisibleSlice
+    ? sumItemHeights(items, 0, startIndex, itemKey, measuredHeights, estimatedItemHeight)
+    : 0;
+  const bottomSpacerHeight = hasVisibleSlice
+    ? sumItemHeights(items, endIndex, items.length, itemKey, measuredHeights, estimatedItemHeight)
+    : sumItemHeights(items, 0, items.length, itemKey, measuredHeights, estimatedItemHeight);
 
   return {
     virtualized: true,

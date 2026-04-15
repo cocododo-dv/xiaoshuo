@@ -6,6 +6,16 @@ import {
   resolveVisibleIndexes,
 } from "../src/lib/virtualList";
 
+function sumHeights(startIndex, endIndex, estimatedItemHeight) {
+  let total = 0;
+
+  for (let index = startIndex; index < endIndex; index += 1) {
+    total += estimatedItemHeight;
+  }
+
+  return total;
+}
+
 describe("resolvePinnedIndexes", () => {
   it("maps pinned keys to stable sorted indexes", () => {
     const items = [
@@ -16,6 +26,12 @@ describe("resolvePinnedIndexes", () => {
     ];
 
     expect(resolvePinnedIndexes(items, "id", ["row-3", "row-1", "missing"])).toEqual([1, 3]);
+  });
+
+  it("keeps falsy keys like 0 pinnable", () => {
+    const items = [{ id: 0 }, { id: 1 }, { id: 2 }];
+
+    expect(resolvePinnedIndexes(items, "id", [0])).toEqual([0]);
   });
 });
 
@@ -58,25 +74,59 @@ describe("buildVirtualWindow", () => {
     expect(state.bottomSpacerHeight).toBe(0);
   });
 
-  it("keeps pinned rows mounted even when they fall outside the current viewport", () => {
+  it("keeps pinned rows mounted while preserving total scroll height", () => {
     const items = Array.from({ length: 40 }, (_, index) => ({ id: `row-${index}` }));
+    const estimatedItemHeight = 18;
+    const viewportHeight = 180;
+    const scrollTop = 18 * 12;
+    const visibleRange = resolveVisibleIndexes({
+      items,
+      viewportHeight,
+      scrollTop,
+      estimatedItemHeight,
+      overscan: 1,
+      measuredHeights: {},
+    });
 
     const state = buildVirtualWindow({
       items,
       itemKey: "id",
-      viewportHeight: 180,
-      scrollTop: 18 * 12,
-      estimatedItemHeight: 18,
+      viewportHeight,
+      scrollTop,
+      estimatedItemHeight,
       overscan: 1,
       threshold: 10,
       measuredHeights: {},
-      pinnedKeys: ["row-2", "row-15"],
+      pinnedKeys: ["row-2", "row-35"],
     });
 
     expect(state.virtualized).toBe(true);
     expect(state.visibleKeys).toContain("row-2");
-    expect(state.visibleKeys).toContain("row-15");
-    expect(state.topSpacerHeight).toBeGreaterThanOrEqual(0);
-    expect(state.bottomSpacerHeight).toBeGreaterThanOrEqual(0);
+    expect(state.visibleKeys).toContain("row-35");
+    expect(
+      state.topSpacerHeight +
+        sumHeights(visibleRange.startIndex, visibleRange.endIndex, estimatedItemHeight) +
+        state.bottomSpacerHeight,
+    ).toBe(items.length * estimatedItemHeight);
+  });
+
+  it("preserves total height when the visible range is empty", () => {
+    const items = Array.from({ length: 8 }, (_, index) => ({ id: `row-${index}` }));
+    const estimatedItemHeight = 24;
+    const state = buildVirtualWindow({
+      items,
+      itemKey: "id",
+      viewportHeight: 0,
+      scrollTop: 0,
+      estimatedItemHeight,
+      overscan: 0,
+      threshold: 0,
+      measuredHeights: {},
+      pinnedKeys: [],
+    });
+
+    expect(state.virtualized).toBe(true);
+    expect(state.topSpacerHeight).toBe(0);
+    expect(state.bottomSpacerHeight).toBe(items.length * estimatedItemHeight);
   });
 });
