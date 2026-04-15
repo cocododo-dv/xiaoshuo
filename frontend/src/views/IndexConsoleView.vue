@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onActivated, reactive, ref, watch } from "vue";
+import { computed, nextTick, onActivated, onDeactivated, reactive, ref, watch } from "vue";
 
 import ActivitySectionCard from "../components/ActivitySectionCard.vue";
 import AliasScopeCard from "../components/AliasScopeCard.vue";
@@ -14,6 +14,7 @@ import { useIndexConsoleStore } from "../stores/indexConsole";
 const emit = defineEmits(["notice"]);
 const indexConsole = useIndexConsoleStore();
 const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = useShellRouter();
+const isViewActive = ref(false);
 
 const expandedSections = reactive({
   recovery_timeline: false,
@@ -54,23 +55,6 @@ const focusTargetId = computed(() => focusTarget.value?.target_id || "");
 const focusTargetRef = computed(() => focusTarget.value?.target_ref || "");
 const focusedSourceType = computed(() => focusTarget.value?.source_type || "");
 const focusedSourceId = computed(() => focusTarget.value?.source_id ?? null);
-const targetGroupRefsSignature = computed(() =>
-  (indexConsole.targetActivityGroups || []).map((group) => group?.target?.target_ref || "").join("|"),
-);
-const indexFocusSignature = computed(() =>
-  [
-    activeView.value,
-    indexConsole.loading ? "1" : "0",
-    indexConsole.activityLoading ? "1" : "0",
-    pendingFocusView.value || "",
-    indexFocusRefreshPending.value ? "1" : "0",
-    focusTargetType.value,
-    focusTargetId.value,
-    focusTargetRef.value,
-    (indexConsole.jobs || []).map((item) => item.job_id || "").join("|"),
-    targetGroupRefsSignature.value,
-  ].join("::"),
-);
 
 const prioritizedJobs = computed(() => {
   const focusJobId = ["verify_job", "reindex_job"].includes(focusTargetType.value) ? focusTargetId.value : null;
@@ -214,7 +198,7 @@ async function ensureFocusSections(force = false) {
   if (sourceSection) await openSection(sourceSection, force);
   if (!focusNeedsTargetGroups()) return;
   await openSection("target_groups", force);
-  if ((indexConsole.targetActivityGroups || []).some((group) => group?.target?.target_ref === focusTargetRef.value)) {
+  if (indexConsole.hasTargetActivityGroup(focusTargetRef.value)) {
     activeTargetGroupRef.value = focusTargetRef.value;
     await indexConsole.ensureTargetGroupItemsLoaded(focusTargetRef.value, { force });
   }
@@ -246,7 +230,19 @@ async function ensureIndexLoaded() {
   }
   if (indexConsole.error) emit("notice", indexConsole.error);
   settleFocusView("index");
-  if (shouldClearIndexFocus(activeView.value, indexConsole.loading || indexConsole.activityLoading, indexFocusRefreshPending.value || pendingFocusView.value === "index", focusTarget.value, indexConsole.aliasScopes, indexConsole.jobs, indexConsole.targetActivityGroups)) clearFocus();
+  if (
+    shouldClearIndexFocus(
+      activeView.value,
+      indexConsole.loading || indexConsole.activityLoading,
+      indexFocusRefreshPending.value || pendingFocusView.value === "index",
+      focusTarget.value,
+      indexConsole.aliasScopes,
+      (jobId) => indexConsole.hasJob(jobId),
+      (targetRef) => indexConsole.hasTargetActivityGroup(targetRef),
+    )
+  ) {
+    clearFocus();
+  }
 }
 async function refreshIndex() {
   indexFocusRefreshPending.value = true;
@@ -273,22 +269,24 @@ const runDuePromotions = async () => { try { emit("notice", await indexConsole.r
 const retry = async (jobId) => { try { emit("notice", await indexConsole.retryVerifyJob(jobId)); await ensureVisibleSections(true); await ensureFocusSections(true); } catch (error) { emit("notice", error.message); } };
 
 watch(() => [activeView.value, focusTargetRef.value, focusedSourceType.value, focusedSourceId.value], async ([viewId]) => {
+  if (!isViewActive.value) return;
   if (viewId !== "index") return;
   if (!focusTargetRef.value && !focusedSourceSection()) return;
   await syncIndexFocus();
 }, { immediate: true });
 
-watch(targetGroupRefsSignature, async () => {
-  if (activeTargetGroupRef.value && !(indexConsole.targetActivityGroups || []).some((group) => group?.target?.target_ref === activeTargetGroupRef.value)) {
+watch(() => indexConsole.targetGroupsVersion, async () => {
+  if (activeTargetGroupRef.value && !indexConsole.hasTargetActivityGroup(activeTargetGroupRef.value)) {
     activeTargetGroupRef.value = "";
   }
-  if (activeView.value !== "index" || !focusNeedsTargetGroups()) return;
-  if (!(indexConsole.targetActivityGroups || []).some((group) => group?.target?.target_ref === focusTargetRef.value)) return;
+  if (!isViewActive.value || activeView.value !== "index" || !focusNeedsTargetGroups()) return;
+  if (!indexConsole.hasTargetActivityGroup(focusTargetRef.value)) return;
   activeTargetGroupRef.value = focusTargetRef.value;
   await indexConsole.ensureTargetGroupItemsLoaded(focusTargetRef.value);
 }, { immediate: true });
 
 watch(() => [focusedActivityKey.value, sourceLinkedActivityKey.value, activeTargetGroupRef.value], async ([focusedKey, linkedKey, targetRef]) => {
+  if (!isViewActive.value || activeView.value !== "index" || !expandedSections.target_groups) return;
   if (!targetRef || typeof document === "undefined") return;
   const activityKey = focusedKey || linkedKey;
   if (!activityKey) return;
@@ -296,11 +294,43 @@ watch(() => [focusedActivityKey.value, sourceLinkedActivityKey.value, activeTarg
   document.querySelector(`[data-activity-key="${activityKey}"]`)?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
 }, { immediate: true });
 
-watch(indexFocusSignature, () => {
-  if (shouldClearIndexFocus(activeView.value, indexConsole.loading || indexConsole.activityLoading, indexFocusRefreshPending.value || pendingFocusView.value === "index", focusTarget.value, indexConsole.aliasScopes, indexConsole.jobs, indexConsole.targetActivityGroups)) clearFocus();
+watch(() => [
+  activeView.value,
+  indexConsole.loading,
+  indexConsole.activityLoading,
+  pendingFocusView.value || "",
+  indexFocusRefreshPending.value,
+  focusTargetType.value,
+  focusTargetId.value,
+  focusTargetRef.value,
+  indexConsole.jobsVersion,
+  indexConsole.targetGroupsVersion,
+], () => {
+  if (!isViewActive.value) return;
+  if (
+    shouldClearIndexFocus(
+      activeView.value,
+      indexConsole.loading || indexConsole.activityLoading,
+      indexFocusRefreshPending.value || pendingFocusView.value === "index",
+      focusTarget.value,
+      indexConsole.aliasScopes,
+      (jobId) => indexConsole.hasJob(jobId),
+      (targetRef) => indexConsole.hasTargetActivityGroup(targetRef),
+    )
+  ) {
+    clearFocus();
+  }
 }, { immediate: true });
 
-onActivated(() => { ensureIndexLoaded(); });
+onActivated(() => {
+  isViewActive.value = true;
+  ensureIndexLoaded();
+});
+
+onDeactivated(() => {
+  isViewActive.value = false;
+  indexFocusRefreshPending.value = false;
+});
 </script>
 
 <template>

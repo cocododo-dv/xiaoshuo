@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onActivated, ref, watch } from "vue";
+import { computed, onActivated, onDeactivated, ref, watch } from "vue";
 
 import CursorPager from "../components/CursorPager.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
@@ -21,27 +21,11 @@ const knowledgeConsole = useKnowledgeConsoleStore();
 const workbench = useWorkbenchStore();
 const shellRouter = useShellRouter();
 const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;
+const isViewActive = ref(false);
 const reviewFocusRefreshPending = ref(false);
 const focusTargetType = computed(() => focusTarget.value?.target_type || "");
 const focusTargetId = computed(() => focusTarget.value?.target_id || "");
 const focusTargetRef = computed(() => focusTarget.value?.target_ref || "");
-const reviewIdsSignature = computed(() => (reviewInbox.items || []).map((item) => item.review_id || "").join("|"));
-const visibleHumanReviewIdsSignature = computed(() =>
-  visibleHumanReviewItems.value.map((item) => item.event_id || "").join("|"),
-);
-const reviewFocusSignature = computed(() =>
-  [
-    activeView.value,
-    reviewInbox.loading ? "1" : "0",
-    pendingFocusView.value || "",
-    reviewFocusRefreshPending.value ? "1" : "0",
-    focusTargetType.value,
-    focusTargetId.value,
-    focusTargetRef.value,
-    reviewIdsSignature.value,
-    visibleHumanReviewIdsSignature.value,
-  ].join("::"),
-);
 
 const visibleHumanReviewItems = computed(() =>
   getVisibleHumanReviewItems(
@@ -151,8 +135,8 @@ async function ensureReviewInboxLoaded() {
       reviewInbox.loading,
       reviewFocusDeferred(),
       focusTarget.value,
-      reviewInbox.items,
-      visibleHumanReviewItems.value,
+      (reviewId) => reviewInbox.hasReviewItem(reviewId),
+      (eventId) => reviewInbox.hasVisibleHumanReviewEvent(eventId, reviewInbox.humanReviewFilters.eventSource),
     )
   ) {
     clearFocus();
@@ -257,25 +241,46 @@ function handleReviewOpenTarget(reviewId) {
 }
 
 onActivated(() => {
+  isViewActive.value = true;
   ensureReviewInboxLoaded();
 });
 
+onDeactivated(() => {
+  isViewActive.value = false;
+  reviewFocusRefreshPending.value = false;
+});
+
 watch(
-  reviewFocusSignature,
+  () => [
+    activeView.value,
+    reviewInbox.loading,
+    pendingFocusView.value || "",
+    reviewFocusRefreshPending.value,
+    focusTargetType.value,
+    focusTargetId.value,
+    focusTargetRef.value,
+    reviewInbox.reviewItemsVersion,
+    reviewInbox.humanReviewItemsVersion,
+    reviewInbox.humanReviewFilters.eventSource,
+  ],
   () => {
+    if (!isViewActive.value) {
+      return;
+    }
     if (
       shouldClearReviewFocus(
         activeView.value,
         reviewInbox.loading,
         reviewFocusDeferred(),
         focusTarget.value,
-        reviewInbox.items,
-        visibleHumanReviewItems.value,
+        (reviewId) => reviewInbox.hasReviewItem(reviewId),
+        (eventId) => reviewInbox.hasVisibleHumanReviewEvent(eventId, reviewInbox.humanReviewFilters.eventSource),
       )
     ) {
       clearFocus();
     }
   },
+  { immediate: true },
 );
 </script>
 

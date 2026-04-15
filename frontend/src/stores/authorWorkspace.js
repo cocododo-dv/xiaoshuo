@@ -39,14 +39,26 @@ async function refreshAuthorTrashStore() {
   authorTrash.markStale();
 }
 
+function assignChapterList(store, chapters) {
+  store.chapters = chapters;
+  store.chapterListVersion += 1;
+}
+
+function assignSceneList(store, scenes) {
+  store.scenes = scenes;
+  store.sceneListVersion += 1;
+}
+
 export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
   state: () => ({
     chapters: [],
+    chapterListVersion: 0,
     selectedChapterId: "",
     chapter: null,
     chapterState: null,
     chapterRunStatus: null,
     scenes: [],
+    sceneListVersion: 0,
     sceneDraft: null,
     loaded: false,
     stale: false,
@@ -66,12 +78,12 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       this.chapter = null;
       this.chapterState = null;
       this.chapterRunStatus = null;
-      this.scenes = [];
+      assignSceneList(this, []);
       this.sceneDraft = null;
     },
     async loadChapters() {
       const payload = await fetchChapters();
-      this.chapters = payload.items || [];
+      assignChapterList(this, payload.items || []);
       if (!this.chapters.length) {
         this.selectedChapterId = "";
         return;
@@ -95,7 +107,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       this.chapter = payload.chapter || null;
       this.chapterState = payload.chapter_state || null;
       this.chapterRunStatus = runStatus || null;
-      this.scenes = payload.scenes || [];
+      assignSceneList(this, payload.scenes || []);
       this.sceneDraft = null;
     },
     async refreshActiveData(preferredChapterId = this.selectedChapterId) {
@@ -120,7 +132,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         this.markFresh();
       } catch (error) {
         this.clearWorkspace();
-        this.chapters = [];
+        assignChapterList(this, []);
         this.loaded = false;
         this.error = error.message;
       } finally {

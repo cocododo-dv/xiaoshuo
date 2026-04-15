@@ -1,4 +1,4 @@
-import { ref } from "vue";
+import { computed, ref } from "vue";
 
 const activeView = ref("workbench");
 const visitedViews = ref(["workbench"]);
@@ -12,14 +12,65 @@ const focusTarget = ref({
 const pendingFocusView = ref(null);
 
 const views = [
-  { id: "author", label: "作者工作台" },
-  { id: "trash", label: "作者回收站" },
-  { id: "workbench", label: "场景工作台" },
-  { id: "review", label: "审核收件箱" },
-  { id: "index", label: "索引控制台" },
-  { id: "knowledge", label: "知识控制台" },
-  { id: "interop", label: "互操作中心" },
+  {
+    id: "author",
+    label: "作者工作台",
+    cacheMode: "light",
+    chromeEyebrow: "Author",
+    chromeTitle: "作者工作台",
+    chromeDescription: "保留编辑表单和选择状态，切回时只做轻量同步。",
+  },
+  {
+    id: "trash",
+    label: "作者回收站",
+    cacheMode: "light",
+    chromeEyebrow: "Trash",
+    chromeTitle: "作者回收站",
+    chromeDescription: "保持批量选择上下文，隐藏时不再重复联动长列表。",
+  },
+  {
+    id: "workbench",
+    label: "场景工作台",
+    cacheMode: "light",
+    chromeEyebrow: "Workbench",
+    chromeTitle: "场景工作台",
+    chromeDescription: "保留当前场景上下文和抽屉状态，回到页面时再按需刷新。",
+  },
+  {
+    id: "review",
+    label: "审核收件箱",
+    cacheMode: "light",
+    chromeEyebrow: "Review",
+    chromeTitle: "审核收件箱",
+    chromeDescription: "切页后保留筛选与聚焦上下文，暂停隐藏页的 focus 联动。",
+  },
+  {
+    id: "index",
+    label: "索引控制台",
+    cacheMode: "light",
+    chromeEyebrow: "Index",
+    chromeTitle: "索引控制台",
+    chromeDescription: "重时间线和目标活动只在当前视图参与滚动定位与自动展开。",
+  },
+  {
+    id: "knowledge",
+    label: "知识控制台",
+    cacheMode: "light",
+    chromeEyebrow: "Knowledge",
+    chromeTitle: "知识控制台",
+    chromeDescription: "保留当前知识条目与草稿输入，避免来回切页时重算。",
+  },
+  {
+    id: "interop",
+    label: "互操作中心",
+    cacheMode: "light",
+    chromeEyebrow: "Interop",
+    chromeTitle: "互操作中心",
+    chromeDescription: "保持导入导出上下文与预览状态，减少切页带来的中断感。",
+  },
 ];
+
+const viewMap = Object.fromEntries(views.map((view) => [view.id, view]));
 
 const workbenchTargetTypes = new Set([
   "scene_card",
@@ -30,7 +81,7 @@ const workbenchTargetTypes = new Set([
 ]);
 
 function ensureVisited(nextView) {
-  if (!views.some((view) => view.id === nextView)) {
+  if (!viewMap[nextView]) {
     return;
   }
   if (visitedViews.value.includes(nextView)) {
@@ -40,6 +91,8 @@ function ensureVisited(nextView) {
 }
 
 export function useShellRouter() {
+  const activeViewMeta = computed(() => viewMap[activeView.value] || viewMap.workbench);
+
   function clearFocus() {
     pendingFocusView.value = null;
     focusTarget.value = {
@@ -52,7 +105,7 @@ export function useShellRouter() {
   }
 
   function navigate(nextView) {
-    if (views.some((view) => view.id === nextView)) {
+    if (viewMap[nextView]) {
       ensureVisited(nextView);
       if (pendingFocusView.value && pendingFocusView.value !== nextView) {
         pendingFocusView.value = null;
@@ -102,6 +155,14 @@ export function useShellRouter() {
     }
   }
 
+  function viewMeta(viewId) {
+    return viewMap[viewId] || viewMap.workbench;
+  }
+
+  function isViewActive(viewId) {
+    return activeView.value === viewId;
+  }
+
   function reset() {
     activeView.value = "workbench";
     visitedViews.value = ["workbench"];
@@ -114,10 +175,13 @@ export function useShellRouter() {
     focusTarget,
     pendingFocusView,
     views,
+    activeViewMeta,
     navigate,
     openTarget,
     clearFocus,
     settleFocusView,
+    viewMeta,
+    isViewActive,
     reset,
   };
 }

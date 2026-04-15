@@ -32,6 +32,48 @@ function createHumanReviewFilters() {
   };
 }
 
+function buildLookup(items, key) {
+  return (items || []).reduce((lookup, item) => {
+    const value = item?.[key];
+    if (value) {
+      lookup[value] = true;
+    }
+    return lookup;
+  }, {});
+}
+
+function buildHumanReviewLookups(items) {
+  const byId = {};
+  const bySource = {};
+  const recoveryOpenById = {};
+  const recoveryOpenItems = [];
+
+  (items || []).forEach((item) => {
+    if (!item?.event_id) {
+      return;
+    }
+
+    byId[item.event_id] = true;
+
+    if (!bySource[item.event_source]) {
+      bySource[item.event_source] = {};
+    }
+    bySource[item.event_source][item.event_id] = true;
+
+    if (item.event_source === "idempotency_recovery" && item.status !== "resolved") {
+      recoveryOpenById[item.event_id] = true;
+      recoveryOpenItems.push(item);
+    }
+  });
+
+  return {
+    byId,
+    bySource,
+    recoveryOpenById,
+    recoveryOpenItems,
+  };
+}
+
 export const useReviewInboxStore = defineStore("reviewInbox", {
   state: () => ({
     reviewFilters: createReviewFilters(),
@@ -41,7 +83,14 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
     reviewFilterSignature: filtersSignature(createReviewFilters()),
     humanReviewFilterSignature: filtersSignature(createHumanReviewFilters()),
     items: [],
+    reviewItemsVersion: 0,
+    reviewItemLookup: {},
     humanReviewItems: [],
+    humanReviewItemsVersion: 0,
+    humanReviewItemLookup: {},
+    humanReviewItemLookupBySource: {},
+    systemRecoveryItemsCache: [],
+    systemRecoveryItemLookup: {},
     lastActionResult: null,
     loaded: false,
     stale: false,
@@ -56,10 +105,18 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
     humanReviewPagination: (state) => state.humanReviewPager.pagination,
     humanReviewCursor: (state) => state.humanReviewPager.cursor,
     humanReviewCursorStack: (state) => state.humanReviewPager.cursorStack,
-    systemRecoveryItems: (state) =>
-      (state.humanReviewItems || []).filter(
-        (item) => item.event_source === "idempotency_recovery" && item.status !== "resolved",
-      ),
+    systemRecoveryItems: (state) => state.systemRecoveryItemsCache,
+    hasReviewItem: (state) => (reviewId) => Boolean(reviewId && state.reviewItemLookup[reviewId]),
+    hasHumanReviewEvent: (state) => (eventId) => Boolean(eventId && state.humanReviewItemLookup[eventId]),
+    hasVisibleHumanReviewEvent: (state) => (eventId, eventSource = "") => {
+      if (!eventId) {
+        return false;
+      }
+      if (eventSource) {
+        return Boolean(state.humanReviewItemLookupBySource[eventSource]?.[eventId]);
+      }
+      return Boolean(state.systemRecoveryItemLookup[eventId]);
+    },
   },
   actions: {
     markStale() {
@@ -91,13 +148,28 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       }
       this.humanReviewFilterSignature = nextSignature;
     },
+    assignReviewItems(items) {
+      this.items = items;
+      this.reviewItemLookup = buildLookup(items, "review_id");
+      this.reviewItemsVersion += 1;
+    },
+    assignHumanReviewItems(items) {
+      const lookups = buildHumanReviewLookups(items);
+
+      this.humanReviewItems = items;
+      this.humanReviewItemLookup = lookups.byId;
+      this.humanReviewItemLookupBySource = lookups.bySource;
+      this.systemRecoveryItemsCache = lookups.recoveryOpenItems;
+      this.systemRecoveryItemLookup = lookups.recoveryOpenById;
+      this.humanReviewItemsVersion += 1;
+    },
     async loadReviewItems({ reset = false } = {}) {
       this.syncReviewPager({ reset });
       const payload = await fetchReviewItems({
         ...this.reviewFilters,
         ...buildCursorQuery(this.reviewPager),
       });
-      this.items = applyCursorPayload(this.reviewPager, payload);
+      this.assignReviewItems(applyCursorPayload(this.reviewPager, payload));
     },
     async loadHumanReviewItems({ reset = false } = {}) {
       this.syncHumanReviewPager({ reset });
@@ -105,7 +177,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         ...this.humanReviewFilters,
         ...buildCursorQuery(this.humanReviewPager),
       });
-      this.humanReviewItems = applyCursorPayload(this.humanReviewPager, payload);
+      this.assignHumanReviewItems(applyCursorPayload(this.humanReviewPager, payload));
     },
     async load({ resetReview = false, resetHumanReview = false, force = false } = {}) {
       if (this.loaded && !this.stale && !force && !resetReview && !resetHumanReview) {
@@ -120,8 +192,8 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         ]);
         this.markFresh();
       } catch (error) {
-        this.items = [];
-        this.humanReviewItems = [];
+        this.assignReviewItems([]);
+        this.assignHumanReviewItems([]);
         this.loaded = false;
         this.error = error.message;
       } finally {
