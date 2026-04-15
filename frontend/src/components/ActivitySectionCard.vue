@@ -24,6 +24,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  testId: {
+    type: String,
+    default: "",
+  },
   toggleTestId: {
     type: String,
     default: "",
@@ -34,7 +38,10 @@ defineEmits(["toggle"]);
 </script>
 
 <template>
-  <article class="paper receipt-card activity-section-card">
+  <article
+    class="paper receipt-card activity-section-card"
+    :data-testid="props.testId || undefined"
+  >
     <div class="receipt-head activity-section-head">
       <div>
         <h3>{{ props.title }}</h3>

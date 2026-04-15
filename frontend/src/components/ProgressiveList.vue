@@ -95,7 +95,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div :data-testid="props.testId || undefined">
+  <div
+    class="progressive-list"
+    :data-testid="props.testId || undefined"
+  >
     <slot
       :items="renderedItems"
       :rendered-count="renderedCount"

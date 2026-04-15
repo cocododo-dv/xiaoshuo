@@ -51,6 +51,23 @@ describe("light keep-alive shell architecture", () => {
     expect(reviewSource).toContain("onDeactivated");
     expect(reviewSource).toContain("isViewActive");
   });
+
+  it("keeps cached heavy surfaces routed through shared list primitives", () => {
+    const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
+    const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+    const authorSource = readFileSync(new URL("../src/views/AuthorWorkspaceView.vue", import.meta.url), "utf8");
+    const virtualListSource = readFileSync(new URL("../src/components/VirtualList.vue", import.meta.url), "utf8");
+    const progressiveListSource = readFileSync(new URL("../src/components/ProgressiveList.vue", import.meta.url), "utf8");
+
+    expect(reviewSource).toContain('test-id="review-inbox-virtual-list"');
+    expect(indexSource).toContain('test-id="index-target-groups-virtual-list"');
+    expect(authorSource).toContain('test-id="author-chapter-virtual-list"');
+    expect(reviewSource).toContain("onDeactivated");
+    expect(indexSource).toContain("onDeactivated");
+    expect(virtualListSource).toContain('class="virtual-list"');
+    expect(virtualListSource).toContain('class="virtual-list-row"');
+    expect(progressiveListSource).toContain('class="progressive-list"');
+  });
 });
 
 describe("versioned visibility lookups", () => {

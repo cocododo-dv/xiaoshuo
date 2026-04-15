@@ -91,6 +91,29 @@ describe("shell smoothness architecture", () => {
     expect(targetGroupCardSource).toContain(":threshold=\"8\"");
   });
 
+  it("ships shared virtual and progressive list primitives for heavy in-page surfaces", () => {
+    const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
+    const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+    const authorSource = readFileSync(new URL("../src/views/AuthorWorkspaceView.vue", import.meta.url), "utf8");
+    const virtualListSource = readFileSync(new URL("../src/components/VirtualList.vue", import.meta.url), "utf8");
+    const progressiveListSource = readFileSync(new URL("../src/components/ProgressiveList.vue", import.meta.url), "utf8");
+    const styles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+
+    expect(reviewSource).toContain('test-id="review-inbox-virtual-list"');
+    expect(indexSource).toContain('test-id="index-jobs-virtual-list"');
+    expect(authorSource).toContain('test-id="author-scene-virtual-list"');
+    expect(virtualListSource).toContain('class="virtual-list"');
+    expect(virtualListSource).toContain('class="virtual-list-spacer"');
+    expect(virtualListSource).toContain('class="virtual-list-row"');
+    expect(progressiveListSource).toContain('class="progressive-list"');
+    expect(styles).toContain(".virtual-list");
+    expect(styles).toContain(".virtual-list-spacer");
+    expect(styles).toContain(".virtual-list-row");
+    expect(styles).toContain(".progressive-list");
+    expect(styles).toContain("contain: layout paint");
+    expect(styles).toContain("content-visibility: auto");
+  });
+
   it("avoids deep watchers in the heaviest cached views", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");

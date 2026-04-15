@@ -205,11 +205,13 @@ onBeforeUnmount(() => {
   >
     <div
       v-if="windowState.virtualized"
+      class="virtual-list-spacer"
       :style="{ height: `${windowState.totalHeight}px`, position: 'relative' }"
     >
       <div
         v-for="entry in windowState.renderedEntries"
         :key="entry.key"
+        class="virtual-list-row"
         :ref="rowRef(entry)"
         :style="{
           position: 'absolute',
@@ -225,6 +227,7 @@ onBeforeUnmount(() => {
       <div
         v-for="entry in windowState.renderedEntries"
         :key="entry.key"
+        class="virtual-list-row"
         :ref="rowRef(entry)"
       >
         <slot :item="entry.item" :entry="entry" :virtualized="false" />

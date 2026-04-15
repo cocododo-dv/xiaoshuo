@@ -416,9 +416,15 @@ describe("review inbox scroll performance integration", () => {
     const mounted = await mountReviewInboxView();
 
     try {
-      expect(mounted.container.querySelector('[data-testid="review-inbox-virtual-list"]')).not.toBeNull();
-      expect(mounted.container.querySelector('[data-testid="human-review-progressive-list"]')).not.toBeNull();
-      expect(mounted.container.querySelector('[data-testid="review-inbox-virtual-list"]').style.maxHeight).toBe("640px");
+      const reviewVirtualList = mounted.container.querySelector('[data-testid="review-inbox-virtual-list"]');
+      const humanReviewProgressiveList = mounted.container.querySelector('[data-testid="human-review-progressive-list"]');
+
+      expect(reviewVirtualList).not.toBeNull();
+      expect(humanReviewProgressiveList).not.toBeNull();
+      expect(reviewVirtualList.classList.contains("virtual-list")).toBe(true);
+      expect(reviewVirtualList.querySelector(".virtual-list-row")).not.toBeNull();
+      expect(humanReviewProgressiveList.classList.contains("progressive-list")).toBe(true);
+      expect(reviewVirtualList.style.maxHeight).toBe("640px");
 
       const reviewCards = mounted.container.querySelectorAll('[data-testid^="review-card-review-"]');
       expect(reviewCards.length).toBeGreaterThan(0);
@@ -512,28 +518,39 @@ describe("index console scroll performance integration", () => {
     });
 
     try {
-      let groupVirtualList = mounted.container.querySelector('[data-testid="index-target-groups-virtual-list"]');
+      const targetGroupsSection = mounted.container.querySelector('[data-testid="index-target-groups-section"]');
+      expect(targetGroupsSection).not.toBeNull();
+
+      let groupVirtualList = targetGroupsSection.querySelector('[data-testid="index-target-groups-virtual-list"]');
       if (!groupVirtualList) {
-        mounted.container.querySelector('[data-testid="index-toggle-target-groups"]').click();
+        targetGroupsSection.querySelector('[data-testid="index-toggle-target-groups"]').click();
         await flushUi();
-        groupVirtualList = mounted.container.querySelector('[data-testid="index-target-groups-virtual-list"]');
+        groupVirtualList = targetGroupsSection.querySelector('[data-testid="index-target-groups-virtual-list"]');
       }
       expect(groupVirtualList).not.toBeNull();
+      expect(groupVirtualList.classList.contains("virtual-list")).toBe(true);
+      expect(groupVirtualList.querySelector(".virtual-list-row")).not.toBeNull();
       expect(groupVirtualList.style.maxHeight).toBe("640px");
 
-      const groupCards = mounted.container.querySelectorAll('[data-testid^="target-activity-group-review_item:review-"]');
+      const groupCards = targetGroupsSection.querySelectorAll('[data-testid^="target-activity-group-review_item:review-"]');
       expect(groupCards.length).toBeGreaterThan(0);
       expect(groupCards.length).toBeLessThan(mounted.store.targetActivityGroups.length);
       expect(mounted.container.querySelector('[data-testid="target-activity-group-review_item:review-13"]')).not.toBeNull();
 
-      if (!mounted.container.querySelector('[data-testid="target-group-progressive-list"]')) {
-        mounted.container.querySelector('[data-testid="target-activity-toggle-review_item:review-13"]').click();
+      groupVirtualList.scrollTop = 10000;
+      groupVirtualList.dispatchEvent(new Event("scroll"));
+      await flushUi();
+
+      expect(mounted.container.querySelector('[data-testid="target-activity-group-review_item:review-13"]')).not.toBeNull();
+
+      if (!targetGroupsSection.querySelector('[data-testid="target-group-progressive-list"]')) {
+        targetGroupsSection.querySelector('[data-testid="target-activity-toggle-review_item:review-13"]').click();
         await flushUi();
       }
 
-      expect(mounted.container.querySelector('[data-testid="target-group-progressive-list"]')).not.toBeNull();
+      expect(targetGroupsSection.querySelector('[data-testid="target-group-progressive-list"]')).not.toBeNull();
 
-      let activityRows = mounted.container.querySelectorAll('[data-testid^="target-activity-item-operator_action:13:"]');
+      let activityRows = targetGroupsSection.querySelectorAll('[data-testid^="target-activity-item-operator_action:13:"]');
       expect(activityRows).toHaveLength(8);
       expect(mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:8"]')).toBeNull();
       expect(mounted.container.querySelector('[data-testid="target-activity-item-operator_action:13:9"]')).toBeNull();
@@ -587,12 +604,18 @@ describe("author workspace scroll performance integration", () => {
 
       expect(chapterVirtualList).not.toBeNull();
       expect(sceneVirtualList).not.toBeNull();
+      expect(chapterVirtualList.classList.contains("virtual-list")).toBe(true);
+      expect(sceneVirtualList.classList.contains("virtual-list")).toBe(true);
       expect(chapterVirtualList.style.maxHeight).toBe("520px");
       expect(sceneVirtualList.style.maxHeight).toBe("560px");
+      expect(chapterTrack.classList.contains("virtual-list-spacer")).toBe(true);
+      expect(sceneTrack.classList.contains("virtual-list-spacer")).toBe(true);
       expect(chapterTrack.style.height).toBe(`${mounted.store.chapters.length * 128}px`);
       expect(sceneTrack.style.height).toBe(`${mounted.store.scenes.length * 188}px`);
       expect(chapterTrack.style.position).toBe("relative");
       expect(sceneTrack.style.position).toBe("relative");
+      expect(chapterTrack.firstElementChild.classList.contains("virtual-list-row")).toBe(true);
+      expect(sceneTrack.firstElementChild.classList.contains("virtual-list-row")).toBe(true);
       expect(chapterTrack.firstElementChild.style.position).toBe("absolute");
       expect(sceneTrack.firstElementChild.style.position).toBe("absolute");
 

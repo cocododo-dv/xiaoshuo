@@ -92,6 +92,56 @@ test("loads index activity sections and target-group items only after explicit e
   }
 });
 
+test("keeps scroll-heavy list surfaces interactive after expansion across review-index-author navigation", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("api-base-input").fill(apiBase);
+  await page.getByTestId("api-base-input").press("Tab");
+  await page.getByTestId("operator-ref-input").fill("ops.smoothness.scroll");
+  await page.getByTestId("operator-ref-input").press("Tab");
+
+  await page.getByTestId("nav-review").click();
+  await expect(page.getByTestId("review-inbox-view")).toBeVisible();
+  await page.getByTestId("review-filter-status").selectOption("pending");
+  await page.getByTestId("review-filter-refresh").click();
+  await expect(page.getByTestId("review-inbox-virtual-list")).toBeVisible();
+
+  const firstReviewCard = page.locator("[data-testid^='review-card-']").first();
+  await expect(firstReviewCard).toBeVisible();
+  await firstReviewCard.getByTestId(/review-toggle-payload-/).click();
+  await expect(firstReviewCard.locator("pre")).toBeVisible();
+
+  await page.getByTestId("nav-index").click();
+  await expect(page.getByTestId("index-console-view")).toBeVisible();
+  await page.getByTestId("index-toggle-target-groups").click();
+  const targetGroupsSection = page.getByTestId("index-target-groups-section");
+  await expect
+    .poll(async () => {
+      const hasVirtualList = await targetGroupsSection.getByTestId("index-target-groups-virtual-list").count();
+      const hasEmptyState = await targetGroupsSection.locator(".empty").count();
+      return hasVirtualList + hasEmptyState;
+    })
+    .toBeGreaterThan(0);
+
+  if (await targetGroupsSection.getByTestId("index-target-groups-virtual-list").count()) {
+    await expect(targetGroupsSection.getByTestId("index-target-groups-virtual-list")).toBeVisible();
+
+    const firstGroupToggle = targetGroupsSection.getByTestId(/target-activity-toggle-/).first();
+    if (await firstGroupToggle.count()) {
+      await firstGroupToggle.click();
+      await expect(targetGroupsSection.locator("[data-testid^='target-activity-item-']").first()).toBeVisible();
+    }
+  } else {
+    await expect(targetGroupsSection.locator(".empty")).toBeVisible();
+  }
+
+  await page.getByTestId("nav-author").click();
+  await expect(page.getByTestId("author-workspace-view")).toBeVisible();
+  await expect(page.getByTestId("author-chapter-virtual-list")).toBeVisible();
+  await expect(page.getByTestId("author-scene-virtual-list")).toBeVisible();
+  await expect(page.getByTestId("author-chapter-form")).toBeVisible();
+  await expect(page.getByTestId("author-scene-form")).toBeVisible();
+});
+
 test("preserves view state across a workbench-review-index-workbench round trip without hidden-page reloads", async ({ page }) => {
   const requestedUrls = [];
 

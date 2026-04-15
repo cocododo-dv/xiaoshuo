@@ -655,6 +655,7 @@ onBeforeUnmount(() => {
           badge="目标"
           :expanded="expandedSections.target_groups"
           :loading="indexConsole.activitySectionState('target_groups').loading"
+          test-id="index-target-groups-section"
           toggle-test-id="index-toggle-target-groups"
           @toggle="toggleSection('target_groups')"
         >

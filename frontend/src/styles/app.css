@@ -195,6 +195,46 @@ pre {
   gap: 1.4rem;
 }
 
+.virtual-list {
+  display: block;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.virtual-list-spacer {
+  width: 100%;
+  min-width: 0;
+  position: relative;
+}
+
+.virtual-list-row {
+  min-width: 0;
+  contain: layout paint;
+}
+
+.virtual-list-row > * {
+  min-width: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: 220px;
+  contain: layout style paint;
+}
+
+.progressive-list {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.review-list .virtual-list-row,
+.author-list .virtual-list-row,
+.author-scene-list .virtual-list-row,
+.receipt-list .virtual-list-row,
+.job-table .virtual-list-row {
+  padding-bottom: 1rem;
+}
+
 .stage-chrome {
   position: sticky;
   top: 1rem;
