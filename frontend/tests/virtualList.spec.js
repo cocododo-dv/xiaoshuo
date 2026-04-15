@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildVirtualWindow,
+  buildHeightProfile,
   resolvePinnedIndexes,
   resolveVisibleIndexes,
 } from "../src/lib/virtualList";
-
 describe("resolvePinnedIndexes", () => {
   it("maps pinned keys to stable sorted indexes", () => {
     const items = [
@@ -41,6 +41,35 @@ describe("resolveVisibleIndexes", () => {
       }),
     ).toEqual({ startIndex: 0, endIndex: 1 });
   });
+
+  it("defaults overscan safely when omitted", () => {
+    const items = Array.from({ length: 5 }, (_, index) => ({ id: `row-${index}` }));
+
+    expect(
+      resolveVisibleIndexes({
+        items,
+        itemKey: "id",
+        viewportHeight: 15,
+        scrollTop: 5,
+        estimatedItemHeight: 10,
+      }),
+    ).toEqual({ startIndex: 0, endIndex: 2 });
+  });
+
+  it("clamps stale scroll positions instead of returning an empty tail slice", () => {
+    const items = Array.from({ length: 4 }, (_, index) => ({ id: `row-${index}` }));
+
+    expect(
+      resolveVisibleIndexes({
+        items,
+        itemKey: "id",
+        viewportHeight: 15,
+        scrollTop: 999,
+        estimatedItemHeight: 10,
+        overscan: 0,
+      }),
+    ).toEqual({ startIndex: 2, endIndex: 4 });
+  });
 });
 
 describe("buildVirtualWindow", () => {
@@ -68,35 +97,39 @@ describe("buildVirtualWindow", () => {
     expect(state.renderedEntries.map((entry) => entry.index)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
-  it("keeps visibleItems contiguous while rendering pinned rows separately", () => {
-    const items = Array.from({ length: 5 }, (_, index) => ({ id: `row-${index}` }));
-    const measuredHeights = { "row-0": 60 };
+  it("supports cached geometry inputs and function item keys", () => {
+    const items = [
+      { key: "row-0" },
+      { key: "row-1" },
+      { key: "row-2" },
+      { key: "row-3" },
+    ];
+    const itemKey = (item) => item.key;
+    const heightProfile = buildHeightProfile(items, itemKey, { "row-1": 20 }, 10);
 
     const state = buildVirtualWindow({
       items,
-      itemKey: "id",
-      viewportHeight: 20,
-      scrollTop: 25,
+      itemKey,
+      viewportHeight: 15,
+      scrollTop: 35,
       estimatedItemHeight: 10,
       overscan: 0,
       threshold: 0,
-      measuredHeights,
-      pinnedKeys: ["row-4"],
+      heightProfile,
+      pinnedIndexes: [1],
     });
 
-    expect(state.visibleItems.map((item) => item.id)).toEqual(["row-0"]);
-    expect(state.visibleKeys).toEqual(["row-0"]);
-    expect(state.totalHeight).toBe(100);
-    expect(state.renderedEntries.map((entry) => entry.index)).toEqual([0, 4]);
-    expect(state.renderedEntries.map((entry) => entry.offsetTop)).toEqual([0, 90]);
-    expect(state.renderedEntries.find((entry) => entry.index === 4)).toMatchObject({
+    expect(state.visibleItems.map((item) => item.key)).toEqual(["row-2", "row-3"]);
+    expect(state.visibleKeys).toEqual(["row-2", "row-3"]);
+    expect(state.totalHeight).toBe(50);
+    expect(state.renderedEntries.map((entry) => entry.index)).toEqual([1, 2, 3]);
+    expect(state.renderedEntries.map((entry) => entry.offsetTop)).toEqual([10, 30, 40]);
+    expect(state.renderedEntries.find((entry) => entry.index === 1)).toMatchObject({
       pinned: true,
       inViewport: false,
-      offsetTop: 90,
-      height: 10,
+      offsetTop: 10,
+      height: 20,
     });
-    expect(state.topSpacerHeight).toBe(0);
-    expect(state.bottomSpacerHeight).toBe(40);
   });
 
   it("preserves total height when the visible range is empty", () => {
