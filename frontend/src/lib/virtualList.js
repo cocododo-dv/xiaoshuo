@@ -13,39 +13,48 @@ function resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItem
   return measuredHeights[key] ?? estimatedItemHeight;
 }
 
-function sumItemHeights(items, startIndex, endIndex, itemKey, measuredHeights, estimatedItemHeight) {
-  let total = 0;
+function buildHeightProfile(items, itemKey, measuredHeights, estimatedItemHeight) {
+  const heights = new Array(items.length);
+  const offsets = new Array(items.length + 1);
+  offsets[0] = 0;
 
-  for (let index = startIndex; index < endIndex; index += 1) {
-    total += resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItemHeight);
+  for (let index = 0; index < items.length; index += 1) {
+    const height = resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItemHeight);
+    heights[index] = height;
+    offsets[index + 1] = offsets[index] + height;
   }
 
-  return total;
+  return {
+    heights,
+    offsets,
+    totalHeight: offsets[items.length] ?? 0,
+  };
 }
 
 function buildRenderedEntries({
   items,
   indexes,
   itemKey,
-  measuredHeights,
-  estimatedItemHeight,
+  heightProfile,
   pinnedIndexes,
   visibleStartIndex,
   visibleEndIndex,
 }) {
+  const pinned = new Set(pinnedIndexes);
+
   return indexes
     .sort((left, right) => left - right)
     .map((index) => {
       const item = items[index];
-      const height = resolveItemHeight(items, index, itemKey, measuredHeights, estimatedItemHeight);
+      const height = heightProfile.heights[index];
 
       return {
         index,
         key: resolveItemKey(item, itemKey),
         item,
-        offsetTop: sumItemHeights(items, 0, index, itemKey, measuredHeights, estimatedItemHeight),
+        offsetTop: heightProfile.offsets[index],
         height,
-        pinned: pinnedIndexes.includes(index),
+        pinned: pinned.has(index),
         inViewport: index >= visibleStartIndex && index < visibleEndIndex,
       };
     });
@@ -63,18 +72,41 @@ export function resolvePinnedIndexes(items, itemKey, pinnedKeys = []) {
 
 export function resolveVisibleIndexes({
   items,
+  itemKey,
   viewportHeight,
   scrollTop,
   estimatedItemHeight,
   overscan,
+  measuredHeights = {},
+  heightProfile,
 }) {
   if (!items.length) {
     return { startIndex: 0, endIndex: 0 };
   }
 
-  const rawStart = Math.max(Math.floor(scrollTop / estimatedItemHeight) - overscan, 0);
-  const rawCount = Math.ceil(viewportHeight / estimatedItemHeight) + overscan * 2;
-  const rawEnd = Math.min(rawStart + rawCount, items.length);
+  if (viewportHeight <= 0) {
+    return { startIndex: 0, endIndex: 0 };
+  }
+
+  const profile = heightProfile ?? buildHeightProfile(items, itemKey, measuredHeights, estimatedItemHeight);
+  const clampedScrollTop = Math.max(scrollTop, 0);
+  const viewportBottom = clampedScrollTop + viewportHeight;
+
+  let startVisibleIndex = 0;
+  while (
+    startVisibleIndex < items.length &&
+    profile.offsets[startVisibleIndex + 1] <= clampedScrollTop
+  ) {
+    startVisibleIndex += 1;
+  }
+
+  let endVisibleIndex = startVisibleIndex;
+  while (endVisibleIndex < items.length && profile.offsets[endVisibleIndex] < viewportBottom) {
+    endVisibleIndex += 1;
+  }
+
+  const rawStart = Math.max(startVisibleIndex - overscan, 0);
+  const rawEnd = Math.min(endVisibleIndex + overscan, items.length);
 
   return {
     startIndex: rawStart,
@@ -93,15 +125,15 @@ export function buildVirtualWindow({
   measuredHeights = {},
   pinnedKeys = [],
 }) {
-  const totalHeight = sumItemHeights(items, 0, items.length, itemKey, measuredHeights, estimatedItemHeight);
+  const heightProfile = buildHeightProfile(items, itemKey, measuredHeights, estimatedItemHeight);
+  const totalHeight = heightProfile.totalHeight;
 
   if (items.length <= threshold) {
     const renderedEntries = buildRenderedEntries({
       items,
       indexes: Array.from({ length: items.length }, (_, index) => index),
       itemKey,
-      measuredHeights,
-      estimatedItemHeight,
+      heightProfile,
       pinnedIndexes: resolvePinnedIndexes(items, itemKey, pinnedKeys),
       visibleStartIndex: 0,
       visibleEndIndex: items.length,
@@ -120,10 +152,13 @@ export function buildVirtualWindow({
 
   const { startIndex, endIndex } = resolveVisibleIndexes({
     items,
+    itemKey,
     viewportHeight,
     scrollTop,
     estimatedItemHeight,
     overscan,
+    measuredHeights,
+    heightProfile,
   });
   const pinnedIndexes = resolvePinnedIndexes(items, itemKey, pinnedKeys);
   const indexes = new Set([
@@ -135,20 +170,15 @@ export function buildVirtualWindow({
     items,
     indexes: orderedIndexes,
     itemKey,
-    measuredHeights,
-    estimatedItemHeight,
+    heightProfile,
     pinnedIndexes,
     visibleStartIndex: startIndex,
     visibleEndIndex: endIndex,
   });
-  const visibleItems = renderedEntries.map((entry) => entry.item);
+  const visibleItems = items.slice(startIndex, endIndex);
   const hasVisibleSlice = endIndex > startIndex;
-  const topSpacerHeight = hasVisibleSlice
-    ? sumItemHeights(items, 0, startIndex, itemKey, measuredHeights, estimatedItemHeight)
-    : 0;
-  const bottomSpacerHeight = hasVisibleSlice
-    ? sumItemHeights(items, endIndex, items.length, itemKey, measuredHeights, estimatedItemHeight)
-    : sumItemHeights(items, 0, items.length, itemKey, measuredHeights, estimatedItemHeight);
+  const topSpacerHeight = hasVisibleSlice ? heightProfile.offsets[startIndex] : 0;
+  const bottomSpacerHeight = hasVisibleSlice ? totalHeight - heightProfile.offsets[endIndex] : totalHeight;
 
   return {
     virtualized: true,

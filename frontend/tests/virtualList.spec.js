@@ -6,16 +6,6 @@ import {
   resolveVisibleIndexes,
 } from "../src/lib/virtualList";
 
-function sumHeights(startIndex, endIndex, estimatedItemHeight) {
-  let total = 0;
-
-  for (let index = startIndex; index < endIndex; index += 1) {
-    total += estimatedItemHeight;
-  }
-
-  return total;
-}
-
 describe("resolvePinnedIndexes", () => {
   it("maps pinned keys to stable sorted indexes", () => {
     const items = [
@@ -36,18 +26,20 @@ describe("resolvePinnedIndexes", () => {
 });
 
 describe("resolveVisibleIndexes", () => {
-  it("expands the visible window with overscan", () => {
-    const items = Array.from({ length: 20 }, (_, index) => ({ id: `row-${index}` }));
+  it("uses measured heights when choosing the visible slice", () => {
+    const items = Array.from({ length: 4 }, (_, index) => ({ id: `row-${index}` }));
 
     expect(
       resolveVisibleIndexes({
         items,
-        viewportHeight: 150,
-        scrollTop: 150,
-        estimatedItemHeight: 50,
-        overscan: 1,
+        itemKey: "id",
+        viewportHeight: 20,
+        scrollTop: 25,
+        estimatedItemHeight: 10,
+        overscan: 0,
+        measuredHeights: { "row-0": 60 },
       }),
-    ).toEqual({ startIndex: 2, endIndex: 7 });
+    ).toEqual({ startIndex: 0, endIndex: 1 });
   });
 });
 
@@ -69,60 +61,48 @@ describe("buildVirtualWindow", () => {
 
     expect(state.virtualized).toBe(false);
     expect(state.visibleItems.map((item) => item.id)).toEqual(items.map((item) => item.id));
+    expect(state.visibleKeys).toEqual(items.map((item) => item.id));
     expect(state.topSpacerHeight).toBe(0);
     expect(state.bottomSpacerHeight).toBe(0);
     expect(state.totalHeight).toBe(6 * 48);
     expect(state.renderedEntries.map((entry) => entry.index)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
-  it("keeps pinned rows mounted while preserving total scroll geometry", () => {
-    const items = Array.from({ length: 40 }, (_, index) => ({ id: `row-${index}` }));
-    const estimatedItemHeight = 18;
-    const viewportHeight = 54;
-    const scrollTop = 54;
-    const visibleRange = resolveVisibleIndexes({
-      items,
-      viewportHeight,
-      scrollTop,
-      estimatedItemHeight,
-      overscan: 1,
-      measuredHeights: {},
-    });
+  it("keeps visibleItems contiguous while rendering pinned rows separately", () => {
+    const items = Array.from({ length: 5 }, (_, index) => ({ id: `row-${index}` }));
+    const measuredHeights = { "row-0": 60 };
 
     const state = buildVirtualWindow({
       items,
       itemKey: "id",
-      viewportHeight,
-      scrollTop,
-      estimatedItemHeight,
-      overscan: 1,
-      threshold: 10,
-      measuredHeights: {},
-      pinnedKeys: ["row-1", "row-35"],
+      viewportHeight: 20,
+      scrollTop: 25,
+      estimatedItemHeight: 10,
+      overscan: 0,
+      threshold: 0,
+      measuredHeights,
+      pinnedKeys: ["row-4"],
     });
 
-    expect(state.virtualized).toBe(true);
-    expect(state.visibleKeys).toEqual(["row-1", "row-2", "row-3", "row-4", "row-5", "row-6", "row-35"]);
-    expect(state.visibleKeys).toContain("row-35");
-    expect(state.totalHeight).toBe(items.length * estimatedItemHeight);
-    expect(state.renderedEntries.map((entry) => entry.index)).toEqual([1, 2, 3, 4, 5, 6, 35]);
-    expect(state.renderedEntries.map((entry) => entry.offsetTop)).toEqual([18, 36, 54, 72, 90, 108, 630]);
-    expect(state.renderedEntries.find((entry) => entry.index === 35)).toMatchObject({
+    expect(state.visibleItems.map((item) => item.id)).toEqual(["row-0"]);
+    expect(state.visibleKeys).toEqual(["row-0"]);
+    expect(state.totalHeight).toBe(100);
+    expect(state.renderedEntries.map((entry) => entry.index)).toEqual([0, 4]);
+    expect(state.renderedEntries.map((entry) => entry.offsetTop)).toEqual([0, 90]);
+    expect(state.renderedEntries.find((entry) => entry.index === 4)).toMatchObject({
       pinned: true,
       inViewport: false,
-      offsetTop: 630,
-      height: estimatedItemHeight,
+      offsetTop: 90,
+      height: 10,
     });
-    expect(
-      state.topSpacerHeight +
-        sumHeights(visibleRange.startIndex, visibleRange.endIndex, estimatedItemHeight) +
-        state.bottomSpacerHeight,
-    ).toBe(state.totalHeight);
+    expect(state.topSpacerHeight).toBe(0);
+    expect(state.bottomSpacerHeight).toBe(40);
   });
 
   it("preserves total height when the visible range is empty", () => {
     const items = Array.from({ length: 8 }, (_, index) => ({ id: `row-${index}` }));
     const estimatedItemHeight = 24;
+
     const state = buildVirtualWindow({
       items,
       itemKey: "id",
