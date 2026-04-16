@@ -346,6 +346,20 @@ describe("scene workbench progressive rendering integration", () => {
         "CH_PROGRESSIVE_SC01",
       );
       expect(mounted.store.lastChapterActionResult.stage_id).toBe("stage_01");
+
+      await animationFrames.flushAll();
+
+      const blockingRowsAfterFlush = mounted.container.querySelectorAll('[data-testid^="scene-run-preflight-item-blocking_"]');
+      const warningRowsAfterFlush = mounted.container.querySelectorAll('[data-testid^="scene-run-preflight-item-warning_"]');
+      const contextRowsAfterFlush = mounted.container.querySelectorAll('[data-testid^="scene-run-preflight-item-context_"]');
+      const backfillRowsAfterFlush = mounted.container.querySelectorAll('[data-testid^="chapter-backfill-item-stage_"]');
+
+      expect(blockingRowsAfterFlush).toHaveLength(14);
+      expect(warningRowsAfterFlush).toHaveLength(14);
+      expect(contextRowsAfterFlush).toHaveLength(14);
+      expect(backfillRowsAfterFlush).toHaveLength(10);
+      expect(mounted.container.querySelector('[data-testid="scene-run-preflight-item-blocking_14"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="chapter-backfill-item-stage_10"]')).not.toBeNull();
     } finally {
       mounted.unmount();
     }
