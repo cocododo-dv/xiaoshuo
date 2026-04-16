@@ -11,45 +11,6 @@ const authorTrash = useAuthorTrashStore();
 const selectedChapterIds = ref([]);
 const selectedSceneIds = ref([]);
 
-function installTrashRowHeightShim() {
-  if (typeof window === "undefined" || typeof HTMLElement === "undefined") {
-    return;
-  }
-  if (typeof navigator === "undefined" || !navigator.userAgent.includes("jsdom")) {
-    return;
-  }
-  if (window.__authorTrashOffsetHeightPatched) {
-    return;
-  }
-
-  const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
-  if (!descriptor?.configurable) {
-    return;
-  }
-
-  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
-    configurable: true,
-    get() {
-      if (this?.classList?.contains("virtual-list-row")) {
-        const trashRow = this.querySelector('[data-testid^="author-trash-chapter-row-"], [data-testid^="author-trash-scene-row-"]');
-        const testId = trashRow?.getAttribute("data-testid") || "";
-        if (testId.startsWith("author-trash-scene-row-")) {
-          return 320;
-        }
-        if (testId.startsWith("author-trash-chapter-row-")) {
-          return 180;
-        }
-      }
-
-      return descriptor.get ? descriptor.get.call(this) : 0;
-    },
-  });
-
-  window.__authorTrashOffsetHeightPatched = true;
-}
-
-installTrashRowHeightShim();
-
 const chapters = computed(() => authorTrash.chapters || []);
 const scenes = computed(() => authorTrash.scenes || []);
 const hasTrash = computed(() => chapters.value.length > 0 || scenes.value.length > 0);
@@ -243,7 +204,6 @@ onActivated(() => {
             :items="chapters"
             item-key="chapter_id"
             :estimated-item-height="180"
-            :overscan="10"
             :threshold="8"
             :viewport-height="560"
             :pinned-keys="pinnedChapterKeys"
@@ -321,7 +281,7 @@ onActivated(() => {
             class="trash-list"
             :items="scenes"
             item-key="scene_id"
-            :estimated-item-height="320"
+            :estimated-item-height="180"
             :threshold="8"
             :viewport-height="560"
             :pinned-keys="pinnedSceneKeys"

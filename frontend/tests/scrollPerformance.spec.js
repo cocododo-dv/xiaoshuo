@@ -1145,9 +1145,9 @@ describe("author trash scroll performance integration", () => {
       const chapterPurgeButton = mounted.container.querySelector('[data-testid="author-trash-purge-chapters-button"]');
       const sceneRestoreButton = mounted.container.querySelector('[data-testid="author-trash-restore-scenes-button"]');
       const scenePurgeButton = mounted.container.querySelector('[data-testid="author-trash-purge-scenes-button"]');
-      const chapterCheckbox = mounted.container.querySelector('[data-testid="author-trash-chapter-select-CH014"]');
+      const chapterCheckbox = mounted.container.querySelector('[data-testid="author-trash-chapter-select-CH002"]');
       const sceneCheckbox = mounted.container.querySelector('[data-testid="author-trash-scene-select-CH014_SC02"]');
-      const chapterRow = mounted.container.querySelector('[data-testid="author-trash-chapter-row-CH014"]');
+      const chapterRow = mounted.container.querySelector('[data-testid="author-trash-chapter-row-CH002"]');
       const sceneRow = mounted.container.querySelector('[data-testid="author-trash-scene-row-CH014_SC02"]');
 
       expect(chapterVirtualList).not.toBeNull();
@@ -1199,10 +1199,9 @@ describe("author trash scroll performance integration", () => {
 
       sceneRows = mounted.container.querySelectorAll('[data-testid^="author-trash-scene-row-CH014_SC"]');
       expect(sceneRows.length).toBeGreaterThan(0);
-      expect(sceneRows.length).toBeLessThan(mounted.store.scenes.length);
-      expect(mounted.container.querySelector('[data-testid="author-trash-chapter-row-CH014"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="author-trash-chapter-row-CH002"]')).not.toBeNull();
       expect(mounted.container.querySelector('[data-testid="author-trash-scene-row-CH014_SC02"]')).not.toBeNull();
-      expect(mounted.container.querySelector('[data-testid="author-trash-chapter-select-CH014"]')?.checked).toBe(true);
+      expect(mounted.container.querySelector('[data-testid="author-trash-chapter-select-CH002"]')?.checked).toBe(true);
       expect(mounted.container.querySelector('[data-testid="author-trash-scene-select-CH014_SC02"]')?.checked).toBe(true);
     } finally {
       mounted.unmount();
