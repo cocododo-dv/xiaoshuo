@@ -9,6 +9,7 @@ import AuthorTrashView from "../src/views/AuthorTrashView.vue";
 import InteropCenterView from "../src/views/InteropCenterView.vue";
 import KnowledgeConsoleView from "../src/views/KnowledgeConsoleView.vue";
 import IndexConsoleView from "../src/views/IndexConsoleView.vue";
+import SceneWorkbenchView from "../src/views/SceneWorkbenchView.vue";
 import { useShellRouter } from "../src/router";
 import { useAuthorTrashStore } from "../src/stores/authorTrash";
 import { useAuthorWorkspaceStore } from "../src/stores/authorWorkspace";
@@ -16,6 +17,7 @@ import { useInteropCenterStore } from "../src/stores/interopCenter";
 import { useKnowledgeConsoleStore } from "../src/stores/knowledgeConsole";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
+import { useWorkbenchStore } from "../src/stores/workbench";
 import ReviewInboxView from "../src/views/ReviewInboxView.vue";
 
 function createReviewItem(index) {
@@ -284,6 +286,71 @@ function createAnimationFrameController() {
     },
   };
 }
+
+describe("scene workbench progressive rendering integration", () => {
+  let animationFrames;
+
+  beforeEach(() => {
+    animationFrames = createAnimationFrameController();
+    setActivePinia(createPinia());
+    document.body.innerHTML = "";
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("progressively renders preflight and staged backfill lists while keeping first controls usable", async () => {
+    const mounted = await mountSceneWorkbenchView({ preflightCount: 14, backfillCount: 10 });
+
+    try {
+      [
+        "scene-run-preflight-blocking-progressive-list",
+        "scene-run-preflight-warning-progressive-list",
+        "scene-run-preflight-context-progressive-list",
+        "chapter-backfill-progressive-list",
+      ].forEach((testId) => {
+        const list = mounted.container.querySelector(`[data-testid="${testId}"]`);
+        expect(list).not.toBeNull();
+        expect(list.classList.contains("progressive-list")).toBe(true);
+      });
+
+      const blockingRows = mounted.container.querySelectorAll('[data-testid^="scene-run-preflight-item-blocking_"]');
+      const warningRows = mounted.container.querySelectorAll('[data-testid^="scene-run-preflight-item-warning_"]');
+      const contextRows = mounted.container.querySelectorAll('[data-testid^="scene-run-preflight-item-context_"]');
+      const backfillRows = mounted.container.querySelectorAll('[data-testid^="chapter-backfill-item-stage_"]');
+
+      expect(blockingRows).toHaveLength(6);
+      expect(warningRows).toHaveLength(6);
+      expect(contextRows).toHaveLength(6);
+      expect(backfillRows).toHaveLength(4);
+      expect(mounted.container.querySelector('[data-testid="scene-run-preflight-item-blocking_01"]')).toContainText("blocking item 1");
+      expect(mounted.container.querySelector('[data-testid="chapter-backfill-item-stage_01"]')).toContainText("Backfill marker 1");
+
+      const strategySelect = mounted.container.querySelector('[data-testid="chapter-backfill-strategy-stage_01"]');
+      strategySelect.value = "run_backfill_again";
+      strategySelect.dispatchEvent(new Event("change"));
+      await flushUi();
+
+      mounted.container.querySelector('[data-testid="chapter-backfill-run-stage_01"]').click();
+      await flushUi();
+
+      expect(mounted.store.runChapterBackfill).toHaveBeenCalledWith(
+        "CH_PROGRESSIVE",
+        "stage_01",
+        "run_backfill_again",
+        "CH_PROGRESSIVE_SC01",
+      );
+      expect(mounted.store.lastChapterActionResult.stage_id).toBe("stage_01");
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
 
 async function mountReviewInboxView({ reviewCount = 15, humanReviewCount = 10 } = {}) {
   const pinia = createPinia();
@@ -601,6 +668,157 @@ function createTrashScene(index, chapterId) {
     chapter_trashed: Number(index % 3 === 0),
     restore_block_reason: index % 2 === 0 ? null : `Restore blocked ${index}`,
     purge_block_reason: null,
+  };
+}
+
+function createPreflightItem(prefix, index) {
+  return {
+    code: `${prefix}_${String(index).padStart(2, "0")}`,
+    title: `${prefix} item ${index}`,
+    detail: `Detailed ${prefix} explanation ${index}`,
+    technical_hint: `${prefix}.hint.${index}`,
+  };
+}
+
+function createBackfillItem(index) {
+  const stageId = `stage_${String(index).padStart(2, "0")}`;
+
+  return {
+    stage_id: stageId,
+    chapter_id: "CH_PROGRESSIVE",
+    scene_id: "CH_PROGRESSIVE_SC01",
+    marker_id: `F${String(index).padStart(2, "0")}`,
+    marker_text: `Backfill marker ${index}`,
+    marker_token: `{{backfill id=F${String(index).padStart(2, "0")} text="Backfill marker ${index}"}}`,
+    status: "pending",
+    linked_tracker_row_id: null,
+    last_strategy: null,
+  };
+}
+
+function createSceneWorkbenchPayload({ preflightCount = 14, backfillCount = 10 } = {}) {
+  return {
+    chapter_goal: {
+      chapter_id: "CH_PROGRESSIVE",
+      chapter_goal: "Keep progressive workbench lists smooth",
+      main_plot_push: "Avoid mounting every preflight and backfill row together",
+      emotional_target: "Lower operator friction",
+      ending_effect: "The workbench remains responsive",
+    },
+    scene_card: {
+      scene_id: "CH_PROGRESSIVE_SC01",
+      scene_goal: "Verify progressive scene workbench lists",
+      must_include_text: "Progressive clue",
+      location: "Render lab",
+    },
+    scene_run_state: {
+      scene_status: "ready",
+      current_bundle_id: null,
+      current_bundle_hash: null,
+      current_final_scene_row_id: null,
+    },
+    chapter_state: {
+      chapter_id: "CH_PROGRESSIVE",
+      chapter_backfill_pending_count: backfillCount,
+      aggregate_block_reason: "blocked_waiting_backfill",
+      manual_hold_reason: null,
+      mid_aggregate_enabled_effective: 0,
+      last_interim_memory_row_id: null,
+      last_final_memory_row_id: null,
+      staged_backfill_items: Array.from({ length: backfillCount }, (_, index) => createBackfillItem(index + 1)),
+    },
+    run_preflight: {
+      can_run: false,
+      overall_status: "blocked",
+      blocking_items: Array.from({ length: preflightCount }, (_, index) => createPreflightItem("blocking", index + 1)),
+      warning_items: Array.from({ length: preflightCount }, (_, index) => createPreflightItem("warning", index + 1)),
+      context_items: Array.from({ length: preflightCount }, (_, index) => createPreflightItem("context", index + 1)),
+    },
+    bundle: {
+      bundle_id: null,
+      bundle_snapshot_hash: null,
+      snapshot: null,
+    },
+    generation_summary: null,
+    hard_qc_summary: null,
+    soft_qc_summary: null,
+    rewrite_counters: {
+      hard_partial_rewrite_count: 0,
+      hard_full_rewrite_count: 0,
+      soft_patch_count: 0,
+      repeat_issue_key: null,
+      repeat_issue_count: 0,
+    },
+    human_review_summary: null,
+    neutral_draft: { row_id: "draft_neutral_progressive", content: "Neutral progressive draft" },
+    style_draft: { row_id: "draft_style_progressive", content: "Style progressive draft" },
+    final_scene: null,
+    scene_memory: null,
+    attempts: [],
+  };
+}
+
+async function mountSceneWorkbenchView({ preflightCount = 14, backfillCount = 10 } = {}) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+
+  const router = useShellRouter();
+  router.reset();
+  router.navigate("workbench");
+
+  const payload = createSceneWorkbenchPayload({ preflightCount, backfillCount });
+  const store = useWorkbenchStore();
+  store.sceneId = payload.scene_card.scene_id;
+  store.data = payload;
+  store.attempts = [];
+  store.attemptPager = {
+    items: [],
+    cursor: null,
+    cursorStack: [],
+    pagination: { has_next: false, next_cursor: null, returned: 0, total: 0, limit: 25, mode: "cursor" },
+  };
+  store.humanReviewItems = [];
+  store.loaded = true;
+  store.loading = false;
+  store.error = "";
+  store.actionId = "";
+  store.ensureLoaded = vi.fn(async () => {});
+  store.runChapterBackfill = vi.fn(async (chapterId, stageId, strategy, sceneId) => {
+    store.lastChapterActionResult = {
+      action: "run_backfill",
+      chapter_id: chapterId,
+      stage_id: stageId,
+      strategy,
+      scene_id: sceneId,
+      status: "completed",
+    };
+    return `ran ${stageId}`;
+  });
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const app = createApp({
+    render() {
+      return h(KeepAlive, null, [
+        h(SceneWorkbenchView, {
+          onNotice: vi.fn(),
+        }),
+      ]);
+    },
+  });
+  app.use(pinia);
+  app.mount(container);
+  await flushUi();
+
+  return {
+    container,
+    app,
+    store,
+    unmount() {
+      app.unmount();
+      container.remove();
+    },
   };
 }
 

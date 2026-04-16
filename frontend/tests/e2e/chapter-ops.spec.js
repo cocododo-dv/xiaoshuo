@@ -11,9 +11,10 @@ test("runs chapter runtime ops end to end inside the scene workbench", async ({ 
   await page.getByTestId("scene-id-input").fill("CH200_SC01");
   await page.getByTestId("scene-load-button").click();
 
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("旧信寄件人线索");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("待补写：1");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("聚合门控：等待补写");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("鏃т俊瀵勪欢浜虹嚎绱?");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("寰呰ˉ鍐欙細1");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("鑱氬悎闂ㄦ帶锛氱瓑寰呰ˉ鍐?");
+  await expect(page.getByTestId("chapter-backfill-progressive-list")).toBeVisible();
 
   await page.getByTestId("chapter-final-aggregate-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("pending staged backfill blocks final aggregate");
@@ -23,26 +24,26 @@ test("runs chapter runtime ops end to end inside the scene workbench", async ({ 
   await page.getByTestId(`chapter-backfill-strategy-${stageId}`).selectOption("create_tracker_now");
   await page.getByTestId(`chapter-backfill-run-${stageId}`).click();
 
-  await expect(page.getByTestId("chapter-action-receipt")).toContainText("执行补写");
-  await expect(page.getByTestId("chapter-action-receipt")).toContainText("立即创建跟踪");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("待补写：0");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("聚合门控：无");
-  await expect(page.getByTestId("chapter-backfill-empty")).toContainText("当前没有待处理的暂存补写。");
+  await expect(page.getByTestId("chapter-action-receipt")).toContainText("鎵ц琛ュ啓");
+  await expect(page.getByTestId("chapter-action-receipt")).toContainText("绔嬪嵆鍒涘缓璺熻釜");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("寰呰ˉ鍐欙細0");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("鑱氬悎闂ㄦ帶锛氭棤");
+  await expect(page.getByTestId("chapter-backfill-empty")).toContainText("褰撳墠娌℃湁寰呭鐞嗙殑鏆傚瓨琛ュ啓銆?");
 
-  await page.getByTestId("chapter-manual-hold-reason-input").fill("等待作者确认 backfill 处理策略");
+  await page.getByTestId("chapter-manual-hold-reason-input").fill("绛夊緟浣滆€呯‘璁?backfill 澶勭悊绛栫暐");
   await page.getByTestId("chapter-manual-hold-set-button").click();
-  await expect(page.getByTestId("chapter-action-receipt")).toContainText("设置人工挂起");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("聚合门控：人工挂起");
+  await expect(page.getByTestId("chapter-action-receipt")).toContainText("璁剧疆浜哄伐鎸傝捣");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("鑱氬悎闂ㄦ帶锛氫汉宸ユ寕璧?");
 
   await page.getByTestId("chapter-final-aggregate-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("chapter manual hold is active");
 
   await page.getByTestId("chapter-manual-hold-clear-button").click();
-  await expect(page.getByTestId("chapter-action-receipt")).toContainText("清除人工挂起");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("聚合门控：无");
+  await expect(page.getByTestId("chapter-action-receipt")).toContainText("娓呴櫎浜哄伐鎸傝捣");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("鑱氬悎闂ㄦ帶锛氭棤");
 
   await page.getByTestId("chapter-final-aggregate-button").click();
-  await expect(page.getByTestId("chapter-action-receipt")).toContainText("运行最终聚合");
+  await expect(page.getByTestId("chapter-action-receipt")).toContainText("杩愯鏈€缁堣仛鍚?");
   await expect(page.getByTestId("chapter-action-receipt")).toContainText("chapter_memory_final_CH200");
-  await expect(page.getByTestId("scene-workbench-view")).toContainText("最终记忆行：chapter_memory_final_CH200");
+  await expect(page.getByTestId("scene-workbench-view")).toContainText("鏈€缁堣蹇嗚锛歝hapter_memory_final_CH200");
 });

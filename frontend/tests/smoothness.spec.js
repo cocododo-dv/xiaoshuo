@@ -174,6 +174,20 @@ describe("shell smoothness architecture", () => {
     expect(styles).toContain(".comparison-list .virtual-list-row");
   });
 
+  it("routes scene workbench preflight and backfill lists through progressive list drivers", () => {
+    const workbenchSource = readFileSync(new URL("../src/views/SceneWorkbenchView.vue", import.meta.url), "utf8");
+
+    expect(workbenchSource).toContain('import ProgressiveList from "../components/ProgressiveList.vue"');
+    expect(workbenchSource).toContain('test-id="scene-run-preflight-blocking-progressive-list"');
+    expect(workbenchSource).toContain('test-id="scene-run-preflight-warning-progressive-list"');
+    expect(workbenchSource).toContain('test-id="scene-run-preflight-context-progressive-list"');
+    expect(workbenchSource).toContain('test-id="chapter-backfill-progressive-list"');
+    expect(workbenchSource).not.toContain('v-for="item in runPreflight.blocking_items"');
+    expect(workbenchSource).not.toContain('v-for="item in runPreflight.warning_items"');
+    expect(workbenchSource).not.toContain('v-for="item in runPreflight.context_items"');
+    expect(workbenchSource).not.toContain('v-for="item in pendingStagedBackfillItems"');
+  });
+
   it("avoids deep watchers in the heaviest cached views", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
