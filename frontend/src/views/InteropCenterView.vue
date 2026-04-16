@@ -315,34 +315,34 @@ function openBundleScene() {
                 class="paper mini comparison-card"
                 :data-testid="`interop-source-comparison-${item.object_type}-${item.lineage_key}`"
               >
-              <div class="source-top">
-                <div>
-                  <div class="eyebrow">{{ item.object_type }}</div>
-                  <h4>{{ item.lineage_key }}</h4>
+                <div class="source-top">
+                  <div>
+                    <div class="eyebrow">{{ item.object_type }}</div>
+                    <h4>{{ item.lineage_key }}</h4>
+                  </div>
+                  <span class="badge">{{ item.source_ref_key }}</span>
                 </div>
-                <span class="badge">{{ item.source_ref_key }}</span>
-              </div>
-              <div class="comparison-diff-grid">
-                <p><strong>版本偏差</strong><br />{{ item.version_status }}</p>
-                <p><strong>文本偏差</strong><br />{{ item.text_status }}</p>
-                <p><strong>来源行 / 版本</strong><br />{{ item.source_row_id || "-" }} / {{ item.source_version ?? "-" }}</p>
-                <p><strong>生效行 / 版本</strong><br />{{ item.active_row_id || "-" }} / {{ item.active_version ?? "-" }}</p>
-              </div>
-              <div class="comparison-copy-grid">
-                <div>
-                  <div class="history-title">来源文本</div>
-                  <p>{{ item.source_text || "-" }}</p>
+                <div class="comparison-diff-grid">
+                  <p><strong>版本偏差</strong><br />{{ item.version_status }}</p>
+                  <p><strong>文本偏差</strong><br />{{ item.text_status }}</p>
+                  <p><strong>来源行 / 版本</strong><br />{{ item.source_row_id || "-" }} / {{ item.source_version ?? "-" }}</p>
+                  <p><strong>生效行 / 版本</strong><br />{{ item.active_row_id || "-" }} / {{ item.active_version ?? "-" }}</p>
                 </div>
-                <div>
-                  <div class="history-title">生效文本</div>
-                  <p>{{ item.active_text || "-" }}</p>
+                <div class="comparison-copy-grid">
+                  <div>
+                    <div class="history-title">来源文本</div>
+                    <p>{{ item.source_text || "-" }}</p>
+                  </div>
+                  <div>
+                    <div class="history-title">生效文本</div>
+                    <p>{{ item.active_text || "-" }}</p>
+                  </div>
                 </div>
-              </div>
-              <div class="card-actions">
-                <button v-if="item.target" class="ghost" @click="openComparisonTarget(item)">
-                  打开 {{ item.target.view_id === "knowledge" ? "知识控制台" : "场景工作台" }}
-                </button>
-              </div>
+                <div class="card-actions">
+                  <button v-if="item.target" class="ghost" @click="openComparisonTarget(item)">
+                    打开 {{ item.target.view_id === "knowledge" ? "知识控制台" : "场景工作台" }}
+                  </button>
+                </div>
               </article>
             </template>
           </VirtualList>
