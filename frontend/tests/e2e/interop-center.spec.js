@@ -52,6 +52,7 @@ test("previews, imports, exports, and replays worksheet bundles from the interop
   await page.getByTestId("interop-preview-button").click();
   await expect(page.getByTestId("interop-preview-summary")).toContainText("bundle_interop_e2e");
   await expect(page.getByTestId("interop-preview-summary")).toContainText("BSHASH_v1");
+  await expect(page.getByTestId("interop-comparison-virtual-list")).toBeVisible();
   await expect(page.getByTestId("interop-source-comparison-style_rule-STYLE_INTEROP_E2E")).toBeVisible();
 
   await page.getByTestId("interop-import-button").click();
@@ -62,6 +63,7 @@ test("previews, imports, exports, and replays worksheet bundles from the interop
   await page.getByTestId("interop-export-button").click();
   await expect(page.getByTestId("interop-envelope-panel")).toContainText("bundle_interop_e2e");
   await expect(page.getByTestId("interop-envelope-panel")).toContainText("P1_scripted");
+  await expect(page.getByTestId("interop-comparison-virtual-list")).toBeVisible();
   await expect(page.getByTestId("interop-source-comparison-style_rule-STYLE_INTEROP_E2E")).toContainText(
     "STYLE_INTEROP_E2E",
   );

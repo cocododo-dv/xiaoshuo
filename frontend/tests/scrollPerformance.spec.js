@@ -6,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AuthorWorkspaceView from "../src/views/AuthorWorkspaceView.vue";
 import AuthorTrashView from "../src/views/AuthorTrashView.vue";
+import InteropCenterView from "../src/views/InteropCenterView.vue";
 import KnowledgeConsoleView from "../src/views/KnowledgeConsoleView.vue";
 import IndexConsoleView from "../src/views/IndexConsoleView.vue";
 import { useShellRouter } from "../src/router";
 import { useAuthorTrashStore } from "../src/stores/authorTrash";
 import { useAuthorWorkspaceStore } from "../src/stores/authorWorkspace";
+import { useInteropCenterStore } from "../src/stores/interopCenter";
 import { useKnowledgeConsoleStore } from "../src/stores/knowledgeConsole";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
@@ -132,6 +134,82 @@ function createKnowledgeDetail(index = 14) {
         action: "approve_review",
         review_id: "knowledge-review-0",
       },
+    },
+  };
+}
+
+function createInteropComparison(index) {
+  const objectType = index % 2 === 0 ? "style_rule" : "scene_card";
+  const lineageKey = `INTEROP_${String(index).padStart(3, "0")}`;
+
+  return {
+    object_type: objectType,
+    lineage_key: lineageKey,
+    source_ref_key: `source_ref_${index}`,
+    version_status: index % 3 === 0 ? "version_mismatch" : "same_version",
+    text_status: index % 4 === 0 ? "text_mismatch" : "same_text",
+    source_row_id: `source-row-${index}`,
+    source_version: index,
+    active_row_id: `active-row-${index}`,
+    active_version: index + 1,
+    source_text: `Source comparison text ${index}`,
+    active_text: `Active comparison text ${index}`,
+    target: {
+      target_type: "knowledge_entry",
+      target_id: lineageKey,
+      target_ref: `knowledge_entry:${objectType}:${lineageKey}`,
+      view_id: "knowledge",
+    },
+  };
+}
+
+async function mountInteropCenterView({ comparisonCount = 24 } = {}) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+
+  const router = useShellRouter();
+  router.reset();
+  router.navigate("interop");
+
+  const store = useInteropCenterStore();
+  store.activeMode = "preview";
+  store.activeEnvelope = {
+    bundle_id: "bundle_interop_smoothness",
+    scene_id: "CH001_SC01",
+    chapter_id: "CH001",
+    execution_mode: "P1_scripted",
+  };
+  store.activeArtifactReceipt = null;
+  store.activeSourceComparisons = Array.from({ length: comparisonCount }, (_, index) =>
+    createInteropComparison(index + 1),
+  );
+  store.error = "";
+  store.actionId = "";
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const app = createApp({
+    render() {
+      return h(KeepAlive, null, [
+        h(InteropCenterView, {
+          onNotice: vi.fn(),
+        }),
+      ]);
+    },
+  });
+  app.use(pinia);
+  app.mount(container);
+  await flushUi();
+
+  return {
+    container,
+    app,
+    store,
+    router,
+    unmount() {
+      app.unmount();
+      container.remove();
     },
   };
 }
@@ -1108,6 +1186,51 @@ describe("author workspace scroll performance integration", () => {
       expect(chapterVirtualList.contains(sceneForm)).toBe(false);
       expect(sceneVirtualList.contains(chapterForm)).toBe(false);
       expect(sceneVirtualList.contains(sceneForm)).toBe(false);
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+describe("interop center scroll performance integration", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    document.body.innerHTML = "";
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => callback(0)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("virtualizes source comparisons while keeping target jump actions usable", async () => {
+    const mounted = await mountInteropCenterView({ comparisonCount: 24 });
+
+    try {
+      const comparisonVirtualList = mounted.container.querySelector('[data-testid="interop-comparison-virtual-list"]');
+
+      expect(comparisonVirtualList).not.toBeNull();
+      expect(comparisonVirtualList.classList.contains("virtual-list")).toBe(true);
+      expect(comparisonVirtualList.style.maxHeight).toBe("640px");
+      expect(comparisonVirtualList.querySelector(".virtual-list-row")).not.toBeNull();
+
+      const comparisonCards = mounted.container.querySelectorAll('[data-testid^="interop-source-comparison-"]');
+      expect(comparisonCards.length).toBeGreaterThan(0);
+      expect(comparisonCards.length).toBeLessThan(mounted.store.activeSourceComparisons.length);
+      expect(mounted.container.querySelector('[data-testid="interop-source-comparison-scene_card-INTEROP_001"]')).not.toBeNull();
+
+      mounted.container.querySelector('[data-testid="interop-source-comparison-scene_card-INTEROP_001"] button').click();
+      await flushUi();
+
+      expect(mounted.router.activeView.value).toBe("knowledge");
+      expect(mounted.router.focusTarget.value.target_ref).toBe("knowledge_entry:scene_card:INTEROP_001");
     } finally {
       mounted.unmount();
     }

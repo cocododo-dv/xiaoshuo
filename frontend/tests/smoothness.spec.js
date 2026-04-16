@@ -162,6 +162,18 @@ describe("shell smoothness architecture", () => {
     expect(styles).toContain(".trash-list .virtual-list-row");
   });
 
+  it("routes interop source comparisons through the shared virtual list driver", () => {
+    const interopSource = readFileSync(new URL("../src/views/InteropCenterView.vue", import.meta.url), "utf8");
+    const styles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+
+    expect(interopSource).toContain('import VirtualList from "../components/VirtualList.vue"');
+    expect(interopSource).toContain("function comparisonKey(item)");
+    expect(interopSource).toContain('test-id="interop-comparison-virtual-list"');
+    expect(interopSource).toContain(':item-key="comparisonKey"');
+    expect(interopSource).not.toContain('v-for="item in activeSourceComparisons"');
+    expect(styles).toContain(".comparison-list .virtual-list-row");
+  });
+
   it("avoids deep watchers in the heaviest cached views", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
