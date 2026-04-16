@@ -45,6 +45,7 @@ const selectedEntryKey = computed(() =>
 );
 
 const pinnedCatalogKeys = computed(() => (selectedEntryKey.value ? [selectedEntryKey.value] : []));
+const catalogRowMapVersion = computed(() => selectedEntryKey.value);
 const catalogItems = computed(() => knowledgeConsole.items || []);
 const prioritizedCatalogItems = computed(() =>
   prioritizeMatchingItem(catalogItems.value, (item) => knowledgeItemKey(item) === selectedEntryKey.value),
@@ -202,6 +203,23 @@ function formatJsonPayload(value) {
 
 function formatSources(sources, fallback = "活动") {
   return sources?.length ? sources.join(", ") : fallback;
+}
+
+function knowledgeCatalogRow(item) {
+  const itemKey = knowledgeItemKey(item);
+
+  return {
+    item,
+    itemKey,
+    objectType: item?.object_type || "",
+    lineageKey: item?.lineage_key || "",
+    itemTypeLabel: formatItemType(item?.object_type),
+    statusLabel: formatStatus(item?.status || "tracked"),
+    activeSummary: previewSummaryText(item?.active_version),
+    candidateSummary: previewSummaryText(item?.candidate_version),
+    runtimeRefLabel: item?.runtime_refs?.alias_scope || item?.runtime_refs?.mode || "-",
+    focused: selectedEntryKey.value === itemKey,
+  };
 }
 
 function knowledgeVersionRow(version) {
@@ -685,34 +703,36 @@ watch(
             :threshold="8"
             :viewport-height="640"
             :pinned-keys="pinnedCatalogKeys"
+            :map-item="knowledgeCatalogRow"
+            :map-version="catalogRowMapVersion"
             test-id="knowledge-catalog-virtual-list"
           >
-            <template #default="{ item }">
+            <template #default="{ row }">
               <article
                 class="review-card knowledge-card"
-                :class="{ 'focused-card': selectedEntryKey === knowledgeItemKey(item) }"
-                :data-testid="`knowledge-card-${item.object_type}-${item.lineage_key}`"
+                :class="{ 'focused-card': row.focused }"
+                :data-testid="`knowledge-card-${row.objectType}-${row.lineageKey}`"
               >
                 <div class="source-top">
                   <div>
-                    <div class="eyebrow">{{ formatItemType(item.object_type) }}</div>
-                    <h3>{{ item.lineage_key }}</h3>
+                    <div class="eyebrow">{{ row.itemTypeLabel }}</div>
+                    <h3>{{ row.lineageKey }}</h3>
                   </div>
-                  <span class="badge">{{ formatStatus(item.status || "tracked") }}</span>
+                  <span class="badge">{{ row.statusLabel }}</span>
                 </div>
-                <p><strong>生效文本</strong><br />{{ previewSummaryText(item.active_version) }}</p>
-                <p><strong>候选文本</strong><br />{{ previewSummaryText(item.candidate_version) }}</p>
-                <p class="muted">运行时引用：{{ item.runtime_refs?.alias_scope || item.runtime_refs?.mode || "-" }}</p>
+                <p><strong>生效文本</strong><br />{{ row.activeSummary }}</p>
+                <p><strong>候选文本</strong><br />{{ row.candidateSummary }}</p>
+                <p class="muted">运行时引用：{{ row.runtimeRefLabel }}</p>
                 <div class="card-actions">
                   <button
                     class="ghost"
-                    :data-testid="`knowledge-view-detail-${item.object_type}-${item.lineage_key}`"
-                    @click="selectEntry(item)"
+                    :data-testid="`knowledge-view-detail-${row.objectType}-${row.lineageKey}`"
+                    @click="selectEntry(row.item)"
                   >
                     查看详情
                   </button>
-                  <button class="ghost" @click="openReviewInbox(item)">查看审核收件箱</button>
-                  <button class="ghost" @click="openIndexConsole(item)">打开索引控制台</button>
+                  <button class="ghost" @click="openReviewInbox(row.item)">查看审核收件箱</button>
+                  <button class="ghost" @click="openIndexConsole(row.item)">打开索引控制台</button>
                 </div>
               </article>
             </template>

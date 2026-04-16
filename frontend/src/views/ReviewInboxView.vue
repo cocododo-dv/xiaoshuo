@@ -73,6 +73,12 @@ const pinnedReviewKeys = computed(() => {
 
   return [focusTargetId.value];
 });
+const reviewRowMapVersion = computed(() => [
+  focusTargetType.value,
+  focusTargetId.value,
+  focusTarget.value?.source_type || "",
+  reviewInbox.actionId || "",
+].join("::"));
 
 function focusedReviewId(reviewId) {
   return focusTarget.value?.target_type === "review_item" && focusTarget.value.target_id === reviewId;
@@ -107,6 +113,18 @@ function reviewSourceActionLabel(reviewId) {
     return "已在索引页打开";
   }
   return "";
+}
+
+function reviewInboxRow(item) {
+  const reviewId = item?.review_id || "";
+
+  return {
+    item,
+    reviewId,
+    highlighted: focusedReviewId(reviewId),
+    sourceActionLabel: reviewSourceActionLabel(reviewId),
+    loading: reviewInbox.actionId === reviewId,
+  };
 }
 
 function reviewFocusDeferred() {
@@ -372,14 +390,16 @@ watch(
           :pinned-keys="pinnedReviewKeys"
           :threshold="10"
           :viewport-height="640"
+          :map-item="reviewInboxRow"
+          :map-version="reviewRowMapVersion"
           test-id="review-inbox-virtual-list"
         >
-          <template #default="{ item }">
+          <template #default="{ row }">
             <ReviewCard
-              :item="item"
-              :highlighted="focusedReviewId(item.review_id)"
-              :source-action-label="reviewSourceActionLabel(item.review_id)"
-              :loading="reviewInbox.actionId === item.review_id"
+              :item="row.item"
+              :highlighted="row.highlighted"
+              :source-action-label="row.sourceActionLabel"
+              :loading="row.loading"
               @approve="approve"
               @release="release"
               @open-target="handleReviewOpenTarget"

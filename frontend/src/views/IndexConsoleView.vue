@@ -78,6 +78,24 @@ const pinnedTargetGroupKeys = computed(() => {
   }
   return [focusTargetRef.value];
 });
+const targetGroupRowMapVersion = computed(() => {
+  const targetRef = activeTargetGroupRef.value;
+  const state = targetRef ? indexConsole.targetGroupState(targetRef) : null;
+  const pagination = targetRef ? indexConsole.targetGroupPagination(targetRef) : null;
+  const itemCount = targetRef ? groupItems(targetRef).length : 0;
+
+  return [
+    targetRef,
+    focusTargetRef.value,
+    focusedActivityKey.value,
+    sourceLinkedActivityKey.value,
+    indexConsole.targetGroupsVersion,
+    itemCount,
+    state?.loading ? "1" : "0",
+    state?.pager?.cursorStack?.length || 0,
+    pagination?.has_next ? "1" : "0",
+  ].join("::");
+});
 const pinnedSystemRuntimeKeys = computed(() => {
   if (focusedSourceSection() !== "system_runtime" || focusedSourceId.value === null || focusedSourceId.value === undefined || focusedSourceId.value === "") {
     return [];
@@ -211,6 +229,25 @@ function indexSystemRuntimeRow(item) {
 
 function indexOperatorActionRow(item) {
   return indexActivityRow("operator_action", "operator_action", "Operator action", item);
+}
+
+function indexTargetGroupRow(group) {
+  const targetRef = group?.target?.target_ref || "";
+  const focused = targetRef === focusTargetRef.value;
+
+  return {
+    group,
+    targetRef,
+    expanded: activeTargetGroupRef.value === targetRef,
+    loading: groupLoading(targetRef),
+    items: groupItems(targetRef),
+    pagination: indexConsole.targetGroupPagination(targetRef),
+    canPrevious: groupCanPrevious(targetRef),
+    canNext: groupCanNext(targetRef),
+    focused,
+    focusedActivityKey: focused ? focusedActivityKey.value : "",
+    sourceLinkedActivityKey: focused ? sourceLinkedActivityKey.value : "",
+  };
 }
 
 function indexJobRow(item) {
@@ -780,20 +817,22 @@ onBeforeUnmount(() => {
               :threshold="8"
               :viewport-height="640"
               :pinned-keys="pinnedTargetGroupKeys"
+              :map-item="indexTargetGroupRow"
+              :map-version="targetGroupRowMapVersion"
               test-id="index-target-groups-virtual-list"
             >
-              <template #default="{ item: group }">
+              <template #default="{ row }">
                 <TargetActivityGroupCard
-                  :group="group"
-                  :expanded="activeTargetGroupRef === group.target.target_ref"
-                  :loading="groupLoading(group.target.target_ref)"
-                  :items="groupItems(group.target.target_ref)"
-                  :pagination="indexConsole.targetGroupPagination(group.target.target_ref)"
-                  :can-previous="groupCanPrevious(group.target.target_ref)"
-                  :can-next="groupCanNext(group.target.target_ref)"
-                  :focused="group.target.target_ref === focusTargetRef"
-                  :focused-activity-key="group.target.target_ref === focusTargetRef ? focusedActivityKey : ''"
-                  :source-linked-activity-key="group.target.target_ref === focusTargetRef ? sourceLinkedActivityKey : ''"
+                  :group="row.group"
+                  :expanded="row.expanded"
+                  :loading="row.loading"
+                  :items="row.items"
+                  :pagination="row.pagination"
+                  :can-previous="row.canPrevious"
+                  :can-next="row.canNext"
+                  :focused="row.focused"
+                  :focused-activity-key="row.focusedActivityKey"
+                  :source-linked-activity-key="row.sourceLinkedActivityKey"
                   @toggle="toggleTargetGroup"
                   @open-target="jumpToTarget"
                   @previous="previousGroupPage"

@@ -117,14 +117,19 @@ describe("shell smoothness architecture", () => {
     expect(indexSource).toContain(':map-item="indexRecoveryRow"');
     expect(indexSource).toContain(':map-item="indexSystemRuntimeRow"');
     expect(indexSource).toContain(':map-item="indexOperatorActionRow"');
+    expect(indexSource).toContain(':map-item="indexTargetGroupRow"');
     expect(indexSource).toContain(':map-item="indexJobRow"');
     expect(indexSource).toContain("function indexRecoveryRow(item)");
     expect(indexSource).toContain("function indexActivityRow(sectionId, sourceType, fallbackTitle, item)");
+    expect(indexSource).toContain("function indexTargetGroupRow(group)");
     expect(indexSource).toContain("function indexJobRow(item)");
     expect(indexSource).not.toContain('activityTargets(item).length');
     expect(indexSource).not.toContain('v-for="target in activityTargets(item)"');
     expect(indexSource).not.toContain("targetSummary(item)");
     expect(indexSource).not.toContain("recoveryFollowup(item) !== '-'");
+    expect(indexSource).not.toContain("activeTargetGroupRef === group.target.target_ref");
+    expect(indexSource).not.toContain("groupLoading(group.target.target_ref)");
+    expect(indexSource).not.toContain("groupItems(group.target.target_ref)");
   });
 
   it("routes the remaining index timelines through VirtualList with semantic section anchors", () => {
@@ -161,6 +166,7 @@ describe("shell smoothness architecture", () => {
   it("precomputes knowledge detail rows inside progressive render windows", () => {
     const knowledgeSource = readFileSync(new URL("../src/views/KnowledgeConsoleView.vue", import.meta.url), "utf8");
 
+    expect(knowledgeSource).toContain(':map-item="knowledgeCatalogRow"');
     expect(knowledgeSource).toContain(':map-item="knowledgeVersionRow"');
     expect(knowledgeSource).toContain(':map-item="knowledgeWorkflowReviewRow"');
     expect(knowledgeSource).toContain(':map-item="knowledgeWorkflowJobRow"');
@@ -168,7 +174,12 @@ describe("shell smoothness architecture", () => {
     expect(knowledgeSource).toContain(':map-item="knowledgeActivityRow"');
     expect(knowledgeSource).toContain(':map-item="knowledgeReviewRefRow"');
     expect(knowledgeSource).toContain(':map-item="knowledgeBundleRefRow"');
+    expect(knowledgeSource).toContain("function knowledgeCatalogRow(item)");
     expect(knowledgeSource).toContain("function knowledgeHumanReviewRow(event)");
+    expect(knowledgeSource).not.toContain("selectedEntryKey === knowledgeItemKey(item)");
+    expect(knowledgeSource).not.toContain("formatItemType(item.object_type)");
+    expect(knowledgeSource).not.toContain("formatStatus(item.status || \"tracked\")");
+    expect(knowledgeSource).not.toContain("previewSummaryText(item.active_version)");
     expect(knowledgeSource).not.toContain('<span>{{ formatStatus(review.status) }}</span>');
     expect(knowledgeSource).not.toContain('<p class="muted">{{ formatJobType(job.job_type) }}');
     expect(knowledgeSource).not.toContain('v-for="action in event.allowed_actions_json || []"');
@@ -209,6 +220,18 @@ describe("shell smoothness architecture", () => {
     expect(authorSource).toContain("const completedSceneIdSet = computed(() =>");
     expect(authorSource).not.toContain("sceneBatchLabel(scene.scene_id)");
     expect(authorSource).not.toContain("isChapterTrashAllowed(chapter)");
+  });
+
+  it("precomputes review inbox virtual rows inside the virtual render window", () => {
+    const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
+
+    expect(reviewSource).toContain(':map-item="reviewInboxRow"');
+    expect(reviewSource).toContain(':map-version="reviewRowMapVersion"');
+    expect(reviewSource).toContain("function reviewInboxRow(item)");
+    expect(reviewSource).toContain('const reviewId = item?.review_id || ""');
+    expect(reviewSource).not.toContain("focusedReviewId(item.review_id)");
+    expect(reviewSource).not.toContain("reviewSourceActionLabel(item.review_id)");
+    expect(reviewSource).not.toContain("reviewInbox.actionId === item.review_id");
   });
 
   it("routes author trash lists through shared VirtualList anchors and keeps trash list spacing shells intact", () => {
