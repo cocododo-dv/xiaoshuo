@@ -120,32 +120,39 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
   await page.getByTestId("index-toggle-system-runtime").click();
   await page.getByTestId("index-toggle-operator-action").click();
 
-  await expect
-    .poll(async () => {
-      const targetGroupsVirtualList = await targetGroupsSection.getByTestId("index-target-groups-virtual-list").count();
-      const targetGroupsEmpty = await targetGroupsSection.locator(".empty").count();
-      const systemRuntimeVirtualList = await systemRuntimeSection.getByTestId("index-system-runtime-virtual-list").count();
-      const systemRuntimeEmpty = await systemRuntimeSection.locator(".empty").count();
-      const operatorActionVirtualList = await operatorActionSection.getByTestId("index-operator-action-virtual-list").count();
-      const operatorActionEmpty = await operatorActionSection.locator(".empty").count();
-      return targetGroupsVirtualList + targetGroupsEmpty + systemRuntimeVirtualList + systemRuntimeEmpty + operatorActionVirtualList + operatorActionEmpty;
-    })
-    .toBeGreaterThan(0);
-
   if (await targetGroupsSection.getByTestId("index-target-groups-virtual-list").count()) {
     await expect(targetGroupsSection.getByTestId("index-target-groups-virtual-list")).toBeVisible();
+
+    const firstGroupToggle = targetGroupsSection.getByTestId(/target-activity-toggle-/).first();
+    if (await firstGroupToggle.count()) {
+      await expect(firstGroupToggle).toBeVisible();
+      await firstGroupToggle.click();
+      await expect(targetGroupsSection.locator("[data-testid^='target-activity-item-']").first()).toBeVisible();
+    }
   } else {
     await expect(targetGroupsSection.locator(".empty")).toBeVisible();
   }
 
   if (await systemRuntimeSection.getByTestId("index-system-runtime-virtual-list").count()) {
     await expect(systemRuntimeSection.getByTestId("index-system-runtime-virtual-list")).toBeVisible();
+    const runtimeList = systemRuntimeSection.getByTestId("index-system-runtime-virtual-list");
+    await runtimeList.evaluate((list) => {
+      list.scrollTop = list.scrollHeight;
+    });
+    await runtimeList.dispatchEvent("scroll");
+    await expect(systemRuntimeSection.locator("[data-activity-key^='system_runtime:']").first()).toBeVisible();
   } else {
     await expect(systemRuntimeSection.locator(".empty")).toBeVisible();
   }
 
   if (await operatorActionSection.getByTestId("index-operator-action-virtual-list").count()) {
     await expect(operatorActionSection.getByTestId("index-operator-action-virtual-list")).toBeVisible();
+    const operatorList = operatorActionSection.getByTestId("index-operator-action-virtual-list");
+    await operatorList.evaluate((list) => {
+      list.scrollTop = list.scrollHeight;
+    });
+    await operatorList.dispatchEvent("scroll");
+    await expect(operatorActionSection.locator("[data-activity-key^='operator_action:']").first()).toBeVisible();
   } else {
     await expect(operatorActionSection.locator(".empty")).toBeVisible();
   }
