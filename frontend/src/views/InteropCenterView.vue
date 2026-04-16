@@ -3,6 +3,7 @@ import { computed, reactive } from "vue";
 
 import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
+import VirtualList from "../components/VirtualList.vue";
 import { useShellRouter } from "../router";
 import { useInteropCenterStore } from "../stores/interopCenter";
 
@@ -35,6 +36,10 @@ function formatActiveMode(mode) {
 
 function formatJsonPayload(value) {
   return JSON.stringify(value ?? {}, null, 2);
+}
+
+function comparisonKey(item) {
+  return `${item?.object_type || "unknown"}:${item?.lineage_key || "unknown"}:${item?.source_ref_key || "unknown"}`;
 }
 
 function syncQueryState() {
@@ -295,13 +300,21 @@ function openBundleScene() {
             <p><strong>产物路径</strong><br />{{ activeArtifactReceipt.file_path }}</p>
           </article>
 
-          <div v-if="activeSourceComparisons.length" class="comparison-list">
-            <article
-              v-for="item in activeSourceComparisons"
-              :key="`${item.object_type}:${item.lineage_key}:${item.source_ref_key}`"
-              class="paper mini comparison-card"
-              :data-testid="`interop-source-comparison-${item.object_type}-${item.lineage_key}`"
-            >
+          <VirtualList
+            v-if="activeSourceComparisons.length"
+            class="comparison-list"
+            :items="activeSourceComparisons"
+            :item-key="comparisonKey"
+            :estimated-item-height="260"
+            :threshold="8"
+            :viewport-height="640"
+            test-id="interop-comparison-virtual-list"
+          >
+            <template #default="{ item }">
+              <article
+                class="paper mini comparison-card"
+                :data-testid="`interop-source-comparison-${item.object_type}-${item.lineage_key}`"
+              >
               <div class="source-top">
                 <div>
                   <div class="eyebrow">{{ item.object_type }}</div>
@@ -330,8 +343,9 @@ function openBundleScene() {
                   打开 {{ item.target.view_id === "knowledge" ? "知识控制台" : "场景工作台" }}
                 </button>
               </div>
-            </article>
-          </div>
+              </article>
+            </template>
+          </VirtualList>
         </article>
       </div>
     </PanelShell>

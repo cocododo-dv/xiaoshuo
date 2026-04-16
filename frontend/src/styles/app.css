@@ -232,6 +232,7 @@ pre {
 .author-list .virtual-list-row,
 .author-scene-list .virtual-list-row,
 .trash-list .virtual-list-row,
+.comparison-list .virtual-list-row,
 .receipt-list .virtual-list-row,
 .job-table .virtual-list-row {
   padding-bottom: 1rem;

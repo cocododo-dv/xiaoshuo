@@ -1193,11 +1193,14 @@ describe("author workspace scroll performance integration", () => {
 });
 
 describe("interop center scroll performance integration", () => {
+  let animationFrames;
+
   beforeEach(() => {
+    animationFrames = createAnimationFrameController();
     setActivePinia(createPinia());
     document.body.innerHTML = "";
-    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => callback(0)));
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
     vi.stubGlobal("ResizeObserver", class {
       observe() {}
       disconnect() {}
