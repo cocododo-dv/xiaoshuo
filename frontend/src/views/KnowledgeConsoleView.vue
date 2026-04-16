@@ -5,6 +5,7 @@ import LazySection from "../components/LazySection.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
 import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
+import { prioritizeMatchingItem } from "../lib/listPriority";
 import { useShellRouter } from "../router";
 import { useKnowledgeConsoleStore } from "../stores/knowledgeConsole";
 
@@ -44,6 +45,9 @@ const selectedEntryKey = computed(() =>
 
 const pinnedCatalogKeys = computed(() => (selectedEntryKey.value ? [selectedEntryKey.value] : []));
 const catalogItems = computed(() => knowledgeConsole.items || []);
+const prioritizedCatalogItems = computed(() =>
+  prioritizeMatchingItem(catalogItems.value, (item) => knowledgeItemKey(item) === selectedEntryKey.value),
+);
 const detailReviewRefs = computed(() => knowledgeConsole.detail?.review_refs || []);
 const detailBundleRefs = computed(() => knowledgeConsole.detail?.bundle_refs || []);
 const detailWorkflow = computed(() => knowledgeConsole.detail?.workflow || {});
@@ -571,7 +575,7 @@ watch(
           <VirtualList
             v-else
             class="knowledge-list"
-            :items="catalogItems"
+            :items="prioritizedCatalogItems"
             :item-key="knowledgeItemKey"
             :estimated-item-height="220"
             :threshold="8"

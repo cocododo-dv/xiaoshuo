@@ -658,6 +658,7 @@ describe("knowledge console scroll performance integration", () => {
       let catalogCards = mounted.container.querySelectorAll('[data-testid^="knowledge-card-"]');
       expect(catalogCards.length).toBeGreaterThan(0);
       expect(catalogCards.length).toBeLessThan(mounted.store.items.length);
+      expect(catalogCards[0].dataset.testid).toBe("knowledge-card-style_rule-KNOWLEDGE_014");
       expect(mounted.container.querySelector('[data-testid="knowledge-card-style_rule-KNOWLEDGE_014"]')).not.toBeNull();
 
       catalogList.scrollTop = 10000;
