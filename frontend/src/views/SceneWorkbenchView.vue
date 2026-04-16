@@ -8,6 +8,7 @@ import GenerationSummaryCard from "../components/GenerationSummaryCard.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
+import ProgressiveList from "../components/ProgressiveList.vue";
 import QcReportCard from "../components/QcReportCard.vue";
 import { useShellRouter } from "../router";
 import { useWorkbenchStore } from "../stores/workbench";
@@ -290,19 +291,29 @@ onActivated(() => {
             data-testid="scene-run-preflight-blocking"
           >
             <h4>阻塞项</h4>
-            <article
-              v-for="item in runPreflight.blocking_items"
-              :key="item.code"
-              class="preflight-item preflight-item-blocking"
-              :data-testid="`scene-run-preflight-item-${item.code}`"
+            <ProgressiveList
+              :items="runPreflight.blocking_items"
+              :initial-count="6"
+              :batch-size="6"
+              :threshold="6"
+              test-id="scene-run-preflight-blocking-progressive-list"
             >
-              <div class="preflight-item-head">
-                <strong>{{ item.title }}</strong>
-                <span class="badge ghost">{{ item.code }}</span>
-              </div>
-              <p>{{ item.detail }}</p>
-              <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
-            </article>
+              <template #default="{ items }">
+                <article
+                  v-for="item in items"
+                  :key="item.code"
+                  class="preflight-item preflight-item-blocking"
+                  :data-testid="`scene-run-preflight-item-${item.code}`"
+                >
+                  <div class="preflight-item-head">
+                    <strong>{{ item.title }}</strong>
+                    <span class="badge ghost">{{ item.code }}</span>
+                  </div>
+                  <p>{{ item.detail }}</p>
+                  <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
+                </article>
+              </template>
+            </ProgressiveList>
           </div>
 
           <div
@@ -311,19 +322,29 @@ onActivated(() => {
             data-testid="scene-run-preflight-warning"
           >
             <h4>建议补充</h4>
-            <article
-              v-for="item in runPreflight.warning_items"
-              :key="item.code"
-              class="preflight-item"
-              :data-testid="`scene-run-preflight-item-${item.code}`"
+            <ProgressiveList
+              :items="runPreflight.warning_items"
+              :initial-count="6"
+              :batch-size="6"
+              :threshold="6"
+              test-id="scene-run-preflight-warning-progressive-list"
             >
-              <div class="preflight-item-head">
-                <strong>{{ item.title }}</strong>
-                <span class="badge ghost">{{ item.code }}</span>
-              </div>
-              <p>{{ item.detail }}</p>
-              <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
-            </article>
+              <template #default="{ items }">
+                <article
+                  v-for="item in items"
+                  :key="item.code"
+                  class="preflight-item"
+                  :data-testid="`scene-run-preflight-item-${item.code}`"
+                >
+                  <div class="preflight-item-head">
+                    <strong>{{ item.title }}</strong>
+                    <span class="badge ghost">{{ item.code }}</span>
+                  </div>
+                  <p>{{ item.detail }}</p>
+                  <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
+                </article>
+              </template>
+            </ProgressiveList>
           </div>
 
           <div
@@ -332,19 +353,29 @@ onActivated(() => {
             data-testid="scene-run-preflight-context"
           >
             <h4>章节上下文</h4>
-            <article
-              v-for="item in runPreflight.context_items"
-              :key="item.code"
-              class="preflight-item"
-              :data-testid="`scene-run-preflight-item-${item.code}`"
+            <ProgressiveList
+              :items="runPreflight.context_items"
+              :initial-count="6"
+              :batch-size="6"
+              :threshold="6"
+              test-id="scene-run-preflight-context-progressive-list"
             >
-              <div class="preflight-item-head">
-                <strong>{{ item.title }}</strong>
-                <span class="badge ghost">{{ item.code }}</span>
-              </div>
-              <p>{{ item.detail }}</p>
-              <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
-            </article>
+              <template #default="{ items }">
+                <article
+                  v-for="item in items"
+                  :key="item.code"
+                  class="preflight-item"
+                  :data-testid="`scene-run-preflight-item-${item.code}`"
+                >
+                  <div class="preflight-item-head">
+                    <strong>{{ item.title }}</strong>
+                    <span class="badge ghost">{{ item.code }}</span>
+                  </div>
+                  <p>{{ item.detail }}</p>
+                  <p v-if="item.technical_hint" class="muted"><code>{{ item.technical_hint }}</code></p>
+                </article>
+              </template>
+            </ProgressiveList>
           </div>
 
           <p
@@ -431,13 +462,22 @@ onActivated(() => {
 
             <div class="chapter-runtime-section">
               <h4>待处理补写</h4>
-              <div v-if="pendingStagedBackfillItems.length" class="chapter-backfill-list">
-                <article
-                  v-for="item in pendingStagedBackfillItems"
-                  :key="item.stage_id"
-                  class="chapter-backfill-item"
-                  :data-testid="`chapter-backfill-item-${item.stage_id}`"
-                >
+              <ProgressiveList
+                v-if="pendingStagedBackfillItems.length"
+                class="chapter-backfill-list"
+                :items="pendingStagedBackfillItems"
+                :initial-count="4"
+                :batch-size="4"
+                :threshold="4"
+                test-id="chapter-backfill-progressive-list"
+              >
+                <template #default="{ items }">
+                  <article
+                    v-for="item in items"
+                    :key="item.stage_id"
+                    class="chapter-backfill-item"
+                    :data-testid="`chapter-backfill-item-${item.stage_id}`"
+                  >
                   <p><strong>{{ item.marker_text }}</strong></p>
                   <p class="muted">标记 {{ item.marker_id }} / 阶段 {{ item.stage_id }}</p>
                   <div class="field-inline">
@@ -459,8 +499,9 @@ onActivated(() => {
                       {{ workbench.actionId === `chapter-backfill:${item.stage_id}` ? "执行中..." : "执行" }}
                     </button>
                   </div>
-                </article>
-              </div>
+                  </article>
+                </template>
+              </ProgressiveList>
               <p v-else class="muted" data-testid="chapter-backfill-empty">当前没有待处理的暂存补写。</p>
             </div>
 
