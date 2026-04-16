@@ -140,6 +140,23 @@ describe("shell smoothness architecture", () => {
     expect(knowledgeSource).not.toContain('v-for="job in workflowJobs"');
   });
 
+  it("precomputes knowledge detail rows inside progressive render windows", () => {
+    const knowledgeSource = readFileSync(new URL("../src/views/KnowledgeConsoleView.vue", import.meta.url), "utf8");
+
+    expect(knowledgeSource).toContain(':map-item="knowledgeVersionRow"');
+    expect(knowledgeSource).toContain(':map-item="knowledgeWorkflowReviewRow"');
+    expect(knowledgeSource).toContain(':map-item="knowledgeWorkflowJobRow"');
+    expect(knowledgeSource).toContain(':map-item="knowledgeHumanReviewRow"');
+    expect(knowledgeSource).toContain(':map-item="knowledgeActivityRow"');
+    expect(knowledgeSource).toContain(':map-item="knowledgeReviewRefRow"');
+    expect(knowledgeSource).toContain(':map-item="knowledgeBundleRefRow"');
+    expect(knowledgeSource).toContain("function knowledgeHumanReviewRow(event)");
+    expect(knowledgeSource).not.toContain('<span>{{ formatStatus(review.status) }}</span>');
+    expect(knowledgeSource).not.toContain('<p class="muted">{{ formatJobType(job.job_type) }}');
+    expect(knowledgeSource).not.toContain('v-for="action in event.allowed_actions_json || []"');
+    expect(knowledgeSource).not.toContain('<p class="muted">{{ (group.sources || []).join(", ") ||');
+  });
+
   it("ships shared virtual and progressive list primitives for heavy in-page surfaces", () => {
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
@@ -204,6 +221,9 @@ describe("shell smoothness architecture", () => {
     expect(workbenchSource).not.toContain('v-for="item in runPreflight.warning_items"');
     expect(workbenchSource).not.toContain('v-for="item in runPreflight.context_items"');
     expect(workbenchSource).not.toContain('v-for="item in pendingStagedBackfillItems"');
+    expect(workbenchSource).toContain("DEFAULT_BACKFILL_STRATEGY");
+    expect(workbenchSource).toContain("function syncSelectedStrategies(items)");
+    expect(workbenchSource).not.toContain(':value="selectedStrategyFor(item.stage_id)"');
   });
 
   it("avoids deep watchers in the heaviest cached views", () => {

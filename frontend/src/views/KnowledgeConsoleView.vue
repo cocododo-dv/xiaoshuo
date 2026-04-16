@@ -200,6 +200,78 @@ function formatJsonPayload(value) {
   return JSON.stringify(value ?? {}, null, 2);
 }
 
+function formatSources(sources, fallback = "活动") {
+  return sources?.length ? sources.join(", ") : fallback;
+}
+
+function knowledgeVersionRow(version) {
+  return {
+    version,
+    rowId: version.row_id,
+    versionLabel: `v${version.version || "候选"}`,
+    text: version.text || "-",
+  };
+}
+
+function knowledgeWorkflowReviewRow(review) {
+  return {
+    review,
+    reviewId: review.review_id,
+    statusLabel: formatStatus(review.status),
+    materializeStatusLabel: formatStatus(review.materialize_status || "pending"),
+  };
+}
+
+function knowledgeWorkflowJobRow(job) {
+  return {
+    job,
+    jobId: job.job_id,
+    statusLabel: formatStatus(job.status),
+    summary: `${formatJobType(job.job_type)} / ${job.alias_scope || "直接读取"}`,
+  };
+}
+
+function knowledgeHumanReviewRow(event) {
+  const eventId = event.event_id;
+  return {
+    event,
+    eventId,
+    statusLabel: formatStatus(event.status),
+    defaultActionLabel: formatAction(event.default_action || "inspect"),
+    actions: (event.allowed_actions_json || []).map((action) => ({
+      action,
+      key: `${eventId}-${action}`,
+      label: actionLabel(action),
+    })),
+  };
+}
+
+function knowledgeActivityRow(group) {
+  const targetRef = group.target?.target_ref || "";
+  return {
+    group,
+    targetRef,
+    activityCount: group.activity_count ?? 0,
+    sourcesLabel: formatSources(group.sources),
+  };
+}
+
+function knowledgeReviewRefRow(reviewRef) {
+  return {
+    reviewRef,
+    targetType: "review_item",
+  };
+}
+
+function knowledgeBundleRefRow(bundleRef) {
+  return {
+    bundleRef,
+    bundleId: bundleRef.bundle_id,
+    sceneId: bundleRef.scene_id,
+    chapterId: bundleRef.chapter_id || "-",
+  };
+}
+
 function jobTarget(job) {
   if (!job?.job_id || !job?.job_type) {
     return null;
@@ -728,16 +800,17 @@ watch(
                 :initial-count="6"
                 :batch-size="6"
                 :threshold="8"
+                :map-item="knowledgeVersionRow"
                 test-id="knowledge-versions-progressive-list"
               >
                 <template #default="{ items }">
                   <ol class="history-list">
-                    <li v-for="version in items" :key="version.row_id" class="history-entry" :data-testid="`knowledge-version-row-${version.row_id}`">
+                    <li v-for="row in items" :key="row.rowId" class="history-entry" :data-testid="`knowledge-version-row-${row.rowId}`">
                       <p class="history-meta">
-                        <strong>{{ version.row_id }}</strong>
-                        <span>v{{ version.version || "候选" }}</span>
+                        <strong>{{ row.rowId }}</strong>
+                        <span>{{ row.versionLabel }}</span>
                       </p>
-                      <p>{{ version.text || "-" }}</p>
+                      <p>{{ row.text }}</p>
                     </li>
                   </ol>
                 </template>
@@ -749,21 +822,22 @@ watch(
                 :initial-count="6"
                 :batch-size="6"
                 :threshold="8"
+                :map-item="knowledgeWorkflowReviewRow"
                 test-id="knowledge-reviews-progressive-list"
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="review in items" :key="review.review_id" class="history-entry" :data-testid="`knowledge-review-row-${review.review_id}`">
+                    <li v-for="row in items" :key="row.reviewId" class="history-entry" :data-testid="`knowledge-review-row-${row.reviewId}`">
                       <p class="history-meta">
-                        <strong>{{ review.review_id }}</strong>
-                        <span>{{ formatStatus(review.status) }}</span>
+                        <strong>{{ row.reviewId }}</strong>
+                        <span>{{ row.statusLabel }}</span>
                       </p>
-                      <p class="muted">{{ formatStatus(review.materialize_status || "pending") }}</p>
+                      <p class="muted">{{ row.materializeStatusLabel }}</p>
                       <div class="card-actions">
                         <button
                           class="ghost"
-                          :data-testid="`knowledge-open-related-review-${review.review_id}`"
-                          @click="openReviewRef(review.review_id)"
+                          :data-testid="`knowledge-open-related-review-${row.reviewId}`"
+                          @click="openReviewRef(row.reviewId)"
                         >
                           打开审核收件箱
                         </button>
@@ -780,18 +854,19 @@ watch(
                 :initial-count="6"
                 :batch-size="6"
                 :threshold="8"
+                :map-item="knowledgeWorkflowJobRow"
                 test-id="knowledge-jobs-progressive-list"
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="job in items" :key="job.job_id" class="history-entry" :data-testid="`knowledge-job-row-${job.job_id}`">
+                    <li v-for="row in items" :key="row.jobId" class="history-entry" :data-testid="`knowledge-job-row-${row.jobId}`">
                       <p class="history-meta">
-                        <strong>{{ job.job_id }}</strong>
-                        <span>{{ formatStatus(job.status) }}</span>
+                        <strong>{{ row.jobId }}</strong>
+                        <span>{{ row.statusLabel }}</span>
                       </p>
-                      <p class="muted">{{ formatJobType(job.job_type) }} / {{ job.alias_scope || "直接读取" }}</p>
+                      <p class="muted">{{ row.summary }}</p>
                       <div class="card-actions">
-                        <button class="ghost" @click="openJobTarget(job)">
+                        <button class="ghost" @click="openJobTarget(row.job)">
                           打开索引控制台
                         </button>
                       </div>
@@ -807,29 +882,30 @@ watch(
                 :initial-count="6"
                 :batch-size="6"
                 :threshold="8"
+                :map-item="knowledgeHumanReviewRow"
                 test-id="knowledge-human-review-progressive-list"
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="event in items" :key="event.event_id" class="history-entry" :data-testid="`knowledge-human-review-row-${event.event_id}`">
+                    <li v-for="row in items" :key="row.eventId" class="history-entry" :data-testid="`knowledge-human-review-row-${row.eventId}`">
                       <p class="history-meta">
-                        <strong>{{ event.event_id }}</strong>
-                        <span>{{ formatStatus(event.status) }}</span>
+                        <strong>{{ row.eventId }}</strong>
+                        <span>{{ row.statusLabel }}</span>
                       </p>
-                      <p class="muted">{{ formatAction(event.default_action || "inspect") }}</p>
+                      <p class="muted">{{ row.defaultActionLabel }}</p>
                       <div class="card-actions">
-                        <button class="ghost" @click="openHumanReviewEvent(event)">
+                        <button class="ghost" @click="openHumanReviewEvent(row.event)">
                           打开审核收件箱
                         </button>
                         <button
-                          v-for="action in event.allowed_actions_json || []"
-                          :key="`${event.event_id}-${action}`"
+                          v-for="action in row.actions"
+                          :key="action.key"
                           class="ghost"
-                          :data-testid="`knowledge-human-review-action-${event.event_id}-${action}`"
+                          :data-testid="`knowledge-human-review-action-${row.eventId}-${action.action}`"
                           :disabled="Boolean(knowledgeConsole.actionId)"
-                          @click="runHumanReviewAction(event.event_id, action)"
+                          @click="runHumanReviewAction(row.eventId, action.action)"
                         >
-                          {{ actionLabel(action) }}
+                          {{ action.label }}
                         </button>
                       </div>
                     </li>
@@ -844,18 +920,19 @@ watch(
                 :initial-count="6"
                 :batch-size="6"
                 :threshold="8"
+                :map-item="knowledgeActivityRow"
                 test-id="knowledge-activity-progressive-list"
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="group in items" :key="group.target.target_ref" class="history-entry" :data-testid="`knowledge-activity-row-${group.target.target_ref}`">
+                    <li v-for="row in items" :key="row.targetRef" class="history-entry" :data-testid="`knowledge-activity-row-${row.targetRef}`">
                       <p class="history-meta">
-                        <strong>{{ group.target.target_ref }}</strong>
-                        <span>{{ group.activity_count }} 条活动</span>
+                        <strong>{{ row.targetRef }}</strong>
+                        <span>{{ row.activityCount }} 条活动</span>
                       </p>
-                      <p class="muted">{{ (group.sources || []).join(", ") || "活动" }}</p>
+                      <p class="muted">{{ row.sourcesLabel }}</p>
                       <div class="card-actions">
-                        <button class="ghost" @click="openActivityTarget(group)">
+                        <button class="ghost" @click="openActivityTarget(row.group)">
                           打开目标
                         </button>
                       </div>
@@ -875,20 +952,21 @@ watch(
                 :initial-count="6"
                 :batch-size="6"
                 :threshold="8"
+                :map-item="knowledgeReviewRefRow"
                 test-id="knowledge-review-refs-progressive-list"
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="reviewRef in items" :key="reviewRef" class="history-entry" :data-testid="`knowledge-review-ref-row-${reviewRef}`">
+                    <li v-for="row in items" :key="row.reviewRef" class="history-entry" :data-testid="`knowledge-review-ref-row-${row.reviewRef}`">
                       <p class="history-meta">
-                        <strong>{{ reviewRef }}</strong>
-                        <span>review_item</span>
+                        <strong>{{ row.reviewRef }}</strong>
+                        <span>{{ row.targetType }}</span>
                       </p>
                       <div class="card-actions">
                         <button
                           class="ghost"
-                          :data-testid="`knowledge-open-review-ref-${reviewRef}`"
-                          @click="openReviewRef(reviewRef)"
+                          :data-testid="`knowledge-open-review-ref-${row.reviewRef}`"
+                          @click="openReviewRef(row.reviewRef)"
                         >
                           打开审核收件箱
                         </button>
@@ -909,21 +987,22 @@ watch(
                 :initial-count="6"
                 :batch-size="6"
                 :threshold="8"
+                :map-item="knowledgeBundleRefRow"
                 test-id="knowledge-bundle-refs-progressive-list"
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="bundleRef in items" :key="bundleRef.bundle_id" class="history-entry" :data-testid="`knowledge-bundle-ref-row-${bundleRef.bundle_id}`">
+                    <li v-for="row in items" :key="row.bundleId" class="history-entry" :data-testid="`knowledge-bundle-ref-row-${row.bundleId}`">
                       <p class="history-meta">
-                        <strong>{{ bundleRef.bundle_id }}</strong>
-                        <span>{{ bundleRef.scene_id }}</span>
+                        <strong>{{ row.bundleId }}</strong>
+                        <span>{{ row.sceneId }}</span>
                       </p>
-                      <p class="muted">章节 {{ bundleRef.chapter_id || "-" }}</p>
+                      <p class="muted">章节 {{ row.chapterId }}</p>
                       <div class="card-actions">
                         <button
                           class="ghost"
-                          :data-testid="`knowledge-open-bundle-ref-${bundleRef.bundle_id}`"
-                          @click="openBundleWorkbench(bundleRef)"
+                          :data-testid="`knowledge-open-bundle-ref-${row.bundleId}`"
+                          @click="openBundleWorkbench(row.bundleRef)"
                         >
                           打开场景工作台
                         </button>

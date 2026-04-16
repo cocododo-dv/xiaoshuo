@@ -21,6 +21,7 @@ const requestedSceneId = ref(workbench.sceneId);
 const manualHoldReason = ref("");
 const selectedStrategies = ref({});
 const isViewActive = ref(false);
+const DEFAULT_BACKFILL_STRATEGY = "create_tracker_now";
 
 const hasData = computed(() => Boolean(workbench.data));
 const chapterState = computed(() => workbench.data?.chapter_state || {});
@@ -106,10 +107,28 @@ function sceneCardTarget(sceneId = resolveSceneId()) {
 }
 
 function selectedStrategyFor(stageId) {
-  if (!selectedStrategies.value[stageId]) {
-    selectedStrategies.value[stageId] = "create_tracker_now";
+  return selectedStrategies.value[stageId] || DEFAULT_BACKFILL_STRATEGY;
+}
+
+function syncSelectedStrategies(items) {
+  const current = selectedStrategies.value;
+  const next = {};
+
+  items.forEach((item) => {
+    if (item.stage_id) {
+      next[item.stage_id] = current[item.stage_id] || DEFAULT_BACKFILL_STRATEGY;
+    }
+  });
+
+  const currentKeys = Object.keys(current);
+  const nextKeys = Object.keys(next);
+  const changed =
+    currentKeys.length !== nextKeys.length
+    || nextKeys.some((stageId) => current[stageId] !== next[stageId]);
+
+  if (changed) {
+    selectedStrategies.value = next;
   }
-  return selectedStrategies.value[stageId];
 }
 
 async function loadWorkbench() {
@@ -231,6 +250,8 @@ watch(
   },
   { immediate: true },
 );
+
+watch(pendingStagedBackfillItems, syncSelectedStrategies, { immediate: true });
 
 onActivated(async () => {
   isViewActive.value = true;
@@ -501,7 +522,7 @@ onDeactivated(() => {
                   <div class="field-inline">
                     <select
                       :data-testid="`chapter-backfill-strategy-${item.stage_id}`"
-                      :value="selectedStrategyFor(item.stage_id)"
+                      :value="selectedStrategies[item.stage_id] || DEFAULT_BACKFILL_STRATEGY"
                       @change="selectedStrategies[item.stage_id] = $event.target.value"
                     >
                       <option value="create_tracker_now">立即创建跟踪</option>

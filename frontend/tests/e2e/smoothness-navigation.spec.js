@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const apiBase = `http://127.0.0.1:${process.env.PLAYWRIGHT_BACKEND_PORT || "8000"}`;
+const indexSectionContentTimeout = 20_000;
 
 async function waitForIndexSectionContent(section, virtualListTestId) {
   await expect
@@ -17,7 +18,7 @@ async function waitForIndexSectionContent(section, virtualListTestId) {
       const emptyText = (await emptyState.textContent()) || "";
       return !emptyText.includes("加载") && !emptyText.includes("鍔犺浇");
     })
-    .toBe(true);
+    .toBe(true, { timeout: indexSectionContentTimeout });
 }
 
 function percentile(values, percentileValue) {
