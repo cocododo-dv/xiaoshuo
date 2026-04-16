@@ -124,6 +124,24 @@ describe("focus visibility helpers", () => {
     ).toEqual([{ event_id: "manual_event", event_source: "manual_scene_review", status: "pending" }]);
   });
 
+  it("keeps the default system recovery queue limited to unresolved recovery events", () => {
+    const openRecoveryItems = [
+      { event_id: "open_recovery", event_source: "idempotency_recovery", status: "needs_followup" },
+    ];
+    const allHumanReviewItems = [
+      ...openRecoveryItems,
+      { event_id: "resolved_recovery", event_source: "idempotency_recovery", status: "resolved" },
+      { event_id: "manual_event", event_source: "manual_scene_review", status: "pending" },
+    ];
+
+    expect(getVisibleHumanReviewItems(allHumanReviewItems, "idempotency_recovery", openRecoveryItems, "")).toEqual(
+      openRecoveryItems,
+    );
+    expect(getVisibleHumanReviewItems(allHumanReviewItems, "idempotency_recovery", [], "resolved")).toEqual([
+      { event_id: "resolved_recovery", event_source: "idempotency_recovery", status: "resolved" },
+    ]);
+  });
+
   it("drops review focus when the filtered payload no longer contains the focused row", () => {
     expect(
       isReviewFocusVisible(

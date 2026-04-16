@@ -1,6 +1,14 @@
-export function getVisibleHumanReviewItems(humanReviewItems, selectedEventSource, recoveryItems) {
+export function getVisibleHumanReviewItems(humanReviewItems, selectedEventSource, recoveryItems, selectedStatus = "") {
+  if (selectedEventSource === "idempotency_recovery" && !selectedStatus) {
+    return [...(recoveryItems || [])];
+  }
   if (selectedEventSource) {
-    return (humanReviewItems || []).filter((item) => item.event_source === selectedEventSource);
+    return (humanReviewItems || []).filter(
+      (item) => item.event_source === selectedEventSource && (!selectedStatus || item.status === selectedStatus),
+    );
+  }
+  if (selectedStatus) {
+    return (humanReviewItems || []).filter((item) => item.status === selectedStatus);
   }
   return [...(recoveryItems || [])];
 }

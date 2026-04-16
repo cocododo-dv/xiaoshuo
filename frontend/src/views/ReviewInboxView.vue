@@ -33,6 +33,7 @@ const visibleHumanReviewItems = computed(() =>
     reviewInbox.humanReviewItems,
     reviewInbox.humanReviewFilters.eventSource,
     reviewInbox.systemRecoveryItems,
+    reviewInbox.humanReviewFilters.status,
   ),
 );
 
