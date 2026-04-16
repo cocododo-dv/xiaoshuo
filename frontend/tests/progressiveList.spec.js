@@ -218,6 +218,108 @@ describe("buildProgressivePlan", () => {
 });
 
 describe("ProgressiveList KeepAlive lifecycle", () => {
+  it("maps only the rows currently admitted into the progressive render window", async () => {
+    const animationFrames = createAnimationFrameController();
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+
+    const items = Array.from({ length: 6 }, (_, index) => ({
+      id: `mapped-row-${index + 1}`,
+      label: `Mapped row ${index + 1}`,
+    }));
+    const mapItem = vi.fn((item) => ({
+      id: item.id,
+      label: item.label.toUpperCase(),
+    }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp({
+      render() {
+        return h(
+          ProgressiveList,
+          {
+            items,
+            mapItem,
+            initialCount: 2,
+            batchSize: 2,
+            threshold: 2,
+            testId: "progressive-map-list",
+          },
+          {
+            default: ({ items: renderedItems }) =>
+              renderedItems.map((item) => h("div", { "data-testid": item.id }, item.label)),
+          },
+        );
+      },
+    });
+
+    app.mount(container);
+    await flushUi();
+
+    try {
+      expect(mapItem).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-testid="mapped-row-1"]')?.textContent).toBe("MAPPED ROW 1");
+      expect(container.querySelector('[data-testid="mapped-row-3"]')).toBeNull();
+
+      await animationFrames.flushAll();
+
+      expect(mapItem).toHaveBeenCalledTimes(6);
+      expect(container.querySelector('[data-testid="mapped-row-6"]')?.textContent).toBe("MAPPED ROW 6");
+    } finally {
+      app.unmount();
+      container.remove();
+    }
+  });
+
+  it("remaps cached rows when the mapper version changes", async () => {
+    const items = [
+      { id: "versioned-row-1", label: "Row 1" },
+      { id: "versioned-row-2", label: "Row 2" },
+    ];
+    const mapVersion = ref("v1");
+    const mapItem = vi.fn((item) => ({
+      id: item.id,
+      label: `${mapVersion.value}:${item.label}`,
+    }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp({
+      render() {
+        return h(
+          ProgressiveList,
+          {
+            items,
+            mapItem,
+            mapVersion: mapVersion.value,
+            enabled: false,
+            testId: "progressive-versioned-map-list",
+          },
+          {
+            default: ({ items: renderedItems }) =>
+              renderedItems.map((item) => h("div", { "data-testid": item.id }, item.label)),
+          },
+        );
+      },
+    });
+
+    app.mount(container);
+    await flushUi();
+
+    try {
+      expect(mapItem).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-testid="versioned-row-1"]')?.textContent).toBe("v1:Row 1");
+
+      mapVersion.value = "v2";
+      await flushUi();
+
+      expect(mapItem).toHaveBeenCalledTimes(4);
+      expect(container.querySelector('[data-testid="versioned-row-1"]')?.textContent).toBe("v2:Row 1");
+    } finally {
+      app.unmount();
+      container.remove();
+    }
+  });
+
   it("pauses pending batches while deactivated and resumes after activation", async () => {
     const animationFrames = createAnimationFrameController();
     vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));

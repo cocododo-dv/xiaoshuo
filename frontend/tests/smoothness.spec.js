@@ -74,6 +74,20 @@ describe("shell smoothness architecture", () => {
     expect(humanReviewSource).toContain("human-review-toggle-details");
   });
 
+  it("precomputes human review row summaries inside the progressive render window", () => {
+    const progressiveListSource = readFileSync(new URL("../src/components/ProgressiveList.vue", import.meta.url), "utf8");
+    const humanReviewSource = readFileSync(new URL("../src/components/HumanReviewDrawer.vue", import.meta.url), "utf8");
+
+    expect(progressiveListSource).toContain("mapItem");
+    expect(humanReviewSource).toContain(":map-item=\"humanReviewRow\"");
+    expect(humanReviewSource).toContain("function humanReviewRow(item)");
+    expect(humanReviewSource).toContain("historyRows(item, eventId)");
+    expect(humanReviewSource).not.toContain("(item.allowed_actions_json || []).map(actionLabel).join");
+    expect(humanReviewSource).not.toContain("linkedTarget(item) || followupTarget(item) || replayTarget(item)");
+    expect(humanReviewSource).not.toContain("v-if=\"historyReplayTarget(entry)\"");
+    expect(humanReviewSource).not.toContain("sourceFocusedTarget(historyReplayTarget(entry), row.eventId)");
+  });
+
   it("routes index console long lists through the shared virtual and progressive list drivers", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
     const targetGroupCardSource = readFileSync(new URL("../src/components/TargetActivityGroupCard.vue", import.meta.url), "utf8");
@@ -89,6 +103,10 @@ describe("shell smoothness architecture", () => {
     expect(targetGroupCardSource).toContain(":initial-count=\"8\"");
     expect(targetGroupCardSource).toContain(":batch-size=\"6\"");
     expect(targetGroupCardSource).toContain(":threshold=\"8\"");
+    expect(targetGroupCardSource).toContain(":map-item=\"targetActivityRow\"");
+    expect(targetGroupCardSource).toContain("function targetActivityRow(item)");
+    expect(targetGroupCardSource).not.toContain("activitySummary(item)");
+    expect(targetGroupCardSource).not.toContain("isHighlighted(item)");
   });
 
   it("routes the remaining index timelines through VirtualList with semantic section anchors", () => {

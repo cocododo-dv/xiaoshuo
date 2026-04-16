@@ -28,11 +28,21 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  mapItem: {
+    type: Function,
+    default: null,
+  },
+  mapVersion: {
+    type: [String, Number, Boolean],
+    default: "",
+  },
 });
 
 const renderedCount = ref(0);
 const frameId = ref(0);
 const active = ref(true);
+let objectMappedItems = new WeakMap();
+let primitiveMappedItems = new Map();
 
 const plan = computed(() =>
   buildProgressivePlan({
@@ -44,8 +54,43 @@ const plan = computed(() =>
   }),
 );
 
-const renderedItems = computed(() => props.items.slice(0, renderedCount.value));
+const rawRenderedItems = computed(() => props.items.slice(0, renderedCount.value));
+const renderedItems = computed(() => {
+  if (!props.mapItem) {
+    return rawRenderedItems.value;
+  }
+  return rawRenderedItems.value.map(mapRenderedItem);
+});
 const pending = computed(() => renderedCount.value < props.items.length);
+
+function resetMappedItemCache() {
+  objectMappedItems = new WeakMap();
+  primitiveMappedItems = new Map();
+}
+
+function mapRenderedItem(item, index) {
+  if (!props.mapItem) {
+    return item;
+  }
+
+  if (item !== null && (typeof item === "object" || typeof item === "function")) {
+    const cached = objectMappedItems.get(item);
+    if (cached?.index === index && Object.is(cached.version, props.mapVersion)) {
+      return cached.value;
+    }
+    const value = props.mapItem(item, index);
+    objectMappedItems.set(item, { index, version: props.mapVersion, value });
+    return value;
+  }
+
+  const primitiveKey = `${String(props.mapVersion)}:${index}:${typeof item}:${String(item)}`;
+  if (primitiveMappedItems.has(primitiveKey)) {
+    return primitiveMappedItems.get(primitiveKey);
+  }
+  const value = props.mapItem(item, index);
+  primitiveMappedItems.set(primitiveKey, value);
+  return value;
+}
 
 function cancelFrame() {
   if (!frameId.value) {
@@ -88,6 +133,13 @@ watch(
     }
   },
   { immediate: true },
+);
+
+watch(
+  () => [props.items, props.mapItem, props.mapVersion],
+  () => {
+    resetMappedItemCache();
+  },
 );
 
 onActivated(() => {

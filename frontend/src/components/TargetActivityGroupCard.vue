@@ -74,7 +74,7 @@ function targetButtonLabel(target) {
   return target?.target_ref || "打开目标";
 }
 
-function activitySummary(item) {
+function activitySummaryFor(item) {
   return [
     item?.source || "-",
     item?.status || "-",
@@ -83,11 +83,33 @@ function activitySummary(item) {
   ].join(" | ");
 }
 
-function isHighlighted(item) {
-  return item?.activity_key && (
-    item.activity_key === props.focusedActivityKey
-    || item.activity_key === props.sourceLinkedActivityKey
+function isHighlightedActivityKey(activityKey) {
+  return activityKey && (
+    activityKey === props.focusedActivityKey
+    || activityKey === props.sourceLinkedActivityKey
   );
+}
+
+function targetActionRows(item) {
+  return (item.target_refs || []).map((target) => ({
+    target,
+    key: `${item.activity_key}:${target.target_ref}`,
+    label: targetButtonLabel(target),
+  }));
+}
+
+function targetActivityRow(item) {
+  const activityKey = item.activity_key;
+  return {
+    item,
+    activityKey,
+    title: item.label || item.source || "-",
+    summaryLine: activitySummaryFor(item),
+    summary: item.summary || "-",
+    highlighted: isHighlightedActivityKey(activityKey),
+    focused: activityKey === props.focusedActivityKey,
+    targets: targetActionRows(item),
+  };
 }
 </script>
 
@@ -127,32 +149,34 @@ function isHighlighted(item) {
           :initial-count="8"
           :batch-size="6"
           :threshold="8"
+          :map-item="targetActivityRow"
+          :map-version="`${props.focusedActivityKey}:${props.sourceLinkedActivityKey}`"
           test-id="target-group-progressive-list"
         >
           <template #default="{ items }">
             <ul class="receipt-list">
               <li
-                v-for="item in items"
-                :key="item.activity_key"
-                :data-activity-key="item.activity_key"
-                :data-testid="`target-activity-item-${item.activity_key}`"
+                v-for="row in items"
+                :key="row.activityKey"
+                :data-activity-key="row.activityKey"
+                :data-testid="`target-activity-item-${row.activityKey}`"
                 :class="{
-                  'focused-card': isHighlighted(item),
-                  'focused-activity-item': item.activity_key === props.focusedActivityKey,
+                  'focused-card': row.highlighted,
+                  'focused-activity-item': row.focused,
                 }"
               >
-                <strong>{{ item.label || item.source || "-" }}</strong><br />
-                {{ activitySummary(item) }}<br />
-                {{ item.summary || "-" }}
-                <div v-if="item.target_refs?.length" class="card-actions">
+                <strong>{{ row.title }}</strong><br />
+                {{ row.summaryLine }}<br />
+                {{ row.summary }}
+                <div v-if="row.targets.length" class="card-actions">
                   <button
-                    v-for="target in item.target_refs"
-                    :key="`${item.activity_key}:${target.target_ref}`"
+                    v-for="targetRow in row.targets"
+                    :key="targetRow.key"
                     type="button"
                     class="ghost"
-                    @click="emit('open-target', target)"
+                    @click="emit('open-target', targetRow.target)"
                   >
-                    {{ targetButtonLabel(target) }}
+                    {{ targetRow.label }}
                   </button>
                 </div>
               </li>
