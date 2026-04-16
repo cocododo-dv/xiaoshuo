@@ -78,6 +78,18 @@ const pinnedTargetGroupKeys = computed(() => {
   }
   return [focusTargetRef.value];
 });
+const pinnedSystemRuntimeKeys = computed(() => {
+  if (focusedSourceSection() !== "system_runtime" || focusedSourceId.value === null || focusedSourceId.value === undefined || focusedSourceId.value === "") {
+    return [];
+  }
+  return [activityItemKey("system_runtime", { operation_id: focusedSourceId.value })];
+});
+const pinnedOperatorActionKeys = computed(() => {
+  if (focusedSourceSection() !== "operator_action" || focusedSourceId.value === null || focusedSourceId.value === undefined || focusedSourceId.value === "") {
+    return [];
+  }
+  return [activityItemKey("operator_action", { operation_id: focusedSourceId.value })];
+});
 const focusedTargetGroupMeta = computed(() => {
   if (!focusTargetRef.value) return null;
   return indexConsole.targetGroupMeta(focusTargetRef.value)
@@ -561,18 +573,28 @@ onBeforeUnmount(() => {
           badge="系统"
           :expanded="expandedSections.system_runtime"
           :loading="indexConsole.activitySectionState('system_runtime').loading"
+          test-id="index-system-runtime-section"
           toggle-test-id="index-toggle-system-runtime"
           @toggle="toggleSection('system_runtime')"
         >
           <div v-if="!indexConsole.systemRuntimeTimelineItems.length" class="empty">当前没有系统活动。</div>
           <template v-else>
-            <ul class="receipt-list">
-              <li
-                v-for="item in indexConsole.systemRuntimeTimelineItems"
-                :key="activityItemKey('system_runtime', item)"
-                :data-activity-key="activityItemKey('system_runtime', item)"
-                :class="{ 'focused-card': isFocusedSource('system_activity', item.operation_id) }"
-              >
+            <VirtualList
+              class="receipt-list"
+              :items="indexConsole.systemRuntimeTimelineItems"
+              :item-key="(item) => activityItemKey('system_runtime', item)"
+              :estimated-item-height="176"
+              :threshold="8"
+              :viewport-height="560"
+              :pinned-keys="pinnedSystemRuntimeKeys"
+              test-id="index-system-runtime-virtual-list"
+            >
+              <template #default="{ item }">
+                <article
+                  class="receipt-list-item"
+                  :data-activity-key="activityItemKey('system_runtime', item)"
+                  :class="{ 'focused-card': isFocusedSource('system_activity', item.operation_id) }"
+                >
                 <strong>{{ item.label || item.event_type || "系统活动" }}</strong><br />
                 {{ targetSummary(item) }}<br />
                 {{ item.summary || item.description || "-" }}
@@ -587,8 +609,9 @@ onBeforeUnmount(() => {
                     {{ targetActionLabel(target) }}
                   </button>
                 </div>
-              </li>
-            </ul>
+                </article>
+              </template>
+            </VirtualList>
             <CursorPager
               test-id-prefix="system-runtime-pager"
               :pagination="indexConsole.activitySectionPagination('system_runtime')"
@@ -608,18 +631,28 @@ onBeforeUnmount(() => {
           badge="操作"
           :expanded="expandedSections.operator_action"
           :loading="indexConsole.activitySectionState('operator_action').loading"
+          test-id="index-operator-action-section"
           toggle-test-id="index-toggle-operator-action"
           @toggle="toggleSection('operator_action')"
         >
           <div v-if="!indexConsole.operatorActionTimelineItems.length" class="empty">当前没有人工操作记录。</div>
           <template v-else>
-            <ul class="receipt-list">
-              <li
-                v-for="item in indexConsole.operatorActionTimelineItems"
-                :key="activityItemKey('operator_action', item)"
-                :data-activity-key="activityItemKey('operator_action', item)"
-                :class="{ 'focused-card': isFocusedSource('operator_action', item.operation_id) }"
-              >
+            <VirtualList
+              class="receipt-list"
+              :items="indexConsole.operatorActionTimelineItems"
+              :item-key="(item) => activityItemKey('operator_action', item)"
+              :estimated-item-height="188"
+              :threshold="8"
+              :viewport-height="560"
+              :pinned-keys="pinnedOperatorActionKeys"
+              test-id="index-operator-action-virtual-list"
+            >
+              <template #default="{ item }">
+                <article
+                  class="receipt-list-item"
+                  :data-activity-key="activityItemKey('operator_action', item)"
+                  :class="{ 'focused-card': isFocusedSource('operator_action', item.operation_id) }"
+                >
                 <strong>{{ item.label || item.action || "人工操作" }}</strong><br />
                 {{ targetSummary(item) }}<br />
                 {{ item.summary || item.description || "-" }}
@@ -634,8 +667,9 @@ onBeforeUnmount(() => {
                     {{ targetActionLabel(target) }}
                   </button>
                 </div>
-              </li>
-            </ul>
+                </article>
+              </template>
+            </VirtualList>
             <CursorPager
               test-id-prefix="operator-action-pager"
               :pagination="indexConsole.activitySectionPagination('operator_action')"
