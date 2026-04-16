@@ -7,6 +7,7 @@ import {
   importBundleWorksheet,
   previewBundleWorksheet,
 } from "../lib/api";
+import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 
 function extractEnvelope(payload) {
   if (payload?.envelope) {
@@ -64,11 +65,11 @@ export const useInteropCenterStore = defineStore("interopCenter", {
       this.worksheetYaml = nextWorksheetYaml;
       try {
         const result = await previewBundleWorksheet(this.worksheetYaml);
-        this.previewResult = result;
+        this.previewResult = snapshotPayload(result);
         this.importResult = null;
-        this.activeEnvelope = result.envelope || null;
+        this.activeEnvelope = result.envelope ? snapshotPayload(result.envelope) : null;
         this.activeArtifactReceipt = null;
-        this.activeSourceComparisons = sourceComparisons(result);
+        this.activeSourceComparisons = snapshotPayloadList(sourceComparisons(result));
         this.activeMode = "preview";
         this.lastPreviewedWorksheet = this.worksheetYaml;
         this.exportBundleId = result.envelope?.bundle_id || this.exportBundleId;
@@ -91,10 +92,10 @@ export const useInteropCenterStore = defineStore("interopCenter", {
       this.worksheetYaml = nextWorksheetYaml;
       try {
         const result = await importBundleWorksheet(this.worksheetYaml);
-        this.importResult = result;
-        this.activeEnvelope = result.envelope || null;
-        this.activeArtifactReceipt = result.artifact_receipt || null;
-        this.activeSourceComparisons = sourceComparisons(result);
+        this.importResult = snapshotPayload(result);
+        this.activeEnvelope = result.envelope ? snapshotPayload(result.envelope) : null;
+        this.activeArtifactReceipt = result.artifact_receipt ? snapshotPayload(result.artifact_receipt) : null;
+        this.activeSourceComparisons = snapshotPayloadList(sourceComparisons(result));
         this.activeMode = "import";
         this.exportBundleId = result.bundle?.bundle_id || this.exportBundleId;
         return `已导入 ${result.bundle?.bundle_id || "工作表构包"}`;
@@ -110,9 +111,9 @@ export const useInteropCenterStore = defineStore("interopCenter", {
       this.error = "";
       try {
         const result = await fetchBundleWorksheetExport(bundleId.trim());
-        this.activeEnvelope = extractEnvelope(result);
-        this.activeArtifactReceipt = result.artifact_receipt || null;
-        this.activeSourceComparisons = sourceComparisons(result);
+        this.activeEnvelope = snapshotPayload(extractEnvelope(result));
+        this.activeArtifactReceipt = result.artifact_receipt ? snapshotPayload(result.artifact_receipt) : null;
+        this.activeSourceComparisons = snapshotPayloadList(sourceComparisons(result));
         this.activeMode = "export";
         this.exportBundleId = bundleId.trim();
         return `已加载 ${this.exportBundleId} 的导出结果`;
@@ -128,9 +129,9 @@ export const useInteropCenterStore = defineStore("interopCenter", {
       this.error = "";
       try {
         const result = await fetchReplayFinalScene(rowId.trim());
-        this.activeEnvelope = extractEnvelope(result);
-        this.activeArtifactReceipt = result.artifact_receipt || null;
-        this.activeSourceComparisons = sourceComparisons(result);
+        this.activeEnvelope = snapshotPayload(extractEnvelope(result));
+        this.activeArtifactReceipt = result.artifact_receipt ? snapshotPayload(result.artifact_receipt) : null;
+        this.activeSourceComparisons = snapshotPayloadList(sourceComparisons(result));
         this.activeMode = "replay-final";
         this.replayFinalRowId = rowId.trim();
         return `已加载 ${this.replayFinalRowId} 的最终场景回放`;
@@ -146,9 +147,9 @@ export const useInteropCenterStore = defineStore("interopCenter", {
       this.error = "";
       try {
         const result = await fetchReplayDraft(rowId.trim());
-        this.activeEnvelope = extractEnvelope(result);
-        this.activeArtifactReceipt = result.artifact_receipt || null;
-        this.activeSourceComparisons = sourceComparisons(result);
+        this.activeEnvelope = snapshotPayload(extractEnvelope(result));
+        this.activeArtifactReceipt = result.artifact_receipt ? snapshotPayload(result.artifact_receipt) : null;
+        this.activeSourceComparisons = snapshotPayloadList(sourceComparisons(result));
         this.activeMode = "replay-draft";
         this.replayDraftRowId = rowId.trim();
         return `已加载 ${this.replayDraftRowId} 的草稿回放`;

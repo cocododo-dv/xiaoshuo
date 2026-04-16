@@ -1,7 +1,7 @@
 <script setup>
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, ref, watch } from "vue";
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, ref, shallowRef, watch } from "vue";
 
-import { buildVirtualWindow } from "../lib/virtualList";
+import { buildHeightProfile, buildVirtualWindow, resolvePinnedIndexes } from "../lib/virtualList";
 
 const props = defineProps({
   items: {
@@ -39,12 +39,19 @@ const props = defineProps({
 });
 
 const scrollTop = ref(0);
-const measuredHeights = ref({});
+const measuredHeights = shallowRef({});
 const rowElements = new Map();
 const rowObservers = new Map();
 const measureFrameId = ref(0);
+const scrollFrameId = ref(0);
 const pendingMeasurements = new Map();
 const active = ref(true);
+let pendingScrollTop = 0;
+
+const heightProfile = computed(() =>
+  buildHeightProfile(props.items, props.itemKey, measuredHeights.value, props.estimatedItemHeight),
+);
+const pinnedIndexes = computed(() => resolvePinnedIndexes(props.items, props.itemKey, props.pinnedKeys));
 
 const windowState = computed(() =>
   buildVirtualWindow({
@@ -57,6 +64,8 @@ const windowState = computed(() =>
     threshold: props.threshold,
     measuredHeights: measuredHeights.value,
     pinnedKeys: props.pinnedKeys,
+    heightProfile: heightProfile.value,
+    pinnedIndexes: pinnedIndexes.value,
   }),
 );
 
@@ -77,6 +86,15 @@ function cancelMeasureFrame() {
   measureFrameId.value = 0;
 }
 
+function cancelScrollFrame() {
+  if (!scrollFrameId.value) {
+    return;
+  }
+
+  cancelAnimationFrame(scrollFrameId.value);
+  scrollFrameId.value = 0;
+}
+
 function flushPendingMeasurements() {
   measureFrameId.value = 0;
 
@@ -87,31 +105,44 @@ function flushPendingMeasurements() {
 
   const queuedMeasurements = [...pendingMeasurements.entries()];
   pendingMeasurements.clear();
+  let nextHeights = measuredHeights.value;
+  let changed = false;
 
   queuedMeasurements.forEach(([key, element]) => {
     if (!element?.isConnected) {
       return;
     }
 
-    commitMeasuredHeight(key, element.offsetHeight);
+    const roundedHeight = normalizedMeasuredHeight(element.offsetHeight);
+    if (shouldCommitMeasuredHeight(nextHeights, key, roundedHeight)) {
+      if (!changed) {
+        nextHeights = { ...nextHeights };
+        changed = true;
+      }
+      nextHeights[key] = roundedHeight;
+    }
   });
+
+  if (changed) {
+    measuredHeights.value = nextHeights;
+  }
 }
 
-function commitMeasuredHeight(key, height) {
+function normalizedMeasuredHeight(height) {
+  return Math.max(Math.round(height), 1);
+}
+
+function shouldCommitMeasuredHeight(heights, key, roundedHeight) {
   if (key === null || key === undefined) {
-    return;
+    return false;
   }
 
-  const roundedHeight = Math.max(Math.round(height), 1);
-  const currentHeight = measuredHeights.value[key];
+  const currentHeight = heights[key];
   if (currentHeight && Math.abs(currentHeight - roundedHeight) <= 1) {
-    return;
+    return false;
   }
 
-  measuredHeights.value = {
-    ...measuredHeights.value,
-    [key]: roundedHeight,
-  };
+  return true;
 }
 
 function queueMeasure(key, element) {
@@ -170,7 +201,19 @@ function rowRef(entry) {
 }
 
 function handleScroll(event) {
-  scrollTop.value = event.target.scrollTop;
+  pendingScrollTop = event.target.scrollTop;
+
+  if (scrollFrameId.value) {
+    return;
+  }
+
+  scrollFrameId.value = requestAnimationFrame(() => {
+    scrollFrameId.value = 0;
+    if (!active.value) {
+      return;
+    }
+    scrollTop.value = pendingScrollTop;
+  });
 }
 
 watch(
@@ -218,11 +261,13 @@ onActivated(async () => {
 onDeactivated(() => {
   active.value = false;
   cancelMeasureFrame();
+  cancelScrollFrame();
   pendingMeasurements.clear();
 });
 
 onBeforeUnmount(() => {
   cancelMeasureFrame();
+  cancelScrollFrame();
   pendingMeasurements.clear();
   rowObservers.forEach((observer) => observer.disconnect());
   rowObservers.clear();
@@ -235,7 +280,7 @@ onBeforeUnmount(() => {
     class="virtual-list"
     :data-testid="props.testId || undefined"
     :style="{ maxHeight: `${props.viewportHeight}px`, overflowY: 'auto', position: 'relative' }"
-    @scroll="handleScroll"
+    @scroll.passive="handleScroll"
   >
     <div
       v-if="windowState.virtualized"
@@ -249,9 +294,10 @@ onBeforeUnmount(() => {
         :ref="rowRef(entry)"
         :style="{
           position: 'absolute',
-          top: `${entry.offsetTop}px`,
+          top: '0',
           left: '0',
           right: '0',
+          transform: `translateY(${entry.offsetTop}px)`,
         }"
       >
         <slot :item="entry.item" :entry="entry" :virtualized="true" />

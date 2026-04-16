@@ -10,6 +10,7 @@ import {
   resetCursorPager,
   retreatCursorPager,
 } from "../lib/cursorPagination";
+import { snapshotPayloadList } from "../lib/payloadSnapshot";
 
 function createReviewFilters() {
   return {
@@ -149,14 +150,16 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       this.humanReviewFilterSignature = nextSignature;
     },
     assignReviewItems(items) {
-      this.items = items;
-      this.reviewItemLookup = buildLookup(items, "review_id");
+      const snapshotItems = snapshotPayloadList(items);
+      this.items = snapshotItems;
+      this.reviewItemLookup = buildLookup(snapshotItems, "review_id");
       this.reviewItemsVersion += 1;
     },
     assignHumanReviewItems(items) {
-      const lookups = buildHumanReviewLookups(items);
+      const snapshotItems = snapshotPayloadList(items);
+      const lookups = buildHumanReviewLookups(snapshotItems);
 
-      this.humanReviewItems = items;
+      this.humanReviewItems = snapshotItems;
       this.humanReviewItemLookup = lookups.byId;
       this.humanReviewItemLookupBySource = lookups.bySource;
       this.systemRecoveryItemsCache = lookups.recoveryOpenItems;

@@ -18,6 +18,7 @@ import {
   resetCursorPager,
   retreatCursorPager,
 } from "../lib/cursorPagination";
+import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 
 export const useWorkbenchStore = defineStore("workbench", {
   state: () => ({
@@ -55,7 +56,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.error = "";
       this.sceneId = sceneId;
       try {
-        this.data = await fetchWorkbench(sceneId);
+        this.data = snapshotPayload(await fetchWorkbench(sceneId));
       } catch (error) {
         this.data = null;
         this.error = error.message;
@@ -67,7 +68,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.humanReviewLoading = true;
       try {
         const payload = await fetchHumanReviewEvents({ sceneId });
-        this.humanReviewItems = payload.items || [];
+        this.humanReviewItems = snapshotPayloadList(payload.items || []);
       } catch (error) {
         this.humanReviewItems = [];
         this.error = error.message;
@@ -87,7 +88,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.syncAttemptPager(sceneId, { reset });
       try {
         const payload = await fetchSceneAttempts(sceneId, buildCursorQuery(this.attemptPager));
-        this.attempts = applyCursorPayload(this.attemptPager, payload);
+        this.attempts = snapshotPayloadList(applyCursorPayload(this.attemptPager, payload));
       } catch (error) {
         this.attempts = [];
         this.error = error.message;
@@ -135,7 +136,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.error = "";
       try {
         const result = await runFullScene(sceneId);
-        this.lastRunResult = result;
+        this.lastRunResult = snapshotPayload(result);
         this.syncAttemptPager(sceneId, { reset: true });
         await this.refreshAll(sceneId, { force: true });
         return `已运行 ${sceneId} 的完整场景流程`;
@@ -152,7 +153,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.error = "";
       try {
         const result = await postChapterBackfill(chapterId, stageId, strategy);
-        this.lastChapterActionResult = result.receipt;
+        this.lastChapterActionResult = snapshotPayload(result.receipt);
         await this.refreshAll(sceneId, { force: true });
         return `已对 ${stageId} 应用策略 ${strategy}`;
       } catch (error) {
@@ -167,7 +168,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.error = "";
       try {
         const result = await postChapterFinalAggregate(chapterId);
-        this.lastChapterActionResult = result.receipt;
+        this.lastChapterActionResult = snapshotPayload(result.receipt);
         await this.refreshAll(sceneId, { force: true });
         return `已运行 ${chapterId} 的最终聚合`;
       } catch (error) {
@@ -182,7 +183,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.error = "";
       try {
         const result = await postChapterManualHold(chapterId, reason);
-        this.lastChapterActionResult = result.receipt;
+        this.lastChapterActionResult = snapshotPayload(result.receipt);
         await this.refreshAll(sceneId, { force: true });
         return `已为 ${chapterId} 设置人工挂起`;
       } catch (error) {
@@ -197,7 +198,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.error = "";
       try {
         const result = await clearChapterManualHold(chapterId);
-        this.lastChapterActionResult = result.receipt;
+        this.lastChapterActionResult = snapshotPayload(result.receipt);
         await this.refreshAll(sceneId, { force: true });
         return `已清除 ${chapterId} 的人工挂起`;
       } catch (error) {

@@ -20,6 +20,80 @@ async function waitForIndexSectionContent(section, virtualListTestId) {
     .toBe(true);
 }
 
+function percentile(values, percentileValue) {
+  if (!values.length) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * percentileValue) - 1);
+  return sorted[index];
+}
+
+async function measureVisibleNavigation(page, navTestId, viewTestId) {
+  const start = Date.now();
+  await page.getByTestId(navTestId).click();
+  await expect(page.getByTestId(viewTestId)).toBeVisible();
+  return Date.now() - start;
+}
+
+async function collectFrameMetricsDuring(page, action, duration = 700) {
+  const metricsPromise = page.evaluate((sampleDuration) =>
+    new Promise((resolve) => {
+      const gaps = [];
+      const longTasks = [];
+      let observer = null;
+      if ("PerformanceObserver" in window) {
+        try {
+          observer = new PerformanceObserver((list) => {
+            list.getEntries().forEach((entry) => longTasks.push(entry.duration));
+          });
+          observer.observe({ type: "longtask", buffered: true });
+        } catch {
+          observer = null;
+        }
+      }
+
+      const start = performance.now();
+      let last = start;
+      function frame(now) {
+        gaps.push(now - last);
+        last = now;
+        if (now - start < sampleDuration) {
+          requestAnimationFrame(frame);
+          return;
+        }
+        observer?.disconnect();
+        resolve({ gaps: gaps.slice(1), longTasks });
+      }
+
+      requestAnimationFrame(frame);
+    }), duration);
+
+  await action();
+  return metricsPromise;
+}
+
+async function exerciseVirtualScroll(locator) {
+  await locator.evaluate(
+    (list) =>
+      new Promise((resolve) => {
+        const maxScrollTop = Math.max(list.scrollHeight - list.clientHeight, 0);
+        let step = 0;
+        function scrollStep() {
+          step += 1;
+          list.scrollTop = Math.round((maxScrollTop * step) / 12);
+          list.dispatchEvent(new Event("scroll"));
+          if (step < 12) {
+            requestAnimationFrame(scrollStep);
+            return;
+          }
+          resolve();
+        }
+        requestAnimationFrame(scrollStep);
+      }),
+  );
+}
+
 test("defers unopened views and keeps heavy review payloads collapsed until expanded", async ({ page }) => {
   const requestedPaths = [];
 
@@ -94,7 +168,10 @@ test("loads index activity sections and target-group items only after explicit e
     .poll(() => requestedUrls.some((url) => url.includes("/api/v1/target-activity-groups?")))
     .toBe(true);
 
-  const firstGroupToggle = page.getByTestId(/target-activity-toggle-/).first();
+  const targetGroupsSection = page.getByTestId("index-target-groups-section");
+  await waitForIndexSectionContent(targetGroupsSection, "index-target-groups-virtual-list");
+
+  const firstGroupToggle = targetGroupsSection.getByTestId(/target-activity-toggle-/).first();
   if (await firstGroupToggle.count()) {
     await expect(firstGroupToggle).toBeVisible();
     await firstGroupToggle.click();
@@ -106,7 +183,7 @@ test("loads index activity sections and target-group items only after explicit e
       )
       .toBe(true);
   } else {
-    await expect(page.getByText("当前没有目标活动摘要。")).toBeVisible();
+    await expect(targetGroupsSection.locator(".empty")).toBeVisible();
   }
 });
 
@@ -184,6 +261,64 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
   await expect(page.getByTestId("author-scene-virtual-list")).toBeVisible();
   await expect(page.getByTestId("author-chapter-form")).toBeVisible();
   await expect(page.getByTestId("author-scene-form")).toBeVisible();
+});
+
+test("keeps cached navigation and virtual scrolling inside smoothness budgets", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("api-base-input").fill(apiBase);
+  await page.getByTestId("api-base-input").press("Tab");
+  await page.getByTestId("operator-ref-input").fill("ops.smoothness.budget");
+  await page.getByTestId("operator-ref-input").press("Tab");
+
+  const warmupRoutes = [
+    ["nav-review", "review-inbox-view"],
+    ["nav-index", "index-console-view"],
+    ["nav-knowledge", "knowledge-console-view"],
+    ["nav-author", "author-workspace-view"],
+    ["nav-workbench", "scene-workbench-view"],
+  ];
+  for (const [navTestId, viewTestId] of warmupRoutes) {
+    await page.getByTestId(navTestId).click();
+    await expect(page.getByTestId(viewTestId)).toBeVisible();
+  }
+
+  const routeDurations = [];
+  for (const [navTestId, viewTestId] of warmupRoutes) {
+    routeDurations.push(await measureVisibleNavigation(page, navTestId, viewTestId));
+  }
+  expect(percentile(routeDurations, 0.95)).toBeLessThanOrEqual(200);
+
+  await page.getByTestId("nav-review").click();
+  await expect(page.getByTestId("review-inbox-virtual-list")).toBeVisible();
+  const reviewList = page.getByTestId("review-inbox-virtual-list");
+  const reviewMetrics = await collectFrameMetricsDuring(page, () => exerciseVirtualScroll(reviewList));
+  expect(percentile(reviewMetrics.gaps, 0.95)).toBeLessThanOrEqual(32);
+  expect(Math.max(...reviewMetrics.gaps)).toBeLessThanOrEqual(80);
+  expect(reviewMetrics.longTasks.filter((duration) => duration > 100)).toHaveLength(0);
+  expect(await reviewList.locator(".virtual-list-row").count()).toBeLessThanOrEqual(40);
+
+  await page.getByTestId("nav-index").click();
+  await expect(page.getByTestId("index-console-view")).toBeVisible();
+  await page.getByTestId("index-toggle-target-groups").click();
+  const targetGroupsSection = page.getByTestId("index-target-groups-section");
+  await waitForIndexSectionContent(targetGroupsSection, "index-target-groups-virtual-list");
+  if (await targetGroupsSection.getByTestId("index-target-groups-virtual-list").count()) {
+    const targetGroupList = targetGroupsSection.getByTestId("index-target-groups-virtual-list");
+    const targetMetrics = await collectFrameMetricsDuring(page, () => exerciseVirtualScroll(targetGroupList));
+    expect(percentile(targetMetrics.gaps, 0.95)).toBeLessThanOrEqual(32);
+    expect(Math.max(...targetMetrics.gaps)).toBeLessThanOrEqual(80);
+    expect(targetMetrics.longTasks.filter((duration) => duration > 100)).toHaveLength(0);
+    expect(await targetGroupList.locator(".virtual-list-row").count()).toBeLessThanOrEqual(40);
+  }
+
+  await page.getByTestId("nav-author").click();
+  await expect(page.getByTestId("author-scene-virtual-list")).toBeVisible();
+  const authorSceneList = page.getByTestId("author-scene-virtual-list");
+  const authorMetrics = await collectFrameMetricsDuring(page, () => exerciseVirtualScroll(authorSceneList));
+  expect(percentile(authorMetrics.gaps, 0.95)).toBeLessThanOrEqual(32);
+  expect(Math.max(...authorMetrics.gaps)).toBeLessThanOrEqual(80);
+  expect(authorMetrics.longTasks.filter((duration) => duration > 100)).toHaveLength(0);
+  expect(await authorSceneList.locator(".virtual-list-row").count()).toBeLessThanOrEqual(40);
 });
 
 test("preserves view state across a workbench-review-index-workbench round trip without hidden-page reloads", async ({ page }) => {

@@ -37,12 +37,16 @@ button {
   color: white;
   cursor: pointer;
   padding: 0.72rem 1.1rem;
-  transition: transform 160ms ease, opacity 160ms ease, box-shadow 160ms ease;
+  touch-action: manipulation;
+  transition: transform 120ms ease, opacity 120ms ease, background-color 120ms ease;
 }
 
 button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 12px 20px rgba(37, 51, 66, 0.16);
+}
+
+button:active {
+  transform: translateY(0) scale(0.98);
 }
 
 button:disabled {
@@ -269,22 +273,21 @@ pre {
 
 .view-fade-enter-active,
 .view-fade-leave-active {
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition: opacity 90ms ease, transform 90ms ease;
 }
 
 .view-fade-enter-from,
 .view-fade-leave-to {
   opacity: 0;
-  transform: translateY(6px);
+  transform: translateY(4px);
 }
 
 .panel {
-  background: rgba(247, 241, 229, 0.78);
+  background: rgba(247, 241, 229, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.6);
   border-radius: 1.7rem;
   padding: 1.4rem;
-  box-shadow: 0 20px 50px var(--shadow);
-  backdrop-filter: blur(10px);
+  box-shadow: 0 14px 32px rgba(27, 24, 21, 0.12);
 }
 
 .panel-shell.panel-shell-compact {
@@ -1198,5 +1201,21 @@ pre {
   .target-group-head {
     grid-template-columns: 1fr;
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
+
+  .view-fade-enter-from,
+  .view-fade-leave-to {
+    transform: none;
   }
 }

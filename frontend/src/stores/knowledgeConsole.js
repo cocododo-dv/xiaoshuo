@@ -10,6 +10,7 @@ import {
   releaseReview,
   retryVerify,
 } from "../lib/api";
+import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 
 const ITEM_TYPE_TO_OBJECT_TYPE = {
   style_observation: "style_observation",
@@ -176,14 +177,14 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
 
       try {
         const knowledgePayload = await fetchKnowledgeEntries(this.filters);
-        this.pendingReviewItems = [];
-        this.items = (knowledgePayload.items || []).filter((item) => itemMatchesFilters(item, this.filters));
-        this.supportedObjectTypes = Array.from(
+        this.pendingReviewItems = snapshotPayloadList([]);
+        this.items = snapshotPayloadList((knowledgePayload.items || []).filter((item) => itemMatchesFilters(item, this.filters)));
+        this.supportedObjectTypes = snapshotPayloadList(Array.from(
           new Set([
             ...(knowledgePayload.supported_object_types || []),
             ...Object.values(ITEM_TYPE_TO_OBJECT_TYPE),
           ]),
-        ).sort();
+        ).sort());
 
         if (requestId === this.detailRequestId) {
           const selectedItem = this.selectedObjectType && this.selectedLineageKey
@@ -196,9 +197,9 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
 
         this.markFresh(this.filters);
       } catch (error) {
-        this.items = [];
-        this.pendingReviewItems = [];
-        this.supportedObjectTypes = [];
+        this.items = snapshotPayloadList([]);
+        this.pendingReviewItems = snapshotPayloadList([]);
+        this.supportedObjectTypes = snapshotPayloadList([]);
         this.detail = null;
         this.loaded = false;
         this.error = error.message;
@@ -231,7 +232,7 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         if (requestId !== this.detailRequestId) {
           return this.detail;
         }
-        const mergedDetail = { ...detail, workflow };
+        const mergedDetail = snapshotPayload({ ...detail, workflow });
         this.detail = mergedDetail && itemMatchesFilters(mergedDetail, this.filters) ? mergedDetail : optimisticDetail;
         return this.detail;
       } catch (error) {

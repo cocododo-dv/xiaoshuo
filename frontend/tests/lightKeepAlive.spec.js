@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 import { createPinia, setActivePinia } from "pinia";
+import { isReactive } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
@@ -45,11 +46,17 @@ describe("light keep-alive shell architecture", () => {
   it("adds deactivated guards so cached pages pause hidden focus work", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
+    const knowledgeSource = readFileSync(new URL("../src/views/KnowledgeConsoleView.vue", import.meta.url), "utf8");
+    const workbenchSource = readFileSync(new URL("../src/views/SceneWorkbenchView.vue", import.meta.url), "utf8");
 
     expect(indexSource).toContain("onDeactivated");
     expect(indexSource).toContain("isViewActive");
     expect(reviewSource).toContain("onDeactivated");
     expect(reviewSource).toContain("isViewActive");
+    expect(knowledgeSource).toContain("onDeactivated");
+    expect(knowledgeSource).toContain("isViewActive");
+    expect(workbenchSource).toContain("onDeactivated");
+    expect(workbenchSource).toContain("isViewActive");
   });
 
   it("keeps cached heavy surfaces routed through shared list primitives", () => {
@@ -156,5 +163,45 @@ describe("versioned visibility lookups", () => {
     expect(store.targetGroupsVersion).toBeGreaterThan(0);
     expect(store.hasJob("verify_demo")).toBe(true);
     expect(store.hasTargetActivityGroup("review_item:review_demo")).toBe(true);
+  });
+
+  it("keeps large store payload rows out of deep Vue reactivity", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes("/review-items")) {
+        return ok({
+          items: [{ review_id: "review_demo", status: "pending", candidate_payload_json: { nested: true } }],
+          pagination: { has_next: false, next_cursor: null, returned: 1, total: 1, limit: 25, mode: "cursor" },
+        });
+      }
+      if (url.includes("/human-review-events")) {
+        return ok({
+          items: [{ event_id: "event_demo", event_source: "idempotency_recovery", status: "pending" }],
+          pagination: { has_next: false, next_cursor: null, returned: 1, total: 1, limit: 25, mode: "cursor" },
+        });
+      }
+      if (url.includes("/vector-alias-scopes")) {
+        return ok({ items: [{ alias_scope: "style_rule:global:global", recent_fault_summary: { details_json: {} } }] });
+      }
+      if (url.includes("/jobs")) {
+        return ok({
+          items: [{ job_id: "verify_demo", job_type: "verify", status: "pending", extra: { nested: true } }],
+          pagination: { has_next: false, next_cursor: null, returned: 1, total: 1, limit: 25, mode: "cursor" },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const reviewStore = useReviewInboxStore();
+    const indexStore = useIndexConsoleStore();
+
+    await reviewStore.ensureLoaded();
+    await indexStore.ensureLoaded();
+
+    expect(isReactive(reviewStore.items[0])).toBe(false);
+    expect(isReactive(reviewStore.items[0].candidate_payload_json)).toBe(false);
+    expect(isReactive(reviewStore.humanReviewItems[0])).toBe(false);
+    expect(isReactive(indexStore.aliasScopes[0])).toBe(false);
+    expect(isReactive(indexStore.jobs[0])).toBe(false);
+    expect(isReactive(indexStore.jobs[0].extra)).toBe(false);
   });
 });

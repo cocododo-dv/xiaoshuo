@@ -7,6 +7,7 @@ import {
   restoreChapters as postRestoreChapters,
   restoreScenes as postRestoreScenes,
 } from "../lib/api";
+import { snapshotPayloadList } from "../lib/payloadSnapshot";
 
 function changedIds(result, key) {
   return (result?.processed || []).map((item) => item?.[key]).filter(Boolean);
@@ -35,12 +36,12 @@ async function markAuthorWorkspaceStale() {
 }
 
 function assignChapterList(store, chapters) {
-  store.chapters = chapters;
+  store.chapters = snapshotPayloadList(chapters);
   store.chapterListVersion += 1;
 }
 
 function assignSceneList(store, scenes) {
-  store.scenes = scenes;
+  store.scenes = snapshotPayloadList(scenes);
   store.sceneListVersion += 1;
 }
 

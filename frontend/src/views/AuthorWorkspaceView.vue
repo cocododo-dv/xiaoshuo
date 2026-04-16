@@ -57,13 +57,27 @@ const pinnedChapterKeys = computed(() => (authorWorkspace.selectedChapterId ? [a
 const pinnedSceneKeys = computed(() => (selectedSceneId.value ? [selectedSceneId.value] : []));
 const chapterRunStatus = computed(() => authorWorkspace.chapterRunStatus || null);
 const selectedScene = computed(() => scenes.value.find((scene) => scene.scene_id === selectedSceneId.value) || null);
+const trashableChapterIds = computed(() => {
+  const ids = new Set();
+  chapters.value.forEach((chapter) => {
+    if (isChapterTrashAllowed(chapter)) {
+      ids.add(chapter.chapter_id);
+    }
+  });
+  return ids;
+});
+const selectableSceneIds = computed(() => {
+  const ids = new Set();
+  scenes.value.forEach((scene) => {
+    ids.add(scene.scene_id);
+  });
+  return ids;
+});
 const selectedChapterTrashIds = computed(() =>
-  selectedChapterIdsForTrash.value.filter((chapterId) =>
-    chapters.value.some((chapter) => chapter.chapter_id === chapterId && Number(chapter.trash_allowed) === 1),
-  ),
+  selectedChapterIdsForTrash.value.filter((chapterId) => trashableChapterIds.value.has(chapterId)),
 );
 const selectedSceneTrashIds = computed(() =>
-  selectedSceneIdsForTrash.value.filter((sceneId) => scenes.value.some((scene) => scene.scene_id === sceneId)),
+  selectedSceneIdsForTrash.value.filter((sceneId) => selectableSceneIds.value.has(sceneId)),
 );
 const chapterRunCompletedCount = computed(() => chapterRunStatus.value?.completed_scene_ids?.length || 0);
 const chapterRunActionLabel = computed(() =>
@@ -166,17 +180,13 @@ function isChapterTrashAllowed(chapter) {
 }
 
 function syncChapterTrashSelection() {
-  const selectableChapterIds = new Set(
-    chapters.value.filter((chapter) => isChapterTrashAllowed(chapter)).map((chapter) => chapter.chapter_id),
-  );
   selectedChapterIdsForTrash.value = selectedChapterIdsForTrash.value.filter((chapterId) =>
-    selectableChapterIds.has(chapterId),
+    trashableChapterIds.value.has(chapterId),
   );
 }
 
 function syncSceneTrashSelection() {
-  const selectableSceneIds = new Set(scenes.value.map((scene) => scene.scene_id));
-  selectedSceneIdsForTrash.value = selectedSceneIdsForTrash.value.filter((sceneId) => selectableSceneIds.has(sceneId));
+  selectedSceneIdsForTrash.value = selectedSceneIdsForTrash.value.filter((sceneId) => selectableSceneIds.value.has(sceneId));
 }
 
 async function refreshAuthorWorkspace() {

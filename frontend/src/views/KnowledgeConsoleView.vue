@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onActivated, reactive, watch } from "vue";
+import { computed, onActivated, onDeactivated, reactive, ref, watch } from "vue";
 
 import LazySection from "../components/LazySection.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
@@ -13,6 +13,7 @@ const emit = defineEmits(["notice"]);
 
 const knowledgeConsole = useKnowledgeConsoleStore();
 const { focusTarget, navigate, openTarget } = useShellRouter();
+const isViewActive = ref(false);
 
 const filters = reactive({
   objectType: knowledgeConsole.filters?.objectType || "",
@@ -56,15 +57,45 @@ const workflowJobs = computed(() => detailWorkflow.value.jobs || []);
 const workflowHumanReviewEvents = computed(() => detailWorkflow.value.human_review_events || []);
 const workflowTargetActivityGroups = computed(() => detailWorkflow.value.target_activity_groups || []);
 const primaryWorkflowAction = computed(() => detailWorkflow.value.recommended_primary_action || null);
-const pendingWorkflowReviewItems = computed(() => workflowReviewItems.value.filter((item) => item.status === "pending"));
-const retryableWorkflowJobs = computed(() =>
-  workflowJobs.value.filter((item) => item.job_type === "verify" && item.status !== "succeeded"),
-);
-const releasableWorkflowReviews = computed(() =>
-  workflowReviewItems.value.filter(
-    (item) => item.status === "approved" && item.materialize_status === "succeeded" && canReleaseReview(item),
-  ),
-);
+const workflowActionItems = computed(() => {
+  const pendingReviews = [];
+  const retryableJobs = [];
+  const releasableReviews = [];
+  const blockedReleaseReviewIds = new Set();
+  const activeVersionRowId = knowledgeConsole.detail?.active_version?.row_id || "";
+
+  workflowJobs.value.forEach((job) => {
+    if (job.job_type !== "verify" || job.status === "succeeded") {
+      return;
+    }
+    retryableJobs.push(job);
+    if (job.review_id) {
+      blockedReleaseReviewIds.add(job.review_id);
+    }
+  });
+
+  workflowReviewItems.value.forEach((review) => {
+    if (review.status === "pending") {
+      pendingReviews.push(review);
+      return;
+    }
+    if (
+      review.status === "approved"
+      && review.materialize_status === "succeeded"
+      && review.approved_item_row_id
+      && activeVersionRowId !== review.approved_item_row_id
+      && !blockedReleaseReviewIds.has(review.review_id)
+    ) {
+      releasableReviews.push(review);
+    }
+  });
+
+  return {
+    pendingReviews,
+    retryableJobs,
+    releasableReviews,
+  };
+});
 const ITEM_TYPE_LABELS = {
   style_rule: "风格规则",
   style_observation: "风格观察",
@@ -167,18 +198,6 @@ function actionLabel(action) {
 
 function formatJsonPayload(value) {
   return JSON.stringify(value ?? {}, null, 2);
-}
-
-function canReleaseReview(review) {
-  if (!review?.approved_item_row_id) {
-    return false;
-  }
-  if (knowledgeConsole.detail?.active_version?.row_id === review.approved_item_row_id) {
-    return false;
-  }
-  return !workflowJobs.value.some(
-    (job) => job.job_type === "verify" && job.review_id === review.review_id && job.status !== "succeeded",
-  );
 }
 
 function jobTarget(job) {
@@ -403,25 +422,38 @@ async function runPrimaryWorkflowAction() {
   }
 }
 
-onActivated(() => {
-  ensureKnowledgeLoaded();
+async function syncKnowledgeFocus(targetRef = focusTarget.value?.target_ref || "") {
+  if (!isViewActive.value) {
+    return;
+  }
+  const target = parseKnowledgeTarget(targetRef);
+  if (!target) {
+    return;
+  }
+  if (!knowledgeConsole.items.length) {
+    await refreshKnowledge();
+  }
+  try {
+    await knowledgeConsole.selectItem(target.objectType, target.lineageKey);
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+onActivated(async () => {
+  isViewActive.value = true;
+  await ensureKnowledgeLoaded();
+  await syncKnowledgeFocus();
+});
+
+onDeactivated(() => {
+  isViewActive.value = false;
 });
 
 watch(
   () => focusTarget.value?.target_ref || "",
   async (targetRef) => {
-    const target = parseKnowledgeTarget(targetRef);
-    if (!target) {
-      return;
-    }
-    if (!knowledgeConsole.items.length) {
-      await refreshKnowledge();
-    }
-    try {
-      await knowledgeConsole.selectItem(target.objectType, target.lineageKey);
-    } catch (error) {
-      emit("notice", error.message);
-    }
+    await syncKnowledgeFocus(targetRef);
   },
 );
 </script>
@@ -650,7 +682,7 @@ watch(
                   {{ actionLabel(primaryWorkflowAction.action) }}
                 </button>
                 <button
-                  v-for="review in pendingWorkflowReviewItems"
+                  v-for="review in workflowActionItems.pendingReviews"
                   :key="`approve-${review.review_id}`"
                   class="ghost"
                   :data-testid="`knowledge-approve-review-${review.review_id}`"
@@ -660,7 +692,7 @@ watch(
                   批准审核
                 </button>
                 <button
-                  v-for="job in retryableWorkflowJobs"
+                  v-for="job in workflowActionItems.retryableJobs"
                   :key="`verify-${job.job_id}`"
                   class="ghost"
                   :data-testid="`knowledge-retry-verify-${job.job_id}`"
@@ -670,7 +702,7 @@ watch(
                   重试校验
                 </button>
                 <button
-                  v-for="review in releasableWorkflowReviews"
+                  v-for="review in workflowActionItems.releasableReviews"
                   :key="`release-${review.review_id}`"
                   class="ghost"
                   :data-testid="`knowledge-release-review-${review.review_id}`"

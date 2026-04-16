@@ -77,6 +77,73 @@ describe("resolvePinnedIndexes", () => {
 });
 
 describe("VirtualList KeepAlive lifecycle", () => {
+  it("coalesces rapid scroll events into one animation-frame render", async () => {
+    const animationFrames = createAnimationFrameController();
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      value: 20,
+    });
+
+    const items = Array.from({ length: 80 }, (_, index) => ({
+      id: `virtual-row-${index + 1}`,
+      label: `Virtual row ${index + 1}`,
+    }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp({
+      render() {
+        return h(
+          VirtualList,
+          {
+            items,
+            itemKey: "id",
+            estimatedItemHeight: 20,
+            overscan: 1,
+            threshold: 0,
+            viewportHeight: 80,
+            testId: "virtual-list-under-test",
+          },
+          {
+            default: ({ item }) =>
+              h("div", { "data-testid": item.id }, item.label),
+          },
+        );
+      },
+    });
+
+    app.mount(container);
+    await flushUi();
+    await animationFrames.flushAll();
+
+    try {
+      const list = container.querySelector('[data-testid="virtual-list-under-test"]');
+      expect(list).not.toBeNull();
+      expect(container.querySelector('[data-testid="virtual-row-1"]')).not.toBeNull();
+
+      list.scrollTop = 280;
+      list.dispatchEvent(new Event("scroll"));
+      list.scrollTop = 520;
+      list.dispatchEvent(new Event("scroll"));
+      await flushUi();
+
+      expect(animationFrames.queuedCount).toBe(1);
+      expect(container.querySelector('[data-testid="virtual-row-26"]')).toBeNull();
+
+      await animationFrames.flushAll();
+
+      expect(container.querySelector('[data-testid="virtual-row-26"]')).not.toBeNull();
+    } finally {
+      app.unmount();
+      container.remove();
+    }
+  });
+
   it("pauses queued measurements while deactivated and resumes after activation", async () => {
     const animationFrames = createAnimationFrameController();
     vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));

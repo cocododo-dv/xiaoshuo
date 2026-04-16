@@ -203,6 +203,7 @@ describe("shell smoothness architecture", () => {
     expect(reviewSource).not.toContain('map((item) => item.review_id || "").join("|")');
     expect(reviewSource).not.toContain('map((item) => item.event_id || "").join("|")');
     expect(authorSource).not.toContain('scenes.value.map((scene) => scene.scene_id).join("|")');
+    expect(authorSource).not.toContain('selectedSceneIdsForTrash.value.filter((sceneId) => scenes.value.some');
     expect(trashSource).not.toContain('chapters.value.map((chapter) => `${chapter.chapter_id}:${chapter.restore_allowed}:${chapter.purge_allowed}`).join("|")');
   });
 
@@ -211,6 +212,11 @@ describe("shell smoothness architecture", () => {
     const interopSource = readFileSync(new URL("../src/views/InteropCenterView.vue", import.meta.url), "utf8");
 
     expect(knowledgeSource).toContain("knowledge-toggle-runtime-refs");
+    expect(knowledgeSource).toContain("workflowActionItems");
+    expect(knowledgeSource).not.toContain("pendingWorkflowReviewItems");
+    expect(knowledgeSource).not.toContain("retryableWorkflowJobs");
+    expect(knowledgeSource).not.toContain("releasableWorkflowReviews");
+    expect(knowledgeSource).not.toContain("workflowJobs.value.some(");
     expect(knowledgeSource).not.toContain("workflowReviewItems.filter(");
     expect(knowledgeSource).not.toContain("workflowJobs.filter(");
     expect(knowledgeSource).not.toContain("JSON.stringify(knowledgeConsole.detail.runtime_refs || {}, null, 2)");
@@ -223,6 +229,16 @@ describe("shell smoothness architecture", () => {
 
     expect(styles).toContain("content-visibility: auto");
     expect(styles).toContain("contain-intrinsic-size");
+  });
+
+  it("keeps motion and paint effects inside the smoothness budget", () => {
+    const styles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+    const buttonHoverBlock = styles.match(/button:hover\s*\{[^}]*\}/)?.[0] || "";
+
+    expect(styles).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(buttonHoverBlock).not.toContain("box-shadow");
+    expect(styles).not.toContain("backdrop-filter");
+    expect(styles).toContain("touch-action: manipulation");
   });
 });
 

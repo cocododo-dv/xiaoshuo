@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onActivated, ref, watch } from "vue";
+import { computed, onActivated, onDeactivated, ref, watch } from "vue";
 
 import AttemptTimeline from "../components/AttemptTimeline.vue";
 import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
@@ -20,6 +20,7 @@ const { focusTarget, openTarget } = useShellRouter();
 const requestedSceneId = ref(workbench.sceneId);
 const manualHoldReason = ref("");
 const selectedStrategies = ref({});
+const isViewActive = ref(false);
 
 const hasData = computed(() => Boolean(workbench.data));
 const chapterState = computed(() => workbench.data?.chapter_state || {});
@@ -200,17 +201,26 @@ function handleOpenTarget(target) {
   emit("notice", `已打开 ${target.target_ref}`);
 }
 
+async function syncWorkbenchFocus() {
+  if (!isViewActive.value) {
+    return false;
+  }
+  if (
+    focusTarget.value?.target_type === "scene_card"
+    && focusTarget.value.target_id
+    && focusTarget.value.target_id !== workbench.sceneId
+  ) {
+    requestedSceneId.value = focusTarget.value.target_id;
+    await loadWorkbench();
+    return true;
+  }
+  return false;
+}
+
 watch(
   () => focusTarget.value?.target_ref,
   async () => {
-    if (
-      focusTarget.value?.target_type === "scene_card"
-      && focusTarget.value.target_id
-      && focusTarget.value.target_id !== workbench.sceneId
-    ) {
-      requestedSceneId.value = focusTarget.value.target_id;
-      await loadWorkbench();
-    }
+    await syncWorkbenchFocus();
   },
 );
 
@@ -222,8 +232,16 @@ watch(
   { immediate: true },
 );
 
-onActivated(() => {
-  ensureWorkbenchLoaded();
+onActivated(async () => {
+  isViewActive.value = true;
+  const focusedLoaded = await syncWorkbenchFocus();
+  if (!focusedLoaded) {
+    await ensureWorkbenchLoaded();
+  }
+});
+
+onDeactivated(() => {
+  isViewActive.value = false;
 });
 </script>
 

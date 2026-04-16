@@ -20,6 +20,7 @@ import {
   resetCursorPager,
   retreatCursorPager,
 } from "../lib/cursorPagination";
+import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 import { normalizeActivityItems, normalizeTargetActivityGroups } from "../lib/targetActivity";
 
 const ACTIVITY_SECTION_IDS = Object.freeze([
@@ -174,22 +175,22 @@ function clearActivitySectionItems(store, sectionId) {
 
 function assignActivitySectionItems(store, sectionId, items) {
   if (sectionId === "recovery_timeline") {
-    store.recoveryEvents = items;
-    store.recoveryTimelineItems = normalizeRecoveryTimelineItems(items);
+    store.recoveryEvents = snapshotPayloadList(items);
+    store.recoveryTimelineItems = snapshotPayloadList(normalizeRecoveryTimelineItems(items));
     return;
   }
   if (sectionId === "system_runtime") {
-    store.systemRuntimeEvents = items;
-    store.systemRuntimeTimelineItems = normalizeActivityItems(items);
+    store.systemRuntimeEvents = snapshotPayloadList(items);
+    store.systemRuntimeTimelineItems = snapshotPayloadList(normalizeActivityItems(items));
     return;
   }
   if (sectionId === "operator_action") {
-    store.operatorActionEvents = items;
-    store.operatorActionTimelineItems = normalizeActivityItems(items);
+    store.operatorActionEvents = snapshotPayloadList(items);
+    store.operatorActionTimelineItems = snapshotPayloadList(normalizeActivityItems(items));
     return;
   }
   if (sectionId === "target_groups") {
-    store.targetActivityGroups = normalizeTargetActivityGroups(items);
+    store.targetActivityGroups = snapshotPayloadList(normalizeTargetActivityGroups(items));
     store.targetGroupLookup = buildLookup(store.targetActivityGroups, (group) => group?.target?.target_ref);
     store.targetGroupsVersion += 1;
   }
@@ -237,13 +238,13 @@ function ensureTargetGroupState(store, targetRef) {
 function upsertTargetGroupMeta(store, targetRef, payload) {
   store.targetGroupMetaByRef = {
     ...store.targetGroupMetaByRef,
-    [targetRef]: {
+    [targetRef]: snapshotPayload({
       target: payload?.target || store.targetGroupMetaByRef[targetRef]?.target || null,
       latestAt: payload?.latest_at || store.targetGroupMetaByRef[targetRef]?.latestAt || null,
       activityCount: payload?.activity_count ?? store.targetGroupMetaByRef[targetRef]?.activityCount ?? 0,
       sources: payload?.sources || store.targetGroupMetaByRef[targetRef]?.sources || [],
       latestActivityKey: payload?.latest_activity_key || store.targetGroupMetaByRef[targetRef]?.latestActivityKey || "",
-    },
+    }),
   };
 }
 
@@ -350,8 +351,9 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
       resetActivityState(this);
     },
     assignJobs(items) {
-      this.jobs = items;
-      this.jobLookup = buildLookup(items, "job_id");
+      const snapshotItems = snapshotPayloadList(items);
+      this.jobs = snapshotItems;
+      this.jobLookup = buildLookup(snapshotItems, "job_id");
       this.jobsVersion += 1;
     },
     async loadJobs({ reset = false } = {}) {
@@ -380,7 +382,7 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
           fetchVectorAliasScopes(this.aliasFilters),
           this.loadJobs({ reset: force }),
         ]);
-        this.aliasScopes = aliasScopes.items || [];
+        this.aliasScopes = snapshotPayloadList(aliasScopes.items || []);
         this.markFresh();
       } catch (error) {
         this.aliasScopes = [];
@@ -533,7 +535,7 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
         const payload = await fetchTargetActivityGroupItems(targetRef, filters);
         this.targetGroupItemsByRef = {
           ...this.targetGroupItemsByRef,
-          [targetRef]: applyCursorPayload(section.pager, payload),
+          [targetRef]: snapshotPayloadList(applyCursorPayload(section.pager, payload)),
         };
         upsertTargetGroupMeta(this, targetRef, payload);
         section.loaded = true;
@@ -541,7 +543,7 @@ export const useIndexConsoleStore = defineStore("indexConsole", {
       } catch (error) {
         this.targetGroupItemsByRef = {
           ...this.targetGroupItemsByRef,
-          [targetRef]: [],
+          [targetRef]: snapshotPayloadList([]),
         };
         section.loaded = false;
         this.error = error.message;

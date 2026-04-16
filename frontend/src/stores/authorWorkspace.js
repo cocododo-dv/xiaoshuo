@@ -12,6 +12,7 @@ import {
   trashChapters as postTrashChapters,
   trashScenes as postTrashScenes,
 } from "../lib/api";
+import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 
 function changedIds(result, key) {
   return (result?.processed || []).map((item) => item?.[key]).filter(Boolean);
@@ -40,12 +41,12 @@ async function refreshAuthorTrashStore() {
 }
 
 function assignChapterList(store, chapters) {
-  store.chapters = chapters;
+  store.chapters = snapshotPayloadList(chapters);
   store.chapterListVersion += 1;
 }
 
 function assignSceneList(store, scenes) {
-  store.scenes = scenes;
+  store.scenes = snapshotPayloadList(scenes);
   store.sceneListVersion += 1;
 }
 
@@ -104,9 +105,9 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
         fetchChapterRunStatus(chapterId),
       ]);
       this.selectedChapterId = chapterId;
-      this.chapter = payload.chapter || null;
-      this.chapterState = payload.chapter_state || null;
-      this.chapterRunStatus = runStatus || null;
+      this.chapter = payload.chapter ? snapshotPayload(payload.chapter) : null;
+      this.chapterState = payload.chapter_state ? snapshotPayload(payload.chapter_state) : null;
+      this.chapterRunStatus = runStatus ? snapshotPayload(runStatus) : null;
       assignSceneList(this, payload.scenes || []);
       this.sceneDraft = null;
     },
@@ -195,7 +196,7 @@ export const useAuthorWorkspaceStore = defineStore("authorWorkspace", {
       this.error = "";
       try {
         const payload = await fetchSceneDraft(chapterId);
-        this.sceneDraft = payload;
+        this.sceneDraft = snapshotPayload(payload);
         return payload;
       } catch (error) {
         this.sceneDraft = null;

@@ -169,7 +169,7 @@ async function reloadAll() {
       </PanelShell>
 
       <div class="view-stack">
-        <Transition name="view-fade" mode="out-in">
+        <Transition name="view-fade">
           <KeepAlive>
             <component :is="activeViewComponent" :key="activeView" class="view-frame" @notice="pushNotice" />
           </KeepAlive>
