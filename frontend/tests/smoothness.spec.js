@@ -91,6 +91,17 @@ describe("shell smoothness architecture", () => {
     expect(targetGroupCardSource).toContain(":threshold=\"8\"");
   });
 
+  it("routes the remaining index timelines through VirtualList with semantic section anchors", () => {
+    const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+
+    expect(indexSource).toContain('test-id="index-system-runtime-section"');
+    expect(indexSource).toContain('test-id="index-system-runtime-virtual-list"');
+    expect(indexSource).toContain('test-id="index-operator-action-section"');
+    expect(indexSource).toContain('test-id="index-operator-action-virtual-list"');
+    expect(indexSource).toContain("const pinnedSystemRuntimeKeys = computed(() =>");
+    expect(indexSource).toContain("const pinnedOperatorActionKeys = computed(() =>");
+  });
+
   it("ships shared virtual and progressive list primitives for heavy in-page surfaces", () => {
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");

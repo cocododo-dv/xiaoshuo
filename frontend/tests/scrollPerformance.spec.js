@@ -140,6 +140,50 @@ function createRecoveryItem(index) {
   };
 }
 
+function createSystemRuntimeItem(index) {
+  return {
+    operation_id: index,
+    source: "system_runtime",
+    event_type: `system_event_${index}`,
+    label: `System event ${index}`,
+    status: index % 2 === 0 ? "succeeded" : "pending",
+    actor_ref: `system-${index}`,
+    timestamp: `2026-04-16T05:${String(index).padStart(2, "0")}:00+00:00`,
+    summary: `System summary ${index}`,
+    description: `System description ${index}`,
+    target_refs: [
+      {
+        target_type: "review_item",
+        target_id: `review-${index}`,
+        target_ref: `review_item:review-${index}`,
+      },
+    ],
+  };
+}
+
+function createOperatorActionItem(index) {
+  return {
+    operation_id: index,
+    source: "operator_action",
+    action: index % 2 === 0 ? "approve_review" : "inspect",
+    label: `Operator event ${index}`,
+    status: index % 2 === 0 ? "approved" : "pending",
+    status_before: "pending",
+    status_after: index % 2 === 0 ? "approved" : "pending",
+    actor_ref: `operator-${index}`,
+    timestamp: `2026-04-16T06:${String(index).padStart(2, "0")}:00+00:00`,
+    summary: `Operator summary ${index}`,
+    description: `Operator description ${index}`,
+    target_refs: [
+      {
+        target_type: "review_item",
+        target_id: `review-${index}`,
+        target_ref: `review_item:review-${index}`,
+      },
+    ],
+  };
+}
+
 function createTargetGroup(index) {
   return {
     target: {
@@ -176,6 +220,8 @@ function createTargetGroupItem(groupIndex, itemIndex) {
 async function mountIndexConsoleView({
   jobCount = 15,
   recoveryCount = 15,
+  systemRuntimeCount = 18,
+  operatorActionCount = 18,
   targetGroupCount = 14,
   targetGroupItemCount = 10,
   focusTarget,
@@ -200,6 +246,8 @@ async function mountIndexConsoleView({
   store.jobsVersion = 1;
   store.jobLookup = Object.fromEntries(store.jobs.map((item) => [item.job_id, true]));
   store.recoveryTimelineItems = Array.from({ length: recoveryCount }, (_, index) => createRecoveryItem(index));
+  store.systemRuntimeTimelineItems = Array.from({ length: systemRuntimeCount }, (_, index) => createSystemRuntimeItem(index + 1));
+  store.operatorActionTimelineItems = Array.from({ length: operatorActionCount }, (_, index) => createOperatorActionItem(index + 1));
   store.targetActivityGroups = Array.from({ length: targetGroupCount }, (_, index) => createTargetGroup(index));
   store.targetGroupsVersion = 1;
   store.targetGroupLookup = Object.fromEntries(store.targetActivityGroups.map((group) => [group.target.target_ref, true]));
@@ -219,6 +267,8 @@ async function mountIndexConsoleView({
     }]),
   );
   store.activitySections.recovery_timeline.loaded = true;
+  store.activitySections.system_runtime.loaded = true;
+  store.activitySections.operator_action.loaded = true;
   store.activitySections.target_groups.loaded = true;
   store.targetActivityGroups.forEach((group) => {
     store.targetGroupStatesByRef[group.target.target_ref] = {
@@ -502,6 +552,90 @@ describe("index console scroll performance integration", () => {
       expect(recoveryRows.length).toBeGreaterThan(0);
       expect(recoveryRows.length).toBeLessThan(mounted.store.recoveryTimelineItems.length);
       expect(mounted.container.querySelector('[data-activity-key="recovery_timeline:recovery-0"]')).not.toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("mounts system runtime through VirtualList and keeps the focused system row mounted after scroll", async () => {
+    const mounted = await mountIndexConsoleView({
+      focusTarget: {
+        target_type: "review_item",
+        target_id: "review-14",
+        target_ref: "review_item:review-14",
+        view_id: "index",
+        source_type: "system_activity",
+        source_id: 14,
+      },
+    });
+
+    try {
+      mounted.container.querySelector('[data-testid="index-toggle-system-runtime"]').click();
+      await flushUi();
+
+      const systemSection = mounted.container.querySelector('[data-testid="index-system-runtime-section"]');
+      expect(systemSection).not.toBeNull();
+      const systemList = systemSection.querySelector('[data-testid="index-system-runtime-virtual-list"]');
+
+      expect(systemList).not.toBeNull();
+      expect(systemList.style.maxHeight).toBe("560px");
+
+      let rows = systemSection.querySelectorAll('[data-activity-key^="system_runtime:"]');
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(mounted.store.systemRuntimeTimelineItems.length);
+      expect(systemSection.querySelector('[data-activity-key="system_runtime:14"]')).not.toBeNull();
+      expect(systemSection.querySelector(".card-actions button")).not.toBeNull();
+
+      systemList.scrollTop = 10000;
+      systemList.dispatchEvent(new Event("scroll"));
+      await flushUi();
+
+      rows = systemSection.querySelectorAll('[data-activity-key^="system_runtime:"]');
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(mounted.store.systemRuntimeTimelineItems.length);
+      expect(systemSection.querySelector('[data-activity-key="system_runtime:14"]')).not.toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("mounts operator action through VirtualList and keeps the focused operator row mounted after scroll", async () => {
+    const mounted = await mountIndexConsoleView({
+      focusTarget: {
+        target_type: "review_item",
+        target_id: "review-15",
+        target_ref: "review_item:review-15",
+        view_id: "index",
+        source_type: "operator_action",
+        source_id: 15,
+      },
+    });
+
+    try {
+      mounted.container.querySelector('[data-testid="index-toggle-operator-action"]').click();
+      await flushUi();
+
+      const operatorSection = mounted.container.querySelector('[data-testid="index-operator-action-section"]');
+      expect(operatorSection).not.toBeNull();
+      const operatorList = operatorSection.querySelector('[data-testid="index-operator-action-virtual-list"]');
+
+      expect(operatorList).not.toBeNull();
+      expect(operatorList.style.maxHeight).toBe("560px");
+
+      let rows = operatorSection.querySelectorAll('[data-activity-key^="operator_action:"]');
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(mounted.store.operatorActionTimelineItems.length);
+      expect(operatorSection.querySelector('[data-activity-key="operator_action:15"]')).not.toBeNull();
+      expect(operatorSection.querySelector(".card-actions button")).not.toBeNull();
+
+      operatorList.scrollTop = 10000;
+      operatorList.dispatchEvent(new Event("scroll"));
+      await flushUi();
+
+      rows = operatorSection.querySelectorAll('[data-activity-key^="operator_action:"]');
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThan(mounted.store.operatorActionTimelineItems.length);
+      expect(operatorSection.querySelector('[data-activity-key="operator_action:15"]')).not.toBeNull();
     } finally {
       mounted.unmount();
     }
