@@ -2,6 +2,24 @@ import { expect, test } from "@playwright/test";
 
 const apiBase = `http://127.0.0.1:${process.env.PLAYWRIGHT_BACKEND_PORT || "8000"}`;
 
+async function waitForIndexSectionContent(section, virtualListTestId) {
+  await expect
+    .poll(async () => {
+      if ((await section.getByTestId(virtualListTestId).count()) > 0) {
+        return true;
+      }
+
+      const emptyState = section.locator(".empty").first();
+      if ((await emptyState.count()) === 0) {
+        return false;
+      }
+
+      const emptyText = (await emptyState.textContent()) || "";
+      return !emptyText.includes("加载") && !emptyText.includes("鍔犺浇");
+    })
+    .toBe(true);
+}
+
 test("defers unopened views and keeps heavy review payloads collapsed until expanded", async ({ page }) => {
   const requestedPaths = [];
 
@@ -120,6 +138,7 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
   await page.getByTestId("index-toggle-system-runtime").click();
   await page.getByTestId("index-toggle-operator-action").click();
 
+  await waitForIndexSectionContent(targetGroupsSection, "index-target-groups-virtual-list");
   if (await targetGroupsSection.getByTestId("index-target-groups-virtual-list").count()) {
     await expect(targetGroupsSection.getByTestId("index-target-groups-virtual-list")).toBeVisible();
 
@@ -133,6 +152,7 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
     await expect(targetGroupsSection.locator(".empty")).toBeVisible();
   }
 
+  await waitForIndexSectionContent(systemRuntimeSection, "index-system-runtime-virtual-list");
   if (await systemRuntimeSection.getByTestId("index-system-runtime-virtual-list").count()) {
     await expect(systemRuntimeSection.getByTestId("index-system-runtime-virtual-list")).toBeVisible();
     const runtimeList = systemRuntimeSection.getByTestId("index-system-runtime-virtual-list");
@@ -145,6 +165,7 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
     await expect(systemRuntimeSection.locator(".empty")).toBeVisible();
   }
 
+  await waitForIndexSectionContent(operatorActionSection, "index-operator-action-virtual-list");
   if (await operatorActionSection.getByTestId("index-operator-action-virtual-list").count()) {
     await expect(operatorActionSection.getByTestId("index-operator-action-virtual-list")).toBeVisible();
     const operatorList = operatorActionSection.getByTestId("index-operator-action-virtual-list");
