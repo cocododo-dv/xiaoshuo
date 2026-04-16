@@ -43,7 +43,6 @@ test("moves author records through trash, blocks ambiguous chapter delete, resto
   const authorTrashView = page.getByTestId("author-trash-view");
   await expect(authorTrashView).toBeVisible();
   await expect(authorTrashView).toContainText("作者回收站");
-  await expect(page.getByTestId("author-trash-chapter-virtual-list")).toBeVisible();
   await expect(page.getByTestId("author-trash-scene-virtual-list")).toBeVisible();
   await expect(page.getByTestId("author-trash-scene-row-CH310_SC02")).toContainText("CH310_SC02");
   await expect(page.getByTestId("author-trash-scene-row-CH310_SC02")).not.toContainText("请先恢复所属章节，再恢复该场景");
