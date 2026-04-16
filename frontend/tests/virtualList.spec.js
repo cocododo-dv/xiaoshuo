@@ -144,6 +144,74 @@ describe("VirtualList KeepAlive lifecycle", () => {
     }
   });
 
+  it("maps only the rows currently admitted into the virtual render window", async () => {
+    const animationFrames = createAnimationFrameController();
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      value: 20,
+    });
+
+    const items = Array.from({ length: 40 }, (_, index) => ({
+      id: `mapped-row-${index + 1}`,
+      label: `Mapped row ${index + 1}`,
+    }));
+    const mapItem = vi.fn((item) => ({
+      id: item.id,
+      label: item.label.toUpperCase(),
+    }));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp({
+      render() {
+        return h(
+          VirtualList,
+          {
+            items,
+            itemKey: "id",
+            mapItem,
+            estimatedItemHeight: 20,
+            overscan: 1,
+            threshold: 0,
+            viewportHeight: 60,
+            testId: "virtual-map-list",
+          },
+          {
+            default: ({ row }) =>
+              h("div", { "data-testid": row.id }, row.label),
+          },
+        );
+      },
+    });
+
+    app.mount(container);
+    await flushUi();
+    await animationFrames.flushAll();
+
+    try {
+      expect(mapItem).toHaveBeenCalledTimes(4);
+      expect(container.querySelector('[data-testid="mapped-row-1"]')?.textContent).toBe("MAPPED ROW 1");
+      expect(container.querySelector('[data-testid="mapped-row-5"]')).toBeNull();
+
+      const list = container.querySelector('[data-testid="virtual-map-list"]');
+      list.scrollTop = 200;
+      list.dispatchEvent(new Event("scroll"));
+      await flushUi();
+      await animationFrames.flushAll();
+
+      expect(mapItem.mock.calls.length).toBeLessThan(items.length);
+      expect(container.querySelector('[data-testid="mapped-row-10"]')?.textContent).toBe("MAPPED ROW 10");
+    } finally {
+      app.unmount();
+      container.remove();
+    }
+  });
+
   it("pauses queued measurements while deactivated and resumes after activation", async () => {
     const animationFrames = createAnimationFrameController();
     vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));

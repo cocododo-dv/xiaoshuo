@@ -36,6 +36,14 @@ const props = defineProps({
     type: Number,
     default: 720,
   },
+  mapItem: {
+    type: Function,
+    default: null,
+  },
+  mapVersion: {
+    type: [String, Number, Boolean],
+    default: "",
+  },
 });
 
 const scrollTop = ref(0);
@@ -47,6 +55,8 @@ const scrollFrameId = ref(0);
 const pendingMeasurements = new Map();
 const active = ref(true);
 let pendingScrollTop = 0;
+let objectMappedItems = new WeakMap();
+let primitiveMappedItems = new Map();
 
 const heightProfile = computed(() =>
   buildHeightProfile(props.items, props.itemKey, measuredHeights.value, props.estimatedItemHeight),
@@ -68,6 +78,62 @@ const windowState = computed(() =>
     pinnedIndexes: pinnedIndexes.value,
   }),
 );
+const renderedEntries = computed(() => {
+  if (!props.mapItem) {
+    return windowState.value.renderedEntries;
+  }
+
+  return windowState.value.renderedEntries.map((entry) => ({
+    ...entry,
+    row: mapRenderedItem(entry.item, entry.index),
+  }));
+});
+
+function resetMappedItemCache() {
+  objectMappedItems = new WeakMap();
+  primitiveMappedItems = new Map();
+}
+
+function mapRenderedItem(item, index) {
+  if (!props.mapItem) {
+    return item;
+  }
+
+  if (item !== null && (typeof item === "object" || typeof item === "function")) {
+    const cached = objectMappedItems.get(item);
+    if (
+      cached?.index === index
+      && Object.is(cached.version, props.mapVersion)
+      && cached.mapper === props.mapItem
+    ) {
+      return cached.value;
+    }
+    const value = props.mapItem(item, index);
+    objectMappedItems.set(item, {
+      index,
+      mapper: props.mapItem,
+      version: props.mapVersion,
+      value,
+    });
+    return value;
+  }
+
+  const primitiveKey = `${String(props.mapVersion)}:${index}:${typeof item}:${String(item)}`;
+  const cached = primitiveMappedItems.get(primitiveKey);
+  if (cached?.mapper === props.mapItem) {
+    return cached.value;
+  }
+  const value = props.mapItem(item, index);
+  primitiveMappedItems.set(primitiveKey, {
+    mapper: props.mapItem,
+    value,
+  });
+  return value;
+}
+
+function rowForEntry(entry) {
+  return props.mapItem ? entry.row : entry.item;
+}
 
 function resolveItemKey(item) {
   if (typeof props.itemKey === "function") {
@@ -228,6 +294,13 @@ watch(
 );
 
 watch(
+  () => [props.items, props.mapItem, props.mapVersion],
+  () => {
+    resetMappedItemCache();
+  },
+);
+
+watch(
   windowState,
   async () => {
     await nextTick();
@@ -236,7 +309,7 @@ watch(
       return;
     }
 
-    windowState.value.renderedEntries.forEach((entry) => {
+    renderedEntries.value.forEach((entry) => {
       const element = rowElements.get(entry.key);
       if (element) {
         queueMeasure(entry.key, element);
@@ -250,7 +323,7 @@ onActivated(async () => {
   active.value = true;
   await nextTick();
 
-  windowState.value.renderedEntries.forEach((entry) => {
+  renderedEntries.value.forEach((entry) => {
     const element = rowElements.get(entry.key);
     if (element?.isConnected) {
       queueMeasure(entry.key, element);
@@ -288,7 +361,7 @@ onBeforeUnmount(() => {
       :style="{ height: `${windowState.totalHeight}px`, position: 'relative' }"
     >
       <div
-        v-for="entry in windowState.renderedEntries"
+        v-for="entry in renderedEntries"
         :key="entry.key"
         class="virtual-list-row"
         :ref="rowRef(entry)"
@@ -300,17 +373,17 @@ onBeforeUnmount(() => {
           transform: `translateY(${entry.offsetTop}px)`,
         }"
       >
-        <slot :item="entry.item" :entry="entry" :virtualized="true" />
+        <slot :item="entry.item" :row="rowForEntry(entry)" :entry="entry" :virtualized="true" />
       </div>
     </div>
     <template v-else>
       <div
-        v-for="entry in windowState.renderedEntries"
+        v-for="entry in renderedEntries"
         :key="entry.key"
         class="virtual-list-row"
         :ref="rowRef(entry)"
       >
-        <slot :item="entry.item" :entry="entry" :virtualized="false" />
+        <slot :item="entry.item" :row="rowForEntry(entry)" :entry="entry" :virtualized="false" />
       </div>
     </template>
   </div>

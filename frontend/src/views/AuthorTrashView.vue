@@ -59,6 +59,36 @@ function sceneSelectable(scene) {
   return Number(scene.restore_allowed) === 1 || Number(scene.purge_allowed) === 1;
 }
 
+function authorTrashChapterRow(item) {
+  return {
+    item,
+    chapterId: item?.chapter_id || "",
+    goal: item?.chapter_goal || "尚未保存章节目标。",
+    sceneCount: item?.scene_count ?? 0,
+    selectable: chapterSelectable(item),
+    trashedAtLabel: formatTimestamp(item?.trashed_at),
+    trashedByLabel: item?.trashed_by || "未知操作员",
+    restoreBlockReason: item?.restore_block_reason || "",
+    purgeBlockReason: item?.purge_block_reason || "",
+  };
+}
+
+function authorTrashSceneRow(item) {
+  return {
+    item,
+    sceneId: item?.scene_id || "",
+    goal: item?.scene_goal || "尚未保存场景目标。",
+    chapterId: item?.chapter_id || "-",
+    sceneSeq: item?.scene_seq ?? "-",
+    selectable: sceneSelectable(item),
+    chapterTrashed: Boolean(item?.chapter_trashed),
+    trashedAtLabel: formatTimestamp(item?.trashed_at),
+    trashedByLabel: item?.trashed_by || "未知操作员",
+    restoreBlockReason: item?.restore_block_reason || "",
+    purgeBlockReason: item?.purge_block_reason || "",
+  };
+}
+
 function syncSelections() {
   const chapterIds = new Set(chapters.value.filter((chapter) => chapterSelectable(chapter)).map((chapter) => chapter.chapter_id));
   const sceneIds = new Set(scenes.value.filter((scene) => sceneSelectable(scene)).map((scene) => scene.scene_id));
@@ -207,40 +237,41 @@ onActivated(() => {
             :threshold="8"
             :viewport-height="560"
             :pinned-keys="pinnedChapterKeys"
+            :map-item="authorTrashChapterRow"
             test-id="author-trash-chapter-virtual-list"
           >
-            <template #default="{ item: chapter }">
+            <template #default="{ row }">
               <article
                 class="trash-row"
-                :class="{ disabled: !chapterSelectable(chapter) }"
-                :data-testid="`author-trash-chapter-row-${chapter.chapter_id}`"
+                :class="{ disabled: !row.selectable }"
+                :data-testid="`author-trash-chapter-row-${row.chapterId}`"
               >
-              <label class="author-select-cell" :for="`trash-chapter-${chapter.chapter_id}`">
+              <label class="author-select-cell" :for="`trash-chapter-${row.chapterId}`">
                 <input
-                  :id="`trash-chapter-${chapter.chapter_id}`"
+                  :id="`trash-chapter-${row.chapterId}`"
                   v-model="selectedChapterIds"
                   type="checkbox"
-                  :value="chapter.chapter_id"
-                  :data-testid="`author-trash-chapter-select-${chapter.chapter_id}`"
-                  :disabled="!chapterSelectable(chapter)"
+                  :value="row.chapterId"
+                  :data-testid="`author-trash-chapter-select-${row.chapterId}`"
+                  :disabled="!row.selectable"
                 />
               </label>
 
               <div class="trash-row-copy">
                 <div class="trash-row-head">
                   <div>
-                    <strong>{{ chapter.chapter_id }}</strong>
-                    <p class="trash-copy">{{ chapter.chapter_goal || "尚未保存章节目标。" }}</p>
+                    <strong>{{ row.chapterId }}</strong>
+                    <p class="trash-copy">{{ row.goal }}</p>
                   </div>
                   <div class="trash-meta">
-                    <span class="badge">{{ chapter.scene_count }} 个场景</span>
-                    <span class="badge">回收于 {{ formatTimestamp(chapter.trashed_at) }}</span>
+                    <span class="badge">{{ row.sceneCount }} 个场景</span>
+                    <span class="badge">回收于 {{ row.trashedAtLabel }}</span>
                   </div>
                 </div>
-                <p class="muted">操作员：{{ chapter.trashed_by || "未知操作员" }}</p>
+                <p class="muted">操作员：{{ row.trashedByLabel }}</p>
                 <div class="trash-reason-list">
-                  <p v-if="chapter.restore_block_reason" class="trash-reason">{{ chapter.restore_block_reason }}</p>
-                  <p v-if="chapter.purge_block_reason" class="trash-reason">{{ chapter.purge_block_reason }}</p>
+                  <p v-if="row.restoreBlockReason" class="trash-reason">{{ row.restoreBlockReason }}</p>
+                  <p v-if="row.purgeBlockReason" class="trash-reason">{{ row.purgeBlockReason }}</p>
                 </div>
               </div>
               </article>
@@ -285,41 +316,42 @@ onActivated(() => {
             :threshold="8"
             :viewport-height="560"
             :pinned-keys="pinnedSceneKeys"
+            :map-item="authorTrashSceneRow"
             test-id="author-trash-scene-virtual-list"
           >
-            <template #default="{ item: scene }">
+            <template #default="{ row }">
               <article
                 class="trash-row"
-                :class="{ disabled: !sceneSelectable(scene) }"
-                :data-testid="`author-trash-scene-row-${scene.scene_id}`"
+                :class="{ disabled: !row.selectable }"
+                :data-testid="`author-trash-scene-row-${row.sceneId}`"
               >
-              <label class="author-select-cell" :for="`trash-scene-${scene.scene_id}`">
+              <label class="author-select-cell" :for="`trash-scene-${row.sceneId}`">
                 <input
-                  :id="`trash-scene-${scene.scene_id}`"
+                  :id="`trash-scene-${row.sceneId}`"
                   v-model="selectedSceneIds"
                   type="checkbox"
-                  :value="scene.scene_id"
-                  :data-testid="`author-trash-scene-select-${scene.scene_id}`"
-                  :disabled="!sceneSelectable(scene)"
+                  :value="row.sceneId"
+                  :data-testid="`author-trash-scene-select-${row.sceneId}`"
+                  :disabled="!row.selectable"
                 />
               </label>
 
               <div class="trash-row-copy">
                 <div class="trash-row-head">
                   <div>
-                    <strong>{{ scene.scene_id }}</strong>
-                    <p class="trash-copy">{{ scene.scene_goal || "尚未保存场景目标。" }}</p>
+                    <strong>{{ row.sceneId }}</strong>
+                    <p class="trash-copy">{{ row.goal }}</p>
                   </div>
                   <div class="trash-meta">
-                    <span class="badge">章节 {{ scene.chapter_id }}</span>
-                    <span class="badge">顺序 {{ scene.scene_seq }}</span>
-                    <span v-if="scene.chapter_trashed" class="badge">所属章节已回收</span>
+                    <span class="badge">章节 {{ row.chapterId }}</span>
+                    <span class="badge">顺序 {{ row.sceneSeq }}</span>
+                    <span v-if="row.chapterTrashed" class="badge">所属章节已回收</span>
                   </div>
                 </div>
-                <p class="muted">回收于 {{ formatTimestamp(scene.trashed_at) }}，操作员：{{ scene.trashed_by || "未知操作员" }}</p>
+                <p class="muted">回收于 {{ row.trashedAtLabel }}，操作员：{{ row.trashedByLabel }}</p>
                 <div class="trash-reason-list">
-                  <p v-if="scene.restore_block_reason" class="trash-reason">{{ scene.restore_block_reason }}</p>
-                  <p v-if="scene.purge_block_reason" class="trash-reason">{{ scene.purge_block_reason }}</p>
+                  <p v-if="row.restoreBlockReason" class="trash-reason">{{ row.restoreBlockReason }}</p>
+                  <p v-if="row.purgeBlockReason" class="trash-reason">{{ row.purgeBlockReason }}</p>
                 </div>
               </div>
               </article>

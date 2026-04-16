@@ -109,6 +109,24 @@ describe("shell smoothness architecture", () => {
     expect(targetGroupCardSource).not.toContain("isHighlighted(item)");
   });
 
+  it("precomputes index virtual list rows inside the virtual render window", () => {
+    const virtualListSource = readFileSync(new URL("../src/components/VirtualList.vue", import.meta.url), "utf8");
+    const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
+
+    expect(virtualListSource).toContain("mapItem");
+    expect(indexSource).toContain(':map-item="indexRecoveryRow"');
+    expect(indexSource).toContain(':map-item="indexSystemRuntimeRow"');
+    expect(indexSource).toContain(':map-item="indexOperatorActionRow"');
+    expect(indexSource).toContain(':map-item="indexJobRow"');
+    expect(indexSource).toContain("function indexRecoveryRow(item)");
+    expect(indexSource).toContain("function indexActivityRow(sectionId, sourceType, fallbackTitle, item)");
+    expect(indexSource).toContain("function indexJobRow(item)");
+    expect(indexSource).not.toContain('activityTargets(item).length');
+    expect(indexSource).not.toContain('v-for="target in activityTargets(item)"');
+    expect(indexSource).not.toContain("targetSummary(item)");
+    expect(indexSource).not.toContain("recoveryFollowup(item) !== '-'");
+  });
+
   it("routes the remaining index timelines through VirtualList with semantic section anchors", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
 
@@ -187,6 +205,10 @@ describe("shell smoothness architecture", () => {
     expect(authorTrashSource).toContain('import VirtualList from "../components/VirtualList.vue"');
     expect(authorTrashSource).toContain("const pinnedChapterKeys = computed(() =>");
     expect(authorTrashSource).toContain("const pinnedSceneKeys = computed(() =>");
+    expect(authorTrashSource).toContain(':map-item="authorTrashChapterRow"');
+    expect(authorTrashSource).toContain(':map-item="authorTrashSceneRow"');
+    expect(authorTrashSource).toContain("function authorTrashChapterRow(item)");
+    expect(authorTrashSource).toContain("function authorTrashSceneRow(item)");
     expect(authorTrashSource).toContain('test-id="author-trash-chapter-virtual-list"');
     expect(authorTrashSource).toContain('test-id="author-trash-scene-virtual-list"');
     expect(authorTrashSource).toContain(':pinned-keys="pinnedChapterKeys"');
@@ -194,6 +216,8 @@ describe("shell smoothness architecture", () => {
     expect(authorTrashSource).toContain('class="trash-list"');
     expect(authorTrashSource).not.toContain('v-for="chapter in chapters"');
     expect(authorTrashSource).not.toContain('v-for="scene in scenes"');
+    expect(authorTrashSource).not.toContain("formatTimestamp(chapter.trashed_at)");
+    expect(authorTrashSource).not.toContain("formatTimestamp(scene.trashed_at)");
     expect(styles).toContain(".trash-list .virtual-list-row");
   });
 

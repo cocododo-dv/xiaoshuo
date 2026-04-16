@@ -160,6 +160,80 @@ const activityTargets = (item) => {
   return parsedTarget ? [parsedTarget] : [];
 };
 
+function targetRowsFor(item, activityKey) {
+  return activityTargets(item).map((target) => ({
+    key: `${activityKey}:${target.target_ref}`,
+    target,
+    label: targetActionLabel(target),
+  }));
+}
+
+function indexRecoveryRow(item) {
+  const activityKey = activityItemKey("recovery_timeline", item);
+  const action = recoveryAction(item);
+  const followup = recoveryFollowup(item);
+
+  return {
+    item,
+    activityKey,
+    eventId: item?.event_id,
+    title: item?.event_id || item?.label || "Recovery event",
+    meta: `${recoveryTimestamp(item)} | ${fmtStatus(item?.status, item?.status || "-")} | ${recoveryActor(item)}`,
+    detail: `Target: ${recoveryTargetRef(item)} | Action: ${fmtAction(action, action)} | Result: ${recoveryResolution(item)}`,
+    followup,
+    showFollowup: followup !== "-",
+    humanTarget: humanReviewTarget(item?.event_id),
+    linkedTarget: recoveryLinkedTarget(item),
+    followupTarget: recoveryFollowupTarget(item),
+    replayTarget: recoveryReplayTarget(item),
+  };
+}
+
+function indexActivityRow(sectionId, sourceType, fallbackTitle, item) {
+  const activity = item;
+  const activityKey = activityItemKey(sectionId, activity);
+
+  return {
+    item: activity,
+    activityKey,
+    operationId: activity?.operation_id,
+    sourceType,
+    title: activity?.label || activity?.event_type || activity?.action || fallbackTitle,
+    summary: targetSummary(activity),
+    body: activity?.summary || activity?.description || "-",
+    targets: targetRowsFor(activity, activityKey),
+  };
+}
+
+function indexSystemRuntimeRow(item) {
+  return indexActivityRow("system_runtime", "system_activity", "System activity", item);
+}
+
+function indexOperatorActionRow(item) {
+  return indexActivityRow("operator_action", "operator_action", "Operator action", item);
+}
+
+function indexJobRow(item) {
+  return {
+    item,
+    jobId: item?.job_id || "",
+    jobType: item?.job_type || "",
+    jobTypeLabel: fmtJobType(item?.job_type, item?.job_type || "-"),
+    aliasScope: item?.alias_scope || "-",
+    statusLabel: fmtStatus(item?.status, item?.status || "-"),
+    targetSnapshotVersion: item?.target_snapshot_version || "-",
+    targetEmbeddingVersion: item?.target_embedding_version || "-",
+    workerId: item?.worker_id || "-",
+    attemptNo: item?.attempt_no ?? 0,
+    heartbeatAt: item?.heartbeat_at || "-",
+    leaseExpiresAt: item?.lease_expires_at || "-",
+    startedAt: item?.started_at || "-",
+    finishedAt: item?.finished_at || "-",
+    errorText: item?.error_text || "-",
+    retryable: item?.job_type === "verify",
+  };
+}
+
 function withSourceTarget(target, sourceType, sourceId) {
   if (!target) return null;
   return { ...target, source_type: sourceType, source_id: sourceId };
@@ -503,50 +577,51 @@ onBeforeUnmount(() => {
               :estimated-item-height="176"
               :threshold="8"
               :viewport-height="560"
+              :map-item="indexRecoveryRow"
               test-id="index-recovery-virtual-list"
             >
-              <template #default="{ item }">
+              <template #default="{ row }">
                 <article
                   class="receipt-list-item"
-                  :data-activity-key="activityItemKey('recovery_timeline', item)"
-                  :class="{ 'focused-card': isFocusedSource('recovery_timeline', item.event_id) || isFocusedSource('recovery_receipt', item.event_id) }"
+                  :data-activity-key="row.activityKey"
+                  :class="{ 'focused-card': isFocusedSource('recovery_timeline', row.eventId) || isFocusedSource('recovery_receipt', row.eventId) }"
                 >
-                <strong>{{ item.event_id || item.label || "恢复事件" }}</strong><br />
-                {{ recoveryTimestamp(item) }} | {{ fmtStatus(item.status, item.status || "-") }} | {{ recoveryActor(item) }}<br />
-                关联目标：{{ recoveryTargetRef(item) }} | 动作：{{ fmtAction(recoveryAction(item), recoveryAction(item)) }} | 结论：{{ recoveryResolution(item) }}
-                <p v-if="recoveryFollowup(item) !== '-'" class="muted activity-inline-copy">
-                  后续：{{ recoveryFollowup(item) }}
+                <strong>{{ row.title }}</strong><br />
+                {{ row.meta }}<br />
+                {{ row.detail }}
+                <p v-if="row.showFollowup" class="muted activity-inline-copy">
+                  后续：{{ row.followup }}
                 </p>
                 <div class="card-actions">
                   <button
-                    v-if="humanReviewTarget(item.event_id)"
+                    v-if="row.humanTarget"
                     type="button"
                     class="ghost"
-                    @click="jumpToTarget(withSourceTarget(humanReviewTarget(item.event_id), 'recovery_timeline', item.event_id))"
+                    @click="jumpToTarget(withSourceTarget(row.humanTarget, 'recovery_timeline', row.eventId))"
                   >
                     打开恢复事件
                   </button>
                   <button
-                    v-if="recoveryLinkedTarget(item)"
+                    v-if="row.linkedTarget"
                     type="button"
                     class="ghost"
-                    @click="jumpToTarget(withIndexFocusTarget(recoveryLinkedTarget(item), 'recovery_timeline', item.event_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(row.linkedTarget, 'recovery_timeline', row.eventId))"
                   >
                     打开关联目标
                   </button>
                   <button
-                    v-if="recoveryFollowupTarget(item)"
+                    v-if="row.followupTarget"
                     type="button"
                     class="ghost"
-                    @click="jumpToTarget(withIndexFocusTarget(recoveryFollowupTarget(item), 'recovery_timeline', item.event_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(row.followupTarget, 'recovery_timeline', row.eventId))"
                   >
                     打开后续目标
                   </button>
                   <button
-                    v-if="recoveryReplayTarget(item)"
+                    v-if="row.replayTarget"
                     type="button"
                     class="ghost"
-                    @click="jumpToTarget(withIndexFocusTarget(recoveryReplayTarget(item), 'recovery_timeline', item.event_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(row.replayTarget, 'recovery_timeline', row.eventId))"
                   >
                     打开回放结果
                   </button>
@@ -587,26 +662,27 @@ onBeforeUnmount(() => {
               :threshold="8"
               :viewport-height="560"
               :pinned-keys="pinnedSystemRuntimeKeys"
+              :map-item="indexSystemRuntimeRow"
               test-id="index-system-runtime-virtual-list"
             >
-              <template #default="{ item }">
+              <template #default="{ row }">
                 <article
                   class="receipt-list-item"
-                  :data-activity-key="activityItemKey('system_runtime', item)"
-                  :class="{ 'focused-card': isFocusedSource('system_activity', item.operation_id) }"
+                  :data-activity-key="row.activityKey"
+                  :class="{ 'focused-card': isFocusedSource('system_activity', row.operationId) }"
                 >
-                <strong>{{ item.label || item.event_type || "系统活动" }}</strong><br />
-                {{ targetSummary(item) }}<br />
-                {{ item.summary || item.description || "-" }}
-                <div v-if="activityTargets(item).length" class="card-actions">
+                <strong>{{ row.title }}</strong><br />
+                {{ row.summary }}<br />
+                {{ row.body }}
+                <div v-if="row.targets.length" class="card-actions">
                   <button
-                    v-for="target in activityTargets(item)"
-                    :key="`${activityItemKey('system_runtime', item)}:${target.target_ref}`"
+                    v-for="targetRow in row.targets"
+                    :key="targetRow.key"
                     type="button"
                     class="ghost"
-                    @click="jumpToTarget(withIndexFocusTarget(target, 'system_activity', item.operation_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(targetRow.target, row.sourceType, row.operationId))"
                   >
-                    {{ targetActionLabel(target) }}
+                    {{ targetRow.label }}
                   </button>
                 </div>
                 </article>
@@ -645,26 +721,27 @@ onBeforeUnmount(() => {
               :threshold="8"
               :viewport-height="560"
               :pinned-keys="pinnedOperatorActionKeys"
+              :map-item="indexOperatorActionRow"
               test-id="index-operator-action-virtual-list"
             >
-              <template #default="{ item }">
+              <template #default="{ row }">
                 <article
                   class="receipt-list-item"
-                  :data-activity-key="activityItemKey('operator_action', item)"
-                  :class="{ 'focused-card': isFocusedSource('operator_action', item.operation_id) }"
+                  :data-activity-key="row.activityKey"
+                  :class="{ 'focused-card': isFocusedSource('operator_action', row.operationId) }"
                 >
-                <strong>{{ item.label || item.action || "人工操作" }}</strong><br />
-                {{ targetSummary(item) }}<br />
-                {{ item.summary || item.description || "-" }}
-                <div v-if="activityTargets(item).length" class="card-actions">
+                <strong>{{ row.title }}</strong><br />
+                {{ row.summary }}<br />
+                {{ row.body }}
+                <div v-if="row.targets.length" class="card-actions">
                   <button
-                    v-for="target in activityTargets(item)"
-                    :key="`${activityItemKey('operator_action', item)}:${target.target_ref}`"
+                    v-for="targetRow in row.targets"
+                    :key="targetRow.key"
                     type="button"
                     class="ghost"
-                    @click="jumpToTarget(withIndexFocusTarget(target, 'operator_action', item.operation_id))"
+                    @click="jumpToTarget(withIndexFocusTarget(targetRow.target, row.sourceType, row.operationId))"
                   >
-                    {{ targetActionLabel(target) }}
+                    {{ targetRow.label }}
                   </button>
                 </div>
                 </article>
@@ -749,25 +826,26 @@ onBeforeUnmount(() => {
         :threshold="8"
         :viewport-height="640"
         :pinned-keys="pinnedJobKeys"
+        :map-item="indexJobRow"
         test-id="index-jobs-virtual-list"
       >
-        <template #default="{ item }">
-          <div class="job-row" :data-testid="`verify-job-${item.job_id}`" :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === item.job_id }">
-          <div class="job-main"><strong>{{ fmtJobType(item.job_type, item.job_type || "-") }}</strong><div class="muted">{{ item.job_id }}</div><div class="muted">{{ item.alias_scope }}</div></div>
+        <template #default="{ row }">
+          <div class="job-row" :data-testid="`verify-job-${row.jobId}`" :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === row.jobId }">
+          <div class="job-main"><strong>{{ row.jobTypeLabel }}</strong><div class="muted">{{ row.jobId }}</div><div class="muted">{{ row.aliasScope }}</div></div>
           <div class="job-diagnostics">
-            <p><strong>状态</strong><br />{{ fmtStatus(item.status, item.status || "-") }}</p>
-            <p><strong>目标快照</strong><br />{{ item.target_snapshot_version || "-" }}</p>
-            <p><strong>目标嵌入</strong><br />{{ item.target_embedding_version || "-" }}</p>
-            <p><strong>工作器</strong><br />{{ item.worker_id || "-" }}</p>
-            <p><strong>尝试次数</strong><br />{{ item.attempt_no ?? 0 }}</p>
-            <p><strong>心跳时间</strong><br />{{ item.heartbeat_at || "-" }}</p>
-            <p><strong>租约到期</strong><br />{{ item.lease_expires_at || "-" }}</p>
-            <p><strong>开始时间</strong><br />{{ item.started_at || "-" }}</p>
-            <p><strong>完成时间</strong><br />{{ item.finished_at || "-" }}</p>
-            <p><strong>错误</strong><br />{{ item.error_text || "-" }}</p>
+            <p><strong>状态</strong><br />{{ row.statusLabel }}</p>
+            <p><strong>目标快照</strong><br />{{ row.targetSnapshotVersion }}</p>
+            <p><strong>目标嵌入</strong><br />{{ row.targetEmbeddingVersion }}</p>
+            <p><strong>工作器</strong><br />{{ row.workerId }}</p>
+            <p><strong>尝试次数</strong><br />{{ row.attemptNo }}</p>
+            <p><strong>心跳时间</strong><br />{{ row.heartbeatAt }}</p>
+            <p><strong>租约到期</strong><br />{{ row.leaseExpiresAt }}</p>
+            <p><strong>开始时间</strong><br />{{ row.startedAt }}</p>
+            <p><strong>完成时间</strong><br />{{ row.finishedAt }}</p>
+            <p><strong>错误</strong><br />{{ row.errorText }}</p>
           </div>
           <div class="job-actions">
-            <button v-if="item.job_type === 'verify'" :disabled="indexConsole.actionId === item.job_id" :data-testid="`retry-verify-job-${item.job_id}`" @click="retry(item.job_id)">重试校验</button>
+            <button v-if="row.retryable" :disabled="indexConsole.actionId === row.jobId" :data-testid="`retry-verify-job-${row.jobId}`" @click="retry(row.jobId)">重试校验</button>
             <span v-else class="muted">自动生成</span>
           </div>
           </div>
