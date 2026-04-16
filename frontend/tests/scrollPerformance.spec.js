@@ -1141,23 +1141,54 @@ describe("author trash scroll performance integration", () => {
     try {
       const chapterVirtualList = mounted.container.querySelector('[data-testid="author-trash-chapter-virtual-list"]');
       const sceneVirtualList = mounted.container.querySelector('[data-testid="author-trash-scene-virtual-list"]');
+      const chapterRestoreButton = mounted.container.querySelector('[data-testid="author-trash-restore-chapters-button"]');
+      const chapterPurgeButton = mounted.container.querySelector('[data-testid="author-trash-purge-chapters-button"]');
+      const sceneRestoreButton = mounted.container.querySelector('[data-testid="author-trash-restore-scenes-button"]');
+      const scenePurgeButton = mounted.container.querySelector('[data-testid="author-trash-purge-scenes-button"]');
+      const chapterCheckbox = mounted.container.querySelector('[data-testid="author-trash-chapter-select-CH014"]');
+      const sceneCheckbox = mounted.container.querySelector('[data-testid="author-trash-scene-select-CH014_SC02"]');
+      const chapterRow = mounted.container.querySelector('[data-testid="author-trash-chapter-row-CH014"]');
+      const sceneRow = mounted.container.querySelector('[data-testid="author-trash-scene-row-CH014_SC02"]');
 
       expect(chapterVirtualList).not.toBeNull();
       expect(sceneVirtualList).not.toBeNull();
+      expect(chapterRestoreButton).not.toBeNull();
+      expect(chapterPurgeButton).not.toBeNull();
+      expect(sceneRestoreButton).not.toBeNull();
+      expect(scenePurgeButton).not.toBeNull();
+      expect(chapterCheckbox).not.toBeNull();
+      expect(sceneCheckbox).not.toBeNull();
+      expect(chapterRow).not.toBeNull();
+      expect(sceneRow).not.toBeNull();
       expect(chapterVirtualList.classList.contains("virtual-list")).toBe(true);
       expect(sceneVirtualList.classList.contains("virtual-list")).toBe(true);
+      expect(chapterVirtualList.style.maxHeight).toBe("560px");
+      expect(sceneVirtualList.style.maxHeight).toBe("560px");
       expect(chapterVirtualList.querySelector(".virtual-list-row")).not.toBeNull();
       expect(sceneVirtualList.querySelector(".virtual-list-row")).not.toBeNull();
+      expect(chapterRestoreButton.disabled).toBe(true);
+      expect(chapterPurgeButton.disabled).toBe(true);
+      expect(sceneRestoreButton.disabled).toBe(true);
+      expect(scenePurgeButton.disabled).toBe(true);
 
       const chapterRows = mounted.container.querySelectorAll('[data-testid^="author-trash-chapter-row-"]');
       expect(chapterRows.length).toBeGreaterThan(0);
       expect(chapterRows.length).toBeLessThan(mounted.store.chapters.length);
-      expect(mounted.container.querySelector('[data-testid="author-trash-chapter-row-CH014"]')).not.toBeNull();
 
       let sceneRows = mounted.container.querySelectorAll('[data-testid^="author-trash-scene-row-CH014_SC"]');
       expect(sceneRows.length).toBeGreaterThan(0);
       expect(sceneRows.length).toBeLessThan(mounted.store.scenes.length);
-      expect(mounted.container.querySelector('[data-testid="author-trash-scene-row-CH014_SC01"]')).not.toBeNull();
+
+      chapterCheckbox.click();
+      sceneCheckbox.click();
+      await flushUi();
+
+      expect(chapterCheckbox.checked).toBe(true);
+      expect(sceneCheckbox.checked).toBe(true);
+      expect(chapterRestoreButton.disabled).toBe(false);
+      expect(chapterPurgeButton.disabled).toBe(false);
+      expect(sceneRestoreButton.disabled).toBe(false);
+      expect(scenePurgeButton.disabled).toBe(false);
 
       chapterVirtualList.scrollTop = 10000;
       chapterVirtualList.dispatchEvent(new Event("scroll"));
@@ -1169,7 +1200,10 @@ describe("author trash scroll performance integration", () => {
       sceneRows = mounted.container.querySelectorAll('[data-testid^="author-trash-scene-row-CH014_SC"]');
       expect(sceneRows.length).toBeGreaterThan(0);
       expect(sceneRows.length).toBeLessThan(mounted.store.scenes.length);
-      expect(mounted.container.querySelector('[data-testid="author-trash-scene-row-CH014_SC01"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="author-trash-chapter-row-CH014"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="author-trash-scene-row-CH014_SC02"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="author-trash-chapter-select-CH014"]')?.checked).toBe(true);
+      expect(mounted.container.querySelector('[data-testid="author-trash-scene-select-CH014_SC02"]')?.checked).toBe(true);
     } finally {
       mounted.unmount();
     }
