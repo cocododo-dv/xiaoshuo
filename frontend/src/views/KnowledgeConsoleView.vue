@@ -2,7 +2,9 @@
 import { computed, onActivated, reactive, watch } from "vue";
 
 import LazySection from "../components/LazySection.vue";
+import ProgressiveList from "../components/ProgressiveList.vue";
 import PanelShell from "../components/PanelShell.vue";
+import VirtualList from "../components/VirtualList.vue";
 import { useShellRouter } from "../router";
 import { useKnowledgeConsoleStore } from "../stores/knowledgeConsole";
 
@@ -40,6 +42,7 @@ const selectedEntryKey = computed(() =>
     : "",
 );
 
+const pinnedCatalogKeys = computed(() => (selectedEntryKey.value ? [selectedEntryKey.value] : []));
 const catalogItems = computed(() => knowledgeConsole.items || []);
 const detailReviewRefs = computed(() => knowledgeConsole.detail?.review_refs || []);
 const detailBundleRefs = computed(() => knowledgeConsole.detail?.bundle_refs || []);
@@ -115,6 +118,10 @@ function formatJobType(jobType) {
 
 function formatAction(action) {
   return ACTION_LABELS[action] || action || "-";
+}
+
+function knowledgeItemKey(item) {
+  return `${item.object_type}:${item.lineage_key}`;
 }
 
 const workflowStatusItems = computed(() => {
@@ -561,37 +568,47 @@ watch(
           <div v-if="knowledgeConsole.loading" class="empty">正在加载知识目录...</div>
           <div v-else-if="knowledgeConsole.error" class="empty">{{ knowledgeConsole.error }}</div>
           <div v-else-if="!catalogItems.length" class="empty">当前筛选下没有匹配的知识行或候选项。</div>
-          <div v-else class="knowledge-list">
-            <article
-              v-for="item in catalogItems"
-              :key="`${item.object_type}:${item.lineage_key}`"
-              class="review-card knowledge-card"
-              :class="{ 'focused-card': selectedEntryKey === `${item.object_type}:${item.lineage_key}` }"
-              :data-testid="`knowledge-card-${item.object_type}-${item.lineage_key}`"
-            >
-              <div class="source-top">
-                <div>
-                  <div class="eyebrow">{{ formatItemType(item.object_type) }}</div>
-                  <h3>{{ item.lineage_key }}</h3>
+          <VirtualList
+            v-else
+            class="knowledge-list"
+            :items="catalogItems"
+            :item-key="knowledgeItemKey"
+            :estimated-item-height="220"
+            :threshold="8"
+            :viewport-height="640"
+            :pinned-keys="pinnedCatalogKeys"
+            test-id="knowledge-catalog-virtual-list"
+          >
+            <template #default="{ item }">
+              <article
+                class="review-card knowledge-card"
+                :class="{ 'focused-card': selectedEntryKey === knowledgeItemKey(item) }"
+                :data-testid="`knowledge-card-${item.object_type}-${item.lineage_key}`"
+              >
+                <div class="source-top">
+                  <div>
+                    <div class="eyebrow">{{ formatItemType(item.object_type) }}</div>
+                    <h3>{{ item.lineage_key }}</h3>
+                  </div>
+                  <span class="badge">{{ formatStatus(item.status || "tracked") }}</span>
                 </div>
-                <span class="badge">{{ formatStatus(item.status || "tracked") }}</span>
-              </div>
-              <p><strong>生效文本</strong><br />{{ previewSummaryText(item.active_version) }}</p>
-              <p><strong>候选文本</strong><br />{{ previewSummaryText(item.candidate_version) }}</p>
-              <p class="muted">运行时引用：{{ item.runtime_refs?.alias_scope || item.runtime_refs?.mode || "-" }}</p>
-              <div class="card-actions">
-                <button
-                  class="ghost"
-                  :data-testid="`knowledge-view-detail-${item.object_type}-${item.lineage_key}`"
-                  @click="selectEntry(item)"
-                >
-                  查看详情
-                </button>
-                <button class="ghost" @click="openReviewInbox(item)">查看审核收件箱</button>
-                <button class="ghost" @click="openIndexConsole(item)">打开索引控制台</button>
-              </div>
-            </article>
-          </div>
+                <p><strong>生效文本</strong><br />{{ previewSummaryText(item.active_version) }}</p>
+                <p><strong>候选文本</strong><br />{{ previewSummaryText(item.candidate_version) }}</p>
+                <p class="muted">运行时引用：{{ item.runtime_refs?.alias_scope || item.runtime_refs?.mode || "-" }}</p>
+                <div class="card-actions">
+                  <button
+                    class="ghost"
+                    :data-testid="`knowledge-view-detail-${item.object_type}-${item.lineage_key}`"
+                    @click="selectEntry(item)"
+                  >
+                    查看详情
+                  </button>
+                  <button class="ghost" @click="openReviewInbox(item)">查看审核收件箱</button>
+                  <button class="ghost" @click="openIndexConsole(item)">打开索引控制台</button>
+                </div>
+              </article>
+            </template>
+          </VirtualList>
         </article>
 
         <article class="paper knowledge-detail-card" data-testid="knowledge-detail-drawer">
@@ -669,147 +686,217 @@ watch(
                 formatJsonPayload(knowledgeConsole.detail.runtime_refs)
               }}</pre>
             </LazySection>
-            <LazySection :key="`versions-${selectedEntryKey}`" title="版本历史">
-              <ol class="history-list">
-                <li v-for="version in knowledgeConsole.detail.versions || []" :key="version.row_id" class="history-entry">
-                  <p class="history-meta">
-                    <strong>{{ version.row_id }}</strong>
-                    <span>v{{ version.version || "候选" }}</span>
-                  </p>
-                  <p>{{ version.text || "-" }}</p>
-                </li>
-              </ol>
-            </LazySection>
-            <LazySection :key="`reviews-${selectedEntryKey}`" title="关联审核">
-              <ol v-if="workflowReviewItems.length" class="history-list">
-                <li v-for="review in workflowReviewItems" :key="review.review_id" class="history-entry">
-                  <p class="history-meta">
-                    <strong>{{ review.review_id }}</strong>
-                    <span>{{ formatStatus(review.status) }}</span>
-                  </p>
-                  <p class="muted">{{ formatStatus(review.materialize_status || "pending") }}</p>
-                  <div class="card-actions">
-                    <button
-                      class="ghost"
-                      :data-testid="`knowledge-open-related-review-${review.review_id}`"
-                      @click="openReviewRef(review.review_id)"
-                    >
-                      打开审核收件箱
-                    </button>
-                  </div>
-                </li>
-              </ol>
-              <p v-else class="muted">还没有关联审核。</p>
-            </LazySection>
-            <LazySection :key="`jobs-${selectedEntryKey}`" title="关联任务">
-              <ol v-if="workflowJobs.length" class="history-list">
-                <li v-for="job in workflowJobs" :key="job.job_id" class="history-entry">
-                  <p class="history-meta">
-                    <strong>{{ job.job_id }}</strong>
-                    <span>{{ formatStatus(job.status) }}</span>
-                  </p>
-                  <p class="muted">{{ formatJobType(job.job_type) }} / {{ job.alias_scope || "直接读取" }}</p>
-                  <div class="card-actions">
-                    <button class="ghost" @click="openJobTarget(job)">
-                      打开索引控制台
-                    </button>
-                  </div>
-                </li>
-              </ol>
-              <p v-else class="muted">还没有关联任务。</p>
-            </LazySection>
-            <LazySection :key="`human-review-${selectedEntryKey}`" title="关联人工审核">
-              <ol v-if="workflowHumanReviewEvents.length" class="history-list">
-                <li v-for="event in workflowHumanReviewEvents" :key="event.event_id" class="history-entry">
-                  <p class="history-meta">
-                    <strong>{{ event.event_id }}</strong>
-                    <span>{{ formatStatus(event.status) }}</span>
-                  </p>
-                  <p class="muted">{{ formatAction(event.default_action || "inspect") }}</p>
-                  <div class="card-actions">
-                    <button class="ghost" @click="openHumanReviewEvent(event)">
-                      打开审核收件箱
-                    </button>
-                    <button
-                      v-for="action in event.allowed_actions_json || []"
-                      :key="`${event.event_id}-${action}`"
-                      class="ghost"
-                      :data-testid="`knowledge-human-review-action-${event.event_id}-${action}`"
-                      :disabled="Boolean(knowledgeConsole.actionId)"
-                      @click="runHumanReviewAction(event.event_id, action)"
-                    >
-                      {{ actionLabel(action) }}
-                    </button>
-                  </div>
-                </li>
-              </ol>
-              <p v-else class="muted">还没有关联的人工审核后续项。</p>
-            </LazySection>
-            <LazySection :key="`activity-${selectedEntryKey}`" title="目标活动">
-              <ol v-if="workflowTargetActivityGroups.length" class="history-list">
-                <li v-for="group in workflowTargetActivityGroups" :key="group.target.target_ref" class="history-entry">
-                  <p class="history-meta">
-                    <strong>{{ group.target.target_ref }}</strong>
-                    <span>{{ group.activity_count }} 条活动</span>
-                  </p>
-                  <p class="muted">{{ (group.sources || []).join(", ") || "活动" }}</p>
-                  <div class="card-actions">
-                    <button class="ghost" @click="openActivityTarget(group)">
-                      打开目标
-                    </button>
-                  </div>
-                </li>
-              </ol>
-              <p v-else class="muted">还没有关联目标活动。</p>
-            </LazySection>
-              <LazySection
-                :key="`review-refs-${selectedEntryKey}`"
-                title="审核引用"
-                toggle-test-id="knowledge-toggle-review-refs"
+            <LazySection :key="`versions-${selectedEntryKey}`" title="版本历史" toggle-test-id="knowledge-toggle-versions">
+              <ProgressiveList
+                :items="knowledgeConsole.detail.versions || []"
+                :initial-count="6"
+                :batch-size="6"
+                :threshold="8"
+                test-id="knowledge-versions-progressive-list"
               >
-              <ol v-if="detailReviewRefs.length" class="history-list">
-                <li v-for="reviewRef in detailReviewRefs" :key="reviewRef" class="history-entry">
-                  <p class="history-meta">
-                    <strong>{{ reviewRef }}</strong>
-                    <span>review_item</span>
-                  </p>
-                  <div class="card-actions">
-                    <button
-                      class="ghost"
-                      :data-testid="`knowledge-open-review-ref-${reviewRef}`"
-                      @click="openReviewRef(reviewRef)"
-                    >
-                      打开审核收件箱
-                    </button>
-                  </div>
-                </li>
-              </ol>
-              <p v-else class="muted">还没有关联审核引用。</p>
+                <template #default="{ items }">
+                  <ol class="history-list">
+                    <li v-for="version in items" :key="version.row_id" class="history-entry" :data-testid="`knowledge-version-row-${version.row_id}`">
+                      <p class="history-meta">
+                        <strong>{{ version.row_id }}</strong>
+                        <span>v{{ version.version || "候选" }}</span>
+                      </p>
+                      <p>{{ version.text || "-" }}</p>
+                    </li>
+                  </ol>
+                </template>
+              </ProgressiveList>
             </LazySection>
-              <LazySection
-                :key="`bundle-refs-${selectedEntryKey}`"
-                title="包引用"
-                toggle-test-id="knowledge-toggle-bundle-refs"
+            <LazySection :key="`reviews-${selectedEntryKey}`" title="关联审核" toggle-test-id="knowledge-toggle-reviews">
+              <ProgressiveList
+                :items="workflowReviewItems"
+                :initial-count="6"
+                :batch-size="6"
+                :threshold="8"
+                test-id="knowledge-reviews-progressive-list"
               >
-              <ol v-if="detailBundleRefs.length" class="history-list">
-                <li v-for="bundleRef in detailBundleRefs" :key="bundleRef.bundle_id" class="history-entry">
-                  <p class="history-meta">
-                    <strong>{{ bundleRef.bundle_id }}</strong>
-                    <span>{{ bundleRef.scene_id }}</span>
-                  </p>
-                  <p class="muted">章节 {{ bundleRef.chapter_id || "-" }}</p>
-                  <div class="card-actions">
-                    <button
-                      class="ghost"
-                      :data-testid="`knowledge-open-bundle-ref-${bundleRef.bundle_id}`"
-                      @click="openBundleWorkbench(bundleRef)"
-                    >
-                      打开场景工作台
-                    </button>
-                  </div>
-                </li>
-              </ol>
-              <p v-else class="muted">还没有包引用。</p>
+                <template #default="{ items }">
+                  <ol v-if="items.length" class="history-list">
+                    <li v-for="review in items" :key="review.review_id" class="history-entry" :data-testid="`knowledge-review-row-${review.review_id}`">
+                      <p class="history-meta">
+                        <strong>{{ review.review_id }}</strong>
+                        <span>{{ formatStatus(review.status) }}</span>
+                      </p>
+                      <p class="muted">{{ formatStatus(review.materialize_status || "pending") }}</p>
+                      <div class="card-actions">
+                        <button
+                          class="ghost"
+                          :data-testid="`knowledge-open-related-review-${review.review_id}`"
+                          @click="openReviewRef(review.review_id)"
+                        >
+                          打开审核收件箱
+                        </button>
+                      </div>
+                    </li>
+                  </ol>
+                  <p v-else class="muted">还没有关联审核。</p>
+                </template>
+              </ProgressiveList>
+            </LazySection>
+            <LazySection :key="`jobs-${selectedEntryKey}`" title="关联任务" toggle-test-id="knowledge-toggle-jobs">
+              <ProgressiveList
+                :items="workflowJobs"
+                :initial-count="6"
+                :batch-size="6"
+                :threshold="8"
+                test-id="knowledge-jobs-progressive-list"
+              >
+                <template #default="{ items }">
+                  <ol v-if="items.length" class="history-list">
+                    <li v-for="job in items" :key="job.job_id" class="history-entry" :data-testid="`knowledge-job-row-${job.job_id}`">
+                      <p class="history-meta">
+                        <strong>{{ job.job_id }}</strong>
+                        <span>{{ formatStatus(job.status) }}</span>
+                      </p>
+                      <p class="muted">{{ formatJobType(job.job_type) }} / {{ job.alias_scope || "直接读取" }}</p>
+                      <div class="card-actions">
+                        <button class="ghost" @click="openJobTarget(job)">
+                          打开索引控制台
+                        </button>
+                      </div>
+                    </li>
+                  </ol>
+                  <p v-else class="muted">还没有关联任务。</p>
+                </template>
+              </ProgressiveList>
+            </LazySection>
+            <LazySection :key="`human-review-${selectedEntryKey}`" title="关联人工审核" toggle-test-id="knowledge-toggle-human-review">
+              <ProgressiveList
+                :items="workflowHumanReviewEvents"
+                :initial-count="6"
+                :batch-size="6"
+                :threshold="8"
+                test-id="knowledge-human-review-progressive-list"
+              >
+                <template #default="{ items }">
+                  <ol v-if="items.length" class="history-list">
+                    <li v-for="event in items" :key="event.event_id" class="history-entry" :data-testid="`knowledge-human-review-row-${event.event_id}`">
+                      <p class="history-meta">
+                        <strong>{{ event.event_id }}</strong>
+                        <span>{{ formatStatus(event.status) }}</span>
+                      </p>
+                      <p class="muted">{{ formatAction(event.default_action || "inspect") }}</p>
+                      <div class="card-actions">
+                        <button class="ghost" @click="openHumanReviewEvent(event)">
+                          打开审核收件箱
+                        </button>
+                        <button
+                          v-for="action in event.allowed_actions_json || []"
+                          :key="`${event.event_id}-${action}`"
+                          class="ghost"
+                          :data-testid="`knowledge-human-review-action-${event.event_id}-${action}`"
+                          :disabled="Boolean(knowledgeConsole.actionId)"
+                          @click="runHumanReviewAction(event.event_id, action)"
+                        >
+                          {{ actionLabel(action) }}
+                        </button>
+                      </div>
+                    </li>
+                  </ol>
+                  <p v-else class="muted">还没有关联的人工审核后续项。</p>
+                </template>
+              </ProgressiveList>
+            </LazySection>
+            <LazySection :key="`activity-${selectedEntryKey}`" title="目标活动" toggle-test-id="knowledge-toggle-activity">
+              <ProgressiveList
+                :items="workflowTargetActivityGroups"
+                :initial-count="6"
+                :batch-size="6"
+                :threshold="8"
+                test-id="knowledge-activity-progressive-list"
+              >
+                <template #default="{ items }">
+                  <ol v-if="items.length" class="history-list">
+                    <li v-for="group in items" :key="group.target.target_ref" class="history-entry" :data-testid="`knowledge-activity-row-${group.target.target_ref}`">
+                      <p class="history-meta">
+                        <strong>{{ group.target.target_ref }}</strong>
+                        <span>{{ group.activity_count }} 条活动</span>
+                      </p>
+                      <p class="muted">{{ (group.sources || []).join(", ") || "活动" }}</p>
+                      <div class="card-actions">
+                        <button class="ghost" @click="openActivityTarget(group)">
+                          打开目标
+                        </button>
+                      </div>
+                    </li>
+                  </ol>
+                  <p v-else class="muted">还没有关联目标活动。</p>
+                </template>
+              </ProgressiveList>
+            </LazySection>
+            <LazySection
+              :key="`review-refs-${selectedEntryKey}`"
+              title="审核引用"
+              toggle-test-id="knowledge-toggle-review-refs"
+            >
+              <ProgressiveList
+                :items="detailReviewRefs"
+                :initial-count="6"
+                :batch-size="6"
+                :threshold="8"
+                test-id="knowledge-review-refs-progressive-list"
+              >
+                <template #default="{ items }">
+                  <ol v-if="items.length" class="history-list">
+                    <li v-for="reviewRef in items" :key="reviewRef" class="history-entry" :data-testid="`knowledge-review-ref-row-${reviewRef}`">
+                      <p class="history-meta">
+                        <strong>{{ reviewRef }}</strong>
+                        <span>review_item</span>
+                      </p>
+                      <div class="card-actions">
+                        <button
+                          class="ghost"
+                          :data-testid="`knowledge-open-review-ref-${reviewRef}`"
+                          @click="openReviewRef(reviewRef)"
+                        >
+                          打开审核收件箱
+                        </button>
+                      </div>
+                    </li>
+                  </ol>
+                  <p v-else class="muted">还没有关联审核引用。</p>
+                </template>
+              </ProgressiveList>
+            </LazySection>
+            <LazySection
+              :key="`bundle-refs-${selectedEntryKey}`"
+              title="包引用"
+              toggle-test-id="knowledge-toggle-bundle-refs"
+            >
+              <ProgressiveList
+                :items="detailBundleRefs"
+                :initial-count="6"
+                :batch-size="6"
+                :threshold="8"
+                test-id="knowledge-bundle-refs-progressive-list"
+              >
+                <template #default="{ items }">
+                  <ol v-if="items.length" class="history-list">
+                    <li v-for="bundleRef in items" :key="bundleRef.bundle_id" class="history-entry" :data-testid="`knowledge-bundle-ref-row-${bundleRef.bundle_id}`">
+                      <p class="history-meta">
+                        <strong>{{ bundleRef.bundle_id }}</strong>
+                        <span>{{ bundleRef.scene_id }}</span>
+                      </p>
+                      <p class="muted">章节 {{ bundleRef.chapter_id || "-" }}</p>
+                      <div class="card-actions">
+                        <button
+                          class="ghost"
+                          :data-testid="`knowledge-open-bundle-ref-${bundleRef.bundle_id}`"
+                          @click="openBundleWorkbench(bundleRef)"
+                        >
+                          打开场景工作台
+                        </button>
+                      </div>
+                    </li>
+                  </ol>
+                  <p v-else class="muted">还没有包引用。</p>
+                </template>
+              </ProgressiveList>
             </LazySection>
           </template>
         </article>
