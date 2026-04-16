@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onActivated, onBeforeUnmount, onDeactivated, ref, watch } from "vue";
 
 import { buildProgressivePlan, nextProgressiveCount } from "../lib/progressiveList";
 
@@ -32,6 +32,7 @@ const props = defineProps({
 
 const renderedCount = ref(0);
 const frameId = ref(0);
+const active = ref(true);
 
 const plan = computed(() =>
   buildProgressivePlan({
@@ -58,7 +59,7 @@ function cancelFrame() {
 function scheduleNextFrame() {
   cancelFrame();
 
-  if (!pending.value) {
+  if (!active.value || !pending.value) {
     return;
   }
 
@@ -70,7 +71,7 @@ function scheduleNextFrame() {
       batchSize: plan.value.batchSize,
     });
 
-    if (pending.value) {
+    if (active.value && pending.value) {
       scheduleNextFrame();
     }
   });
@@ -82,12 +83,25 @@ watch(
     cancelFrame();
     renderedCount.value = nextPlan.renderedCount;
 
-    if (nextPlan.pending) {
+    if (active.value && nextPlan.pending) {
       scheduleNextFrame();
     }
   },
   { immediate: true },
 );
+
+onActivated(() => {
+  active.value = true;
+
+  if (pending.value) {
+    scheduleNextFrame();
+  }
+});
+
+onDeactivated(() => {
+  active.value = false;
+  cancelFrame();
+});
 
 onBeforeUnmount(() => {
   cancelFrame();

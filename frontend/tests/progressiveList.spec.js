@@ -1,10 +1,50 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
 
+import { KeepAlive, createApp, h, nextTick, ref } from "vue";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import ProgressiveList from "../src/components/ProgressiveList.vue";
 import {
   buildProgressivePlan,
   nextProgressiveCount,
   shouldProgressivelyRender,
 } from "../src/lib/progressiveList";
+
+async function flushUi() {
+  await nextTick();
+  await Promise.resolve();
+}
+
+function createAnimationFrameController() {
+  let nextId = 1;
+  let queue = [];
+
+  return {
+    request(callback) {
+      const id = nextId;
+      nextId += 1;
+      queue.push({ id, callback });
+      return id;
+    },
+    cancel(id) {
+      queue = queue.filter((entry) => entry.id !== id);
+    },
+    async flushAll() {
+      while (queue.length) {
+        const currentQueue = queue;
+        queue = [];
+        currentQueue.forEach((entry) => entry.callback(0));
+        await flushUi();
+      }
+    },
+  };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  document.body.innerHTML = "";
+});
 
 describe("shouldProgressivelyRender", () => {
   it("returns false when progressive rendering is disabled", () => {
@@ -174,5 +214,76 @@ describe("buildProgressivePlan", () => {
       batchSize: 2,
       threshold: 1,
     });
+  });
+});
+
+describe("ProgressiveList KeepAlive lifecycle", () => {
+  it("pauses pending batches while deactivated and resumes after activation", async () => {
+    const animationFrames = createAnimationFrameController();
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+
+    const visible = ref(true);
+    const items = Array.from({ length: 6 }, (_, index) => ({
+      id: `progressive-row-${index + 1}`,
+      label: `Progressive row ${index + 1}`,
+    }));
+    const Placeholder = {
+      name: "ProgressiveListPlaceholder",
+      render() {
+        return h("section", { "data-testid": "progressive-placeholder" }, "hidden");
+      },
+    };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp({
+      render() {
+        return h(KeepAlive, null, () =>
+          visible.value
+            ? h(
+              ProgressiveList,
+              {
+                items,
+                initialCount: 2,
+                batchSize: 2,
+                threshold: 2,
+                testId: "progressive-list-under-test",
+              },
+              {
+                default: ({ items: renderedItems }) =>
+                  renderedItems.map((item) =>
+                    h("div", { "data-testid": item.id }, item.label),
+                  ),
+              },
+            )
+            : h(Placeholder),
+        );
+      },
+    });
+
+    app.mount(container);
+    await flushUi();
+
+    try {
+      expect(container.querySelectorAll('[data-testid^="progressive-row-"]')).toHaveLength(2);
+
+      visible.value = false;
+      await flushUi();
+      expect(container.querySelector('[data-testid="progressive-placeholder"]')).not.toBeNull();
+
+      await animationFrames.flushAll();
+
+      visible.value = true;
+      await flushUi();
+      expect(container.querySelectorAll('[data-testid^="progressive-row-"]')).toHaveLength(2);
+
+      await animationFrames.flushAll();
+
+      expect(container.querySelectorAll('[data-testid^="progressive-row-"]')).toHaveLength(6);
+      expect(container.querySelector('[data-testid="progressive-row-6"]')).not.toBeNull();
+    } finally {
+      app.unmount();
+      container.remove();
+    }
   });
 });
