@@ -10,6 +10,7 @@ test("creates knowledge candidates and carries them through review, index, and p
 
   await page.getByTestId("nav-knowledge").click();
   await expect(page.getByTestId("knowledge-console-view")).toBeVisible();
+  await expect(page.getByTestId("knowledge-catalog-virtual-list")).toBeVisible();
 
   await page.getByTestId("knowledge-review-id").fill("review_knowledge_style_rule");
   await page.getByTestId("knowledge-item-type").selectOption("style_rule_set");
@@ -18,6 +19,8 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-create-button").click();
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
   await expect(page.getByTestId("knowledge-detail-lineage")).toContainText("STYLE_KNOWLEDGE_E2E");
+  await page.getByTestId("knowledge-toggle-reviews").click();
+  await expect(page.getByTestId("knowledge-reviews-progressive-list")).toBeVisible();
   await page.getByTestId("knowledge-approve-review-review_knowledge_style_rule").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已批准 review_knowledge_style_rule，操作员 ops.knowledge.e2e");
 
@@ -32,6 +35,7 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
   await expect(page.getByTestId("knowledge-detail-lineage")).toContainText("STYLE_KNOWLEDGE_E2E");
   await page.getByTestId("knowledge-toggle-review-refs").click();
+  await expect(page.getByTestId("knowledge-review-refs-progressive-list")).toBeVisible();
   await expect(page.getByTestId("knowledge-open-review-ref-review_knowledge_style_rule")).toBeVisible();
 
   await page.getByTestId("knowledge-scope-ref-filter").fill("missing_scope");
@@ -88,6 +92,7 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-refresh-button").click();
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
   await page.getByTestId("knowledge-toggle-bundle-refs").click();
+  await expect(page.getByTestId("knowledge-bundle-refs-progressive-list")).toBeVisible();
   await page.getByTestId("knowledge-open-bundle-ref-bundle_CH001_SC02").click();
   await expect(page.getByTestId("scene-id-input")).toHaveValue("CH001_SC02");
   await expect(page.getByTestId("scene-workbench-scene-card")).toHaveClass(/focused-card/);

@@ -102,6 +102,26 @@ describe("shell smoothness architecture", () => {
     expect(indexSource).toContain("const pinnedOperatorActionKeys = computed(() =>");
   });
 
+  it("routes knowledge console catalog and detail histories through shared list drivers", () => {
+    const knowledgeSource = readFileSync(new URL("../src/views/KnowledgeConsoleView.vue", import.meta.url), "utf8");
+
+    expect(knowledgeSource).toContain('import ProgressiveList from "../components/ProgressiveList.vue"');
+    expect(knowledgeSource).toContain('import VirtualList from "../components/VirtualList.vue"');
+    expect(knowledgeSource).toContain("const pinnedCatalogKeys = computed(() =>");
+    expect(knowledgeSource).toContain('test-id="knowledge-catalog-virtual-list"');
+    expect(knowledgeSource).toContain('test-id="knowledge-versions-progressive-list"');
+    expect(knowledgeSource).toContain('test-id="knowledge-reviews-progressive-list"');
+    expect(knowledgeSource).toContain('test-id="knowledge-jobs-progressive-list"');
+    expect(knowledgeSource).toContain('test-id="knowledge-human-review-progressive-list"');
+    expect(knowledgeSource).toContain('test-id="knowledge-activity-progressive-list"');
+    expect(knowledgeSource).toContain('test-id="knowledge-review-refs-progressive-list"');
+    expect(knowledgeSource).toContain('test-id="knowledge-bundle-refs-progressive-list"');
+    expect(knowledgeSource).not.toContain('v-for="item in catalogItems"');
+    expect(knowledgeSource).not.toContain('v-for="version in knowledgeConsole.detail.versions || []"');
+    expect(knowledgeSource).not.toContain('v-for="review in workflowReviewItems"');
+    expect(knowledgeSource).not.toContain('v-for="job in workflowJobs"');
+  });
+
   it("ships shared virtual and progressive list primitives for heavy in-page surfaces", () => {
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");

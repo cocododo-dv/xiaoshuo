@@ -5,9 +5,11 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AuthorWorkspaceView from "../src/views/AuthorWorkspaceView.vue";
+import KnowledgeConsoleView from "../src/views/KnowledgeConsoleView.vue";
 import IndexConsoleView from "../src/views/IndexConsoleView.vue";
 import { useShellRouter } from "../src/router";
 import { useAuthorWorkspaceStore } from "../src/stores/authorWorkspace";
+import { useKnowledgeConsoleStore } from "../src/stores/knowledgeConsole";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 import ReviewInboxView from "../src/views/ReviewInboxView.vue";
@@ -42,6 +44,132 @@ function createHumanReviewItem(index) {
       action_history: [],
     },
     allowed_actions_json: ["inspect", "retry_request"],
+  };
+}
+
+function createKnowledgeCatalogItem(index) {
+  const objectType = index % 2 === 0 ? "style_rule" : "calibration_line";
+  const lineageKey = `KNOWLEDGE_${String(index).padStart(3, "0")}`;
+
+  return {
+    object_type: objectType,
+    lineage_key: lineageKey,
+    status: index % 2 === 0 ? "active" : "candidate",
+    active_version: {
+      row_id: `active-${index}`,
+      version: index,
+      text: `Active knowledge text ${index}`,
+    },
+    candidate_version: {
+      row_id: `candidate-${index}`,
+      review_id: `knowledge-review-${index}`,
+      text: `Candidate knowledge text ${index}`,
+    },
+    runtime_refs: {
+      alias_scope: `style_rule:global:${index}`,
+      verify_status: index % 3 === 0 ? "failed" : "succeeded",
+    },
+    review_refs: [`knowledge-review-${index}`],
+    bundle_refs: [
+      {
+        bundle_id: `bundle-${index}`,
+        scene_id: `CH001_SC${String(index).padStart(2, "0")}`,
+        chapter_id: "CH001",
+      },
+    ],
+  };
+}
+
+function createKnowledgeDetail(index = 14) {
+  const base = createKnowledgeCatalogItem(index);
+
+  return {
+    ...base,
+    versions: Array.from({ length: 18 }, (_, itemIndex) => ({
+      row_id: `version-${itemIndex}`,
+      version: itemIndex + 1,
+      text: `Version history ${itemIndex}`,
+    })),
+    review_refs: Array.from({ length: 18 }, (_, itemIndex) => `knowledge-review-${itemIndex}`),
+    bundle_refs: Array.from({ length: 18 }, (_, itemIndex) => ({
+      bundle_id: `bundle-${itemIndex}`,
+      scene_id: `CH001_SC${String(itemIndex).padStart(2, "0")}`,
+      chapter_id: "CH001",
+    })),
+    workflow: {
+      review_items: Array.from({ length: 18 }, (_, itemIndex) => ({
+        review_id: `knowledge-review-${itemIndex}`,
+        status: itemIndex % 2 === 0 ? "pending" : "approved",
+        materialize_status: itemIndex % 3 === 0 ? "succeeded" : "pending",
+        approved_item_row_id: `version-${itemIndex}`,
+      })),
+      jobs: Array.from({ length: 18 }, (_, itemIndex) => ({
+        job_id: `knowledge-job-${itemIndex}`,
+        job_type: "verify",
+        review_id: `knowledge-review-${itemIndex}`,
+        status: itemIndex % 2 === 0 ? "failed" : "running",
+        alias_scope: `style_rule:global:${itemIndex}`,
+      })),
+      human_review_events: Array.from({ length: 18 }, (_, itemIndex) => ({
+        event_id: `knowledge-event-${itemIndex}`,
+        status: itemIndex % 2 === 0 ? "pending" : "resolved",
+        default_action: "inspect",
+        allowed_actions_json: ["inspect", "retry_request"],
+      })),
+      target_activity_groups: Array.from({ length: 18 }, (_, itemIndex) => ({
+        target: {
+          target_type: "review_item",
+          target_id: `knowledge-review-${itemIndex}`,
+          target_ref: `review_item:knowledge-review-${itemIndex}`,
+        },
+        activity_count: 8 + itemIndex,
+        sources: ["operator_action", "system_runtime"],
+      })),
+      recommended_primary_action: {
+        kind: "review",
+        action: "approve_review",
+        review_id: "knowledge-review-0",
+      },
+    },
+  };
+}
+
+async function mountKnowledgeConsoleView({ catalogCount = 24, selectedIndex = 14 } = {}) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+
+  const store = useKnowledgeConsoleStore();
+  store.items = Array.from({ length: catalogCount }, (_, index) => createKnowledgeCatalogItem(index));
+  store.detail = createKnowledgeDetail(selectedIndex);
+  store.selectedObjectType = store.detail.object_type;
+  store.selectedLineageKey = store.detail.lineage_key;
+  store.supportedObjectTypes = ["calibration_line", "style_rule"];
+  store.loaded = true;
+  store.stale = false;
+  store.loading = false;
+  store.actionId = "";
+  store.error = "";
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const app = createApp({
+    render() {
+      return h(KeepAlive, null, [h(KnowledgeConsoleView, { onNotice: vi.fn() })]);
+    },
+  });
+  app.use(pinia);
+  app.mount(container);
+  await flushUi();
+
+  return {
+    container,
+    app,
+    store,
+    unmount() {
+      app.unmount();
+      container.remove();
+    },
   };
 }
 
@@ -491,6 +619,113 @@ describe("review inbox scroll performance integration", () => {
       humanReviewCards = mounted.container.querySelectorAll('[data-testid^="human-review-event-"]');
       expect(humanReviewCards).toHaveLength(mounted.store.systemRecoveryItems.length);
       expect(mounted.container.querySelector('[data-testid="human-review-event-event-9"]')).not.toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+describe("knowledge console scroll performance integration", () => {
+  let animationFrames;
+
+  beforeEach(() => {
+    animationFrames = createAnimationFrameController();
+    setActivePinia(createPinia());
+    document.body.innerHTML = "";
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("mounts the knowledge catalog through VirtualList and keeps the selected card pinned after scroll", async () => {
+    const mounted = await mountKnowledgeConsoleView({ catalogCount: 24, selectedIndex: 14 });
+
+    try {
+      const catalogList = mounted.container.querySelector('[data-testid="knowledge-catalog-virtual-list"]');
+      expect(catalogList).not.toBeNull();
+      expect(catalogList.style.maxHeight).toBe("640px");
+
+      let catalogCards = mounted.container.querySelectorAll('[data-testid^="knowledge-card-"]');
+      expect(catalogCards.length).toBeGreaterThan(0);
+      expect(catalogCards.length).toBeLessThan(mounted.store.items.length);
+      expect(mounted.container.querySelector('[data-testid="knowledge-card-style_rule-KNOWLEDGE_014"]')).not.toBeNull();
+
+      catalogList.scrollTop = 10000;
+      catalogList.dispatchEvent(new Event("scroll"));
+      await flushUi();
+
+      catalogCards = mounted.container.querySelectorAll('[data-testid^="knowledge-card-"]');
+      expect(catalogCards.length).toBeGreaterThan(0);
+      expect(catalogCards.length).toBeLessThan(mounted.store.items.length);
+      expect(mounted.container.querySelector('[data-testid="knowledge-card-style_rule-KNOWLEDGE_014"]')).not.toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("progressively renders knowledge detail history lists while keeping visible actions usable", async () => {
+    const mounted = await mountKnowledgeConsoleView({ catalogCount: 24, selectedIndex: 14 });
+
+    try {
+      [
+        "knowledge-toggle-versions",
+        "knowledge-toggle-reviews",
+        "knowledge-toggle-jobs",
+        "knowledge-toggle-human-review",
+        "knowledge-toggle-activity",
+        "knowledge-toggle-review-refs",
+        "knowledge-toggle-bundle-refs",
+      ].forEach((testId) => {
+        const toggle = mounted.container.querySelector(`[data-testid="${testId}"]`);
+        expect(toggle).not.toBeNull();
+        toggle.click();
+      });
+
+      await flushUi();
+
+      [
+        "knowledge-versions-progressive-list",
+        "knowledge-reviews-progressive-list",
+        "knowledge-jobs-progressive-list",
+        "knowledge-human-review-progressive-list",
+        "knowledge-activity-progressive-list",
+        "knowledge-review-refs-progressive-list",
+        "knowledge-bundle-refs-progressive-list",
+      ].forEach((testId) => {
+        expect(mounted.container.querySelector(`[data-testid="${testId}"]`)).not.toBeNull();
+      });
+
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-version-row-"]')).toHaveLength(6);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-review-row-"]')).toHaveLength(6);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-job-row-"]')).toHaveLength(6);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-human-review-row-"]')).toHaveLength(6);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-activity-row-"]')).toHaveLength(6);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-review-ref-row-"]')).toHaveLength(6);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-bundle-ref-row-"]')).toHaveLength(6);
+      expect(mounted.container.querySelector('[data-testid="knowledge-open-related-review-knowledge-review-0"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="knowledge-human-review-action-knowledge-event-0-inspect"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="knowledge-open-review-ref-knowledge-review-0"]')).not.toBeNull();
+      expect(mounted.container.querySelector('[data-testid="knowledge-open-bundle-ref-bundle-0"]')).not.toBeNull();
+
+      await animationFrames.flushAll();
+
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-version-row-"]')).toHaveLength(18);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-review-row-"]')).toHaveLength(18);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-job-row-"]')).toHaveLength(18);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-human-review-row-"]')).toHaveLength(18);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-activity-row-"]')).toHaveLength(18);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-review-ref-row-"]')).toHaveLength(18);
+      expect(mounted.container.querySelectorAll('[data-testid^="knowledge-bundle-ref-row-"]')).toHaveLength(18);
     } finally {
       mounted.unmount();
     }
