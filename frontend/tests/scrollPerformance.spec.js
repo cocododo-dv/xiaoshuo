@@ -570,12 +570,14 @@ describe("index console scroll performance integration", () => {
     });
 
     try {
-      mounted.container.querySelector('[data-testid="index-toggle-system-runtime"]').click();
-      await flushUi();
-
       const systemSection = mounted.container.querySelector('[data-testid="index-system-runtime-section"]');
       expect(systemSection).not.toBeNull();
-      const systemList = systemSection.querySelector('[data-testid="index-system-runtime-virtual-list"]');
+      let systemList = systemSection.querySelector('[data-testid="index-system-runtime-virtual-list"]');
+      if (!systemList) {
+        systemSection.querySelector('[data-testid="index-toggle-system-runtime"]').click();
+        await flushUi();
+        systemList = systemSection.querySelector('[data-testid="index-system-runtime-virtual-list"]');
+      }
 
       expect(systemList).not.toBeNull();
       expect(systemList.style.maxHeight).toBe("560px");
@@ -612,12 +614,14 @@ describe("index console scroll performance integration", () => {
     });
 
     try {
-      mounted.container.querySelector('[data-testid="index-toggle-operator-action"]').click();
-      await flushUi();
-
       const operatorSection = mounted.container.querySelector('[data-testid="index-operator-action-section"]');
       expect(operatorSection).not.toBeNull();
-      const operatorList = operatorSection.querySelector('[data-testid="index-operator-action-virtual-list"]');
+      let operatorList = operatorSection.querySelector('[data-testid="index-operator-action-virtual-list"]');
+      if (!operatorList) {
+        operatorSection.querySelector('[data-testid="index-toggle-operator-action"]').click();
+        await flushUi();
+        operatorList = operatorSection.querySelector('[data-testid="index-operator-action-virtual-list"]');
+      }
 
       expect(operatorList).not.toBeNull();
       expect(operatorList.style.maxHeight).toBe("560px");
