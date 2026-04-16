@@ -145,6 +145,17 @@ describe("shell smoothness architecture", () => {
     expect(styles).toContain("content-visibility: auto");
   });
 
+  it("routes author trash lists through shared VirtualList anchors and keeps trash list spacing shells intact", () => {
+    const authorTrashSource = readFileSync(new URL("../src/views/AuthorTrashView.vue", import.meta.url), "utf8");
+
+    expect(authorTrashSource).toContain('import VirtualList from "../components/VirtualList.vue"');
+    expect(authorTrashSource).toContain('test-id="author-trash-chapter-virtual-list"');
+    expect(authorTrashSource).toContain('test-id="author-trash-scene-virtual-list"');
+    expect(authorTrashSource).toContain('class="trash-list"');
+    expect(authorTrashSource).not.toContain('v-for="chapter in chapters"');
+    expect(authorTrashSource).not.toContain('v-for="scene in scenes"');
+  });
+
   it("avoids deep watchers in the heaviest cached views", () => {
     const indexSource = readFileSync(new URL("../src/views/IndexConsoleView.vue", import.meta.url), "utf8");
     const reviewSource = readFileSync(new URL("../src/views/ReviewInboxView.vue", import.meta.url), "utf8");

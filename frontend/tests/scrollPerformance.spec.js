@@ -5,9 +5,11 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AuthorWorkspaceView from "../src/views/AuthorWorkspaceView.vue";
+import AuthorTrashView from "../src/views/AuthorTrashView.vue";
 import KnowledgeConsoleView from "../src/views/KnowledgeConsoleView.vue";
 import IndexConsoleView from "../src/views/IndexConsoleView.vue";
 import { useShellRouter } from "../src/router";
+import { useAuthorTrashStore } from "../src/stores/authorTrash";
 import { useAuthorWorkspaceStore } from "../src/stores/authorWorkspace";
 import { useKnowledgeConsoleStore } from "../src/stores/knowledgeConsole";
 import { useIndexConsoleStore } from "../src/stores/indexConsole";
@@ -491,6 +493,95 @@ function createAuthorScene(index, chapterId) {
     scene_status: "ready",
     current_bundle_id: null,
     current_final_scene_row_id: null,
+  };
+}
+
+function createTrashChapter(index, sceneCount) {
+  return {
+    chapter_id: `CH${String(index).padStart(3, "0")}`,
+    chapter_goal: `Trash chapter goal ${index}`,
+    scene_count: sceneCount,
+    trashed_at: `2026-04-15T08:${String(index).padStart(2, "0")}:00+00:00`,
+    trashed_by: `operator-${index}`,
+    restore_allowed: index % 2 === 0 ? 1 : 0,
+    purge_allowed: 1,
+    restore_block_reason: index % 2 === 0 ? null : `Restore blocked ${index}`,
+    purge_block_reason: null,
+  };
+}
+
+function createTrashScene(index, chapterId) {
+  return {
+    scene_id: `${chapterId}_SC${String(index).padStart(2, "0")}`,
+    chapter_id: chapterId,
+    scene_seq: index,
+    scene_goal: `Trash scene goal ${index}`,
+    trashed_at: `2026-04-15T09:${String(index).padStart(2, "0")}:00+00:00`,
+    trashed_by: `operator-${index}`,
+    restore_allowed: index % 2 === 0 ? 1 : 0,
+    purge_allowed: 1,
+    chapter_trashed: Number(index % 3 === 0),
+    restore_block_reason: index % 2 === 0 ? null : `Restore blocked ${index}`,
+    purge_block_reason: null,
+  };
+}
+
+async function mountAuthorTrashView({ chapterCount = 24, sceneCount = 30, selectedChapterIndex = 14 } = {}) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+
+  const router = useShellRouter();
+  router.reset();
+  router.navigate("trash");
+
+  const store = useAuthorTrashStore();
+  const chapters = Array.from({ length: chapterCount }, (_, index) => createTrashChapter(index + 1, sceneCount));
+  const selectedChapter = chapters[selectedChapterIndex - 1];
+  const scenes = Array.from({ length: sceneCount }, (_, index) => createTrashScene(index + 1, selectedChapter.chapter_id));
+
+  store.chapters = chapters;
+  store.chapterListVersion = 1;
+  store.scenes = scenes;
+  store.sceneListVersion = 1;
+  store.loaded = true;
+  store.stale = false;
+  store.loading = false;
+  store.error = "";
+  store.actionId = "";
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, data: { chapters, scenes } }),
+    })),
+  );
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const app = createApp({
+    render() {
+      return h(KeepAlive, null, [
+        h(AuthorTrashView, {
+          onNotice: vi.fn(),
+        }),
+      ]);
+    },
+  });
+  app.use(pinia);
+  app.mount(container);
+  await flushUi();
+
+  return {
+    container,
+    app,
+    store,
+    router,
+    unmount() {
+      app.unmount();
+      container.remove();
+    },
   };
 }
 
@@ -1017,6 +1108,68 @@ describe("author workspace scroll performance integration", () => {
       expect(chapterVirtualList.contains(sceneForm)).toBe(false);
       expect(sceneVirtualList.contains(chapterForm)).toBe(false);
       expect(sceneVirtualList.contains(sceneForm)).toBe(false);
+    } finally {
+      mounted.unmount();
+    }
+  });
+});
+
+describe("author trash scroll performance integration", () => {
+  let animationFrames;
+
+  beforeEach(() => {
+    animationFrames = createAnimationFrameController();
+    setActivePinia(createPinia());
+    document.body.innerHTML = "";
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("mounts author trash through VirtualList and keeps both trash lists virtualized at runtime", async () => {
+    const mounted = await mountAuthorTrashView();
+
+    try {
+      const chapterVirtualList = mounted.container.querySelector('[data-testid="author-trash-chapter-virtual-list"]');
+      const sceneVirtualList = mounted.container.querySelector('[data-testid="author-trash-scene-virtual-list"]');
+
+      expect(chapterVirtualList).not.toBeNull();
+      expect(sceneVirtualList).not.toBeNull();
+      expect(chapterVirtualList.classList.contains("virtual-list")).toBe(true);
+      expect(sceneVirtualList.classList.contains("virtual-list")).toBe(true);
+      expect(chapterVirtualList.querySelector(".virtual-list-row")).not.toBeNull();
+      expect(sceneVirtualList.querySelector(".virtual-list-row")).not.toBeNull();
+
+      const chapterRows = mounted.container.querySelectorAll('[data-testid^="author-trash-chapter-row-"]');
+      expect(chapterRows.length).toBeGreaterThan(0);
+      expect(chapterRows.length).toBeLessThan(mounted.store.chapters.length);
+      expect(mounted.container.querySelector('[data-testid="author-trash-chapter-row-CH014"]')).not.toBeNull();
+
+      let sceneRows = mounted.container.querySelectorAll('[data-testid^="author-trash-scene-row-CH014_SC"]');
+      expect(sceneRows.length).toBeGreaterThan(0);
+      expect(sceneRows.length).toBeLessThan(mounted.store.scenes.length);
+      expect(mounted.container.querySelector('[data-testid="author-trash-scene-row-CH014_SC01"]')).not.toBeNull();
+
+      chapterVirtualList.scrollTop = 10000;
+      chapterVirtualList.dispatchEvent(new Event("scroll"));
+      sceneVirtualList.scrollTop = 10000;
+      sceneVirtualList.dispatchEvent(new Event("scroll"));
+      await flushUi();
+      await animationFrames.flushAll();
+
+      sceneRows = mounted.container.querySelectorAll('[data-testid^="author-trash-scene-row-CH014_SC"]');
+      expect(sceneRows.length).toBeGreaterThan(0);
+      expect(sceneRows.length).toBeLessThan(mounted.store.scenes.length);
+      expect(mounted.container.querySelector('[data-testid="author-trash-scene-row-CH014_SC01"]')).not.toBeNull();
     } finally {
       mounted.unmount();
     }
