@@ -328,8 +328,8 @@ describe("scene workbench progressive rendering integration", () => {
       expect(warningRows).toHaveLength(6);
       expect(contextRows).toHaveLength(6);
       expect(backfillRows).toHaveLength(4);
-      expect(mounted.container.querySelector('[data-testid="scene-run-preflight-item-blocking_01"]')).toContainText("blocking item 1");
-      expect(mounted.container.querySelector('[data-testid="chapter-backfill-item-stage_01"]')).toContainText("Backfill marker 1");
+      expect(mounted.container.querySelector('[data-testid="scene-run-preflight-item-blocking_01"]').textContent).toContain("blocking item 1");
+      expect(mounted.container.querySelector('[data-testid="chapter-backfill-item-stage_01"]').textContent).toContain("Backfill marker 1");
 
       const strategySelect = mounted.container.querySelector('[data-testid="chapter-backfill-strategy-stage_01"]');
       strategySelect.value = "run_backfill_again";
