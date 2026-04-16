@@ -59,9 +59,9 @@ const chapterRunStatus = computed(() => authorWorkspace.chapterRunStatus || null
 const selectedScene = computed(() => scenes.value.find((scene) => scene.scene_id === selectedSceneId.value) || null);
 const trashableChapterIds = computed(() => {
   const ids = new Set();
-  chapters.value.forEach((chapter) => {
-    if (isChapterTrashAllowed(chapter)) {
-      ids.add(chapter.chapter_id);
+  chapters.value.forEach((item) => {
+    if (isChapterTrashAllowed(item)) {
+      ids.add(item.chapter_id);
     }
   });
   return ids;
@@ -83,12 +83,20 @@ const chapterRunCompletedCount = computed(() => chapterRunStatus.value?.complete
 const chapterRunActionLabel = computed(() =>
   chapterRunStatus.value?.status === "blocked" ? "Resume chapter run" : "Run chapter",
 );
+const completedSceneIdSet = computed(() => new Set(chapterRunStatus.value?.completed_scene_ids || []));
+const sceneRowMapVersion = computed(() => [
+  chapterRunStatus.value?.status || "",
+  chapterRunStatus.value?.current_scene_id || "",
+  chapterRunStatus.value?.blocked_scene_id || "",
+  scenes.value.length,
+  chapterRunStatus.value?.completed_scene_ids?.join("|") || "",
+].join("::"));
 
 function sceneBatchState(sceneId) {
   if (chapterRunStatus.value?.blocked_scene_id === sceneId) {
     return "blocked";
   }
-  if ((chapterRunStatus.value?.completed_scene_ids || []).includes(sceneId)) {
+  if (completedSceneIdSet.value.has(sceneId)) {
     return "completed";
   }
   if (chapterRunStatus.value?.current_scene_id === sceneId && chapterRunStatus.value?.status === "running") {
@@ -175,8 +183,38 @@ async function startQuickScene() {
   }
 }
 
-function isChapterTrashAllowed(chapter) {
-  return Number(chapter?.trash_allowed) === 1;
+function isChapterTrashAllowed(item) {
+  return Number(item?.trash_allowed) === 1;
+}
+
+function authorChapterRow(item) {
+  return {
+    item,
+    chapterId: item?.chapter_id || "",
+    chapterGoal: item?.chapter_goal || "",
+    currentPhase: item?.current_phase || "-",
+    activeSceneCount: item?.active_scene_count ?? 0,
+    trashedSceneCount: item?.trashed_scene_count ?? 0,
+    trashAllowed: isChapterTrashAllowed(item),
+    trashBlockReason: item?.trash_block_reason || "",
+  };
+}
+
+function authorSceneRow(item) {
+  const sceneId = item?.scene_id || "";
+
+  return {
+    item,
+    sceneId,
+    sceneSeq: item?.scene_seq ?? 0,
+    sceneGoal: item?.scene_goal || "",
+    sceneStatus: item?.scene_status || "-",
+    locationLabel: item?.location || "未设置地点",
+    batchLabel: sceneBatchLabel(sceneId),
+    moveUpDisabled: item?.scene_seq === 1,
+    moveDownDisabled: item?.scene_seq === scenes.value.length,
+    markLastDisabled: item?.is_chapter_last === 1,
+  };
 }
 
 function syncChapterTrashSelection() {
@@ -454,21 +492,22 @@ onActivated(() => {
             :threshold="8"
             :viewport-height="520"
             :pinned-keys="pinnedChapterKeys"
+            :map-item="authorChapterRow"
             test-id="author-chapter-virtual-list"
           >
-            <template #default="{ item: chapter }">
+            <template #default="{ row }">
               <article
                 class="author-list-row"
-                :class="{ disabled: !isChapterTrashAllowed(chapter) }"
+                :class="{ disabled: !row.trashAllowed }"
               >
-              <label class="author-select-cell" :for="`chapter-trash-${chapter.chapter_id}`">
+              <label class="author-select-cell" :for="`chapter-trash-${row.chapterId}`">
                 <input
-                  :id="`chapter-trash-${chapter.chapter_id}`"
+                  :id="`chapter-trash-${row.chapterId}`"
                   v-model="selectedChapterIdsForTrash"
                   type="checkbox"
-                  :value="chapter.chapter_id"
-                  :data-testid="`author-chapter-select-for-trash-${chapter.chapter_id}`"
-                  :disabled="!isChapterTrashAllowed(chapter) || authorWorkspace.actionId === 'trash-chapters'"
+                  :value="row.chapterId"
+                  :data-testid="`author-chapter-select-for-trash-${row.chapterId}`"
+                  :disabled="!row.trashAllowed || authorWorkspace.actionId === 'trash-chapters'"
                   @click.stop
                 />
               </label>
@@ -476,24 +515,24 @@ onActivated(() => {
               <div class="author-list-content">
                 <button
                   class="author-list-item"
-                  :class="{ active: authorWorkspace.selectedChapterId === chapter.chapter_id }"
-                  :data-testid="`author-chapter-select-${chapter.chapter_id}`"
-                  @click="selectChapter(chapter.chapter_id)"
+                  :class="{ active: authorWorkspace.selectedChapterId === row.chapterId }"
+                  :data-testid="`author-chapter-select-${row.chapterId}`"
+                  @click="selectChapter(row.chapterId)"
                 >
-                  <strong>{{ chapter.chapter_id }}</strong>
-                  <span>{{ chapter.chapter_goal }}</span>
-                  <span class="muted">{{ chapter.current_phase }} · {{ chapter.active_scene_count }} 个活跃场景</span>
+                  <strong>{{ row.chapterId }}</strong>
+                  <span>{{ row.chapterGoal }}</span>
+                  <span class="muted">{{ row.currentPhase }} · {{ row.activeSceneCount }} 个活跃场景</span>
                 </button>
 
                 <div class="author-list-meta">
-                  <span class="badge">{{ chapter.active_scene_count }} 个活跃场景</span>
-                  <span class="badge">{{ chapter.trashed_scene_count }} 个已回收场景</span>
+                  <span class="badge">{{ row.activeSceneCount }} 个活跃场景</span>
+                  <span class="badge">{{ row.trashedSceneCount }} 个已回收场景</span>
                   <p
-                    v-if="chapter.trash_block_reason"
+                    v-if="row.trashBlockReason"
                     class="author-block-reason"
-                    :data-testid="`author-chapter-trash-block-${chapter.chapter_id}`"
+                    :data-testid="`author-chapter-trash-block-${row.chapterId}`"
                   >
-                    {{ chapter.trash_block_reason }}
+                    {{ row.trashBlockReason }}
                   </p>
                 </div>
               </div>
@@ -630,65 +669,67 @@ onActivated(() => {
               :threshold="10"
               :viewport-height="560"
               :pinned-keys="pinnedSceneKeys"
+              :map-item="authorSceneRow"
+              :map-version="sceneRowMapVersion"
               test-id="author-scene-virtual-list"
             >
-              <template #default="{ item: scene }">
+              <template #default="{ row }">
                 <article
                   class="author-scene-row"
-                  :class="{ active: selectedSceneId === scene.scene_id }"
-                  :data-testid="`author-scene-row-${scene.scene_id}`"
+                  :class="{ active: selectedSceneId === row.sceneId }"
+                  :data-testid="`author-scene-row-${row.sceneId}`"
                 >
-                <label class="author-select-cell" :for="`scene-trash-${scene.scene_id}`">
+                <label class="author-select-cell" :for="`scene-trash-${row.sceneId}`">
                   <input
-                    :id="`scene-trash-${scene.scene_id}`"
+                    :id="`scene-trash-${row.sceneId}`"
                     v-model="selectedSceneIdsForTrash"
                     type="checkbox"
-                    :value="scene.scene_id"
-                    :data-testid="`author-scene-select-${scene.scene_id}`"
+                    :value="row.sceneId"
+                    :data-testid="`author-scene-select-${row.sceneId}`"
                     :disabled="authorWorkspace.actionId === 'trash-scenes'"
                     @click.stop
                   />
                 </label>
 
                 <div class="author-scene-body">
-                  <div class="author-scene-meta" @click="selectScene(scene.scene_id)">
-                    <strong>{{ scene.scene_seq }}. {{ scene.scene_id }}</strong>
-                    <span>{{ scene.scene_goal }}</span>
-                    <span class="muted">{{ scene.scene_status }} · {{ scene.location || "未设置地点" }}</span>
-                    <span class="badge" :data-testid="`author-scene-batch-state-${scene.scene_id}`">
-                      {{ sceneBatchLabel(scene.scene_id) }}
+                  <div class="author-scene-meta" @click="selectScene(row.sceneId)">
+                    <strong>{{ row.sceneSeq }}. {{ row.sceneId }}</strong>
+                    <span>{{ row.sceneGoal }}</span>
+                    <span class="muted">{{ row.sceneStatus }} · {{ row.locationLabel }}</span>
+                    <span class="badge" :data-testid="`author-scene-batch-state-${row.sceneId}`">
+                      {{ row.batchLabel }}
                     </span>
                   </div>
 
                   <div class="author-scene-actions">
                     <button
                       class="ghost"
-                      :disabled="scene.scene_seq === 1 || authorWorkspace.actionId === 'reorder-scenes'"
-                      :data-testid="`author-scene-move-up-${scene.scene_id}`"
-                      @click="moveScene(scene.scene_id, -1)"
+                      :disabled="row.moveUpDisabled || authorWorkspace.actionId === 'reorder-scenes'"
+                      :data-testid="`author-scene-move-up-${row.sceneId}`"
+                      @click="moveScene(row.sceneId, -1)"
                     >
                       上移
                     </button>
                     <button
                       class="ghost"
-                      :disabled="scene.scene_seq === scenes.length || authorWorkspace.actionId === 'reorder-scenes'"
-                      :data-testid="`author-scene-move-down-${scene.scene_id}`"
-                      @click="moveScene(scene.scene_id, 1)"
+                      :disabled="row.moveDownDisabled || authorWorkspace.actionId === 'reorder-scenes'"
+                      :data-testid="`author-scene-move-down-${row.sceneId}`"
+                      @click="moveScene(row.sceneId, 1)"
                     >
                       下移
                     </button>
                     <button
                       class="ghost"
-                      :disabled="scene.is_chapter_last === 1 || authorWorkspace.actionId === 'reorder-scenes'"
-                      :data-testid="`author-scene-mark-last-${scene.scene_id}`"
-                      @click="markSceneAsLast(scene.scene_id)"
+                      :disabled="row.markLastDisabled || authorWorkspace.actionId === 'reorder-scenes'"
+                      :data-testid="`author-scene-mark-last-${row.sceneId}`"
+                      @click="markSceneAsLast(row.sceneId)"
                     >
                       标记为章节结尾
                     </button>
                     <button
                       class="ghost"
-                      :data-testid="`author-open-workbench-${scene.scene_id}`"
-                      @click="openInWorkbench(scene.scene_id)"
+                      :data-testid="`author-open-workbench-${row.sceneId}`"
+                      @click="openInWorkbench(row.sceneId)"
                     >
                       在场景工作台打开
                     </button>

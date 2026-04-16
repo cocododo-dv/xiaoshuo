@@ -198,6 +198,19 @@ describe("shell smoothness architecture", () => {
     expect(styles).toContain("content-visibility: auto");
   });
 
+  it("precomputes author workspace virtual rows inside the virtual render window", () => {
+    const authorSource = readFileSync(new URL("../src/views/AuthorWorkspaceView.vue", import.meta.url), "utf8");
+
+    expect(authorSource).toContain(':map-item="authorChapterRow"');
+    expect(authorSource).toContain(':map-item="authorSceneRow"');
+    expect(authorSource).toContain(':map-version="sceneRowMapVersion"');
+    expect(authorSource).toContain("function authorChapterRow(item)");
+    expect(authorSource).toContain("function authorSceneRow(item)");
+    expect(authorSource).toContain("const completedSceneIdSet = computed(() =>");
+    expect(authorSource).not.toContain("sceneBatchLabel(scene.scene_id)");
+    expect(authorSource).not.toContain("isChapterTrashAllowed(chapter)");
+  });
+
   it("routes author trash lists through shared VirtualList anchors and keeps trash list spacing shells intact", () => {
     const authorTrashSource = readFileSync(new URL("../src/views/AuthorTrashView.vue", import.meta.url), "utf8");
     const styles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");

@@ -589,7 +589,8 @@ describe("author lifecycle source", () => {
     expect(source).toContain("智能草稿");
     expect(source).toMatch(/function startNewScene\(\)\s*\{[\s\S]*assignSceneForm\(null\);[\s\S]*\}/);
     expect(source).toMatch(/async function startQuickScene\(\)\s*\{[\s\S]*loadSceneDraft\(\);[\s\S]*\}/);
-    expect(source).toContain("chapter.trash_block_reason");
+    expect(source).toContain('trashBlockReason: item?.trash_block_reason || ""');
+    expect(source).toContain("row.trashBlockReason");
     expect(source).toContain("scene_card");
   });
 
