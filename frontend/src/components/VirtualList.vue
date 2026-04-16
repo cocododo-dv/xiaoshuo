@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, ref, watch } from "vue";
 
 import { buildVirtualWindow } from "../lib/virtualList";
 
@@ -44,6 +44,7 @@ const rowElements = new Map();
 const rowObservers = new Map();
 const measureFrameId = ref(0);
 const pendingMeasurements = new Map();
+const active = ref(true);
 
 const windowState = computed(() =>
   buildVirtualWindow({
@@ -78,6 +79,12 @@ function cancelMeasureFrame() {
 
 function flushPendingMeasurements() {
   measureFrameId.value = 0;
+
+  if (!active.value) {
+    pendingMeasurements.clear();
+    return;
+  }
+
   const queuedMeasurements = [...pendingMeasurements.entries()];
   pendingMeasurements.clear();
 
@@ -108,6 +115,10 @@ function commitMeasuredHeight(key, height) {
 }
 
 function queueMeasure(key, element) {
+  if (!active.value) {
+    return;
+  }
+
   pendingMeasurements.set(key, element);
 
   if (measureFrameId.value) {
@@ -177,6 +188,11 @@ watch(
   windowState,
   async () => {
     await nextTick();
+
+    if (!active.value) {
+      return;
+    }
+
     windowState.value.renderedEntries.forEach((entry) => {
       const element = rowElements.get(entry.key);
       if (element) {
@@ -186,6 +202,24 @@ watch(
   },
   { immediate: true },
 );
+
+onActivated(async () => {
+  active.value = true;
+  await nextTick();
+
+  windowState.value.renderedEntries.forEach((entry) => {
+    const element = rowElements.get(entry.key);
+    if (element?.isConnected) {
+      queueMeasure(entry.key, element);
+    }
+  });
+});
+
+onDeactivated(() => {
+  active.value = false;
+  cancelMeasureFrame();
+  pendingMeasurements.clear();
+});
 
 onBeforeUnmount(() => {
   cancelMeasureFrame();

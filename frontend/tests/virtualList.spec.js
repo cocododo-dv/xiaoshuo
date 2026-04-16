@@ -1,11 +1,62 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
 
+import { KeepAlive, createApp, h, nextTick, ref } from "vue";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import VirtualList from "../src/components/VirtualList.vue";
 import {
   buildVirtualWindow,
   buildHeightProfile,
   resolvePinnedIndexes,
   resolveVisibleIndexes,
 } from "../src/lib/virtualList";
+
+async function flushUi() {
+  await nextTick();
+  await Promise.resolve();
+}
+
+function createAnimationFrameController() {
+  let nextId = 1;
+  let queue = [];
+  let executedCount = 0;
+
+  return {
+    get executedCount() {
+      return executedCount;
+    },
+    get queuedCount() {
+      return queue.length;
+    },
+    request(callback) {
+      const id = nextId;
+      nextId += 1;
+      queue.push({ id, callback });
+      return id;
+    },
+    cancel(id) {
+      queue = queue.filter((entry) => entry.id !== id);
+    },
+    async flushAll() {
+      while (queue.length) {
+        const currentQueue = queue;
+        queue = [];
+        currentQueue.forEach((entry) => {
+          executedCount += 1;
+          entry.callback(0);
+        });
+        await flushUi();
+      }
+    },
+  };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  document.body.innerHTML = "";
+});
+
 describe("resolvePinnedIndexes", () => {
   it("maps pinned keys to stable sorted indexes", () => {
     const items = [
@@ -22,6 +73,84 @@ describe("resolvePinnedIndexes", () => {
     const items = [{ id: 0 }, { id: 1 }, { id: 2 }];
 
     expect(resolvePinnedIndexes(items, "id", [0])).toEqual([0]);
+  });
+});
+
+describe("VirtualList KeepAlive lifecycle", () => {
+  it("pauses queued measurements while deactivated and resumes after activation", async () => {
+    const animationFrames = createAnimationFrameController();
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback) => animationFrames.request(callback)));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id) => animationFrames.cancel(id)));
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      disconnect() {}
+    });
+
+    const visible = ref(true);
+    const items = Array.from({ length: 30 }, (_, index) => ({
+      id: `virtual-row-${index + 1}`,
+      label: `Virtual row ${index + 1}`,
+    }));
+    const Placeholder = {
+      name: "VirtualListPlaceholder",
+      render() {
+        return h("section", { "data-testid": "virtual-placeholder" }, "hidden");
+      },
+    };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const app = createApp({
+      render() {
+        return h(KeepAlive, null, () =>
+          visible.value
+            ? h(
+              VirtualList,
+              {
+                items,
+                itemKey: "id",
+                estimatedItemHeight: 20,
+                overscan: 1,
+                threshold: 0,
+                viewportHeight: 80,
+                testId: "virtual-list-under-test",
+              },
+              {
+                default: ({ item }) =>
+                  h("div", { "data-testid": item.id }, item.label),
+              },
+            )
+            : h(Placeholder),
+        );
+      },
+    });
+
+    app.mount(container);
+    await flushUi();
+
+    try {
+      expect(container.querySelector('[data-testid="virtual-list-under-test"]')).not.toBeNull();
+      expect(animationFrames.queuedCount).toBeGreaterThan(0);
+
+      visible.value = false;
+      await flushUi();
+      expect(container.querySelector('[data-testid="virtual-placeholder"]')).not.toBeNull();
+
+      await animationFrames.flushAll();
+
+      expect(animationFrames.executedCount).toBe(0);
+
+      visible.value = true;
+      await flushUi();
+      expect(container.querySelector('[data-testid="virtual-list-under-test"]')).not.toBeNull();
+
+      await animationFrames.flushAll();
+
+      expect(animationFrames.executedCount).toBeGreaterThan(0);
+      expect(container.querySelector('[data-testid="virtual-row-1"]')).not.toBeNull();
+    } finally {
+      app.unmount();
+      container.remove();
+    }
   });
 });
 
