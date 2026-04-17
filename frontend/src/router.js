@@ -68,6 +68,14 @@ const views = [
     chromeTitle: "互操作中心",
     chromeDescription: "保持导入导出上下文与预览状态，减少切页带来的中断感。",
   },
+  {
+    id: "config",
+    label: "系统配置",
+    cacheMode: "light",
+    chromeEyebrow: "Config",
+    chromeTitle: "系统配置",
+    chromeDescription: "集中管理 API、模型、提示词和运行时 YAML 快照。",
+  },
 ];
 
 const viewMap = Object.fromEntries(views.map((view) => [view.id, view]));

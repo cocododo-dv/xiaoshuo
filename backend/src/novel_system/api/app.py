@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from novel_system.api.response import error
-from novel_system.api.routes import chapters, domain, indexing, interop, knowledge, review, scenes
+from novel_system.api.routes import chapters, domain, indexing, interop, knowledge, review, scenes, system_config
 from novel_system.db import models  # noqa: F401
 from novel_system.db.base import Base
 from novel_system.db.session import engine
@@ -52,4 +52,5 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router)
     app.include_router(indexing.router)
     app.include_router(interop.router)
+    app.include_router(system_config.router)
     return app

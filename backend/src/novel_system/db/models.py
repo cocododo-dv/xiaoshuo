@@ -639,3 +639,29 @@ class ReconcileFault(Base):
     object_ref: Mapped[str] = mapped_column(String)
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class SystemConfigSnapshot(Base):
+    __tablename__ = "system_config_snapshots"
+
+    snapshot_id: Mapped[str] = mapped_column(String, primary_key=True)
+    category: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer)
+    yaml_raw: Mapped[str] = mapped_column(Text)
+    parsed_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    validation_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    activated_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class SystemSecret(Base):
+    __tablename__ = "system_secrets"
+
+    secret_id: Mapped[str] = mapped_column(String, primary_key=True)
+    encrypted_value: Mapped[str] = mapped_column(Text)
+    value_hint: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)

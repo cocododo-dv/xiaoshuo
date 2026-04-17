@@ -188,6 +188,8 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
         llm_columns = _pragma_columns_by_name(connection, "llm_calls")
         qc_columns = _pragma_columns_by_name(connection, "qc_reports")
         job_columns = _pragma_columns_by_name(connection, "chapter_run_jobs")
+        config_columns = _pragma_columns_by_name(connection, "system_config_snapshots")
+        secret_columns = _pragma_columns_by_name(connection, "system_secrets")
         historical_draft = connection.execute(
             """
             SELECT row_id, scene_id, chapter_id, stage, generation_llm_call_id
@@ -206,15 +208,19 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-    assert version_row == ("20260414_0007",)
+    assert version_row == ("20260417_0008",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
+    assert "system_config_snapshots" in table_names
+    assert "system_secrets" in table_names
     assert "generation_llm_call_id" in draft_columns
     assert "generation_llm_call_id" in final_columns
     assert {"llm_call_id", "provider", "model"} <= llm_columns.keys()
     assert {"qc_report_id", "source_draft_row_id", "issues_json"} <= qc_columns.keys()
     assert {"job_id", "chapter_id", "status", "job_type"} <= job_columns.keys()
+    assert {"snapshot_id", "category", "version", "yaml_raw", "active_flag"} <= config_columns.keys()
+    assert {"secret_id", "encrypted_value", "value_hint"} <= secret_columns.keys()
     assert job_columns["status"][3] == 1
     assert job_columns["job_type"][3] == 1
     assert historical_draft == ("draft_hist_CH001_SC01", "CH001_SC01", "CH001", "neutral_draft", None)
@@ -279,6 +285,8 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
             WHERE job_id = 'chapter_job_existing'
             """
         ).fetchone()
+        config_columns = _pragma_columns_by_name(connection, "system_config_snapshots")
+        secret_columns = _pragma_columns_by_name(connection, "system_secrets")
         scene_draft = connection.execute(
             """
             SELECT row_id, generation_llm_call_id
@@ -297,10 +305,14 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260414_0007",)
+    assert version_row == ("20260417_0008",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
+    assert "system_config_snapshots" in table_names
+    assert "system_secrets" in table_names
+    assert {"snapshot_id", "category", "version", "yaml_raw", "active_flag"} <= config_columns.keys()
+    assert {"secret_id", "encrypted_value", "value_hint"} <= secret_columns.keys()
     assert llm_call == ("llm_call_existing", "seed-provider", "seed-model", "style_draft", 42)
     assert qc_report == ("qc_report_existing", "draft_existing", "bundle_existing", "pass")
     assert chapter_job == ("chapter_job_existing", "CH001", "queued", "chapter_qc")
