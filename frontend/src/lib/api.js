@@ -111,6 +111,46 @@ export async function apiPost(path, body = {}) {
   }
 }
 
+async function apiAdminPost(path, body = {}, adminToken = "") {
+  try {
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Operator-Ref": getOperatorRef(),
+    };
+    if (adminToken) {
+      headers["X-Admin-Token"] = adminToken;
+    }
+    const response = await fetch(buildUrl(path), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    return parseEnvelope(response);
+  } catch (error) {
+    throw normalizeRequestError(error);
+  }
+}
+
+export function fetchSystemConfig() {
+  return apiGet("/api/v1/system-config");
+}
+
+export function saveSystemConfigDraft(payload, adminToken) {
+  return apiAdminPost("/api/v1/system-config/drafts", payload, adminToken);
+}
+
+export function activateSystemConfigSnapshot(snapshotId, adminToken) {
+  return apiAdminPost(`/api/v1/system-config/${encodeURIComponent(snapshotId)}/activate`, {}, adminToken);
+}
+
+export function testSystemConfigProvider(payload, adminToken) {
+  return apiAdminPost("/api/v1/system-config/test-provider", payload, adminToken);
+}
+
+export function exportSystemConfigCategory(category) {
+  return apiGet(`/api/v1/system-config/export/${encodeURIComponent(category)}`);
+}
+
 export function fetchWorkbench(sceneId) {
   return apiGet(`/api/v1/scenes/${sceneId}/workbench`);
 }

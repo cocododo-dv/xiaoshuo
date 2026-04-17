@@ -19,6 +19,8 @@ class Settings:
     llm_api_key: str | None = None
     llm_timeout_seconds: float = 30.0
     llm_enabled: bool = False
+    admin_token: str | None = None
+    config_secret: str | None = None
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -38,7 +40,7 @@ def _get_float_env(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a valid number") from exc
 
 
-def get_settings() -> Settings:
+def get_settings(*, include_runtime_config: bool = True) -> Settings:
     database_url = os.environ.get(
         "NOVEL_SYSTEM_DATABASE_URL",
         "sqlite:///./novel_system.db",
@@ -53,8 +55,10 @@ def get_settings() -> Settings:
     llm_api_key = os.environ.get("NOVEL_SYSTEM_LLM_API_KEY")
     llm_timeout_seconds = _get_float_env("NOVEL_SYSTEM_LLM_TIMEOUT_SECONDS", 30.0)
     llm_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_ENABLED", False)
+    admin_token = os.environ.get("NOVEL_SYSTEM_ADMIN_TOKEN")
+    config_secret = os.environ.get("NOVEL_SYSTEM_CONFIG_SECRET")
     vector_store_dir.mkdir(parents=True, exist_ok=True)
-    return Settings(
+    settings = Settings(
         database_url=database_url,
         vector_backend=vector_backend,
         vector_store_dir=vector_store_dir,
@@ -64,4 +68,12 @@ def get_settings() -> Settings:
         llm_api_key=llm_api_key,
         llm_timeout_seconds=llm_timeout_seconds,
         llm_enabled=llm_enabled,
+        admin_token=admin_token,
+        config_secret=config_secret,
     )
+    if not include_runtime_config:
+        return settings
+
+    from novel_system.services.system_config import apply_active_api_config
+
+    return apply_active_api_config(settings)

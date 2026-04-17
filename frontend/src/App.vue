@@ -13,6 +13,7 @@ const VIEW_COMPONENTS = {
   index: defineAsyncComponent(() => import("./views/IndexConsoleView.vue")),
   knowledge: defineAsyncComponent(() => import("./views/KnowledgeConsoleView.vue")),
   interop: defineAsyncComponent(() => import("./views/InteropCenterView.vue")),
+  config: defineAsyncComponent(() => import("./views/SystemConfigView.vue")),
 };
 
 const { activeView, activeViewMeta, visitedViews, views, navigate } = useShellRouter();
@@ -91,6 +92,12 @@ async function reloadAll() {
           const interopCenterModule = await import("./stores/interopCenter");
           const store = interopCenterModule.useInteropCenterStore();
           await store.ensureLoaded({ force: true });
+          return store.error;
+        }
+        if (viewId === "config") {
+          const systemConfigModule = await import("./stores/systemConfig");
+          const store = systemConfigModule.useSystemConfigStore();
+          await store.load();
           return store.error;
         }
         return "";

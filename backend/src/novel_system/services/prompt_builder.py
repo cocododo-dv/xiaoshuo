@@ -90,11 +90,26 @@ class PromptBuilder:
 
 
 def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTemplate]:
-    config_path = Path(path) if path is not None else _default_prompts_config_path()
-    try:
-        raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise PromptConfigurationError("prompts config could not be parsed") from exc
+    if path is None:
+        from novel_system.services.system_config import load_active_config_payload
+
+        raw_payload = load_active_config_payload("prompts")
+        if raw_payload is None:
+            config_path = _default_prompts_config_path()
+            try:
+                raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            except yaml.YAMLError as exc:
+                raise PromptConfigurationError("prompts config could not be parsed") from exc
+    else:
+        config_path = Path(path)
+        try:
+            raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise PromptConfigurationError("prompts config could not be parsed") from exc
+    return parse_prompt_templates(raw_payload)
+
+
+def parse_prompt_templates(raw_payload: Any) -> dict[str, PromptTemplate]:
     if not isinstance(raw_payload, dict):
         raise PromptConfigurationError("prompts config must decode to a mapping")
 

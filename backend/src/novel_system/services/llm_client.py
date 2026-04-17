@@ -322,8 +322,20 @@ class LLMClient:
 
 
 def load_model_routing_config(path: str | Path | None = None) -> ModelRoutingConfig:
-    config_path = Path(path) if path is not None else _default_models_config_path()
-    raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if path is None:
+        from novel_system.services.system_config import load_active_config_payload
+
+        raw_payload = load_active_config_payload("models")
+        if raw_payload is None:
+            config_path = _default_models_config_path()
+            raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    else:
+        config_path = Path(path)
+        raw_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    return parse_model_routing_config(raw_payload)
+
+
+def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
     if raw_payload is None:
         raw_payload = {}
     if not isinstance(raw_payload, dict):

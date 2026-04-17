@@ -14,7 +14,7 @@ _SESSION_FACTORY = None
 def engine():
     global _ENGINE
     if _ENGINE is None:
-        settings = get_settings()
+        settings = get_settings(include_runtime_config=False)
         connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
         _ENGINE = create_engine(settings.database_url, connect_args=connect_args, future=True)
     return _ENGINE

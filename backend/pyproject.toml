@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14,<2",
   "chromadb==1.5.7",
+  "cryptography>=42,<43",
   "fastapi>=0.135,<1",
   "httpx>=0.26,<1",
   "pydantic>=2.5,<3",
