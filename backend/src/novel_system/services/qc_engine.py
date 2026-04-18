@@ -15,6 +15,8 @@ from novel_system.services.human_review_manager import HumanReviewManager
 from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse, load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
+from novel_system.services.style_profile import StyleScoreService
+from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
 
 
@@ -178,7 +180,7 @@ class HardQcEngine:
                     ),
                     continuity_warning=continuity_warning,
                 )
-            task_config = self.routing_config.task_routing["hard_qc"]
+            task_config = self.routing_config.node_routing["hard_qc"]
             request = LLMRequest(
                 model=task_config.model,
                 messages=[
@@ -189,6 +191,13 @@ class HardQcEngine:
                 max_output_tokens=task_config.max_output_tokens,
                 response_format=task_config.response_format,
                 provider=task_config.provider,
+                node_id="hard_qc",
+                provider_id=task_config.provider_id,
+                account_id=task_config.account_id,
+                reasoning_level=task_config.reasoning_level,
+                api_mode=task_config.api_mode,
+                credential_mode=task_config.credential_mode,
+                provider_options=task_config.provider_options,
             )
             response = self._client().generate(request)
             payload = response.structured_output or {}
@@ -534,6 +543,7 @@ class HardQcEngine:
             base_url=self.settings.llm_base_url,
             api_key=self.settings.llm_api_key,
             timeout_seconds=self.settings.llm_timeout_seconds,
+            provider_configs=load_llm_provider_runtime_configs(),
         )
 
 
@@ -593,7 +603,7 @@ class SoftQcEngine:
                     ),
                     continuity_warning=continuity_warning,
                 )
-            task_config = self.routing_config.task_routing["soft_qc"]
+            task_config = self.routing_config.node_routing["soft_qc"]
             request = LLMRequest(
                 model=task_config.model,
                 messages=[
@@ -604,6 +614,13 @@ class SoftQcEngine:
                 max_output_tokens=task_config.max_output_tokens,
                 response_format=task_config.response_format,
                 provider=task_config.provider,
+                node_id="soft_qc",
+                provider_id=task_config.provider_id,
+                account_id=task_config.account_id,
+                reasoning_level=task_config.reasoning_level,
+                api_mode=task_config.api_mode,
+                credential_mode=task_config.credential_mode,
+                provider_options=task_config.provider_options,
             )
             response = self._client().generate(request)
             payload = response.structured_output or {}
@@ -748,6 +765,9 @@ class SoftQcEngine:
                     "carry_note_text": report.carry_note_text,
                 }
             )
+        style_entry = StyleScoreService.rewrite_brief_entry(report)
+        if style_entry is not None:
+            entries.append(style_entry)
         return entries
 
     @staticmethod
@@ -949,4 +969,5 @@ class SoftQcEngine:
             base_url=self.settings.llm_base_url,
             api_key=self.settings.llm_api_key,
             timeout_seconds=self.settings.llm_timeout_seconds,
+            provider_configs=load_llm_provider_runtime_configs(),
         )

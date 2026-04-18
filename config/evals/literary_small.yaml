@@ -1,0 +1,63 @@
+suite_id: literary_small_v1
+description: >
+  Small original-fiction literary quality suite for checking whether generation
+  can satisfy concrete motifs, abstract style cues, length bands, and banned
+  moves. The suite avoids named-author imitation and focuses on transferable
+  prose features.
+pass_threshold: 0.72
+cases:
+  - case_id: reunion_pressure_gate
+    title: Reunion pressure at the gate
+    prompt: >
+      Write a short scene in which two estranged leads meet at a city gate.
+      Keep the prose tense, gesture-led, and concrete. A letter must change
+      hands, but no one should explain the whole backstory.
+    baseline_text: >
+      The gate held its old iron breath. She kept the letter flat under her
+      sleeve until his gesture stopped halfway to the latch. Tension gathered
+      in the pause. Neither of them explained the years between them; the paper
+      did that, edge by edge, when she finally let it cross into his hand.
+    required_terms: ["gate", "letter"]
+    style_cues: ["gesture", "tension", "pause"]
+    banned_terms: ["woke up", "explained everything"]
+    min_chars: 120
+    max_chars: 700
+
+  - case_id: archive_room_suspicion
+    title: Archive room suspicion
+    prompt: >
+      Write a compact scene in an archive room where a character discovers a
+      missing page. Use tactile imagery and short paragraph turns. The emotion
+      should move from routine attention to suspicion.
+    baseline_text: >
+      Dust lifted when the archive drawer opened. Her thumb found the torn page
+      before her eyes accepted it.
+      
+      Routine left first. Then suspicion.
+      
+      She held the folder against the lamp, feeling the paper fibers catch and
+      drag. Someone had not stolen a secret. Someone had made a door.
+    required_terms: ["archive", "page"]
+    style_cues: ["dust", "suspicion", "paper"]
+    banned_terms: ["dream", "randomly"]
+    min_chars: 120
+    max_chars: 700
+
+  - case_id: dockside_cliffhanger
+    title: Dockside cliffhanger
+    prompt: >
+      Write the last beat of a scene at a dock. The scene should end on a hard
+      visual hook rather than summary. Use sparse dialogue and a clear emotional
+      turn toward urgency.
+    baseline_text: >
+      Fog pressed the dock into pieces. The boatman would not look at the water.
+      
+      "Late," he said.
+      
+      Urgency went through her before fear did. Below the pier, a hand rose out
+      of the black tide with her brother's ring shining on one finger.
+    required_terms: ["dock", "ring"]
+    style_cues: ["urgency", "fog", "hand"]
+    banned_terms: ["to be continued", "suddenly everything"]
+    min_chars: 100
+    max_chars: 650

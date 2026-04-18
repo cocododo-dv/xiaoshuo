@@ -33,6 +33,24 @@ function formatVersion(version) {
     <div v-else class="provenance-grid">
       <section class="provenance-section">
         <div class="provenance-label">可追踪来源</div>
+        <div v-if="provenance.styleProfile" class="style-profile-panel" data-testid="bundle-style-profile-panel">
+          <div class="receipt-head">
+            <strong>风格画像契约</strong>
+            <span class="badge">{{ provenance.styleProfile.contractVersion || "style_profile" }}</span>
+          </div>
+          <ol v-if="provenance.styleProfile.featureRows.length" class="style-score-list">
+            <li v-for="feature in provenance.styleProfile.featureRows" :key="feature.name">
+              <span>{{ feature.name }}</span>
+              <small>{{ feature.guidance.join("; ") }}</small>
+            </li>
+          </ol>
+          <p v-if="provenance.styleProfile.calibrationLines.length" class="muted">
+            calibration: {{ provenance.styleProfile.calibrationLines.join("; ") }}
+          </p>
+          <p v-if="provenance.styleProfile.bannedMoves.length" class="muted">
+            banned: {{ provenance.styleProfile.bannedMoves.join("; ") }}
+          </p>
+        </div>
         <div v-if="provenance.sources.length" class="source-stack">
           <article v-for="source in provenance.sources" :key="source.key" class="source-card">
             <div class="source-top">

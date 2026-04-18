@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { configureConnection } from "./helpers.js";
+
 const WORKSHEET_YAML = `
 bundle_id: bundle_interop_e2e
 scene_id: CH001_SC03
@@ -39,11 +41,7 @@ snapshot:
 
 test("previews, imports, exports, and replays worksheet bundles from the interop center", async ({ page }) => {
   await page.goto("/");
-
-  await page.getByTestId("api-base-input").fill("http://127.0.0.1:8000");
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.interop.e2e");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { operatorRef: "ops.interop.e2e" });
 
   await page.getByTestId("nav-interop").click();
   await expect(page.getByTestId("interop-center-view")).toBeVisible();
@@ -72,11 +70,17 @@ test("previews, imports, exports, and replays worksheet bundles from the interop
   await page.getByTestId("scene-id-input").fill("CH001_SC03");
   await page.getByTestId("scene-load-button").click();
   await page.getByTestId("run-full-scene-button").click();
-  await expect(page.getByTestId("scene-run-receipt")).toContainText("final_scene_CH001_SC03");
+  const runReceipt = page.getByTestId("scene-run-receipt");
+  await expect(runReceipt).toContainText("final_scene_CH001_SC03");
+  const runReceiptText = (await runReceipt.textContent()) || "";
+  const finalSceneRowId = runReceiptText.match(/final_scene_CH001_SC03_v\d+/)?.[0];
+  const bundleId = runReceiptText.match(/bundle_CH001_SC03_v\d+/)?.[0];
+  expect(finalSceneRowId).toBeTruthy();
+  expect(bundleId).toBeTruthy();
 
   await page.getByTestId("nav-interop").click();
-  await page.getByTestId("interop-replay-final-row-id").fill("final_scene_CH001_SC03");
+  await page.getByTestId("interop-replay-final-row-id").fill(finalSceneRowId);
   await page.getByTestId("interop-replay-final-button").click();
-  await expect(page.getByTestId("interop-envelope-panel")).toContainText("bundle_CH001_SC03");
+  await expect(page.getByTestId("interop-envelope-panel")).toContainText(bundleId);
   await expect(page.getByTestId("interop-replay-receipt")).toContainText("scene_replay_export");
 });

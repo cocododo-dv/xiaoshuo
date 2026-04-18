@@ -4,8 +4,17 @@ import { computed, onActivated, onDeactivated, reactive, ref, watch } from "vue"
 import LazySection from "../components/LazySection.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
 import PanelShell from "../components/PanelShell.vue";
+import StyleProfileDiffSummary from "../components/StyleProfileDiffSummary.vue";
+import StyleProfileRiskWarning from "../components/StyleProfileRiskWarning.vue";
+import StyleProfileSummary from "../components/StyleProfileSummary.vue";
 import VirtualList from "../components/VirtualList.vue";
 import { prioritizeMatchingItem } from "../lib/listPriority";
+import {
+  styleProfileDiffFromKnowledgeDetail,
+  styleProfileRiskFromKnowledgeDetail,
+  styleProfileRiskFromReviewItem,
+  styleProfileSummaryFromKnowledgeDetail,
+} from "../lib/styleProfileSummary";
 import { useShellRouter } from "../router";
 import { useKnowledgeConsoleStore } from "../stores/knowledgeConsole";
 
@@ -37,6 +46,8 @@ const draft = reactive({
   activeOnApprove: 1,
   extraPayload: "",
 });
+const riskAcknowledgements = reactive({});
+const riskReasons = reactive({});
 
 const selectedEntryKey = computed(() =>
   knowledgeConsole.selectedObjectType && knowledgeConsole.selectedLineageKey
@@ -58,6 +69,16 @@ const workflowJobs = computed(() => detailWorkflow.value.jobs || []);
 const workflowHumanReviewEvents = computed(() => detailWorkflow.value.human_review_events || []);
 const workflowTargetActivityGroups = computed(() => detailWorkflow.value.target_activity_groups || []);
 const primaryWorkflowAction = computed(() => detailWorkflow.value.recommended_primary_action || null);
+const detailStyleProfileSummary = computed(() => styleProfileSummaryFromKnowledgeDetail(knowledgeConsole.detail));
+const detailStyleProfileDiffSummary = computed(() => styleProfileDiffFromKnowledgeDetail(knowledgeConsole.detail));
+const detailStyleProfileRisk = computed(() => styleProfileRiskFromKnowledgeDetail(knowledgeConsole.detail));
+const emptyStyleProfileRisk = Object.freeze({
+  available: false,
+  severity: "",
+  title: "",
+  reasons: [],
+  actionHint: "",
+});
 const workflowActionItems = computed(() => {
   const pendingReviews = [];
   const retryableJobs = [];
@@ -96,6 +117,29 @@ const workflowActionItems = computed(() => {
     retryableJobs,
     releasableReviews,
   };
+});
+const workflowRiskConfirmationReviews = computed(() =>
+  workflowActionItems.value.pendingReviews.filter((review) => reviewRequiresRiskConfirmation(review)),
+);
+const primaryWorkflowActionReview = computed(() => {
+  const action = primaryWorkflowAction.value;
+  if (action?.kind !== "review" || !action.review_id) {
+    return null;
+  }
+  return workflowReviewForId(action.review_id);
+});
+const primaryWorkflowActionDisabled = computed(() => {
+  const action = primaryWorkflowAction.value;
+  if (!action) {
+    return true;
+  }
+  if (knowledgeConsole.actionId) {
+    return true;
+  }
+  if (action.kind === "review" && action.action === "approve_review" && primaryWorkflowActionReview.value) {
+    return !canApproveReview(primaryWorkflowActionReview.value);
+  }
+  return false;
 });
 const ITEM_TYPE_LABELS = {
   style_rule: "风格规则",
@@ -458,9 +502,60 @@ function openActivityTarget(group) {
   emit("notice", `已打开目标：${group.target.target_ref}`);
 }
 
-async function runApprove(reviewId) {
+function workflowReviewForId(reviewId) {
+  return workflowReviewItems.value.find((review) => review.review_id === reviewId) || null;
+}
+
+function knowledgeReviewRisk(review) {
+  const reviewRisk = styleProfileRiskFromReviewItem(review);
+  if (reviewRisk?.available) {
+    return reviewRisk;
+  }
+
+  const selectedCandidateReviewId = knowledgeConsole.detail?.candidate_version?.review_id || "";
+  const matchesSelectedCandidate =
+    Boolean(review?.review_id)
+    && (
+      review.review_id === selectedCandidateReviewId
+      || detailReviewRefs.value.includes(review.review_id)
+    );
+  if (matchesSelectedCandidate && detailStyleProfileRisk.value?.available) {
+    return detailStyleProfileRisk.value;
+  }
+  return emptyStyleProfileRisk;
+}
+
+function reviewRequiresRiskConfirmation(review) {
+  return knowledgeReviewRisk(review).severity === "high";
+}
+
+function riskReasonForReview(reviewId) {
+  return (riskReasons[reviewId] || "").trim();
+}
+
+function canApproveReview(review) {
+  if (!reviewRequiresRiskConfirmation(review)) {
+    return true;
+  }
+  return Boolean(riskAcknowledgements[review.review_id] && riskReasonForReview(review.review_id));
+}
+
+function approvalPayloadForReview(review) {
+  if (!reviewRequiresRiskConfirmation(review)) {
+    return {};
+  }
+  return {
+    risk_confirmation: {
+      acknowledged: Boolean(riskAcknowledgements[review.review_id]),
+      reason: riskReasonForReview(review.review_id),
+      severity: "high",
+    },
+  };
+}
+
+async function runApprove(reviewId, payload = {}) {
   try {
-    emit("notice", await knowledgeConsole.approveReview(reviewId));
+    emit("notice", await knowledgeConsole.approveReview(reviewId, payload));
   } catch (error) {
     emit("notice", error.message);
   }
@@ -496,7 +591,12 @@ async function runPrimaryWorkflowAction() {
     return;
   }
   if (action.kind === "review" && action.action === "approve_review") {
-    await runApprove(action.review_id);
+    const review = workflowReviewForId(action.review_id);
+    if (review && !canApproveReview(review)) {
+      emit("notice", "请先确认高风险风格变更并填写批准理由。");
+      return;
+    }
+    await runApprove(action.review_id, review ? approvalPayloadForReview(review) : {});
     return;
   }
   if (action.kind === "review" && action.action === "release_review") {
@@ -755,6 +855,18 @@ watch(
             <p data-testid="knowledge-detail-lineage"><strong>血缘</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
             <p><strong>生效版本</strong><br />{{ previewText(knowledgeConsole.detail.active_version) }}</p>
             <p><strong>候选版本</strong><br />{{ previewText(knowledgeConsole.detail.candidate_version) }}</p>
+            <StyleProfileSummary
+              :summary="detailStyleProfileSummary"
+              test-id="knowledge-style-profile-summary"
+            />
+            <StyleProfileDiffSummary
+              :summary="detailStyleProfileDiffSummary"
+              test-id="knowledge-style-profile-diff-summary"
+            />
+            <StyleProfileRiskWarning
+              :risk="detailStyleProfileRisk"
+              test-id="knowledge-style-profile-risk-warning"
+            />
             <div class="history-stack">
               <p class="history-title">流程状态</p>
               <div class="card-actions">
@@ -768,7 +880,7 @@ watch(
                   v-if="primaryWorkflowAction"
                   class="ghost"
                   data-testid="knowledge-workflow-primary-action"
-                  :disabled="Boolean(knowledgeConsole.actionId)"
+                  :disabled="primaryWorkflowActionDisabled"
                   @click="runPrimaryWorkflowAction"
                 >
                   {{ actionLabel(primaryWorkflowAction.action) }}
@@ -778,8 +890,8 @@ watch(
                   :key="`approve-${review.review_id}`"
                   class="ghost"
                   :data-testid="`knowledge-approve-review-${review.review_id}`"
-                  :disabled="Boolean(knowledgeConsole.actionId)"
-                  @click="runApprove(review.review_id)"
+                  :disabled="Boolean(knowledgeConsole.actionId) || !canApproveReview(review)"
+                  @click="runApprove(review.review_id, approvalPayloadForReview(review))"
                 >
                   批准审核
                 </button>
@@ -803,6 +915,29 @@ watch(
                 >
                   发布审核
                 </button>
+              </div>
+              <div
+                v-for="review in workflowRiskConfirmationReviews"
+                :key="`risk-confirmation-${review.review_id}`"
+                class="risk-confirmation knowledge-risk-confirmation"
+                :data-testid="`knowledge-risk-confirmation-${review.review_id}`"
+              >
+                <label class="checkbox-inline risk-confirmation-check">
+                  <input
+                    v-model="riskAcknowledgements[review.review_id]"
+                    type="checkbox"
+                    :data-testid="`knowledge-risk-confirm-${review.review_id}`"
+                  />
+                  <span>我已复核高风险风格变更，确认可以从知识控制台覆盖当前生效画像。</span>
+                </label>
+                <textarea
+                  v-model="riskReasons[review.review_id]"
+                  class="risk-confirmation-reason"
+                  rows="3"
+                  :data-testid="`knowledge-risk-reason-${review.review_id}`"
+                  placeholder="填写批准理由，会写入操作日志"
+                ></textarea>
+                <small>需要明确理由后才能批准，之后可在索引控制台目标活动中回放。</small>
               </div>
             </div>
             <LazySection

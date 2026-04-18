@@ -98,14 +98,25 @@ function targetActionRows(item) {
   }));
 }
 
+function riskConfirmationFor(item) {
+  const direct = item?.risk_confirmation;
+  if (direct?.reason) {
+    return direct;
+  }
+  const fromPayload = item?.payload_json?.request_payload?.risk_confirmation;
+  return fromPayload?.reason ? fromPayload : null;
+}
+
 function targetActivityRow(item) {
   const activityKey = item.activity_key;
+  const riskConfirmation = riskConfirmationFor(item);
   return {
     item,
     activityKey,
     title: item.label || item.source || "-",
     summaryLine: activitySummaryFor(item),
     summary: item.summary || "-",
+    riskConfirmation,
     highlighted: isHighlightedActivityKey(activityKey),
     focused: activityKey === props.focusedActivityKey,
     targets: targetActionRows(item),
@@ -168,6 +179,13 @@ function targetActivityRow(item) {
                 <strong>{{ row.title }}</strong><br />
                 {{ row.summaryLine }}<br />
                 {{ row.summary }}
+                <p
+                  v-if="row.riskConfirmation"
+                  class="muted activity-risk-confirmation"
+                  :data-testid="`target-activity-risk-confirmation-${row.activityKey}`"
+                >
+                  高风险确认：{{ row.riskConfirmation.reason }}
+                </p>
                 <div v-if="row.targets.length" class="card-actions">
                   <button
                     v-for="targetRow in row.targets"

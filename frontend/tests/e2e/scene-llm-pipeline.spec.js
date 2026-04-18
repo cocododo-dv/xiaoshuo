@@ -1,12 +1,10 @@
 import { expect, test } from "@playwright/test";
 
+import { configureConnection } from "./helpers.js";
+
 test("runs a deterministic scene llm pipeline from generation evidence through archive", async ({ page }) => {
   await page.goto("/");
-
-  await page.getByTestId("api-base-input").fill("http://127.0.0.1:8000");
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.scene-llm.e2e");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { operatorRef: "ops.scene-llm.e2e" });
 
   await page.getByTestId("scene-id-input").fill("CH001_SC01");
   await page.getByTestId("scene-load-button").click();
@@ -17,7 +15,9 @@ test("runs a deterministic scene llm pipeline from generation evidence through a
   const runReceipt = page.getByTestId("scene-run-receipt");
   await expect(runReceipt).toContainText("final_scene_CH001_SC01");
   await expect(runReceipt).toContainText("bundle_CH001_SC01");
-  await expect(page.getByTestId("operator-ref-input")).toHaveValue("ops.scene-llm.e2e");
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("novel-system-operator-ref")))
+    .toBe("ops.scene-llm.e2e");
 
   const generationCard = page.getByTestId("scene-generation-summary-card");
   await expect(generationCard).toContainText("style_draft");

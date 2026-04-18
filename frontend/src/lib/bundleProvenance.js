@@ -36,6 +36,15 @@ const SOURCE_DEFINITIONS = [
     digestKey: "style_rule",
   },
   {
+    key: "style_profile",
+    label: "风格画像契约",
+    collection: "source_version_refs",
+    logicalIdKey: "style_profile_contract",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "style_profile",
+  },
+  {
     key: "banned_rule",
     label: "禁忌规则簇",
     collection: "source_version_refs",
@@ -101,6 +110,7 @@ const SLOT_LABELS = {
   relation: "关系设定",
   prev_scene_memory: "上一场景记忆",
   style_rules: "风格规则",
+  style_profile: "风格画像契约",
   banned_rules: "禁忌规则",
   calibration_lines: "校准句",
   world_rules: "世界规则",
@@ -122,6 +132,10 @@ export function buildBundleProvenance(snapshot) {
   const resolvedRefIds = snapshot.resolved_ref_ids || {};
   const inlineDigests = snapshot.inline_digests || {};
   const orderedInjections = snapshot.ordered_injections || [];
+  const styleProfile = parseStyleProfileDigest(
+    inlineDigests.style_profile,
+    sourceVersionRefs.style_profile_contract,
+  );
 
   const sources = SOURCE_DEFINITIONS.flatMap((definition) => {
     const collection = definition.collection === "resolved_ref_ids" ? resolvedRefIds : sourceVersionRefs;
@@ -154,5 +168,51 @@ export function buildBundleProvenance(snapshot) {
     available: sources.length > 0 || injections.length > 0,
     sources,
     injections,
+    ...(styleProfile ? { styleProfile } : {}),
   };
+}
+
+function parseStyleProfileDigest(rawDigest, contractFallback = null) {
+  if (typeof rawDigest !== "string" || !rawDigest.trim()) {
+    return null;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(rawDigest);
+  } catch {
+    return {
+      contractVersion: contractFallback || null,
+      featureRows: [],
+      calibrationLines: [],
+      bannedMoves: [],
+      raw: rawDigest,
+    };
+  }
+
+  const features = payload?.features && typeof payload.features === "object" ? payload.features : {};
+  const featureRows = Object.entries(features)
+    .map(([name, feature]) => ({
+      name,
+      guidance: normalizeTextList(feature?.guidance ?? feature),
+    }))
+    .filter((item) => item.guidance.length);
+
+  return {
+    contractVersion: payload.contract_version || contractFallback || null,
+    featureRows,
+    calibrationLines: normalizeTextList(payload.calibration_lines),
+    bannedMoves: normalizeTextList(payload.banned_moves),
+    raw: rawDigest,
+  };
+}
+
+function normalizeTextList(value) {
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
 }

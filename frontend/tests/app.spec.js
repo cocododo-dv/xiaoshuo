@@ -391,9 +391,17 @@ describe("vue shell", () => {
     expect(routerSource).toContain('id: "knowledge"');
     expect(routerSource).toContain('label: "知识控制台"');
     expect(routerSource).toContain('cacheMode: "light"');
-    expect(routerSource).toContain("chromeTitle");
+    expect(routerSource).not.toContain("chromeTitle");
     expect(routerSource).not.toContain("formatViewLabel");
     expect(routerSource).not.toContain("uiText");
+  });
+
+  it("ships an explicit favicon asset so browser QA starts clean", () => {
+    const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+
+    expect(indexSource).toContain('rel="icon"');
+    expect(indexSource).toContain('/favicon.svg');
+    expect(existsSync(new URL("../public/favicon.svg", import.meta.url))).toBe(true);
   });
 
   it("adds an interop center entry point to the shell", () => {

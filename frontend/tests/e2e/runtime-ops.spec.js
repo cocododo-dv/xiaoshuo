@@ -1,12 +1,10 @@
 import { expect, test } from "@playwright/test";
 
+import { configureConnection } from "./helpers.js";
+
 test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await page.goto("/");
-
-  await page.getByTestId("api-base-input").fill("http://127.0.0.1:8000");
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.runtime.e2e");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { operatorRef: "ops.runtime.e2e" });
 
   await page.getByTestId("scene-id-input").fill("CH001_SC01");
   await page.getByTestId("scene-load-button").click();

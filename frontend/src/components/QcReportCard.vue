@@ -32,6 +32,24 @@ function normalizeIssueKeys(summary) {
 function normalizeRewriteBrief(summary) {
   return summary?.rewrite_brief?.length ? summary.rewrite_brief.join("; ") : "-";
 }
+
+function formatPercent(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${Math.round(value * 100)}%`;
+}
+
+function hasStyleSummary(summary) {
+  return Boolean(
+    summary
+      && (
+        typeof summary.style_score === "number"
+        || summary.style_dimensions?.length
+        || summary.style_deviations?.length
+      ),
+  );
+}
 </script>
 
 <template>
@@ -65,7 +83,27 @@ function normalizeRewriteBrief(summary) {
         <p v-if="softSummary"><strong>Issue Keys</strong><br />{{ normalizeIssueKeys(softSummary) }}</p>
         <p v-if="softSummary"><strong>Next Action</strong><br />{{ formatValue(softSummary.next_action) }}</p>
         <p v-if="softSummary"><strong>Rewrite Brief</strong><br />{{ normalizeRewriteBrief(softSummary) }}</p>
-        <p v-else class="muted">暂无软 QC 结果。</p>
+        <div v-if="hasStyleSummary(softSummary)" class="style-score-block">
+          <div class="receipt-head">
+            <strong>风格命中</strong>
+            <span class="badge">{{ formatPercent(softSummary.style_score) }}</span>
+          </div>
+          <ul v-if="softSummary.style_dimensions?.length" class="style-score-list">
+            <li v-for="dimension in softSummary.style_dimensions" :key="dimension.name">
+              <span>{{ dimension.name }}</span>
+              <strong>{{ formatPercent(dimension.score) }}</strong>
+              <small>{{ dimension.evidence }}</small>
+            </li>
+          </ul>
+          <ul v-if="softSummary.style_deviations?.length" class="style-score-list">
+            <li v-for="deviation in softSummary.style_deviations" :key="`${deviation.dimension}-${deviation.patch_brief}`">
+              <span>{{ deviation.dimension }}</span>
+              <strong>{{ deviation.severity || "-" }}</strong>
+              <small>{{ deviation.patch_brief }}</small>
+            </li>
+          </ul>
+        </div>
+        <p v-if="!softSummary" class="muted">暂无软 QC 结果。</p>
       </section>
 
       <section v-if="rewriteCounters" class="qc-report-summary">

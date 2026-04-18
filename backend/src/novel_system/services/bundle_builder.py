@@ -11,6 +11,7 @@ from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
 from novel_system.services.resolver import Resolver
+from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
 
 
 class BundleBuilder:
@@ -25,6 +26,14 @@ class BundleBuilder:
     @staticmethod
     def _combined_text(rows: list[Any], text_field: str) -> str:
         return "\n\n".join(str(getattr(row, text_field)) for row in rows if getattr(row, text_field, None))
+
+    def _next_bundle_id(self, scene_id: str, state: SceneRunState) -> tuple[str, int]:
+        build_no = (state.bundle_build_count or 0) + 1
+        while True:
+            bundle_id = f"bundle_{scene_id}_v{build_no}"
+            if self.session.get(SceneBundle, bundle_id) is None:
+                return bundle_id, build_no
+            build_no += 1
 
     def build(self, scene_id: str, execution_mode: str = "P2", force_rebuild: bool = False) -> dict[str, Any]:
         scene = self.session.get(SceneCard, scene_id)
@@ -137,6 +146,24 @@ class BundleBuilder:
             )
             inline_digests["calibration_line"] = self._combined_text(calibration_lines, "text")
 
+        style_profile = StyleProfileService.build_profile(
+            style_rules=style_rules,
+            style_observations=style_observations,
+            banned_rule_clusters=banned_rule_clusters,
+            calibration_lines=calibration_lines,
+            voice_profile=voice_profile,
+        )
+        if style_profile:
+            source_version_refs["style_profile_contract"] = STYLE_FEATURE_CONTRACT_VERSION
+            ordered_injections.append(
+                {
+                    "slot": "style_profile",
+                    "ref_id": STYLE_FEATURE_CONTRACT_VERSION,
+                    "digest_key": "style_profile",
+                }
+            )
+            inline_digests["style_profile"] = StyleProfileService.render_profile_digest(style_profile)
+
         world_rules = self.resolver.resolve_active_world_rules(self.session, scene)
         if world_rules:
             ordered_injections.append(
@@ -180,29 +207,24 @@ class BundleBuilder:
             inline_digests=inline_digests,
         )
         bundle_hash = compute_bundle_hash_projection(projection)
-        bundle_id = state.current_bundle_id or f"bundle_{scene.scene_id}"
+        bundle_id, build_count = self._next_bundle_id(scene.scene_id, state)
         snapshot = projection.model_dump(mode="json")
         snapshot["scene_id"] = scene.scene_id
         snapshot["chapter_id"] = scene.chapter_id
 
-        bundle = self.session.get(SceneBundle, bundle_id)
-        if bundle is None:
-            bundle = SceneBundle(
-                bundle_id=bundle_id,
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                execution_mode=execution_mode,
-                bundle_snapshot_hash=bundle_hash,
-                frozen_snapshot_json=snapshot,
-            )
-            self.session.add(bundle)
-        else:
-            bundle.bundle_snapshot_hash = bundle_hash
-            bundle.frozen_snapshot_json = snapshot
+        bundle = SceneBundle(
+            bundle_id=bundle_id,
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            execution_mode=execution_mode,
+            bundle_snapshot_hash=bundle_hash,
+            frozen_snapshot_json=snapshot,
+        )
+        self.session.add(bundle)
 
         state.current_bundle_id = bundle_id
         state.current_bundle_hash = bundle_hash
-        state.bundle_build_count += 1
+        state.bundle_build_count = build_count
         state.scene_status = "bundle_built"
         self.session.flush()
 

@@ -151,6 +151,46 @@ export function exportSystemConfigCategory(category) {
   return apiGet(`/api/v1/system-config/export/${encodeURIComponent(category)}`);
 }
 
+export function fetchLlmConfig() {
+  return apiGet("/api/v1/system-config/llm");
+}
+
+export function saveLlmProviderConfig(payload, adminToken) {
+  return apiAdminPost("/api/v1/system-config/llm/providers", payload, adminToken);
+}
+
+export function saveLlmNodeRoutes(payload, adminToken) {
+  return apiAdminPost("/api/v1/system-config/llm/node-routes", payload, adminToken);
+}
+
+export function probeLlmProvider(providerId, payload = {}, adminToken) {
+  return apiAdminPost(`/api/v1/system-config/llm/providers/${encodeURIComponent(providerId)}/probe`, payload, adminToken);
+}
+
+export function startLlmOAuth(providerType, payload, adminToken) {
+  return apiAdminPost(`/api/v1/system-config/llm/oauth/${encodeURIComponent(providerType)}/start`, payload, adminToken);
+}
+
+export function fetchLiteraryEvalLatest() {
+  return apiGet("/api/v1/literary-eval/latest");
+}
+
+export function runLiteraryEval(payload = { mode: "baseline" }) {
+  return apiPost("/api/v1/literary-eval/run", payload);
+}
+
+export function fetchStyleProfileContract() {
+  return apiGet("/api/v1/style-profile/contract");
+}
+
+export function extractStyleProfile(payload) {
+  return apiPost("/api/v1/style-profile/extract", payload);
+}
+
+export function submitStyleProfileCandidate(payload) {
+  return apiPost("/api/v1/style-profile/review-candidate", payload);
+}
+
 export function fetchWorkbench(sceneId) {
   return apiGet(`/api/v1/scenes/${sceneId}/workbench`);
 }
@@ -274,8 +314,8 @@ export function createReviewItem(payload) {
   return apiPost("/api/v1/review-items", payload);
 }
 
-export function approveReview(reviewId) {
-  return apiPost(`/api/v1/review-items/${reviewId}/approve`);
+export function approveReview(reviewId, payload = {}) {
+  return apiPost(`/api/v1/review-items/${reviewId}/approve`, payload);
 }
 
 export function releaseReview(reviewId) {

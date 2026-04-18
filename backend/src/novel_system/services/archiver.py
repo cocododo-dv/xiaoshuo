@@ -38,7 +38,7 @@ class Archiver:
             existing_memory.active_flag = 0
             existing_memory.runtime_eligible = 0
 
-        memory_row_id = f"scene_memory_{scene_id}"
+        memory_row_id = _scene_memory_row_id(scene_id, final_scene_row_id)
         memory = SceneMemory(
             row_id=memory_row_id,
             scene_id=scene_id,
@@ -51,7 +51,7 @@ class Archiver:
             runtime_eligible=1,
             runtime_eligibility_basis="direct_read",
         )
-        self.session.merge(memory)
+        self.session.add(memory)
 
         rolling = self.session.execute(
             select(ChapterRollingNote).where(ChapterRollingNote.scene_id == scene_id)
@@ -86,3 +86,10 @@ class Archiver:
         self.session.flush()
 
         return {"scene_memory_row_id": memory_row_id, "scene_status": state.scene_status}
+
+
+def _scene_memory_row_id(scene_id: str, final_scene_row_id: str) -> str:
+    final_prefix = f"final_scene_{scene_id}"
+    if final_scene_row_id.startswith(final_prefix):
+        return f"scene_memory_{scene_id}{final_scene_row_id[len(final_prefix):]}"
+    return f"scene_memory_{scene_id}_{final_scene_row_id}"

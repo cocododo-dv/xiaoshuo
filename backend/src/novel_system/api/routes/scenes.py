@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,6 +28,7 @@ from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
+from novel_system.services.style_profile import StyleScoreService
 
 router = APIRouter(tags=["scenes"])
 
@@ -283,7 +286,7 @@ def _serialize_generation_summary(session: Session, scene_id: str, state: SceneR
     llm_call = _resolve_generation_llm_call(session, scene_id, state)
     if llm_call is None:
         return None
-    return {
+    summary = {
         "llm_call_id": llm_call.llm_call_id,
         "step": _display_generation_step(llm_call.step),
         "raw_step": llm_call.step,
@@ -298,6 +301,10 @@ def _serialize_generation_summary(session: Session, scene_id: str, state: SceneR
         "error_code": llm_call.error_code,
         "created_at": llm_call.created_at,
     }
+    style_summary = _style_score_summary_for_scene(session, scene_id, state)
+    if style_summary is not None:
+        summary["style_score_summary"] = style_summary
+    return summary
 
 
 def _resolve_generation_llm_call(session: Session, scene_id: str, state: SceneRunState) -> LlmCall | None:
@@ -377,7 +384,7 @@ def _resolve_current_run_bundle_id(session: Session, scene_id: str, state: Scene
 def _serialize_qc_summary(report: QcReport | None) -> dict | None:
     if report is None:
         return None
-    return {
+    summary = {
         "qc_report_id": report.qc_report_id,
         "qc_type": report.qc_type,
         "pass_flag": None if report.pass_flag is None else bool(report.pass_flag),
@@ -387,6 +394,17 @@ def _serialize_qc_summary(report: QcReport | None) -> dict | None:
         "rewrite_brief": _extract_rewrite_brief(report.rewrite_brief_json or []),
         "created_at": report.created_at,
     }
+    style_summary = StyleScoreService.summary_from_rewrite_brief(report.rewrite_brief_json or [])
+    if style_summary is not None:
+        summary.update(style_summary)
+    return summary
+
+
+def _style_score_summary_for_scene(session: Session, scene_id: str, state: SceneRunState) -> dict[str, Any] | None:
+    report = _latest_qc_report(session, scene_id, state, "soft_qc")
+    if report is None:
+        return None
+    return StyleScoreService.summary_from_rewrite_brief(report.rewrite_brief_json or [])
 
 
 def _extract_issue_keys(entries: list[dict]) -> list[str]:

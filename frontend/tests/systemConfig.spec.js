@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "../src/lib/api";
+import { buildLiteraryEvalCaseRows } from "../src/lib/literaryEvalSummary";
 
 function ok(data) {
   return {
@@ -22,7 +23,53 @@ describe("system config api helpers", () => {
     await api.saveSystemConfigDraft({ category: "models", yaml_raw: "task_routing: {}\n" }, "admin-token");
     await api.activateSystemConfigSnapshot("config_models_001", "admin-token");
     await api.testSystemConfigProvider({ provider: "openai_compatible", base_url: "https://llm.example/v1" }, "admin-token");
+    await api.fetchLlmConfig();
+    await api.saveLlmProviderConfig(
+      {
+        provider_id: "openai_primary",
+        provider_type: "openai",
+        base_url: "https://api.openai.example/v1",
+        api_key: "sk-secret",
+      },
+      "admin-token",
+    );
+    await api.saveLlmNodeRoutes(
+      {
+        activate: true,
+        node_routing: {
+          neutral_draft: {
+            provider: "openai",
+            provider_id: "openai_primary",
+            model: "gpt-5.4",
+            temperature: 0.2,
+            max_output_tokens: 3000,
+            response_format: "json_object",
+            reasoning_level: "medium",
+          },
+        },
+      },
+      "admin-token",
+    );
+    await api.probeLlmProvider("openai_primary", {}, "admin-token");
+    await api.startLlmOAuth(
+      "gemini",
+      {
+        provider_id: "gemini_oauth",
+        account_id: "acct_google",
+        client_id: "client-id",
+        redirect_uri: "http://127.0.0.1/callback",
+      },
+      "admin-token",
+    );
     await api.exportSystemConfigCategory("models");
+    await api.fetchLiteraryEvalLatest();
+    await api.runLiteraryEval({ mode: "baseline" });
+    await api.runLiteraryEval({ mode: "live", model: "writer-live-model" });
+    await api.fetchStyleProfileContract();
+    await api.extractStyleProfile({ sample_texts: ["short rhythm and dialogue pressure"] });
+    await api.submitStyleProfileCandidate({
+      profile_yaml: "style_profile:\n  contract_version: STYLE_FEATURE_CONTRACT_v1\n",
+    });
 
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/system-config");
     expect(globalThis.fetch).toHaveBeenCalledWith(
@@ -47,6 +94,71 @@ describe("system config api helpers", () => {
       }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/system-config/export/models");
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/literary-eval/latest");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/literary-eval/run",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Idempotency-Key": expect.any(String) }),
+        body: JSON.stringify({ mode: "baseline" }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/system-config/llm");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/system-config/llm/providers",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/system-config/llm/node-routes",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/system-config/llm/providers/openai_primary/probe",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/system-config/llm/oauth/gemini/start",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/literary-eval/run",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Idempotency-Key": expect.any(String) }),
+        body: JSON.stringify({ mode: "live", model: "writer-live-model" }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/style-profile/contract");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/style-profile/extract",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Idempotency-Key": expect.any(String) }),
+        body: JSON.stringify({ sample_texts: ["short rhythm and dialogue pressure"] }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/style-profile/review-candidate",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Idempotency-Key": expect.any(String) }),
+        body: JSON.stringify({
+          profile_yaml: "style_profile:\n  contract_version: STYLE_FEATURE_CONTRACT_v1\n",
+        }),
+      }),
+    );
   });
 });
 
@@ -93,6 +205,171 @@ describe("system config store", () => {
           },
         });
       }
+      if (url.endsWith("/api/v1/system-config/llm") && !options.method) {
+        return ok({
+          provider_catalog: {
+            openai: { label: "OpenAI", credential_modes: ["api_key"] },
+            gemini: { label: "Gemini / Google", credential_modes: ["api_key", "oauth2"] },
+          },
+          providers: {
+            openai_primary: {
+              provider_id: "openai_primary",
+              provider_type: "openai",
+              account_id: "acct_ops",
+              base_url: "https://api.openai.example/v1",
+              enabled: true,
+              credential_mode: "api_key",
+              models: ["gpt-5.4"],
+              secret: { configured: true, hint: "sk-...test" },
+            },
+          },
+          node_routes: {
+            neutral_draft: {
+              node_id: "neutral_draft",
+              status: "active",
+              configured: true,
+              provider: "openai",
+              provider_id: "openai_primary",
+              account_id: "acct_ops",
+              model: "gpt-5.4",
+              temperature: 0.2,
+              max_output_tokens: 3000,
+              response_format: "json_object",
+              reasoning_level: "medium",
+            },
+            chapter_summary: {
+              node_id: "chapter_summary",
+              status: "reserved",
+              configured: false,
+            },
+          },
+        });
+      }
+      if (url.endsWith("/api/v1/system-config/llm/providers") && options.method === "POST") {
+        const body = JSON.parse(options.body);
+        expect(body.api_key).toBe("sk-secret");
+        return ok({
+          provider: {
+            provider_id: body.provider_id,
+            provider_type: body.provider_type,
+            base_url: body.base_url,
+            credential_mode: body.credential_mode || "api_key",
+            models: body.models || [],
+            secret: { configured: true, hint: "sk-...cret" },
+          },
+        });
+      }
+      if (url.endsWith("/api/v1/system-config/llm/node-routes") && options.method === "POST") {
+        const body = JSON.parse(options.body);
+        return ok({
+          snapshot: {
+            snapshot_id: "config_models_llm_001",
+            active: Boolean(body.activate),
+            parsed: body,
+          },
+        });
+      }
+      if (url.endsWith("/api/v1/system-config/llm/providers/openai_primary/probe") && options.method === "POST") {
+        return ok({ ok: true, status_code: 200, latency_ms: 42, message: "provider probe succeeded" });
+      }
+      if (url.endsWith("/api/v1/system-config/llm/oauth/gemini/start") && options.method === "POST") {
+        return ok({
+          provider_type: "gemini",
+          provider_id: "gemini_oauth",
+          authorization_url: "https://accounts.google.com/o/oauth2/v2/auth?state=signed",
+          state: "signed",
+        });
+      }
+      if (url.endsWith("/api/v1/literary-eval/latest") && !options.method) {
+        return ok({ report: null });
+      }
+      if (url.endsWith("/api/v1/literary-eval/run") && options.method === "POST") {
+        const body = JSON.parse(options.body);
+        return ok({
+          report: {
+            mode: body.mode || "baseline",
+            model: body.model || null,
+            suite_id: "literary_small_v1",
+            summary: {
+              case_count: 3,
+              passed_count: 2,
+              failed_count: 1,
+              mean_score: 0.82,
+              pass_threshold: 0.72,
+            },
+            cases: [
+              {
+                case_id: "style-pressure-001",
+                title: "压迫感转场",
+                prompt: "写一个带有压迫感的转场。",
+                generated_text: "门轴轻响，灯线压低，所有人都停在同一口气里。",
+                score: 0.64,
+                passed: false,
+                dimensions: {
+                  required_terms: 0.5,
+                  style_cues: 0.5,
+                  banned_terms: 1,
+                  length: 0.7,
+                },
+                issues: ["missing required term: corridor", "style cue not present: delayed sentence release"],
+              },
+              {
+                case_id: "dialogue-silence-001",
+                title: "对白留白",
+                prompt: "写一段少对白的冲突。",
+                generated_text: "她没有回答，只把杯沿转向窗外。",
+                score: 0.93,
+                passed: true,
+                dimensions: {
+                  required_terms: 1,
+                  style_cues: 1,
+                  banned_terms: 1,
+                  length: 0.72,
+                },
+                issues: [],
+              },
+            ],
+          },
+        });
+      }
+      if (url.endsWith("/api/v1/style-profile/contract") && !options.method) {
+        return ok({
+          contract_version: "STYLE_FEATURE_CONTRACT_v1",
+          feature_names: ["rhythm", "syntax", "dialogue_ratio"],
+          example_yaml: "style_profile:\n  contract_version: STYLE_FEATURE_CONTRACT_v1\n",
+        });
+      }
+      if (url.endsWith("/api/v1/style-profile/extract") && options.method === "POST") {
+        return ok({
+          profile: {
+            contract_version: "STYLE_FEATURE_CONTRACT_v1",
+            features: {
+              rhythm: { guidance: ["short rhythm and dialogue pressure"] },
+            },
+          },
+          profile_yaml: "style_profile:\n  contract_version: STYLE_FEATURE_CONTRACT_v1\n",
+        });
+      }
+      if (url.endsWith("/api/v1/style-profile/review-candidate") && options.method === "POST") {
+        const body = JSON.parse(options.body);
+        expect(body.profile_yaml).toContain("style_profile:");
+        return ok({
+          review: {
+            review_id: "review_style_profile_global_global_abc123",
+            item_type: "style_rule_set",
+            target_collection: "style_rules",
+            status: "pending",
+            candidate_text: body.profile_yaml,
+            candidate_payload_json: {
+              lineage_key: "style_profile_global_global",
+              source: "style_profile_extract",
+            },
+          },
+          target: {
+            target_ref: "review_item:review_style_profile_global_global_abc123",
+          },
+        });
+      }
       throw new Error(`Unexpected fetch: ${url}`);
     });
   });
@@ -116,17 +393,187 @@ describe("system config store", () => {
     expect(store.lastDraft.snapshot_id).toBe("config_models_001");
     expect(store.lastActivated.active).toBe(true);
   });
+
+  it("loads llm provider config and saves provider, node routes, probes, and oauth start", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+
+    await store.loadLlmConfig();
+    store.providerDraft = {
+      provider_id: "openai_primary",
+      provider_type: "openai",
+      account_id: "acct_ops",
+      base_url: "https://api.openai.example/v1",
+      credential_mode: "api_key",
+      modelsText: "gpt-5.4\n",
+      api_key: "sk-secret",
+    };
+    const providerMessage = await store.saveLlmProvider();
+    store.nodeRouteDrafts.neutral_draft.model = "gpt-5.4-mini";
+    store.nodeRouteDrafts.neutral_draft.reasoning_level = "high";
+    const routeMessage = await store.saveLlmNodeRoutes();
+    const probeMessage = await store.probeLlmProvider("openai_primary");
+    const oauthMessage = await store.startLlmOAuth({
+      provider_id: "gemini_oauth",
+      account_id: "acct_google",
+      client_id: "client-id",
+      redirect_uri: "http://127.0.0.1/callback",
+    });
+
+    expect(store.llm.providers.openai_primary.secret.hint).toBe("sk-...test");
+    expect(store.nodeRouteRows.some((row) => row.node_id === "chapter_summary" && row.status === "reserved")).toBe(true);
+    expect(providerMessage).toContain("openai_primary");
+    expect(routeMessage).toContain("config_models_llm_001");
+    expect(probeMessage).toContain("成功");
+    expect(oauthMessage).toContain("Gemini");
+    expect(store.oauthStart.authorization_url).toContain("accounts.google.com");
+    expect(store.providerDraft.api_key).toBe("");
+  });
+
+  it("loads and runs the literary eval summary from system config", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+
+    await store.loadLiteraryEvalLatest();
+    const message = await store.runLiteraryEval();
+
+    expect(store.literaryEval.report.summary.passed_count).toBe(2);
+    expect(store.literaryEval.report.summary.case_count).toBe(3);
+    expect(store.literaryEval.report.cases[0].issues[0]).toContain("corridor");
+    expect(message).toContain("2/3");
+  });
+
+  it("runs live literary eval with an optional model override", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+
+    store.literaryEvalModel = "writer-live-model";
+    const message = await store.runLiteraryEval("live");
+
+    const call = globalThis.fetch.mock.calls.find(([url, options]) => {
+      if (!url.endsWith("/api/v1/literary-eval/run") || options.method !== "POST") {
+        return false;
+      }
+      return JSON.parse(options.body).mode === "live";
+    });
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call[1].body)).toEqual({ mode: "live", model: "writer-live-model" });
+    expect(store.literaryEval.report.mode).toBe("live");
+    expect(store.literaryEval.report.model).toBe("writer-live-model");
+    expect(message).toContain("2/3");
+  });
+
+  it("builds literary eval diagnostic rows with status, dimensions, and preview text", () => {
+    const rows = buildLiteraryEvalCaseRows({
+      cases: [
+        {
+          case_id: "style-pressure-001",
+          title: "压迫感转场",
+          generated_text: "门轴轻响，灯线压低，所有人都停在同一口气里。",
+          score: 0.64,
+          passed: false,
+          dimensions: {
+            required_terms: 0.5,
+            style_cues: 0.5,
+            banned_terms: 1,
+            length: 0.7,
+          },
+          issues: ["missing required term: corridor"],
+        },
+      ],
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        caseId: "style-pressure-001",
+        title: "压迫感转场",
+        statusLabel: "未通过",
+        scoreLabel: "0.64",
+        issueText: "missing required term: corridor",
+        generatedPreview: "门轴轻响，灯线压低，所有人都停在同一口气里。",
+      }),
+    ]);
+    expect(rows[0].dimensions).toContainEqual(expect.objectContaining({ label: "必备词", score: "0.50" }));
+  });
+
+  it("loads the style profile contract for configuration debugging", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+
+    await store.loadStyleProfileContract();
+
+    expect(store.styleProfileContract.contract_version).toBe("STYLE_FEATURE_CONTRACT_v1");
+    expect(store.styleProfileContract.example_yaml).toContain("style_profile:");
+  });
+
+  it("extracts a style profile YAML draft from pasted sample text", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+
+    store.styleProfileSampleText = "short rhythm and dialogue pressure";
+    const message = await store.extractStyleProfileDraft();
+
+    expect(store.styleProfileExtract.profile_yaml).toContain("style_profile:");
+    expect(store.styleProfileDraftYaml).toContain("style_profile:");
+    expect(store.styleProfileExtract.profile.contract_version).toBe("STYLE_FEATURE_CONTRACT_v1");
+    expect(message).toContain("STYLE_FEATURE_CONTRACT_v1");
+  });
+
+  it("submits the edited style profile YAML as a review candidate", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+
+    store.styleProfileExtract = {
+      profile_yaml: "style_profile:\n  contract_version: STYLE_FEATURE_CONTRACT_v1\n",
+    };
+    store.styleProfileDraftYaml = [
+      "style_profile:",
+      "  contract_version: STYLE_FEATURE_CONTRACT_v1",
+      "  features:",
+      "    rhythm:",
+      "      guidance:",
+      "        - edited cadence",
+      "",
+    ].join("\n");
+    const message = await store.submitStyleProfileCandidate();
+
+    expect(store.styleProfileReview.review_id).toBe("review_style_profile_global_global_abc123");
+    expect(store.styleProfileReview.candidate_text).toContain("edited cadence");
+    expect(message).toContain("review_style_profile_global_global_abc123");
+  });
 });
 
 describe("system config shell registration", () => {
   it("registers the system config view and store", () => {
     const appSource = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
     const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
+    const viewSource = readFileSync(new URL("../src/views/SystemConfigView.vue", import.meta.url), "utf8");
 
     expect(appSource).toContain("SystemConfigView");
     expect(routerSource).toContain('id: "config"');
     expect(routerSource).toContain('label: "系统配置"');
     expect(existsSync(new URL("../src/stores/systemConfig.js", import.meta.url))).toBe(true);
     expect(existsSync(new URL("../src/views/SystemConfigView.vue", import.meta.url))).toBe(true);
+    expect(viewSource).toContain("config-literary-eval-summary");
+    expect(viewSource).toContain("config-literary-eval-run");
+    expect(viewSource).toContain("config-literary-eval-run-live");
+    expect(viewSource).toContain("systemConfig.literaryEvalModel");
+    expect(viewSource).toContain("literaryEvalCases");
+    expect(viewSource).toContain("config-literary-eval-cases");
+    expect(viewSource).toContain("config-literary-eval-case-");
+    expect(viewSource).toContain("config-style-profile-contract");
+    expect(viewSource).toContain("config-style-profile-sample");
+    expect(viewSource).toContain("config-style-profile-extract");
+    expect(viewSource).toContain("config-style-profile-submit");
+    expect(viewSource).toContain("config-style-profile-yaml");
+    expect(viewSource).toContain("systemConfig.styleProfileDraftYaml");
+    expect(viewSource).toContain("config-style-profile-review");
+    expect(viewSource).toContain("config-llm-provider-panel");
+    expect(viewSource).toContain("config-llm-oauth-panel");
+    expect(viewSource).toContain("config-llm-node-matrix");
+    expect(viewSource).toContain("config-llm-node-row-");
+    expect(viewSource).toContain("systemConfig.nodeRouteRows");
+    expect(viewSource).toContain("saveLlmNodeRoutes");
   });
 });

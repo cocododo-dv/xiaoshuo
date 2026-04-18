@@ -1,12 +1,10 @@
 import { expect, test } from "@playwright/test";
 
+import { configureConnection } from "./helpers.js";
+
 test("runs chapter runtime ops end to end inside the scene workbench", async ({ page }) => {
   await page.goto("/");
-
-  await page.getByTestId("api-base-input").fill("http://127.0.0.1:8000");
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.chapter.e2e");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { operatorRef: "ops.chapter.e2e" });
 
   await page.getByTestId("scene-id-input").fill("CH200_SC01");
   await page.getByTestId("scene-load-button").click();

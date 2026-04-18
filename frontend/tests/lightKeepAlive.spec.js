@@ -15,16 +15,18 @@ function ok(data) {
 }
 
 describe("light keep-alive shell architecture", () => {
-  it("adds light keep-alive metadata and stage chrome to the shell", () => {
+  it("keeps light keep-alive metadata without duplicating per-view stage chrome", () => {
     const appSource = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
     const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
-    expect(appSource).toContain("stage-chrome");
+    expect(appSource).not.toContain("stage-chrome");
     expect(appSource).toContain("view-fade");
-    expect(appSource).toContain("stage-settings");
+    expect(appSource).not.toContain("stage-settings");
+    expect(appSource).not.toContain("api-base-input");
+    expect(appSource).not.toContain("operator-ref-input");
     expect(routerSource).toContain('cacheMode: "light"');
-    expect(routerSource).toContain("chromeTitle");
-    expect(routerSource).toContain("chromeDescription");
+    expect(routerSource).not.toContain("chromeTitle");
+    expect(routerSource).not.toContain("chromeDescription");
   });
 
   it("replaces join-signature watchers with version markers in cached heavy views", () => {

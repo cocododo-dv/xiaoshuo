@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
-from novel_system.db.models import HumanReviewEvent, ReviewItem
+from novel_system.db.models import HumanReviewEvent, ReviewItem, VersionRegistry
 from novel_system.services.errors import DomainError
 from novel_system.services.human_review_manager import HumanReviewManager
 from novel_system.services.human_review_support import (
@@ -15,6 +17,7 @@ from novel_system.services.human_review_support import (
     structured_target_from_replay_result,
 )
 from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.knowledge_registry import descriptor_for_item_type
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.versioning import PromotionService, ReviewMaterializationService
 
@@ -53,7 +56,7 @@ def list_review_items(
         cursor_values=lambda item: [item.created_at, item.review_id],
     )
     return ok(
-        {"items": [_serialize_review(item) for item in page_items], "pagination": pagination},
+        {"items": [_serialize_review(item, session=session) for item in page_items], "pagination": pagination},
         req_id=getattr(request.state, "request_id", None),
     )
 
@@ -63,7 +66,7 @@ def review_detail(review_id: str, request: Request, session: Session = Depends(g
     item = session.get(ReviewItem, review_id)
     if item is None:
         raise DomainError("REVIEW_NOT_FOUND", f"review {review_id} not found", status_code=404)
-    return ok(_serialize_review(item), req_id=getattr(request.state, "request_id", None))
+    return ok(_serialize_review(item, session=session), req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v1/review-items")
@@ -124,23 +127,119 @@ def _upsert_review_item(session: Session, payload: dict) -> dict:
             setattr(item, key, value)
     session.flush()
     session.refresh(item)
-    return _serialize_review(item)
+    return _serialize_review(item, session=session)
 
 
 @router.post("/api/v1/review-items/{review_id}/approve")
-def approve_review(review_id: str, request: Request, session: Session = Depends(get_session)):
+def approve_review(
+    review_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    approval_payload = dict(payload or {})
+    approval_payload["review_id"] = review_id
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items/{review_id}/approve",
-        payload={"review_id": review_id},
-        action=lambda: ReviewMaterializationService(session).materialize_review(review_id),
+        payload=approval_payload,
+        action=lambda: _approve_review_with_style_profile_gate(session, review_id, approval_payload),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+def _approve_review_with_style_profile_gate(session: Session, review_id: str, payload: dict[str, Any]) -> dict:
+    item = session.get(ReviewItem, review_id)
+    if item is None:
+        return ReviewMaterializationService(session).materialize_review(review_id)
+
+    risk = _high_risk_style_profile_approval(session, item)
+    if risk is None:
+        return ReviewMaterializationService(session).materialize_review(review_id)
+
+    reason = _risk_confirmation_reason(payload.get("risk_confirmation"))
+    if reason is None:
+        raise DomainError(
+            "STYLE_PROFILE_RISK_CONFIRMATION_REQUIRED",
+            "high-risk style profile approval requires acknowledgement and a confirmation reason",
+            status_code=409,
+            details=risk,
+        )
+
+    result = ReviewMaterializationService(session).materialize_review(review_id)
+    return {
+        **result,
+        "risk_confirmation": {
+            "acknowledged": True,
+            "reason": reason,
+            "severity": "high",
+            "required": True,
+        },
+    }
+
+
+def _high_risk_style_profile_approval(session: Session, item: ReviewItem) -> dict[str, Any] | None:
+    candidate_payload = item.candidate_payload_json or {}
+    if not isinstance(candidate_payload, dict):
+        return None
+    candidate_profile = candidate_payload.get("style_profile")
+    if not isinstance(candidate_profile, dict):
+        return None
+
+    baseline_profile = _style_profile_baseline(session, item)
+    if not isinstance(baseline_profile, dict):
+        return None
+
+    baseline_features = baseline_profile.get("features")
+    if not isinstance(baseline_features, dict):
+        return None
+
+    removed_features = []
+    for feature_key in sorted(baseline_features):
+        if _style_guidance_items(baseline_profile, feature_key) and not _style_guidance_items(
+            candidate_profile,
+            feature_key,
+        ):
+            removed_features.append(feature_key)
+
+    if not removed_features:
+        return None
+    return {
+        "severity": "high",
+        "removed_features": removed_features,
+        "review_id": item.review_id,
+    }
+
+
+def _style_guidance_items(profile: dict[str, Any], feature_key: str) -> list[str]:
+    features = profile.get("features")
+    if not isinstance(features, dict):
+        return []
+    feature = features.get(feature_key)
+    if not isinstance(feature, dict):
+        return []
+    guidance = feature.get("guidance")
+    if isinstance(guidance, str):
+        return [guidance.strip()] if guidance.strip() else []
+    if not isinstance(guidance, list):
+        return []
+    return [str(item).strip() for item in guidance if str(item).strip()]
+
+
+def _risk_confirmation_reason(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    if value.get("acknowledged") is not True:
+        return None
+    reason = value.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return reason.strip()
 
 
 @router.post("/api/v1/review-items/{review_id}/release")
@@ -159,8 +258,8 @@ def release_review(review_id: str, request: Request, session: Session = Depends(
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
-def _serialize_review(item: ReviewItem) -> dict:
-    return {
+def _serialize_review(item: ReviewItem, *, session: Session | None = None) -> dict:
+    payload = {
         "review_id": item.review_id,
         "scene_id": item.scene_id,
         "chapter_id": item.chapter_id,
@@ -173,6 +272,42 @@ def _serialize_review(item: ReviewItem) -> dict:
         "materialize_status": item.materialize_status,
         "approved_item_row_id": item.approved_item_row_id,
     }
+    baseline = _style_profile_baseline(session, item)
+    if baseline is not None:
+        payload["style_profile_baseline"] = baseline
+    return payload
+
+
+def _style_profile_baseline(session: Session | None, item: ReviewItem) -> dict | None:
+    if session is None:
+        return None
+    candidate_payload = item.candidate_payload_json or {}
+    if not isinstance(candidate_payload.get("style_profile"), dict):
+        return None
+    lineage_key = candidate_payload.get("lineage_key")
+    if not isinstance(lineage_key, str) or not lineage_key:
+        return None
+    try:
+        descriptor = descriptor_for_item_type(item.item_type)
+    except DomainError:
+        return None
+
+    registries = session.execute(
+        select(VersionRegistry)
+        .where(VersionRegistry.object_type == descriptor.object_type)
+        .where(VersionRegistry.lineage_key == lineage_key)
+        .order_by(VersionRegistry.version.desc())
+    ).scalars().all()
+    for registry in registries:
+        row = session.get(descriptor.model_cls, registry.physical_row_id)
+        if row is None or getattr(row, "active_flag", 0) != 1:
+            continue
+        source_review_id = getattr(row, "source_review_id", None)
+        source_review = session.get(ReviewItem, source_review_id) if source_review_id else None
+        source_payload = source_review.candidate_payload_json if source_review else {}
+        if isinstance(source_payload, dict) and isinstance(source_payload.get("style_profile"), dict):
+            return source_payload["style_profile"]
+    return None
 
 
 @router.get("/api/v1/human-review-events")

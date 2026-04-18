@@ -157,10 +157,14 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert len(fake_client.requests) == 2
     request = fake_client.requests[0]
     assert request.response_format == "json_object"
+    assert request.node_id == "neutral_draft"
+    assert request.reasoning_level == "medium"
     assert any("Scene ID: CH100_SC01" in message["content"] for message in request.messages)
     assert any("Return JSON that matches the structured schema exactly." in message["content"] for message in request.messages)
     style_request = fake_client.requests[1]
     assert style_request.model == "gpt-5"
+    assert style_request.node_id == "style_draft"
+    assert style_request.reasoning_level == "medium"
     assert any("Approved Neutral Draft" in message["content"] for message in style_request.messages)
     assert any("Provider-generated neutral scene text." in message["content"] for message in style_request.messages)
     assert any("Rewrite the scene draft with stronger style adherence" in message["content"] for message in style_request.messages)
@@ -177,6 +181,8 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert style_draft.source_bundle_hash == bundle.bundle_snapshot_hash
 
     assert llm_calls[0].provider == "fake-provider"
+    assert llm_calls[0].node_id == "neutral_draft"
+    assert llm_calls[0].reasoning_level == "medium"
     assert llm_calls[0].model == "fake-neutral-model"
     assert llm_calls[0].step == "neutral_draft"
     assert llm_calls[0].scene_id == "CH100_SC01"
@@ -191,6 +197,8 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
         estimate_tokens(message["content"]) for message in request.messages
     )
     assert llm_calls[1].provider == "fake-provider"
+    assert llm_calls[1].node_id == "style_draft"
+    assert llm_calls[1].reasoning_level == "medium"
     assert llm_calls[1].model == "fake-style-model"
     assert llm_calls[1].step == "style_draft"
     assert llm_calls[1].scene_id == "CH100_SC01"

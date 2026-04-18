@@ -415,9 +415,30 @@ def _serialize_operator_action(item: OperationLog) -> dict:
         "target_refs": _operation_log_target_refs(item.object_type, item.event_type, item.object_ref, payload),
         "payload_json": payload,
     }
+    risk_confirmation = _risk_confirmation_from_payload(payload)
+    if risk_confirmation is not None:
+        data["risk_confirmation"] = risk_confirmation
     if item.event_type == "operator_action":
         data["summary"] = payload.get("summary")
     return data
+
+
+def _risk_confirmation_from_payload(payload: dict) -> dict | None:
+    request_payload = payload.get("request_payload")
+    confirmation = request_payload.get("risk_confirmation") if isinstance(request_payload, dict) else None
+    if not isinstance(confirmation, dict):
+        confirmation = payload.get("risk_confirmation")
+    if not isinstance(confirmation, dict):
+        return None
+
+    reason = confirmation.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return {
+        "acknowledged": confirmation.get("acknowledged") is True,
+        "reason": reason.strip(),
+        "severity": confirmation.get("severity") or "high",
+    }
 
 
 def _operation_log_target_refs(object_type: str, event_type: str, object_ref: str, payload: dict) -> list[dict[str, str]]:
@@ -561,6 +582,7 @@ def _serialize_target_activity_groups(
             "summary": item.get("resolution_reason"),
             "object_ref": item.get("object_ref"),
             "target_refs": targets,
+            "risk_confirmation": item.get("risk_confirmation"),
         }
         _append_target_group_entries(groups, targets, entry)
 

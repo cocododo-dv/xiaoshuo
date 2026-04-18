@@ -1,12 +1,10 @@
 import { expect, test } from "@playwright/test";
 
+import { configureConnection } from "./helpers.js";
+
 test("shows blockers for a preflight-failed scene and warnings for a runnable scene", async ({ page }) => {
   await page.goto("/");
-
-  await page.getByTestId("api-base-input").fill("http://127.0.0.1:8000");
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.preflight.e2e");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { operatorRef: "ops.preflight.e2e" });
 
   await page.getByTestId("scene-id-input").fill("CH210_SC01");
   await page.getByTestId("scene-load-button").click();

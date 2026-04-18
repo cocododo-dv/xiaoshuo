@@ -1,12 +1,10 @@
 import { expect, test } from "@playwright/test";
 
+import { configureConnection } from "./helpers.js";
+
 test("creates knowledge candidates and carries them through review, index, and provenance", async ({ page }) => {
   await page.goto("/");
-
-  await page.getByTestId("api-base-input").fill("http://127.0.0.1:8000");
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.knowledge.e2e");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { operatorRef: "ops.knowledge.e2e" });
 
   await page.getByTestId("nav-knowledge").click();
   await expect(page.getByTestId("knowledge-console-view")).toBeVisible();
@@ -76,7 +74,11 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("scene-load-button").click();
   await page.getByTestId("run-full-scene-button").click();
   const workbench = page.getByTestId("scene-workbench-view");
-  await expect(page.getByTestId("scene-run-receipt")).toContainText("bundle_CH001_SC02");
+  const runReceipt = page.getByTestId("scene-run-receipt");
+  await expect(runReceipt).toContainText("bundle_CH001_SC02");
+  const runReceiptText = (await runReceipt.textContent()) || "";
+  const bundleId = runReceiptText.match(/bundle_CH001_SC02_v\d+/)?.[0];
+  expect(bundleId).toBeTruthy();
   await page.getByTestId("scene-toggle-bundle-provenance").click();
   await expect(workbench).toContainText("构包溯源");
   await expect(workbench).toContainText("风格规则集");
@@ -93,7 +95,7 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
   await page.getByTestId("knowledge-toggle-bundle-refs").click();
   await expect(page.getByTestId("knowledge-bundle-refs-progressive-list")).toBeVisible();
-  await page.getByTestId("knowledge-open-bundle-ref-bundle_CH001_SC02").click();
+  await page.getByTestId(`knowledge-open-bundle-ref-${bundleId}`).click();
   await expect(page.getByTestId("scene-id-input")).toHaveValue("CH001_SC02");
   await expect(page.getByTestId("scene-workbench-scene-card")).toHaveClass(/focused-card/);
 });

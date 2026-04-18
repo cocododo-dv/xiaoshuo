@@ -91,6 +91,7 @@ describe("buildBundleProvenance", () => {
     const snapshot = {
       source_version_refs: {
         style_rule_set_id: "STYLE_GLOBAL_MAIN",
+        style_profile_contract: "STYLE_FEATURE_CONTRACT_v1",
         banned_cluster_id: "BAN_REUNION_V1",
         calibration_line_ids: ["CAL_002"],
         scene_summary_id: "CH001_SC01",
@@ -103,6 +104,7 @@ describe("buildBundleProvenance", () => {
       },
       ordered_injections: [
         { slot: "style_rules", ref_id: "STYLE_GLOBAL_MAIN", digest_key: "style_rule" },
+        { slot: "style_profile", ref_id: "STYLE_FEATURE_CONTRACT_v1", digest_key: "style_profile" },
         { slot: "banned_rules", ref_id: "BAN_REUNION_V1", digest_key: "banned_rule" },
         { slot: "calibration_lines", ref_id: "CAL_002", digest_key: "calibration_line" },
         { slot: "world_rules", ref_id: "WR_GLOBAL_014", digest_key: "world_rule" },
@@ -112,6 +114,7 @@ describe("buildBundleProvenance", () => {
       ],
       inline_digests: {
         style_rule: "keep emotion in gesture and pause",
+        style_profile: '{"features":{"rhythm":{"guidance":["pause before reveal"]}}}',
         banned_rule: "do not explain the whole backstory at reunion time",
         calibration_line: "the door closed like a sentence left unfinished",
         world_rule: "public spellcasting inside the city is forbidden",
@@ -123,6 +126,18 @@ describe("buildBundleProvenance", () => {
 
     const provenance = buildBundleProvenance(snapshot);
 
+    expect(provenance.styleProfile).toEqual({
+      contractVersion: "STYLE_FEATURE_CONTRACT_v1",
+      featureRows: [
+        {
+          name: "rhythm",
+          guidance: ["pause before reveal"],
+        },
+      ],
+      calibrationLines: [],
+      bannedMoves: [],
+      raw: '{"features":{"rhythm":{"guidance":["pause before reveal"]}}}',
+    });
     expect(provenance.sources).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -130,6 +145,12 @@ describe("buildBundleProvenance", () => {
           label: "风格规则集",
           logicalId: "STYLE_GLOBAL_MAIN",
           digest: "keep emotion in gesture and pause",
+        }),
+        expect.objectContaining({
+          key: "style_profile",
+          label: "风格画像契约",
+          logicalId: "STYLE_FEATURE_CONTRACT_v1",
+          digest: '{"features":{"rhythm":{"guidance":["pause before reveal"]}}}',
         }),
         expect.objectContaining({
           key: "banned_rule",
@@ -160,6 +181,7 @@ describe("buildBundleProvenance", () => {
     expect(provenance.injections).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ slot: "style_rules", slotLabel: "风格规则", digest: "keep emotion in gesture and pause" }),
+        expect.objectContaining({ slot: "style_profile", slotLabel: "风格画像契约", digest: '{"features":{"rhythm":{"guidance":["pause before reveal"]}}}' }),
         expect.objectContaining({ slot: "world_rules", slotLabel: "世界规则", digest: "public spellcasting inside the city is forbidden" }),
         expect.objectContaining({ slot: "chapter_summary", slotLabel: "章节摘要", digest: "chapter summary for the first reunion chapter" }),
       ]),
@@ -271,10 +293,13 @@ describe("review inbox source", () => {
 describe("shell source", () => {
   it("persists an operator ref alongside the API base", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+    const configSource = readFileSync(new URL("../src/views/SystemConfigView.vue", import.meta.url), "utf8");
     const apiSource = readFileSync(new URL("../src/lib/api.js", import.meta.url), "utf8");
 
-    expect(source).toContain("操作员标识");
-    expect(source).toContain("setOperatorRef");
+    expect(source).not.toContain("操作员标识");
+    expect(source).not.toContain("setOperatorRef");
+    expect(configSource).toContain("操作员标识");
+    expect(configSource).toContain("updateOperatorRef");
     expect(apiSource).toContain("X-Operator-Ref");
     expect(apiSource).toContain("getOperatorRef");
   });

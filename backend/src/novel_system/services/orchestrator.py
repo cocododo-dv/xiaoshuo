@@ -9,7 +9,7 @@ from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
-from novel_system.services.scene_generation import SceneGenerationService
+from novel_system.services.scene_generation import SceneGenerationService, versioned_scene_artifact_id
 from novel_system.services.version_manager import VersionManager
 
 
@@ -117,9 +117,9 @@ class Orchestrator:
                 "soft_qc": self._soft_qc_result_payload(soft_qc),
             }
 
-        final_row_id = f"final_scene_{scene_id}"
+        final_row_id = versioned_scene_artifact_id("final_scene", scene_id, bundle)
         carry_notes_json = self._carry_notes_from_report(soft_qc.qc_report_id) if soft_qc.branch == "waive" else []
-        self.session.merge(
+        self.session.add(
             FinalScene(
                 row_id=final_row_id,
                 scene_id=scene_id,

@@ -41,14 +41,14 @@ describe("shell smoothness architecture", () => {
     expect(source).toContain("defineAsyncComponent");
     expect(source).toContain("KeepAlive");
     expect(source).toContain("activeViewComponent");
-    expect(source).toContain("stage-chrome");
+    expect(source).not.toContain("stage-chrome");
     expect(source).toContain("view-fade");
     expect(routerSource).toContain('cacheMode: "light"');
     expect(source).not.toContain("v-show=\"activeView === 'author'\"");
     expect(source).not.toContain("v-show=\"activeView === 'workbench'\"");
   });
 
-  it("keeps shell refresh reloaders lazy instead of eagerly importing every heavy store", () => {
+  it("keeps shell navigation free of global refresh reloaders", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
 
     expect(source).not.toContain('from "./stores/authorTrash"');
@@ -60,8 +60,10 @@ describe("shell smoothness architecture", () => {
     expect(source).not.toContain("const authorTrash =");
     expect(source).not.toContain("const authorWorkspace =");
     expect(source).not.toContain("const indexConsole =");
-    expect(source).toContain('import("./stores/authorWorkspace")');
-    expect(source).toContain('import("./stores/indexConsole")');
+    expect(source).not.toContain('import("./stores/authorWorkspace")');
+    expect(source).not.toContain('import("./stores/indexConsole")');
+    expect(source).not.toContain("reloadAll");
+    expect(source).not.toContain("刷新已访问视图");
   });
 
   it("collapses heavy detail blocks behind explicit toggles", () => {

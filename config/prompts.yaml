@@ -62,14 +62,54 @@ templates:
           items:
             type: string
 
+  style_profile_extract:
+    version: "2026-04-18.v1"
+    input_token_budget: 1800
+    system_prompt: |
+      You extract transferable prose style features from examples or approved style rules.
+      Do not identify or imitate a protected author; describe reusable craft-level traits only.
+    task_prompt: |
+      Convert the supplied samples into a Style Feature Contract.
+      Use rhythm, syntax, imagery, narrative_distance, emotion_curve, paragraph_density, and dialogue_ratio.
+      Include calibration lines and banned moves only when explicitly supported by the input.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - contract_version
+        - features
+      properties:
+        contract_version:
+          type: string
+        features:
+          type: object
+        calibration_lines:
+          type: array
+          items:
+            type: string
+        banned_moves:
+          type: array
+          items:
+            type: string
+
   style_draft:
-    version: "2026-04-14.v1"
+    version: "2026-04-18.v1"
     input_token_budget: 2600
     system_prompt: |
-      You are drafting a stylistically tuned web-novel scene.
-      Preserve bundle facts while applying the supplied style guidance and avoiding banned moves.
+      You are drafting a stylistically tuned web-novel scene from a structured Style Feature Contract.
+      Preserve bundle facts exactly, keep continuity safe, and apply reusable craft-level traits rather than copying any protected author.
     task_prompt: |
       Rewrite the scene draft with stronger style adherence without changing factual continuity.
+      Rewrite the approved neutral draft without changing factual continuity.
+      Follow the Style Feature Contract dimension by dimension:
+      - rhythm: sentence beat, pause placement, paragraph endings.
+      - syntax: sentence length mix, clause shape, dialogue/narration texture.
+      - imagery: recurring sensory fields, tactile anchors, gesture logic.
+      - narrative_distance: POV closeness, interiority, exposition distance.
+      - emotion_curve: how pressure rises, turns, and resolves inside the scene.
+      - paragraph_density: block length, line-break frequency, compression level.
+      - dialogue_ratio: spoken line share and silence around speech.
+      Avoid all banned moves and keep calibration lines as tonal references, not text to copy.
     structured_schema:
       type: object
       additionalProperties: false
@@ -84,13 +124,15 @@ templates:
             type: string
 
   soft_qc:
-    version: "2026-04-14.v1"
+    version: "2026-04-18.v1"
     input_token_budget: 1800
     system_prompt: |
-      You are a soft quality-control reviewer for prose polish.
-      Focus on readability, cadence, emotional clarity, and whether the draft needs a controlled patch.
+      You are a soft quality-control reviewer for prose polish and Style Feature Contract adherence.
+      Focus on readability, cadence, emotional clarity, style-feature match, and whether the draft needs one controlled patch.
     task_prompt: |
       Review the draft for polish opportunities and return only structured soft QC guidance.
+      Score style adherence from 0 to 1 using rhythm, syntax, imagery, narrative_distance, emotion_curve, paragraph_density, and dialogue_ratio.
+      If style drift is patchable, put precise instructions in rewrite_brief and style_deviations.patch_brief.
     structured_schema:
       type: object
       additionalProperties: false
@@ -130,6 +172,42 @@ templates:
           type: string
         carry_note_text:
           type: string
+        style_score:
+          type: number
+        style_dimensions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - name
+              - score
+              - evidence
+            properties:
+              name:
+                type: string
+              score:
+                type: number
+              evidence:
+                type: string
+        style_deviations:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - dimension
+              - severity
+              - patch_brief
+            properties:
+              dimension:
+                type: string
+              severity:
+                type: string
+              patch_brief:
+                type: string
+              evidence:
+                type: string
 
   chapter_summary:
     version: "2026-04-14.v1"

@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
+from novel_system.api.routes.scenes import _serialize_generation_summary, _serialize_qc_summary
 from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
     ChapterState,
     FinalScene,
     HumanReviewEvent,
+    LlmCall,
     QcReport,
     RelationProfile,
     SceneCard,
@@ -220,8 +223,11 @@ def _base_soft_qc_payload(
     carry_forward_note: bool = False,
     note_scope: str | None = None,
     carry_note_text: str | None = None,
+    style_score: float | None = None,
+    style_dimensions: list[dict] | None = None,
+    style_deviations: list[dict] | None = None,
 ) -> dict:
-    return {
+    payload = {
         "resolution_code": resolution_code,
         "pass_flag": resolution_code in {"soft_pass", "soft_waive"},
         "next_action": next_action,
@@ -231,6 +237,13 @@ def _base_soft_qc_payload(
         "note_scope": note_scope,
         "carry_note_text": carry_note_text,
     }
+    if style_score is not None:
+        payload["style_score"] = style_score
+    if style_dimensions is not None:
+        payload["style_dimensions"] = style_dimensions
+    if style_deviations is not None:
+        payload["style_deviations"] = style_deviations
+    return payload
 
 
 def test_soft_qc_validator_accepts_patch_and_waive_payloads() -> None:
@@ -266,6 +279,54 @@ def test_soft_qc_validator_accepts_patch_and_waive_payloads() -> None:
     assert waive.carry_note_text == "Keep the envelope as a recurring tension motif."
 
 
+def test_soft_qc_validator_accepts_style_score_contract_and_rejects_out_of_range() -> None:
+    report = validate_qc_report(
+        "soft_qc",
+        _base_soft_qc_payload(
+            resolution_code="soft_patch",
+            next_action="patch",
+            issues=[{"issue_key": "style_profile_drift", "message": "Dialogue ratio is too high."}],
+            rewrite_brief=["Reduce dialogue and restore interior pressure."],
+            style_score=0.62,
+            style_dimensions=[
+                {
+                    "name": "rhythm",
+                    "score": 0.7,
+                    "evidence": "Several paragraph endings carry pressure.",
+                },
+                {
+                    "name": "dialogue_ratio",
+                    "score": 0.45,
+                    "evidence": "Dialogue crowds out the requested interior distance.",
+                },
+            ],
+            style_deviations=[
+                {
+                    "dimension": "dialogue_ratio",
+                    "severity": "medium",
+                    "patch_brief": "Cut two spoken lines and move one beat into narration.",
+                }
+            ],
+        ),
+    )
+
+    assert report.style_score == 0.62
+    assert report.style_dimensions[0].name == "rhythm"
+    assert report.style_dimensions[1].score == 0.45
+    assert report.style_deviations[0].patch_brief == "Cut two spoken lines and move one beat into narration."
+
+    with pytest.raises((QCValidationError, ValidationError)):
+        validate_qc_report(
+            "soft_qc",
+            _base_soft_qc_payload(
+                resolution_code="soft_pass",
+                next_action="pass",
+                style_score=1.2,
+                style_dimensions=[{"name": "rhythm", "score": 1.3, "evidence": "too high"}],
+            ),
+        )
+
+
 def test_soft_qc_validator_rejects_waive_without_note() -> None:
     with pytest.raises(QCValidationError):
         validate_qc_report(
@@ -276,6 +337,121 @@ def test_soft_qc_validator_rejects_waive_without_note() -> None:
                 carry_forward_note=False,
             ),
         )
+
+
+def test_soft_qc_engine_persists_style_score_summary_and_api_serializers(session) -> None:
+    _seed_scene(session)
+    state = session.get(SceneRunState, "CH100_SC01")
+    session.add(
+        SceneDraft(
+            row_id="draft_style_CH100_SC01",
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            stage="style_draft",
+            content="Style draft under soft QC.",
+            source_bundle_id="bundle_CH100_SC01",
+            source_bundle_hash="bundle_hash_CH100_SC01",
+            generation_llm_call_id="llm_call_style_CH100_SC01",
+        )
+    )
+    session.add(
+        LlmCall(
+            llm_call_id="llm_call_style_CH100_SC01",
+            provider="fake-provider",
+            model="fake-style-model",
+            prompt_hash="prompt_hash_style",
+            step="style_draft",
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            prompt_tokens=12,
+            completion_tokens=34,
+            total_tokens=46,
+            latency_ms=78,
+            finish_reason="stop",
+        )
+    )
+    session.add(
+        FinalScene(
+            row_id="final_scene_CH100_SC01",
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            content="Final scene.",
+            source_bundle_id="bundle_CH100_SC01",
+            source_bundle_hash="bundle_hash_CH100_SC01",
+            generation_llm_call_id="llm_call_style_CH100_SC01",
+        )
+    )
+    state.current_bundle_id = "bundle_CH100_SC01"
+    state.current_bundle_hash = "bundle_hash_CH100_SC01"
+    state.current_style_draft_row_id = "draft_style_CH100_SC01"
+    state.current_final_scene_row_id = "final_scene_CH100_SC01"
+    session.commit()
+
+    engine = SoftQcEngine(
+        session,
+        llm_client=FakeSoftQcClient(
+            [
+                _base_soft_qc_payload(
+                    resolution_code="soft_pass",
+                    next_action="pass",
+                    style_score=0.84,
+                    style_dimensions=[
+                        {"name": "rhythm", "score": 0.9, "evidence": "Pressure lands at paragraph ends."},
+                        {"name": "imagery", "score": 0.78, "evidence": "The letter image stays tactile."},
+                    ],
+                    style_deviations=[
+                        {
+                            "dimension": "paragraph_density",
+                            "severity": "low",
+                            "patch_brief": "Break the longest paragraph before final archive.",
+                        }
+                    ],
+                )
+            ]
+        ),
+    )
+
+    decision = engine.evaluate(
+        scene_id="CH100_SC01",
+        bundle={
+            "bundle_id": "bundle_CH100_SC01",
+            "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+            "snapshot": {
+                "scene_id": "CH100_SC01",
+                "chapter_id": "CH100",
+                "inline_digests": {"scene_card": "Force both characters to reveal what they know."},
+            },
+        },
+        source_draft_row_id="draft_style_CH100_SC01",
+        source_draft_content="Style draft under soft QC.",
+    )
+    session.commit()
+
+    report = session.execute(select(QcReport).where(QcReport.qc_type == "soft_qc")).scalars().one()
+    style_entry = next(entry for entry in report.rewrite_brief_json if entry.get("kind") == "style_score")
+    qc_summary = _serialize_qc_summary(report)
+    generation_summary = _serialize_generation_summary(session, "CH100_SC01", state)
+
+    assert decision.branch == "continue"
+    assert style_entry == {
+        "kind": "style_score",
+        "style_score": 0.84,
+        "style_dimensions": [
+            {"name": "rhythm", "score": 0.9, "evidence": "Pressure lands at paragraph ends."},
+            {"name": "imagery", "score": 0.78, "evidence": "The letter image stays tactile."},
+        ],
+        "style_deviations": [
+            {
+                "dimension": "paragraph_density",
+                "severity": "low",
+                "patch_brief": "Break the longest paragraph before final archive.",
+            }
+        ],
+    }
+    assert qc_summary["style_score"] == 0.84
+    assert qc_summary["style_dimensions"][0]["name"] == "rhythm"
+    assert qc_summary["style_deviations"][0]["dimension"] == "paragraph_density"
+    assert generation_summary["style_score_summary"]["style_score"] == 0.84
 
 
 def test_run_scene_hard_qc_pass_persists_report_and_continues(session) -> None:
@@ -681,8 +857,8 @@ def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(se
     assert rerun_result["scene_status"] == "archived"
     assert rerun_result["current_final_scene_row_id"] == state.current_final_scene_row_id
     assert rerun_result["current_human_review_event_id"] is None
-    assert state.current_style_draft_row_id == "draft_style_CH100_SC01"
-    assert state.current_final_scene_row_id == "final_scene_CH100_SC01"
+    assert state.current_style_draft_row_id.startswith("draft_style_CH100_SC01_v")
+    assert state.current_final_scene_row_id.startswith("final_scene_CH100_SC01_v")
     assert state.current_human_review_event_id is None
 
 
@@ -739,9 +915,12 @@ def test_run_scene_resets_soft_patch_state_between_reruns(session) -> None:
     assert first_result["scene_status"] == "archived"
     assert rerun_result["scene_status"] == "archived"
     assert state.soft_patch_count == 1
-    assert state.current_neutral_draft_row_id == first_neutral_row_id
+    assert state.current_neutral_draft_row_id != first_neutral_row_id
+    assert session.get(SceneDraft, first_neutral_row_id) is not None
+    assert session.get(SceneDraft, state.current_neutral_draft_row_id) is not None
     assert state.current_qc_report_id != first_qc_report_id
     assert state.current_human_review_event_id is None
+    assert len([attempt for attempt in attempts if attempt.step == "neutral_draft"]) == 2
     assert len([attempt for attempt in attempts if attempt.step == "soft_patch"]) == 2
     assert len([attempt for attempt in attempts if attempt.step == "finalize"]) == 2
     assert human_reviews == []

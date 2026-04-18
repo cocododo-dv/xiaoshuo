@@ -12,6 +12,13 @@ function formatValue(value) {
   }
   return value;
 }
+
+function formatPercent(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${Math.round(value * 100)}%`;
+}
 </script>
 
 <template>
@@ -32,6 +39,15 @@ function formatValue(value) {
       <p><strong>Token</strong><br />{{ formatValue(summary.prompt_tokens) }} / {{ formatValue(summary.completion_tokens) }} / {{ formatValue(summary.total_tokens) }}</p>
       <p><strong>Latency</strong><br />{{ formatValue(summary.latency_ms) }} ms</p>
       <p><strong>Finish Reason</strong><br />{{ formatValue(summary.finish_reason) }}</p>
+      <div v-if="summary.style_score_summary" class="style-score-block">
+        <div class="receipt-head">
+          <strong>风格命中</strong>
+          <span class="badge">{{ formatPercent(summary.style_score_summary.style_score) }}</span>
+        </div>
+        <p v-if="summary.style_score_summary.style_deviations?.length" class="muted">
+          {{ summary.style_score_summary.style_deviations.map((item) => item.dimension).join(", ") }}
+        </p>
+      </div>
       <p v-if="summary.error_code"><strong>Error Code</strong><br />{{ summary.error_code }}</p>
     </div>
     <p v-else class="muted">暂无生成证据。完成一次场景运行后，这里会展示最近一次生成调用的摘要。</p>

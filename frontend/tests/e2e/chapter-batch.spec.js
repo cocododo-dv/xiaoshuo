@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { configureConnection } from "./helpers.js";
+
 const API_BASE = "http://127.0.0.1:8000";
 const OPERATOR_REF = "ops.chapter-batch.e2e";
 
@@ -105,10 +107,7 @@ test("launches a chapter batch run, shows where it stopped, and resumes from per
   );
 
   await page.goto("/");
-  await page.getByTestId("api-base-input").fill(API_BASE);
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill(OPERATOR_REF);
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { apiBase: API_BASE, operatorRef: OPERATOR_REF });
   await page.getByTestId("nav-author").click();
   await page.getByTestId("author-chapter-select-CH910").click();
 

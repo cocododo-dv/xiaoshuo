@@ -14,6 +14,7 @@ def test_l3_acceptance_smoke(client, session) -> None:
         headers={"X-Idempotency-Key": "acceptance-scene-1"},
     )
     assert run_scene.status_code == 200
+    bundle_id = run_scene.json()["data"]["current_bundle_id"]
 
     review = client.post(
         "/api/v1/review-items/import-demo",
@@ -50,7 +51,7 @@ def test_l3_acceptance_smoke(client, session) -> None:
         headers={"X-Idempotency-Key": "review-acceptance-release"},
     ).status_code == 200
 
-    worksheet = client.get("/api/v1/interop/export/bundle-worksheet/bundle_CH001_SC01")
+    worksheet = client.get(f"/api/v1/interop/export/bundle-worksheet/{bundle_id}")
     alias = client.get("/api/v1/index/alias-scopes/style_observation:global:global")
     assert worksheet.status_code == 200
     assert alias.status_code == 200

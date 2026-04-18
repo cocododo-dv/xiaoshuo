@@ -27,6 +27,7 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("chapter_goal", "Chapter Goal", ("chapter_goal",)),
     ("scene_card", "Scene Card", ("scene_card",)),
     ("pov_voice", "POV Voice", ("voice_card",)),
+    ("style_profile", "Style Feature Contract", ("style_profile", "style_feature_contract")),
     ("style_rules", "Style Rules", ("style_rule",)),
     ("banned_rules", "Banned Rules", ("banned_rule",)),
     ("open_foreshadow", "Open Foreshadow", ("foreshadow",)),

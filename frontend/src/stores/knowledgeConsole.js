@@ -277,11 +277,11 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         this.actionId = "";
       }
     },
-    async approveReview(reviewId) {
+    async approveReview(reviewId, payload = {}) {
       this.actionId = `approve:${reviewId}`;
       this.error = "";
       try {
-        const result = await approveReview(reviewId);
+        const result = await approveReview(reviewId, payload);
         this.lastActionResult = result;
         await this.refreshSelection();
         return `已批准 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;

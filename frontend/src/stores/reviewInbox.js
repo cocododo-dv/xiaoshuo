@@ -266,11 +266,11 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         this.loading = false;
       }
     },
-    async approve(reviewId) {
+    async approve(reviewId, payload = {}) {
       this.actionId = reviewId;
       this.error = "";
       try {
-        const result = await approveReview(reviewId);
+        const result = await approveReview(reviewId, payload);
         this.lastActionResult = result;
         await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已批准 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;

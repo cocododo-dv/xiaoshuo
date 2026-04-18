@@ -13,12 +13,15 @@ assert.ok(app.includes("SceneWorkbenchView"));
 assert.ok(app.includes("ReviewInboxView"));
 assert.ok(app.includes("IndexConsoleView"));
 assert.ok(app.includes("InteropCenterView"));
-assert.ok(app.includes("stage-chrome"));
+assert.ok(app.includes("stage-notices"));
+assert.ok(!app.includes("stage-chrome"));
+assert.ok(!app.includes("api-base-input"));
 assert.ok(router.includes('id: "knowledge"'));
 assert.ok(router.includes('label: "知识控制台"'));
 assert.ok(router.includes('id: "interop"'));
 assert.ok(router.includes('label: "互操作中心"'));
 assert.ok(router.includes('cacheMode: "light"'));
+assert.ok(!router.includes("chromeTitle"));
 assert.ok(!router.includes("formatViewLabel"));
 assert.ok(!router.includes("uiText"));
 

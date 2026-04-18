@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import FinalScene, RelationProfile, SceneRunState, VoiceProfile
+from novel_system.db.models import FinalScene, RelationProfile, SceneBundle, SceneDraft, SceneMemory, SceneRunState, VoiceProfile
 
 
 def seed_story(client, session: Session | None = None) -> None:
@@ -165,6 +166,76 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
         "repeat_issue_count": 0,
     }
     assert workbench_data["human_review_summary"] is None
+
+
+def test_rerunning_scene_appends_immutable_run_artifacts_and_replays_old_final(client, session) -> None:
+    seed_story(client, session=session)
+
+    first_run = client.post(
+        "/api/v1/scenes/CH001_SC01/run/full",
+        headers={"X-Idempotency-Key": "scene-run-immutable-1"},
+    )
+    assert first_run.status_code == 200
+    first_data = first_run.json()["data"]
+    first_bundle_id = first_data["current_bundle_id"]
+    first_final_row_id = first_data["current_final_scene_row_id"]
+    first_bundle = session.get(SceneBundle, first_bundle_id)
+    assert first_bundle is not None
+    first_scene_digest = first_bundle.frozen_snapshot_json["inline_digests"]["scene_card"]
+
+    update_scene = client.post(
+        "/api/v1/scenes",
+        json={
+            "scene_id": "CH001_SC01",
+            "chapter_id": "CH001",
+            "scene_seq": 1,
+            "pov_character_id": "CHAR_A",
+            "onstage_chars_json": ["CHAR_A", "CHAR_B"],
+            "location": "旧城门廊",
+            "scene_goal": "让第二次运行形成新的场景目标",
+            "beats_json": ["二次试探", "升级", "留钩子"],
+            "must_include_text": "旧信寄件人的线索",
+            "target_length_band": "short",
+            "scene_type": "reunion",
+            "is_chapter_last": 0,
+        },
+        headers={"X-Idempotency-Key": "scene-run-immutable-update"},
+    )
+    assert update_scene.status_code == 200
+
+    second_run = client.post(
+        "/api/v1/scenes/CH001_SC01/run/full",
+        headers={"X-Idempotency-Key": "scene-run-immutable-2"},
+    )
+    assert second_run.status_code == 200
+    second_data = second_run.json()["data"]
+    second_bundle_id = second_data["current_bundle_id"]
+    second_final_row_id = second_data["current_final_scene_row_id"]
+
+    assert first_bundle_id != second_bundle_id
+    assert first_final_row_id != second_final_row_id
+
+    state = session.get(SceneRunState, "CH001_SC01")
+    assert state.current_bundle_id == second_bundle_id
+    assert state.current_final_scene_row_id == second_final_row_id
+
+    bundles = session.execute(select(SceneBundle).where(SceneBundle.scene_id == "CH001_SC01")).scalars().all()
+    drafts = session.execute(select(SceneDraft).where(SceneDraft.scene_id == "CH001_SC01")).scalars().all()
+    finals = session.execute(select(FinalScene).where(FinalScene.scene_id == "CH001_SC01")).scalars().all()
+    memories = session.execute(select(SceneMemory).where(SceneMemory.scene_id == "CH001_SC01")).scalars().all()
+
+    assert len(bundles) == 2
+    assert len([draft for draft in drafts if draft.stage == "neutral_draft"]) == 2
+    assert len([draft for draft in drafts if draft.stage == "style_draft"]) == 2
+    assert len(finals) == 2
+    assert len(memories) == 2
+
+    assert session.get(SceneBundle, first_bundle_id).frozen_snapshot_json["inline_digests"]["scene_card"] == first_scene_digest
+    assert session.get(SceneBundle, second_bundle_id).frozen_snapshot_json["inline_digests"]["scene_card"] == "让第二次运行形成新的场景目标"
+
+    replay_old = client.get(f"/api/v1/replay/final-scene/{first_final_row_id}")
+    assert replay_old.status_code == 200
+    assert replay_old.json()["data"]["envelope"]["bundle_id"] == first_bundle_id
 
 
 def test_workbench_generation_summary_can_resolve_from_current_final_scene_provenance(client, session) -> None:

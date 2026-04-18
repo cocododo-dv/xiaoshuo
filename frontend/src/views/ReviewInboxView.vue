@@ -209,9 +209,9 @@ function clearHumanReviewFilters() {
   refreshReviews();
 }
 
-async function approve(reviewId) {
+async function approve(reviewId, payload = {}) {
   try {
-    const message = await reviewInbox.approve(reviewId);
+    const message = await reviewInbox.approve(reviewId, payload);
     markDependentViewsStale();
     openTarget(reviewTarget(reviewId), {
       view_id: "review",

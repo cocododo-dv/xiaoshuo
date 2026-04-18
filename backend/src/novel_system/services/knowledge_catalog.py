@@ -557,6 +557,11 @@ def _serialize_version(session: Session, descriptor, registry: VersionRegistry) 
         payload["rule_tier"] = row.rule_tier
     if hasattr(row, "expires_at"):
         payload["expires_at"] = row.expires_at
+    source_review_id = payload.get("source_review_id")
+    if source_review_id:
+        source_review = session.get(ReviewItem, source_review_id)
+        if source_review is not None:
+            _attach_style_profile_metadata(payload, source_review.candidate_payload_json or {})
     return payload
 
 
@@ -683,7 +688,7 @@ def _candidate_version_from_reviews(reviews: list[ReviewItem]) -> dict[str, Any]
 
 def _serialize_review_candidate(review: ReviewItem) -> dict[str, Any]:
     payload = review.candidate_payload_json or {}
-    return {
+    candidate = {
         "review_id": review.review_id,
         "text": review.candidate_text,
         "active_flag": False,
@@ -700,6 +705,17 @@ def _serialize_review_candidate(review: ReviewItem) -> dict[str, Any]:
         "scene_id": payload.get("scene_id") or review.scene_id,
         "lineage_key": _review_lineage_key(review),
     }
+    _attach_style_profile_metadata(candidate, payload)
+    return candidate
+
+
+def _attach_style_profile_metadata(target: dict[str, Any], payload: dict[str, Any]) -> None:
+    if payload.get("source"):
+        target["source"] = payload.get("source")
+    if payload.get("contract_version"):
+        target["contract_version"] = payload.get("contract_version")
+    if isinstance(payload.get("style_profile"), dict):
+        target["style_profile"] = payload.get("style_profile")
 
 
 def _latest_alias_fault_summary(session: Session, alias_scope: str) -> dict[str, Any] | None:
@@ -1185,9 +1201,30 @@ def _serialize_operator_action(item: OperationLog) -> dict[str, Any]:
         "target_refs": _operation_log_target_refs(item.object_type, item.event_type, item.object_ref, payload),
         "payload_json": payload,
     }
+    risk_confirmation = _risk_confirmation_from_payload(payload)
+    if risk_confirmation is not None:
+        data["risk_confirmation"] = risk_confirmation
     if item.event_type == "operator_action":
         data["summary"] = payload.get("summary")
     return data
+
+
+def _risk_confirmation_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    request_payload = payload.get("request_payload")
+    confirmation = request_payload.get("risk_confirmation") if isinstance(request_payload, dict) else None
+    if not isinstance(confirmation, dict):
+        confirmation = payload.get("risk_confirmation")
+    if not isinstance(confirmation, dict):
+        return None
+
+    reason = confirmation.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+    return {
+        "acknowledged": confirmation.get("acknowledged") is True,
+        "reason": reason.strip(),
+        "severity": confirmation.get("severity") or "high",
+    }
 
 
 def _operation_log_target_refs(
@@ -1336,6 +1373,7 @@ def _serialize_target_activity_groups(
             "summary": item.get("resolution_reason"),
             "object_ref": item.get("object_ref"),
             "target_refs": targets,
+            "risk_confirmation": item.get("risk_confirmation"),
         }
         _append_target_group_entries(groups, targets, entry)
 

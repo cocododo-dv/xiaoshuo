@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { configureConnection } from "./helpers.js";
+
 const apiBase = `http://127.0.0.1:${process.env.PLAYWRIGHT_BACKEND_PORT || "8000"}`;
 const indexSectionContentTimeout = 20_000;
 
@@ -106,10 +108,7 @@ test("defers unopened views and keeps heavy review payloads collapsed until expa
   });
 
   await page.goto("/");
-  await page.getByTestId("api-base-input").fill(apiBase);
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.smoothness.e2e");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.e2e" });
 
   await expect.poll(() => requestedPaths.filter((path) => path === "/api/v1/knowledge-entries").length).toBe(0);
 
@@ -142,10 +141,7 @@ test("loads index activity sections and target-group items only after explicit e
   });
 
   await page.goto("/");
-  await page.getByTestId("api-base-input").fill(apiBase);
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.smoothness.index.e2e");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.index.e2e" });
 
   await page.getByTestId("nav-index").click();
   await expect(page.getByTestId("index-console-view")).toBeVisible();
@@ -190,10 +186,7 @@ test("loads index activity sections and target-group items only after explicit e
 
 test("keeps scroll-heavy list surfaces interactive after expansion across review-index-author navigation", async ({ page }) => {
   await page.goto("/");
-  await page.getByTestId("api-base-input").fill(apiBase);
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.smoothness.scroll");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.scroll" });
 
   await page.getByTestId("nav-review").click();
   await expect(page.getByTestId("review-inbox-view")).toBeVisible();
@@ -266,10 +259,7 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
 
 test("keeps cached navigation and virtual scrolling inside smoothness budgets", async ({ page }) => {
   await page.goto("/");
-  await page.getByTestId("api-base-input").fill(apiBase);
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.smoothness.budget");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.budget" });
 
   const warmupRoutes = [
     ["nav-review", "review-inbox-view"],
@@ -335,10 +325,7 @@ test("preserves view state across a workbench-review-index-workbench round trip 
   const requestCount = (fragment) => requestedUrls.filter((url) => url.includes(fragment)).length;
 
   await page.goto("/");
-  await page.getByTestId("api-base-input").fill(apiBase);
-  await page.getByTestId("api-base-input").press("Tab");
-  await page.getByTestId("operator-ref-input").fill("ops.smoothness.roundtrip");
-  await page.getByTestId("operator-ref-input").press("Tab");
+  await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.roundtrip" });
 
   await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
   await expect(page.getByTestId("scene-id-input")).toHaveValue("CH001_SC01");

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from novel_system.db.models import ChapterGoal, SceneCard, SceneRunState, StyleObservation
+from novel_system.db.models import (
+    BannedRuleCluster,
+    CalibrationLine,
+    ChapterGoal,
+    SceneCard,
+    SceneRunState,
+    StyleObservation,
+    StyleRule,
+)
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.prompt_builder import PromptBuilder, PromptConfigurationError, load_prompt_templates
 
@@ -146,6 +154,40 @@ def test_prompt_builder_returns_isolated_schema_copies() -> None:
     assert repeated["prompt_hash"] == original_hash
     assert repeated["structured_schema"]["required"] == ["scene_text"]
     assert repeated["structured_schema"]["properties"]["scene_text"]["type"] == "string"
+
+
+def test_prompt_builder_renders_style_feature_contract_for_style_draft() -> None:
+    builder = PromptBuilder()
+    snapshot = _bundle_snapshot()
+    snapshot["ordered_injections"].append(
+        {"slot": "style_profile", "ref_id": "STYLE_FEATURE_CONTRACT_v1", "digest_key": "style_profile"}
+    )
+    snapshot["inline_digests"]["style_profile"] = """
+{
+  "contract_version": "STYLE_FEATURE_CONTRACT_v1",
+  "features": {
+    "rhythm": {"guidance": ["short pressure beats before reveals"]},
+    "syntax": {"guidance": ["mix clipped dialogue with one longer internal sentence"]},
+    "imagery": {"guidance": ["use tactile door and paper images"]},
+    "narrative_distance": {"guidance": ["close third-person interior pressure"]},
+    "emotion_curve": {"guidance": ["suspicion to controlled urgency"]},
+    "paragraph_density": {"guidance": ["compact paragraphs with hard-ending lines"]},
+    "dialogue_ratio": {"guidance": ["dialogue stays below exposition"]}
+  },
+  "banned_moves": ["do not explain the full backstory"]
+}
+""".strip()
+
+    payload = builder.build(snapshot, "style_draft")
+
+    assert "## Style Feature Contract" in payload["user_prompt"]
+    assert "STYLE_FEATURE_CONTRACT_v1" in payload["user_prompt"]
+    assert "rhythm" in payload["user_prompt"]
+    assert "syntax" in payload["user_prompt"]
+    assert "imagery" in payload["user_prompt"]
+    assert "narrative_distance" in payload["user_prompt"]
+    assert "paragraph_density" in payload["user_prompt"]
+    assert "style_profile" in payload["token_budget"]["included_sections"]
 
 
 def test_chapter_summary_schema_requires_carry_forward() -> None:
@@ -332,6 +374,42 @@ def test_bundle_builder_adds_style_observation_digest_to_snapshot(session) -> No
             created_at="2026-04-14T00:00:00+00:00",
         )
     )
+    session.add(
+        StyleRule(
+            row_id="style_rule_STYLE_GATE_v1",
+            style_rule_set_id="STYLE_GATE",
+            scope="global",
+            scope_ref_id="global",
+            content="Use clipped rhythm and tactile imagery when pressure rises.",
+            active_flag=1,
+            runtime_eligible=1,
+            created_at="2026-04-14T00:00:00+00:00",
+        )
+    )
+    session.add(
+        BannedRuleCluster(
+            row_id="banned_rule_cluster_BAN_GATE_v1",
+            banned_cluster_id="BAN_GATE",
+            scope="global",
+            scope_ref_id="global",
+            content="Do not explain the whole backstory at the gate.",
+            active_flag=1,
+            runtime_eligible=1,
+            created_at="2026-04-14T00:00:00+00:00",
+        )
+    )
+    session.add(
+        CalibrationLine(
+            row_id="calibration_line_CAL_GATE_v1",
+            calibration_line_id="CAL_GATE",
+            scope="global",
+            scope_ref_id="global",
+            text="The gate clicked shut like a verdict.",
+            active_flag=1,
+            runtime_eligible=1,
+            created_at="2026-04-14T00:00:00+00:00",
+        )
+    )
     session.commit()
 
     payload = BundleBuilder(session).build("CH900_SC01")
@@ -344,4 +422,10 @@ def test_bundle_builder_adds_style_observation_digest_to_snapshot(session) -> No
     assert {
         item["digest_key"]
         for item in snapshot["ordered_injections"]
-    } >= {"chapter_goal", "scene_card", "style_observation"}
+    } >= {"chapter_goal", "scene_card", "style_observation", "style_profile"}
+    assert snapshot["source_version_refs"]["style_profile_contract"] == "STYLE_FEATURE_CONTRACT_v1"
+    assert "STYLE_FEATURE_CONTRACT_v1" in snapshot["inline_digests"]["style_profile"]
+    assert "rhythm" in snapshot["inline_digests"]["style_profile"]
+    assert "imagery" in snapshot["inline_digests"]["style_profile"]
+    assert "calibration_lines" in snapshot["inline_digests"]["style_profile"]
+    assert "The gate clicked shut like a verdict." in snapshot["inline_digests"]["style_profile"]

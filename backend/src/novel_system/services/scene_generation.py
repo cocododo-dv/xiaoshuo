@@ -15,6 +15,7 @@ from novel_system.services.context_budget import finalize_request_budget
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse, load_model_routing_config
+from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.settings import get_settings
 
@@ -39,6 +40,18 @@ class StyleGenerationResult:
 
 SCENE_SPLIT_RECOMMENDATION = "Split the scene and retry generation with a smaller continuity scope."
 JSON_SCHEMA_INSTRUCTION = "Return JSON that matches the structured schema exactly."
+
+
+def versioned_scene_artifact_id(prefix: str, scene_id: str, bundle: dict[str, Any]) -> str:
+    bundle_id = str(bundle.get("bundle_id") or "")
+    bundle_prefix = f"bundle_{scene_id}_"
+    if bundle_id.startswith(bundle_prefix):
+        return f"{prefix}_{scene_id}_{bundle_id[len(bundle_prefix):]}"
+    if bundle_id == f"bundle_{scene_id}":
+        return f"{prefix}_{scene_id}"
+    bundle_hash = str(bundle.get("bundle_snapshot_hash") or "")
+    suffix = bundle_hash[:12] if bundle_hash else hashlib.sha256(canonical_json(bundle).encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}_{scene_id}_{suffix}"
 
 
 class OfflineNeutralClient:
@@ -128,7 +141,7 @@ class SceneGenerationService:
 
         try:
             prompt = self._prompt_builder().build(bundle["snapshot"], "neutral_draft")
-            task_config = self._routing_config().task_routing["neutral_draft"]
+            task_config = self._task_config("neutral_draft")
             request = LLMRequest(
                 model=task_config.model,
                 messages=[
@@ -139,6 +152,13 @@ class SceneGenerationService:
                 max_output_tokens=task_config.max_output_tokens,
                 response_format=task_config.response_format,
                 provider=task_config.provider,
+                node_id="neutral_draft",
+                provider_id=getattr(task_config, "provider_id", None),
+                account_id=getattr(task_config, "account_id", None),
+                reasoning_level=getattr(task_config, "reasoning_level", "medium"),
+                api_mode=getattr(task_config, "api_mode", "responses"),
+                credential_mode=getattr(task_config, "credential_mode", None),
+                provider_options=getattr(task_config, "provider_options", {}),
             )
             final_budget = finalize_request_budget(
                 system_prompt=request.messages[0]["content"],
@@ -152,6 +172,11 @@ class SceneGenerationService:
                 "temperature": request.temperature,
                 "max_output_tokens": request.max_output_tokens,
                 "response_format": request.response_format,
+                "provider": request.provider,
+                "provider_id": request.provider_id,
+                "account_id": request.account_id,
+                "reasoning_level": request.reasoning_level,
+                "credential_mode": request.credential_mode,
                 "token_budget": final_budget["budget"],
                 "continuity_warning": final_budget["continuity_warning"],
             }
@@ -177,7 +202,13 @@ class SceneGenerationService:
             LlmCall(
                 llm_call_id=llm_call_id,
                 provider=response.provider,
+                provider_id=request.provider_id,
+                account_id=request.account_id,
                 model=response.model,
+                node_id=request.node_id,
+                reasoning_level=request.reasoning_level,
+                native_reasoning_json=response.native_reasoning,
+                credential_mode=request.credential_mode,
                 prompt_hash=prompt["prompt_hash"],
                 step="neutral_draft",
                 scene_id=scene_id,
@@ -198,8 +229,8 @@ class SceneGenerationService:
         )
         self.session.flush()
 
-        neutral_row_id = f"draft_neutral_{scene_id}"
-        self.session.merge(
+        neutral_row_id = versioned_scene_artifact_id("draft_neutral", scene_id, bundle)
+        self.session.add(
             SceneDraft(
                 row_id=neutral_row_id,
                 scene_id=scene_id,
@@ -253,7 +284,7 @@ class SceneGenerationService:
             scene=scene,
             state=state,
             bundle=bundle,
-            row_id=f"draft_style_{scene_id}",
+            row_id=versioned_scene_artifact_id("draft_style", scene_id, bundle),
             stage="style_draft",
             llm_step="style_draft",
             neutral_content=neutral_content,
@@ -282,7 +313,7 @@ class SceneGenerationService:
             scene=scene,
             state=state,
             bundle=bundle,
-            row_id=f"draft_style_patch_{scene_id}",
+            row_id=versioned_scene_artifact_id("draft_style_patch", scene_id, bundle),
             stage="style_patch",
             llm_step="soft_patch",
             neutral_content=source_style_content,
@@ -338,7 +369,7 @@ class SceneGenerationService:
                 extra_instruction=extra_instruction,
                 patch_brief=patch_brief,
             )
-            task_config = self._routing_config().task_routing["stylize"]
+            task_config = self._task_config("style_patch" if patch_brief else "style_draft")
             final_budget = finalize_request_budget(
                 system_prompt=request.messages[0]["content"],
                 user_prompt=request.messages[1]["content"],
@@ -351,6 +382,11 @@ class SceneGenerationService:
                 "temperature": request.temperature,
                 "max_output_tokens": request.max_output_tokens,
                 "response_format": request.response_format,
+                "provider": request.provider,
+                "provider_id": request.provider_id,
+                "account_id": request.account_id,
+                "reasoning_level": request.reasoning_level,
+                "credential_mode": request.credential_mode,
                 "token_budget": final_budget["budget"],
                 "continuity_warning": final_budget["continuity_warning"],
                 "source_draft_row_id": source_draft_row_id,
@@ -379,7 +415,13 @@ class SceneGenerationService:
             LlmCall(
                 llm_call_id=llm_call_id,
                 provider=response.provider,
+                provider_id=request.provider_id,
+                account_id=request.account_id,
                 model=response.model,
+                node_id=request.node_id,
+                reasoning_level=request.reasoning_level,
+                native_reasoning_json=response.native_reasoning,
+                credential_mode=request.credential_mode,
                 prompt_hash=prompt["prompt_hash"],
                 step=llm_step,
                 scene_id=scene.scene_id,
@@ -400,7 +442,7 @@ class SceneGenerationService:
         )
         self.session.flush()
 
-        self.session.merge(
+        self.session.add(
             SceneDraft(
                 row_id=row_id,
                 scene_id=scene.scene_id,
@@ -462,7 +504,8 @@ class SceneGenerationService:
             extra_instruction=extra_instruction,
             patch_brief=patch_brief,
         )
-        task_config = self._routing_config().task_routing["stylize"]
+        node_id = "style_patch" if patch_brief else "style_draft"
+        task_config = self._task_config(node_id)
         return LLMRequest(
             model=task_config.model,
             messages=[
@@ -473,6 +516,13 @@ class SceneGenerationService:
             max_output_tokens=task_config.max_output_tokens,
             response_format=task_config.response_format,
             provider=task_config.provider,
+            node_id=node_id,
+            provider_id=getattr(task_config, "provider_id", None),
+            account_id=getattr(task_config, "account_id", None),
+            reasoning_level=getattr(task_config, "reasoning_level", "medium"),
+            api_mode=getattr(task_config, "api_mode", "responses"),
+            credential_mode=getattr(task_config, "credential_mode", None),
+            provider_options=getattr(task_config, "provider_options", {}),
         )
 
     @staticmethod
@@ -534,6 +584,7 @@ class SceneGenerationService:
             base_url=self.settings.llm_base_url,
             api_key=self.settings.llm_api_key,
             timeout_seconds=self.settings.llm_timeout_seconds,
+            provider_configs=load_llm_provider_runtime_configs(),
         )
 
     def _prompt_builder(self) -> PromptBuilder:
@@ -545,6 +596,18 @@ class SceneGenerationService:
         if self._routing_config_cache is None:
             self._routing_config_cache = load_model_routing_config()
         return self._routing_config_cache
+
+    def _task_config(self, node_id: str) -> Any:
+        routing = self._routing_config()
+        node_routing = getattr(routing, "node_routing", None)
+        if isinstance(node_routing, dict) and node_id in node_routing:
+            return node_routing[node_id]
+        task_routing = getattr(routing, "task_routing", {})
+        if node_id in task_routing:
+            return task_routing[node_id]
+        if node_id in {"style_draft", "style_patch"} and "stylize" in task_routing:
+            return task_routing["stylize"]
+        raise KeyError(node_id)
 
     def _persist_generation_failure(
         self,
@@ -566,7 +629,13 @@ class SceneGenerationService:
             LlmCall(
                 llm_call_id=llm_call_id,
                 provider=getattr(task_config, "provider", None),
+                provider_id=getattr(task_config, "provider_id", None),
+                account_id=getattr(task_config, "account_id", None),
                 model=getattr(task_config, "model", None),
+                node_id=step,
+                reasoning_level=getattr(task_config, "reasoning_level", None),
+                native_reasoning_json=None,
+                credential_mode=getattr(task_config, "credential_mode", None),
                 prompt_hash=prompt["prompt_hash"] if prompt is not None else None,
                 step=step,
                 scene_id=scene.scene_id,

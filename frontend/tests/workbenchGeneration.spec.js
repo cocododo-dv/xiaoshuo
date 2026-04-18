@@ -225,6 +225,11 @@ describe("scene workbench generation evidence", () => {
         latency_ms: 812,
         finish_reason: "stop",
         error_code: null,
+        style_score_summary: {
+          style_score: 0.84,
+          style_dimensions: [{ name: "rhythm", score: 0.9, evidence: "Pressure lands at paragraph ends." }],
+          style_deviations: [{ dimension: "paragraph_density", severity: "low", patch_brief: "Break the longest paragraph." }],
+        },
       },
       hardQcSummary: {
         qc_type: "hard_qc",
@@ -241,6 +246,9 @@ describe("scene workbench generation evidence", () => {
         issue_keys: ["style_tension_flat"],
         next_action: "patch",
         rewrite_brief: ["Raise tension in the closing beat"],
+        style_score: 0.84,
+        style_dimensions: [{ name: "rhythm", score: 0.9, evidence: "Pressure lands at paragraph ends." }],
+        style_deviations: [{ dimension: "paragraph_density", severity: "low", patch_brief: "Break the longest paragraph." }],
       },
       rewriteCounters: {
         hard_partial_rewrite_count: 0,
@@ -275,6 +283,8 @@ describe("scene workbench generation evidence", () => {
     expect(store.data.generation_summary.raw_step).toBe("soft_patch");
     expect(store.data.hard_qc_summary.resolution_code).toBe("hard_pass");
     expect(store.data.soft_qc_summary.resolution_code).toBe("soft_patch_requested");
+    expect(store.data.generation_summary.style_score_summary.style_score).toBe(0.84);
+    expect(store.data.soft_qc_summary.style_dimensions[0].name).toBe("rhythm");
     expect(store.data.rewrite_counters.soft_patch_count).toBe(1);
     expect(store.data.human_review_summary.trigger_reason).toBe("soft_qc_patch_cycle_limit");
   });
@@ -357,6 +367,11 @@ describe("scene workbench generation view", () => {
           latency_ms: 812,
           finish_reason: "stop",
           error_code: null,
+          style_score_summary: {
+            style_score: 0.84,
+            style_dimensions: [{ name: "rhythm", score: 0.9, evidence: "Pressure lands at paragraph ends." }],
+            style_deviations: [{ dimension: "paragraph_density", severity: "low", patch_brief: "Break the longest paragraph." }],
+          },
         },
         hardQcSummary: {
           qc_type: "hard_qc",
@@ -373,6 +388,9 @@ describe("scene workbench generation view", () => {
           issue_keys: ["style_tension_flat"],
           next_action: "patch",
           rewrite_brief: ["Raise tension in the closing beat"],
+          style_score: 0.84,
+          style_dimensions: [{ name: "rhythm", score: 0.9, evidence: "Pressure lands at paragraph ends." }],
+          style_deviations: [{ dimension: "paragraph_density", severity: "low", patch_brief: "Break the longest paragraph." }],
         },
         rewriteCounters: {
           hard_partial_rewrite_count: 0,
@@ -422,10 +440,15 @@ describe("scene workbench generation view", () => {
       expect(refreshedGenerationCard.textContent).toContain("gpt-4.1-mini");
       expect(refreshedGenerationCard.textContent).toContain("prompt_hash_abc123");
       expect(refreshedGenerationCard.textContent).toContain("stop");
+      expect(refreshedGenerationCard.textContent).toContain("风格命中");
+      expect(refreshedGenerationCard.textContent).toContain("84%");
       expect(refreshedQcCard.textContent).toContain("hard_pass");
       expect(refreshedQcCard.textContent).toContain("soft_patch_requested");
       expect(refreshedQcCard.textContent).toContain("style_tension_flat");
       expect(refreshedQcCard.textContent).toContain("Raise tension in the closing beat");
+      expect(refreshedQcCard.textContent).toContain("rhythm");
+      expect(refreshedQcCard.textContent).toContain("paragraph_density");
+      expect(refreshedQcCard.textContent).toContain("Break the longest paragraph");
       expect(refreshedQcCard.textContent).toContain("human_review_required");
     } finally {
       mounted.unmount();
