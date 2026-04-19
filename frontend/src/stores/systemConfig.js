@@ -39,15 +39,35 @@ const LLM_NODE_ORDER = [
   "chapter_aggregate",
 ];
 const DEFAULT_PROVIDER_DRAFT = {
-  provider_id: "",
-  provider_type: "openai",
-  account_id: "",
-  base_url: "",
+  provider_id: "local_ollama",
+  provider_type: "openai_compatible",
+  account_id: "local",
+  base_url: "http://127.0.0.1:11434/v1",
   enabled: true,
-  credential_mode: "api_key",
-  api_mode: "",
-  modelsText: "",
+  credential_mode: "none",
+  api_mode: "chat",
+  modelsText: "qwen2.5:7b\nllama3.1:8b",
   api_key: "",
+};
+const LOCAL_PROVIDER_PRESETS = {
+  ollama: {
+    provider_id: "local_ollama",
+    account_id: "local",
+    base_url: "http://127.0.0.1:11434/v1",
+    modelsText: "qwen2.5:7b\nllama3.1:8b",
+  },
+  "lm-studio": {
+    provider_id: "local_lm_studio",
+    account_id: "local",
+    base_url: "http://127.0.0.1:1234/v1",
+    modelsText: "local-model",
+  },
+  custom: {
+    provider_id: "local_llm",
+    account_id: "local",
+    base_url: "http://127.0.0.1:8080/v1",
+    modelsText: "local-model",
+  },
 };
 const DEFAULT_OAUTH_DRAFT = {
   provider_id: "gemini_oauth",
@@ -95,6 +115,40 @@ function parseTextList(value) {
     .split(/\r?\n|,/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function firstProviderModel(provider) {
+  const models = Array.isArray(provider?.models) ? provider.models : [];
+  return models.map((model) => String(model).trim()).find(Boolean) || "";
+}
+
+function buildProviderProbePayload(provider) {
+  const model = firstProviderModel(provider);
+  const payload = {};
+  if (model) {
+    payload.model = model;
+    payload.check_completion = provider?.provider_type === "openai_compatible";
+  }
+  return payload;
+}
+
+function normalizeProviderBaseUrl(value) {
+  let baseUrl = String(value || "").trim().replace(/\/+$/, "");
+  for (const suffix of ["/chat/completions", "/completions", "/responses", "/models"]) {
+    if (baseUrl.endsWith(suffix)) {
+      baseUrl = baseUrl.slice(0, -suffix.length).replace(/\/+$/, "");
+      break;
+    }
+  }
+  return baseUrl;
+}
+
+function configWriteErrorMessage(error) {
+  const message = error?.message || "保存失败";
+  if (message.includes("X-Admin-Token") || message.includes("ADMIN_TOKEN")) {
+    return "保存失败：后端需要管理令牌。请用 NOVEL_SYSTEM_ADMIN_TOKEN 启动后端，并在上方填写同一个管理令牌。";
+  }
+  return `保存失败：${message}`;
 }
 
 function normalizeNumber(value, fallback) {
@@ -165,12 +219,16 @@ function buildProviderPayload(draft) {
     credential_mode: String(draft.credential_mode || DEFAULT_PROVIDER_DRAFT.credential_mode).trim(),
     models: parseTextList(draft.modelsText),
   };
-  ["account_id", "base_url", "api_mode", "api_key"].forEach((field) => {
+  ["account_id", "base_url", "api_mode"].forEach((field) => {
     const value = String(draft[field] || "").trim();
     if (value) {
-      payload[field] = value;
+      payload[field] = field === "base_url" ? normalizeProviderBaseUrl(value) : value;
     }
   });
+  const apiKey = String(draft.api_key || "").trim();
+  if (payload.credential_mode !== "none" && apiKey) {
+    payload.api_key = apiKey;
+  }
   return payload;
 }
 
@@ -215,7 +273,6 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     adminToken: storedAdminToken(),
     apiBase: getApiBase(),
     operatorRef: getOperatorRef(),
-    apiKeyInput: "",
     providerProbe: null,
     llm: {
       provider_catalog: {},
@@ -228,6 +285,8 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     oauthDraft: { ...DEFAULT_OAUTH_DRAFT },
     nodeRouteDrafts: normalizeNodeRouteDrafts({}),
     providerProbeResults: {},
+    llmActionMessage: "",
+    llmActionTone: "",
     oauthStart: null,
     exportResult: null,
     literaryEval: { report: null },
@@ -280,6 +339,32 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         };
       });
     },
+    configDashboardSummary() {
+      const providerCount = this.providerRows.length;
+      const configuredRows = this.nodeRouteRows.filter((row) => row.configured);
+      const activeRows = configuredRows.filter((row) => row.status !== "reserved");
+      const reservedRows = this.nodeRouteRows.filter((row) => row.status === "reserved");
+      return {
+        providerCount,
+        configuredNodeCount: configuredRows.length,
+        activeNodeCount: activeRows.length,
+        reservedNodeCount: reservedRows.length,
+        needsProvider: providerCount === 0,
+        needsActiveRoutes: activeRows.length === 0,
+      };
+    },
+    localSetupMessage: (state) => {
+      if (state.runtime.admin_configured === false) {
+        return "本地单机模式：后端没有设置管理令牌，来自本机 127.0.0.1 的配置写入会被允许。";
+      }
+      return "";
+    },
+    writeBlockedMessage: (state) => {
+      if (state.runtime.admin_configured === true && !String(state.adminToken || "").trim()) {
+        return "请先填写管理令牌，才能保存系统配置。";
+      }
+      return "";
+    },
   },
   actions: {
     setAdminToken(value) {
@@ -326,12 +411,8 @@ export const useSystemConfigStore = defineStore("systemConfig", {
           category: this.selectedCategory,
           yaml_raw: this.editorYaml,
         };
-        if (this.selectedCategory === "api" && this.apiKeyInput.trim()) {
-          payload.secrets = { llm_api_key: this.apiKeyInput.trim() };
-        }
         const result = await saveSystemConfigDraft(payload, this.adminToken);
         this.lastDraft = result.snapshot;
-        this.apiKeyInput = "";
         await this.load();
         return `已保存配置草稿 ${result.snapshot.snapshot_id}`;
       } catch (error) {
@@ -394,17 +475,36 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     editLlmProviderDraft(provider) {
       this.providerDraft = providerDraftFrom(provider);
     },
+    applyLocalProviderPreset(presetId = "ollama") {
+      const preset = LOCAL_PROVIDER_PRESETS[presetId] || LOCAL_PROVIDER_PRESETS.custom;
+      this.providerDraft = {
+        ...DEFAULT_PROVIDER_DRAFT,
+        ...preset,
+        provider_type: "openai_compatible",
+        enabled: true,
+        credential_mode: "none",
+        api_mode: "chat",
+        api_key: "",
+      };
+    },
     async saveLlmProvider() {
       this.llmSaving = true;
       this.error = "";
+      this.llmActionMessage = "正在保存模型接入...";
+      this.llmActionTone = "info";
       try {
         const payload = buildProviderPayload(this.providerDraft);
         const result = await saveLlmProviderConfig(payload, this.adminToken);
         this.providerDraft.api_key = "";
         await this.loadLlmConfig();
-        return `LLM Provider 已保存：${result.provider?.provider_id || payload.provider_id}`;
+        const message = `模型接入已保存：${result.provider?.provider_id || payload.provider_id}`;
+        this.llmActionMessage = message;
+        this.llmActionTone = "success";
+        return message;
       } catch (error) {
         this.error = error.message;
+        this.llmActionMessage = configWriteErrorMessage(error);
+        this.llmActionTone = "error";
         throw error;
       } finally {
         this.llmSaving = false;
@@ -436,12 +536,17 @@ export const useSystemConfigStore = defineStore("systemConfig", {
       this.testing = true;
       this.error = "";
       try {
-        const result = await probeLlmProviderRequest(providerId, {}, this.adminToken);
+        const provider = this.llm.providers?.[providerId] || {};
+        const probePayload = buildProviderProbePayload(provider);
+        const result = await probeLlmProviderRequest(providerId, probePayload, this.adminToken);
         this.providerProbeResults = {
           ...this.providerProbeResults,
           [providerId]: result,
         };
-        return result.ok ? `Provider ${providerId} 探测成功` : `Provider ${providerId} 探测失败：${result.message}`;
+        if (!result.ok) {
+          return `模型验证失败：${result.message || providerId}`;
+        }
+        return `模型验证成功：${result.message || providerId}`;
       } catch (error) {
         this.error = error.message;
         throw error;

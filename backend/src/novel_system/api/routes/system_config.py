@@ -13,6 +13,10 @@ from novel_system.services.system_config import SystemConfigService, require_adm
 router = APIRouter(tags=["system_config"])
 
 
+def _client_host(request: Request) -> str | None:
+    return request.client.host if request.client is not None else None
+
+
 class SystemConfigDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -28,6 +32,8 @@ class ProviderProbeRequest(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     timeout_seconds: float | None = None
+    model: str | None = None
+    check_completion: bool | None = None
 
 
 class LlmProviderConfigRequest(BaseModel):
@@ -78,7 +84,7 @@ def create_system_config_draft(
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    require_admin_token(x_admin_token)
+    require_admin_token(x_admin_token, client_host=_client_host(request))
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result = SystemConfigService(session).create_draft(
         category=payload.category,
@@ -96,7 +102,7 @@ def activate_system_config_snapshot(
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    require_admin_token(x_admin_token)
+    require_admin_token(x_admin_token, client_host=_client_host(request))
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     return ok(
         SystemConfigService(session).activate(snapshot_id, actor_ref=actor_ref),
@@ -107,10 +113,11 @@ def activate_system_config_snapshot(
 @router.post("/api/v1/system-config/test-provider")
 def test_system_config_provider(
     payload: ProviderProbeRequest,
+    request: Request,
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    require_admin_token(x_admin_token)
+    require_admin_token(x_admin_token, client_host=_client_host(request))
     return ok(SystemConfigService(session).test_provider(payload=payload.model_dump()), req_id=None)
 
 
@@ -134,7 +141,7 @@ def save_system_config_llm_provider(
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    require_admin_token(x_admin_token)
+    require_admin_token(x_admin_token, client_host=_client_host(request))
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     return ok(
         SystemConfigService(session).save_llm_provider(payload=payload.model_dump(mode="json", exclude_none=True), actor_ref=actor_ref),
@@ -149,7 +156,7 @@ def save_system_config_llm_node_routes(
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    require_admin_token(x_admin_token)
+    require_admin_token(x_admin_token, client_host=_client_host(request))
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     return ok(
         SystemConfigService(session).save_llm_node_routes(payload=payload.model_dump(mode="json", exclude_none=True), actor_ref=actor_ref),
@@ -160,11 +167,12 @@ def save_system_config_llm_node_routes(
 @router.post("/api/v1/system-config/llm/providers/{provider_id}/probe")
 def probe_system_config_llm_provider(
     provider_id: str,
+    request: Request,
     payload: ProviderProbeRequest | None = None,
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    require_admin_token(x_admin_token)
+    require_admin_token(x_admin_token, client_host=_client_host(request))
     return ok(
         SystemConfigService(session).probe_llm_provider(provider_id=provider_id, payload=payload.model_dump(mode="json", exclude_none=True) if payload else {}),
         req_id=None,
@@ -175,10 +183,11 @@ def probe_system_config_llm_provider(
 def start_system_config_llm_oauth(
     provider_type: str,
     payload: LlmOAuthStartRequest,
+    request: Request,
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
-    require_admin_token(x_admin_token)
+    require_admin_token(x_admin_token, client_host=_client_host(request))
     return ok(
         SystemConfigService(session).start_llm_oauth(provider_type=provider_type, payload=payload.model_dump(mode="json", exclude_none=True)),
         req_id=None,

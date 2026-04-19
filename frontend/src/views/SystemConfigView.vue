@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
 import { buildLiteraryEvalCaseRows } from "../lib/literaryEvalSummary";
@@ -7,6 +7,7 @@ import { useSystemConfigStore } from "../stores/systemConfig";
 
 const emit = defineEmits(["notice"]);
 const systemConfig = useSystemConfigStore();
+const activeConfigSection = ref("setup");
 
 const categoryLabels = {
   api: "连接与密钥",
@@ -29,6 +30,7 @@ const styleProfileContract = computed(() => systemConfig.styleProfileContract ||
 const styleProfileDraftReady = computed(() => Boolean(systemConfig.styleProfileDraftYaml.trim()));
 const providerTypeOptions = computed(() => systemConfig.providerCatalogOptions);
 const providerRows = computed(() => systemConfig.providerRows);
+const configDashboardSummary = computed(() => systemConfig.configDashboardSummary);
 const reasoningLevels = ["off", "low", "medium", "high"];
 const responseFormatOptions = ["text", "json_object", "json_schema"];
 
@@ -64,10 +66,6 @@ function activate(snapshotId) {
   runAction(() => systemConfig.activateSnapshot(snapshotId));
 }
 
-function testProvider() {
-  runAction(() => systemConfig.testProvider());
-}
-
 function saveLlmProvider() {
   runAction(() => systemConfig.saveLlmProvider());
 }
@@ -96,6 +94,21 @@ function credentialModesFor(providerType) {
   return providerTypeOptions.value.find((item) => item.provider_type === providerType)?.credential_modes || ["api_key"];
 }
 
+function providerProbeCheckItems(result) {
+  const checks = result?.checks || {};
+  return [
+    ["connection", "连接"],
+    ["model", "模型名"],
+    ["completion", "生成"],
+  ]
+    .filter(([key]) => checks[key])
+    .map(([key, label]) => ({
+      key,
+      label,
+      ok: checks[key].ok,
+    }));
+}
+
 function runLiteraryEval(mode = "baseline") {
   runAction(() => systemConfig.runLiteraryEval(mode));
 }
@@ -122,14 +135,18 @@ function updateApiBase() {
 function updateOperatorRef() {
   emit("notice", systemConfig.updateOperatorRef(systemConfig.operatorRef));
 }
+
+function selectConfigSection(sectionId) {
+  activeConfigSection.value = sectionId;
+}
 </script>
 
 <template>
   <div class="system-config-view" data-testid="system-config-view">
     <PanelShell
       eyebrow="System Config"
-      title="系统配置中心"
-      description="运行配置、模型路由、提示词与版本快照集中管理。"
+      title="配置驾驶舱"
+      description="按连接、账号、节点、验证四步完成日常配置；YAML 和历史放在高级工具里。"
     >
       <template #actions>
         <button class="ghost" data-testid="config-refresh" :disabled="systemConfig.loading" @click="runAction(() => systemConfig.load())">
@@ -150,10 +167,89 @@ function updateOperatorRef() {
           <span>当前类别</span>
           <strong>{{ categoryLabels[systemConfig.selectedCategory] || systemConfig.selectedCategory }}</strong>
         </div>
+        <div class="stat">
+          <span>模型接入</span>
+          <strong>{{ configDashboardSummary.providerCount }}</strong>
+        </div>
+        <div class="stat">
+          <span>已接入节点</span>
+          <strong>{{ configDashboardSummary.activeNodeCount }}</strong>
+        </div>
       </div>
     </PanelShell>
 
+    <div class="config-dashboard-tabs" data-testid="config-dashboard-tabs" role="tablist" aria-label="配置区块">
+      <button
+        id="config-dashboard-tab-setup"
+        class="config-dashboard-tab"
+        :class="{ active: activeConfigSection === 'setup' }"
+        :aria-selected="activeConfigSection === 'setup'"
+        :tabindex="activeConfigSection === 'setup' ? 0 : -1"
+        aria-controls="config-section-setup"
+        data-testid="config-dashboard-tab-setup"
+        role="tab"
+        type="button"
+        @click="selectConfigSection('setup')"
+      >
+        <strong>连接与模型</strong>
+        <span>先连后端，再接本地或云端模型</span>
+      </button>
+      <button
+        id="config-dashboard-tab-routing"
+        class="config-dashboard-tab"
+        :class="{ active: activeConfigSection === 'routing' }"
+        :aria-selected="activeConfigSection === 'routing'"
+        :tabindex="activeConfigSection === 'routing' ? 0 : -1"
+        aria-controls="config-section-routing"
+        data-testid="config-dashboard-tab-routing"
+        role="tab"
+        type="button"
+        @click="selectConfigSection('routing')"
+      >
+        <strong>节点路由</strong>
+        <span>再指定每个 LLM 节点用哪个模型</span>
+      </button>
+      <button
+        id="config-dashboard-tab-validation"
+        class="config-dashboard-tab"
+        :class="{ active: activeConfigSection === 'validation' }"
+        :aria-selected="activeConfigSection === 'validation'"
+        :tabindex="activeConfigSection === 'validation' ? 0 : -1"
+        aria-controls="config-section-validation"
+        data-testid="config-dashboard-tab-validation"
+        role="tab"
+        type="button"
+        @click="selectConfigSection('validation')"
+      >
+        <strong>验证发布</strong>
+        <span>最后探测、评测、确认快照</span>
+      </button>
+      <button
+        id="config-dashboard-tab-advanced"
+        class="config-dashboard-tab"
+        :class="{ active: activeConfigSection === 'advanced' }"
+        :aria-selected="activeConfigSection === 'advanced'"
+        :tabindex="activeConfigSection === 'advanced' ? 0 : -1"
+        aria-controls="config-section-advanced"
+        data-testid="config-dashboard-tab-advanced"
+        role="tab"
+        type="button"
+        @click="selectConfigSection('advanced')"
+      >
+        <strong>高级工具</strong>
+        <span>YAML、历史、风格画像放这里</span>
+      </button>
+    </div>
+
     <div class="config-layout">
+      <section
+        id="config-section-setup"
+        v-show="activeConfigSection === 'setup'"
+        class="config-dashboard-section config-section-setup"
+        aria-labelledby="config-dashboard-tab-setup"
+        data-testid="config-section-setup"
+        role="tabpanel"
+      >
       <PanelShell eyebrow="Connection" title="连接设置" description="本机控制台连接与后端管理令牌。">
         <div class="config-form-grid">
           <label>
@@ -184,53 +280,94 @@ function updateOperatorRef() {
               @change="systemConfig.setAdminToken(systemConfig.adminToken)"
             />
           </label>
-          <label>
-            <span>LLM API Key</span>
-            <input
-              v-model="systemConfig.apiKeyInput"
-              class="control-input"
-              data-testid="config-api-key-input"
-              type="password"
-              placeholder="保存 api 类别草稿时更新"
-            />
-          </label>
-        </div>
-        <div class="config-action-row">
-          <button class="ghost" data-testid="config-provider-test" :disabled="systemConfig.testing" @click="testProvider">
-            Provider 探测
-          </button>
-          <span v-if="systemConfig.providerProbe" class="muted">
-            {{ systemConfig.providerProbe.ok ? "探测成功" : systemConfig.providerProbe.message }}
-          </span>
         </div>
       </PanelShell>
 
       <PanelShell
         class="config-wide-panel"
         data-testid="config-llm-provider-panel"
-        eyebrow="LLM Accounts"
-        title="供应商账号"
-        description="API Key、账号标识和模型目录统一走服务端密钥管理。"
+        eyebrow="Model Access"
+        title="模型接入"
+        description="本地模型走 OpenAI-compatible 地址；云厂商走服务端密钥管理。"
       >
         <template #actions>
-          <button data-testid="config-llm-provider-save" :disabled="systemConfig.llmSaving" @click="saveLlmProvider">
-            保存账号
+          <button
+            data-testid="config-llm-provider-save"
+            :disabled="systemConfig.llmSaving || Boolean(systemConfig.writeBlockedMessage)"
+            @click="saveLlmProvider"
+          >
+            保存接入
           </button>
         </template>
+
+        <div v-if="systemConfig.writeBlockedMessage" class="config-inline-alert warning" data-testid="config-write-warning">
+          <strong>暂时不能保存</strong>
+          <span>{{ systemConfig.writeBlockedMessage }}</span>
+        </div>
+        <div
+          v-else-if="systemConfig.localSetupMessage"
+          class="config-inline-alert info"
+          data-testid="config-local-setup-note"
+        >
+          <strong>本地单机模式</strong>
+          <span>{{ systemConfig.localSetupMessage }}</span>
+        </div>
+        <div
+          v-if="systemConfig.llmActionMessage"
+          class="config-action-message"
+          :class="systemConfig.llmActionTone"
+          data-testid="config-llm-action-message"
+        >
+          {{ systemConfig.llmActionMessage }}
+        </div>
+
+        <div class="llm-connection-shortcuts" data-testid="config-llm-connection-shortcuts">
+          <button
+            class="llm-mode-card"
+            data-testid="config-llm-local-preset-ollama"
+            type="button"
+            @click="systemConfig.applyLocalProviderPreset('ollama')"
+          >
+            <strong>本地 Ollama</strong>
+            <span>默认 http://127.0.0.1:11434/v1，无需密钥</span>
+          </button>
+          <button
+            class="llm-mode-card"
+            data-testid="config-llm-local-preset-lm-studio"
+            type="button"
+            @click="systemConfig.applyLocalProviderPreset('lm-studio')"
+          >
+            <strong>本地 LM Studio</strong>
+            <span>默认 http://127.0.0.1:1234/v1，无需密钥</span>
+          </button>
+          <button
+            class="llm-mode-card"
+            data-testid="config-llm-local-preset-custom"
+            type="button"
+            @click="systemConfig.applyLocalProviderPreset('custom')"
+          >
+            <strong>自定义本地服务</strong>
+            <span>vLLM、LocalAI、llama.cpp server 等兼容 /v1 的地址</span>
+          </button>
+          <div class="llm-mode-card passive">
+            <strong>云厂商 API Key</strong>
+            <span>在下方选择 OpenAI、Claude、DeepSeek、智谱或 Gemini，并填写 API Key</span>
+          </div>
+        </div>
 
         <div class="llm-provider-grid">
           <div class="llm-provider-form">
             <label>
-              <span>Provider ID</span>
+              <span>接入 ID</span>
               <input
                 v-model="systemConfig.providerDraft.provider_id"
                 class="control-input"
                 data-testid="config-llm-provider-id"
-                placeholder="openai_primary"
+                placeholder="local_ollama"
               />
             </label>
             <label>
-              <span>供应商</span>
+              <span>类型</span>
               <select
                 v-model="systemConfig.providerDraft.provider_type"
                 class="control-input"
@@ -242,21 +379,21 @@ function updateOperatorRef() {
               </select>
             </label>
             <label>
-              <span>账号</span>
+              <span>账号 / 环境</span>
               <input
                 v-model="systemConfig.providerDraft.account_id"
                 class="control-input"
                 data-testid="config-llm-provider-account"
-                placeholder="acct_ops"
+                placeholder="local"
               />
             </label>
             <label>
-              <span>Base URL</span>
+              <span>服务地址（到 /v1）</span>
               <input
                 v-model="systemConfig.providerDraft.base_url"
                 class="control-input"
                 data-testid="config-llm-provider-base-url"
-                placeholder="留空使用默认地址"
+                placeholder="http://127.0.0.1:8080/v1"
               />
             </label>
             <label>
@@ -276,7 +413,7 @@ function updateOperatorRef() {
               </select>
             </label>
             <label>
-              <span>API 模式</span>
+              <span>调用协议</span>
               <select v-model="systemConfig.providerDraft.api_mode" class="control-input">
                 <option value="">默认</option>
                 <option value="responses">responses</option>
@@ -284,17 +421,17 @@ function updateOperatorRef() {
               </select>
             </label>
             <label class="config-wide-field">
-              <span>模型目录</span>
+              <span>模型名（每行一个）</span>
               <textarea
                 v-model="systemConfig.providerDraft.modelsText"
                 class="control-input control-textarea llm-model-list-editor"
                 data-testid="config-llm-provider-models"
-                placeholder="gpt-5.4&#10;gpt-5.4-mini"
+                placeholder="qwen2.5:7b&#10;llama3.1:8b"
                 spellcheck="false"
               />
             </label>
-            <label class="config-wide-field">
-              <span>API Key</span>
+            <label v-if='systemConfig.providerDraft.credential_mode !== "none"' class="config-wide-field">
+              <span>API Key（云厂商）</span>
               <input
                 v-model="systemConfig.providerDraft.api_key"
                 class="control-input"
@@ -303,10 +440,13 @@ function updateOperatorRef() {
                 placeholder="只提交到后端，不回显"
               />
             </label>
+            <div v-else class="config-wide-field llm-no-secret-note" data-testid="config-llm-provider-no-secret">
+              无需密钥：本地 OpenAI-compatible 服务通常只需要服务地址和模型名。
+            </div>
           </div>
 
           <div class="llm-provider-list">
-            <div v-if="!providerRows.length" class="empty">还没有配置供应商账号。</div>
+            <div v-if="!providerRows.length" class="empty">还没有配置模型接入。</div>
             <div
               v-for="provider in providerRows"
               v-else
@@ -321,18 +461,38 @@ function updateOperatorRef() {
                 </p>
               </div>
               <span class="badge">
-                {{ provider.secret?.configured ? provider.secret.hint || "configured" : "未配置密钥" }}
+                {{
+                  provider.credential_mode === "none"
+                    ? "无需密钥"
+                    : provider.secret?.configured
+                      ? provider.secret.hint || "configured"
+                      : "未配置密钥"
+                }}
               </span>
               <span class="badge">{{ provider.models?.length || 0 }} models</span>
               <div class="config-action-row">
                 <button class="ghost" type="button" @click="editLlmProvider(provider)">编辑</button>
                 <button class="ghost" type="button" :disabled="systemConfig.testing" @click="probeLlmProvider(provider.provider_id)">
-                  探测
+                  验证模型
                 </button>
               </div>
-              <p v-if="systemConfig.providerProbeResults[provider.provider_id]" class="muted llm-probe-result">
-                {{ systemConfig.providerProbeResults[provider.provider_id].message }}
-              </p>
+              <div v-if="systemConfig.providerProbeResults[provider.provider_id]" class="llm-probe-result">
+                <p class="muted">{{ systemConfig.providerProbeResults[provider.provider_id].message }}</p>
+                <div class="llm-probe-checks">
+                  <span
+                    v-for="check in providerProbeCheckItems(systemConfig.providerProbeResults[provider.provider_id])"
+                    :key="check.key"
+                    class="llm-probe-check"
+                    :class="{
+                      'is-ok': check.ok === true,
+                      'is-fail': check.ok === false,
+                      'is-skip': check.ok === null,
+                    }"
+                  >
+                    {{ check.label }} {{ check.ok === true ? "通过" : check.ok === false ? "未通过" : "跳过" }}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -390,7 +550,16 @@ function updateOperatorRef() {
           </a>
         </div>
       </PanelShell>
+      </section>
 
+      <section
+        id="config-section-routing"
+        v-show="activeConfigSection === 'routing'"
+        class="config-dashboard-section config-section-routing"
+        aria-labelledby="config-dashboard-tab-routing"
+        data-testid="config-section-routing"
+        role="tabpanel"
+      >
       <PanelShell
         class="config-wide-panel"
         data-testid="config-llm-node-matrix"
@@ -483,6 +652,55 @@ function updateOperatorRef() {
           </div>
         </div>
       </PanelShell>
+      </section>
+
+      <section
+        id="config-section-validation"
+        v-show="activeConfigSection === 'validation'"
+        class="config-dashboard-section config-section-validation"
+        aria-labelledby="config-dashboard-tab-validation"
+        data-testid="config-section-validation"
+        role="tabpanel"
+      >
+      <PanelShell
+        class="config-wide-panel"
+        eyebrow="Readiness"
+        title="验证发布"
+        description="这里集中检查账号、节点、探测结果和最近激活快照。"
+      >
+        <div class="config-readiness-grid">
+          <div class="config-readiness-item" :class="{ warning: configDashboardSummary.needsProvider }">
+            <span>模型接入</span>
+            <strong>{{ configDashboardSummary.providerCount }}</strong>
+            <small>{{ configDashboardSummary.needsProvider ? "先添加至少一个模型接入" : "可用于节点路由" }}</small>
+          </div>
+          <div class="config-readiness-item" :class="{ warning: configDashboardSummary.needsActiveRoutes }">
+            <span>已接入节点</span>
+            <strong>{{ configDashboardSummary.activeNodeCount }}</strong>
+            <small>{{ configDashboardSummary.needsActiveRoutes ? "先为真实调用节点选择模型" : "可以保存并激活" }}</small>
+          </div>
+          <div class="config-readiness-item">
+            <span>预留节点</span>
+            <strong>{{ configDashboardSummary.reservedNodeCount }}</strong>
+            <small>后续功能打开时再接入</small>
+          </div>
+          <div class="config-readiness-item">
+            <span>模型快照</span>
+            <strong>{{ systemConfig.llm.models_snapshot?.snapshot_id || "默认配置" }}</strong>
+            <small>{{ systemConfig.llm.models_snapshot?.active ? "已激活" : "尚未激活新快照" }}</small>
+          </div>
+        </div>
+        <div class="config-action-row">
+          <button
+            data-testid="config-llm-node-routes-save-validation"
+            :disabled="systemConfig.llmSaving || configDashboardSummary.needsProvider || configDashboardSummary.needsActiveRoutes"
+            @click="saveLlmNodeRoutes"
+          >
+            保存并激活节点路由
+          </button>
+          <span class="muted">日常发布只需要确认上面的状态，再保存节点路由。</span>
+        </div>
+      </PanelShell>
 
       <PanelShell eyebrow="Literary Eval" title="文学评测" description="小规模评测集用于检查风格与场景生成质量。">
         <template #actions>
@@ -558,7 +776,16 @@ function updateOperatorRef() {
           </li>
         </ol>
       </PanelShell>
+      </section>
 
+      <section
+        id="config-section-advanced"
+        v-show="activeConfigSection === 'advanced'"
+        class="config-dashboard-section config-section-advanced"
+        aria-labelledby="config-dashboard-tab-advanced"
+        data-testid="config-section-advanced"
+        role="tabpanel"
+      >
       <PanelShell eyebrow="Style Profile" title="风格画像契约" description="结构化风格特征的调试样例，用于校准提示词和 QC 输出。">
         <div class="config-overview" data-testid="config-style-profile-contract">
           <div class="stat">
@@ -683,6 +910,7 @@ function updateOperatorRef() {
       <PanelShell v-if="systemConfig.exportResult" eyebrow="Export" title="导出 YAML" description="当前导出内容。">
         <pre class="config-export-block" data-testid="config-export-yaml">{{ systemConfig.exportResult.yaml_raw }}</pre>
       </PanelShell>
+      </section>
     </div>
   </div>
 </template>

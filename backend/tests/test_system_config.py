@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import httpx
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from novel_system.api.app import create_app
 from novel_system.db.models import SystemSecret
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.services.llm_client import load_model_routing_config
@@ -33,6 +35,51 @@ def test_system_config_write_requires_admin_token(client, monkeypatch) -> None:
         "/api/v1/system-config/drafts",
         json={"category": "models", "yaml_raw": "task_routing: {}\nretry_budget: {}\njob_runtime: {}\n"},
     )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "ADMIN_TOKEN_REQUIRED"
+
+
+def test_system_config_local_setup_mode_allows_loopback_writes_without_admin_token(monkeypatch) -> None:
+    monkeypatch.delenv("NOVEL_SYSTEM_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as local_client:
+        response = local_client.post(
+            "/api/v1/system-config/llm/providers",
+            json={
+                "provider_id": "local_qwen",
+                "provider_type": "openai_compatible",
+                "account_id": "local",
+                "base_url": "http://127.0.0.1:8080/v1/chat/completions",
+                "credential_mode": "none",
+                "api_mode": "chat",
+                "models": ["Qwen3-14B-Q8_0.gguf"],
+            },
+        )
+
+    assert response.status_code == 200
+    provider = response.json()["data"]["provider"]
+    assert provider["provider_id"] == "local_qwen"
+    assert provider["base_url"] == "http://127.0.0.1:8080/v1"
+    assert provider["credential_mode"] == "none"
+
+
+def test_system_config_local_setup_mode_rejects_non_loopback_writes(monkeypatch) -> None:
+    monkeypatch.delenv("NOVEL_SYSTEM_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    with TestClient(create_app(), client=("192.0.2.42", 50000)) as remote_client:
+        response = remote_client.post(
+            "/api/v1/system-config/llm/providers",
+            json={
+                "provider_id": "local_qwen",
+                "provider_type": "openai_compatible",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "credential_mode": "none",
+                "models": ["Qwen3-14B-Q8_0.gguf"],
+            },
+        )
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "ADMIN_TOKEN_REQUIRED"
@@ -246,6 +293,139 @@ def test_llm_config_provider_secret_and_node_routes_do_not_leak_credentials(clie
     assert routing_config.node_routing["neutral_draft"].provider_id == "openai_primary"
     assert routing_config.node_routing["neutral_draft"].reasoning_level == "medium"
     assert routing_config.node_routing["style_patch"].reasoning_level == "high"
+
+
+def test_llm_config_supports_local_openai_compatible_without_secret(client, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    overview_response = client.get("/api/v1/system-config/llm")
+    assert overview_response.status_code == 200
+    catalog = overview_response.json()["data"]["provider_catalog"]
+    assert catalog["openai_compatible"]["label"] == "本地 / OpenAI 兼容"
+    assert "none" in catalog["openai_compatible"]["credential_modes"]
+    assert catalog["openai_compatible"]["default_base_url"] == "http://127.0.0.1:11434/v1"
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "local_ollama",
+            "provider_type": "openai_compatible",
+            "account_id": "local",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "enabled": True,
+            "credential_mode": "none",
+            "api_mode": "chat",
+            "models": ["qwen2.5:7b"],
+        },
+    )
+
+    assert provider_response.status_code == 200
+    payload = provider_response.json()["data"]["provider"]
+    assert payload["provider_type"] == "openai_compatible"
+    assert payload["credential_mode"] == "none"
+    assert payload["secret"]["configured"] is False
+    assert payload["secret"]["secret_type"] == "none"
+
+    stored_secret = session.execute(
+        select(SystemSecret).where(SystemSecret.secret_id == "llm_provider:local_ollama:api_key")
+    ).scalars().first()
+    assert stored_secret is None
+
+
+def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "local_qwen",
+            "provider_type": "openai_compatible",
+            "account_id": "local",
+            "base_url": "https://local-llm.test/v1/chat/completions",
+            "credential_mode": "none",
+            "api_mode": "chat",
+            "models": ["qwen3:14b"],
+        },
+    )
+    assert provider_response.status_code == 200
+    assert provider_response.json()["data"]["provider"]["base_url"] == "https://local-llm.test/v1"
+
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+        assert url == "https://local-llm.test/v1/models"
+        assert headers == {}
+        assert timeout == 10.0
+        return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}]})
+
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
+        assert url == "https://local-llm.test/v1/chat/completions"
+        assert headers == {}
+        assert timeout == 10.0
+        assert json["model"] == "qwen3:14b"
+        assert json["messages"][0]["content"] == "ping"
+        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+
+    response = client.post(
+        "/api/v1/system-config/llm/providers/local_qwen/probe",
+        headers=ADMIN_HEADERS,
+        json={"model": "qwen3:14b", "check_completion": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["ok"] is True
+    assert payload["checks"]["connection"]["ok"] is True
+    assert payload["checks"]["model"]["ok"] is True
+    assert payload["checks"]["completion"]["ok"] is True
+    assert payload["checks"]["model"]["requested_model"] == "qwen3:14b"
+    assert "qwen3:14b" in payload["message"]
+
+
+def test_llm_provider_probe_reports_available_models_when_local_name_does_not_match(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "local_qwen",
+            "provider_type": "openai_compatible",
+            "account_id": "local",
+            "base_url": "https://local-llm.test/v1",
+            "credential_mode": "none",
+            "api_mode": "chat",
+            "models": ["Qwen3 14B"],
+        },
+    )
+    assert provider_response.status_code == 200
+
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+        return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}, {"id": "llama3.1:8b"}]})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+
+    response = client.post(
+        "/api/v1/system-config/llm/providers/local_qwen/probe",
+        headers=ADMIN_HEADERS,
+        json={"model": "Qwen3 14B", "check_completion": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["ok"] is False
+    assert payload["checks"]["connection"]["ok"] is True
+    assert payload["checks"]["model"]["ok"] is False
+    assert payload["checks"]["model"]["requested_model"] == "Qwen3 14B"
+    assert payload["checks"]["model"]["available_models"] == ["qwen3:14b", "llama3.1:8b"]
+    assert "Qwen3 14B" in payload["message"]
+    assert "qwen3:14b" in payload["message"]
 
 
 def test_llm_config_oauth_start_is_gemini_only_and_uses_signed_state(client, monkeypatch) -> None:

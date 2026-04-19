@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { configureConnection } from "./helpers.js";
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = `http://127.0.0.1:${process.env.PLAYWRIGHT_BACKEND_PORT || "8000"}`;
 const OPERATOR_REF = "ops.chapter-batch.e2e";
 
 async function postJson(request, path, body, idempotencyKey) {

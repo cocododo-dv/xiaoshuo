@@ -176,8 +176,10 @@ def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
             provider_id=provider_id,
             provider_type=str(provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id),
             account_id=_optional_text(provider_payload.get("account_id")),
-            base_url=str(provider_payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(str(provider_payload.get("provider_type")), "")),
-            api_key=secret_value if credential_mode == "api_key" else (legacy_api_key or None),
+            base_url=_normalize_provider_base_url(
+                provider_payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(str(provider_payload.get("provider_type")), "")
+            ),
+            api_key=(secret_value or legacy_api_key) if credential_mode == "api_key" else None,
             credential_mode=credential_mode if credential_mode in SUPPORTED_CREDENTIAL_MODES else "api_key",
             api_mode=str(provider_payload.get("api_mode") or "chat"),  # type: ignore[arg-type]
             enabled=_bool_value(provider_payload.get("enabled", True)),
@@ -303,32 +305,120 @@ class SystemConfigService:
 
     def test_provider(self, *, payload: dict[str, Any]) -> dict[str, Any]:
         provider_payload = _coerce_api_payload(payload)
-        provider = provider_payload.get("provider", "openai_compatible")
+        provider = str(provider_payload.get("provider_type") or provider_payload.get("provider") or "openai_compatible")
         if provider not in SUPPORTED_PROVIDERS:
             raise DomainError("CONFIG_PROVIDER_UNSUPPORTED", f"unsupported provider {provider}", status_code=422)
 
-        base_url = str(provider_payload.get("base_url") or "").rstrip("/")
+        base_url = _normalize_provider_base_url(provider_payload.get("base_url"))
         if not base_url:
             raise DomainError("CONFIG_PROVIDER_INVALID", "provider base_url is required", status_code=422)
 
-        api_key = payload.get("api_key") or load_secret_value(LLM_API_KEY_SECRET_ID)
+        provider_id = _optional_text(provider_payload.get("provider_id"))
+        default_credential_mode = "none" if provider_id and not provider_payload.get("api_key") else "api_key"
+        credential_mode = str(provider_payload.get("credential_mode") or default_credential_mode)
+        api_key = None
+        if credential_mode == "api_key":
+            provider_secret = load_secret_value(llm_provider_api_key_secret_id(provider_id)) if provider_id else None
+            api_key = provider_payload.get("api_key") or provider_secret or load_secret_value(LLM_API_KEY_SECRET_ID)
+        elif credential_mode == "oauth2" and provider_id:
+            oauth_secret = load_secret_value(llm_provider_oauth_secret_id(provider_id))
+            if oauth_secret:
+                try:
+                    oauth_payload = yaml.safe_load(oauth_secret)
+                    if isinstance(oauth_payload, dict):
+                        api_key = oauth_payload.get("access_token")
+                    else:
+                        api_key = oauth_secret
+                except yaml.YAMLError:
+                    api_key = oauth_secret
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        timeout_value = provider_payload.get("timeout_seconds")
+        timeout_seconds = _float_value(10.0 if timeout_value is None else timeout_value, "timeout_seconds")
         started_at = time.perf_counter()
         try:
-            response = httpx.get(f"{base_url}/models", headers=headers, timeout=provider_payload.get("timeout_seconds", 10.0))
+            response = httpx.get(f"{base_url}/models", headers=headers, timeout=timeout_seconds)
         except httpx.RequestError as exc:
             return {
                 "ok": False,
                 "status_code": None,
                 "latency_ms": int((time.perf_counter() - started_at) * 1000),
                 "message": str(exc),
+                "checks": {
+                    "connection": {
+                        "ok": False,
+                        "status_code": None,
+                        "message": str(exc),
+                    }
+                },
             }
 
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        checks: dict[str, Any] = {
+            "connection": {
+                "ok": response.is_success,
+                "status_code": response.status_code,
+                "latency_ms": latency_ms,
+                "message": "model list endpoint reached" if response.is_success else _provider_error_summary(response),
+            }
+        }
+        if not response.is_success:
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "latency_ms": latency_ms,
+                "message": _provider_error_summary(response),
+                "checks": checks,
+            }
+
+        model_ids = _extract_model_ids(response)
+        requested_model = _requested_probe_model(provider_payload)
+        if requested_model:
+            model_ok = requested_model in model_ids
+            checks["model"] = {
+                "ok": model_ok,
+                "requested_model": requested_model,
+                "available_models": model_ids,
+            }
+            if not model_ok:
+                available_hint = "、".join(model_ids[:5]) if model_ids else "未能从 /models 解析到模型列表"
+                return {
+                    "ok": False,
+                    "status_code": response.status_code,
+                    "latency_ms": latency_ms,
+                    "message": f"模型 {requested_model} 未在服务返回的模型列表中出现。可用模型：{available_hint}",
+                    "checks": checks,
+                }
+
+        should_check_completion = bool(requested_model) and _bool_value(provider_payload.get("check_completion", False))
+        if should_check_completion:
+            completion_result = _probe_chat_completion(
+                provider=provider,
+                base_url=base_url,
+                headers=headers,
+                model=str(requested_model),
+                timeout_seconds=timeout_seconds,
+            )
+            checks["completion"] = completion_result
+            if completion_result["ok"] is not True:
+                return {
+                    "ok": False,
+                    "status_code": completion_result.get("status_code") or response.status_code,
+                    "latency_ms": int((time.perf_counter() - started_at) * 1000),
+                    "message": completion_result["message"],
+                    "checks": checks,
+                }
+
+        message = (
+            f"模型 {requested_model} 可用：连接、模型名、生成均通过"
+            if requested_model and checks.get("completion", {}).get("ok") is True
+            else (f"模型 {requested_model} 已在服务列表中找到" if requested_model else "provider probe succeeded")
+        )
         return {
-            "ok": response.is_success,
+            "ok": True,
             "status_code": response.status_code,
             "latency_ms": int((time.perf_counter() - started_at) * 1000),
-            "message": "provider probe succeeded" if response.is_success else _provider_error_summary(response),
+            "message": message,
+            "checks": checks,
         }
 
     def llm_overview(self) -> dict[str, Any]:
@@ -385,7 +475,12 @@ class SystemConfigService:
             actor_ref=actor_ref,
         )
         secret_status = self._secret_status(llm_provider_api_key_secret_id(provider_id))
-        if api_key:
+        if provider["credential_mode"] == "none":
+            existing_secret = self.session.get(SystemSecret, llm_provider_api_key_secret_id(provider_id))
+            if existing_secret is not None:
+                self.session.delete(existing_secret)
+            secret_status = _none_secret_status()
+        elif api_key:
             secret_status = self._save_secret_value(
                 secret_id=llm_provider_api_key_secret_id(provider_id),
                 raw_value=api_key,
@@ -736,6 +831,7 @@ class SystemConfigService:
     def _serialize_provider(self, provider_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         credential_mode = str(payload.get("credential_mode") or "api_key")
         secret_id = llm_provider_oauth_secret_id(provider_id) if credential_mode == "oauth2" else llm_provider_api_key_secret_id(provider_id)
+        secret_status = _none_secret_status() if credential_mode == "none" else self._secret_status(secret_id)
         return {
             "provider_id": provider_id,
             "provider_type": payload.get("provider_type") or payload.get("provider"),
@@ -747,7 +843,7 @@ class SystemConfigService:
             "models": list(payload.get("models") or []),
             "scopes": list(payload.get("scopes") or []),
             "provider_options": dict(payload.get("provider_options") or {}),
-            "secret": self._secret_status(secret_id),
+            "secret": secret_status,
         }
 
 
@@ -794,10 +890,23 @@ def default_config_payload(category: str) -> tuple[str, dict[str, Any], dict[str
     return yaml_raw, parsed, validation, "repo_default"
 
 
-def require_admin_token(header_value: str | None) -> None:
+def require_admin_token(header_value: str | None, *, client_host: str | None = None) -> None:
     token = _admin_token()
-    if not token or header_value != token:
+    if token:
+        if header_value == token:
+            return
         raise DomainError("ADMIN_TOKEN_REQUIRED", "valid X-Admin-Token is required", status_code=403)
+    if _is_loopback_client(client_host):
+        return
+    raise DomainError(
+        "ADMIN_TOKEN_REQUIRED",
+        "valid X-Admin-Token is required; local setup mode only accepts loopback requests",
+        status_code=403,
+    )
+
+
+def _is_loopback_client(client_host: str | None) -> bool:
+    return str(client_host or "").strip().lower() in {"127.0.0.1", "::1", "localhost"}
 
 
 def _active_snapshot(session: Session, category: str) -> SystemConfigSnapshot | None:
@@ -863,7 +972,7 @@ def _validate_api_config(parsed: dict[str, Any]) -> dict[str, Any]:
     if provider not in SUPPORTED_PROVIDERS:
         raise ValueError(f"unsupported provider {provider}")
 
-    base_url = str(llm.get("base_url") or "").strip()
+    base_url = _normalize_provider_base_url(llm.get("base_url"))
     if not base_url:
         raise ValueError("llm.base_url is required")
 
@@ -890,6 +999,15 @@ def _provider_payloads_from_llm(llm: dict[str, Any]) -> dict[str, dict[str, Any]
     return {}
 
 
+def _normalize_provider_base_url(value: Any) -> str:
+    base_url = str(value or "").strip().rstrip("/")
+    for suffix in ("/chat/completions", "/completions", "/responses", "/models"):
+        if base_url.endswith(suffix):
+            base_url = base_url[: -len(suffix)].rstrip("/")
+            break
+    return base_url
+
+
 def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     provider_id = _required_text(payload.get("provider_id"), "provider_id")
     provider_type = str(payload.get("provider_type") or payload.get("provider") or "").strip()
@@ -898,7 +1016,7 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     credential_mode = str(payload.get("credential_mode") or "api_key")
     if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
         raise ValueError(f"unsupported credential_mode {credential_mode}")
-    base_url = str(payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(provider_type) or "").strip().rstrip("/")
+    base_url = _normalize_provider_base_url(payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(provider_type))
     if not base_url:
         raise ValueError("provider base_url is required")
     models = payload.get("models") if isinstance(payload.get("models"), list) else []
@@ -920,6 +1038,11 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _provider_catalog() -> dict[str, dict[str, Any]]:
     return {
+        "openai_compatible": {
+            "label": "本地 / OpenAI 兼容",
+            "credential_modes": ["none", "api_key"],
+            "default_base_url": DEFAULT_PROVIDER_BASE_URLS["openai_compatible"],
+        },
         "openai": {
             "label": "OpenAI",
             "credential_modes": ["api_key"],
@@ -945,6 +1068,17 @@ def _provider_catalog() -> dict[str, dict[str, Any]]:
             "credential_modes": ["api_key", "oauth2"],
             "default_base_url": DEFAULT_PROVIDER_BASE_URLS["gemini"],
         },
+    }
+
+
+def _none_secret_status() -> dict[str, Any]:
+    return {
+        "configured": False,
+        "hint": None,
+        "secret_type": "none",
+        "metadata": {},
+        "expires_at": None,
+        "updated_at": None,
     }
 
 
@@ -1041,6 +1175,88 @@ def _config_secret() -> str | None:
     from novel_system.settings import get_settings
 
     return get_settings(include_runtime_config=False).config_secret
+
+
+def _requested_probe_model(payload: dict[str, Any]) -> str | None:
+    explicit_model = _optional_text(payload.get("model"))
+    if explicit_model:
+        return explicit_model
+    models = payload.get("models")
+    if isinstance(models, list):
+        for model in models:
+            candidate = _optional_text(model)
+            if candidate:
+                return candidate
+    return None
+
+
+def _extract_model_ids(response: httpx.Response) -> list[str]:
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+    candidates: list[Any] = []
+    if isinstance(payload, dict):
+        for key in ("data", "models"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+        if not candidates:
+            candidates.append(payload)
+    elif isinstance(payload, list):
+        candidates.extend(payload)
+
+    model_ids: list[str] = []
+    for item in candidates:
+        if isinstance(item, str):
+            model_ids.append(item)
+        elif isinstance(item, dict):
+            for key in ("id", "name", "model"):
+                value = _optional_text(item.get(key))
+                if value:
+                    model_ids.append(value)
+                    break
+    return list(dict.fromkeys(model_ids))
+
+
+def _probe_chat_completion(
+    *,
+    provider: str,
+    base_url: str,
+    headers: dict[str, str],
+    model: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    if provider not in {"openai", "openai_compatible", "deepseek", "zhipu_glm"}:
+        return {
+            "ok": None,
+            "status_code": None,
+            "message": f"completion check skipped for provider {provider}",
+        }
+    try:
+        response = httpx.post(
+            f"{base_url}/chat/completions",
+            headers=headers,
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "temperature": 0,
+                "max_tokens": 8,
+                "stream": False,
+            },
+            timeout=timeout_seconds,
+        )
+    except httpx.RequestError as exc:
+        return {
+            "ok": False,
+            "status_code": None,
+            "message": str(exc),
+        }
+    return {
+        "ok": response.is_success,
+        "status_code": response.status_code,
+        "message": "minimal completion succeeded" if response.is_success else _provider_error_summary(response),
+    }
 
 
 def _provider_error_summary(response: httpx.Response) -> str:

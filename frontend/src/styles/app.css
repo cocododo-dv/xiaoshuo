@@ -1351,6 +1351,52 @@ pre {
   gap: 1.4rem;
 }
 
+.config-dashboard-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.config-dashboard-tab {
+  display: grid;
+  gap: 0.3rem;
+  min-height: 5.1rem;
+  align-content: center;
+  padding: 0.9rem 1rem;
+  text-align: left;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.66);
+  border: 1px solid rgba(44, 37, 30, 0.12);
+  border-radius: 0.5rem;
+}
+
+.config-dashboard-tab strong,
+.config-dashboard-tab span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-dashboard-tab strong {
+  font-size: 0.98rem;
+}
+
+.config-dashboard-tab span {
+  color: rgba(27, 24, 21, 0.62);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.config-dashboard-tab.active {
+  color: #f7efe3;
+  background: #1b1a18;
+  border-color: #1b1a18;
+  box-shadow: 0 12px 28px rgba(27, 24, 21, 0.16);
+}
+
+.config-dashboard-tab.active span {
+  color: rgba(247, 239, 227, 0.72);
+}
+
 .config-overview,
 .config-action-row,
 .config-history-row {
@@ -1365,6 +1411,20 @@ pre {
   grid-template-columns: minmax(16rem, 0.75fr) minmax(0, 1.35fr);
   gap: 1.4rem;
   align-items: start;
+}
+
+.config-dashboard-section {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.75fr) minmax(0, 1.35fr);
+  gap: 1.4rem;
+  align-items: start;
+}
+
+.config-section-setup > .panel-shell:first-child,
+.config-section-routing > .panel-shell,
+.config-section-validation > .panel-shell {
+  grid-column: 1 / -1;
 }
 
 .config-editor-panel {
@@ -1394,6 +1454,89 @@ pre {
   display: grid;
   gap: 1rem;
   margin-top: 1rem;
+}
+
+.llm-connection-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.llm-mode-card {
+  display: grid;
+  gap: 0.32rem;
+  min-height: 5.4rem;
+  align-content: center;
+  padding: 0.85rem 0.95rem;
+  text-align: left;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(44, 37, 30, 0.14);
+  border-radius: 0.5rem;
+}
+
+.llm-mode-card:hover {
+  border-color: rgba(31, 57, 77, 0.38);
+  background: rgba(247, 250, 249, 0.88);
+}
+
+.llm-mode-card.passive {
+  cursor: default;
+  background: rgba(37, 51, 66, 0.055);
+}
+
+.llm-mode-card strong,
+.llm-mode-card span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.llm-mode-card span,
+.llm-no-secret-note {
+  color: rgba(27, 24, 21, 0.62);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.llm-no-secret-note {
+  padding: 0.85rem 0.95rem;
+  border: 1px dashed rgba(44, 37, 30, 0.18);
+  border-radius: 0.5rem;
+  background: rgba(86, 129, 90, 0.09);
+}
+
+.config-inline-alert,
+.config-action-message {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(44, 37, 30, 0.14);
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--muted-ink);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.config-inline-alert.warning,
+.config-action-message.error {
+  border-color: rgba(180, 74, 51, 0.28);
+  background: rgba(251, 228, 221, 0.78);
+  color: #8e392b;
+}
+
+.config-inline-alert.info,
+.config-action-message.info {
+  border-color: rgba(38, 93, 134, 0.22);
+  background: rgba(226, 238, 246, 0.72);
+  color: #315f7e;
+}
+
+.config-action-message.success {
+  border-color: rgba(56, 122, 81, 0.28);
+  background: rgba(221, 239, 218, 0.72);
+  color: #2f6d45;
 }
 
 .llm-provider-grid {
@@ -1452,6 +1595,42 @@ pre {
   margin: -0.15rem 0 0;
 }
 
+.llm-probe-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+
+.llm-probe-check {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.65rem;
+  padding: 0 0.55rem;
+  border: 1px solid rgba(44, 37, 30, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted-ink);
+  font-size: 0.78rem;
+}
+
+.llm-probe-check.is-ok {
+  border-color: rgba(56, 122, 81, 0.28);
+  background: rgba(221, 239, 218, 0.72);
+  color: #2f6d45;
+}
+
+.llm-probe-check.is-fail {
+  border-color: rgba(180, 74, 51, 0.28);
+  background: rgba(251, 228, 221, 0.78);
+  color: #9b3f2e;
+}
+
+.llm-probe-check.is-skip {
+  border-color: rgba(87, 91, 96, 0.2);
+  background: rgba(236, 234, 229, 0.72);
+}
+
 .llm-node-matrix-table {
   margin-top: 1rem;
 }
@@ -1507,6 +1686,41 @@ pre {
   display: grid;
   gap: 0.4rem;
   margin-bottom: 0.9rem;
+}
+
+.config-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.config-readiness-item {
+  display: grid;
+  gap: 0.32rem;
+  min-width: 0;
+  padding: 0.8rem 0.9rem;
+  border-left: 3px solid rgba(86, 129, 90, 0.52);
+  background: rgba(37, 51, 66, 0.045);
+  border-radius: 0.5rem;
+}
+
+.config-readiness-item.warning {
+  border-left-color: rgba(179, 74, 51, 0.7);
+  background: rgba(179, 74, 51, 0.09);
+}
+
+.config-readiness-item span,
+.config-readiness-item small {
+  color: rgba(27, 24, 21, 0.62);
+}
+
+.config-readiness-item strong {
+  overflow-wrap: anywhere;
+}
+
+.config-readiness-item small {
+  line-height: 1.35;
 }
 
 .config-category-list,
@@ -1717,9 +1931,13 @@ pre {
   .trash-layout,
   .interop-layout,
   .config-layout,
+  .config-dashboard-tabs,
+  .config-dashboard-section,
+  .llm-connection-shortcuts,
   .llm-provider-grid,
   .llm-provider-form,
   .config-oauth-grid,
+  .config-readiness-grid,
   .llm-node-row,
   .llm-node-controls,
   .interop-query-grid,

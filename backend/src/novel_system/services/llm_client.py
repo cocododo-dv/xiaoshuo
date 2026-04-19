@@ -23,7 +23,7 @@ SUPPORTED_CREDENTIAL_MODES = {"api_key", "oauth2", "none"}
 
 DEFAULT_PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
-    "openai_compatible": "https://api.openai.com/v1",
+    "openai_compatible": "http://127.0.0.1:11434/v1",
     "anthropic": "https://api.anthropic.com/v1",
     "deepseek": "https://api.deepseek.com/v1",
     "zhipu_glm": "https://open.bigmodel.cn/api/paas/v4",

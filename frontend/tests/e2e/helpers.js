@@ -1,4 +1,6 @@
-export async function configureConnection(page, { apiBase = "http://127.0.0.1:8000", operatorRef = "operator" } = {}) {
+const defaultApiBase = `http://127.0.0.1:${process.env.PLAYWRIGHT_BACKEND_PORT || "8000"}`;
+
+export async function configureConnection(page, { apiBase = defaultApiBase, operatorRef = "operator" } = {}) {
   await page.evaluate(
     ({ nextApiBase, nextOperatorRef }) => {
       window.localStorage.setItem("novel-system-api-base", nextApiBase);

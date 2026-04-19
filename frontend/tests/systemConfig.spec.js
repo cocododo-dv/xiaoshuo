@@ -208,6 +208,11 @@ describe("system config store", () => {
       if (url.endsWith("/api/v1/system-config/llm") && !options.method) {
         return ok({
           provider_catalog: {
+            openai_compatible: {
+              label: "本地 / OpenAI 兼容",
+              credential_modes: ["none", "api_key"],
+              default_base_url: "http://127.0.0.1:11434/v1",
+            },
             openai: { label: "OpenAI", credential_modes: ["api_key"] },
             gemini: { label: "Gemini / Google", credential_modes: ["api_key", "oauth2"] },
           },
@@ -247,7 +252,20 @@ describe("system config store", () => {
       }
       if (url.endsWith("/api/v1/system-config/llm/providers") && options.method === "POST") {
         const body = JSON.parse(options.body);
-        expect(body.api_key).toBe("sk-secret");
+        if (body.provider_id === "local_ollama") {
+          expect(body.provider_type).toBe("openai_compatible");
+          expect(body.credential_mode).toBe("none");
+          expect(body.base_url).toBe("http://127.0.0.1:11434/v1");
+          expect(body.api_key).toBeUndefined();
+        } else if (body.provider_id === "local_qwen") {
+          expect(body.provider_type).toBe("openai_compatible");
+          expect(body.credential_mode).toBe("none");
+          expect(body.base_url).toBe("http://127.0.0.1:8080/v1");
+          expect(body.models).toEqual(["Qwen3-14B-Q8_0.gguf"]);
+          expect(body.api_key).toBeUndefined();
+        } else {
+          expect(body.api_key).toBe("sk-secret");
+        }
         return ok({
           provider: {
             provider_id: body.provider_id,
@@ -255,7 +273,10 @@ describe("system config store", () => {
             base_url: body.base_url,
             credential_mode: body.credential_mode || "api_key",
             models: body.models || [],
-            secret: { configured: true, hint: "sk-...cret" },
+            secret:
+              body.credential_mode === "none"
+                ? { configured: false, secret_type: "none" }
+                : { configured: true, hint: "sk-...cret" },
           },
         });
       }
@@ -271,6 +292,21 @@ describe("system config store", () => {
       }
       if (url.endsWith("/api/v1/system-config/llm/providers/openai_primary/probe") && options.method === "POST") {
         return ok({ ok: true, status_code: 200, latency_ms: 42, message: "provider probe succeeded" });
+      }
+      if (url.endsWith("/api/v1/system-config/llm/providers/local_qwen/probe") && options.method === "POST") {
+        const body = JSON.parse(options.body);
+        expect(body).toEqual({ model: "qwen3:14b", check_completion: true });
+        return ok({
+          ok: true,
+          status_code: 200,
+          latency_ms: 36,
+          message: "模型 qwen3:14b 可用：连接、模型名、生成均通过",
+          checks: {
+            connection: { ok: true },
+            model: { ok: true, requested_model: "qwen3:14b" },
+            completion: { ok: true },
+          },
+        });
       }
       if (url.endsWith("/api/v1/system-config/llm/oauth/gemini/start") && options.method === "POST") {
         return ok({
@@ -423,12 +459,122 @@ describe("system config store", () => {
 
     expect(store.llm.providers.openai_primary.secret.hint).toBe("sk-...test");
     expect(store.nodeRouteRows.some((row) => row.node_id === "chapter_summary" && row.status === "reserved")).toBe(true);
+    expect(store.configDashboardSummary).toEqual({
+      providerCount: 1,
+      configuredNodeCount: 1,
+      activeNodeCount: 1,
+      reservedNodeCount: 1,
+      needsProvider: false,
+      needsActiveRoutes: false,
+    });
     expect(providerMessage).toContain("openai_primary");
     expect(routeMessage).toContain("config_models_llm_001");
     expect(probeMessage).toContain("成功");
     expect(oauthMessage).toContain("Gemini");
     expect(store.oauthStart.authorization_url).toContain("accounts.google.com");
     expect(store.providerDraft.api_key).toBe("");
+  });
+
+  it("prefills a local OpenAI-compatible provider without sending an api key", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+
+    await store.loadLlmConfig();
+    store.applyLocalProviderPreset("ollama");
+    const providerMessage = await store.saveLlmProvider();
+
+    expect(store.providerDraft.provider_id).toBe("local_ollama");
+    expect(store.providerDraft.provider_type).toBe("openai_compatible");
+    expect(store.providerDraft.credential_mode).toBe("none");
+    expect(store.providerDraft.base_url).toBe("http://127.0.0.1:11434/v1");
+    expect(store.providerDraft.api_key).toBe("");
+    expect(providerMessage).toContain("local_ollama");
+  });
+
+  it("normalizes a pasted chat completions endpoint before saving a local provider", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+
+    store.providerDraft = {
+      provider_id: "local_qwen",
+      provider_type: "openai_compatible",
+      account_id: "local",
+      base_url: "http://127.0.0.1:8080/v1/chat/completions",
+      credential_mode: "none",
+      api_mode: "chat",
+      modelsText: "Qwen3-14B-Q8_0.gguf",
+      api_key: "",
+    };
+
+    const providerMessage = await store.saveLlmProvider();
+
+    expect(providerMessage).toContain("local_qwen");
+  });
+
+  it("allows local setup mode without an admin token and keeps inline save feedback", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.runtime = { admin_configured: false };
+    expect(store.localSetupMessage).toContain("本地单机模式");
+    expect(store.writeBlockedMessage).toBe("");
+
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        data: {
+          provider: {
+            provider_id: "local_qwen",
+            provider_type: "openai_compatible",
+            base_url: "http://127.0.0.1:8080/v1",
+            credential_mode: "none",
+            models: ["Qwen3-14B-Q8_0.gguf"],
+            secret: { configured: false, secret_type: "none" },
+          },
+        },
+      }),
+    }));
+    store.providerDraft = {
+      provider_id: "local_qwen",
+      provider_type: "openai_compatible",
+      account_id: "local",
+      base_url: "http://127.0.0.1:8080/v1",
+      credential_mode: "none",
+      api_mode: "chat",
+      modelsText: "Qwen3-14B-Q8_0.gguf",
+      api_key: "",
+    };
+
+    const message = await store.saveLlmProvider();
+
+    expect(message).toContain("local_qwen");
+    expect(store.llmActionMessage).toContain("local_qwen");
+    expect(store.llmActionTone).toBe("success");
+  });
+
+  it("verifies the configured local model instead of only probing the base url", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+
+    await store.loadLlmConfig();
+    store.llm.providers.local_qwen = {
+      provider_id: "local_qwen",
+      provider_type: "openai_compatible",
+      account_id: "local",
+      base_url: "http://127.0.0.1:11434/v1",
+      enabled: true,
+      credential_mode: "none",
+      models: ["qwen3:14b"],
+      secret: { configured: false, secret_type: "none" },
+    };
+
+    const message = await store.probeLlmProvider("local_qwen");
+
+    expect(message).toContain("qwen3:14b");
+    expect(store.providerProbeResults.local_qwen.checks.completion.ok).toBe(true);
   });
 
   it("loads and runs the literary eval summary from system config", async () => {
@@ -549,6 +695,7 @@ describe("system config shell registration", () => {
     const appSource = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
     const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
     const viewSource = readFileSync(new URL("../src/views/SystemConfigView.vue", import.meta.url), "utf8");
+    const storeSource = readFileSync(new URL("../src/stores/systemConfig.js", import.meta.url), "utf8");
 
     expect(appSource).toContain("SystemConfigView");
     expect(routerSource).toContain('id: "config"');
@@ -569,11 +716,37 @@ describe("system config shell registration", () => {
     expect(viewSource).toContain("config-style-profile-yaml");
     expect(viewSource).toContain("systemConfig.styleProfileDraftYaml");
     expect(viewSource).toContain("config-style-profile-review");
+    expect(viewSource).toContain("config-dashboard-tabs");
+    expect(viewSource).toContain("config-dashboard-tab-setup");
+    expect(viewSource).toContain("config-dashboard-tab-routing");
+    expect(viewSource).toContain("config-dashboard-tab-validation");
+    expect(viewSource).toContain("config-dashboard-tab-advanced");
+    expect(viewSource).toContain("config-section-setup");
+    expect(viewSource).toContain("config-section-routing");
+    expect(viewSource).toContain("config-section-validation");
+    expect(viewSource).toContain("config-section-advanced");
+    expect(viewSource).toContain("configDashboardSummary");
+    expect(viewSource).toContain("config-write-warning");
+    expect(viewSource).toContain("config-local-setup-note");
+    expect(viewSource).toContain("config-llm-action-message");
     expect(viewSource).toContain("config-llm-provider-panel");
+    expect(viewSource).toContain("config-llm-local-preset-ollama");
+    expect(viewSource).toContain("config-llm-local-preset-lm-studio");
+    expect(viewSource).toContain("config-llm-local-preset-custom");
+    expect(viewSource).toContain("systemConfig.applyLocalProviderPreset");
+    expect(viewSource).toContain("systemConfig.providerDraft.credential_mode !== \"none\"");
+    expect(viewSource).toContain("无需密钥");
     expect(viewSource).toContain("config-llm-oauth-panel");
     expect(viewSource).toContain("config-llm-node-matrix");
     expect(viewSource).toContain("config-llm-node-row-");
     expect(viewSource).toContain("systemConfig.nodeRouteRows");
     expect(viewSource).toContain("saveLlmNodeRoutes");
+    expect(viewSource).not.toContain("config-api-key-input");
+    expect(viewSource).not.toContain("config-provider-test");
+    expect(viewSource).not.toContain("systemConfig.apiKeyInput");
+    expect(storeSource).toContain("localSetupMessage");
+    expect(storeSource).toContain("writeBlockedMessage");
+    expect(storeSource).toContain("llmActionMessage");
+    expect(storeSource).not.toContain("apiKeyInput");
   });
 });
