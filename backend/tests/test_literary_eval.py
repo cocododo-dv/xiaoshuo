@@ -12,7 +12,7 @@ from novel_system.services.literary_eval import (
     load_literary_eval_suite,
     score_literary_case,
 )
-from novel_system.services.llm_client import LLMResponse
+from novel_system.services.llm_client import LLMResponse, ModelRoutingConfig, ProviderRuntimeConfig, TaskModelConfig
 from novel_system.tools.literary_eval import main as literary_eval_main
 
 
@@ -293,3 +293,77 @@ def test_literary_eval_run_api_writes_latest_baseline_report(
     assert latest_response.status_code == 200
     assert latest_response.json()["data"]["report"]["suite_id"] == "literary_small_v1"
     assert latest_response.json()["data"]["report"]["summary"]["passed_count"] == 3
+
+
+def test_literary_eval_run_api_allows_live_local_provider_without_api_key(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "latest.json"
+    monkeypatch.setenv("NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH", str(report_path))
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
+
+    from novel_system.api.routes import literary_eval as route_module
+
+    task_config = TaskModelConfig(
+        provider="openai_compatible",
+        provider_id="local_qwen3",
+        model="Qwen3-14B-Q8_0.gguf",
+        temperature=0.2,
+        max_output_tokens=200,
+        response_format="json_object",
+        api_mode="chat",
+        credential_mode="none",
+    )
+    monkeypatch.setattr(
+        route_module,
+        "load_model_routing_config",
+        lambda: ModelRoutingConfig(
+            node_routing={"literary_eval_live": task_config},
+            task_routing={},
+            retry_budget={},
+            job_runtime={},
+        ),
+    )
+    monkeypatch.setattr(
+        route_module,
+        "load_llm_provider_runtime_configs",
+        lambda: {
+            "local_qwen3": ProviderRuntimeConfig(
+                provider_id="local_qwen3",
+                provider_type="openai_compatible",
+                base_url="http://127.0.0.1:8080/v1",
+                credential_mode="none",
+                enabled=True,
+                models=("Qwen3-14B-Q8_0.gguf",),
+            )
+        },
+    )
+
+    class FakeLiveGenerator:
+        def __init__(self, *_args, model: str, provider_id: str | None, credential_mode: str | None, **_kwargs) -> None:
+            assert model == "Qwen3-14B-Q8_0.gguf"
+            assert provider_id == "local_qwen3"
+            assert credential_mode == "none"
+
+        def __call__(self, case):
+            return {
+                "generated_text": "gate letter archive page dock urgency gesture tension suspicion visual hook",
+                "provider": "openai_compatible",
+                "model": "Qwen3-14B-Q8_0.gguf",
+                "request_id": f"fake_{case.case_id}",
+            }
+
+    monkeypatch.setattr(route_module, "LLMLiteraryCaseGenerator", FakeLiveGenerator)
+
+    response = client.post("/api/v1/literary-eval/run", json={"mode": "live"})
+
+    assert response.status_code == 200
+    report = response.json()["data"]["report"]
+    assert report["mode"] == "live"
+    assert report["cases"][0]["generation"]["model"] == "Qwen3-14B-Q8_0.gguf"
+    assert report_path.exists()

@@ -55,19 +55,24 @@ def _generator_for_mode(mode: str, *, model: str | None):
     settings = get_settings()
     if not settings.llm_enabled:
         raise SystemExit("live literary eval requires NOVEL_SYSTEM_LLM_ENABLED=true")
-    if not settings.llm_api_key:
-        raise SystemExit("live literary eval requires NOVEL_SYSTEM_LLM_API_KEY")
 
     routing = load_model_routing_config()
     task_config = routing.node_routing.get("literary_eval_live") or routing.node_routing.get("style_draft")
     if task_config is None and model is None:
         raise SystemExit("live literary eval requires --model or task_routing.stylize")
+    provider_configs = load_llm_provider_runtime_configs()
+    if not _live_credentials_available(
+        settings.llm_api_key,
+        provider_configs,
+        provider_id=task_config.provider_id if task_config is not None else None,
+    ):
+        raise SystemExit("live literary eval requires a configured API key or credential-free local provider")
     client = LLMClient(
         provider=settings.llm_provider,
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key,
         timeout_seconds=settings.llm_timeout_seconds,
-        provider_configs=load_llm_provider_runtime_configs(),
+        provider_configs=provider_configs,
     )
     return LLMLiteraryCaseGenerator(
         client,
@@ -82,6 +87,20 @@ def _generator_for_mode(mode: str, *, model: str | None):
         temperature=task_config.temperature if task_config is not None else 0.75,
         max_output_tokens=task_config.max_output_tokens if task_config is not None else 1200,
     )
+
+
+def _live_credentials_available(api_key: str | None, provider_configs: dict, *, provider_id: str | None) -> bool:
+    if api_key:
+        return True
+    candidates = [provider_configs[provider_id]] if provider_id and provider_id in provider_configs else provider_configs.values()
+    for provider_config in candidates:
+        if not provider_config.enabled:
+            continue
+        if provider_config.credential_mode == "none":
+            return True
+        if provider_config.api_key or provider_config.access_token:
+            return True
+    return False
 
 
 def _default_suite_path() -> Path:

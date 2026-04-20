@@ -73,6 +73,16 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
                     "scene_status": "human_review_required",
                     "current_human_review_event_id": state.current_human_review_event_id,
                 }
+            if blocked_scene == scene_id and block_kind == "partial_rewrite":
+                state.scene_status = "hard_qc_partial_rewrite_required"
+                state.current_human_review_event_id = None
+                state.current_final_scene_row_id = None
+                self.session.flush()
+                return {
+                    "scene_status": "hard_qc_partial_rewrite_required",
+                    "current_human_review_event_id": None,
+                    "current_final_scene_row_id": None,
+                }
 
             state.scene_status = "archived"
             state.current_human_review_event_id = None
@@ -202,6 +212,30 @@ def test_chapter_run_full_blocks_on_human_review_and_resume_retries_blocked_scen
     resumed = resumed_response.json()["data"]
     assert resumed["status"] == "completed"
     assert resumed["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02"]
+
+
+def test_chapter_run_full_blocks_when_scene_finishes_without_final_scene(client, session, monkeypatch) -> None:
+    _create_chapter(client, "CH900")
+    _create_scene(client, "CH900", "CH900_SC01", 1)
+    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
+    shared = _install_fake_runner(monkeypatch, blocked_scene="CH900_SC01", block_kind="partial_rewrite")
+
+    response = client.post(
+        "/api/v1/chapters/CH900/run/full",
+        headers={"X-Idempotency-Key": "chapter-run-partial-rewrite-block"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "blocked"
+    assert data["current_scene_id"] == "CH900_SC01"
+    assert data["completed_scene_ids"] == []
+    assert data["blocked_scene_id"] == "CH900_SC01"
+    assert data["latest_error"] == {
+        "code": "CHAPTER_RUN_SCENE_INCOMPLETE",
+        "message": "scene run did not produce a final scene",
+    }
+    assert shared["calls"] == ["CH900_SC01"]
 
 
 def test_chapter_run_full_stays_blocked_until_human_review_resolves(client, session, monkeypatch) -> None:
@@ -436,3 +470,51 @@ def test_chapter_run_status_preserves_failed_job_visibility(client, session) -> 
         "code": "CHAPTER_RUN_FAILED",
         "message": "scene execution crashed",
     }
+
+
+def test_chapter_run_status_reconciles_external_finalized_scene_progress(client, session) -> None:
+    _create_chapter(client, "CH900")
+    _create_scene(client, "CH900", "CH900_SC01", 1, is_chapter_last=1)
+    state = session.get(SceneRunState, "CH900_SC01")
+    assert state is not None
+    state.scene_status = "archived"
+    state.current_final_scene_row_id = "final_scene_CH900_SC01_v1"
+    session.add(
+        ChapterRunJob(
+            job_id="chapter_run_CH900_stale_blocked",
+            chapter_id="CH900",
+            status="blocked",
+            job_type="chapter_run_full",
+            payload_json={
+                "scene_ids": ["CH900_SC01"],
+                "completed_scene_ids": [],
+                "current_scene_id": "CH900_SC01",
+                "blocked_scene_id": "CH900_SC01",
+            },
+            result_summary_json={
+                "scene_ids": ["CH900_SC01"],
+                "completed_scene_ids": [],
+                "current_scene_id": "CH900_SC01",
+                "blocked_scene_id": "CH900_SC01",
+                "latest_error": {
+                    "code": "CHAPTER_RUN_SCENE_INCOMPLETE",
+                    "message": "scene run did not produce a final scene",
+                },
+            },
+            worker_id="local-process",
+            attempt_no=1,
+            error_code="CHAPTER_RUN_SCENE_INCOMPLETE",
+            error_text="scene run did not produce a final scene",
+        )
+    )
+    session.commit()
+
+    status_response = client.get("/api/v1/chapters/CH900/run-status")
+
+    assert status_response.status_code == 200
+    status_payload = status_response.json()["data"]
+    assert status_payload["status"] == "completed"
+    assert status_payload["completed_scene_ids"] == ["CH900_SC01"]
+    assert status_payload["blocked_scene_id"] is None
+    assert status_payload["current_scene_id"] == "CH900_SC01"
+    assert status_payload["latest_error"] is None

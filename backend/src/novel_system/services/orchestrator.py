@@ -179,6 +179,10 @@ class Orchestrator:
 
     @staticmethod
     def _prepare_state_for_run(state: SceneRunState) -> None:
+        preserve_hard_retry_state = (
+            state.current_final_scene_row_id is None
+            and state.scene_status in {"hard_qc_partial_rewrite_required", "hard_qc_full_rewrite_required"}
+        )
         state.current_bundle_id = None
         state.current_bundle_hash = None
         state.current_neutral_draft_row_id = None
@@ -187,11 +191,12 @@ class Orchestrator:
         state.current_human_review_event_id = None
         state.current_qc_report_id = None
         state.total_attempt_count = 0
-        state.hard_partial_rewrite_count = 0
-        state.hard_full_rewrite_count = 0
         state.soft_patch_count = 0
-        state.repeat_issue_key = None
-        state.repeat_issue_count = 0
+        if not preserve_hard_retry_state:
+            state.hard_partial_rewrite_count = 0
+            state.hard_full_rewrite_count = 0
+            state.repeat_issue_key = None
+            state.repeat_issue_count = 0
 
     def _rewrite_brief_from_report(self, qc_report_id: str) -> list[str]:
         report = self.session.get(QcReport, qc_report_id)
