@@ -2274,6 +2274,12 @@ pre {
   font-weight: 700;
 }
 
+.reference-flow-step.blocked {
+  border-color: rgba(132, 45, 29, 0.28);
+  background: rgba(132, 45, 29, 0.1);
+  color: #842d1d;
+}
+
 .reference-action-hint {
   grid-column: 1 / -1;
   margin: 0;
@@ -2364,6 +2370,58 @@ pre {
 .reference-source {
   color: rgba(27, 24, 21, 0.56);
   font-size: 0.9rem;
+}
+
+.source-hidden {
+  display: inline-flex;
+  margin-left: 0.35rem;
+  color: rgba(27, 24, 21, 0.52);
+}
+
+.dragon-demo-workspace {
+  border-color: rgba(29, 58, 83, 0.18);
+  background: rgba(247, 249, 247, 0.72);
+}
+
+.dragon-demo-flow {
+  margin-top: 0;
+}
+
+.dragon-demo-blockers,
+.dragon-demo-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.dragon-demo-results {
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.dragon-demo-chapter {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.95rem;
+  border: 1px solid rgba(37, 51, 66, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+  min-width: 0;
+}
+
+.dragon-demo-final {
+  max-height: 15rem;
+  margin: 0;
+  padding: 0.85rem;
+  overflow: auto;
+  border-radius: 8px;
+  background: rgba(248, 246, 239, 0.82);
+  color: rgba(27, 24, 21, 0.78);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .reference-summary {

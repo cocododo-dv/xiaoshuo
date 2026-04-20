@@ -165,6 +165,8 @@ describe("reference learning api helpers", () => {
       scope: "chapter",
       scope_ref_id: "CH001",
     });
+    await api.fetchDragonXianxiaDemoStatus();
+    await api.runDragonXianxiaDemo();
     await api.rejectReview("review_reffind_1", { reason: "重复样本" });
 
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/reference-books");
@@ -183,6 +185,11 @@ describe("reference learning api helpers", () => {
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha/profiles/refprofile_alpha/apply",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/demo/dragon-xianxia/status");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/demo/dragon-xianxia/run",
       expect.objectContaining({ method: "POST" }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
@@ -332,6 +339,20 @@ describe("reference learning store", () => {
     expect(source).toContain("reference-profile-summary");
     expect(source).toContain("reference-profile-json");
     expect(source).toContain('v-if="false"');
+  });
+
+  it("renders the dragon xianxia demo workspace without source excerpts", () => {
+    const source = readFileSync(REFERENCE_VIEW_PATH, "utf8");
+
+    expect(source).toContain("dragonDemoStatus");
+    expect(source).toContain("loadDragonDemoStatus");
+    expect(source).toContain("runDragonDemo");
+    expect(source).toContain('data-testid="dragon-demo-workspace"');
+    expect(source).toContain('data-testid="dragon-demo-run"');
+    expect(source).toContain("source_excerpt_hidden");
+    expect(source).toContain("profile.preview_items");
+    expect(source).not.toContain("finding.source_segment?.preview");
+    expect(source).not.toContain("const profileJson = profile?.profile_json || {}");
   });
 
   it("keeps shell notices compact and human readable", () => {

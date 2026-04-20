@@ -107,10 +107,6 @@ async function approveReview(request, reviewId, suffix) {
   );
 }
 
-async function releaseReview(request, reviewId, suffix) {
-  return postJson(request, `/api/v1/review-items/${reviewId}/release`, {}, `release-${suffix}`);
-}
-
 function expectNoSourceLeakage(value) {
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
   for (const marker of FORBIDDEN_SOURCE_MARKERS) {
@@ -164,82 +160,27 @@ async function prepareSafeReferenceProfile(request) {
   return { bookId, profile: completed.profile };
 }
 
-async function createChapterDemo(request, chapter, index) {
-  await postJson(
-    request,
-    "/api/v1/chapters",
-    {
-      chapter_id: chapter.chapterId,
-      planned_scene_count: 1,
-      chapter_goal: chapter.goal,
-      main_plot_push: chapter.push,
-      emotional_target: chapter.emotion,
-      ending_effect: chapter.ending,
-      must_not: "Do not reuse protected source names, settings, declarations, or recognizable plot bridges.",
-      notes: "Three-chapter cultivation demo generated from safe abstract reference profile mechanics.",
-    },
-    `dragon-xianxia-create-${chapter.chapterId}`,
-  );
-  await postJson(
-    request,
-    "/api/v1/scenes",
-    {
-      scene_id: chapter.sceneId,
-      chapter_id: chapter.chapterId,
-      scene_seq: 1,
-      pov_character_id: "CHAR_A",
-      onstage_chars_json: ["CHAR_A", "CHAR_B"],
-      location: chapter.location,
-      scene_goal: chapter.sceneGoal,
-      beats_json: chapter.beats,
-      must_include_text: chapter.mustInclude,
-      forbidden_text: FORBIDDEN_SOURCE_MARKERS.join(" "),
-      exit_change: chapter.ending,
-      hook: index === CHAPTERS.length - 1 ? "demo endpoint with sequel hook" : "continue",
-      target_length_band: "short",
-      scene_type: "cultivation_trial",
-      is_chapter_last: 1,
-    },
-    `dragon-xianxia-create-${chapter.sceneId}`,
-  );
-}
-
-async function applyAndReleaseProfile(request, bookId, profileId, chapter, index) {
-  const applied = await postJson(
-    request,
-    `/api/v1/reference-books/${bookId}/profiles/${profileId}/apply`,
-    { scope: "chapter", scope_ref_id: chapter.chapterId },
-    `dragon-xianxia-apply-${chapter.chapterId}`,
-  );
-  expect(applied.applied).toBe(false);
-  expect(new Set(applied.reviews.map((item) => item.item_type))).toEqual(
-    new Set(["style_rule_set", "narrative_pattern"]),
-  );
-
-  for (const [reviewIndex, review] of applied.reviews.entries()) {
-    await approveReview(request, review.review_id, `dragon-xianxia-apply-${index}-${reviewIndex}`);
-    await releaseReview(request, review.review_id, `dragon-xianxia-apply-${index}-${reviewIndex}`);
-  }
-}
-
 test("turns a safe Dragon reference-learning profile into a three-chapter xianxia demo without source leakage", async ({
   page,
   request,
 }) => {
-  const { bookId, profile } = await prepareSafeReferenceProfile(request);
+  await prepareSafeReferenceProfile(request);
 
-  for (const [index, chapter] of CHAPTERS.entries()) {
-    await createChapterDemo(request, chapter, index);
-    await applyAndReleaseProfile(request, bookId, profile.profile_id, chapter, index);
-    const run = await postJson(
-      request,
-      `/api/v1/chapters/${chapter.chapterId}/run/full`,
-      {},
-      `dragon-xianxia-run-${chapter.chapterId}`,
-    );
-    expect(run.status, JSON.stringify(run)).toBe("completed");
-    expect(run.completed_scene_ids).toContain(chapter.sceneId);
+  await page.goto("/");
+  await configureConnection(page, { apiBase: API_BASE, operatorRef: OPERATOR_REF });
+  await page.getByTestId("nav-reference").click();
+  await expect(page.getByTestId("reference-learning-view")).toBeVisible();
+  await expect(page.getByTestId("dragon-demo-workspace")).toBeVisible();
+  await expect(page.getByTestId("dragon-demo-run")).toBeEnabled({ timeout: 30000 });
+  await page.getByTestId("dragon-demo-run").click();
+  await expect(page.getByTestId("dragon-demo-workspace")).toContainText(
+    `Offline style draft for ${CHAPTERS[2].sceneId}.`,
+    { timeout: 90000 },
+  );
+  await expect(page.getByTestId("dragon-demo-workspace")).toContainText("泄漏检查 通过");
+  await expect(page.getByTestId("dragon-demo-workspace")).not.toContainText("txt8080");
 
+  for (const chapter of CHAPTERS) {
     const workbench = await getJson(request, `/api/v1/scenes/${chapter.sceneId}/workbench`);
     expect(workbench.scene_run_state.current_final_scene_row_id).toBeTruthy();
     expect(workbench.final_scene?.content || "").toContain(`Offline style draft for ${chapter.sceneId}.`);
@@ -247,8 +188,7 @@ test("turns a safe Dragon reference-learning profile into a three-chapter xianxi
     expectNoSourceLeakage(workbench.final_scene?.content || "");
   }
 
-  await page.goto("/");
-  await configureConnection(page, { apiBase: API_BASE, operatorRef: OPERATOR_REF });
+  await page.getByTestId("nav-workbench").click();
   await page.getByTestId("scene-id-input").fill(CHAPTERS[2].sceneId);
   await page.getByTestId("scene-load-button").click();
   await expect(page.getByTestId("scene-workbench-view")).toContainText(`Offline style draft for ${CHAPTERS[2].sceneId}.`);
