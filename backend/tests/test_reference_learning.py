@@ -308,7 +308,8 @@ def test_learning_run_pauses_for_review_then_completes_profile(client, tmp_path:
     assert {"style_rule_set", "style_observation", "narrative_pattern"} <= {
         finding["review"]["item_type"] for finding in findings
     }
-    assert all(finding["source_segment"]["preview"] for finding in findings)
+    assert all(finding["source_excerpt_hidden"] is True for finding in findings)
+    assert all(finding["source_segment"]["preview"] is None for finding in findings)
 
     run_id = first_advance["run"]["run_id"]
     waiting_again = client.post(
@@ -349,6 +350,19 @@ def test_learning_run_pauses_for_review_then_completes_profile(client, tmp_path:
     assert data["profile"]["coverage"]["approved_findings"] >= 4
     assert "style_profile" in data["profile"]["profile_json"]
     assert "narrative_patterns" in data["profile"]["profile_json"]
+
+
+def test_reference_finding_response_hides_source_excerpt_by_default(client, tmp_path: Path) -> None:
+    book_id = _import_reference_book(client, tmp_path)
+    first_advance = _start_and_advance(client, book_id)
+
+    finding = first_advance["round"]["findings"][0]
+
+    assert finding["source_excerpt_hidden"] is True
+    assert finding["evidence_preview"] is None
+    assert finding["source_segment"]["preview"] is None
+    assert finding["source_segment"]["segment_kind"]
+    assert finding["summary"]
 
 
 def test_review_reject_marks_status_and_does_not_materialize(client, session) -> None:

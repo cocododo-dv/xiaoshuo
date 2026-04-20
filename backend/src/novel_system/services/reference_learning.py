@@ -1083,13 +1083,14 @@ class ReferenceLearningService:
             "finding_type": finding.finding_type,
             "dimension": finding.dimension,
             "summary": finding.summary,
-            "evidence_preview": finding.evidence_preview,
+            "evidence_preview": None,
+            "source_excerpt_hidden": True,
             "status": finding.status,
             "source_segment": {
                 "segment_id": segment.segment_id if segment else finding.segment_id,
                 "segment_kind": segment.segment_kind if segment else None,
                 "chapter_hint": segment.chapter_hint if segment else None,
-                "preview": _preview(segment.text) if segment else finding.evidence_preview,
+                "preview": None,
             },
             "review": self.serialize_review(review) if review else None,
         }
@@ -1111,6 +1112,7 @@ class ReferenceLearningService:
     @staticmethod
     def serialize_profile(profile: ReferenceProfile) -> dict[str, Any]:
         safety_summary = _profile_safety_summary(profile.profile_json, stripped_count=_profile_stripped_count(profile))
+        display_profile_json, display_safety_summary = _sanitize_reference_profile_payload(dict(profile.profile_json or {}))
         coverage = dict(profile.coverage_json or {})
         coverage["safety_summary"] = safety_summary
         coverage.setdefault("profile_stale", profile.status == PROFILE_STATUS_STALE)
@@ -1121,8 +1123,11 @@ class ReferenceLearningService:
             "title": profile.title,
             "status": profile.status,
             "profile_json": profile.profile_json,
+            "display_profile_json": display_profile_json,
+            "preview_items": _profile_preview_items(display_profile_json),
             "coverage": coverage,
             "safety_summary": safety_summary,
+            "display_safety_summary": display_safety_summary,
             "source_finding_ids": profile.source_finding_ids_json,
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
@@ -1242,6 +1247,35 @@ def _abstract_profile_fallback(text: str) -> str:
     if "pressure" in lowered or "rhythm" in lowered or "syntax" in lowered:
         return "Use compact pressure beats before a longer emotional release sentence."
     return "Convert the reference into abstract craft guidance and avoid recognizable source material."
+
+
+def _profile_preview_items(profile_json: dict[str, Any]) -> list[str]:
+    style_profile = profile_json.get("style_profile") if isinstance(profile_json.get("style_profile"), dict) else {}
+    features = style_profile.get("features") if isinstance(style_profile.get("features"), dict) else {}
+    preview_items: list[str] = []
+    for key in sorted(features):
+        feature = features.get(key)
+        if not isinstance(feature, dict):
+            continue
+        guidance = feature.get("guidance")
+        items = guidance if isinstance(guidance, list) else [guidance] if guidance else []
+        for item in items:
+            text = str(item or "").strip()
+            if text:
+                preview_items.append(f"{key}: {text}")
+            if len(preview_items) >= 3:
+                break
+        if len(preview_items) >= 3:
+            break
+    narrative_patterns = profile_json.get("narrative_patterns")
+    if isinstance(narrative_patterns, list):
+        for item in narrative_patterns:
+            text = str(item or "").strip()
+            if text:
+                preview_items.append(f"narrative: {text}")
+            if len(preview_items) >= 4:
+                break
+    return preview_items[:4]
 
 
 def _profile_stripped_count(profile: ReferenceProfile) -> int:

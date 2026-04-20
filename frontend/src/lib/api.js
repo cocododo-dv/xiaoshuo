@@ -252,6 +252,14 @@ export function applyReferenceProfile(bookId, profileId, payload) {
   );
 }
 
+export function fetchDragonXianxiaDemoStatus() {
+  return apiGet("/api/v1/demo/dragon-xianxia/status");
+}
+
+export function runDragonXianxiaDemo(payload = {}) {
+  return apiPost("/api/v1/demo/dragon-xianxia/run", payload);
+}
+
 export function fetchWorkbench(sceneId) {
   return apiGet(`/api/v1/scenes/${sceneId}/workbench`);
 }

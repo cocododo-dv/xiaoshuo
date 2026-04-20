@@ -4,6 +4,7 @@ import { computed, onActivated, ref } from "vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { fetchDragonXianxiaDemoStatus, runDragonXianxiaDemo } from "../lib/api";
 import { useShellRouter } from "../router";
 import { useReferenceLearningStore } from "../stores/referenceLearning";
 
@@ -20,6 +21,11 @@ const { receipt, running, runFlowAction } = useFlowActionFeedback({
 const REFERENCE_IMPORT_SCOPE = "reference:import";
 const REFERENCE_RUN_SCOPE = "reference:run";
 const REFERENCE_LIBRARY_SCOPE = "reference:library";
+const DRAGON_DEMO_SCOPE = "reference:dragon-demo";
+
+const dragonDemoStatus = ref(null);
+const dragonDemoError = ref("");
+const dragonDemoLoading = ref(false);
 
 const selectedBook = computed(() => referenceLearning.detail?.book || referenceLearning.selectedBook || null);
 const coverage = computed(() => referenceLearning.coverage || {});
@@ -33,6 +39,44 @@ const readyProfiles = computed(() => profiles.value.filter((profile) => !isProfi
 const staleProfiles = computed(() => profiles.value.filter((profile) => isProfileStale(profile)));
 const coveredDimensions = computed(() => coverage.value.covered_dimensions || []);
 const coveredFindingTypes = computed(() => coverage.value.covered_finding_types || []);
+const dragonDemoBlockers = computed(() => dragonDemoStatus.value?.blockers || []);
+const dragonDemoChapters = computed(() => dragonDemoStatus.value?.chapters || []);
+const dragonDemoLeakage = computed(() => dragonDemoStatus.value?.leakage_check || { passed: false, hits: [] });
+const dragonDemoReady = computed(() => dragonDemoStatus.value?.ready === true);
+const dragonDemoModeLabel = computed(() =>
+  dragonDemoStatus.value?.mode === "offline_placeholder"
+    ? "离线占位模式"
+    : dragonDemoStatus.value?.mode === "live"
+      ? "真实生成模式"
+      : "状态未加载",
+);
+const dragonDemoSteps = computed(() => [
+  {
+    key: "book",
+    label: "参考样本",
+    state: dragonDemoStatus.value?.book_id ? "done" : "blocked",
+  },
+  {
+    key: "profile",
+    label: "安全画像",
+    state: dragonDemoStatus.value?.profile_id ? "done" : "blocked",
+  },
+  {
+    key: "chapters",
+    label: "三章创建",
+    state: dragonDemoChapters.value.length === 3 ? "done" : "pending",
+  },
+  {
+    key: "run",
+    label: "章节运行",
+    state: dragonDemoChapters.value.some((chapter) => chapter.final_scene) ? "done" : "pending",
+  },
+  {
+    key: "leakage",
+    label: "最终检查",
+    state: dragonDemoLeakage.value?.passed ? "done" : dragonDemoBlockers.value.length ? "blocked" : "pending",
+  },
+]);
 const canAdvance = computed(() =>
   Boolean(
     referenceLearning.selectedBookId &&
@@ -294,22 +338,29 @@ function profileStatusLabel(profile) {
   return labelForStatus(profile?.status);
 }
 
+function displayProfileJson(profile) {
+  return profile?.display_profile_json || {};
+}
+
 function profileSummary(profile) {
-  const profileJson = profile?.profile_json || {};
-  const styleProfile = profileJson.style_profile || {};
+  const displayJson = displayProfileJson(profile);
+  const styleProfile = displayJson.style_profile || {};
   const features = styleProfile.features || {};
   const guidedFeatures = Object.values(features).filter((feature) => {
     const guidance = feature?.guidance;
     return Array.isArray(guidance) ? guidance.length : Boolean(guidance);
   }).length;
-  const narrativeCount = Array.isArray(profileJson.narrative_patterns) ? profileJson.narrative_patterns.length : 0;
+  const narrativeCount = Array.isArray(displayJson.narrative_patterns) ? displayJson.narrative_patterns.length : 0;
   const bannedCount = Array.isArray(styleProfile.banned_moves) ? styleProfile.banned_moves.length : 0;
   return `${guidedFeatures} 条文笔特征 · ${narrativeCount} 条叙事模式 · ${bannedCount} 条禁复刻规则`;
 }
 
 function profilePreviewItems(profile) {
-  const profileJson = profile?.profile_json || {};
-  const styleProfile = profileJson.style_profile || {};
+  if (profile && Array.isArray(profile.preview_items)) {
+    return profile.preview_items.filter(Boolean).slice(0, 4);
+  }
+  const displayJson = displayProfileJson(profile);
+  const styleProfile = displayJson.style_profile || {};
   const features = styleProfile.features || {};
   const featureGuidance = Object.entries(features)
     .flatMap(([key, feature]) => {
@@ -318,8 +369,8 @@ function profilePreviewItems(profile) {
       return items.map((item) => `${key}: ${item}`);
     })
     .slice(0, 3);
-  const narrativePatterns = Array.isArray(profileJson.narrative_patterns)
-    ? profileJson.narrative_patterns.map((item) => `narrative: ${item}`).slice(0, 2)
+  const narrativePatterns = Array.isArray(displayJson.narrative_patterns)
+    ? displayJson.narrative_patterns.map((item) => `narrative: ${item}`).slice(0, 2)
     : [];
   return [...featureGuidance, ...narrativePatterns].slice(0, 4);
 }
@@ -339,6 +390,80 @@ function handleReceiptNavigate(target) {
   if (target?.view) {
     navigate(target.view);
   }
+}
+
+function dragonDemoBlockerLabel(blocker) {
+  const labels = {
+    DRAGON_REFERENCE_BOOK_NOT_FOUND: "本机参考样本缺失",
+    DRAGON_PROFILE_NOT_READY: "安全画像缺失、过期或不安全",
+    DRAGON_SOURCE_LEAKAGE: "终稿命中来源泄漏标记",
+  };
+  return labels[blocker?.code] || blocker?.message || blocker?.code || "Demo 已阻塞";
+}
+
+function dragonDemoNextStep(blockers = dragonDemoBlockers.value) {
+  if (blockers.some((blocker) => blocker.code === "DRAGON_PROFILE_NOT_READY")) {
+    return "继续分析参考样本，直到生成 ready 且 safe 的画像。";
+  }
+  if (blockers.some((blocker) => blocker.code === "DRAGON_REFERENCE_BOOK_NOT_FOUND")) {
+    return "先恢复或导入本机《龙族》参考样本。";
+  }
+  if (blockers.some((blocker) => blocker.code === "DRAGON_SOURCE_LEAKAGE")) {
+    return "检查生成 bundle，清除来源标记后再发布。";
+  }
+  if (dragonDemoStatus.value?.mode === "offline_placeholder") {
+    return "配置 LLM 后可生成真实小说稿；当前只能算管线 smoke。";
+  }
+  return "查看三章终稿、QC 和泄漏检查结果。";
+}
+
+async function loadDragonDemoStatus({ quiet = false } = {}) {
+  dragonDemoLoading.value = true;
+  dragonDemoError.value = "";
+  try {
+    dragonDemoStatus.value = await fetchDragonXianxiaDemoStatus();
+    return dragonDemoStatus.value;
+  } catch (error) {
+    dragonDemoError.value = error.message;
+    if (!quiet) {
+      emit("notice", error.message);
+    }
+    return null;
+  } finally {
+    dragonDemoLoading.value = false;
+  }
+}
+
+async function runDragonDemo() {
+  dragonDemoError.value = "";
+  await runFlowAction({
+    scopeKey: DRAGON_DEMO_SCOPE,
+    actionLabel: "Run xianxia demo",
+    runningMessage: "正在运行三章修仙 Demo...",
+    successMessage: (result) =>
+      result?.mode === "offline_placeholder"
+        ? "三章 Demo 已完成（离线占位模式）。"
+        : "三章 Demo 已完成。",
+    nextStep: () => dragonDemoNextStep(),
+    failureNextStep: (error) => dragonDemoNextStep(error?.details?.blockers || dragonDemoBlockers.value),
+    action: async () => {
+      try {
+        const result = await runDragonXianxiaDemo();
+        dragonDemoStatus.value = result;
+        return result;
+      } catch (error) {
+        dragonDemoError.value = error.message;
+        if (error?.details?.blockers) {
+          dragonDemoStatus.value = {
+            ...(dragonDemoStatus.value || {}),
+            ready: false,
+            blockers: error.details.blockers,
+          };
+        }
+        throw error;
+      }
+    },
+  });
 }
 
 async function ensureLoaded() {
@@ -464,6 +589,7 @@ function openKnowledgeConsole() {
 
 onActivated(() => {
   referenceLearning.initialize().catch((error) => emit("notice", error.message));
+  loadDragonDemoStatus({ quiet: true });
 });
 </script>
 
@@ -709,6 +835,83 @@ onActivated(() => {
           </div>
         </article>
 
+        <article class="reference-section panel dragon-demo-workspace" data-testid="dragon-demo-workspace">
+          <div class="reference-section-head">
+            <div>
+              <div class="eyebrow">Demo Studio</div>
+              <h3>三章修仙 Demo</h3>
+              <p class="muted">{{ dragonDemoModeLabel }}</p>
+            </div>
+            <div class="actions">
+              <button type="button" class="ghost" :disabled="dragonDemoLoading" @click="loadDragonDemoStatus">
+                {{ dragonDemoLoading ? "刷新中..." : "刷新" }}
+              </button>
+              <button
+                type="button"
+                data-testid="dragon-demo-run"
+                :disabled="!dragonDemoReady || running(DRAGON_DEMO_SCOPE)"
+                @click="runDragonDemo"
+              >
+                {{ running(DRAGON_DEMO_SCOPE) ? "运行中..." : "运行 Demo" }}
+              </button>
+            </div>
+          </div>
+          <FlowActionReceipt :receipt="receipt(DRAGON_DEMO_SCOPE)" />
+
+          <div class="reference-flow dragon-demo-flow" aria-label="dragon xianxia demo workflow">
+            <span
+              v-for="step in dragonDemoSteps"
+              :key="step.key"
+              class="reference-flow-step"
+              :class="{ done: step.state === 'done', blocked: step.state === 'blocked' }"
+            >
+              {{ step.label }}
+            </span>
+            <p class="reference-action-hint">{{ dragonDemoNextStep() }}</p>
+          </div>
+
+          <div v-if="dragonDemoError" class="inline-error">
+            <strong>Demo 已阻塞</strong>
+            <p>{{ dragonDemoError }}</p>
+          </div>
+
+          <div v-if="dragonDemoBlockers.length" class="dragon-demo-blockers">
+            <span v-for="blocker in dragonDemoBlockers" :key="blocker.code" class="badge status-rejected">
+              {{ dragonDemoBlockerLabel(blocker) }}
+            </span>
+          </div>
+
+          <div class="dragon-demo-status-row">
+            <span class="badge ghost">样本 {{ dragonDemoStatus?.book_id || "未找到" }}</span>
+            <span class="badge ghost">画像 {{ dragonDemoStatus?.profile_id || "未就绪" }}</span>
+            <span class="badge" :class="dragonDemoLeakage.passed ? 'status-approved' : 'status-pending'">
+              泄漏检查 {{ dragonDemoLeakage.passed ? "通过" : "待检查" }}
+            </span>
+          </div>
+
+          <div v-if="dragonDemoChapters.length" class="dragon-demo-results">
+            <article v-for="chapter in dragonDemoChapters" :key="chapter.chapter_id" class="dragon-demo-chapter">
+              <div class="reference-card-top">
+                <div>
+                  <strong>{{ chapter.chapter_id }}</strong>
+                  <p class="muted">{{ chapter.scene_id }}</p>
+                </div>
+                <span class="badge" :class="chapter.status === 'completed' ? 'status-approved' : 'status-pending'">
+                  {{ chapter.status }}
+                </span>
+              </div>
+              <p v-if="chapter.final_scene?.content" class="dragon-demo-final">{{ chapter.final_scene.content }}</p>
+              <p v-else class="muted">终稿待生成。</p>
+              <div class="dragon-demo-status-row">
+                <span class="badge ghost">
+                  QC {{ chapter.qc_summary ? (chapter.qc_summary.pass_flag === false ? "失败" : "通过") : "待检查" }}
+                </span>
+                <span class="badge ghost">证据 {{ chapter.bundle?.bundle_snapshot_hash || "待生成" }}</span>
+              </div>
+            </article>
+          </div>
+        </article>
+
         <article class="reference-section panel">
           <div class="reference-section-head">
             <div>
@@ -745,7 +948,8 @@ onActivated(() => {
 
                   <p class="reference-source">
                     {{ finding.source_segment?.chapter_hint || finding.source_segment?.segment_kind || "片段" }}
-                    · {{ finding.source_segment?.preview || finding.evidence_preview }}
+                    <span v-if="finding.source_excerpt_hidden" class="source-hidden">source excerpt hidden</span>
+                    <span v-else>· {{ finding.evidence_preview || "abstract summary" }}</span>
                   </p>
                   <p class="reference-summary">{{ finding.summary }}</p>
                   <p class="reference-risk">{{ findingRisk(finding) }}</p>
