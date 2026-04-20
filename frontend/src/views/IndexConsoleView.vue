@@ -11,6 +11,7 @@ import VirtualList from "../components/VirtualList.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { shouldClearIndexFocus } from "../lib/filterFocus";
 import { prioritizeMatchingItem } from "../lib/listPriority";
+import { formatReadableTargetRef } from "../lib/readableRefs";
 import { useShellRouter } from "../router";
 import { useIndexConsoleStore } from "../stores/indexConsole";
 
@@ -65,6 +66,15 @@ const focusTargetId = computed(() => focusTarget.value?.target_id || "");
 const focusTargetRef = computed(() => focusTarget.value?.target_ref || "");
 const focusedSourceType = computed(() => focusTarget.value?.source_type || "");
 const focusedSourceId = computed(() => focusTarget.value?.source_id ?? null);
+const pendingPublishCount = computed(() =>
+  indexConsole.aliasScopes.filter((item) => item.candidate_alias && item.candidate_alias !== item.active_alias).length,
+);
+const failedVerificationCount = computed(() =>
+  indexConsole.jobs.filter((item) => item.status === "failed" || item.error_text).length,
+);
+const recoveryEventCount = computed(() =>
+  indexConsole.lastRecoveryResult?.created_human_review_events ?? indexConsole.recoveryTimelineItems.length,
+);
 
 const prioritizedJobs = computed(() => {
   const focusJobId = ["verify_job", "reindex_job"].includes(focusTargetType.value) ? focusTargetId.value : null;
@@ -258,12 +268,14 @@ function indexTargetGroupRow(group) {
 }
 
 function indexJobRow(item) {
+  const readableAlias = formatReadableTargetRef(item?.alias_scope);
   return {
     item,
     jobId: item?.job_id || "",
     jobType: item?.job_type || "",
     jobTypeLabel: fmtJobType(item?.job_type, item?.job_type || "-"),
-    aliasScope: item?.alias_scope || "-",
+    aliasScope: readableAlias.label,
+    rawAliasScope: readableAlias.raw || "-",
     statusLabel: fmtStatus(item?.status, item?.status || "-"),
     targetSnapshotVersion: item?.target_snapshot_version || "-",
     targetEmbeddingVersion: item?.target_embedding_version || "-",
@@ -559,7 +571,11 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="panel-grid" data-testid="index-console-view">
-    <PanelShell eyebrow="索引控制台" title="别名、校验与恢复" description="把长列表拆成摘要优先、明细按需的控制台。">
+    <PanelShell
+      eyebrow="索引控制台"
+      title="发布、校验与恢复"
+      description="这是发布、校验、恢复知识与审核结果的后台状态页；普通作者只需要在卡住或要确认证据时查看。"
+    >
       <template #actions>
         <div class="field-inline">
           <button @click="refreshIndex">刷新</button>
@@ -569,6 +585,25 @@ onBeforeUnmount(() => {
       </template>
       <FlowActionReceipt :receipt="receipt(INDEX_ACTION_SCOPE)" />
       <FlowActionReceipt :receipt="receipt(INDEX_JOB_SCOPE)" />
+
+      <div class="stats index-summary-strip" data-testid="index-summary-strip">
+        <div class="stat">
+          <span>待发布</span>
+          <strong>{{ pendingPublishCount }}</strong>
+        </div>
+        <div class="stat">
+          <span>失败校验</span>
+          <strong>{{ failedVerificationCount }}</strong>
+        </div>
+        <div class="stat">
+          <span>恢复事件</span>
+          <strong>{{ recoveryEventCount }}</strong>
+        </div>
+        <div class="stat">
+          <span>说明</span>
+          <strong>长列表默认折叠，例如：校准句 / 全局 / 全局；内部 ID 放在高级详情里。</strong>
+        </div>
+      </div>
 
       <div v-if="indexConsole.loading" class="empty">正在加载别名范围...</div>
       <div v-else-if="indexConsole.error && !indexConsole.aliasScopes.length && !indexConsole.jobs.length" class="empty">{{ indexConsole.error }}</div>
@@ -918,7 +953,12 @@ onBeforeUnmount(() => {
       >
         <template #default="{ row }">
           <div class="job-row" :data-testid="`verify-job-${row.jobId}`" :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === row.jobId }">
-          <div class="job-main"><strong>{{ row.jobTypeLabel }}</strong><div class="muted">{{ row.jobId }}</div><div class="muted">{{ row.aliasScope }}</div></div>
+          <div class="job-main">
+            <strong>{{ row.jobTypeLabel }}</strong>
+            <div class="muted">{{ row.jobId }}</div>
+            <div class="muted">{{ row.aliasScope }}</div>
+            <div class="muted">高级详情：{{ row.rawAliasScope }}</div>
+          </div>
           <div class="job-diagnostics">
             <p><strong>状态</strong><br />{{ row.statusLabel }}</p>
             <p><strong>目标快照</strong><br />{{ row.targetSnapshotVersion }}</p>
@@ -932,8 +972,19 @@ onBeforeUnmount(() => {
             <p><strong>错误</strong><br />{{ row.errorText }}</p>
           </div>
           <div class="job-actions">
+            <p v-if="row.statusLabel === '失败' || row.errorText !== '-'" class="muted">
+              历史校验记录：旧候选或旧目标可能仍保留失败记录，不一定代表当前创作失败。
+            </p>
+            <button
+              v-if="jobTarget(row.item)"
+              class="ghost"
+              type="button"
+              @click="jumpToTarget(withIndexFocusTarget(jobTarget(row.item), 'index_job', row.jobId))"
+            >
+              查看目标
+            </button>
             <button v-if="row.retryable" :disabled="indexConsole.actionId === row.jobId" :data-testid="`retry-verify-job-${row.jobId}`" @click="retry(row.jobId)">重试校验</button>
-            <span v-else class="muted">自动生成</span>
+            <span class="muted">{{ row.retryable ? "无需处理时可忽略历史记录" : "自动生成" }}</span>
           </div>
           </div>
         </template>

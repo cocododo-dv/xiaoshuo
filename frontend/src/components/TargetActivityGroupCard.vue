@@ -1,6 +1,9 @@
 <script setup>
+import { computed } from "vue";
+
 import CursorPager from "./CursorPager.vue";
 import ProgressiveList from "./ProgressiveList.vue";
+import { formatReadableTargetRef } from "../lib/readableRefs";
 
 const props = defineProps({
   group: {
@@ -46,6 +49,7 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["toggle", "open-target", "previous", "next"]);
+const readableTarget = computed(() => formatReadableTargetRef(props.group.target.target_ref));
 
 function formatValue(value, fallback = "-") {
   return value === null || value === undefined || value === "" ? fallback : String(value);
@@ -132,7 +136,8 @@ function targetActivityRow(item) {
   >
     <div class="target-group-head">
       <div class="target-group-meta">
-        <strong>{{ props.group.target.target_ref }}</strong><br />
+        <strong>{{ readableTarget.label }}</strong><br />
+        <span class="muted">高级详情：{{ readableTarget.raw }}</span><br />
         最近时间：{{ props.group.latest_at || "-" }} | 数量：{{ props.group.activity_count ?? 0 }} | 来源：{{ formatSources(props.group.sources) }}
       </div>
       <button

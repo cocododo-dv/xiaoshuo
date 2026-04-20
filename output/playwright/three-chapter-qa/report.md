@@ -46,6 +46,15 @@ Stored in `output/playwright/three-chapter-qa/`:
 - `system-config-complete.png`
 - `author-trash-complete.png`
 
+## 用户标注回应
+
+| Comment | 标注位置 | 是否用上 | 闭环动作与证据 |
+| --- | --- | --- | --- |
+| Comment 1 | 场景工作台 | 已用上，但截图停在默认 `CH001_SC01` 404，容易误判 | `run-scenes-workbench.js` 逐章加载 `CHQA01_SC01`、`CHQA02_SC01`、`CHQA03_SC01` 并调用 `run/full`；证据见 `workbench-complete.png`、`workbench-chqa03-final.png` 和最终行 `final_scene_CHQA##_SC01_v5` |
+| Comment 2 | 索引控制台的 `calibration_line:global:global` 卡片 | 已用上，但内部对象名不可读 | `knowledge-bootstrap.js` 创建 `CAL_QA_THREE_CHAPTERS` 校准句候选，`exercise-remaining-pages.js` 在索引控制台运行到期发布、恢复扫描、展开目标活动与任务列表；证据见 `index-console-complete.png` |
+| Comment 3 | 索引控制台整体 | 已用上，但页面没有说明“发布/校验/恢复”对作者意味着什么 | 闭环中执行了 `run-due-promotions-button`、`run-recovery-sweep-button`，并读取 `/api/v1/index/jobs` 与 `/api/v1/index/runtime-ledger`；建议把摘要、失败校验和高级详情分层展示 |
+| Comment 4 | 知识控制台 | 已用上，但需要了解“候选/血缘/发布”才知道怎么操作 | `knowledge-bootstrap.js` 创建声线、关系、风格、校准句候选，并走过批准、重试校验、发布两条路径；证据见 `knowledge-console-complete.png` |
+
 ## Fixed Issues
 
 | Priority | Issue | Root cause | Fix |

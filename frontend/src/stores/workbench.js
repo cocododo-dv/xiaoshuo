@@ -20,13 +20,38 @@ import {
 } from "../lib/cursorPagination";
 import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 
+export const LAST_WORKBENCH_SCENE_ID_KEY = "novel-system:last-workbench-scene-id";
+
+function readLastWorkbenchSceneId() {
+  if (typeof localStorage === "undefined") {
+    return "";
+  }
+  try {
+    return localStorage.getItem(LAST_WORKBENCH_SCENE_ID_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberWorkbenchSceneId(sceneId) {
+  const value = String(sceneId || "").trim();
+  if (!value || typeof localStorage === "undefined") {
+    return;
+  }
+  try {
+    localStorage.setItem(LAST_WORKBENCH_SCENE_ID_KEY, value);
+  } catch {
+    // Storage can be unavailable in private or embedded browser contexts.
+  }
+}
+
 export const useWorkbenchStore = defineStore("workbench", {
   state: () => ({
-    sceneId: "CH001_SC01",
+    sceneId: readLastWorkbenchSceneId(),
     data: null,
     humanReviewItems: [],
     attemptPager: createCursorPager(),
-    attemptSceneId: "CH001_SC01",
+    attemptSceneId: readLastWorkbenchSceneId(),
     attempts: [],
     loaded: false,
     stale: false,
@@ -52,11 +77,19 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.stale = false;
     },
     async load(sceneId = this.sceneId) {
+      const nextSceneId = String(sceneId || "").trim();
+      if (!nextSceneId) {
+        this.sceneId = "";
+        this.data = null;
+        this.error = "";
+        return;
+      }
       this.loading = true;
       this.error = "";
-      this.sceneId = sceneId;
+      this.sceneId = nextSceneId;
       try {
-        this.data = snapshotPayload(await fetchWorkbench(sceneId));
+        this.data = snapshotPayload(await fetchWorkbench(nextSceneId));
+        rememberWorkbenchSceneId(nextSceneId);
       } catch (error) {
         this.data = null;
         this.error = error.message;
@@ -97,7 +130,16 @@ export const useWorkbenchStore = defineStore("workbench", {
       }
     },
     async refreshAll(sceneId = this.sceneId, { force = false } = {}) {
-      const nextSceneId = sceneId || this.sceneId;
+      const nextSceneId = String(sceneId || this.sceneId || "").trim();
+      if (!nextSceneId) {
+        this.sceneId = "";
+        this.data = null;
+        this.humanReviewItems = [];
+        this.attempts = [];
+        this.error = "";
+        this.loaded = false;
+        return;
+      }
       if (this.loaded && !this.stale && !force && nextSceneId === this.sceneId) {
         return;
       }
@@ -108,6 +150,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         this.loadAttempts(nextSceneId, { reset: force || nextSceneId !== this.attemptSceneId }),
       ]);
       if (!this.error) {
+        rememberWorkbenchSceneId(nextSceneId);
         this.markFresh();
       } else {
         this.loaded = false;

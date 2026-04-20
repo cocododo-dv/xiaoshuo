@@ -18,7 +18,7 @@ import { useWorkbenchStore } from "../stores/workbench";
 const emit = defineEmits(["notice"]);
 
 const workbench = useWorkbenchStore();
-const { focusTarget, openTarget } = useShellRouter();
+const { focusTarget, openTarget, navigate } = useShellRouter();
 const requestedSceneId = ref(workbench.sceneId);
 const manualHoldReason = ref("");
 const selectedStrategies = ref({});
@@ -57,6 +57,31 @@ const focusedHumanReviewEventId = computed(() =>
 const isFocusedRunReceipt = computed(
   () => focusTarget.value?.source_type === "scene_run_receipt" && focusTarget.value?.source_id === workbench.sceneId,
 );
+const currentFinalSceneRowId = computed(() =>
+  workbench.data?.scene_run_state?.current_final_scene_row_id
+  || workbench.lastRunResult?.current_final_scene_row_id
+  || workbench.data?.final_scene?.row_id
+  || "-",
+);
+const attemptEvidenceLabel = computed(() => (workbench.attempts.length ? `${workbench.attempts.length} 条轨迹` : "暂无轨迹"));
+const qcEvidenceLabel = computed(() => {
+  if (!hasData.value) {
+    return "-";
+  }
+  const hard = hardQcSummary.value?.status || hardQcSummary.value?.result || "";
+  const soft = softQcSummary.value?.status || softQcSummary.value?.result || "";
+  return [hard, soft].filter(Boolean).join(" / ") || "已显示";
+});
+const sceneMissingGuidance = computed(() => {
+  const message = String(workbench.error || "").toLowerCase();
+  if (!message) {
+    return "";
+  }
+  if (message.includes("not found") || message.includes("404")) {
+    return "没有找到这个场景。请检查场景 ID，或回到作者工作台从章节里的场景按钮打开。";
+  }
+  return "读取场景时遇到问题。请检查场景 ID，刷新后再试。";
+});
 
 const STATUS_LABELS = {
   ready: "就绪",
@@ -102,6 +127,11 @@ function resolveSceneId() {
   return requestedSceneId.value.trim() || workbench.sceneId;
 }
 
+function openAuthorWorkspace() {
+  navigate("author");
+  emit("notice", "已打开作者工作台");
+}
+
 function sceneCardTarget(sceneId = resolveSceneId()) {
   if (!sceneId) {
     return null;
@@ -139,6 +169,10 @@ function syncSelectedStrategies(items) {
 }
 
 async function loadWorkbench() {
+  if (!resolveSceneId()) {
+    emit("notice", "请先从作者工作台选择场景，或输入场景 ID。");
+    return;
+  }
   await runFlowAction({
     scopeKey: WORKBENCH_MAIN_SCOPE,
     actionLabel: "读取场景",
@@ -150,6 +184,9 @@ async function loadWorkbench() {
 }
 
 async function ensureWorkbenchLoaded() {
+  if (!resolveSceneId()) {
+    return;
+  }
   await workbench.ensureLoaded({ sceneId: resolveSceneId() });
   if (workbench.error) {
     emit("notice", workbench.error);
@@ -172,6 +209,10 @@ async function previousAttemptsPage() {
 
 async function runScene() {
   const sceneId = resolveSceneId();
+  if (!sceneId) {
+    emit("notice", "请先从作者工作台选择场景，或输入场景 ID。");
+    return;
+  }
   const result = await runFlowAction({
     scopeKey: WORKBENCH_MAIN_SCOPE,
     actionLabel: "运行完整场景",
@@ -294,14 +335,19 @@ onDeactivated(() => {
     <PanelShell
       eyebrow="场景工作台"
       title="场景循环与归档"
-      description="跟踪单个场景的章节意图、草稿谱系和归档状态。"
+      description="本页用于生成与验收单场景；平时从作者工作台打开场景后再运行。"
     >
       <template #actions>
         <div class="field-inline">
-          <input v-model="requestedSceneId" class="control-input" data-testid="scene-id-input" />
+          <input
+            v-model="requestedSceneId"
+            class="control-input"
+            data-testid="scene-id-input"
+            placeholder="从作者工作台选择场景，或输入场景 ID"
+          />
           <button data-testid="scene-load-button" @click="loadWorkbench">读取</button>
           <button
-            :disabled="workbench.actionId === 'run-scene' || !runPreflight.can_run"
+            :disabled="workbench.actionId === 'run-scene' || !runPreflight.can_run || !resolveSceneId()"
             data-testid="run-full-scene-button"
             @click="runScene"
           >
@@ -310,6 +356,33 @@ onDeactivated(() => {
         </div>
       </template>
       <FlowActionReceipt :receipt="receipt(WORKBENCH_MAIN_SCOPE)" />
+
+      <div class="stats workbench-purpose-strip" data-testid="workbench-purpose-strip">
+        <div class="stat">
+          <span>用途</span>
+          <strong>本页用于生成与验收单场景</strong>
+        </div>
+        <div class="stat">
+          <span>当前场景</span>
+          <strong>{{ workbench.sceneId || "未选择" }}</strong>
+        </div>
+        <div class="stat">
+          <span>预检</span>
+          <strong>{{ hasData ? formatPreflightStatus(runPreflight.overall_status) : "等待加载" }}</strong>
+        </div>
+        <div class="stat">
+          <span>终稿行</span>
+          <strong>{{ currentFinalSceneRowId }}</strong>
+        </div>
+        <div class="stat">
+          <span>QC</span>
+          <strong>{{ qcEvidenceLabel }}</strong>
+        </div>
+        <div class="stat">
+          <span>运行轨迹</span>
+          <strong>{{ attemptEvidenceLabel }}</strong>
+        </div>
+      </div>
 
       <div v-if="workbench.loading" class="empty">正在加载场景工作台...</div>
       <template v-else-if="hasData">
@@ -645,8 +718,16 @@ onDeactivated(() => {
           <BundleProvenanceCard :snapshot="workbench.data.bundle?.snapshot" />
         </LazySection>
       </template>
-      <div v-else-if="workbench.error" class="empty">{{ workbench.error }}</div>
-      <div v-else class="empty">输入场景 ID 后即可加载工作台。</div>
+      <div v-else-if="workbench.error" class="empty scene-missing-guidance" data-testid="scene-missing-guidance">
+        <p>{{ sceneMissingGuidance }}</p>
+        <p class="muted">错误信息：{{ workbench.error }}</p>
+        <div class="card-actions">
+          <button class="ghost" type="button" @click="openAuthorWorkspace">回到作者工作台</button>
+        </div>
+      </div>
+      <div v-else class="empty" data-testid="scene-workbench-empty">
+        从作者工作台选择场景，或输入场景 ID 加载。
+      </div>
     </PanelShell>
 
     <PanelShell eyebrow="尝试时间线" title="执行轨迹">

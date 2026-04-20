@@ -675,7 +675,7 @@ watch(
     <PanelShell
       eyebrow="知识控制台"
       title="新建候选并查看生效知识"
-      description="按知识家族查看生效行、待审核候选、版本历史和运行时引用。"
+      description="这是长期设定与风格知识库，会影响后续生成，不是写正文的页面。"
     >
       <template #actions>
         <div class="knowledge-filter-grid">
@@ -714,12 +714,27 @@ watch(
         </div>
       </template>
 
+      <div class="stats knowledge-purpose-strip" data-testid="knowledge-purpose-strip">
+        <div class="stat">
+          <span>用途</span>
+          <strong>长期设定与风格知识库</strong>
+        </div>
+        <div class="stat">
+          <span>流程</span>
+          <strong>创建候选 -> 批准 -> 必要时校验 -> 发布/生效</strong>
+        </div>
+        <div class="stat">
+          <span>影响</span>
+          <strong>生效知识会进入后续生成上下文</strong>
+        </div>
+      </div>
+
       <div class="knowledge-layout">
         <article class="paper knowledge-form-card">
           <div class="receipt-head">
             <div>
               <h3>新建候选</h3>
-              <p class="muted receipt-copy">先在这里创建审核候选，再在右侧详情抽屉里完成批准、校验、发布和后续处理。</p>
+              <p class="muted receipt-copy">创建候选 -> 批准 -> 必要时校验 -> 发布/生效。先写入长期知识草稿，再在右侧详情抽屉里处理。</p>
             </div>
             <span class="badge">创建接口</span>
           </div>
@@ -747,8 +762,9 @@ watch(
               </select>
             </label>
             <label>
-              <span>血缘键</span>
+              <span>作者标签：血缘键</span>
               <input v-model="draft.lineageKey" class="control-input" data-testid="knowledge-lineage-key" />
+              <small>同一条长期知识的稳定名字，例如某个角色声线、关系或全局风格。</small>
             </label>
             <label>
               <span>批准后生效</span>
@@ -756,6 +772,7 @@ watch(
                 <option :value="1">是</option>
                 <option :value="0">否</option>
               </select>
+              <small>选择“否”时，需要先完成校验，再发布到运行时。</small>
             </label>
             <label>
               <span>作用域</span>
@@ -876,6 +893,12 @@ watch(
             先选择一条血缘，再查看版本历史和运行时引用。
           </div>
           <template v-else>
+            <div class="history-stack" data-testid="knowledge-impact-summary">
+              <p class="history-title">生效范围与证据</p>
+              <p><strong>这条知识现在是否生效</strong><br />{{ formatStatus(knowledgeConsole.detail.status || "unknown") }}</p>
+              <p><strong>会影响哪里</strong><br />{{ knowledgeConsole.detail.runtime_refs?.alias_scope || knowledgeConsole.detail.runtime_refs?.mode || "直接读取" }}</p>
+              <p><strong>来自哪个审核</strong><br />{{ workflowReviewItems[0]?.review_id || detailReviewRefs[0] || "暂无关联审核" }}</p>
+            </div>
             <p data-testid="knowledge-detail-lineage"><strong>血缘</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
             <p><strong>生效版本</strong><br />{{ previewText(knowledgeConsole.detail.active_version) }}</p>
             <p><strong>候选版本</strong><br />{{ previewText(knowledgeConsole.detail.candidate_version) }}</p>
@@ -964,6 +987,10 @@ watch(
                 ></textarea>
                 <small>需要明确理由后才能批准，之后可在索引控制台目标活动中回放。</small>
               </div>
+            </div>
+            <div class="history-stack" data-testid="knowledge-advanced-refs">
+              <p class="history-title">高级引用</p>
+              <p class="muted">审核引用、关联任务、包引用和目标活动默认折叠在下方，需要排查时再展开。</p>
             </div>
             <LazySection
               :key="`runtime-${selectedEntryKey}`"
