@@ -271,7 +271,7 @@ describe("review inbox source", () => {
     expect(cardSource).toContain("highlighted");
     expect(cardSource).toContain("sourceActionLabel");
     expect(cardSource).toContain("review-toggle-payload");
-    expect(cardSource).toContain('defineEmits(["approve", "release", "open-target"])');
+    expect(cardSource).toContain('defineEmits(["approve", "release", "open-target", "open-reference"])');
     expect(cardSource).toContain("payloadExpanded");
     expect(drawerSource).toContain("focusEventId");
   });

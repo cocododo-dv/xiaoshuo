@@ -191,6 +191,7 @@ const ACTION_LABELS = {
   retry_request: "重试请求",
   inspect: "查看详情",
 };
+const REFERENCE_SOURCES = new Set(["reference_book_learning", "reference_profile_apply"]);
 
 function formatItemType(itemType) {
   return ITEM_TYPE_LABELS[itemType] || itemType || "-";
@@ -257,8 +258,36 @@ function formatSources(sources, fallback = "活动") {
   return sources?.length ? sources.join(", ") : fallback;
 }
 
+function candidatePayloadForItem(item) {
+  return (
+    item?.candidate_version?.candidate_payload_json ||
+    item?.candidate_version?.payload_json ||
+    item?.candidate_payload_json ||
+    item?.payload_json ||
+    {}
+  );
+}
+
+function referenceSourceForItem(item) {
+  const payload = candidatePayloadForItem(item);
+  if (REFERENCE_SOURCES.has(payload?.source)) {
+    return "参考书学习";
+  }
+  const lineageKey = String(item?.lineage_key || "");
+  const reviewId = String(item?.candidate_version?.review_id || item?.review_refs?.[0] || "");
+  if (lineageKey.startsWith("refbook_") || reviewId.includes("reffind") || reviewId.includes("refprofile")) {
+    return "参考书学习";
+  }
+  return "";
+}
+
+function referenceKnowledgeSummary(label, fallback) {
+  return label ? "参考书候选已抽象化，源书片段隐藏。" : fallback;
+}
+
 function knowledgeCatalogRow(item) {
   const itemKey = knowledgeItemKey(item);
+  const referenceSourceLabel = referenceSourceForItem(item);
 
   return {
     item,
@@ -267,9 +296,16 @@ function knowledgeCatalogRow(item) {
     lineageKey: item?.lineage_key || "",
     itemTypeLabel: formatItemType(item?.object_type),
     statusLabel: formatStatus(item?.status || "tracked"),
-    activeSummary: previewSummaryText(item?.active_version),
-    candidateSummary: previewSummaryText(item?.candidate_version),
+    activeSummary: referenceKnowledgeSummary(
+      referenceSourceLabel && item?.active_version?.text,
+      previewSummaryText(item?.active_version),
+    ),
+    candidateSummary: referenceKnowledgeSummary(
+      referenceSourceLabel && item?.candidate_version,
+      previewSummaryText(item?.candidate_version),
+    ),
     runtimeRefLabel: item?.runtime_refs?.alias_scope || item?.runtime_refs?.mode || "-",
+    referenceSourceLabel,
     focused: selectedEntryKey.value === itemKey,
   };
 }
@@ -413,6 +449,11 @@ function openReviewInbox(item) {
     },
   );
   emit("notice", `已打开审核收件箱：review_item:${reviewId}`);
+}
+
+function openReferenceLearning() {
+  navigate("reference");
+  emit("notice", "已打开参考书学习");
 }
 
 function openIndexConsole(item) {
@@ -859,12 +900,23 @@ watch(
                     <div class="eyebrow">{{ row.itemTypeLabel }}</div>
                     <h3>{{ row.lineageKey }}</h3>
                   </div>
-                  <span class="badge">{{ row.statusLabel }}</span>
+                  <div class="card-actions">
+                    <span v-if="row.referenceSourceLabel" class="badge ghost">来自参考书学习</span>
+                    <span class="badge">{{ row.statusLabel }}</span>
+                  </div>
                 </div>
                 <p><strong>生效文本</strong><br />{{ row.activeSummary }}</p>
                 <p><strong>候选文本</strong><br />{{ row.candidateSummary }}</p>
                 <p class="muted">运行时引用：{{ row.runtimeRefLabel }}</p>
                 <div class="card-actions">
+                  <button
+                    v-if="row.referenceSourceLabel"
+                    class="ghost"
+                    :data-testid="`knowledge-open-reference-${row.objectType}-${row.lineageKey}`"
+                    @click="openReferenceLearning"
+                  >
+                    回到参考书学习
+                  </button>
                   <button
                     class="ghost"
                     :data-testid="`knowledge-view-detail-${row.objectType}-${row.lineageKey}`"

@@ -48,6 +48,33 @@ const canAdvance = computed(() =>
       !referenceLearning.actionId,
   ),
 );
+const advanceRunDisabledReason = computed(() => {
+  if (!selectedBook.value || !referenceLearning.selectedBookId) {
+    return "先导入或选择一本参考书。";
+  }
+  if (!runId.value) {
+    return "先启动学习任务。";
+  }
+  if (referenceLearning.actionId) {
+    return "系统正在处理当前操作。";
+  }
+  if (referenceLearning.pendingDecisionCount > 0) {
+    return `还有 ${referenceLearning.pendingDecisionCount} 张候选卡待决策`;
+  }
+  if (readyProfiles.value.length) {
+    return "画像已经生成。";
+  }
+  return "";
+});
+const advanceRunLabel = computed(() => {
+  if (referenceLearning.actionId === "advance-run") {
+    return "分析中...";
+  }
+  if (hasRoundFindings.value && referenceLearning.pendingDecisionCount === 0 && !readyProfiles.value.length) {
+    return "继续生成画像";
+  }
+  return "继续分析";
+});
 const canStart = computed(() => Boolean(referenceLearning.selectedBookId && !runId.value && !referenceLearning.actionId));
 const startRunDisabledReason = computed(() => {
   if (!selectedBook.value) {
@@ -260,6 +287,24 @@ function findingRisk(finding) {
     return "只保留抽象校准，不把原书长句作为生成素材。";
   }
   return "只进入抽象技法层，不直接带入原书表达。";
+}
+
+function findingSourceLabel(finding) {
+  return finding?.source_segment?.display_label || finding?.source_segment?.segment_kind || "reference segment";
+}
+
+function findingSafetyLabel(finding) {
+  const notes =
+    finding?.review?.candidate_payload_json?.safety_notes ||
+    finding?.candidate_payload_json?.safety_notes ||
+    {};
+  if (Number(notes.stripped_count || 0) > 0) {
+    return "已移除源书专名";
+  }
+  if (notes.source_excerpt_hidden || finding?.source_excerpt_hidden) {
+    return "已抽象化";
+  }
+  return "";
 }
 
 function findingReceiptScope(finding) {
@@ -662,12 +707,16 @@ onActivated(() => {
                 class="ghost"
                 data-testid="reference-advance-run"
                 :disabled="!canAdvance"
+                :title="advanceRunDisabledReason"
                 @click="advanceRun"
               >
-                {{ referenceLearning.actionId === "advance-run" ? "分析中..." : "继续分析" }}
+                {{ advanceRunLabel }}
               </button>
             </div>
           </div>
+          <p v-if="advanceRunDisabledReason" class="muted reference-control-hint">
+            {{ advanceRunDisabledReason }}
+          </p>
           <FlowActionReceipt :receipt="receipt(REFERENCE_RUN_SCOPE)" />
 
           <div class="reference-flow" aria-label="reference learning workflow">
@@ -757,9 +806,10 @@ onActivated(() => {
                   </div>
 
                   <p class="reference-source">
-                    {{ finding.source_segment?.chapter_hint || finding.source_segment?.segment_kind || "片段" }}
+                    {{ findingSourceLabel(finding) }}
                     <span v-if="finding.source_excerpt_hidden" class="source-hidden">source excerpt hidden</span>
-                    <span v-else>· {{ finding.evidence_preview || "abstract summary" }}</span>
+                    <span v-else class="source-hidden">abstract summary only</span>
+                    <span v-if="findingSafetyLabel(finding)" class="source-hidden">{{ findingSafetyLabel(finding) }}</span>
                   </p>
                   <p class="reference-summary">{{ finding.summary }}</p>
                   <p class="reference-risk">{{ findingRisk(finding) }}</p>

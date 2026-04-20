@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { createApp, h, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import KnowledgeConsoleView from "../src/views/KnowledgeConsoleView.vue";
 import { setOperatorRef } from "../src/lib/api";
 import { useKnowledgeConsoleStore } from "../src/stores/knowledgeConsole";
+
+const SOURCE_ROOT = process.cwd();
 
 function activeStyleProfile() {
   return {
@@ -211,5 +216,17 @@ describe("knowledge console risk approval", () => {
       },
     });
     expect(approveHeaders["X-Operator-Ref"]).toBe("operator");
+  });
+
+  it("surfaces safe reference-learning source labels and return links in the knowledge console source", () => {
+    const source = readFileSync(path.join(SOURCE_ROOT, "src/views/KnowledgeConsoleView.vue"), "utf8");
+
+    expect(source).toContain("referenceSourceForItem");
+    expect(source).toContain("referenceKnowledgeSummary");
+    expect(source).toContain("openReferenceLearning");
+    expect(source).toContain("来自参考书学习");
+    expect(source).toContain("参考书候选已抽象化，源书片段隐藏。");
+    expect(source).toContain("knowledge-open-reference");
+    expect(source).toContain("回到参考书学习");
   });
 });

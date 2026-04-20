@@ -75,6 +75,7 @@ describe("decision review decluttering", () => {
   it("shows reference profile application reviews as user-facing summaries before technical details", async () => {
     const reviewId = "review_apply_refprofile_refbook_d4ae8e00eea8_c172c96ee5_narra";
     const lineageKey = "REF_STYLE_refprofile_refbook_d4ae8e00eea8_c172c96ee5_scene_CH001";
+    const openReference = vi.fn();
     const mounted = await mount(ReviewCard, {
       item: {
         review_id: reviewId,
@@ -102,14 +103,20 @@ describe("decision review decluttering", () => {
       onApprove: vi.fn(),
       onRelease: vi.fn(),
       onOpenTarget: vi.fn(),
+      onOpenReference: openReference,
     });
 
     try {
       const card = mounted.container.querySelector(".review-card");
       expect(card.textContent).toContain("参考画像应用");
+      expect(card.textContent).toContain("回到参考书学习");
       expect(card.textContent).toContain("CH001");
       expect(card.textContent).not.toContain(reviewId);
       expect(card.textContent).not.toContain(lineageKey);
+
+      card.querySelector(`[data-testid="review-open-reference-${reviewId}"]`).click();
+      await nextTick();
+      expect(openReference).toHaveBeenCalledWith(reviewId);
 
       card.querySelector(`[data-testid="review-toggle-payload-${reviewId}"]`).click();
       await nextTick();
@@ -139,5 +146,8 @@ describe("decision review decluttering", () => {
     expect(source).toContain('label="人工事件"');
     expect(source).toContain('label="审核项"');
     expect(source).toContain(":hide-when-empty=\"true\"");
+    expect(source).toContain("@open-reference");
+    expect(source).toContain("handleReviewOpenReference");
+    expect(source).toContain('navigate("reference")');
   });
 });

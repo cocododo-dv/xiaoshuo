@@ -95,6 +95,16 @@ PROFILE_BLOCKED_MARKERS = (
     "诺玛",
     "源氏重工",
     "蛇岐八家",
+    "dragon",
+    "Japanese branch",
+    "Soviet",
+    "roller coaster",
+    "deep-sea",
+    "mythical peril",
+    "mysterious letter",
+    "rain, cold, fog",
+    "frozen landscapes",
+    "entertainers",
 )
 PROFILE_MAX_SAFE_STRING_CHARS = 320
 
@@ -362,7 +372,17 @@ class ReferenceLearningService:
         dimension = llm_finding.get("dimension") or DIMENSIONS[index % len(DIMENSIONS)]
         finding_id = f"reffind_{round_row.round_id}_{index + 1}"
         review_id = f"review_{finding_id}"
-        summary = llm_finding.get("summary") or _finding_summary(finding_type=finding_type, dimension=dimension, segment=segment)
+        raw_summary = llm_finding.get("summary") or _finding_summary(
+            finding_type=finding_type,
+            dimension=dimension,
+            segment=segment,
+        )
+        summary, summary_notes = _sanitize_reference_finding_text(raw_summary)
+        raw_payload_extra = llm_finding.get("payload_extra")
+        if not isinstance(raw_payload_extra, dict):
+            raw_payload_extra = {}
+        payload_extra, payload_notes = _sanitize_reference_finding_payload_extra(raw_payload_extra)
+        safety_notes = _merge_reference_safety_notes(summary_notes, payload_notes)
         payload = {
             "lineage_key": f"{_safe_key(book_id)}_{round_row.round_index}_{index + 1}_{finding_type}",
             "text": summary,
@@ -372,7 +392,8 @@ class ReferenceLearningService:
             "reference_book_id": book_id,
             "reference_segment_id": segment.segment_id,
             "dimension": dimension,
-            **llm_finding.get("payload_extra", {}),
+            **payload_extra,
+            "safety_notes": safety_notes,
         }
         review = self._upsert_review(
             review_id=review_id,
@@ -1078,18 +1099,20 @@ class ReferenceLearningService:
     def serialize_finding(self, finding: ReferenceFinding) -> dict[str, Any]:
         segment = self.session.get(ReferenceBookSegment, finding.segment_id)
         review = self.session.get(ReviewItem, finding.review_id)
+        display_summary, _ = _sanitize_reference_finding_text(finding.summary)
         return {
             "finding_id": finding.finding_id,
             "finding_type": finding.finding_type,
             "dimension": finding.dimension,
-            "summary": finding.summary,
+            "summary": display_summary,
             "evidence_preview": None,
             "source_excerpt_hidden": True,
             "status": finding.status,
             "source_segment": {
                 "segment_id": segment.segment_id if segment else finding.segment_id,
                 "segment_kind": segment.segment_kind if segment else None,
-                "chapter_hint": segment.chapter_hint if segment else None,
+                "display_label": _segment_display_label(segment),
+                "chapter_hint": None,
                 "preview": None,
             },
             "review": self.serialize_review(review) if review else None,
@@ -1097,13 +1120,27 @@ class ReferenceLearningService:
 
     @staticmethod
     def serialize_review(review: ReviewItem) -> dict[str, Any]:
+        payload = review.candidate_payload_json if isinstance(review.candidate_payload_json, dict) else {}
+        candidate_text = review.candidate_text
+        candidate_payload_json = review.candidate_payload_json
+        if _is_reference_review_payload(payload):
+            candidate_text, text_notes = _sanitize_reference_finding_text(review.candidate_text)
+            payload_without_notes = {key: value for key, value in payload.items() if key != "safety_notes"}
+            safe_payload, payload_notes = _sanitize_reference_finding_payload_extra(payload_without_notes)
+            existing_notes = payload.get("safety_notes") if isinstance(payload.get("safety_notes"), dict) else {}
+            safe_payload["safety_notes"] = _merge_reference_safety_notes(
+                _coerce_reference_safety_notes(existing_notes),
+                text_notes,
+                payload_notes,
+            )
+            candidate_payload_json = safe_payload
         return {
             "review_id": review.review_id,
             "item_type": review.item_type,
             "target_collection": review.target_collection,
             "status": review.status,
-            "candidate_text": review.candidate_text,
-            "candidate_payload_json": review.candidate_payload_json,
+            "candidate_text": candidate_text,
+            "candidate_payload_json": candidate_payload_json,
             "active_on_approve": review.active_on_approve,
             "materialize_status": review.materialize_status,
             "approved_item_row_id": review.approved_item_row_id,
@@ -1232,6 +1269,109 @@ def _blocked_profile_markers(text: str) -> list[str]:
         if marker in compact or marker_lower in compact_lower:
             blocked.append(marker)
     return sorted(set(blocked))
+
+
+def _sanitize_reference_finding_text(value: str) -> tuple[str, dict[str, Any]]:
+    original = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not original:
+        return "", _reference_safety_notes(stripped_count=0, blocked_marker_labels=[])
+
+    stripped_count = 0
+    marker_labels = _reference_finding_marker_labels(original)
+    without_evidence = PROFILE_EVIDENCE_LABEL_RE.sub("", original).strip()
+    if without_evidence != original:
+        stripped_count += 1
+    cleaned = without_evidence or original
+
+    if _blocked_profile_markers(cleaned) or len(cleaned) > PROFILE_MAX_SAFE_STRING_CHARS:
+        cleaned = _abstract_profile_fallback(original)
+        stripped_count += 1
+    if _blocked_profile_markers(cleaned) or len(cleaned) > PROFILE_MAX_SAFE_STRING_CHARS:
+        cleaned = "Convert the reference into abstract craft guidance and avoid recognizable source material."
+        stripped_count += 1
+
+    return cleaned, _reference_safety_notes(
+        stripped_count=stripped_count,
+        blocked_marker_labels=marker_labels,
+    )
+
+
+def _sanitize_reference_finding_payload_extra(value: Any) -> tuple[Any, dict[str, Any]]:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        notes = _reference_safety_notes(stripped_count=0, blocked_marker_labels=[])
+        for key, item in value.items():
+            sanitized_item, item_notes = _sanitize_reference_finding_payload_extra(item)
+            sanitized[key] = sanitized_item
+            notes = _merge_reference_safety_notes(notes, item_notes)
+        return sanitized, notes
+
+    if isinstance(value, list):
+        sanitized_items: list[Any] = []
+        notes = _reference_safety_notes(stripped_count=0, blocked_marker_labels=[])
+        for item in value:
+            sanitized_item, item_notes = _sanitize_reference_finding_payload_extra(item)
+            sanitized_items.append(sanitized_item)
+            notes = _merge_reference_safety_notes(notes, item_notes)
+        return sanitized_items, notes
+
+    if isinstance(value, str):
+        return _sanitize_reference_finding_text(value)
+
+    return value, _reference_safety_notes(stripped_count=0, blocked_marker_labels=[])
+
+
+def _reference_finding_marker_labels(text: str) -> list[str]:
+    raw = str(text or "")
+    lowered = raw.lower()
+    labels: list[str] = []
+    if PROFILE_EVIDENCE_LABEL_RE.search(raw):
+        labels.append("evidence_label")
+    if any(marker in lowered for marker in ("txt8080", "www.", "http://", "https://")):
+        labels.append("source_boilerplate")
+    if _blocked_profile_markers(raw):
+        labels.append("source_named_entity")
+    return sorted(set(labels))
+
+
+def _reference_safety_notes(*, stripped_count: int, blocked_marker_labels: list[str]) -> dict[str, Any]:
+    return {
+        "source_excerpt_hidden": True,
+        "stripped_count": int(stripped_count),
+        "blocked_markers": sorted(set(blocked_marker_labels)),
+    }
+
+
+def _coerce_reference_safety_notes(value: dict[str, Any]) -> dict[str, Any]:
+    stripped_count = int(value.get("stripped_count") or 0)
+    marker_labels = ["source_named_entity"] if value.get("blocked_markers") else []
+    return _reference_safety_notes(
+        stripped_count=stripped_count,
+        blocked_marker_labels=marker_labels,
+    )
+
+
+def _merge_reference_safety_notes(*notes: dict[str, Any]) -> dict[str, Any]:
+    stripped_count = 0
+    marker_labels: list[str] = []
+    for note in notes:
+        stripped_count += int(note.get("stripped_count") or 0)
+        marker_labels.extend(str(item) for item in (note.get("blocked_markers") or []) if item)
+    return _reference_safety_notes(
+        stripped_count=stripped_count,
+        blocked_marker_labels=marker_labels,
+    )
+
+
+def _segment_display_label(segment: ReferenceBookSegment | None) -> str:
+    if segment is None:
+        return "reference segment"
+    segment_kind = str(segment.segment_kind or "reference").replace("_", " ").strip() or "reference"
+    return f"{segment_kind} segment"
+
+
+def _is_reference_review_payload(payload: dict[str, Any]) -> bool:
+    return payload.get("source") in {"reference_book_learning", "reference_profile_apply"}
 
 
 def _abstract_profile_fallback(text: str) -> str:

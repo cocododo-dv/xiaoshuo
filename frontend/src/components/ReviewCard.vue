@@ -28,7 +28,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["approve", "release", "open-target"]);
+const emit = defineEmits(["approve", "release", "open-target", "open-reference"]);
 
 const payloadExpanded = ref(false);
 const riskAcknowledged = ref(false);
@@ -66,11 +66,27 @@ const ITEM_LABELS = {
 };
 
 const SOURCE_LABELS = {
+  reference_book_learning: "参考书学习",
   reference_profile_apply: "参考画像应用",
   style_profile_extract: "样本文本提取",
   knowledge_console: "知识控制台",
   manual: "人工录入",
 };
+
+const REFERENCE_SOURCES = new Set(["reference_book_learning", "reference_profile_apply"]);
+const REFERENCE_SAFE_TECHNICAL_KEYS = new Set([
+  "source",
+  "scope",
+  "scope_ref_id",
+  "lineage_key",
+  "reference_book_id",
+  "reference_segment_id",
+  "dimension",
+  "contract_version",
+  "source_excerpt_hidden",
+  "stripped_count",
+  "blocked_markers",
+]);
 
 const SCOPE_LABELS = {
   global: "全局",
@@ -83,12 +99,14 @@ const payload = computed(() =>
     ? props.item.candidate_payload_json
     : {},
 );
+const isReferenceSource = computed(() => REFERENCE_SOURCES.has(payload.value.source));
 
 const collectionLabel = computed(
   () => COLLECTION_LABELS[props.item.target_collection] || ITEM_LABELS[props.item.item_type] || props.item.target_collection || "审核候选",
 );
 
 const sourceLabel = computed(() => SOURCE_LABELS[payload.value.source] || payload.value.source || "审核候选");
+const referenceSourceLabel = computed(() => (isReferenceSource.value ? "来自参考书学习" : ""));
 
 const scopeSummary = computed(() => {
   const scope = payload.value.scope || "";
@@ -109,7 +127,7 @@ const reviewTitle = computed(() => {
 
 const payloadSummary = computed(() => {
   if (payload.value.source === "reference_profile_apply") {
-    const profileTitle = payload.value.profile_title || payload.value.book_title || "参考书画像";
+    const profileTitle = "参考书画像";
     return `${profileTitle}${scopeSummary.value ? ` · 应用到${scopeSummary.value}` : ""}`;
   }
   const parts = [
@@ -123,26 +141,14 @@ const formattedPayload = computed(() => {
   if (!payloadExpanded.value) {
     return "";
   }
-  return JSON.stringify(
-    {
-      review_id: props.item.review_id,
-      item_type: props.item.item_type,
-      target_collection: props.item.target_collection,
-      status: props.item.status,
-      materialize_status: props.item.materialize_status,
-      candidate_text: props.item.candidate_text,
-      candidate_payload_json: props.item.candidate_payload_json || {},
-    },
-    null,
-    2,
-  );
+  return JSON.stringify(reviewTechnicalPayload(), null, 2);
 });
 const reviewImpactSummary = computed(() => buildReviewImpactSummary(props.item));
 const publicReviewImpactSummary = computed(() => ({
   ...reviewImpactSummary.value,
   sourceLabel: sourceLabel.value,
-  sourceDetail: payload.value.source === "reference_profile_apply"
-    ? payload.value.profile_title || payload.value.book_title || "参考书画像"
+  sourceDetail: isReferenceSource.value
+    ? "已抽象化参考画像"
     : reviewImpactSummary.value.sourceDetail,
   targetLabel: collectionLabel.value,
   targetDetail: scopeSummary.value || "",
@@ -175,6 +181,39 @@ function approveReview() {
   emit("approve", props.item.review_id, approvalPayload.value);
 }
 
+function reviewTechnicalPayload() {
+  const candidatePayload = isReferenceSource.value
+    ? redactReferencePayload(props.item.candidate_payload_json || {})
+    : props.item.candidate_payload_json || {};
+  return {
+    review_id: props.item.review_id,
+    item_type: props.item.item_type,
+    target_collection: props.item.target_collection,
+    status: props.item.status,
+    materialize_status: props.item.materialize_status,
+    candidate_text: isReferenceSource.value ? "Reference-derived text hidden in technical detail." : props.item.candidate_text,
+    candidate_payload_json: candidatePayload,
+  };
+}
+
+function redactReferencePayload(value, key = "") {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactReferencePayload(item, key));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        redactReferencePayload(entryValue, entryKey),
+      ]),
+    );
+  }
+  if (typeof value === "string" && !REFERENCE_SAFE_TECHNICAL_KEYS.has(key)) {
+    return "[reference-derived content hidden]";
+  }
+  return value;
+}
+
 watch(
   () => props.item.review_id,
   () => {
@@ -193,6 +232,7 @@ watch(
     <div class="review-meta">
       <span class="badge">{{ collectionLabel }}</span>
       <span class="muted">{{ sourceLabel }}</span>
+      <span v-if="referenceSourceLabel" class="badge ghost">{{ referenceSourceLabel }}</span>
       <span v-if="props.sourceActionLabel" class="badge">{{ props.sourceActionLabel }}</span>
     </div>
 
@@ -263,6 +303,14 @@ watch(
         @click="payloadExpanded = !payloadExpanded"
       >
         {{ payloadExpanded ? "收起技术详情" : "技术详情" }}
+      </button>
+      <button
+        v-if="isReferenceSource"
+        class="ghost"
+        :data-testid="`review-open-reference-${props.item.review_id}`"
+        @click="emit('open-reference', props.item.review_id)"
+      >
+        回到参考书学习
       </button>
     </div>
 

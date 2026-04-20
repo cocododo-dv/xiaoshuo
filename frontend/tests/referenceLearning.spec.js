@@ -112,7 +112,12 @@ function roundPayload() {
           dimension: "rhythm",
           summary: "Use short pressure beats before release.",
           status: "pending",
-          source_segment: { preview: "Rain tapped the window.", segment_kind: "opening" },
+          source_segment: {
+            preview: null,
+            chapter_hint: "第一章 雨夜来信",
+            display_label: "opening segment",
+            segment_kind: "opening",
+          },
           review: { review_id: "review_reffind_1", item_type: "style_rule_set", status: "pending" },
         },
         {
@@ -121,7 +126,12 @@ function roundPayload() {
           dimension: "chapter hook",
           summary: "Use chapter hook escalation.",
           status: "pending",
-          source_segment: { preview: "The letter arrived wet.", segment_kind: "structure" },
+          source_segment: {
+            preview: null,
+            chapter_hint: "第二章 卡塞尔访客",
+            display_label: "structure segment",
+            segment_kind: "structure",
+          },
           review: { review_id: "review_reffind_2", item_type: "narrative_pattern", status: "pending" },
         },
       ],
@@ -309,11 +319,14 @@ describe("reference learning store", () => {
     expect(source).toContain("nextAction");
     expect(source).toContain("startRunLabel");
     expect(source).toContain("startRunDisabledReason");
+    expect(source).toContain("advanceRunLabel");
+    expect(source).toContain("advanceRunDisabledReason");
     expect(source).toContain("reference-import-toggle");
     expect(source).toContain("shouldShowImportForm");
     expect(source).toContain("reference-next-action");
     expect(source).toContain("还有");
     expect(source).toContain("张候选卡待决策");
+    expect(source).toContain("继续生成画像");
     expect(source).toContain("useFlowActionFeedback");
     expect(source).toContain("FlowActionReceipt");
     expect(source).toContain("referenceProfileReceipt");
@@ -364,8 +377,14 @@ describe("reference learning store", () => {
     expect(apiSource).not.toContain(retiredRunHelper);
     expect(source).not.toContain(retiredStatusLoader);
     expect(source).toContain("source_excerpt_hidden");
+    expect(source).toContain("findingSourceLabel");
+    expect(source).toContain("findingSafetyLabel");
+    expect(source).toContain("source_segment?.display_label");
+    expect(source).toContain("已抽象化");
+    expect(source).toContain("已移除源书专名");
     expect(source).toContain("profile.preview_items");
     expect(source).not.toContain("finding.source_segment?.preview");
+    expect(source).not.toContain("source_segment?.chapter_hint");
     expect(source).not.toContain("const profileJson = profile?.profile_json || {}");
   });
 

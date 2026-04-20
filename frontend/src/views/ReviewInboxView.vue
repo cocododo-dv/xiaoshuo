@@ -24,6 +24,7 @@ const knowledgeConsole = useKnowledgeConsoleStore();
 const workbench = useWorkbenchStore();
 const shellRouter = useShellRouter();
 const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;
+const { navigate } = shellRouter;
 const isViewActive = ref(false);
 const reviewFocusRefreshPending = ref(false);
 const { receipt, runFlowAction } = useFlowActionFeedback({
@@ -318,6 +319,11 @@ function handleReviewOpenTarget(reviewId) {
   emit("notice", `已打开 ${target.target_ref}`);
 }
 
+function handleReviewOpenReference(reviewId) {
+  navigate("reference");
+  emit("notice", reviewId ? `已回到参考书学习：${reviewId}` : "已回到参考书学习");
+}
+
 onActivated(() => {
   isViewActive.value = true;
   ensureReviewInboxLoaded();
@@ -478,6 +484,7 @@ watch(
                   @approve="approve"
                   @release="release"
                   @open-target="handleReviewOpenTarget"
+                  @open-reference="handleReviewOpenReference"
                 />
                 <FlowActionReceipt compact :receipt="receipt(reviewReceiptScope(row.reviewId))" />
               </div>

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from novel_system.db.models import ChapterGoal, LlmCall, ReferenceBookSegment, ReviewItem, SceneCard, SceneRunState
+from novel_system.db.models import ChapterGoal, LlmCall, ReferenceBookSegment, ReferenceFinding, ReviewItem, SceneCard, SceneRunState
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.reference_learning import ReferenceLearningService
@@ -310,6 +310,8 @@ def test_learning_run_pauses_for_review_then_completes_profile(client, tmp_path:
     }
     assert all(finding["source_excerpt_hidden"] is True for finding in findings)
     assert all(finding["source_segment"]["preview"] is None for finding in findings)
+    assert all(finding["source_segment"]["chapter_hint"] is None for finding in findings)
+    assert all(finding["source_segment"]["display_label"] for finding in findings)
 
     run_id = first_advance["run"]["run_id"]
     waiting_again = client.post(
@@ -361,8 +363,108 @@ def test_reference_finding_response_hides_source_excerpt_by_default(client, tmp_
     assert finding["source_excerpt_hidden"] is True
     assert finding["evidence_preview"] is None
     assert finding["source_segment"]["preview"] is None
+    assert finding["source_segment"]["chapter_hint"] is None
+    assert finding["source_segment"]["display_label"].endswith("segment")
     assert finding["source_segment"]["segment_kind"]
     assert finding["summary"]
+
+
+def test_reference_finding_sanitizes_llm_source_markers_before_review(session, tmp_path: Path) -> None:
+    book_path = tmp_path / "leaky-reference.md"
+    book_path.write_text(_book_text(), encoding="utf-8")
+    service = ReferenceLearningService(session, llm_client=LeakyReferenceLlmClient())
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="龙族[1-3部全].txt",
+        author_label="reference",
+        cloud_policy="allow_full_cloud",
+        analysis_focus="style_structure",
+    )
+    run = service.start_run(imported["book_id"], batch_size=5)["run"]
+    first_advance = service.advance_run(imported["book_id"], run["run_id"])
+
+    findings = first_advance["round"]["findings"]
+    assert findings
+    serialized_findings = json.dumps(findings, ensure_ascii=False)
+    for marker in ["Evidence:", "Evidence pattern:", "txt8080", "声明：本书", "路明非", "楚子航", "卡塞尔", "江南", "龙族"]:
+        assert marker not in serialized_findings
+
+    for finding in findings:
+        review = session.get(ReviewItem, finding["review"]["review_id"])
+        assert review is not None
+        serialized_review = json.dumps(
+            {
+                "candidate_text": review.candidate_text,
+                "candidate_payload_json": review.candidate_payload_json,
+            },
+            ensure_ascii=False,
+        )
+        assert "safety_notes" in review.candidate_payload_json
+        assert review.candidate_payload_json["safety_notes"]["source_excerpt_hidden"] is True
+        assert review.candidate_payload_json["safety_notes"]["stripped_count"] >= 0
+        for marker in ["Evidence:", "Evidence pattern:", "txt8080", "声明：本书", "路明非", "楚子航", "卡塞尔", "江南", "龙族"]:
+            assert marker not in serialized_review
+
+
+def test_reference_finding_serializer_sanitizes_legacy_raw_review_rows(session, tmp_path: Path) -> None:
+    book_path = tmp_path / "legacy-reference.md"
+    book_path.write_text(_book_text(), encoding="utf-8")
+    service = ReferenceLearningService(session, llm_client=LeakyReferenceLlmClient())
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="龙族[1-3部全].txt",
+        author_label="reference",
+        cloud_policy="allow_full_cloud",
+        analysis_focus="style_structure",
+    )
+    run = service.start_run(imported["book_id"], batch_size=5)["run"]
+    first_advance = service.advance_run(imported["book_id"], run["run_id"])
+    finding_id = first_advance["round"]["findings"][0]["finding_id"]
+    review_id = first_advance["round"]["findings"][0]["review"]["review_id"]
+
+    raw_summary = (
+        "Evidence: 路明非 joins 卡塞尔 after a dragon attack tied to the Japanese branch, "
+        "Soviet dissolution, and roller coaster imagery."
+    )
+    finding = session.get(ReferenceFinding, finding_id)
+    review = session.get(ReviewItem, review_id)
+    assert finding is not None
+    assert review is not None
+    finding.summary = raw_summary
+    review.candidate_text = raw_summary
+    review.candidate_payload_json = {
+        "source": "reference_book_learning",
+        "lineage_key": "refbook_legacy_safe_output",
+        "text": raw_summary,
+        "profile_title": "龙族[1-3部全].txt reference profile",
+        "narrative_patterns": [raw_summary],
+        "safety_notes": {
+            "source_excerpt_hidden": True,
+            "stripped_count": 1,
+            "blocked_markers": ["龙族", "路明非"],
+        },
+    }
+    session.flush()
+
+    serialized = service.serialize_finding(finding)
+    serialized_json = json.dumps(serialized, ensure_ascii=False)
+    for marker in [
+        "Evidence:",
+        "路明非",
+        "卡塞尔",
+        "龙族",
+        "dragon",
+        "Japanese branch",
+        "Soviet",
+        "roller coaster",
+    ]:
+        assert marker not in serialized_json
+    assert serialized["source_segment"]["chapter_hint"] is None
+    assert serialized["source_segment"]["display_label"].endswith("segment")
+    assert serialized["review"]["candidate_payload_json"]["lineage_key"] == "refbook_legacy_safe_output"
+    assert serialized["review"]["candidate_payload_json"]["safety_notes"]["source_excerpt_hidden"] is True
 
 
 def test_review_reject_marks_status_and_does_not_materialize(client, session) -> None:
