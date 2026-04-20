@@ -198,6 +198,7 @@ class HardQcEngine:
                 api_mode=task_config.api_mode,
                 credential_mode=task_config.credential_mode,
                 provider_options=task_config.provider_options,
+                response_schema=_response_schema(prompt),
             )
             response = self._client().generate(request)
             payload = response.structured_output or {}
@@ -621,6 +622,7 @@ class SoftQcEngine:
                 api_mode=task_config.api_mode,
                 credential_mode=task_config.credential_mode,
                 provider_options=task_config.provider_options,
+                response_schema=_response_schema(prompt),
             )
             response = self._client().generate(request)
             payload = response.structured_output or {}
@@ -654,6 +656,13 @@ class SoftQcEngine:
             )
 
         payload = report.model_dump()
+        branch = self._branch_for(report.next_action)
+        if branch == "patch" and state.soft_patch_count >= 1:
+            payload = self._waive_repeat_patch_payload(payload)
+            report = validate_qc_report("soft_qc", payload)
+            payload = report.model_dump()
+            branch = "waive"
+
         qc_report = self._persist_qc_report(
             scene=scene,
             state=state,
@@ -661,20 +670,6 @@ class SoftQcEngine:
             source_draft_row_id=source_draft_row_id,
             payload=payload,
         )
-        branch = self._branch_for(report.next_action)
-
-        if branch == "patch" and state.soft_patch_count >= 1:
-            self._clear_downstream_outputs(state)
-            return self._escalate_existing_report(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                source_draft_row_id=source_draft_row_id,
-                qc_report=qc_report,
-                branch="human_review_required",
-                failure_reason="soft_qc requested another patch after the single controlled patch pass was already used.",
-                trigger_reason="soft_qc_patch_cycle_limit",
-            )
 
         if branch == "human_review_required":
             self._clear_downstream_outputs(state)
@@ -752,6 +747,22 @@ class SoftQcEngine:
             "carry_forward_note": False,
             "note_scope": None,
             "carry_note_text": None,
+        }
+
+    @staticmethod
+    def _waive_repeat_patch_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        rewrite_brief = [item for item in payload.get("rewrite_brief", []) if isinstance(item, str) and item.strip()]
+        carry_note_text = "Repeated soft QC patch request after one controlled patch pass."
+        if rewrite_brief:
+            carry_note_text = f"{carry_note_text} Carry forward: {'; '.join(item.strip() for item in rewrite_brief)}"
+        return {
+            **payload,
+            "resolution_code": "soft_waive",
+            "pass_flag": True,
+            "next_action": "pass_with_notes",
+            "carry_forward_note": True,
+            "note_scope": "scene_memory",
+            "carry_note_text": carry_note_text,
         }
 
     @staticmethod
@@ -971,3 +982,7 @@ class SoftQcEngine:
             timeout_seconds=self.settings.llm_timeout_seconds,
             provider_configs=load_llm_provider_runtime_configs(),
         )
+
+
+def _response_schema(prompt: dict[str, Any]) -> dict[str, Any]:
+    return {"name": str(prompt["template_name"]), "schema": prompt["structured_schema"]}

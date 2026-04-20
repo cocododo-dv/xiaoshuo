@@ -186,6 +186,9 @@ class Orchestrator:
         state.current_final_scene_row_id = None
         state.current_human_review_event_id = None
         state.current_qc_report_id = None
+        state.total_attempt_count = 0
+        state.hard_partial_rewrite_count = 0
+        state.hard_full_rewrite_count = 0
         state.soft_patch_count = 0
         state.repeat_issue_key = None
         state.repeat_issue_count = 0

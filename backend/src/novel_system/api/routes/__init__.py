@@ -1,6 +1,5 @@
 __all__ = [
     "chapters",
-    "demo_workflows",
     "domain",
     "indexing",
     "interop",

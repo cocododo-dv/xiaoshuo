@@ -7,6 +7,7 @@ import * as api from "../src/lib/api";
 
 const REFERENCE_VIEW_PATH = new URL("../src/views/ReferenceLearningView.vue", import.meta.url);
 const REFERENCE_STORE_PATH = new URL("../src/stores/referenceLearning.js", import.meta.url);
+const API_PATH = new URL("../src/lib/api.js", import.meta.url);
 const APP_PATH = new URL("../src/App.vue", import.meta.url);
 const STYLE_PATH = new URL("../src/styles/app.css", import.meta.url);
 
@@ -165,12 +166,6 @@ describe("reference learning api helpers", () => {
       scope: "chapter",
       scope_ref_id: "CH001",
     });
-    await api.fetchDragonXianxiaDemoStatus({ book_id: "refbook_alpha", profile_id: "refprofile_alpha" });
-    await api.runDragonXianxiaDemo({
-      book_id: "refbook_alpha",
-      profile_id: "refprofile_alpha",
-      force_rerun: false,
-    });
     await api.rejectReview("review_reffind_1", { reason: "重复样本" });
 
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/reference-books");
@@ -190,20 +185,6 @@ describe("reference learning api helpers", () => {
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha/profiles/refprofile_alpha/apply",
       expect.objectContaining({ method: "POST" }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/v1/demo/dragon-xianxia/status?book_id=refbook_alpha&profile_id=refprofile_alpha",
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/v1/demo/dragon-xianxia/run",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          book_id: "refbook_alpha",
-          profile_id: "refprofile_alpha",
-          force_rerun: false,
-        }),
-      }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/review-items/review_reffind_1/reject",
@@ -345,6 +326,11 @@ describe("reference learning store", () => {
 
     expect(source).toContain("readyProfiles");
     expect(source).toContain("staleProfiles");
+    expect(source).toContain("profileVisibilityFilter");
+    expect(source).toContain("visibleProfiles");
+    expect(source).toContain('data-testid="reference-profile-filter"');
+    expect(source).toContain('data-testid="reference-profile-filter-ready"');
+    expect(source).toContain('data-testid="reference-profile-filter-all"');
     expect(source).toContain("canApplyProfile");
     expect(source).toContain("profileSummary");
     expect(source).toContain("profilePreviewItems");
@@ -354,29 +340,29 @@ describe("reference learning store", () => {
     expect(source).toContain('v-if="false"');
   });
 
-  it("renders the dragon xianxia demo workspace without source excerpts", () => {
+  it("does not render the retired sample demo workspace in the reference learning view", () => {
     const source = readFileSync(REFERENCE_VIEW_PATH, "utf8");
+    const apiSource = readFileSync(API_PATH, "utf8");
+    const retiredTitle = ["Demo", "Studio"].join(" ");
+    const retiredChineseTitle = ["\u4e09\u7ae0", "\u4fee\u4ed9 Demo"].join("");
+    const retiredStateRef = ["dragon", "Demo", "Status"].join("");
+    const retiredScopeRef = ["DRAGON", "DEMO", "SCOPE"].join("_");
+    const retiredTestId = `data-testid="${["dragon", "demo", "workspace"].join("-")}"`;
+    const retiredSlug = ["dragon", "xianxia"].join("-");
+    const retiredEndpoint = ["/api/v1", "demo", retiredSlug].join("/");
+    const retiredStatusHelper = ["fetch", "Dragon", "Xianxia", "Demo", "Status"].join("");
+    const retiredRunHelper = ["run", "Dragon", "Xianxia", "Demo"].join("");
+    const retiredStatusLoader = ["load", "Dragon", "Demo", "Status"].join("");
 
-    expect(source).toContain("dragonDemoStatus");
-    expect(source).toContain("dragonDemoSelectedBookId");
-    expect(source).toContain("dragonDemoSelectedProfileId");
-    expect(source).toContain("dragonDemoRunPayload");
-    expect(source).toContain("dragonDemoMarkdown");
-    expect(source).toContain("copyDragonDemoMarkdown");
-    expect(source).toContain("downloadDragonDemoMarkdown");
-    expect(source).toContain("openDragonDemoWorkbench");
-    expect(source).toContain("openDragonDemoExport");
-    expect(source).toContain("loadDragonDemoStatus");
-    expect(source).toContain("runDragonDemo");
-    expect(source).toContain('data-testid="dragon-demo-workspace"');
-    expect(source).toContain('data-testid="dragon-demo-book-select"');
-    expect(source).toContain('data-testid="dragon-demo-profile-select"');
-    expect(source).toContain('data-testid="dragon-demo-run"');
-    expect(source).toContain('data-testid="dragon-demo-copy-markdown"');
-    expect(source).toContain('data-testid="dragon-demo-download-markdown"');
-    expect(source).toContain('data-testid="dragon-demo-open-workbench"');
-    expect(source).toContain('data-testid="dragon-demo-open-interop"');
-    expect(source).toContain('data-testid="dragon-demo-offline-warning"');
+    expect(source).not.toContain(retiredTitle);
+    expect(source).not.toContain(retiredChineseTitle);
+    expect(source).not.toContain(retiredStateRef);
+    expect(source).not.toContain(retiredScopeRef);
+    expect(source).not.toContain(retiredTestId);
+    expect(apiSource).not.toContain(retiredEndpoint);
+    expect(apiSource).not.toContain(retiredStatusHelper);
+    expect(apiSource).not.toContain(retiredRunHelper);
+    expect(source).not.toContain(retiredStatusLoader);
     expect(source).toContain("source_excerpt_hidden");
     expect(source).toContain("profile.preview_items");
     expect(source).not.toContain("finding.source_segment?.preview");

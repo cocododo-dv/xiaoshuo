@@ -198,6 +198,54 @@ def test_llm_client_retries_http_429_before_succeeding() -> None:
     assert response.finish_reason == "stop"
 
 
+def test_llm_client_retries_malformed_json_before_succeeding() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_bad_json_once",
+                    "model": "local-qwen",
+                    "output_text": "I will explain instead of returning JSON.",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_good_json_retry",
+                "model": "local-qwen",
+                "output_text": '{"scene_text": "ok"}',
+            },
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key=None,
+        timeout_seconds=12,
+        max_retries=1,
+        transport=httpx.MockTransport(handler),
+    )
+
+    response = client.generate(
+        LLMRequest(
+            model="local-qwen",
+            messages=[{"role": "user", "content": "Return JSON."}],
+            temperature=0,
+            max_output_tokens=64,
+            response_format="json_object",
+        )
+    )
+
+    assert attempts == 2
+    assert response.request_id == "resp_good_json_retry"
+    assert response.structured_output == {"scene_text": "ok"}
+
+
 def test_llm_client_raises_normalized_error_for_malformed_json_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -229,6 +277,39 @@ def test_llm_client_raises_normalized_error_for_malformed_json_response() -> Non
         )
 
     assert exc_info.value.code == "LLM_RESPONSE_INVALID_JSON"
+
+
+def test_llm_client_extracts_wrapped_json_object_from_local_model_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_wrapped_json",
+                "model": "local-qwen",
+                "output_text": 'Here is the JSON:\n```json\n{"scene_text": "ok"}\n```',
+            },
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key=None,
+        timeout_seconds=12,
+        transport=httpx.MockTransport(handler),
+    )
+
+    response = client.generate(
+        LLMRequest(
+            model="local-qwen",
+            messages=[{"role": "user", "content": "Return JSON."}],
+            temperature=0,
+            max_output_tokens=64,
+            response_format="json_object",
+        )
+    )
+
+    assert response.text == 'Here is the JSON:\n```json\n{"scene_text": "ok"}\n```'
+    assert response.structured_output == {"scene_text": "ok"}
 
 
 def test_llm_client_rejects_invalid_runtime_response_format() -> None:

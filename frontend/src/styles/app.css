@@ -2387,77 +2387,12 @@ pre {
   color: rgba(27, 24, 21, 0.52);
 }
 
-.dragon-demo-workspace {
-  border-color: rgba(29, 58, 83, 0.18);
-  background: rgba(247, 249, 247, 0.72);
-}
-
-.dragon-demo-flow {
-  margin-top: 0;
-}
-
-.dragon-demo-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto;
-  gap: 0.75rem;
-  align-items: end;
-}
-
-.dragon-demo-controls label {
-  display: grid;
-  gap: 0.35rem;
-  min-width: 0;
-}
-
 .toggle-row {
   display: inline-flex !important;
   grid-auto-flow: column;
   grid-template-columns: auto 1fr;
   align-items: center;
   white-space: nowrap;
-}
-
-.dragon-demo-export-actions {
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  gap: 0.55rem;
-}
-
-.dragon-demo-blockers,
-.dragon-demo-status-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  min-width: 0;
-}
-
-.dragon-demo-results {
-  display: grid;
-  gap: 0.8rem;
-  min-width: 0;
-}
-
-.dragon-demo-chapter {
-  display: grid;
-  gap: 0.75rem;
-  padding: 0.95rem;
-  border: 1px solid rgba(37, 51, 66, 0.12);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.58);
-  min-width: 0;
-}
-
-.dragon-demo-final {
-  max-height: 15rem;
-  margin: 0;
-  padding: 0.85rem;
-  overflow: auto;
-  border-radius: 8px;
-  background: rgba(248, 246, 239, 0.82);
-  color: rgba(27, 24, 21, 0.78);
-  line-height: 1.65;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .reference-summary {
@@ -2621,8 +2556,7 @@ pre {
   .knowledge-filter-grid,
   .knowledge-form-grid,
   .config-form-grid,
-  .author-form-grid,
-  .dragon-demo-controls {
+  .author-form-grid {
     grid-template-columns: 1fr;
   }
 

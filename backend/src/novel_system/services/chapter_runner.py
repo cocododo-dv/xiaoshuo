@@ -23,10 +23,10 @@ class ChapterRunnerService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def run_full(self, chapter_id: str) -> dict[str, Any]:
+    def run_full(self, chapter_id: str, *, restart: bool = False) -> dict[str, Any]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
         scene_ids = self._scene_ids(chapter_id)
-        job = self._resumeable_job(chapter_id)
+        job = None if restart else self._resumeable_job(chapter_id)
         if job is None:
             job = self._create_job(chapter_id, scene_ids)
         else:

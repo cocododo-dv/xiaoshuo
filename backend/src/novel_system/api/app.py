@@ -8,7 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from novel_system.api.response import error
 from novel_system.api.routes import (
     chapters,
-    demo_workflows,
     domain,
     indexing,
     interop,
@@ -64,7 +63,6 @@ def create_app() -> FastAPI:
     app.include_router(domain.router)
     app.include_router(knowledge.router)
     app.include_router(reference_books.router)
-    app.include_router(demo_workflows.router)
     app.include_router(indexing.router)
     app.include_router(interop.router)
     app.include_router(system_config.router)

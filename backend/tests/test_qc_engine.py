@@ -387,28 +387,29 @@ def test_soft_qc_engine_persists_style_score_summary_and_api_serializers(session
     state.current_final_scene_row_id = "final_scene_CH100_SC01"
     session.commit()
 
+    soft_client = FakeSoftQcClient(
+        [
+            _base_soft_qc_payload(
+                resolution_code="soft_pass",
+                next_action="pass",
+                style_score=0.84,
+                style_dimensions=[
+                    {"name": "rhythm", "score": 0.9, "evidence": "Pressure lands at paragraph ends."},
+                    {"name": "imagery", "score": 0.78, "evidence": "The letter image stays tactile."},
+                ],
+                style_deviations=[
+                    {
+                        "dimension": "paragraph_density",
+                        "severity": "low",
+                        "patch_brief": "Break the longest paragraph before final archive.",
+                    }
+                ],
+            )
+        ]
+    )
     engine = SoftQcEngine(
         session,
-        llm_client=FakeSoftQcClient(
-            [
-                _base_soft_qc_payload(
-                    resolution_code="soft_pass",
-                    next_action="pass",
-                    style_score=0.84,
-                    style_dimensions=[
-                        {"name": "rhythm", "score": 0.9, "evidence": "Pressure lands at paragraph ends."},
-                        {"name": "imagery", "score": 0.78, "evidence": "The letter image stays tactile."},
-                    ],
-                    style_deviations=[
-                        {
-                            "dimension": "paragraph_density",
-                            "severity": "low",
-                            "patch_brief": "Break the longest paragraph before final archive.",
-                        }
-                    ],
-                )
-            ]
-        ),
+        llm_client=soft_client,
     )
 
     decision = engine.evaluate(
@@ -452,6 +453,14 @@ def test_soft_qc_engine_persists_style_score_summary_and_api_serializers(session
     assert qc_summary["style_dimensions"][0]["name"] == "rhythm"
     assert qc_summary["style_deviations"][0]["dimension"] == "paragraph_density"
     assert generation_summary["style_score_summary"]["style_score"] == 0.84
+    assert soft_client.requests[0].response_schema["name"] == "soft_qc"
+    assert soft_client.requests[0].response_schema["schema"]["required"] == [
+        "resolution_code",
+        "pass_flag",
+        "next_action",
+        "issues",
+        "rewrite_brief",
+    ]
 
 
 def test_run_scene_hard_qc_pass_persists_report_and_continues(session) -> None:
@@ -491,7 +500,7 @@ def test_run_scene_hard_qc_pass_persists_report_and_continues(session) -> None:
     assert soft_report.next_action == "pass"
     assert state.current_qc_report_id == soft_report.qc_report_id
     assert state.current_human_review_event_id is None
-    assert style_draft.content == "Provider-generated style scene text."
+    assert style_draft.content == "Provider-generated style scene text.\n\nA red envelope changes hands."
     assert final_scene.content == style_draft.content
     assert final_scene.generation_llm_call_id == style_draft.generation_llm_call_id
     assert state.current_style_draft_row_id == style_draft.row_id
@@ -586,7 +595,7 @@ def test_run_scene_soft_qc_patch_rechecks_before_finalize(session) -> None:
     assert len(reports) == 2
     assert reports[0].next_action == "patch"
     assert reports[1].next_action == "pass"
-    assert patch_draft.content == "Provider-generated patched scene text."
+    assert patch_draft.content == "Provider-generated patched scene text.\n\nA red envelope changes hands."
     assert patch_draft.content != style_draft.content
     assert final_scene.content == patch_draft.content
     assert final_scene.generation_llm_call_id == patch_draft.generation_llm_call_id
@@ -605,7 +614,7 @@ def test_run_scene_soft_qc_patch_rechecks_before_finalize(session) -> None:
     assert patch_attempt.details_json["source_style_draft_row_id"] == style_draft.row_id
 
 
-def test_run_scene_soft_qc_patch_repeat_escalates_to_human_review(session) -> None:
+def test_run_scene_soft_qc_patch_repeat_waives_with_carry_note(session) -> None:
     _seed_scene(session)
     orchestrator = _make_orchestrator(
         session,
@@ -630,18 +639,19 @@ def test_run_scene_soft_qc_patch_repeat_escalates_to_human_review(session) -> No
     session.commit()
 
     state = session.get(SceneRunState, "CH100_SC01")
-    final_scene = session.execute(select(FinalScene)).scalars().all()
-    event = session.execute(select(HumanReviewEvent)).scalars().one()
+    final_scene = session.execute(select(FinalScene)).scalars().one()
+    events = session.execute(select(HumanReviewEvent)).scalars().all()
+    reports = session.execute(select(QcReport).where(QcReport.qc_type == "soft_qc").order_by(QcReport.created_at.asc(), QcReport.qc_report_id.asc())).scalars().all()
     attempts = session.execute(select(AttemptTracker).order_by(AttemptTracker.attempt_id.asc())).scalars().all()
 
-    assert result["scene_status"] == "human_review_required"
-    assert result["soft_qc"]["branch"] == "human_review_required"
-    assert state.current_style_draft_row_id is None
-    assert state.current_final_scene_row_id is None
-    assert final_scene == []
-    assert state.current_human_review_event_id == event.event_id
-    assert event.event_source == "scene_generation"
-    assert event.details_json["trigger_reason"] == "soft_qc_patch_cycle_limit"
+    assert result["scene_status"] == "archived"
+    assert result["soft_qc"]["branch"] == "waive"
+    assert state.current_final_scene_row_id == final_scene.row_id
+    assert events == []
+    assert reports[-1].resolution_code == "soft_waive"
+    assert reports[-1].next_action == "pass_with_notes"
+    assert reports[-1].pass_flag == 1
+    assert any(entry.get("kind") == "carry_forward_note" for entry in reports[-1].rewrite_brief_json)
     assert [attempt.step for attempt in attempts if attempt.step in {"style_draft", "soft_qc", "soft_patch"}] == [
         "style_draft",
         "soft_qc",
@@ -731,6 +741,52 @@ def test_hard_qc_engine_escalates_repeated_issue_key_to_human_review(session) ->
     assert event.status == "needs_followup"
     assert event.details_json["trigger_reason"] == "repeat_issue_key_limit"
     assert event.details_json["recommended_action"] == "human_review_required"
+
+
+def test_hard_qc_engine_sends_structured_response_schema(session) -> None:
+    _seed_scene(session)
+    session.add(
+        SceneDraft(
+            row_id="draft_neutral_CH100_SC01",
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            stage="neutral_draft",
+            content="Neutral draft under review.",
+            source_bundle_id="bundle_CH100_SC01",
+            source_bundle_hash="bundle_hash_CH100_SC01",
+        )
+    )
+    session.commit()
+
+    hard_client = FakeQcClient(_base_qc_payload(resolution_code="hard_pass", next_action="pass"))
+    engine = HardQcEngine(session, llm_client=hard_client)
+
+    decision = engine.evaluate(
+        scene_id="CH100_SC01",
+        bundle={
+            "bundle_id": "bundle_CH100_SC01",
+            "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+            "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+        },
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content="Neutral draft under review.",
+    )
+    session.commit()
+
+    request = hard_client.requests[0]
+    assert decision.branch == "continue"
+    assert request.response_schema["name"] == "hard_qc"
+    assert request.response_schema["schema"]["required"] == [
+        "resolution_code",
+        "pass_flag",
+        "next_action",
+        "issues",
+        "rewrite_brief",
+    ]
+    assert (
+        "Required top-level JSON keys: resolution_code, pass_flag, next_action, issues, rewrite_brief"
+        in request.messages[1]["content"]
+    )
 
 
 def test_hard_qc_engine_turns_malformed_payload_into_human_review_required(session) -> None:
@@ -842,6 +898,7 @@ def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(se
     assert blocked_event_id is None
 
     state.current_human_review_event_id = "human_review_stale_from_previous_block"
+    state.total_attempt_count = state.attempt_budget
     session.commit()
 
     rerun = _make_orchestrator(
@@ -860,6 +917,7 @@ def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(se
     assert state.current_style_draft_row_id.startswith("draft_style_CH100_SC01_v")
     assert state.current_final_scene_row_id.startswith("final_scene_CH100_SC01_v")
     assert state.current_human_review_event_id is None
+    assert state.total_attempt_count == 1
 
 
 def test_run_scene_resets_soft_patch_state_between_reruns(session) -> None:

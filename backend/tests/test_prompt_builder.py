@@ -7,6 +7,7 @@ from novel_system.db.models import (
     CalibrationLine,
     ChapterGoal,
     SceneCard,
+    SceneMemory,
     SceneRunState,
     StyleObservation,
     StyleRule,
@@ -73,6 +74,9 @@ def test_prompt_builder_includes_required_sections_and_stable_hash() -> None:
     assert payload["structured_schema"]["type"] == "object"
     assert "Chapter Goal" in payload["user_prompt"]
     assert "Scene Card" in payload["user_prompt"]
+    assert "same language as the chapter goal and scene card" in payload["user_prompt"]
+    assert "Required top-level JSON keys: scene_text" in payload["user_prompt"]
+    assert "Return only valid JSON. Do not wrap it in markdown fences." in payload["user_prompt"]
     assert "POV Voice" in payload["user_prompt"]
     assert "Style Rules" in payload["user_prompt"]
     assert "Open Foreshadow" in payload["user_prompt"]
@@ -194,6 +198,67 @@ def test_chapter_summary_schema_requires_carry_forward() -> None:
     payload = PromptBuilder().build(_bundle_snapshot(), "chapter_summary")
 
     assert payload["structured_schema"]["required"] == ["summary", "carry_forward"]
+
+
+def test_hard_qc_uses_runtime_minimum_budget_for_default_runs(tmp_path) -> None:
+    prompt_path = tmp_path / "prompts.yaml"
+    prompt_path.write_text(
+        """
+templates:
+  hard_qc:
+    version: "test"
+    input_token_budget: 60
+    system_prompt: "system"
+    task_prompt: "task"
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - resolution_code
+        - pass_flag
+        - next_action
+        - issues
+      properties:
+        resolution_code:
+          type: string
+        pass_flag:
+          type: boolean
+        next_action:
+          type: string
+        issues:
+          type: array
+          items:
+            type: object
+        rewrite_brief:
+          type: array
+          items:
+            type: string
+""".strip(),
+        encoding="utf-8",
+    )
+    builder = PromptBuilder(prompt_path)
+
+    default_payload = builder.build(_bundle_snapshot(), "hard_qc")
+    explicit_payload = builder.build(_bundle_snapshot(), "hard_qc", max_input_tokens=60)
+
+    assert default_payload["token_budget"]["target_input_tokens"] >= 3200
+    assert explicit_payload["token_budget"]["target_input_tokens"] == 60
+
+
+def test_hard_qc_schema_requires_rewrite_brief_for_runtime_validator() -> None:
+    payload = PromptBuilder().build(_bundle_snapshot(), "hard_qc")
+
+    assert payload["structured_schema"]["required"] == [
+        "resolution_code",
+        "pass_flag",
+        "next_action",
+        "issues",
+        "rewrite_brief",
+    ]
+    assert (
+        "Required top-level JSON keys: resolution_code, pass_flag, next_action, issues, rewrite_brief"
+        in payload["user_prompt"]
+    )
 
 
 def test_load_prompt_templates_rejects_invalid_config(tmp_path) -> None:
@@ -429,3 +494,101 @@ def test_bundle_builder_adds_style_observation_digest_to_snapshot(session) -> No
     assert "imagery" in snapshot["inline_digests"]["style_profile"]
     assert "calibration_lines" in snapshot["inline_digests"]["style_profile"]
     assert "The gate clicked shut like a verdict." in snapshot["inline_digests"]["style_profile"]
+
+
+def test_bundle_builder_scene_digest_includes_operational_scene_constraints(session) -> None:
+    session.add(
+        ChapterGoal(
+            chapter_id="CH901",
+            planned_scene_count=1,
+            chapter_goal="Open the trial with a visible cost.",
+        )
+    )
+    session.add(
+        SceneCard(
+            scene_id="CH901_SC01",
+            chapter_id="CH901",
+            scene_seq=1,
+            location="Moon bridge",
+            scene_goal="Test the initiate without copying source material.",
+            beats_json=["arrival", "seal wakes", "choice under pressure"],
+            must_include_text="the spirit seal glows like cold jade",
+            forbidden_text="Do not use source names.",
+            exit_change="The mountain gate answers.",
+            hook="continue",
+            target_length_band="short",
+            scene_type="cultivation_trial",
+        )
+    )
+    session.add(SceneRunState(scene_id="CH901_SC01"))
+    session.commit()
+
+    snapshot = BundleBuilder(session).build("CH901_SC01")["snapshot"]
+    scene_digest = snapshot["inline_digests"]["scene_card"]
+
+    assert "Goal: Test the initiate without copying source material." in scene_digest
+    assert "Location: Moon bridge" in scene_digest
+    assert "Beats: arrival; seal wakes; choice under pressure" in scene_digest
+    assert "Required text: the spirit seal glows like cold jade" in scene_digest
+    assert "Forbidden text: Do not use source names." in scene_digest
+    assert "Exit change: The mountain gate answers." in scene_digest
+    assert "Hook: continue" in scene_digest
+    assert "Target length: short" in scene_digest
+
+
+def test_bundle_builder_uses_only_prior_scene_memory(session) -> None:
+    session.add(
+        ChapterGoal(
+            chapter_id="CH902",
+            planned_scene_count=2,
+            chapter_goal="Move from first sign to second choice.",
+        )
+    )
+    session.add_all(
+        [
+            SceneCard(
+                scene_id="CH902_SC01",
+                chapter_id="CH902",
+                scene_seq=1,
+                onstage_chars_json=[],
+                scene_goal="Open the chapter.",
+            ),
+            SceneCard(
+                scene_id="CH902_SC02",
+                chapter_id="CH902",
+                scene_seq=2,
+                onstage_chars_json=[],
+                scene_goal="Continue after the first result.",
+            ),
+            SceneRunState(scene_id="CH902_SC01"),
+            SceneRunState(scene_id="CH902_SC02"),
+            SceneMemory(
+                row_id="scene_memory_CH902_SC01_v1",
+                scene_id="CH902_SC01",
+                chapter_id="CH902",
+                content="prior scene memory",
+                source_bundle_id="bundle_CH902_SC01_v1",
+                final_scene_row_id="final_scene_CH902_SC01_v1",
+                active_flag=1,
+                created_at="2026-04-20T00:00:00+00:00",
+            ),
+            SceneMemory(
+                row_id="scene_memory_CH902_SC02_v1",
+                scene_id="CH902_SC02",
+                chapter_id="CH902",
+                content="current scene stale memory",
+                source_bundle_id="bundle_CH902_SC02_v1",
+                final_scene_row_id="final_scene_CH902_SC02_v1",
+                active_flag=1,
+                created_at="2026-04-20T01:00:00+00:00",
+            ),
+        ]
+    )
+    session.commit()
+
+    first_snapshot = BundleBuilder(session).build("CH902_SC01")["snapshot"]
+    second_snapshot = BundleBuilder(session).build("CH902_SC02")["snapshot"]
+
+    assert "scene_memory" not in first_snapshot["inline_digests"]
+    assert second_snapshot["source_version_refs"]["scene_memory_prev"] == "CH902_SC01"
+    assert second_snapshot["inline_digests"]["scene_memory"] == "prior scene memory"

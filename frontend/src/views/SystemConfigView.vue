@@ -147,6 +147,14 @@ function updateApiBase() {
   emit("notice", systemConfig.updateApiBase(systemConfig.apiBase));
 }
 
+function probeApiBase() {
+  runAction(() => systemConfig.probeApiBase(), {
+    actionLabel: "测试 API 地址",
+    runningMessage: "正在测试当前 API 地址...",
+    nextStep: "下一步：连接成功后继续配置模型接入；失败则检查端口或后端服务。",
+  });
+}
+
 function updateOperatorRef() {
   emit("notice", systemConfig.updateOperatorRef(systemConfig.operatorRef));
 }
@@ -267,7 +275,7 @@ function selectConfigSection(sectionId) {
         role="tabpanel"
       >
       <PanelShell eyebrow="Connection" title="连接设置" description="本机控制台连接与后端管理令牌。">
-        <div class="config-form-grid">
+        <form class="config-form-grid" autocomplete="off" @submit.prevent>
           <label>
             <span>API 地址</span>
             <input
@@ -296,7 +304,29 @@ function selectConfigSection(sectionId) {
               @change="systemConfig.setAdminToken(systemConfig.adminToken)"
             />
           </label>
+        </form>
+        <div class="config-action-row">
+          <span class="badge ghost" data-testid="config-api-base-effective">
+            当前生效 {{ systemConfig.apiBase }}
+          </span>
+          <button
+            type="button"
+            class="ghost"
+            data-testid="config-api-base-probe"
+            :disabled="systemConfig.testing"
+            @click="probeApiBase"
+          >
+            {{ systemConfig.testing ? "测试中..." : "测试连接" }}
+          </button>
         </div>
+        <p
+          v-if="systemConfig.apiBaseProbe"
+          class="muted"
+          :class="{ 'reference-risk': systemConfig.apiBaseProbe.ok === false }"
+        >
+          {{ systemConfig.apiBaseProbe.ok ? "API 地址可用" : "API 地址不可用" }} ·
+          {{ systemConfig.apiBaseProbe.url }}
+        </p>
       </PanelShell>
 
       <PanelShell
@@ -372,7 +402,7 @@ function selectConfigSection(sectionId) {
         </div>
 
         <div class="llm-provider-grid">
-          <div class="llm-provider-form">
+          <form class="llm-provider-form" autocomplete="off" @submit.prevent="saveLlmProvider">
             <label>
               <span>接入 ID</span>
               <input
@@ -459,7 +489,7 @@ function selectConfigSection(sectionId) {
             <div v-else class="config-wide-field llm-no-secret-note" data-testid="config-llm-provider-no-secret">
               无需密钥：本地 OpenAI-compatible 服务通常只需要服务地址和模型名。
             </div>
-          </div>
+          </form>
 
           <div class="llm-provider-list">
             <div v-if="!providerRows.length" class="empty">还没有配置模型接入。</div>

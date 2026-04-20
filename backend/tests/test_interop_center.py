@@ -297,6 +297,11 @@ def test_export_and_replay_return_complete_envelopes_with_artifacts_and_diffs(cl
     assert export_data["artifact_receipt"]["artifact_kind"] == "bundle_worksheet_export"
     assert export_data["artifact_receipt"]["direction"] == "export"
     assert export_data["source_ref_comparisons"]
+    scene_card_comparison = next(
+        item for item in export_data["source_ref_comparisons"] if item["object_type"] == "scene_card"
+    )
+    assert scene_card_comparison["text_status"] == "same"
+    assert scene_card_comparison["active_text"] == scene_card_comparison["source_text"]
 
     replay_response = client.get(f"/api/v1/replay/final-scene/{final_scene_row_id}")
     assert replay_response.status_code == 200

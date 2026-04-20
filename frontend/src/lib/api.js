@@ -44,6 +44,10 @@ function buildUrl(path) {
   return `${getApiBase()}${path}`;
 }
 
+function buildUrlFromBase(baseUrl, path) {
+  return `${String(baseUrl || DEFAULT_API_BASE).trim().replace(/\/+$/, "")}${path}`;
+}
+
 function buildIdempotencyKey(path) {
   return `${path}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -92,6 +96,15 @@ async function parseEnvelope(response) {
 export async function apiGet(path) {
   try {
     const response = await fetch(buildUrl(path));
+    return parseEnvelope(response);
+  } catch (error) {
+    throw normalizeRequestError(error);
+  }
+}
+
+export async function apiGetFromBase(baseUrl, path) {
+  try {
+    const response = await fetch(buildUrlFromBase(baseUrl, path));
     return parseEnvelope(response);
   } catch (error) {
     throw normalizeRequestError(error);
@@ -153,6 +166,10 @@ async function apiPostForm(path, formData) {
 
 export function fetchSystemConfig() {
   return apiGet("/api/v1/system-config");
+}
+
+export function fetchSystemConfigAtBase(baseUrl) {
+  return apiGetFromBase(baseUrl, "/api/v1/system-config");
 }
 
 export function saveSystemConfigDraft(payload, adminToken) {
@@ -250,14 +267,6 @@ export function applyReferenceProfile(bookId, profileId, payload) {
     `/api/v1/reference-books/${encodeURIComponent(bookId)}/profiles/${encodeURIComponent(profileId)}/apply`,
     payload,
   );
-}
-
-export function fetchDragonXianxiaDemoStatus(filters = {}) {
-  return apiGet(buildQueryPath("/api/v1/demo/dragon-xianxia/status", filters));
-}
-
-export function runDragonXianxiaDemo(payload = {}) {
-  return apiPost("/api/v1/demo/dragon-xianxia/run", payload);
 }
 
 export function fetchWorkbench(sceneId) {

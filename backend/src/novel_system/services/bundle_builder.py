@@ -11,6 +11,7 @@ from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
 from novel_system.services.resolver import Resolver
+from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
 
 
@@ -41,8 +42,15 @@ class BundleBuilder:
         state = self.session.get(SceneRunState, scene_id)
         previous_memory = self.session.execute(
             select(SceneMemory)
-            .where(SceneMemory.chapter_id == scene.chapter_id, SceneMemory.active_flag == 1)
-            .order_by(SceneMemory.created_at.desc())
+            .join(SceneCard, SceneCard.scene_id == SceneMemory.scene_id)
+            .where(
+                SceneMemory.chapter_id == scene.chapter_id,
+                SceneMemory.active_flag == 1,
+                SceneMemory.runtime_eligible == 1,
+                SceneCard.trashed_flag == 0,
+                SceneCard.scene_seq < scene.scene_seq,
+            )
+            .order_by(SceneCard.scene_seq.desc(), SceneMemory.created_at.desc())
         ).scalars().first()
 
         source_version_refs = {
@@ -55,7 +63,7 @@ class BundleBuilder:
         ]
         inline_digests = {
             "chapter_goal": chapter.chapter_goal,
-            "scene_card": scene.scene_goal,
+            "scene_card": scene_card_digest(scene),
         }
 
         voice_profile_id = self.resolver.resolve_voice_profile_id(scene)

@@ -34,6 +34,11 @@ class PromptTemplate:
 
 
 SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "number", "integer", "boolean", "null"}
+RUNTIME_MIN_INPUT_BUDGETS = {
+    "hard_qc": 3600,
+    "soft_qc": 3600,
+    "style_draft": 4200,
+}
 
 
 class PromptBuilder:
@@ -51,12 +56,17 @@ class PromptBuilder:
         snapshot = _normalize_mapping(bundle_snapshot)
         sections = _collect_sections(snapshot)
         structured_schema = _clone_jsonish(template.structured_schema)
+        task_prompt = _append_runtime_template_instruction(template.task_prompt, template.name)
+        task_prompt = _append_schema_instruction(task_prompt, structured_schema)
+        target_input_tokens = max_input_tokens
+        if target_input_tokens is None:
+            target_input_tokens = max(template.input_token_budget, RUNTIME_MIN_INPUT_BUDGETS.get(template.name, 0))
         context_budget = apply_context_budget(
             system_prompt=template.system_prompt,
-            task_prompt=template.task_prompt,
+            task_prompt=task_prompt,
             bundle_snapshot=snapshot,
             sections=sections,
-            max_input_tokens=max_input_tokens or template.input_token_budget,
+            max_input_tokens=target_input_tokens,
         )
         budget = context_budget["budget"]
         system_prompt = template.system_prompt
@@ -155,6 +165,7 @@ def _load_prompt_template(template_name: str, payload: Any) -> PromptTemplate:
     if not isinstance(structured_schema, Mapping):
         raise PromptConfigurationError(f"template {template_name}.structured_schema must be a mapping")
     normalized_schema = _normalize_mapping(structured_schema)
+    _align_schema_with_runtime_contract(template_name, normalized_schema)
     _validate_structured_schema(normalized_schema, f"template {template_name}.structured_schema", top_level=True)
 
     return PromptTemplate(
@@ -199,6 +210,97 @@ def _normalize_text(text: str) -> str:
 
 def _clone_jsonish(value: Any) -> Any:
     return copy.deepcopy(value)
+
+
+def _append_schema_instruction(user_prompt: str, structured_schema: Mapping[str, Any]) -> str:
+    required = structured_schema.get("required")
+    required_keys = [item for item in required if isinstance(item, str)] if isinstance(required, list) else []
+    enum_instruction = _enum_instruction(structured_schema)
+    suffix_lines: list[str] = []
+    if not required_keys:
+        suffix_lines.append("Return only valid JSON. Do not wrap it in markdown fences.")
+    else:
+        suffix_lines.append(f"Required top-level JSON keys: {', '.join(required_keys)}.")
+        if enum_instruction:
+            suffix_lines.append(enum_instruction)
+        suffix_lines.append("Return only valid JSON. Do not wrap it in markdown fences.")
+    return f"{user_prompt}\n" + "\n".join(suffix_lines)
+
+
+def _append_runtime_template_instruction(user_prompt: str, template_name: str) -> str:
+    instructions = {
+        "neutral_draft": (
+            "Write prose in the same language as the chapter goal and scene card. "
+            "If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; "
+            "do not translate Chinese settings, beats, or required text into English."
+        ),
+        "style_draft": (
+            "Preserve the source draft language; do not translate the scene while styling it. "
+            "If the draft or scene card is Chinese, scene_text must remain Chinese prose."
+        ),
+    }
+    instruction = instructions.get(template_name)
+    if not instruction or instruction in user_prompt:
+        return user_prompt
+    return f"{user_prompt}\n{instruction}"
+
+
+def _align_schema_with_runtime_contract(template_name: str, schema: dict[str, Any]) -> None:
+    if template_name not in {"hard_qc", "soft_qc"}:
+        return
+    properties = schema.get("properties")
+    required = schema.get("required")
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        return
+
+    if template_name == "hard_qc":
+        properties.setdefault("rewrite_brief", {"type": "array", "items": {"type": "string"}})
+        if "rewrite_brief" not in required:
+            required.append("rewrite_brief")
+        _merge_schema_property(
+            properties,
+            "resolution_code",
+            {"enum": ["hard_pass", "hard_fail_partial", "hard_fail_full", "hard_block_human"]},
+        )
+        _merge_schema_property(
+            properties,
+            "next_action",
+            {"enum": ["pass", "partial_rewrite", "full_rewrite", "human_review_required"]},
+        )
+        return
+
+    _merge_schema_property(
+        properties,
+        "resolution_code",
+        {"enum": ["soft_pass", "soft_patch", "soft_waive", "soft_block_human"]},
+    )
+    _merge_schema_property(
+        properties,
+        "next_action",
+        {"enum": ["pass", "patch", "pass_with_notes", "human_review_required"]},
+    )
+
+
+def _merge_schema_property(properties: dict[str, Any], property_name: str, updates: dict[str, Any]) -> None:
+    property_schema = properties.get(property_name)
+    if isinstance(property_schema, dict):
+        property_schema.update(updates)
+
+
+def _enum_instruction(structured_schema: Mapping[str, Any]) -> str:
+    properties = structured_schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return ""
+    instructions: list[str] = []
+    for key, property_schema in properties.items():
+        if not isinstance(key, str) or not isinstance(property_schema, Mapping):
+            continue
+        enum_values = property_schema.get("enum")
+        if isinstance(enum_values, list) and enum_values and all(isinstance(item, str) for item in enum_values):
+            instructions.append(f"{key} must be one of: {', '.join(enum_values)}")
+    if not instructions:
+        return ""
+    return "Allowed JSON enum values: " + "; ".join(instructions) + "."
 
 
 def _validate_structured_schema(schema: Mapping[str, Any], context: str, *, top_level: bool = False) -> None:

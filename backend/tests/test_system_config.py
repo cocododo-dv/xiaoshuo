@@ -7,6 +7,7 @@ from sqlalchemy import select
 from novel_system.api.app import create_app
 from novel_system.db.models import SystemSecret
 from novel_system.services.system_config import load_llm_provider_runtime_configs
+from novel_system.services.settings_helpers import llm_generation_mode
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.settings import get_settings
@@ -63,6 +64,32 @@ def test_system_config_local_setup_mode_allows_loopback_writes_without_admin_tok
     assert provider["provider_id"] == "local_qwen"
     assert provider["base_url"] == "http://127.0.0.1:8080/v1"
     assert provider["credential_mode"] == "none"
+
+
+def test_no_key_local_provider_counts_as_live_generation_mode(monkeypatch) -> None:
+    monkeypatch.delenv("NOVEL_SYSTEM_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
+
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as local_client:
+        response = local_client.post(
+            "/api/v1/system-config/llm/providers",
+            json={
+                "provider_id": "local_qwen",
+                "provider_type": "openai_compatible",
+                "account_id": "local",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "credential_mode": "none",
+                "api_mode": "responses",
+                "models": ["Qwen3-14B-Q8_0.gguf"],
+                "enabled": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert get_settings().llm_enabled is True
+    assert get_settings().llm_api_key is None
+    assert llm_generation_mode() == "live"
 
 
 def test_system_config_local_setup_mode_rejects_non_loopback_writes(monkeypatch) -> None:

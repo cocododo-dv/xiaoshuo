@@ -8,6 +8,7 @@ import {
   fetchLiteraryEvalLatest,
   fetchStyleProfileContract,
   fetchSystemConfig,
+  fetchSystemConfigAtBase,
   getApiBase,
   getOperatorRef,
   probeLlmProvider as probeLlmProviderRequest,
@@ -275,6 +276,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     editorYaml: "",
     adminToken: storedAdminToken(),
     apiBase: getApiBase(),
+    apiBaseProbe: null,
     operatorRef: getOperatorRef(),
     providerProbe: null,
     llm: {
@@ -377,6 +379,34 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     updateApiBase(value) {
       this.apiBase = setApiBase(value ?? this.apiBase);
       return `已保存 API 地址：${this.apiBase}`;
+    },
+    async probeApiBase() {
+      this.testing = true;
+      this.error = "";
+      const url = this.apiBase;
+      try {
+        const payload = await fetchSystemConfigAtBase(url);
+        this.apiBaseProbe = {
+          ok: true,
+          url,
+          runtime: payload.runtime || {},
+          category_count: Object.keys(payload.categories || {}).length,
+          checked_at: new Date().toISOString(),
+        };
+        this.runtime = payload.runtime || this.runtime;
+        return `API 地址可用：${url}`;
+      } catch (error) {
+        this.apiBaseProbe = {
+          ok: false,
+          url,
+          message: error.message,
+          checked_at: new Date().toISOString(),
+        };
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.testing = false;
+      }
     },
     updateOperatorRef(value) {
       this.operatorRef = setOperatorRef(value ?? this.operatorRef);

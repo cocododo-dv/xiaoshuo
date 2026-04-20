@@ -15,6 +15,7 @@ import yaml
 
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+RETRYABLE_RESPONSE_ERROR_CODES = {"LLM_RESPONSE_INVALID_JSON", "LLM_RESPONSE_MISSING_TEXT"}
 SUPPORTED_PROVIDERS = {"openai_compatible", "openai", "anthropic", "deepseek", "zhipu_glm", "gemini"}
 SUPPORTED_RESPONSE_FORMATS = {"json_object", "text"}
 SUPPORTED_API_MODES = {"responses", "chat"}
@@ -236,7 +237,12 @@ class LLMClient:
                         "llm provider returned invalid JSON",
                     ) from exc
 
-                return self._parse_response(body, request, provider_config, native_reasoning=native_reasoning)
+                try:
+                    return self._parse_response(body, request, provider_config, native_reasoning=native_reasoning)
+                except LLMResponseError as exc:
+                    if exc.code in RETRYABLE_RESPONSE_ERROR_CODES and attempt < self._max_retries:
+                        continue
+                    raise
 
         raise LLMHTTPError(
             "LLM_HTTP_FAILURE",
@@ -439,7 +445,7 @@ class LLMClient:
         structured_output: dict[str, Any] | None = None
         if request.response_format == "json_object":
             try:
-                structured_output = json.loads(text)
+                structured_output = _loads_json_object_text(text)
             except json.JSONDecodeError as exc:
                 raise LLMResponseError(
                     "LLM_RESPONSE_INVALID_JSON",
@@ -830,6 +836,48 @@ def _extract_openai_output_text(body: dict[str, Any], *, api_mode: Literal["resp
         "LLM_RESPONSE_MISSING_TEXT",
         "llm provider response did not include text output",
     )
+
+
+def _loads_json_object_text(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as original_exc:
+        for candidate in _iter_json_object_candidates(text):
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        raise original_exc
+
+
+def _iter_json_object_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start : index + 1])
+                    break
+        start = text.find("{", start + 1)
+    return candidates
 
 
 def _normalize_usage(usage: Any) -> dict[str, int]:

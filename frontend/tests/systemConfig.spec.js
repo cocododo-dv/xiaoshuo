@@ -430,6 +430,20 @@ describe("system config store", () => {
     expect(store.lastActivated.active).toBe(true);
   });
 
+  it("probes the currently configured api base without requiring an admin token", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+
+    store.updateApiBase("http://127.0.0.1:8010");
+    const message = await store.probeApiBase();
+
+    expect(message).toContain("http://127.0.0.1:8010");
+    expect(store.apiBaseProbe.ok).toBe(true);
+    expect(store.apiBaseProbe.url).toBe("http://127.0.0.1:8010");
+    expect(store.apiBaseProbe.runtime.admin_configured).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8010/api/v1/system-config");
+  });
+
   it("loads llm provider config and saves provider, node routes, probes, and oauth start", async () => {
     const { useSystemConfigStore } = await import("../src/stores/systemConfig");
     const store = useSystemConfigStore();
@@ -729,6 +743,13 @@ describe("system config shell registration", () => {
     expect(viewSource).toContain("config-write-warning");
     expect(viewSource).toContain("config-local-setup-note");
     expect(viewSource).toContain("config-llm-action-message");
+    expect(viewSource).toContain("config-api-base-effective");
+    expect(viewSource).toContain("config-api-base-probe");
+    expect(viewSource).toContain("probeApiBase");
+    expect(storeSource).toContain("apiBaseProbe");
+    expect(storeSource).toContain("probeApiBase");
+    expect(viewSource).toContain('<form class="config-form-grid"');
+    expect(viewSource).toContain('<form class="llm-provider-form"');
     expect(viewSource).toContain("config-llm-provider-panel");
     expect(viewSource).toContain("config-llm-local-preset-ollama");
     expect(viewSource).toContain("config-llm-local-preset-lm-studio");

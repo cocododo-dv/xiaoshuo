@@ -156,6 +156,7 @@ class SceneGenerationService:
                 provider_id=getattr(task_config, "provider_id", None),
                 account_id=getattr(task_config, "account_id", None),
                 reasoning_level=getattr(task_config, "reasoning_level", "medium"),
+                response_schema=_response_schema(prompt),
                 api_mode=getattr(task_config, "api_mode", "responses"),
                 credential_mode=getattr(task_config, "credential_mode", None),
                 provider_options=getattr(task_config, "provider_options", {}),
@@ -182,7 +183,7 @@ class SceneGenerationService:
             }
             self._raise_if_scene_split_required(final_budget["continuity_warning"])
             response = self._client().generate(request)
-            neutral_content = _extract_scene_text(response)
+            neutral_content = _ensure_required_scene_text(scene, _extract_scene_text(response))
         except Exception as exc:
             self._persist_generation_failure(
                 scene=scene,
@@ -394,7 +395,7 @@ class SceneGenerationService:
             }
             self._raise_if_scene_split_required(final_budget["continuity_warning"])
             response = self._client(kind=client_kind).generate(request)
-            style_content = _extract_scene_text(response)
+            style_content = _ensure_required_scene_text(scene, _extract_scene_text(response))
         except Exception as exc:
             self._persist_generation_failure(
                 scene=scene,
@@ -520,6 +521,7 @@ class SceneGenerationService:
             provider_id=getattr(task_config, "provider_id", None),
             account_id=getattr(task_config, "account_id", None),
             reasoning_level=getattr(task_config, "reasoning_level", "medium"),
+            response_schema=_response_schema(prompt),
             api_mode=getattr(task_config, "api_mode", "responses"),
             credential_mode=getattr(task_config, "credential_mode", None),
             provider_options=getattr(task_config, "provider_options", {}),
@@ -683,6 +685,17 @@ def _extract_scene_text(response: LLMResponse) -> str:
     if isinstance(scene_text, str) and scene_text.strip():
         return scene_text.strip()
     raise ValueError("neutral_draft response missing scene_text")
+
+
+def _ensure_required_scene_text(scene: SceneCard, content: str) -> str:
+    required = (scene.must_include_text or "").strip()
+    if not required or required in content:
+        return content
+    return f"{content.rstrip()}\n\n{required}"
+
+
+def _response_schema(prompt: dict[str, Any]) -> dict[str, Any]:
+    return {"name": str(prompt["template_name"]), "schema": prompt["structured_schema"]}
 
 
 def _extract_scene_id(request: LLMRequest) -> str:

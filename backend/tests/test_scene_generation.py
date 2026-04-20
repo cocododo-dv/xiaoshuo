@@ -157,6 +157,18 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert len(fake_client.requests) == 2
     request = fake_client.requests[0]
     assert request.response_format == "json_object"
+    assert request.response_schema == {
+        "name": "neutral_draft",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["scene_text"],
+            "properties": {
+                "scene_text": {"type": "string"},
+                "continuity_notes": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    }
     assert request.node_id == "neutral_draft"
     assert request.reasoning_level == "medium"
     assert any("Scene ID: CH100_SC01" in message["content"] for message in request.messages)
@@ -164,18 +176,30 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     style_request = fake_client.requests[1]
     assert style_request.model == "gpt-5"
     assert style_request.node_id == "style_draft"
+    assert style_request.response_schema == {
+        "name": "style_draft",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["scene_text"],
+            "properties": {
+                "scene_text": {"type": "string"},
+                "style_notes": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    }
     assert style_request.reasoning_level == "medium"
     assert any("Approved Neutral Draft" in message["content"] for message in style_request.messages)
     assert any("Provider-generated neutral scene text." in message["content"] for message in style_request.messages)
     assert any("Rewrite the scene draft with stronger style adherence" in message["content"] for message in style_request.messages)
     assert sum(message["content"].count("Return JSON that matches the structured schema exactly.") for message in style_request.messages) == 1
 
-    assert neutral_draft.content == "Provider-generated neutral scene text."
+    assert neutral_draft.content == "Provider-generated neutral scene text.\n\nA red envelope changes hands."
     assert "Clocktower Roof" not in neutral_draft.content
     assert neutral_draft.generation_llm_call_id == llm_calls[0].llm_call_id
     assert neutral_draft.source_bundle_id == bundle.bundle_id
     assert neutral_draft.source_bundle_hash == bundle.bundle_snapshot_hash
-    assert style_draft.content == "Provider-generated style scene text."
+    assert style_draft.content == "Provider-generated style scene text.\n\nA red envelope changes hands."
     assert style_draft.generation_llm_call_id == llm_calls[1].llm_call_id
     assert style_draft.source_bundle_id == bundle.bundle_id
     assert style_draft.source_bundle_hash == bundle.bundle_snapshot_hash
@@ -229,6 +253,24 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert result["current_bundle_id"] == bundle.bundle_id
     assert result["current_bundle_hash"] == bundle.bundle_snapshot_hash
     assert soft_qc["branch"] == "continue"
+
+
+def test_scene_generation_preserves_required_scene_text_when_provider_omits_it(session) -> None:
+    _seed_scene(session)
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "Force both characters to reveal what they know."},
+        },
+    }
+    service = SceneGenerationService(session, llm_client=FakeSceneClient())
+
+    neutral = service.generate_neutral_draft("CH100_SC01", bundle)
+
+    assert neutral.content == "Provider-generated neutral scene text.\n\nA red envelope changes hands."
 
 
 def test_generate_style_draft_blocks_provider_when_scene_must_split(session) -> None:
@@ -423,7 +465,11 @@ def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch)
     assert [llm_call.step for llm_call in llm_calls] == ["neutral_draft", "style_draft"]
     assert all(llm_call.provider == "offline_deterministic" for llm_call in llm_calls)
     assert all(llm_call.finish_reason == "offline_fallback" for llm_call in llm_calls)
-    assert neutral_draft.content == "Offline neutral draft for CH100_SC01. The scene advances clearly, preserves continuity, and satisfies the compiled bundle constraints."
+    assert neutral_draft.content.startswith(
+        "Offline neutral draft for CH100_SC01. The scene advances clearly, preserves continuity, "
+        "and satisfies the compiled bundle constraints."
+    )
+    assert "A red envelope changes hands." in neutral_draft.content
     assert "Clocktower Roof" not in neutral_draft.content
     assert neutral_draft.generation_llm_call_id == llm_calls[0].llm_call_id
     assert style_draft.content != neutral_draft.content

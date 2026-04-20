@@ -32,6 +32,7 @@ from novel_system.db.models import (
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json, compute_bundle_hash_projection, normalize
 from novel_system.services.knowledge_registry import descriptor_for_object_type
+from novel_system.services.scene_digest import scene_card_digest
 
 
 @dataclass(frozen=True)
@@ -417,7 +418,7 @@ class InteropCenterService:
             scene = self.session.get(SceneCard, lineage_key)
             if scene is None:
                 return None
-            return {"row_id": scene.scene_id, "version": None, "text": scene.scene_goal}
+            return {"row_id": scene.scene_id, "version": None, "text": scene_card_digest(scene)}
 
         try:
             descriptor = descriptor_for_object_type(object_type)

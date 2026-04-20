@@ -8,6 +8,8 @@ templates:
     task_prompt: |
       Write the next scene draft from the supplied bundle snapshot.
       Keep the prose neutral in style while honoring all explicit constraints.
+      Write prose in the same language as the chapter goal and scene card.
+      If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; do not translate Chinese settings, beats, or required text into English.
     structured_schema:
       type: object
       additionalProperties: false
@@ -29,6 +31,12 @@ templates:
       Fail any contradiction, missing hard constraint, or unsupported event.
     task_prompt: |
       Audit the scene draft against the bundle snapshot and return only structured findings.
+      Use one legal outcome tuple only:
+      hard_pass / true / pass,
+      hard_fail_partial / false / partial_rewrite,
+      hard_fail_full / false / full_rewrite,
+      hard_block_human / false / human_review_required.
+      Always include rewrite_brief; use an empty array when the draft passes.
     structured_schema:
       type: object
       additionalProperties: false
@@ -37,13 +45,24 @@ templates:
         - pass_flag
         - next_action
         - issues
+        - rewrite_brief
       properties:
         resolution_code:
           type: string
+          enum:
+            - hard_pass
+            - hard_fail_partial
+            - hard_fail_full
+            - hard_block_human
         pass_flag:
           type: boolean
         next_action:
           type: string
+          enum:
+            - pass
+            - partial_rewrite
+            - full_rewrite
+            - human_review_required
         issues:
           type: array
           items:
@@ -101,6 +120,8 @@ templates:
     task_prompt: |
       Rewrite the scene draft with stronger style adherence without changing factual continuity.
       Rewrite the approved neutral draft without changing factual continuity.
+      Preserve the source draft language; do not translate the scene while styling it.
+      If the draft or scene card is Chinese, scene_text must remain Chinese prose.
       Follow the Style Feature Contract dimension by dimension:
       - rhythm: sentence beat, pause placement, paragraph endings.
       - syntax: sentence length mix, clause shape, dialogue/narration texture.
@@ -133,6 +154,11 @@ templates:
       Review the draft for polish opportunities and return only structured soft QC guidance.
       Score style adherence from 0 to 1 using rhythm, syntax, imagery, narrative_distance, emotion_curve, paragraph_density, and dialogue_ratio.
       If style drift is patchable, put precise instructions in rewrite_brief and style_deviations.patch_brief.
+      Use one legal outcome tuple only:
+      soft_pass / true / pass,
+      soft_patch / false / patch,
+      soft_waive / true / pass_with_notes,
+      soft_block_human / false / human_review_required.
     structured_schema:
       type: object
       additionalProperties: false
@@ -145,10 +171,20 @@ templates:
       properties:
         resolution_code:
           type: string
+          enum:
+            - soft_pass
+            - soft_patch
+            - soft_waive
+            - soft_block_human
         pass_flag:
           type: boolean
         next_action:
           type: string
+          enum:
+            - pass
+            - patch
+            - pass_with_notes
+            - human_review_required
         issues:
           type: array
           items:

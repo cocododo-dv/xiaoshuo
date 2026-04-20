@@ -464,7 +464,7 @@ class SystemConfigService:
         providers[provider_id] = {key: value for key, value in provider.items() if key != "api_key"}
         llm_payload["providers"] = providers
         llm_payload["default_provider_id"] = llm_payload.get("default_provider_id") or provider_id
-        llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
+        llm_payload["enabled"] = True if provider["enabled"] else _bool_value(llm_payload.get("enabled", True))
         llm_payload.setdefault("timeout_seconds", 30.0)
         snapshot = self._store_config_snapshot(
             category="api",
