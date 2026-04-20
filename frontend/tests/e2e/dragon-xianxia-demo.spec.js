@@ -164,21 +164,27 @@ test("turns a safe Dragon reference-learning profile into a three-chapter xianxi
   page,
   request,
 }) => {
-  await prepareSafeReferenceProfile(request);
+  const { bookId, profile } = await prepareSafeReferenceProfile(request);
 
   await page.goto("/");
   await configureConnection(page, { apiBase: API_BASE, operatorRef: OPERATOR_REF });
   await page.getByTestId("nav-reference").click();
   await expect(page.getByTestId("reference-learning-view")).toBeVisible();
   await expect(page.getByTestId("dragon-demo-workspace")).toBeVisible();
+  await page.getByTestId("dragon-demo-book-select").selectOption(bookId);
+  await expect(page.getByTestId("dragon-demo-profile-select")).toBeEnabled({ timeout: 30000 });
+  await page.getByTestId("dragon-demo-profile-select").selectOption(profile.profile_id);
   await expect(page.getByTestId("dragon-demo-run")).toBeEnabled({ timeout: 30000 });
   await page.getByTestId("dragon-demo-run").click();
   await expect(page.getByTestId("dragon-demo-workspace")).toContainText(
     `Offline style draft for ${CHAPTERS[2].sceneId}.`,
     { timeout: 90000 },
   );
+  await expect(page.getByTestId("dragon-demo-offline-warning")).toBeVisible();
   await expect(page.getByTestId("dragon-demo-workspace")).toContainText("泄漏检查 通过");
   await expect(page.getByTestId("dragon-demo-workspace")).not.toContainText("txt8080");
+  await expect(page.getByTestId("dragon-demo-copy-markdown")).toBeEnabled();
+  await expect(page.getByTestId("dragon-demo-download-markdown")).toBeEnabled();
 
   for (const chapter of CHAPTERS) {
     const workbench = await getJson(request, `/api/v1/scenes/${chapter.sceneId}/workbench`);
@@ -187,6 +193,12 @@ test("turns a safe Dragon reference-learning profile into a three-chapter xianxi
     expectNoSourceLeakage(workbench.bundle?.snapshot);
     expectNoSourceLeakage(workbench.final_scene?.content || "");
   }
+
+  await page.getByTestId("dragon-demo-open-workbench").first().click();
+  await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
+  await page.getByTestId("nav-reference").click();
+  await page.getByTestId("dragon-demo-open-interop").first().click();
+  await expect(page.getByTestId("interop-center-view")).toBeVisible();
 
   await page.getByTestId("nav-workbench").click();
   await page.getByTestId("scene-id-input").fill(CHAPTERS[2].sceneId);

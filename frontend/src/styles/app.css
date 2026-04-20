@@ -633,6 +633,15 @@ pre {
   margin-bottom: 0;
 }
 
+.inline-warning {
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(180, 128, 45, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 246, 220, 0.7);
+  color: rgba(78, 57, 16, 0.82);
+  line-height: 1.5;
+}
+
 .receipt-card::after {
   content: "";
   position: absolute;
@@ -2387,6 +2396,33 @@ pre {
   margin-top: 0;
 }
 
+.dragon-demo-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.dragon-demo-controls label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.toggle-row {
+  display: inline-flex !important;
+  grid-auto-flow: column;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.dragon-demo-export-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
 .dragon-demo-blockers,
 .dragon-demo-status-row {
   display: flex;
@@ -2585,7 +2621,8 @@ pre {
   .knowledge-filter-grid,
   .knowledge-form-grid,
   .config-form-grid,
-  .author-form-grid {
+  .author-form-grid,
+  .dragon-demo-controls {
     grid-template-columns: 1fr;
   }
 

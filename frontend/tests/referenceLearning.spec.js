@@ -165,8 +165,12 @@ describe("reference learning api helpers", () => {
       scope: "chapter",
       scope_ref_id: "CH001",
     });
-    await api.fetchDragonXianxiaDemoStatus();
-    await api.runDragonXianxiaDemo();
+    await api.fetchDragonXianxiaDemoStatus({ book_id: "refbook_alpha", profile_id: "refprofile_alpha" });
+    await api.runDragonXianxiaDemo({
+      book_id: "refbook_alpha",
+      profile_id: "refprofile_alpha",
+      force_rerun: false,
+    });
     await api.rejectReview("review_reffind_1", { reason: "重复样本" });
 
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/reference-books");
@@ -187,10 +191,19 @@ describe("reference learning api helpers", () => {
       "http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha/profiles/refprofile_alpha/apply",
       expect.objectContaining({ method: "POST" }),
     );
-    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/demo/dragon-xianxia/status");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/demo/dragon-xianxia/status?book_id=refbook_alpha&profile_id=refprofile_alpha",
+    );
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/demo/dragon-xianxia/run",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          book_id: "refbook_alpha",
+          profile_id: "refprofile_alpha",
+          force_rerun: false,
+        }),
+      }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/review-items/review_reffind_1/reject",
@@ -345,10 +358,25 @@ describe("reference learning store", () => {
     const source = readFileSync(REFERENCE_VIEW_PATH, "utf8");
 
     expect(source).toContain("dragonDemoStatus");
+    expect(source).toContain("dragonDemoSelectedBookId");
+    expect(source).toContain("dragonDemoSelectedProfileId");
+    expect(source).toContain("dragonDemoRunPayload");
+    expect(source).toContain("dragonDemoMarkdown");
+    expect(source).toContain("copyDragonDemoMarkdown");
+    expect(source).toContain("downloadDragonDemoMarkdown");
+    expect(source).toContain("openDragonDemoWorkbench");
+    expect(source).toContain("openDragonDemoExport");
     expect(source).toContain("loadDragonDemoStatus");
     expect(source).toContain("runDragonDemo");
     expect(source).toContain('data-testid="dragon-demo-workspace"');
+    expect(source).toContain('data-testid="dragon-demo-book-select"');
+    expect(source).toContain('data-testid="dragon-demo-profile-select"');
     expect(source).toContain('data-testid="dragon-demo-run"');
+    expect(source).toContain('data-testid="dragon-demo-copy-markdown"');
+    expect(source).toContain('data-testid="dragon-demo-download-markdown"');
+    expect(source).toContain('data-testid="dragon-demo-open-workbench"');
+    expect(source).toContain('data-testid="dragon-demo-open-interop"');
+    expect(source).toContain('data-testid="dragon-demo-offline-warning"');
     expect(source).toContain("source_excerpt_hidden");
     expect(source).toContain("profile.preview_items");
     expect(source).not.toContain("finding.source_segment?.preview");
