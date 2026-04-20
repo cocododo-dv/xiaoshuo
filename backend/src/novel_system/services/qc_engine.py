@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,8 @@ from novel_system.settings import get_settings
 CONTINUITY_BUDGET_ISSUE_KEY = "continuity_budget_exceeded"
 CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe input budget after deterministic continuity compaction."
 CONTINUITY_BUDGET_REWRITE = "Split the scene and retry QC with a smaller continuity scope."
+HARD_QC_REQUIRED_ISSUE_KEYS = {"missing_required_text", "missing_hard_constraint"}
+HARD_QC_STYLE_ONLY_ISSUE_KEYS = {"style_compliance", "style_rule_violation", "style_profile_drift"}
 
 
 @dataclass(slots=True)
@@ -122,6 +125,71 @@ def _continuity_warning_issue_key(continuity_warning: Any) -> str:
         if isinstance(code, str) and code:
             return code
     return CONTINUITY_BUDGET_ISSUE_KEY
+
+
+def _issue_blob(issues: list[Any], rewrite_brief: list[Any]) -> str:
+    parts: list[str] = []
+    for issue in issues:
+        if isinstance(issue, dict):
+            parts.append(str(issue.get("issue_key") or ""))
+            parts.append(str(issue.get("message") or ""))
+    parts.extend(str(item) for item in rewrite_brief)
+    return "\n".join(parts)
+
+
+def _contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
+    if not isinstance(forbidden_text, str) or not forbidden_text.strip():
+        return False
+    return any(term in content for term in _constraint_terms(forbidden_text))
+
+
+def _constraint_terms(text: str) -> list[str]:
+    return [term.strip() for term in re.split(r"[,，、;；\n]+", text) if len(term.strip()) >= 2]
+
+
+def _scene_card_source_texts(scene: SceneCard) -> list[str]:
+    texts = [scene.must_include_text, scene.hook, scene.exit_change, scene.scene_goal, scene.location]
+    beats = scene.beats_json if isinstance(scene.beats_json, list) else []
+    texts.extend(item for item in beats if isinstance(item, str))
+    return [text for text in texts if isinstance(text, str) and text.strip()]
+
+
+def _source_field_satisfied(source_text: str, content: str) -> bool:
+    source_text = source_text.strip()
+    if source_text in content:
+        return True
+    fragments = _significant_fragments(source_text)
+    if not fragments:
+        return False
+    matched = [fragment for fragment in fragments if fragment in content]
+    return len(matched) >= min(2, len(fragments))
+
+
+def _issue_mentions_source(issue_blob: str, source_text: str) -> bool:
+    source_text = source_text.strip()
+    if source_text and source_text in issue_blob:
+        return True
+    return any(fragment in issue_blob for fragment in _significant_fragments(source_text))
+
+
+def _significant_fragments(text: str) -> list[str]:
+    fragments: list[str] = []
+    fragments.extend(match.lower() for match in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}", text))
+    for sequence in re.findall(r"[\u4e00-\u9fff]{3,}", text):
+        fragments.extend(sequence[index : index + 3] for index in range(0, max(len(sequence) - 2, 0)))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for fragment in fragments:
+        if fragment in seen:
+            continue
+        seen.add(fragment)
+        unique.append(fragment)
+    return unique
+
+
+def _reported_duplicate_appears_once(issue_blob: str, content: str) -> bool:
+    quoted = re.findall(r"['‘“\"]([^'’”\"]{3,})['’”\"]", issue_blob)
+    return bool(quoted) and all(content.count(fragment) <= 1 for fragment in quoted)
 
 
 class HardQcEngine:
@@ -231,6 +299,8 @@ class HardQcEngine:
                 ),
             )
 
+        payload = self._apply_deterministic_sanity(scene, neutral_content, report.model_dump())
+        report = validate_qc_report("hard_qc", payload)
         payload = report.model_dump()
         qc_report = self._persist_qc_report(
             scene=scene,
@@ -339,6 +409,65 @@ class HardQcEngine:
             if isinstance(issue_key, str) and issue_key:
                 return issue_key
         return None
+
+    def _apply_deterministic_sanity(self, scene: SceneCard, neutral_content: str, payload: dict[str, Any]) -> dict[str, Any]:
+        issues = payload.get("issues")
+        if not isinstance(issues, list) or not issues:
+            return payload
+        rewrite_brief = payload.get("rewrite_brief")
+        issue_blob = _issue_blob(issues, rewrite_brief if isinstance(rewrite_brief, list) else [])
+        filtered = [
+            issue
+            for issue in issues
+            if not (
+                isinstance(issue, dict)
+                and self._issue_contradicts_deterministic_scene_card(scene, neutral_content, issue, issue_blob)
+            )
+        ]
+        if len(filtered) == len(issues):
+            return payload
+        if filtered:
+            return {**payload, "issues": filtered}
+        return {
+            **payload,
+            "resolution_code": "hard_pass",
+            "pass_flag": True,
+            "next_action": "pass",
+            "issues": [],
+            "rewrite_brief": [],
+        }
+
+    def _issue_contradicts_deterministic_scene_card(
+        self,
+        scene: SceneCard,
+        neutral_content: str,
+        issue: dict[str, Any],
+        issue_blob: str,
+    ) -> bool:
+        issue_key = str(issue.get("issue_key") or "").strip()
+        if issue_key == "forbidden_text":
+            return not _contains_forbidden_term(scene.forbidden_text, neutral_content)
+        if issue_key in HARD_QC_STYLE_ONLY_ISSUE_KEYS or issue_key.startswith("style_"):
+            return True
+        if issue_key in HARD_QC_REQUIRED_ISSUE_KEYS:
+            return self._source_field_satisfies_reported_issue(scene.must_include_text, neutral_content, issue_blob) or any(
+                self._source_field_satisfies_reported_issue(source_text, neutral_content, issue_blob)
+                for source_text in _scene_card_source_texts(scene)
+            )
+        if issue_key == "unsupported_event":
+            return any(
+                self._source_field_satisfies_reported_issue(source_text, neutral_content, issue_blob)
+                for source_text in _scene_card_source_texts(scene)
+            )
+        if issue_key == "duplicate_text":
+            return _reported_duplicate_appears_once(issue_blob, neutral_content)
+        return False
+
+    @staticmethod
+    def _source_field_satisfies_reported_issue(source_text: Any, neutral_content: str, issue_blob: str) -> bool:
+        if not isinstance(source_text, str) or not source_text.strip():
+            return False
+        return _source_field_satisfied(source_text, neutral_content) and _issue_mentions_source(issue_blob, source_text)
 
     def _persist_qc_report(
         self,

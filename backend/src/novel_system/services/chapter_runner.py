@@ -73,6 +73,12 @@ class ChapterRunnerService:
                 self.session.flush()
                 return self._serialize_job(job)
 
+            scene_incomplete_error = self._scene_incomplete_error(next_scene_id, result)
+            if scene_incomplete_error is not None:
+                self._mark_blocked(job, blocked_scene_id=next_scene_id, latest_error=scene_incomplete_error)
+                self.session.flush()
+                return self._serialize_job(job)
+
             self._mark_scene_completed(job, next_scene_id)
             gate_error = self._chapter_gate_error(chapter_id, scene_id=next_scene_id)
             if gate_error is not None:
@@ -147,17 +153,24 @@ class ChapterRunnerService:
 
     def _reconcile_job(self, job: ChapterRunJob, scene_ids: list[str]) -> None:
         payload = self._payload(job)
-        completed = [scene_id for scene_id in payload.get("completed_scene_ids", []) if scene_id in scene_ids]
+        finalized_scene_ids = self._finalized_scene_ids(scene_ids)
+        completed_set = {
+            scene_id
+            for scene_id in payload.get("completed_scene_ids", [])
+            if scene_id in scene_ids
+        }
+        completed = [scene_id for scene_id in scene_ids if scene_id in completed_set or scene_id in finalized_scene_ids]
         current_scene_id = payload.get("current_scene_id")
         if current_scene_id not in scene_ids:
             current_scene_id = completed[-1] if completed else None
         blocked_scene_id = payload.get("blocked_scene_id")
         if blocked_scene_id not in scene_ids:
             blocked_scene_id = None
+        if blocked_scene_id in completed and self._chapter_gate_error(job.chapter_id, scene_id=blocked_scene_id) is None:
+            blocked_scene_id = None
         if blocked_scene_id is not None:
             current_scene_id = blocked_scene_id
-        completed_set = set(completed)
-        next_scene_id = next((scene_id for scene_id in scene_ids if scene_id not in completed_set), None)
+        next_scene_id = next((scene_id for scene_id in scene_ids if scene_id not in set(completed)), None)
         payload.update(
             {
                 "scene_ids": scene_ids,
@@ -171,12 +184,11 @@ class ChapterRunnerService:
         latest_error = summary.get("latest_error")
         if blocked_scene_id is None:
             if next_scene_id is None:
-                if job.status != JOB_STATUS_FAILED:
-                    latest_error = None
-                    job.error_code = None
-                    job.error_text = None
-                    job.status = JOB_STATUS_COMPLETED
-                    job.finished_at = job.finished_at or utcnow()
+                latest_error = None
+                job.error_code = None
+                job.error_text = None
+                job.status = JOB_STATUS_COMPLETED
+                job.finished_at = job.finished_at or utcnow()
             elif job.status in {JOB_STATUS_BLOCKED, JOB_STATUS_COMPLETED}:
                 latest_error = None
                 job.error_code = None
@@ -189,6 +201,18 @@ class ChapterRunnerService:
         summary["current_scene_id"] = current_scene_id
         summary["latest_error"] = latest_error
         job.result_summary_json = summary
+
+    def _finalized_scene_ids(self, scene_ids: list[str]) -> set[str]:
+        if not scene_ids:
+            return set()
+        states = self.session.execute(
+            select(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids))
+        ).scalars().all()
+        return {
+            state.scene_id
+            for state in states
+            if state.current_final_scene_row_id
+        }
 
     def _mark_running(self, job: ChapterRunJob) -> None:
         now = utcnow()
@@ -336,6 +360,22 @@ class ChapterRunnerService:
         if result.get("scene_status") == "human_review_required":
             return True
         return bool(result.get("current_human_review_event_id"))
+
+    def _scene_incomplete_error(self, scene_id: str, result: dict[str, Any] | None) -> dict[str, str] | None:
+        if not isinstance(result, dict):
+            return {
+                "code": "CHAPTER_RUN_SCENE_INCOMPLETE",
+                "message": "scene run did not produce a final scene",
+            }
+        if result.get("current_final_scene_row_id"):
+            return None
+        state = self.session.get(SceneRunState, scene_id)
+        if state is not None and state.current_final_scene_row_id:
+            return None
+        return {
+            "code": "CHAPTER_RUN_SCENE_INCOMPLETE",
+            "message": "scene run did not produce a final scene",
+        }
 
     @staticmethod
     def _payload(job: ChapterRunJob) -> dict[str, Any]:

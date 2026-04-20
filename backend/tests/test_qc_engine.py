@@ -689,6 +689,112 @@ def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_styl
     assert session.execute(select(FinalScene)).scalars().all() == []
 
 
+def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -> None:
+    _seed_scene(session)
+    first = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(
+            resolution_code="hard_fail_partial",
+            next_action="partial_rewrite",
+            issues=[{"issue_key": "missing_red_envelope", "message": "The required handoff is absent."}],
+        ),
+    )
+
+    first_result = first.run_scene("CH100_SC01")
+    session.commit()
+
+    second = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(
+            resolution_code="hard_fail_partial",
+            next_action="partial_rewrite",
+            issues=[{"issue_key": "missing_red_envelope", "message": "The required handoff is still absent."}],
+        ),
+    )
+
+    second_result = second.run_scene("CH100_SC01")
+    session.commit()
+
+    state = session.get(SceneRunState, "CH100_SC01")
+    event = session.execute(select(HumanReviewEvent)).scalars().one()
+
+    assert first_result["scene_status"] == "hard_qc_partial_rewrite_required"
+    assert second_result["scene_status"] == "human_review_required"
+    assert second_result["hard_qc"]["branch"] == "human_review_required"
+    assert second_result["hard_qc"]["stop_reason"] == "repeat_issue_key_limit"
+    assert state.repeat_issue_key == "missing_red_envelope"
+    assert state.repeat_issue_count == 2
+    assert state.hard_partial_rewrite_count == 2
+    assert state.current_human_review_event_id == event.event_id
+    assert state.current_final_scene_row_id is None
+
+
+def test_run_scene_ignores_hard_qc_forbidden_false_positive_when_required_text_is_present(session) -> None:
+    _seed_scene(session)
+    orchestrator = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(
+            resolution_code="hard_fail_partial",
+            next_action="partial_rewrite",
+            issues=[
+                {
+                    "issue_key": "forbidden_text",
+                    "message": "Remove the forbidden text 'A red envelope changes hands.' from the draft.",
+                }
+            ],
+        ),
+        soft_qc_payloads=[_base_soft_qc_payload(resolution_code="soft_pass", next_action="pass")],
+    )
+
+    result = orchestrator.run_scene("CH100_SC01")
+    session.commit()
+
+    hard_report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
+    final_scene = session.execute(select(FinalScene)).scalars().one()
+
+    assert result["scene_status"] == "archived"
+    assert result["hard_qc"]["branch"] == "continue"
+    assert hard_report.resolution_code == "hard_pass"
+    assert hard_report.pass_flag == 1
+    assert hard_report.issues_json == []
+    assert final_scene.content
+
+
+def test_run_scene_ignores_hard_qc_hook_and_style_false_positives_when_source_is_satisfied(session) -> None:
+    _seed_scene(session)
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.hook = "red envelope changes hands"
+    session.commit()
+    orchestrator = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(
+            resolution_code="hard_fail_partial",
+            next_action="partial_rewrite",
+            issues=[
+                {
+                    "issue_key": "unsupported_event",
+                    "message": "The red envelope changes hands hook is unsupported by the bundle.",
+                },
+                {
+                    "issue_key": "style_compliance",
+                    "message": "The prose should be handled by soft QC instead.",
+                },
+            ],
+        ),
+        soft_qc_payloads=[_base_soft_qc_payload(resolution_code="soft_pass", next_action="pass")],
+    )
+
+    result = orchestrator.run_scene("CH100_SC01")
+    session.commit()
+
+    hard_report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
+
+    assert result["scene_status"] == "archived"
+    assert result["hard_qc"]["branch"] == "continue"
+    assert hard_report.resolution_code == "hard_pass"
+    assert hard_report.issues_json == []
+
+
 def test_hard_qc_engine_escalates_repeated_issue_key_to_human_review(session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, "CH100_SC01")

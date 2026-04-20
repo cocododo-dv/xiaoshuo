@@ -71,12 +71,6 @@ def _generator_for_mode(mode: str, *, model: str | None):
             "Live literary eval requires NOVEL_SYSTEM_LLM_ENABLED=true.",
             status_code=400,
         )
-    if not settings.llm_api_key:
-        raise DomainError(
-            "LITERARY_EVAL_LIVE_API_KEY_MISSING",
-            "Live literary eval requires NOVEL_SYSTEM_LLM_API_KEY.",
-            status_code=400,
-        )
 
     routing = load_model_routing_config()
     task_config = routing.node_routing.get("literary_eval_live") or routing.node_routing.get("style_draft")
@@ -86,12 +80,23 @@ def _generator_for_mode(mode: str, *, model: str | None):
             "Live literary eval requires a model override or task_routing.stylize.",
             status_code=400,
         )
+    provider_configs = load_llm_provider_runtime_configs()
+    if not _live_credentials_available(
+        settings.llm_api_key,
+        provider_configs,
+        provider_id=task_config.provider_id if task_config is not None else None,
+    ):
+        raise DomainError(
+            "LITERARY_EVAL_LIVE_CREDENTIALS_MISSING",
+            "Live literary eval requires a configured API key or credential-free local provider.",
+            status_code=400,
+        )
     client = LLMClient(
         provider=settings.llm_provider,
         base_url=settings.llm_base_url,
         api_key=settings.llm_api_key,
         timeout_seconds=settings.llm_timeout_seconds,
-        provider_configs=load_llm_provider_runtime_configs(),
+        provider_configs=provider_configs,
     )
     return LLMLiteraryCaseGenerator(
         client,
@@ -106,3 +111,17 @@ def _generator_for_mode(mode: str, *, model: str | None):
         temperature=task_config.temperature if task_config is not None else 0.75,
         max_output_tokens=task_config.max_output_tokens if task_config is not None else 1200,
     )
+
+
+def _live_credentials_available(api_key: str | None, provider_configs: dict, *, provider_id: str | None) -> bool:
+    if api_key:
+        return True
+    candidates = [provider_configs[provider_id]] if provider_id and provider_id in provider_configs else provider_configs.values()
+    for provider_config in candidates:
+        if not provider_config.enabled:
+            continue
+        if provider_config.credential_mode == "none":
+            return True
+        if provider_config.api_key or provider_config.access_token:
+            return True
+    return False
