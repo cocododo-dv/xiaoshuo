@@ -720,10 +720,21 @@ function selectConfigSection(sectionId) {
             <strong>{{ configDashboardSummary.providerCount }}</strong>
             <small>{{ configDashboardSummary.needsProvider ? "先添加至少一个模型接入" : "可用于节点路由" }}</small>
           </div>
-          <div class="config-readiness-item" :class="{ warning: configDashboardSummary.needsActiveRoutes }">
+          <div
+            class="config-readiness-item"
+            :class="{ warning: configDashboardSummary.needsActiveRoutes || configDashboardSummary.needsRouteProviders }"
+          >
             <span>已接入节点</span>
             <strong>{{ configDashboardSummary.activeNodeCount }}</strong>
-            <small>{{ configDashboardSummary.needsActiveRoutes ? "先为真实调用节点选择模型" : "可以保存并激活" }}</small>
+            <small>
+              {{
+                configDashboardSummary.needsRouteProviders
+                  ? `有 ${configDashboardSummary.blockedNodeCount} 个节点缺少可用 provider/model`
+                  : configDashboardSummary.needsActiveRoutes
+                    ? "先为真实调用节点选择模型"
+                    : "可以保存并激活"
+              }}
+            </small>
           </div>
           <div class="config-readiness-item">
             <span>预留节点</span>
@@ -739,7 +750,12 @@ function selectConfigSection(sectionId) {
         <div class="config-action-row">
           <button
             data-testid="config-llm-node-routes-save-validation"
-            :disabled="systemConfig.llmSaving || configDashboardSummary.needsProvider || configDashboardSummary.needsActiveRoutes"
+            :disabled="
+              systemConfig.llmSaving ||
+              configDashboardSummary.needsProvider ||
+              configDashboardSummary.needsActiveRoutes ||
+              configDashboardSummary.needsRouteProviders
+            "
             @click="saveLlmNodeRoutes"
           >
             保存并激活节点路由

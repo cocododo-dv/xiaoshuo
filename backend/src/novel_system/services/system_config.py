@@ -447,10 +447,12 @@ class SystemConfigService:
                 },
             )
             node_routes[node_id]["status"] = status
+        _annotate_node_route_readiness(node_routes=node_routes, providers=providers)
         return {
             "provider_catalog": _provider_catalog(),
             "providers": providers,
             "node_routes": node_routes,
+            "readiness": _llm_readiness_summary(providers=providers, node_routes=node_routes),
             "api_snapshot": api_payload.get("active_snapshot"),
             "models_snapshot": models_payload.get("active_snapshot"),
         }
@@ -506,7 +508,12 @@ class SystemConfigService:
             "retry_budget": dict(payload.get("retry_budget") or {}),
             "job_runtime": dict(payload.get("job_runtime") or {}),
         }
-        parse_model_routing_config(config_payload)
+        routing_config = parse_model_routing_config(config_payload)
+        if _bool_value(payload.get("activate", False)):
+            _validate_activating_node_route_bindings(
+                node_routing=routing_config.node_routing,
+                providers=self.llm_overview()["providers"],
+            )
         snapshot = self._store_config_snapshot(
             category="models",
             parsed=config_payload,
@@ -1099,6 +1106,170 @@ def _serialize_task_config(node_id: str, task_config) -> dict[str, Any]:
         "credential_mode": task_config.credential_mode,
         "provider_options": task_config.provider_options,
     }
+
+
+def _provider_view_ready(provider: dict[str, Any]) -> bool:
+    if provider.get("enabled") is False:
+        return False
+    credential_mode = str(provider.get("credential_mode") or "api_key")
+    if credential_mode == "none":
+        return True
+    secret = provider.get("secret") if isinstance(provider.get("secret"), dict) else {}
+    return secret.get("configured") is True
+
+
+def _route_readiness(route: dict[str, Any], providers: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    status = str(route.get("status") or "active")
+    provider_id = _optional_text(route.get("provider_id"))
+    model = _optional_text(route.get("model"))
+    configured = bool(route.get("configured") or provider_id or model)
+    if status == "reserved":
+        return {
+            "ready": False,
+            "provider_ready": False,
+            "provider_missing": False,
+            "model_missing": False,
+            "readiness_reason": "reserved",
+        }
+    if not configured:
+        return {
+            "ready": False,
+            "provider_ready": False,
+            "provider_missing": False,
+            "model_missing": False,
+            "readiness_reason": "not_configured",
+        }
+
+    if not provider_id:
+        return {
+            "ready": False,
+            "provider_ready": False,
+            "provider_missing": True,
+            "model_missing": False,
+            "readiness_reason": "provider_id_missing",
+        }
+    provider = providers.get(provider_id)
+    if provider is None:
+        return {
+            "ready": False,
+            "provider_ready": False,
+            "provider_missing": True,
+            "model_missing": False,
+            "readiness_reason": f"provider_not_found:{provider_id}",
+        }
+
+    provider_ready = _provider_view_ready(provider)
+    if not model:
+        return {
+            "ready": False,
+            "provider_ready": provider_ready,
+            "provider_missing": False,
+            "model_missing": True,
+            "readiness_reason": "model_missing",
+        }
+    models = [str(model) for model in provider.get("models") or []]
+    model_missing = bool(models and model not in models)
+    ready = provider_ready and not model_missing
+    reason = "ready"
+    if not provider_ready:
+        reason = "provider_not_ready"
+    elif model_missing:
+        reason = f"model_not_listed:{model}"
+    return {
+        "ready": ready,
+        "provider_ready": provider_ready,
+        "provider_missing": False,
+        "model_missing": model_missing,
+        "readiness_reason": reason,
+    }
+
+
+def _annotate_node_route_readiness(
+    *,
+    node_routes: dict[str, dict[str, Any]],
+    providers: dict[str, dict[str, Any]],
+) -> None:
+    for route in node_routes.values():
+        route.update(_route_readiness(route, providers))
+
+
+def _llm_readiness_summary(
+    *,
+    providers: dict[str, dict[str, Any]],
+    node_routes: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    provider_count = len(providers)
+    active_provider_count = sum(1 for provider in providers.values() if _provider_view_ready(provider))
+    active_routes = [
+        route
+        for route in node_routes.values()
+        if route.get("status") != "reserved"
+        and (route.get("configured") or route.get("provider_id") or route.get("model"))
+    ]
+    ready_routes = [route for route in active_routes if route.get("ready") is True]
+    blocked_routes = [route for route in active_routes if route.get("ready") is not True]
+    return {
+        "provider_count": provider_count,
+        "active_provider_count": active_provider_count,
+        "configured_route_count": len(active_routes),
+        "active_route_count": len(active_routes),
+        "ready_route_count": len(ready_routes),
+        "blocked_route_count": len(blocked_routes),
+        "blocked_routes": [
+            {
+                "node_id": route.get("node_id"),
+                "provider_id": route.get("provider_id"),
+                "model": route.get("model"),
+                "reason": route.get("readiness_reason"),
+            }
+            for route in blocked_routes
+        ],
+        "ready": active_provider_count > 0 and len(ready_routes) > 0 and not blocked_routes,
+    }
+
+
+def _validate_activating_node_route_bindings(
+    *,
+    node_routing: dict[str, Any],
+    providers: dict[str, dict[str, Any]],
+) -> None:
+    missing_bindings: list[str] = []
+    missing_models: list[str] = []
+    not_ready_providers: list[str] = []
+    for node_id, task_config in node_routing.items():
+        if LLM_NODE_STATUSES.get(node_id) == "reserved":
+            continue
+        provider_id = task_config.provider_id
+        if not provider_id or provider_id not in providers:
+            missing_bindings.append(f"{node_id}:{provider_id or 'missing_provider_id'}")
+            continue
+        if not _provider_view_ready(providers[provider_id]):
+            not_ready_providers.append(f"{node_id}:{provider_id}")
+        models = [str(model) for model in providers[provider_id].get("models") or []]
+        if not _optional_text(task_config.model):
+            missing_models.append(f"{node_id}:{provider_id}:missing_model")
+        elif models and task_config.model not in models:
+            missing_models.append(f"{node_id}:{provider_id}:{task_config.model}")
+
+    if missing_bindings:
+        raise DomainError(
+            "CONFIG_ROUTE_PROVIDER_MISSING",
+            "active LLM node routes must reference an existing provider_id: " + ", ".join(missing_bindings),
+            status_code=422,
+        )
+    if not_ready_providers:
+        raise DomainError(
+            "CONFIG_ROUTE_PROVIDER_NOT_READY",
+            "active LLM node routes must reference an enabled provider with configured credentials: "
+            + ", ".join(not_ready_providers),
+            status_code=422,
+        )
+    if missing_models:
+        raise DomainError(
+            "CONFIG_ROUTE_MODEL_MISSING",
+            "active LLM node routes must use a model listed by their provider config: " + ", ".join(missing_models),
+            status_code=422,
+        )
 
 
 def _required_text(value: Any, field: str) -> str:

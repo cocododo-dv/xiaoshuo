@@ -477,9 +477,11 @@ describe("system config store", () => {
       providerCount: 1,
       configuredNodeCount: 1,
       activeNodeCount: 1,
+      blockedNodeCount: 0,
       reservedNodeCount: 1,
       needsProvider: false,
       needsActiveRoutes: false,
+      needsRouteProviders: false,
     });
     expect(providerMessage).toContain("openai_primary");
     expect(routeMessage).toContain("config_models_llm_001");
@@ -487,6 +489,88 @@ describe("system config store", () => {
     expect(oauthMessage).toContain("Gemini");
     expect(store.oauthStart.authorization_url).toContain("accounts.google.com");
     expect(store.providerDraft.api_key).toBe("");
+  });
+
+  it("does not count provider-missing node routes as runnable active routes", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.endsWith("/api/v1/system-config/llm")) {
+        return ok({
+          provider_catalog: {},
+          providers: {},
+          node_routes: {
+            style_draft: {
+              node_id: "style_draft",
+              status: "active",
+              configured: true,
+              ready: false,
+              provider_ready: false,
+              provider_missing: true,
+              provider: "openai_compatible",
+              provider_id: "missing_qwen",
+              model: "Qwen3-14B-Q8_0.gguf",
+            },
+            chapter_summary: {
+              node_id: "chapter_summary",
+              status: "reserved",
+              configured: false,
+              ready: false,
+            },
+          },
+          readiness: {
+            provider_count: 0,
+            active_provider_count: 0,
+            configured_route_count: 1,
+            active_route_count: 1,
+            ready_route_count: 0,
+            blocked_route_count: 1,
+            ready: false,
+          },
+        });
+      }
+      return ok({});
+    });
+
+    await store.loadLlmConfig();
+
+    const styleDraftRow = store.nodeRouteRows.find((row) => row.node_id === "style_draft");
+    expect(styleDraftRow.ready).toBe(false);
+    expect(styleDraftRow.provider_missing).toBe(true);
+    expect(store.configDashboardSummary).toMatchObject({
+      providerCount: 0,
+      configuredNodeCount: 1,
+      activeNodeCount: 0,
+      blockedNodeCount: 1,
+      needsProvider: true,
+      needsActiveRoutes: true,
+      needsRouteProviders: true,
+    });
+  });
+
+  it("recomputes draft route readiness when the selected provider or model changes", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+
+    await store.loadLlmConfig();
+    store.nodeRouteDrafts.neutral_draft.provider_id = "";
+    let neutralDraftRow = store.nodeRouteRows.find((row) => row.node_id === "neutral_draft");
+    expect(neutralDraftRow.ready).toBe(false);
+    expect(neutralDraftRow.provider_missing).toBe(true);
+    expect(store.configDashboardSummary).toMatchObject({
+      providerCount: 1,
+      activeNodeCount: 0,
+      blockedNodeCount: 1,
+      needsRouteProviders: true,
+    });
+
+    store.nodeRouteDrafts.neutral_draft.provider_id = "openai_primary";
+    store.nodeRouteDrafts.neutral_draft.model = "not-listed";
+    neutralDraftRow = store.nodeRouteRows.find((row) => row.node_id === "neutral_draft");
+    expect(neutralDraftRow.ready).toBe(false);
+    expect(neutralDraftRow.provider_missing).toBe(false);
+    expect(neutralDraftRow.model_missing).toBe(true);
+    expect(neutralDraftRow.readiness_reason).toContain("model_not_listed");
   });
 
   it("prefills a local OpenAI-compatible provider without sending an api key", async () => {

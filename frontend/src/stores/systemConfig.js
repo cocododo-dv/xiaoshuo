@@ -211,6 +211,100 @@ function providerDraftFrom(provider = {}) {
   };
 }
 
+function providerViewReady(provider = {}) {
+  if (!provider || provider.enabled === false) {
+    return false;
+  }
+  const credentialMode = provider.credential_mode || "api_key";
+  if (credentialMode === "none") {
+    return true;
+  }
+  return provider.secret?.configured === true;
+}
+
+function routeReadinessFromDraft(draft, source = {}, providers = {}) {
+  const status = draft.status || source.status || "active";
+  const providerId = draft.provider_id || "";
+  const model = draft.model || "";
+  const configured = Boolean(providerId || model || source.configured);
+  const sourceMatchesDraft =
+    source.ready !== undefined &&
+    (source.provider_id || "") === providerId &&
+    (source.model || "") === model &&
+    (source.status || "active") === status;
+
+  if (sourceMatchesDraft) {
+    return {
+      status,
+      configured,
+      ready: Boolean(source.ready),
+      provider_ready: source.provider_ready !== undefined ? Boolean(source.provider_ready) : true,
+      provider_missing: Boolean(source.provider_missing),
+      model_missing: Boolean(source.model_missing),
+      readiness_reason: source.readiness_reason || "",
+    };
+  }
+
+  if (status === "reserved") {
+    return {
+      status,
+      configured: false,
+      ready: false,
+      provider_ready: false,
+      provider_missing: false,
+      model_missing: false,
+      readiness_reason: "reserved",
+    };
+  }
+  if (!configured) {
+    return {
+      status,
+      configured: false,
+      ready: false,
+      provider_ready: false,
+      provider_missing: false,
+      model_missing: false,
+      readiness_reason: "not_configured",
+    };
+  }
+  if (!providerId) {
+    return {
+      status,
+      configured: true,
+      ready: false,
+      provider_ready: false,
+      provider_missing: true,
+      model_missing: false,
+      readiness_reason: "provider_id_missing",
+    };
+  }
+  const provider = providers[providerId];
+  if (!provider) {
+    return {
+      status,
+      configured: true,
+      ready: false,
+      provider_ready: false,
+      provider_missing: true,
+      model_missing: false,
+      readiness_reason: `provider_not_found:${providerId}`,
+    };
+  }
+
+  const providerReady = providerViewReady(provider);
+  const models = Array.isArray(provider.models) ? provider.models.map((item) => String(item)) : [];
+  const modelMissing = !model || (models.length > 0 && !models.includes(model));
+  return {
+    status,
+    configured: true,
+    ready: providerReady && !modelMissing,
+    provider_ready: providerReady,
+    provider_missing: false,
+    model_missing: modelMissing,
+    readiness_reason: !providerReady ? "provider_not_ready" : modelMissing ? `model_not_listed:${model}` : "ready",
+  };
+}
+
 function buildProviderPayload(draft) {
   const providerId = String(draft.provider_id || "").trim();
   if (!providerId) {
@@ -329,6 +423,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
       ),
     nodeRouteRows: (state) => {
       const drafts = state.nodeRouteDrafts || {};
+      const providers = state.llm.providers || {};
       const nodeIds = [
         ...LLM_NODE_ORDER,
         ...Object.keys(drafts).filter((nodeId) => !LLM_NODE_ORDER.includes(nodeId)),
@@ -336,26 +431,35 @@ export const useSystemConfigStore = defineStore("systemConfig", {
       return nodeIds.map((nodeId) => {
         const draft = drafts[nodeId] || normalizeNodeRouteDraft(nodeId, {});
         const source = state.llm.node_routes?.[nodeId] || {};
+        const readiness = routeReadinessFromDraft(draft, source, providers);
         return {
           ...draft,
           node_id: nodeId,
-          status: source.status || draft.status || "active",
-          configured: Boolean(source.configured || draft.provider_id || draft.model),
+          status: readiness.status,
+          configured: readiness.configured,
+          ready: readiness.ready,
+          provider_ready: readiness.provider_ready,
+          provider_missing: readiness.provider_missing,
+          model_missing: readiness.model_missing,
+          readiness_reason: readiness.readiness_reason,
         };
       });
     },
     configDashboardSummary() {
       const providerCount = this.providerRows.length;
       const configuredRows = this.nodeRouteRows.filter((row) => row.configured);
-      const activeRows = configuredRows.filter((row) => row.status !== "reserved");
+      const runnableRows = configuredRows.filter((row) => row.status !== "reserved" && row.ready);
+      const blockedRows = configuredRows.filter((row) => row.status !== "reserved" && !row.ready);
       const reservedRows = this.nodeRouteRows.filter((row) => row.status === "reserved");
       return {
         providerCount,
         configuredNodeCount: configuredRows.length,
-        activeNodeCount: activeRows.length,
+        activeNodeCount: runnableRows.length,
+        blockedNodeCount: blockedRows.length,
         reservedNodeCount: reservedRows.length,
         needsProvider: providerCount === 0,
-        needsActiveRoutes: activeRows.length === 0,
+        needsActiveRoutes: runnableRows.length === 0,
+        needsRouteProviders: blockedRows.some((row) => row.provider_missing || row.provider_ready === false || row.model_missing),
       };
     },
     localSetupMessage: (state) => {

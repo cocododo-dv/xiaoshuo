@@ -92,6 +92,167 @@ def test_no_key_local_provider_counts_as_live_generation_mode(monkeypatch) -> No
     assert llm_generation_mode() == "live"
 
 
+def test_llm_overview_marks_default_routes_without_provider_as_not_ready(client) -> None:
+    response = client.get("/api/v1/system-config/llm")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["providers"] == {}
+    assert payload["readiness"]["provider_count"] == 0
+    assert payload["readiness"]["configured_route_count"] > 0
+    assert payload["readiness"]["ready_route_count"] == 0
+    assert payload["readiness"]["ready"] is False
+    route = payload["node_routes"]["neutral_draft"]
+    assert route["configured"] is True
+    assert route["ready"] is False
+    assert route["provider_missing"] is True
+
+
+def test_llm_node_route_activation_requires_existing_provider_binding(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    response = client.post(
+        "/api/v1/system-config/llm/node-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "activate": True,
+            "node_routing": {
+                "style_draft": {
+                    "provider": "openai_compatible",
+                    "provider_id": "missing_qwen",
+                    "model": "Qwen3-14B-Q8_0.gguf",
+                    "temperature": 0.2,
+                    "max_output_tokens": 3000,
+                    "response_format": "json_object",
+                    "reasoning_level": "medium",
+                    "api_mode": "chat",
+                    "credential_mode": "none",
+                }
+            },
+            "retry_budget": {},
+            "job_runtime": {},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CONFIG_ROUTE_PROVIDER_MISSING"
+    assert "missing_qwen" in response.json()["error"]["message"]
+
+
+def test_llm_node_route_activation_requires_ready_provider_secret(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "openai_no_secret",
+            "provider_type": "openai",
+            "base_url": "https://api.openai.example/v1",
+            "enabled": True,
+            "credential_mode": "api_key",
+            "api_mode": "responses",
+            "models": ["gpt-5.4"],
+        },
+    )
+    assert provider_response.status_code == 200
+    assert provider_response.json()["data"]["provider"]["secret"]["configured"] is False
+
+    response = client.post(
+        "/api/v1/system-config/llm/node-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "activate": True,
+            "node_routing": {
+                "neutral_draft": {
+                    "provider": "openai",
+                    "provider_id": "openai_no_secret",
+                    "model": "gpt-5.4",
+                    "temperature": 0.2,
+                    "max_output_tokens": 3000,
+                    "response_format": "json_object",
+                    "reasoning_level": "medium",
+                    "api_mode": "responses",
+                }
+            },
+            "retry_budget": {},
+            "job_runtime": {},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CONFIG_ROUTE_PROVIDER_NOT_READY"
+    assert "openai_no_secret" in response.json()["error"]["message"]
+
+
+def test_llm_overview_marks_route_model_missing_when_provider_models_change(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "local_qwen",
+            "provider_type": "openai_compatible",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "enabled": True,
+            "credential_mode": "none",
+            "api_mode": "chat",
+            "models": ["Qwen3-14B-Q8_0.gguf"],
+        },
+    )
+    assert provider_response.status_code == 200
+
+    route_response = client.post(
+        "/api/v1/system-config/llm/node-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "activate": True,
+            "node_routing": {
+                "style_draft": {
+                    "provider": "openai_compatible",
+                    "provider_id": "local_qwen",
+                    "model": "Qwen3-14B-Q8_0.gguf",
+                    "temperature": 0.2,
+                    "max_output_tokens": 3000,
+                    "response_format": "json_object",
+                    "reasoning_level": "medium",
+                    "api_mode": "chat",
+                    "credential_mode": "none",
+                }
+            },
+            "retry_budget": {},
+            "job_runtime": {},
+        },
+    )
+    assert route_response.status_code == 200
+
+    provider_update = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "local_qwen",
+            "provider_type": "openai_compatible",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "enabled": True,
+            "credential_mode": "none",
+            "api_mode": "chat",
+            "models": ["AnotherLocalModel"],
+        },
+    )
+    assert provider_update.status_code == 200
+
+    overview = client.get("/api/v1/system-config/llm")
+    payload = overview.json()["data"]
+    assert payload["node_routes"]["style_draft"]["ready"] is False
+    assert payload["node_routes"]["style_draft"]["model_missing"] is True
+    assert payload["readiness"]["ready"] is False
+    assert payload["readiness"]["blocked_route_count"] >= 1
+
+
 def test_system_config_local_setup_mode_rejects_non_loopback_writes(monkeypatch) -> None:
     monkeypatch.delenv("NOVEL_SYSTEM_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
@@ -314,7 +475,10 @@ def test_llm_config_provider_secret_and_node_routes_do_not_leak_credentials(clie
     assert "sk-secret-openai" not in overview.text
     assert overview_payload["providers"]["openai_primary"]["secret"]["configured"] is True
     assert overview_payload["node_routes"]["neutral_draft"]["provider_id"] == "openai_primary"
+    assert overview_payload["node_routes"]["neutral_draft"]["ready"] is True
     assert overview_payload["node_routes"]["style_patch"]["model"] == "gpt-5.4"
+    assert overview_payload["readiness"]["ready"] is True
+    assert overview_payload["readiness"]["blocked_route_count"] == 0
 
     routing_config = load_model_routing_config()
     assert routing_config.node_routing["neutral_draft"].provider_id == "openai_primary"
