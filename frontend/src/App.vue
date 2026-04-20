@@ -10,6 +10,7 @@ const VIEW_COMPONENTS = {
   review: defineAsyncComponent(() => import("./views/ReviewInboxView.vue")),
   index: defineAsyncComponent(() => import("./views/IndexConsoleView.vue")),
   knowledge: defineAsyncComponent(() => import("./views/KnowledgeConsoleView.vue")),
+  reference: defineAsyncComponent(() => import("./views/ReferenceLearningView.vue")),
   interop: defineAsyncComponent(() => import("./views/InteropCenterView.vue")),
   config: defineAsyncComponent(() => import("./views/SystemConfigView.vue")),
 };
@@ -24,11 +25,29 @@ const activeViewComponent = computed(() => VIEW_COMPONENTS[activeView.value] || 
 // activeView === 'trash'
 // activeView === 'interop'
 
-function pushNotice(message) {
+function formatNotice(message) {
   if (!message) {
+    return "";
+  }
+  const text = String(message).trim();
+  if (text.startsWith("profile ready")) {
+    return "参考书画像已生成。下一步：选择应用范围，并创建审核项。";
+  }
+  if (text.startsWith("started ")) {
+    return "学习任务已启动。下一步：点击「继续分析」生成候选卡。";
+  }
+  if (text.startsWith("round ") && text.includes("waiting for review")) {
+    return "新一轮候选卡已生成，请审核下方卡片。";
+  }
+  return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+}
+
+function pushNotice(message) {
+  const notice = formatNotice(message);
+  if (!notice) {
     return;
   }
-  notices.value = [message, ...notices.value].slice(0, 4);
+  notices.value = [notice, ...notices.value.filter((item) => item !== notice)].slice(0, 3);
 }
 
 </script>

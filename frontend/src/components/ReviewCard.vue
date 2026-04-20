@@ -43,22 +43,110 @@ const STATUS_LABELS = {
   released: "已发布",
 };
 
-const payloadSummary = computed(() => {
-  const payload = props.item.candidate_payload_json || {};
-  const parts = [
-    payload.lineage_key,
-    payload.scope,
-    payload.scope_ref_id,
-    payload.scene_id,
-    payload.chapter_id,
-  ].filter(Boolean);
-  return parts.join(" / ") || "无附加载荷摘要";
+const COLLECTION_LABELS = {
+  style_rules: "风格规则",
+  style_observations: "风格观察",
+  calibration_lines: "校准参考",
+  banned_rule_clusters: "禁用复刻规则",
+  narrative_patterns: "叙事结构",
+  voice_cards: "角色声线",
+  relation_cards: "关系卡",
+  world_rules: "世界规则",
+  foreshadow_tracker: "伏笔",
+  scene_memories: "场景记忆",
+  chapter_memories: "章节记忆",
+};
+
+const ITEM_LABELS = {
+  style_rule_set: "文笔规则",
+  style_observation: "风格观察",
+  calibration_candidate: "校准参考",
+  banned_rule_cluster: "禁用复刻规则",
+  narrative_pattern: "叙事结构",
+};
+
+const SOURCE_LABELS = {
+  reference_profile_apply: "参考画像应用",
+  style_profile_extract: "样本文本提取",
+  knowledge_console: "知识控制台",
+  manual: "人工录入",
+};
+
+const SCOPE_LABELS = {
+  global: "全局",
+  chapter: "章节",
+  scene: "场景",
+};
+
+const payload = computed(() =>
+  props.item.candidate_payload_json && typeof props.item.candidate_payload_json === "object"
+    ? props.item.candidate_payload_json
+    : {},
+);
+
+const collectionLabel = computed(
+  () => COLLECTION_LABELS[props.item.target_collection] || ITEM_LABELS[props.item.item_type] || props.item.target_collection || "审核候选",
+);
+
+const sourceLabel = computed(() => SOURCE_LABELS[payload.value.source] || payload.value.source || "审核候选");
+
+const scopeSummary = computed(() => {
+  const scope = payload.value.scope || "";
+  const scopeRef = payload.value.scope_ref_id || payload.value.scene_id || payload.value.chapter_id || "";
+  if (!scope && !scopeRef) {
+    return "";
+  }
+  const label = SCOPE_LABELS[scope] || scope || "范围";
+  return scopeRef ? `${label} ${scopeRef}` : label;
 });
 
-const formattedPayload = computed(() =>
-  payloadExpanded.value ? JSON.stringify(props.item.candidate_payload_json || {}, null, 2) : "",
-);
+const reviewTitle = computed(() => {
+  if (payload.value.source === "reference_profile_apply") {
+    return `参考画像应用 · ${collectionLabel.value}`;
+  }
+  return `${collectionLabel.value} · ${sourceLabel.value}`;
+});
+
+const payloadSummary = computed(() => {
+  if (payload.value.source === "reference_profile_apply") {
+    const profileTitle = payload.value.profile_title || payload.value.book_title || "参考书画像";
+    return `${profileTitle}${scopeSummary.value ? ` · 应用到${scopeSummary.value}` : ""}`;
+  }
+  const parts = [
+    scopeSummary.value,
+    payload.value.contract_version || payload.value.style_profile?.contract_version || "",
+  ].filter(Boolean);
+  return parts.join(" · ") || "技术详情中可查看完整载荷";
+});
+
+const formattedPayload = computed(() => {
+  if (!payloadExpanded.value) {
+    return "";
+  }
+  return JSON.stringify(
+    {
+      review_id: props.item.review_id,
+      item_type: props.item.item_type,
+      target_collection: props.item.target_collection,
+      status: props.item.status,
+      materialize_status: props.item.materialize_status,
+      candidate_text: props.item.candidate_text,
+      candidate_payload_json: props.item.candidate_payload_json || {},
+    },
+    null,
+    2,
+  );
+});
 const reviewImpactSummary = computed(() => buildReviewImpactSummary(props.item));
+const publicReviewImpactSummary = computed(() => ({
+  ...reviewImpactSummary.value,
+  sourceLabel: sourceLabel.value,
+  sourceDetail: payload.value.source === "reference_profile_apply"
+    ? payload.value.profile_title || payload.value.book_title || "参考书画像"
+    : reviewImpactSummary.value.sourceDetail,
+  targetLabel: collectionLabel.value,
+  targetDetail: scopeSummary.value || "",
+}));
 const styleProfileSummary = computed(() => styleProfileSummaryFromReviewItem(props.item));
 const styleProfileRisk = computed(() => styleProfileRiskFromReviewItem(props.item));
 const requiresRiskConfirmation = computed(() => styleProfileRisk.value?.severity === "high");
@@ -103,35 +191,35 @@ watch(
     :data-testid="`review-card-${props.item.review_id}`"
   >
     <div class="review-meta">
-      <span class="badge">{{ props.item.target_collection }}</span>
-      <span class="muted">{{ props.item.review_id }}</span>
+      <span class="badge">{{ collectionLabel }}</span>
+      <span class="muted">{{ sourceLabel }}</span>
       <span v-if="props.sourceActionLabel" class="badge">{{ props.sourceActionLabel }}</span>
     </div>
 
-    <h3>{{ props.item.candidate_text || "空候选内容" }}</h3>
+    <h3>{{ reviewTitle }}</h3>
     <p class="muted">状态：{{ formatStatus(props.item.status) }}</p>
-    <p class="muted">载荷摘要：{{ payloadSummary }}</p>
+    <p class="muted">摘要：{{ payloadSummary }}</p>
 
-    <dl v-if="reviewImpactSummary.available" class="review-impact-summary" data-testid="review-impact-summary">
+    <dl v-if="publicReviewImpactSummary.available" class="review-impact-summary" data-testid="review-impact-summary">
       <div>
         <dt>来源</dt>
         <dd>
-          <strong>{{ reviewImpactSummary.sourceLabel }}</strong>
-          <small v-if="reviewImpactSummary.sourceDetail">{{ reviewImpactSummary.sourceDetail }}</small>
+          <strong>{{ publicReviewImpactSummary.sourceLabel }}</strong>
+          <small v-if="publicReviewImpactSummary.sourceDetail">{{ publicReviewImpactSummary.sourceDetail }}</small>
         </dd>
       </div>
       <div>
         <dt>影响</dt>
         <dd>
-          <strong>{{ reviewImpactSummary.targetLabel }}</strong>
-          <small v-if="reviewImpactSummary.targetDetail">{{ reviewImpactSummary.targetDetail }}</small>
+          <strong>{{ publicReviewImpactSummary.targetLabel }}</strong>
+          <small v-if="publicReviewImpactSummary.targetDetail">{{ publicReviewImpactSummary.targetDetail }}</small>
         </dd>
       </div>
       <div>
         <dt>运行时</dt>
         <dd>
-          <strong>{{ reviewImpactSummary.runtimeLabel }}</strong>
-          <small>{{ reviewImpactSummary.runtimeDetail }}</small>
+          <strong>{{ publicReviewImpactSummary.runtimeLabel }}</strong>
+          <small>{{ publicReviewImpactSummary.runtimeDetail }}</small>
         </dd>
       </div>
     </dl>
@@ -174,7 +262,7 @@ watch(
         :data-testid="`review-toggle-payload-${props.item.review_id}`"
         @click="payloadExpanded = !payloadExpanded"
       >
-        {{ payloadExpanded ? "收起载荷" : "查看载荷" }}
+        {{ payloadExpanded ? "收起技术详情" : "技术详情" }}
       </button>
     </div>
 

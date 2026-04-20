@@ -335,6 +335,7 @@ class ReviewItem(Base):
             "WHEN item_type = 'style_observation' THEN 'style_observations' "
             "WHEN item_type = 'style_rule_set' THEN 'style_rules' "
             "WHEN item_type = 'banned_rule_cluster' THEN 'banned_rule_clusters' "
+            "WHEN item_type = 'narrative_pattern' THEN 'narrative_patterns' "
             "WHEN item_type = 'voice_card_candidate' THEN 'voice_cards' "
             "WHEN item_type = 'relation_card_candidate' THEN 'relation_cards' "
             "WHEN item_type = 'world_rule' THEN 'world_rules' "
@@ -410,6 +411,27 @@ class StyleRule(Base):
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
     style_rule_set_id: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    scope: Mapped[str] = mapped_column(String, default="global")
+    scope_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    content: Mapped[str] = mapped_column(Text)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    active_flag: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
+    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class NarrativePattern(Base):
+    __tablename__ = "narrative_patterns"
+    __table_args__ = (
+        CheckConstraint("NOT (active_flag = 0 AND runtime_eligible = 1)", name="ck_narrative_patterns_runtime"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    narrative_pattern_id: Mapped[str] = mapped_column(String)
     version: Mapped[int] = mapped_column(Integer, default=1)
     scope: Mapped[str] = mapped_column(String, default="global")
     scope_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -645,6 +667,103 @@ class ReconcileFault(Base):
     object_ref: Mapped[str] = mapped_column(String)
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class ReferenceBook(Base):
+    __tablename__ = "reference_books"
+
+    book_id: Mapped[str] = mapped_column(String, primary_key=True)
+    title: Mapped[str] = mapped_column(String)
+    author_label: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_kind: Mapped[str] = mapped_column(String)
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    cloud_policy: Mapped[str] = mapped_column(String)
+    analysis_focus: Mapped[str] = mapped_column(String, default="style_structure")
+    text_checksum: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="imported")
+    total_chars: Mapped[int] = mapped_column(Integer, default=0)
+    total_segments: Mapped[int] = mapped_column(Integer, default=0)
+    stats_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ReferenceBookSegment(Base):
+    __tablename__ = "reference_book_segments"
+
+    segment_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("reference_books.book_id"))
+    segment_index: Mapped[int] = mapped_column(Integer)
+    chapter_hint: Mapped[str | None] = mapped_column(String, nullable=True)
+    segment_kind: Mapped[str] = mapped_column(String)
+    start_offset: Mapped[int] = mapped_column(Integer, default=0)
+    end_offset: Mapped[int] = mapped_column(Integer, default=0)
+    text: Mapped[str] = mapped_column(Text)
+    selected_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class ReferenceLearningRun(Base):
+    __tablename__ = "reference_learning_runs"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("reference_books.book_id"))
+    status: Mapped[str] = mapped_column(String, default="running")
+    batch_size: Mapped[int] = mapped_column(Integer, default=8)
+    coverage_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    round_count: Mapped[int] = mapped_column(Integer, default=0)
+    profile_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ReferenceLearningRound(Base):
+    __tablename__ = "reference_learning_rounds"
+
+    round_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("reference_books.book_id"))
+    run_id: Mapped[str] = mapped_column(ForeignKey("reference_learning_runs.run_id"))
+    round_index: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String, default="waiting_review")
+    segment_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    finding_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ReferenceFinding(Base):
+    __tablename__ = "reference_findings"
+
+    finding_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("reference_books.book_id"))
+    run_id: Mapped[str] = mapped_column(ForeignKey("reference_learning_runs.run_id"))
+    round_id: Mapped[str] = mapped_column(ForeignKey("reference_learning_rounds.round_id"))
+    segment_id: Mapped[str] = mapped_column(ForeignKey("reference_book_segments.segment_id"))
+    review_id: Mapped[str] = mapped_column(String)
+    finding_type: Mapped[str] = mapped_column(String)
+    dimension: Mapped[str] = mapped_column(String)
+    summary: Mapped[str] = mapped_column(Text)
+    evidence_preview: Mapped[str] = mapped_column(Text)
+    candidate_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ReferenceProfile(Base):
+    __tablename__ = "reference_profiles"
+
+    profile_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("reference_books.book_id"))
+    run_id: Mapped[str] = mapped_column(ForeignKey("reference_learning_runs.run_id"))
+    title: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="ready")
+    profile_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    coverage_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_finding_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
 class SystemConfigSnapshot(Base):

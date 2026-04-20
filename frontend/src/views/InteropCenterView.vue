@@ -1,9 +1,11 @@
 <script setup>
 import { computed, reactive } from "vue";
 
+import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
+import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useShellRouter } from "../router";
 import { useInteropCenterStore } from "../stores/interopCenter";
 
@@ -11,6 +13,11 @@ const emit = defineEmits(["notice"]);
 
 const interopCenter = useInteropCenterStore();
 const { openTarget } = useShellRouter();
+const { receipt, runFlowAction } = useFlowActionFeedback({
+  emitNotice: (message) => emit("notice", message),
+});
+const INTEROP_IMPORT_SCOPE = "interop:import";
+const INTEROP_RESULT_SCOPE = "interop:result";
 const query = reactive({
   exportBundleId: interopCenter.exportBundleId || "",
   replayFinalRowId: interopCenter.replayFinalRowId || "",
@@ -49,52 +56,72 @@ function syncQueryState() {
 }
 
 async function runPreview() {
-  try {
-    const message = await interopCenter.previewWorksheet();
+  const result = await runFlowAction({
+    scopeKey: INTEROP_IMPORT_SCOPE,
+    actionLabel: "预览工作表",
+    runningMessage: "正在解析工作表并生成预览...",
+    successMessage: (message) => message || "工作表预览已生成。",
+    nextStep: () => "下一步：确认预览无误后点击「导入工作表」。",
+    action: () => interopCenter.previewWorksheet(),
+  });
+  if (result) {
     syncQueryState();
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
 async function runImport() {
-  try {
-    const message = await interopCenter.importWorksheet();
+  const result = await runFlowAction({
+    scopeKey: INTEROP_IMPORT_SCOPE,
+    actionLabel: "导入工作表",
+    runningMessage: "正在导入工作表产物...",
+    successMessage: (message) => message || "工作表已导入。",
+    nextStep: () => "下一步：查看导入回执，或打开场景工作台继续验证。",
+    action: () => interopCenter.importWorksheet(),
+  });
+  if (result) {
     syncQueryState();
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
 async function loadExport() {
-  try {
-    const message = await interopCenter.exportBundle(query.exportBundleId);
+  const result = await runFlowAction({
+    scopeKey: INTEROP_RESULT_SCOPE,
+    actionLabel: "加载导出结果",
+    runningMessage: "正在加载 bundle 导出结果...",
+    successMessage: (message) => message || "导出结果已加载。",
+    nextStep: () => "下一步：查看结果信封和来源对比。",
+    action: () => interopCenter.exportBundle(query.exportBundleId),
+  });
+  if (result) {
     syncQueryState();
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
 async function loadReplayFinal() {
-  try {
-    const message = await interopCenter.replayFinalScene(query.replayFinalRowId);
+  const result = await runFlowAction({
+    scopeKey: INTEROP_RESULT_SCOPE,
+    actionLabel: "回放终稿场景",
+    runningMessage: "正在回放终稿场景...",
+    successMessage: (message) => message || "终稿场景已回放。",
+    nextStep: () => "下一步：查看回放回执和来源对比。",
+    action: () => interopCenter.replayFinalScene(query.replayFinalRowId),
+  });
+  if (result) {
     syncQueryState();
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
 async function loadReplayDraft() {
-  try {
-    const message = await interopCenter.replayDraft(query.replayDraftRowId);
+  const result = await runFlowAction({
+    scopeKey: INTEROP_RESULT_SCOPE,
+    actionLabel: "回放草稿",
+    runningMessage: "正在回放草稿...",
+    successMessage: (message) => message || "草稿已回放。",
+    nextStep: () => "下一步：查看回放回执和来源对比。",
+    action: () => interopCenter.replayDraft(query.replayDraftRowId),
+  });
+  if (result) {
     syncQueryState();
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
@@ -172,6 +199,7 @@ function openBundleScene() {
               {{ interopCenter.actionId === "import" ? "导入中..." : "导入工作表" }}
             </button>
           </div>
+          <FlowActionReceipt :receipt="receipt(INTEROP_IMPORT_SCOPE)" />
 
           <article v-if="previewSummary" class="paper mini" data-testid="interop-preview-summary">
             <h4>预览结果</h4>
@@ -254,6 +282,7 @@ function openBundleScene() {
               {{ interopCenter.actionId === "replay-draft" ? "加载中..." : "回放草稿" }}
             </button>
           </div>
+          <FlowActionReceipt :receipt="receipt(INTEROP_RESULT_SCOPE)" />
         </article>
 
         <article class="paper">

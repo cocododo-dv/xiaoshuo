@@ -43,6 +43,11 @@ const views = [
     cacheMode: "light",
   },
   {
+    id: "reference",
+    label: "参考书学习",
+    cacheMode: "light",
+  },
+  {
     id: "interop",
     label: "互操作中心",
     cacheMode: "light",

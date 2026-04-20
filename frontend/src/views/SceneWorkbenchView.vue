@@ -4,12 +4,14 @@ import { computed, onActivated, onDeactivated, ref, watch } from "vue";
 import AttemptTimeline from "../components/AttemptTimeline.vue";
 import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
 import CursorPager from "../components/CursorPager.vue";
+import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import GenerationSummaryCard from "../components/GenerationSummaryCard.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
 import QcReportCard from "../components/QcReportCard.vue";
+import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useShellRouter } from "../router";
 import { useWorkbenchStore } from "../stores/workbench";
 
@@ -22,6 +24,11 @@ const manualHoldReason = ref("");
 const selectedStrategies = ref({});
 const isViewActive = ref(false);
 const DEFAULT_BACKFILL_STRATEGY = "create_tracker_now";
+const { receipt, runFlowAction } = useFlowActionFeedback({
+  emitNotice: (message) => emit("notice", message),
+});
+const WORKBENCH_MAIN_SCOPE = "workbench:main";
+const WORKBENCH_CHAPTER_SCOPE = "workbench:chapter";
 
 const hasData = computed(() => Boolean(workbench.data));
 const chapterState = computed(() => workbench.data?.chapter_state || {});
@@ -132,10 +139,14 @@ function syncSelectedStrategies(items) {
 }
 
 async function loadWorkbench() {
-  await workbench.refreshAll(resolveSceneId(), { force: true });
-  if (workbench.error) {
-    emit("notice", workbench.error);
-  }
+  await runFlowAction({
+    scopeKey: WORKBENCH_MAIN_SCOPE,
+    actionLabel: "读取场景",
+    runningMessage: "正在读取场景工作台数据...",
+    successMessage: () => "场景工作台已刷新。",
+    nextStep: () => "下一步：检查运行前提示，确认后运行完整场景。",
+    action: () => workbench.refreshAll(resolveSceneId(), { force: true }),
+  });
 }
 
 async function ensureWorkbenchLoaded() {
@@ -160,59 +171,71 @@ async function previousAttemptsPage() {
 }
 
 async function runScene() {
-  try {
-    const sceneId = resolveSceneId();
-    const message = await workbench.runScene(sceneId);
+  const sceneId = resolveSceneId();
+  const result = await runFlowAction({
+    scopeKey: WORKBENCH_MAIN_SCOPE,
+    actionLabel: "运行完整场景",
+    runningMessage: "正在运行完整场景流水线...",
+    successMessage: (message) => message || "完整场景运行已完成。",
+    nextStep: () => "下一步：查看下方运行回执、质量报告和 bundle 来源。",
+    action: () => workbench.runScene(sceneId),
+  });
+  if (result) {
     openTarget(sceneCardTarget(sceneId), {
       view_id: "workbench",
       source_type: "scene_run_receipt",
       source_id: sceneId,
     });
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
 async function runChapterBackfill(stageId) {
-  try {
-    const message = await workbench.runChapterBackfill(
+  await runFlowAction({
+    scopeKey: WORKBENCH_CHAPTER_SCOPE,
+    actionLabel: "执行章节补写",
+    runningMessage: "正在执行章节补写动作...",
+    successMessage: (message) => message || "章节补写已完成。",
+    nextStep: () => "下一步：查看章节运行状态，必要时继续运行完整场景。",
+    action: () => workbench.runChapterBackfill(
       chapterId.value,
       stageId,
       selectedStrategyFor(stageId),
       resolveSceneId(),
-    );
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
-  }
+    ),
+  });
 }
 
 async function runChapterFinalAggregate() {
-  try {
-    const message = await workbench.runChapterFinalAggregate(chapterId.value, resolveSceneId());
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: WORKBENCH_CHAPTER_SCOPE,
+    actionLabel: "运行最终聚合",
+    runningMessage: "正在聚合章节最终状态...",
+    successMessage: (message) => message || "章节最终聚合已完成。",
+    nextStep: () => "下一步：回到场景状态或运行完整场景确认结果。",
+    action: () => workbench.runChapterFinalAggregate(chapterId.value, resolveSceneId()),
+  });
 }
 
 async function setManualHold() {
-  try {
-    const message = await workbench.setChapterManualHold(chapterId.value, manualHoldReason.value, resolveSceneId());
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: WORKBENCH_CHAPTER_SCOPE,
+    actionLabel: "设置人工挂起",
+    runningMessage: "正在设置章节人工挂起...",
+    successMessage: (message) => message || "已设置人工挂起。",
+    nextStep: () => "下一步：处理挂起原因；准备好后可解除挂起。",
+    action: () => workbench.setChapterManualHold(chapterId.value, manualHoldReason.value, resolveSceneId()),
+  });
 }
 
 async function clearManualHold() {
-  try {
-    const message = await workbench.clearChapterManualHold(chapterId.value, resolveSceneId());
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: WORKBENCH_CHAPTER_SCOPE,
+    actionLabel: "解除人工挂起",
+    runningMessage: "正在解除章节人工挂起...",
+    successMessage: (message) => message || "已解除人工挂起。",
+    nextStep: () => "下一步：继续章节运行或运行完整场景。",
+    action: () => workbench.clearChapterManualHold(chapterId.value, resolveSceneId()),
+  });
 }
 
 function handleOpenTarget(target) {
@@ -286,6 +309,7 @@ onDeactivated(() => {
           </button>
         </div>
       </template>
+      <FlowActionReceipt :receipt="receipt(WORKBENCH_MAIN_SCOPE)" />
 
       <div v-if="workbench.loading" class="empty">正在加载场景工作台...</div>
       <template v-else-if="hasData">
@@ -458,6 +482,7 @@ onDeactivated(() => {
             </button>
           </div>
         </article>
+        <FlowActionReceipt :receipt="receipt(WORKBENCH_CHAPTER_SCOPE)" />
 
         <div class="workbench-columns" data-testid="scene-workbench-summary-row">
           <GenerationSummaryCard

@@ -153,6 +153,30 @@ If you want to re-verify the wrapper itself, run:
 powershell -ExecutionPolicy Bypass -File scripts/test_dev_lifecycle.ps1
 ```
 
+## Reference Book Learning Quick Start
+
+Use this flow when you want to drop in one TXT/MD reference book, let the system sample it, and only make review decisions.
+
+1. Start the local stack with `.\start-dev.cmd` or `.\restart-dev.cmd`, then open `http://127.0.0.1:5173`.
+2. Open `Reference Learning` in the shell.
+3. Import a `.txt`, `.md`, or `.markdown` file by upload or local path.
+4. Choose the cloud policy before importing:
+   - `local_only`: never calls the LLM path; uses deterministic local heuristics.
+   - `segments_only`: sends only selected segments to the configured LLM route.
+   - `allow_full_cloud`: allows full-book processing through segment-by-segment map/reduce; it does not send the whole book as one prompt.
+5. Start a learning run and click advance. Each round produces review cards for style rules, style observations, narrative patterns, banned replication rules, and calibration candidates.
+6. Approve or reject the cards. The run pauses whenever review is pending; once enough approved coverage exists, it synthesizes a per-book reference profile.
+7. Apply the profile to `global`, `chapter`, or `scene`. Applying only creates review items; it does not activate the profile automatically.
+8. In `Review Inbox`, approve and release the generated apply reviews. After release, the scene bundle can include the style profile and narrative patterns.
+
+The reference profile is intentionally abstract. Runtime data should contain transferable craft guidance, narrative structure, calibration notes, and forbidden replication rules; it should not preserve long source sentences, named characters, settings, proper nouns, or recognizable scene bridges from the reference book.
+
+Current v1 limits:
+
+- TXT/MD only; EPUB/PDF/DOCX are not supported yet.
+- UTF-8 is tried first, then GB18030 fallback.
+- Reference profiles are stored as independent assets per book and only enter generation after manual apply/review/release.
+
 ## End-to-end Demo
 
 ```powershell

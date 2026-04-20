@@ -80,7 +80,11 @@ function normalizeRequestError(error) {
 async function parseEnvelope(response) {
   const payload = await response.json();
   if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error?.message || `请求失败：${response.status}`);
+    const error = new Error(payload.error?.message || `请求失败：${response.status}`);
+    error.code = payload.error?.code || null;
+    error.status = response.status;
+    error.details = payload.error?.details || {};
+    throw error;
   }
   return payload.data;
 }
@@ -124,6 +128,22 @@ async function apiAdminPost(path, body = {}, adminToken = "") {
       method: "POST",
       headers,
       body: JSON.stringify(body),
+    });
+    return parseEnvelope(response);
+  } catch (error) {
+    throw normalizeRequestError(error);
+  }
+}
+
+async function apiPostForm(path, formData) {
+  try {
+    const response = await fetch(buildUrl(path), {
+      method: "POST",
+      headers: {
+        "X-Idempotency-Key": buildIdempotencyKey(path),
+        "X-Operator-Ref": getOperatorRef(),
+      },
+      body: formData,
     });
     return parseEnvelope(response);
   } catch (error) {
@@ -189,6 +209,47 @@ export function extractStyleProfile(payload) {
 
 export function submitStyleProfileCandidate(payload) {
   return apiPost("/api/v1/style-profile/review-candidate", payload);
+}
+
+export function fetchReferenceBooks() {
+  return apiGet("/api/v1/reference-books");
+}
+
+export function fetchReferenceBook(bookId) {
+  return apiGet(`/api/v1/reference-books/${encodeURIComponent(bookId)}`);
+}
+
+export function importReferenceBookPath(payload) {
+  return apiPost("/api/v1/reference-books/import-path", payload);
+}
+
+export function importReferenceBookUpload({ file, title = "", author_label = "", cloud_policy, analysis_focus = "style_structure" }) {
+  const formData = new FormData();
+  formData.set("file", file);
+  if (title) {
+    formData.set("title", title);
+  }
+  if (author_label) {
+    formData.set("author_label", author_label);
+  }
+  formData.set("cloud_policy", cloud_policy);
+  formData.set("analysis_focus", analysis_focus);
+  return apiPostForm("/api/v1/reference-books/import-upload", formData);
+}
+
+export function startReferenceLearningRun(bookId, payload = { batch_size: 8 }) {
+  return apiPost(`/api/v1/reference-books/${encodeURIComponent(bookId)}/runs`, payload);
+}
+
+export function advanceReferenceLearningRun(bookId, runId) {
+  return apiPost(`/api/v1/reference-books/${encodeURIComponent(bookId)}/runs/${encodeURIComponent(runId)}/advance`);
+}
+
+export function applyReferenceProfile(bookId, profileId, payload) {
+  return apiPost(
+    `/api/v1/reference-books/${encodeURIComponent(bookId)}/profiles/${encodeURIComponent(profileId)}/apply`,
+    payload,
+  );
 }
 
 export function fetchWorkbench(sceneId) {
@@ -316,6 +377,10 @@ export function createReviewItem(payload) {
 
 export function approveReview(reviewId, payload = {}) {
   return apiPost(`/api/v1/review-items/${reviewId}/approve`, payload);
+}
+
+export function rejectReview(reviewId, payload = {}) {
+  return apiPost(`/api/v1/review-items/${reviewId}/reject`, payload);
 }
 
 export function releaseReview(reviewId) {

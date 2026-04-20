@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onActivated, reactive, ref, watch } from "vue";
 
+import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
+import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useShellRouter } from "../router";
 import { useAuthorWorkspaceStore } from "../stores/authorWorkspace";
 
@@ -10,6 +12,13 @@ const emit = defineEmits(["notice"]);
 
 const authorWorkspace = useAuthorWorkspaceStore();
 const { openTarget } = useShellRouter();
+const { receipt, runFlowAction } = useFlowActionFeedback({
+  emitNotice: (message) => emit("notice", message),
+});
+const AUTHOR_WORKSPACE_SCOPE = "author:workspace";
+const AUTHOR_CHAPTER_SCOPE = "author:chapter";
+const AUTHOR_SCENE_SCOPE = "author:scene";
+const AUTHOR_ORDER_SCOPE = "author:order";
 
 function createEmptyChapterForm() {
   return {
@@ -170,16 +179,27 @@ function startNewScene() {
   assignSceneForm(null);
 }
 
+function loadSceneDraft() {
+  return authorWorkspace.loadSceneDraft();
+}
+
 async function startQuickScene() {
   creatingScene.value = true;
   selectedSceneId.value = "";
-  try {
-    const draft = await authorWorkspace.loadSceneDraft();
+  const draft = await runFlowAction({
+    scopeKey: AUTHOR_SCENE_SCOPE,
+    actionLabel: "生成智能草稿",
+    runningMessage: "正在生成场景智能草稿...",
+    successMessage: (result) => `已生成智能草稿 ${result?.scene_id || ""}`.trim(),
+    nextStep: () => "下一步：检查草稿内容并保存场景。",
+    action: () => {
+      return loadSceneDraft();
+    },
+  });
+  if (draft) {
     assignSceneForm(draft);
-    emit("notice", `已生成智能草稿 ${draft.scene_id}`);
-  } catch (error) {
+  } else {
     creatingScene.value = false;
-    emit("notice", error.message);
   }
 }
 
@@ -228,11 +248,17 @@ function syncSceneTrashSelection() {
 }
 
 async function refreshAuthorWorkspace() {
-  await authorWorkspace.ensureLoaded({ force: true });
-  syncChapterTrashSelection();
-  syncSceneTrashSelection();
-  if (authorWorkspace.error) {
-    emit("notice", authorWorkspace.error);
+  const result = await runFlowAction({
+    scopeKey: AUTHOR_WORKSPACE_SCOPE,
+    actionLabel: "刷新作者工作台",
+    runningMessage: "正在刷新作者工作台...",
+    successMessage: () => "作者工作台已刷新。",
+    nextStep: () => "下一步：选择章节或继续编辑当前草稿。",
+    action: () => authorWorkspace.ensureLoaded({ force: true }),
+  });
+  if (result !== null) {
+    syncChapterTrashSelection();
+    syncSceneTrashSelection();
   }
 }
 
@@ -261,41 +287,52 @@ function selectScene(sceneId) {
 }
 
 async function saveChapter() {
-  try {
-    const message = await authorWorkspace.saveChapter({
+  const result = await runFlowAction({
+    scopeKey: AUTHOR_CHAPTER_SCOPE,
+    actionLabel: "保存章节",
+    runningMessage: "正在保存章节简报...",
+    successMessage: (message) => message || "章节已保存。",
+    nextStep: () => "下一步：保存场景，或运行章节批处理。",
+    action: () => authorWorkspace.saveChapter({
       ...chapterForm,
       planned_scene_count: Number(chapterForm.planned_scene_count || 0),
       mid_aggregate_enabled: Number(chapterForm.mid_aggregate_enabled || 0),
-    });
+    }),
+  });
+  if (result) {
     creatingChapter.value = false;
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
 async function saveScene() {
-  try {
-    const message = await authorWorkspace.saveScene({
+  const result = await runFlowAction({
+    scopeKey: AUTHOR_SCENE_SCOPE,
+    actionLabel: "保存场景",
+    runningMessage: "正在保存场景目标...",
+    successMessage: (message) => message || "场景已保存。",
+    nextStep: () => "下一步：打开场景工作台运行，或继续调整场景顺序。",
+    action: () => authorWorkspace.saveScene({
       ...sceneForm,
       chapter_id: authorWorkspace.selectedChapterId || chapterForm.chapter_id,
       onstage_chars_json: textToList(sceneForm.onstage_chars_json),
       beats_json: textToList(sceneForm.beats_json),
-    });
+    }),
+  });
+  if (result) {
     creatingScene.value = false;
     selectedSceneId.value = sceneForm.scene_id;
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
 async function runChapter() {
-  try {
-    emit("notice", await authorWorkspace.runChapter());
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: AUTHOR_CHAPTER_SCOPE,
+    actionLabel: "运行章节",
+    runningMessage: "正在运行章节批处理...",
+    successMessage: (message) => message || "章节运行已推进。",
+    nextStep: () => "下一步：查看章节运行状态，处理阻塞场景或继续运行。",
+    action: () => authorWorkspace.runChapter(),
+  });
 }
 
 async function moveScene(sceneId, offset) {
@@ -308,25 +345,29 @@ async function moveScene(sceneId, offset) {
   const [movedSceneId] = orderedSceneIds.splice(currentIndex, 1);
   orderedSceneIds.splice(nextIndex, 0, movedSceneId);
   const lastSceneId = scenes.value.find((scene) => scene.is_chapter_last === 1)?.scene_id || orderedSceneIds.at(-1);
-  try {
-    emit("notice", await authorWorkspace.reorderScenes(orderedSceneIds, lastSceneId));
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: AUTHOR_ORDER_SCOPE,
+    actionLabel: "调整场景顺序",
+    runningMessage: "正在保存场景顺序...",
+    successMessage: (message) => message || "场景顺序已更新。",
+    nextStep: () => "下一步：确认章节尾场景，或运行章节。",
+    action: () => authorWorkspace.reorderScenes(orderedSceneIds, lastSceneId),
+  });
 }
 
 async function markSceneAsLast(sceneId) {
-  try {
-    emit(
-      "notice",
-      await authorWorkspace.reorderScenes(
+  await runFlowAction({
+    scopeKey: AUTHOR_ORDER_SCOPE,
+    actionLabel: "标记章节结尾",
+    runningMessage: "正在标记章节结尾场景...",
+    successMessage: (message) => message || "章节结尾场景已更新。",
+    nextStep: () => "下一步：运行章节或继续编辑场景。",
+    action: () =>
+      authorWorkspace.reorderScenes(
         scenes.value.map((scene) => scene.scene_id),
         sceneId,
       ),
-    );
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  });
 }
 
 async function trashSelectedScenes() {
@@ -334,12 +375,16 @@ async function trashSelectedScenes() {
   if (!sceneIds.length || !confirmAction(`确认将选中的 ${sceneIds.length} 个场景移入作者回收站吗？`)) {
     return;
   }
-  try {
-    const message = await authorWorkspace.trashScenes(sceneIds);
+  const result = await runFlowAction({
+    scopeKey: AUTHOR_SCENE_SCOPE,
+    actionLabel: "回收场景",
+    runningMessage: `正在回收 ${sceneIds.length} 个场景...`,
+    successMessage: (message) => message || "场景已移入回收站。",
+    nextStep: () => "下一步：如需恢复，可到作者回收站处理。",
+    action: () => authorWorkspace.trashScenes(sceneIds),
+  });
+  if (result) {
     selectedSceneIdsForTrash.value = [];
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
@@ -348,15 +393,19 @@ async function trashSelectedChapters() {
   if (!chapterIds.length || !confirmAction(`确认将选中的 ${chapterIds.length} 个章节移入作者回收站吗？`)) {
     return;
   }
-  try {
-    const message = await authorWorkspace.trashChapters(chapterIds);
+  const result = await runFlowAction({
+    scopeKey: AUTHOR_CHAPTER_SCOPE,
+    actionLabel: "回收章节",
+    runningMessage: `正在回收 ${chapterIds.length} 个章节...`,
+    successMessage: (message) => message || "章节已移入回收站。",
+    nextStep: () => "下一步：如需恢复，可到作者回收站处理。",
+    action: () => authorWorkspace.trashChapters(chapterIds),
+  });
+  if (result) {
     creatingChapter.value = false;
     creatingScene.value = false;
     selectedChapterIdsForTrash.value = [];
     selectedSceneId.value = "";
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
@@ -458,6 +507,7 @@ onActivated(() => {
           </button>
         </div>
       </template>
+      <FlowActionReceipt :receipt="receipt(AUTHOR_WORKSPACE_SCOPE)" />
 
       <div v-if="authorWorkspace.loading" class="empty">正在加载作者工作台...</div>
       <div v-else-if="authorWorkspace.error" class="empty">{{ authorWorkspace.error }}</div>
@@ -481,6 +531,7 @@ onActivated(() => {
               移入所选章节
             </button>
           </div>
+          <FlowActionReceipt compact :receipt="receipt(AUTHOR_CHAPTER_SCOPE)" />
 
           <div v-if="!chapters.length" class="empty">当前还没有活跃章节。</div>
           <VirtualList
@@ -637,6 +688,7 @@ onActivated(() => {
               {{ authorWorkspace.actionId === "run-chapter" ? "Running..." : chapterRunActionLabel }}
             </button>
           </div>
+          <FlowActionReceipt :receipt="receipt(AUTHOR_CHAPTER_SCOPE)" />
         </article>
 
         <article class="paper author-editor-card">
@@ -658,6 +710,8 @@ onActivated(() => {
               移入所选场景
             </button>
           </div>
+          <FlowActionReceipt compact :receipt="receipt(AUTHOR_ORDER_SCOPE)" />
+          <FlowActionReceipt compact :receipt="receipt(AUTHOR_SCENE_SCOPE)" />
 
           <div v-if="!authorWorkspace.selectedChapterId" class="empty">请先选择或新建章节，再编辑场景。</div>
           <template v-else>
@@ -804,6 +858,7 @@ onActivated(() => {
                 {{ authorWorkspace.actionId.startsWith("save-scene") ? "保存中..." : "保存场景" }}
               </button>
             </div>
+            <FlowActionReceipt :receipt="receipt(AUTHOR_SCENE_SCOPE)" />
           </template>
         </article>
       </div>

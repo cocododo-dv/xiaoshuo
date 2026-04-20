@@ -184,6 +184,19 @@ def _prepare_operator_action_context(session: Session, *, path_template: str, pa
             "target_refs": [_target("review_item", review_id)],
         }
 
+    if path_template == "/api/v1/review-items/{review_id}/reject":
+        review_id = payload.get("review_id")
+        if not isinstance(review_id, str) or not review_id:
+            return None
+        review = session.get(ReviewItem, review_id)
+        return {
+            "object_type": "review_item",
+            "object_ref": review_id,
+            "action": "reject_review",
+            "status_before": review.status if review else None,
+            "target_refs": [_target("review_item", review_id)],
+        }
+
     if path_template == "/api/v1/index/verify/{job_id}/retry":
         job_id = payload.get("job_id")
         if not isinstance(job_id, str) or not job_id:
@@ -315,6 +328,16 @@ def _resolve_operator_action_outcome(
             {
                 "review_id": object_ref,
                 "released": result.get("released"),
+            },
+        )
+
+    if action == "reject_review":
+        return (
+            result.get("status"),
+            "review rejected by operator",
+            {
+                "review_id": object_ref,
+                "reason": result.get("reason"),
             },
         )
 

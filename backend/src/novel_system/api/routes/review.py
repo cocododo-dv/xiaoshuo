@@ -258,6 +258,66 @@ def release_review(review_id: str, request: Request, session: Session = Depends(
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
+@router.post("/api/v1/review-items/{review_id}/reject")
+def reject_review(
+    review_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    reject_payload = dict(payload or {})
+    reject_payload["review_id"] = review_id
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/review-items/{review_id}/reject",
+        payload=reject_payload,
+        action=lambda: _reject_review(session, review_id, reject_payload),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+def _reject_review(session: Session, review_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    item = session.get(ReviewItem, review_id)
+    if item is None:
+        raise DomainError("REVIEW_NOT_FOUND", f"review {review_id} not found", status_code=404)
+    if _review_has_released_materialized_row(session, item):
+        raise DomainError("REVIEW_REJECT_PRECONDITION_FAILED", "released reviews cannot be rejected", status_code=409)
+    had_materialized_candidate = (
+        item.status == "approved" or item.materialize_status == "succeeded" or bool(item.approved_item_row_id)
+    )
+    item.status = "rejected"
+    if had_materialized_candidate:
+        item.materialize_status = "rejected"
+        item.approved_item_row_id = None
+        item.approved_item_id = None
+    session.flush()
+    return {
+        "review_id": item.review_id,
+        "status": item.status,
+        "materialize_status": item.materialize_status,
+        "approved_item_row_id": item.approved_item_row_id,
+        "reason": payload.get("reason"),
+    }
+
+
+def _review_has_released_materialized_row(session: Session, item: ReviewItem) -> bool:
+    if not item.approved_item_row_id:
+        return False
+    try:
+        descriptor = descriptor_for_item_type(item.item_type)
+    except DomainError:
+        return True
+    approved_row = session.get(descriptor.model_cls, item.approved_item_row_id)
+    if approved_row is None:
+        return False
+    return getattr(approved_row, "active_flag", 0) == 1 or getattr(approved_row, "runtime_eligible", 0) == 1
+
+
 def _serialize_review(item: ReviewItem, *, session: Session | None = None) -> dict:
     payload = {
         "review_id": item.review_id,

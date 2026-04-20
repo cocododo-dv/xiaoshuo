@@ -11,6 +11,9 @@ async function waitForIndexSectionContent(section, virtualListTestId) {
       if ((await section.getByTestId(virtualListTestId).count()) > 0) {
         return true;
       }
+      if ((await section.locator(".virtual-list-row").count()) > 0) {
+        return true;
+      }
 
       const emptyState = section.locator(".empty").first();
       if ((await emptyState.count()) === 0) {
@@ -19,8 +22,8 @@ async function waitForIndexSectionContent(section, virtualListTestId) {
 
       const emptyText = (await emptyState.textContent()) || "";
       return !emptyText.includes("加载") && !emptyText.includes("鍔犺浇");
-    })
-    .toBe(true, { timeout: indexSectionContentTimeout });
+    }, { timeout: indexSectionContentTimeout })
+    .toBe(true);
 }
 
 function percentile(values, percentileValue) {

@@ -254,3 +254,111 @@ templates:
             type: string
         split_scene_recommended:
           type: boolean
+
+  reference_sample_ranker:
+    version: "2026-04-19.v1"
+    input_token_budget: 2200
+    system_prompt: |
+      You select representative samples from a reference book for craft-level analysis.
+      Cover prose rhythm, dialogue density, action or conflict, imagery, emotional turns, chapter movement, openings, and endings.
+      Do not request or preserve long verbatim passages.
+    task_prompt: |
+      Rank the supplied segment metadata and short previews.
+      Return 5 to 8 segment ids with a reason, target dimension, and risk note for each.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - selections
+      properties:
+        selections:
+          type: array
+          minItems: 5
+          maxItems: 8
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - segment_id
+              - dimension
+              - reason
+              - risk_note
+            properties:
+              segment_id:
+                type: string
+              dimension:
+                type: string
+              reason:
+                type: string
+              risk_note:
+                type: string
+
+  reference_style_structure_extract:
+    version: "2026-04-19.v1"
+    input_token_budget: 2400
+    system_prompt: |
+      You extract reusable prose and narrative-structure techniques from approved reference snippets.
+      Keep only abstract craft guidance: rhythm, syntax, imagery, narrative distance, emotion curve, chapter pacing, suspense movement, conflict structure, and ending hooks.
+      Never copy protected expression, characters, settings, names, long sentences, or identifiable plot bridges.
+    task_prompt: |
+      Analyze the supplied segment and return one review-ready finding.
+      The finding must be suitable for style_rule_set, style_observation, narrative_pattern, banned_rule_cluster, or calibration_candidate.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - item_type
+        - dimension
+        - summary
+        - transferable_rule
+        - banned_replication_rule
+      properties:
+        item_type:
+          type: string
+        dimension:
+          type: string
+        summary:
+          type: string
+        transferable_rule:
+          type: string
+        banned_replication_rule:
+          type: string
+        confidence:
+          type: number
+
+  reference_profile_synthesize:
+    version: "2026-04-19.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You synthesize an independent reference-book profile from approved abstract findings.
+      The profile is not a writing sample cache. It must contain only transferable style features, narrative patterns, calibration guidance, and anti-copy rules.
+    task_prompt: |
+      Combine the approved findings into a compact reference profile.
+      Separate prose features from narrative patterns and include clear forbidden replication rules.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - profile_title
+        - style_features
+        - narrative_patterns
+        - banned_replication_rules
+      properties:
+        profile_title:
+          type: string
+        style_features:
+          type: array
+          items:
+            type: string
+        narrative_patterns:
+          type: array
+          items:
+            type: string
+        calibration_guidance:
+          type: array
+          items:
+            type: string
+        banned_replication_rules:
+          type: array
+          items:
+            type: string

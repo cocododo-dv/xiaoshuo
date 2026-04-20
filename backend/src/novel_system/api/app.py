@@ -13,6 +13,7 @@ from novel_system.api.routes import (
     interop,
     knowledge,
     literary_eval,
+    reference_books,
     review,
     scenes,
     style_profile,
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(review.router)
     app.include_router(domain.router)
     app.include_router(knowledge.router)
+    app.include_router(reference_books.router)
     app.include_router(indexing.router)
     app.include_router(interop.router)
     app.include_router(system_config.router)

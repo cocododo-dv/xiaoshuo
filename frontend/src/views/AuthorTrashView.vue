@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onActivated, ref, watch } from "vue";
 
+import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
+import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useAuthorTrashStore } from "../stores/authorTrash";
 
 const emit = defineEmits(["notice"]);
@@ -10,6 +12,12 @@ const emit = defineEmits(["notice"]);
 const authorTrash = useAuthorTrashStore();
 const selectedChapterIds = ref([]);
 const selectedSceneIds = ref([]);
+const { receipt, runFlowAction } = useFlowActionFeedback({
+  emitNotice: (message) => emit("notice", message),
+});
+const TRASH_CHAPTER_SCOPE = "author-trash:chapters";
+const TRASH_SCENE_SCOPE = "author-trash:scenes";
+const TRASH_REFRESH_SCOPE = "author-trash:refresh";
 
 const chapters = computed(() => authorTrash.chapters || []);
 const scenes = computed(() => authorTrash.scenes || []);
@@ -97,11 +105,15 @@ function syncSelections() {
 }
 
 async function refreshTrash() {
-  await authorTrash.ensureLoaded({ force: true });
-  syncSelections();
-  if (authorTrash.error) {
-    emit("notice", authorTrash.error);
-  }
+  const result = await runFlowAction({
+    scopeKey: TRASH_REFRESH_SCOPE,
+    actionLabel: "刷新回收站",
+    runningMessage: "正在刷新作者回收站...",
+    successMessage: () => "作者回收站已刷新。",
+    nextStep: () => "下一步：选择可恢复或可清除的记录。",
+    action: () => authorTrash.ensureLoaded({ force: true }),
+  });
+  if (result !== null) syncSelections();
 }
 
 async function ensureTrashLoaded() {
@@ -117,12 +129,16 @@ async function restoreSelectedChapters() {
   if (!chapterIds.length || !confirmAction(`确认恢复选中的 ${chapterIds.length} 个章节吗？`)) {
     return;
   }
-  try {
-    const message = await authorTrash.restoreChapters(chapterIds);
+  const result = await runFlowAction({
+    scopeKey: TRASH_CHAPTER_SCOPE,
+    actionLabel: "恢复章节",
+    runningMessage: `正在恢复 ${chapterIds.length} 个章节...`,
+    successMessage: (message) => message || "章节已恢复。",
+    nextStep: () => "下一步：回到作者工作台继续编辑或运行章节。",
+    action: () => authorTrash.restoreChapters(chapterIds),
+  });
+  if (result) {
     selectedChapterIds.value = [];
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
@@ -131,12 +147,16 @@ async function purgeSelectedChapters() {
   if (!chapterIds.length || !confirmAction(`确认永久清除选中的 ${chapterIds.length} 个章节吗？此操作不可撤销。`)) {
     return;
   }
-  try {
-    const message = await authorTrash.purgeChapters(chapterIds);
+  const result = await runFlowAction({
+    scopeKey: TRASH_CHAPTER_SCOPE,
+    actionLabel: "永久清除章节",
+    runningMessage: `正在永久清除 ${chapterIds.length} 个章节...`,
+    successMessage: (message) => message || "章节已永久清除。",
+    nextStep: () => "下一步：继续检查回收站是否还有待处理记录。",
+    action: () => authorTrash.purgeChapters(chapterIds),
+  });
+  if (result) {
     selectedChapterIds.value = [];
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
@@ -145,12 +165,16 @@ async function restoreSelectedScenes() {
   if (!sceneIds.length || !confirmAction(`确认恢复选中的 ${sceneIds.length} 个场景吗？`)) {
     return;
   }
-  try {
-    const message = await authorTrash.restoreScenes(sceneIds);
+  const result = await runFlowAction({
+    scopeKey: TRASH_SCENE_SCOPE,
+    actionLabel: "恢复场景",
+    runningMessage: `正在恢复 ${sceneIds.length} 个场景...`,
+    successMessage: (message) => message || "场景已恢复。",
+    nextStep: () => "下一步：回到作者工作台继续编辑或运行场景。",
+    action: () => authorTrash.restoreScenes(sceneIds),
+  });
+  if (result) {
     selectedSceneIds.value = [];
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
@@ -159,12 +183,16 @@ async function purgeSelectedScenes() {
   if (!sceneIds.length || !confirmAction(`确认永久清除选中的 ${sceneIds.length} 个场景吗？此操作不可撤销。`)) {
     return;
   }
-  try {
-    const message = await authorTrash.purgeScenes(sceneIds);
+  const result = await runFlowAction({
+    scopeKey: TRASH_SCENE_SCOPE,
+    actionLabel: "永久清除场景",
+    runningMessage: `正在永久清除 ${sceneIds.length} 个场景...`,
+    successMessage: (message) => message || "场景已永久清除。",
+    nextStep: () => "下一步：继续检查回收站是否还有待处理记录。",
+    action: () => authorTrash.purgeScenes(sceneIds),
+  });
+  if (result) {
     selectedSceneIds.value = [];
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
@@ -195,6 +223,7 @@ onActivated(() => {
           <span class="badge">{{ scenes.length }} 个场景</span>
         </div>
       </template>
+      <FlowActionReceipt :receipt="receipt(TRASH_REFRESH_SCOPE)" />
 
       <div v-if="authorTrash.loading" class="empty">正在加载作者回收站...</div>
       <div v-else-if="authorTrash.error" class="empty">{{ authorTrash.error }}</div>
@@ -226,6 +255,7 @@ onActivated(() => {
               永久清除所选章节
             </button>
           </div>
+          <FlowActionReceipt compact :receipt="receipt(TRASH_CHAPTER_SCOPE)" />
 
           <div v-if="!chapters.length" class="empty">当前没有已回收章节。</div>
           <VirtualList
@@ -305,6 +335,7 @@ onActivated(() => {
               永久清除所选场景
             </button>
           </div>
+          <FlowActionReceipt compact :receipt="receipt(TRASH_SCENE_SCOPE)" />
 
           <div v-if="!scenes.length" class="empty">当前没有已回收场景。</div>
           <VirtualList

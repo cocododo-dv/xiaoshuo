@@ -10,6 +10,7 @@ from novel_system.db.models import (
     CalibrationLine,
     ChapterMemory,
     ForeshadowTracker,
+    NarrativePattern,
     RelationProfile,
     SceneCard,
     SceneMemory,
@@ -87,6 +88,17 @@ class Resolver:
                 self._scoped_clause(BannedRuleCluster, scene),
             )
             .order_by(BannedRuleCluster.created_at.asc(), BannedRuleCluster.row_id.asc())
+        ).scalars().all()
+
+    def resolve_active_narrative_patterns(self, session: Session, scene: SceneCard) -> list[NarrativePattern]:
+        return session.execute(
+            select(NarrativePattern)
+            .where(
+                NarrativePattern.active_flag == 1,
+                NarrativePattern.runtime_eligible == 1,
+                self._scoped_clause(NarrativePattern, scene),
+            )
+            .order_by(NarrativePattern.created_at.asc(), NarrativePattern.row_id.asc())
         ).scalars().all()
 
     def resolve_active_world_rules(self, session: Session, scene: SceneCard) -> list[WorldRule]:

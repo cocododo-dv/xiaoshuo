@@ -4,9 +4,11 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, reacti
 import ActivitySectionCard from "../components/ActivitySectionCard.vue";
 import AliasScopeCard from "../components/AliasScopeCard.vue";
 import CursorPager from "../components/CursorPager.vue";
+import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import TargetActivityGroupCard from "../components/TargetActivityGroupCard.vue";
 import VirtualList from "../components/VirtualList.vue";
+import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { shouldClearIndexFocus } from "../lib/filterFocus";
 import { prioritizeMatchingItem } from "../lib/listPriority";
 import { useShellRouter } from "../router";
@@ -16,6 +18,11 @@ const emit = defineEmits(["notice"]);
 const indexConsole = useIndexConsoleStore();
 const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = useShellRouter();
 const isViewActive = ref(false);
+const { receipt, runFlowAction } = useFlowActionFeedback({
+  emitNotice: (message) => emit("notice", message),
+});
+const INDEX_ACTION_SCOPE = "index:action";
+const INDEX_JOB_SCOPE = "index:job";
 
 const expandedSections = reactive({
   recovery_timeline: false,
@@ -429,9 +436,48 @@ const nextGroupPage = async (targetRef) => { await indexConsole.nextTargetGroupI
 const clearAliasFilters = async () => { indexConsole.clearAliasFilters(); await refreshIndex(); };
 const clearJobFilters = async () => { indexConsole.clearJobFilters(); await refreshIndex(); };
 const clearLedgerFilters = async () => { indexConsole.clearLedgerFilters(); await refreshIndex(); };
-const runRecovery = async () => { try { emit("notice", await indexConsole.runRecovery()); await ensureVisibleSections(true); await ensureFocusSections(true); } catch (error) { emit("notice", error.message); } };
-const runDuePromotions = async () => { try { emit("notice", await indexConsole.runDuePromotions()); await ensureVisibleSections(true); await ensureFocusSections(true); } catch (error) { emit("notice", error.message); } };
-const retry = async (jobId) => { try { emit("notice", await indexConsole.retryVerifyJob(jobId)); await ensureVisibleSections(true); await ensureFocusSections(true); } catch (error) { emit("notice", error.message); } };
+const runRecovery = async () => {
+  const result = await runFlowAction({
+    scopeKey: INDEX_ACTION_SCOPE,
+    actionLabel: "恢复扫描",
+    runningMessage: "正在扫描并恢复卡住的运行时作业...",
+    successMessage: (message) => message || "恢复扫描已完成。",
+    nextStep: () => "下一步：查看恢复回执，处理新产生的人工审核事件。",
+    action: () => indexConsole.runRecovery(),
+  });
+  if (result) {
+    await ensureVisibleSections(true);
+    await ensureFocusSections(true);
+  }
+};
+const runDuePromotions = async () => {
+  const result = await runFlowAction({
+    scopeKey: INDEX_ACTION_SCOPE,
+    actionLabel: "运行到期发布",
+    runningMessage: "正在发布到期的已批准内容...",
+    successMessage: (message) => message || "到期发布已完成。",
+    nextStep: () => "下一步：查看发布回执或打开相关审核项。",
+    action: () => indexConsole.runDuePromotions(),
+  });
+  if (result) {
+    await ensureVisibleSections(true);
+    await ensureFocusSections(true);
+  }
+};
+const retry = async (jobId) => {
+  const result = await runFlowAction({
+    scopeKey: INDEX_JOB_SCOPE,
+    actionLabel: "重试校验任务",
+    runningMessage: "正在重试校验任务...",
+    successMessage: (message) => message || "校验任务已重试。",
+    nextStep: () => "下一步：刷新任务列表或打开目标活动查看后续状态。",
+    action: () => indexConsole.retryVerifyJob(jobId),
+  });
+  if (result) {
+    await ensureVisibleSections(true);
+    await ensureFocusSections(true);
+  }
+};
 
 watch(() => [activeView.value, focusTargetRef.value, focusedSourceType.value, focusedSourceId.value], async ([viewId]) => {
   if (!isViewActive.value) return;
@@ -521,6 +567,8 @@ onBeforeUnmount(() => {
           <button :disabled="indexConsole.actionId === 'recovery'" data-testid="run-recovery-sweep-button" @click="runRecovery">{{ indexConsole.actionId === "recovery" ? "恢复中..." : "恢复扫描" }}</button>
         </div>
       </template>
+      <FlowActionReceipt :receipt="receipt(INDEX_ACTION_SCOPE)" />
+      <FlowActionReceipt :receipt="receipt(INDEX_JOB_SCOPE)" />
 
       <div v-if="indexConsole.loading" class="empty">正在加载别名范围...</div>
       <div v-else-if="indexConsole.error && !indexConsole.aliasScopes.length && !indexConsole.jobs.length" class="empty">{{ indexConsole.error }}</div>

@@ -14,6 +14,7 @@ from novel_system.db.models import (
     ForeshadowTracker,
     HumanReviewEvent,
     IdempotencyKey,
+    NarrativePattern,
     OperationLog,
     ReconcileFault,
     ReindexJob,
@@ -445,6 +446,22 @@ class VersioningServiceBase:
             return descriptor.model_cls(
                 row_id=row_id,
                 banned_cluster_id=lineage_key,
+                version=version,
+                scope=scope,
+                scope_ref_id=scope_ref_id,
+                content=text_value,
+                source_review_id=review.review_id,
+                active_flag=0,
+                runtime_eligible=0,
+                runtime_eligibility_basis=pending_basis,
+                effective_at=effective_at,
+            )
+
+        if descriptor.object_type == "narrative_pattern":
+            scope, scope_ref_id = self._payload_scope(payload)
+            return NarrativePattern(
+                row_id=row_id,
+                narrative_pattern_id=lineage_key,
                 version=version,
                 scope=scope,
                 scope_ref_id=scope_ref_id,

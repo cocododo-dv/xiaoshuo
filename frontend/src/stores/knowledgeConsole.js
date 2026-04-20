@@ -15,6 +15,7 @@ import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 const ITEM_TYPE_TO_OBJECT_TYPE = {
   style_observation: "style_observation",
   style_rule_set: "style_rule",
+  narrative_pattern: "narrative_pattern",
   banned_rule_cluster: "banned_rule_cluster",
   voice_card_candidate: "voice_card",
   relation_card_candidate: "relation_card",

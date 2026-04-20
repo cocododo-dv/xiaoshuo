@@ -1,1 +1,11 @@
-__all__ = ["chapters", "domain", "indexing", "interop", "knowledge", "review", "scenes", "system_config"]
+__all__ = [
+    "chapters",
+    "domain",
+    "indexing",
+    "interop",
+    "knowledge",
+    "reference_books",
+    "review",
+    "scenes",
+    "system_config",
+]

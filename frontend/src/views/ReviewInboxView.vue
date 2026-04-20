@@ -2,10 +2,12 @@
 import { computed, onActivated, onDeactivated, ref, watch } from "vue";
 
 import CursorPager from "../components/CursorPager.vue";
+import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ReviewCard from "../components/ReviewCard.vue";
 import VirtualList from "../components/VirtualList.vue";
+import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { getVisibleHumanReviewItems, shouldClearReviewFocus } from "../lib/filterFocus";
 import { prioritizeMatchingItem } from "../lib/listPriority";
 import { useShellRouter } from "../router";
@@ -24,6 +26,9 @@ const shellRouter = useShellRouter();
 const { activeView, focusTarget, openTarget, clearFocus, pendingFocusView, settleFocusView } = shellRouter;
 const isViewActive = ref(false);
 const reviewFocusRefreshPending = ref(false);
+const { receipt, runFlowAction } = useFlowActionFeedback({
+  emitNotice: (message) => emit("notice", message),
+});
 const focusTargetType = computed(() => focusTarget.value?.target_type || "");
 const focusTargetId = computed(() => focusTarget.value?.target_id || "");
 const focusTargetRef = computed(() => focusTarget.value?.target_ref || "");
@@ -36,6 +41,28 @@ const visibleHumanReviewItems = computed(() =>
     reviewInbox.humanReviewFilters.status,
   ),
 );
+const hasHumanReviewFilter = computed(() =>
+  Boolean(
+    reviewInbox.humanReviewFilters.eventSource ||
+      reviewInbox.humanReviewFilters.status ||
+      reviewInbox.humanReviewFilters.priority ||
+      reviewInbox.humanReviewFilters.owner ||
+      reviewInbox.humanReviewFilters.sceneId ||
+      reviewInbox.humanReviewFilters.chapterId,
+  ),
+);
+const shouldShowHumanReviewSection = computed(() => visibleHumanReviewItems.value.length > 0 || hasHumanReviewFilter.value);
+const shouldShowHumanReviewPager = computed(() =>
+  visibleHumanReviewItems.value.length > 0 ||
+  Boolean(reviewInbox.humanReviewCursorStack.length) ||
+  Boolean(reviewInbox.humanReviewPagination?.has_next),
+);
+const reviewItemsSummary = computed(() => {
+  const pagination = reviewInbox.reviewPagination || {};
+  const returned = pagination.returned ?? reviewInbox.items.length;
+  const total = pagination.total ?? reviewInbox.items.length;
+  return `当前 ${returned} / 共 ${total}`;
+});
 
 const humanReviewSection = computed(() => {
   if (reviewInbox.humanReviewFilters.eventSource === "manual_scene_review") {
@@ -137,6 +164,25 @@ function markDependentViewsStale() {
   workbench.markStale();
 }
 
+function reviewReceiptScope(reviewId) {
+  return `review:${reviewId || "unknown"}`;
+}
+
+function humanReviewReceiptScope(eventId) {
+  return `human-review:${eventId || "unknown"}`;
+}
+
+function focusReviewAction(reviewId, sourceType) {
+  if (activeView.value !== "review") {
+    return;
+  }
+  openTarget(reviewTarget(reviewId), {
+    view_id: "review",
+    source_type: sourceType,
+    source_id: reviewId,
+  });
+}
+
 async function refreshReviews() {
   await reviewInbox.load({ force: true });
   if (reviewInbox.error) {
@@ -210,43 +256,47 @@ function clearHumanReviewFilters() {
 }
 
 async function approve(reviewId, payload = {}) {
-  try {
-    const message = await reviewInbox.approve(reviewId, payload);
+  const result = await runFlowAction({
+    scopeKey: reviewReceiptScope(reviewId),
+    actionLabel: "批准审核",
+    runningMessage: "正在提交批准并落地候选内容...",
+    successMessage: (message) => message || "审核已批准。",
+    nextStep: () => "下一步：如果发布按钮亮起，继续点击「发布」让内容进入生效链路。",
+    action: () => reviewInbox.approve(reviewId, payload),
+  });
+  if (result) {
     markDependentViewsStale();
-    openTarget(reviewTarget(reviewId), {
-      view_id: "review",
-      source_type: "review_approve",
-      source_id: reviewId,
-    });
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
+    focusReviewAction(reviewId, "review_approve");
   }
 }
 
 async function release(reviewId) {
-  try {
-    const message = await reviewInbox.release(reviewId);
+  const result = await runFlowAction({
+    scopeKey: reviewReceiptScope(reviewId),
+    actionLabel: "发布审核",
+    runningMessage: "正在发布已批准内容...",
+    successMessage: (message) => message || "审核已发布。",
+    nextStep: () => "下一步：查看知识控制台或场景工作台，确认运行时 bundle 已引用新内容。",
+    action: () => reviewInbox.release(reviewId),
+  });
+  if (result) {
     markDependentViewsStale();
-    openTarget(reviewTarget(reviewId), {
-      view_id: "review",
-      source_type: "review_release",
-      source_id: reviewId,
-    });
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
+    focusReviewAction(reviewId, "review_release");
   }
 }
 
 async function handleHumanReviewAction({ eventId, action }) {
-  try {
-    const message = await reviewInbox.actOnHumanReviewEvent(eventId, action);
+  const result = await runFlowAction({
+    scopeKey: humanReviewReceiptScope(eventId),
+    actionLabel: "处理人工审核",
+    runningMessage: "正在执行恢复/人工审核动作...",
+    successMessage: (message) => message || "人工审核动作已完成。",
+    nextStep: () => "下一步：打开关联目标或刷新列表，继续处理后续项。",
+    action: () => reviewInbox.actOnHumanReviewEvent(eventId, action),
+  });
+  if (result) {
     indexConsole.recordRecoveryAction(reviewInbox.lastActionResult);
     markDependentViewsStale();
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
   }
 }
 
@@ -331,34 +381,44 @@ watch(
       <div v-if="reviewInbox.loading" class="empty">正在加载审核收件箱...</div>
       <div v-else-if="reviewInbox.error" class="empty">{{ reviewInbox.error }}</div>
       <template v-else>
-        <div class="field-inline">
-          <select v-model="reviewInbox.reviewFilters.status" data-testid="review-filter-status">
-            <option value="">所有审核状态</option>
-            <option value="pending">待处理</option>
-            <option value="approved">已批准</option>
-            <option value="rejected">已拒绝</option>
-          </select>
-          <button data-testid="review-filter-refresh" @click="refreshReviews">刷新</button>
-          <button data-testid="review-filter-clear" @click="clearReviewFilters">清空</button>
-        </div>
-        <div class="field-inline">
-          <select v-model="reviewInbox.humanReviewFilters.eventSource" data-testid="human-review-filter-event-source">
-            <option value="">所有事件来源</option>
-            <option value="idempotency_recovery">幂等恢复</option>
-            <option value="manual_scene_review">手动场景审核</option>
-          </select>
-          <button data-testid="human-review-filter-refresh" @click="refreshReviews">刷新</button>
-          <button data-testid="human-review-filter-clear" @click="clearHumanReviewFilters">清空</button>
-        </div>
-        <article v-if="visibleHumanReviewItems.length" class="paper inline-error">
-          <div class="receipt-head">
+        <section class="review-inbox-section review-inbox-filters" data-testid="review-inbox-filters">
+          <div>
+            <h3>筛选</h3>
+            <p class="muted">普通审核项和人工事件分开筛选，避免两个列表互相干扰。</p>
+          </div>
+          <div class="review-filter-grid">
+            <div class="field-inline">
+              <select v-model="reviewInbox.reviewFilters.status" data-testid="review-filter-status">
+                <option value="">所有审核状态</option>
+                <option value="pending">待处理</option>
+                <option value="approved">已批准</option>
+                <option value="rejected">已拒绝</option>
+              </select>
+              <button data-testid="review-filter-refresh" @click="refreshReviews">刷新审核项</button>
+              <button data-testid="review-filter-clear" @click="clearReviewFilters">清空</button>
+            </div>
+            <div class="field-inline">
+              <select v-model="reviewInbox.humanReviewFilters.eventSource" data-testid="human-review-filter-event-source">
+                <option value="">所有事件来源</option>
+                <option value="idempotency_recovery">幂等恢复</option>
+                <option value="manual_scene_review">手动场景审核</option>
+              </select>
+              <button data-testid="human-review-filter-refresh" @click="refreshReviews">刷新人工事件</button>
+              <button data-testid="human-review-filter-clear" @click="clearHumanReviewFilters">清空</button>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="shouldShowHumanReviewSection" class="review-inbox-section" data-testid="human-review-section">
+          <div class="review-inbox-section-head">
             <div>
               <h3>{{ humanReviewSection.title }}</h3>
               <p class="muted receipt-copy">{{ humanReviewSection.description }}</p>
             </div>
-            <span class="badge">{{ humanReviewSection.badge }}</span>
+            <span class="badge">{{ visibleHumanReviewItems.length }}{{ humanReviewSection.countLabel }}</span>
           </div>
           <HumanReviewDrawer
+            v-if="visibleHumanReviewItems.length"
             :items="prioritizedHumanReviewItems"
             :action-id="reviewInbox.actionId"
             :focus-event-id="focusedRecoveryEventId()"
@@ -366,55 +426,75 @@ watch(
             @action="handleHumanReviewAction"
             @open-target="handleOpenTarget"
           />
-        </article>
-        <div v-else-if="reviewInbox.humanReviewFilters.eventSource" class="empty">
-          {{ humanReviewSection.empty }}
-        </div>
-        <CursorPager
-          test-id-prefix="human-review-pager"
-          :pagination="reviewInbox.humanReviewPagination"
-          :can-previous="Boolean(reviewInbox.humanReviewCursorStack.length)"
-          :can-next="Boolean(reviewInbox.humanReviewPagination?.has_next)"
-          :disabled="reviewInbox.loading"
-          @previous="previousHumanReviewPage"
-          @next="nextHumanReviewPage"
-        />
+          <FlowActionReceipt
+            v-if="focusedRecoveryEventId()"
+            compact
+            :receipt="receipt(humanReviewReceiptScope(focusedRecoveryEventId()))"
+          />
+          <div v-if="!visibleHumanReviewItems.length" class="empty subtle-empty">{{ humanReviewSection.empty }}</div>
+          <CursorPager
+            v-if="shouldShowHumanReviewPager"
+            label="人工事件"
+            :hide-when-empty="true"
+            test-id-prefix="human-review-pager"
+            :pagination="reviewInbox.humanReviewPagination"
+            :can-previous="Boolean(reviewInbox.humanReviewCursorStack.length)"
+            :can-next="Boolean(reviewInbox.humanReviewPagination?.has_next)"
+            :disabled="reviewInbox.loading"
+            @previous="previousHumanReviewPage"
+            @next="nextHumanReviewPage"
+          />
+        </section>
 
-        <div v-if="!reviewInbox.items.length" class="empty">当前没有待处理审核项。</div>
-        <VirtualList
-          v-else
-          class="review-list"
-          :items="prioritizedReviewItems"
-          item-key="review_id"
-          :estimated-item-height="220"
-          :pinned-keys="pinnedReviewKeys"
-          :threshold="10"
-          :viewport-height="640"
-          :map-item="reviewInboxRow"
-          :map-version="reviewRowMapVersion"
-          test-id="review-inbox-virtual-list"
-        >
-          <template #default="{ row }">
-            <ReviewCard
-              :item="row.item"
-              :highlighted="row.highlighted"
-              :source-action-label="row.sourceActionLabel"
-              :loading="row.loading"
-              @approve="approve"
-              @release="release"
-              @open-target="handleReviewOpenTarget"
-            />
-          </template>
-        </VirtualList>
-        <CursorPager
-          test-id-prefix="review-items-pager"
-          :pagination="reviewInbox.reviewPagination"
-          :can-previous="Boolean(reviewInbox.reviewCursorStack.length)"
-          :can-next="Boolean(reviewInbox.reviewPagination?.has_next)"
-          :disabled="reviewInbox.loading"
-          @previous="previousReviewPage"
-          @next="nextReviewPage"
-        />
+        <section class="review-inbox-section" data-testid="review-items-section">
+          <div class="review-inbox-section-head">
+            <div>
+              <h3>审核项</h3>
+              <p class="muted">普通候选在这里批准、发布，技术载荷默认收起。</p>
+            </div>
+            <span class="badge">审核项 · {{ reviewItemsSummary }}</span>
+          </div>
+          <div v-if="!reviewInbox.items.length" class="empty">当前没有待处理审核项。</div>
+          <VirtualList
+            v-else
+            class="review-list"
+            :items="prioritizedReviewItems"
+            item-key="review_id"
+            :estimated-item-height="220"
+            :pinned-keys="pinnedReviewKeys"
+            :threshold="10"
+            :viewport-height="640"
+            :map-item="reviewInboxRow"
+            :map-version="reviewRowMapVersion"
+            test-id="review-inbox-virtual-list"
+          >
+            <template #default="{ row }">
+              <div class="flow-action-card-shell">
+                <ReviewCard
+                  :item="row.item"
+                  :highlighted="row.highlighted"
+                  :source-action-label="row.sourceActionLabel"
+                  :loading="row.loading"
+                  @approve="approve"
+                  @release="release"
+                  @open-target="handleReviewOpenTarget"
+                />
+                <FlowActionReceipt compact :receipt="receipt(reviewReceiptScope(row.reviewId))" />
+              </div>
+            </template>
+          </VirtualList>
+          <CursorPager
+            label="审核项"
+            :hide-when-empty="true"
+            test-id-prefix="review-items-pager"
+            :pagination="reviewInbox.reviewPagination"
+            :can-previous="Boolean(reviewInbox.reviewCursorStack.length)"
+            :can-next="Boolean(reviewInbox.reviewPagination?.has_next)"
+            :disabled="reviewInbox.loading"
+            @previous="previousReviewPage"
+            @next="nextReviewPage"
+          />
+        </section>
       </template>
     </PanelShell>
   </section>

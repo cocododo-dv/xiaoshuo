@@ -9,6 +9,7 @@ from novel_system.db.models import (
     CalibrationLine,
     ChapterMemory,
     ForeshadowTracker,
+    NarrativePattern,
     RelationProfile,
     ReviewItem,
     SceneMemory,
@@ -125,6 +126,7 @@ class PromotionService(VersioningServiceBase):
         direct_models = (
             (descriptor_for_object_type("style_rule"), StyleRule),
             (descriptor_for_object_type("banned_rule_cluster"), BannedRuleCluster),
+            (descriptor_for_object_type("narrative_pattern"), NarrativePattern),
             (descriptor_for_object_type("voice_card"), VoiceProfile),
             (descriptor_for_object_type("relation_card"), RelationProfile),
             (descriptor_for_object_type("world_rule"), WorldRule),

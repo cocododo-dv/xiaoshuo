@@ -1,0 +1,108 @@
+[ 1367906ms] [WARNING] [Vue warn]: Unhandled error during execution of render function 
+  at <ReferenceLearningView key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <AsyncComponentWrapper key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <KeepAlive> 
+  at <BaseTransition appear=false persisted=false mode=undefined  ... > 
+  at <Transition name="view-fade" > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2203
+[ 1367907ms] [WARNING] [Vue warn]: Unhandled error during execution of scheduler flush 
+  at <ReferenceLearningView key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <AsyncComponentWrapper key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <KeepAlive> 
+  at <BaseTransition appear=false persisted=false mode=undefined  ... > 
+  at <Transition name="view-fade" > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2203
+[ 1367910ms] ReferenceError: isProfileStale is not defined
+    at http://127.0.0.1:5173/src/views/ReferenceLearningView.vue?t=1776652617440:38:73
+    at Array.filter (<anonymous>)
+    at ComputedRefImpl.fn (http://127.0.0.1:5173/src/views/ReferenceLearningView.vue?t=1776652617440:38:53)
+    at refreshComputed (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:661:29)
+    at get value (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:1916:5)
+    at ComputedRefImpl.fn (http://127.0.0.1:5173/src/views/ReferenceLearningView.vue?t=1776652617440:47:22)
+    at refreshComputed (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:661:29)
+    at get value (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:1916:5)
+    at unref (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:1771:30)
+    at Object.get (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:1777:64)
+[ 1383920ms] [WARNING] [Vue warn]: Unhandled error during execution of scheduler flush 
+  at <ReferenceLearningView key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <AsyncComponentWrapper key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <KeepAlive> 
+  at <BaseTransition appear=false persisted=false mode=undefined  ... > 
+  at <Transition name="view-fade" > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2203
+[ 1383921ms] TypeError: Cannot read properties of null (reading 'component')
+    at locateNonHydratedAsyncRoot (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:9098:41)
+    at locateNonHydratedAsyncRoot (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:9103:14)
+    at ReactiveEffect.componentUpdateFn [as fn] (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:8332:40)
+    at ReactiveEffect.run (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:507:19)
+    at http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2689:27
+    at callWithErrorHandling (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2351:33)
+    at flushJobs (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2559:9)
+[ 1389727ms] [WARNING] [Vue warn]: Unhandled error during execution of scheduler flush 
+  at <ReferenceLearningView key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <AsyncComponentWrapper key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <KeepAlive> 
+  at <BaseTransition appear=false persisted=false mode=undefined  ... > 
+  at <Transition name="view-fade" > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2203
+[ 1389728ms] TypeError: Cannot read properties of null (reading 'component')
+    at locateNonHydratedAsyncRoot (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:9098:41)
+    at locateNonHydratedAsyncRoot (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:9103:14)
+    at ReactiveEffect.componentUpdateFn [as fn] (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:8332:40)
+    at ReactiveEffect.run (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:507:19)
+    at http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2689:27
+    at callWithErrorHandling (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2351:33)
+    at flushJobs (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2559:9)
+[ 1397727ms] [WARNING] [Vue warn]: Unhandled error during execution of render function 
+  at <ReferenceLearningView key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <AsyncComponentWrapper key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <KeepAlive> 
+  at <BaseTransition appear=false persisted=false mode=undefined  ... > 
+  at <Transition name="view-fade" > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2203
+[ 1397727ms] [ERROR] TypeError: $setup.bookProgressLabel is not a function
+    at http://127.0.0.1:5173/src/views/ReferenceLearningView.vue?t=1776652647246:776:79
+    at renderList (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:5354:16)
+    at Proxy._sfc_render (http://127.0.0.1:5173/src/views/ReferenceLearningView.vue?t=1776652647246:768:73)
+    at renderComponentRoot (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:6722:17)
+    at ReactiveEffect.componentUpdateFn [as fn] (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:8290:46)
+    at ReactiveEffect.run (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:507:19)
+    at http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2656:16
+    at Array.forEach (<anonymous>)
+    at rerender (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2648:25)
+    at Object.rerender (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2722:14) @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2723
+[ 1397727ms] [WARNING] [HMR] Something went wrong during Vue component hot-reload. Full reload required. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2724
+[ 1411450ms] [WARNING] [Vue warn]: Unhandled error during execution of render function 
+  at <ReferenceLearningView key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <AsyncComponentWrapper key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <KeepAlive> 
+  at <BaseTransition appear=false persisted=false mode=undefined  ... > 
+  at <Transition name="view-fade" > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2203
+[ 1411450ms] [ERROR] TypeError: $setup.bookProgressLabel is not a function
+    at http://127.0.0.1:5173/src/views/ReferenceLearningView.vue?t=1776652660989:793:79
+    at renderList (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:5354:16)
+    at Proxy._sfc_render (http://127.0.0.1:5173/src/views/ReferenceLearningView.vue?t=1776652660989:785:73)
+    at renderComponentRoot (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:6722:17)
+    at ReactiveEffect.componentUpdateFn [as fn] (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:8290:46)
+    at ReactiveEffect.run (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:507:19)
+    at http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2656:16
+    at Array.forEach (<anonymous>)
+    at rerender (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2648:25)
+    at Object.rerender (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2722:14) @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2723
+[ 1411450ms] [WARNING] [HMR] Something went wrong during Vue component hot-reload. Full reload required. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2724
+[ 1525266ms] [WARNING] [Vue warn]: Unhandled error during execution of scheduler flush 
+  at <ReferenceLearningView key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <AsyncComponentWrapper key="reference" class="view-frame" onNotice=fn<pushNotice> > 
+  at <KeepAlive> 
+  at <BaseTransition appear=false persisted=false mode=undefined  ... > 
+  at <Transition name="view-fade" > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2203
+[ 1525267ms] TypeError: Cannot read properties of null (reading 'component')
+    at locateNonHydratedAsyncRoot (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:9098:41)
+    at locateNonHydratedAsyncRoot (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:9103:14)
+    at ReactiveEffect.componentUpdateFn [as fn] (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:8332:40)
+    at ReactiveEffect.run (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:507:19)
+    at http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2689:27
+    at callWithErrorHandling (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2351:33)
+    at flushJobs (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-6SOJBO4M.js?v=2c357631:2559:9)

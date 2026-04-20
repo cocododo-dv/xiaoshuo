@@ -1,13 +1,19 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 
+import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
+import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { buildLiteraryEvalCaseRows } from "../lib/literaryEvalSummary";
 import { useSystemConfigStore } from "../stores/systemConfig";
 
 const emit = defineEmits(["notice"]);
 const systemConfig = useSystemConfigStore();
 const activeConfigSection = ref("setup");
+const { receipt, runFlowAction } = useFlowActionFeedback({
+  emitNotice: (message) => emit("notice", message),
+});
+const CONFIG_ACTION_SCOPE = "config:action";
 
 const categoryLabels = {
   api: "连接与密钥",
@@ -44,14 +50,23 @@ onMounted(async () => {
 });
 
 async function runAction(action, options = {}) {
-  try {
-    const message = await action();
-    if (message && !options.silent) {
-      emit("notice", message);
+  if (options.silent) {
+    try {
+      await action();
+    } catch (error) {
+      emit("notice", error.message);
     }
-  } catch (error) {
-    emit("notice", error.message);
+    return;
   }
+  await runFlowAction({
+    scopeKey: options.scopeKey || CONFIG_ACTION_SCOPE,
+    actionLabel: options.actionLabel || "系统配置",
+    runningMessage: options.runningMessage || "正在处理系统配置动作...",
+    successMessage: (message) => message || options.successMessage || "系统配置已更新。",
+    nextStep: () => options.nextStep || "下一步：继续检查配置状态，或回到相关工作台验证效果。",
+    action,
+    notify: true,
+  });
 }
 
 function selectCategory(category) {
@@ -59,27 +74,27 @@ function selectCategory(category) {
 }
 
 function saveDraft() {
-  runAction(() => systemConfig.saveDraft());
+  runAction(() => systemConfig.saveDraft(), { actionLabel: "保存草稿", runningMessage: "正在保存配置草稿...", nextStep: "下一步：确认验证结果后可激活快照。" });
 }
 
 function activate(snapshotId) {
-  runAction(() => systemConfig.activateSnapshot(snapshotId));
+  runAction(() => systemConfig.activateSnapshot(snapshotId), { actionLabel: "激活快照", runningMessage: "正在激活配置快照...", nextStep: "下一步：返回相关流程验证新配置。" });
 }
 
 function saveLlmProvider() {
-  runAction(() => systemConfig.saveLlmProvider());
+  runAction(() => systemConfig.saveLlmProvider(), { actionLabel: "保存模型提供方", runningMessage: "正在保存模型提供方配置...", nextStep: "下一步：测试连接或配置节点路由。" });
 }
 
 function saveLlmNodeRoutes() {
-  runAction(() => systemConfig.saveLlmNodeRoutes());
+  runAction(() => systemConfig.saveLlmNodeRoutes(), { actionLabel: "保存节点路由", runningMessage: "正在保存 LLM 节点路由...", nextStep: "下一步：运行评测或回到生成流程验证。" });
 }
 
 function probeLlmProvider(providerId) {
-  runAction(() => systemConfig.probeLlmProvider(providerId));
+  runAction(() => systemConfig.probeLlmProvider(providerId), { actionLabel: "测试模型连接", runningMessage: "正在测试模型提供方连接...", nextStep: "下一步：连接成功后保存路由；失败则检查密钥或模型名。" });
 }
 
 function startGeminiOAuth() {
-  runAction(() => systemConfig.startLlmOAuth());
+  runAction(() => systemConfig.startLlmOAuth(), { actionLabel: "启动 OAuth", runningMessage: "正在启动 OAuth 授权...", nextStep: "下一步：按浏览器授权结果继续配置。" });
 }
 
 function editLlmProvider(provider) {
@@ -110,15 +125,15 @@ function providerProbeCheckItems(result) {
 }
 
 function runLiteraryEval(mode = "baseline") {
-  runAction(() => systemConfig.runLiteraryEval(mode));
+  runAction(() => systemConfig.runLiteraryEval(mode), { actionLabel: "运行文学评测", runningMessage: "正在运行文学评测...", nextStep: "下一步：查看评测结果并调整模型路由。" });
 }
 
 function extractStyleProfileDraft() {
-  runAction(() => systemConfig.extractStyleProfileDraft());
+  runAction(() => systemConfig.extractStyleProfileDraft(), { actionLabel: "提取风格画像", runningMessage: "正在提取风格画像草稿...", nextStep: "下一步：检查草稿，确认后提交候选。" });
 }
 
 function submitStyleProfileCandidate() {
-  runAction(() => systemConfig.submitStyleProfileCandidate());
+  runAction(() => systemConfig.submitStyleProfileCandidate(), { actionLabel: "提交风格候选", runningMessage: "正在提交风格画像候选...", nextStep: "下一步：到审核收件箱批准候选。" });
 }
 
 function exportCurrent() {
@@ -153,6 +168,7 @@ function selectConfigSection(sectionId) {
           刷新
         </button>
       </template>
+      <FlowActionReceipt :receipt="receipt(CONFIG_ACTION_SCOPE)" />
 
       <div class="config-overview">
         <div class="stat">

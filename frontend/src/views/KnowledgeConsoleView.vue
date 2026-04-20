@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, onDeactivated, reactive, ref, watch } from "vue";
 
+import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import LazySection from "../components/LazySection.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
 import PanelShell from "../components/PanelShell.vue";
@@ -8,6 +9,7 @@ import StyleProfileDiffSummary from "../components/StyleProfileDiffSummary.vue";
 import StyleProfileRiskWarning from "../components/StyleProfileRiskWarning.vue";
 import StyleProfileSummary from "../components/StyleProfileSummary.vue";
 import VirtualList from "../components/VirtualList.vue";
+import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { prioritizeMatchingItem } from "../lib/listPriority";
 import {
   styleProfileDiffFromKnowledgeDetail,
@@ -23,6 +25,11 @@ const emit = defineEmits(["notice"]);
 const knowledgeConsole = useKnowledgeConsoleStore();
 const { focusTarget, navigate, openTarget } = useShellRouter();
 const isViewActive = ref(false);
+const { receipt, runFlowAction } = useFlowActionFeedback({
+  emitNotice: (message) => emit("notice", message),
+});
+const KNOWLEDGE_CREATE_SCOPE = "knowledge:create";
+const KNOWLEDGE_WORKFLOW_SCOPE = "knowledge:workflow";
 
 const filters = reactive({
   objectType: knowledgeConsole.filters?.objectType || "",
@@ -144,6 +151,7 @@ const primaryWorkflowActionDisabled = computed(() => {
 const ITEM_TYPE_LABELS = {
   style_rule: "风格规则",
   style_observation: "风格观察",
+  narrative_pattern: "叙事结构",
   banned_rule_cluster: "禁忌规则簇",
   voice_card: "声线卡",
   relation_card: "关系卡",
@@ -375,12 +383,14 @@ async function ensureKnowledgeLoaded() {
 }
 
 async function submitCandidate() {
-  try {
-    const message = await knowledgeConsole.createCandidate(draft);
-    emit("notice", message);
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: KNOWLEDGE_CREATE_SCOPE,
+    actionLabel: "创建候选",
+    runningMessage: "正在创建知识审核候选...",
+    successMessage: (message) => message || "知识候选已创建。",
+    nextStep: () => "下一步：在详情抽屉或审核收件箱里批准候选。",
+    action: () => knowledgeConsole.createCandidate(draft),
+  });
 }
 
 function openReviewInbox(item) {
@@ -554,35 +564,47 @@ function approvalPayloadForReview(review) {
 }
 
 async function runApprove(reviewId, payload = {}) {
-  try {
-    emit("notice", await knowledgeConsole.approveReview(reviewId, payload));
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: KNOWLEDGE_WORKFLOW_SCOPE,
+    actionLabel: "批准审核",
+    runningMessage: "正在批准知识候选...",
+    successMessage: (message) => message || "知识候选已批准。",
+    nextStep: () => "下一步：如果需要发布，继续点击「发布审核」。",
+    action: () => knowledgeConsole.approveReview(reviewId, payload),
+  });
 }
 
 async function runRetryVerify(jobId) {
-  try {
-    emit("notice", await knowledgeConsole.retryVerifyJob(jobId));
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: KNOWLEDGE_WORKFLOW_SCOPE,
+    actionLabel: "重试校验",
+    runningMessage: "正在重试知识校验任务...",
+    successMessage: (message) => message || "校验任务已重试。",
+    nextStep: () => "下一步：查看关联任务状态，成功后继续发布。",
+    action: () => knowledgeConsole.retryVerifyJob(jobId),
+  });
 }
 
 async function runRelease(reviewId) {
-  try {
-    emit("notice", await knowledgeConsole.releaseReview(reviewId));
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: KNOWLEDGE_WORKFLOW_SCOPE,
+    actionLabel: "发布审核",
+    runningMessage: "正在发布知识审核结果...",
+    successMessage: (message) => message || "知识审核已发布。",
+    nextStep: () => "下一步：查看目标活动，确认运行时引用已经更新。",
+    action: () => knowledgeConsole.releaseReview(reviewId),
+  });
 }
 
 async function runHumanReviewAction(eventId, action) {
-  try {
-    emit("notice", await knowledgeConsole.actOnHumanReviewEvent(eventId, action));
-  } catch (error) {
-    emit("notice", error.message);
-  }
+  await runFlowAction({
+    scopeKey: KNOWLEDGE_WORKFLOW_SCOPE,
+    actionLabel: "处理人工审核",
+    runningMessage: "正在执行人工审核后续动作...",
+    successMessage: (message) => message || "人工审核动作已完成。",
+    nextStep: () => "下一步：打开目标活动或继续处理关联审核。",
+    action: () => knowledgeConsole.actOnHumanReviewEvent(eventId, action),
+  });
 }
 
 async function runPrimaryWorkflowAction() {
@@ -710,6 +732,7 @@ watch(
               <span>条目类型</span>
               <select v-model="draft.itemType" class="control-input" data-testid="knowledge-item-type">
                 <option value="style_rule_set">风格规则集</option>
+                <option value="narrative_pattern">叙事结构画像</option>
                 <option value="banned_rule_cluster">禁忌规则簇</option>
                 <option value="voice_card_candidate">声线卡候选</option>
                 <option value="relation_card_candidate">关系卡候选</option>
@@ -780,6 +803,7 @@ watch(
               {{ knowledgeConsole.actionId === "create" ? "创建中..." : "创建候选" }}
             </button>
           </div>
+          <FlowActionReceipt :receipt="receipt(KNOWLEDGE_CREATE_SCOPE)" />
         </article>
 
         <article class="paper knowledge-catalog-card">
@@ -916,6 +940,7 @@ watch(
                   发布审核
                 </button>
               </div>
+              <FlowActionReceipt :receipt="receipt(KNOWLEDGE_WORKFLOW_SCOPE)" />
               <div
                 v-for="review in workflowRiskConfirmationReviews"
                 :key="`risk-confirmation-${review.review_id}`"

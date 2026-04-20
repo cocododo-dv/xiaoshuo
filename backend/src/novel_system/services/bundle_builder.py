@@ -137,6 +137,19 @@ class BundleBuilder:
             )
             inline_digests["banned_rule"] = self._combined_text(banned_rule_clusters, "content")
 
+        narrative_patterns = self.resolver.resolve_active_narrative_patterns(self.session, scene)
+        if narrative_patterns:
+            narrative_ids = [row.narrative_pattern_id for row in narrative_patterns]
+            source_version_refs["narrative_pattern_ids"] = narrative_ids
+            ordered_injections.append(
+                {
+                    "slot": "narrative_patterns",
+                    "ref_id": narrative_ids[0],
+                    "digest_key": "narrative_pattern",
+                }
+            )
+            inline_digests["narrative_pattern"] = self._combined_text(narrative_patterns, "content")
+
         calibration_lines = self.resolver.resolve_active_calibration_lines(self.session, scene)
         if calibration_lines:
             calibration_ids = [row.calibration_line_id for row in calibration_lines]

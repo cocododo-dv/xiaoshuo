@@ -261,8 +261,11 @@ describe("review inbox source", () => {
     expect(source).toContain("onActivated(() => {");
     expect(source).toContain("ensureReviewInboxLoaded()");
     expect(source).toContain("markDependentViewsStale");
-    expect(source).toContain('source_type: "review_approve"');
-    expect(source).toContain('source_type: "review_release"');
+    expect(source).toContain("function focusReviewAction");
+    expect(source).toContain('activeView.value !== "review"');
+    expect(source).toContain('focusReviewAction(reviewId, "review_approve")');
+    expect(source).toContain('focusReviewAction(reviewId, "review_release")');
+    expect(source).toContain("source_type: sourceType");
     expect(source).toContain('source_type: "review_card_open"');
     expect(source).toContain("openTarget");
     expect(cardSource).toContain("highlighted");
