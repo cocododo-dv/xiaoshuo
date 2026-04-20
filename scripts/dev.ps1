@@ -211,7 +211,12 @@ function Invoke-BackendBootstrap {
         $env:PYTHONPATH = "src"
         $env:NOVEL_SYSTEM_VECTOR_BACKEND = "memory"
         Invoke-NativeStep -Label "Backend migration" -WorkingDirectory $script:BackendDir -FilePath "python" -ArgumentList @("-m", "alembic", "upgrade", "head")
-        Invoke-NativeStep -Label "Demo seed" -WorkingDirectory $script:BackendDir -FilePath "python" -ArgumentList @("-m", "novel_system.tools.seed_demo")
+        if (Test-DemoSeedSkipped) {
+            Write-Step -Message "Demo seed skipped; clean reset marker is active."
+        }
+        else {
+            Invoke-NativeStep -Label "Demo seed" -WorkingDirectory $script:BackendDir -FilePath "python" -ArgumentList @("-m", "novel_system.tools.seed_demo")
+        }
     }
     finally {
         if ($null -eq $previousPythonPath) {
@@ -228,6 +233,13 @@ function Invoke-BackendBootstrap {
             $env:NOVEL_SYSTEM_VECTOR_BACKEND = $previousVectorBackend
         }
     }
+}
+
+function Test-DemoSeedSkipped {
+    if ($env:NOVEL_SYSTEM_SKIP_DEMO_SEED -eq "1") {
+        return $true
+    }
+    return Test-Path -LiteralPath $script:SkipDemoSeedMarker
 }
 
 function Start-TrackedServices {
@@ -277,6 +289,7 @@ $script:FrontendDir = Join-Path $repoRoot "frontend"
 $script:RunDir = Join-Path $repoRoot ".codex-run"
 $script:BackendPidFile = Join-Path $script:RunDir "backend.pid"
 $script:FrontendPidFile = Join-Path $script:RunDir "frontend.pid"
+$script:SkipDemoSeedMarker = Join-Path $script:RunDir "skip-demo-seed"
 $script:BackendOutLog = Join-Path $script:RunDir "backend.out.log"
 $script:BackendErrLog = Join-Path $script:RunDir "backend.err.log"
 $script:FrontendOutLog = Join-Path $script:RunDir "frontend.out.log"
