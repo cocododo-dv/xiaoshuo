@@ -117,6 +117,35 @@ describe("readable scene workbench", () => {
     expect(restored.sceneId).toBe("CHQA01_SC01");
   });
 
+  it("clears a stale stored scene id when the remembered scene no longer exists", async () => {
+    localStorage.setItem(LAST_SCENE_KEY, "MISSING_SC01");
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes("/scenes/MISSING_SC01/workbench")) {
+        return {
+          ok: false,
+          json: async () => ({ ok: false, error: { message: "scene not found" } }),
+        };
+      }
+      if (url.includes("/human-review-events?scene_id=MISSING_SC01")) {
+        return okEnvelope({ items: [] });
+      }
+      if (url.includes("/scenes/MISSING_SC01/attempts")) {
+        return emptyCursorEnvelope();
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const store = useWorkbenchStore();
+    expect(store.sceneId).toBe("MISSING_SC01");
+
+    await store.ensureLoaded({ force: true });
+
+    expect(store.sceneId).toBe("");
+    expect(store.data).toBeNull();
+    expect(localStorage.getItem(LAST_SCENE_KEY)).toBeNull();
+    expect(store.error).toContain("scene not found");
+  });
+
   it("surfaces purpose, status evidence, and missing-scene recovery guidance in the workbench view", () => {
     const source = readFileSync(path.join(SOURCE_ROOT, "src/views/SceneWorkbenchView.vue"), "utf8");
 
@@ -125,6 +154,50 @@ describe("readable scene workbench", () => {
     expect(source).toContain("scene-missing-guidance");
     expect(source).toContain("从作者工作台选择场景");
     expect(source).toContain("回到作者工作台");
+  });
+});
+
+describe("user-facing Chinese readability guard", () => {
+  it("keeps common shell, pager, and workbench strings out of mojibake", () => {
+    const files = [
+      "src/router.js",
+      "src/components/CursorPager.vue",
+      "src/stores/workbench.js",
+      "src/views/ReferenceLearningView.vue",
+      "src/views/AuthorWorkspaceView.vue",
+      "src/views/SceneWorkbenchView.vue",
+      "src/views/ReviewInboxView.vue",
+      "src/views/IndexConsoleView.vue",
+      "src/views/KnowledgeConsoleView.vue",
+      "src/views/InteropCenterView.vue",
+      "src/views/AuthorTrashView.vue",
+      "src/views/SystemConfigView.vue",
+    ];
+    const mojibakeFingerprints = [
+      "浣滆",
+      "鍦烘",
+      "瀹℃",
+      "鏆傛",
+      "涓婁竴",
+      "鐭ヨ",
+      "绱㈠",
+      "鍙傝",
+      "鎿嶄",
+      "鍚",
+    ];
+    const offenders = [];
+
+    for (const file of files) {
+      const source = readFileSync(path.join(SOURCE_ROOT, file), "utf8");
+      const lines = source.split(/\r?\n/);
+      lines.forEach((line, index) => {
+        if (mojibakeFingerprints.some((fingerprint) => line.includes(fingerprint))) {
+          offenders.push(`${file}:${index + 1}:${line.trim()}`);
+        }
+      });
+    }
+
+    expect(offenders).toEqual([]);
   });
 });
 

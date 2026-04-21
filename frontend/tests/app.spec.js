@@ -10,6 +10,13 @@ import { useKnowledgeConsoleStore } from "../src/stores/knowledgeConsole";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 import { useWorkbenchStore } from "../src/stores/workbench";
 
+function ok(data) {
+  return {
+    ok: true,
+    json: async () => ({ ok: true, data }),
+  };
+}
+
 describe("workbench store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -705,6 +712,94 @@ describe("review inbox store", () => {
     expect(message).toContain("ops.duwei");
   });
 
+  it("keeps a just-approved pending review visible for same-card release", async () => {
+    let approved = false;
+    let released = false;
+    globalThis.fetch = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/review-items/review_style_pending/approve")) {
+        approved = true;
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              review_id: "review_style_pending",
+              status: "approved",
+              materialize_status: "succeeded",
+              approved_item_row_id: "style_observation_review_style_pending_v1",
+              actor_ref: "ops.duwei",
+            },
+          }),
+        };
+      }
+      if (requestUrl.includes("/review-items/review_style_pending/release")) {
+        released = true;
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              review_id: "review_style_pending",
+              released: true,
+              actor_ref: "ops.duwei",
+            },
+          }),
+        };
+      }
+      if (requestUrl.includes("/review-items")) {
+        const pendingFilter = requestUrl.includes("status=pending");
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              items:
+                pendingFilter && approved
+                  ? []
+                  : [
+                      {
+                        review_id: "review_style_pending",
+                        status: "pending",
+                        item_type: "style_observation",
+                        target_collection: "style_observations",
+                        candidate_text: "pending review",
+                        materialize_status: "pending",
+                      },
+                    ],
+            },
+          }),
+        };
+      }
+      if (requestUrl.includes("/human-review-events")) {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, data: { items: [] } }),
+        };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const store = useReviewInboxStore();
+    store.reviewFilters.status = "pending";
+    await store.load({ resetReview: true, resetHumanReview: true, force: true });
+    await store.approve("review_style_pending");
+
+    expect(store.items).toEqual([
+      expect.objectContaining({
+        review_id: "review_style_pending",
+        status: "approved",
+        materialize_status: "succeeded",
+        approved_item_row_id: "style_observation_review_style_pending_v1",
+      }),
+    ]);
+
+    await store.release("review_style_pending");
+
+    expect(released).toBe(true);
+    expect(store.items).toEqual([]);
+  });
+
   it("retries a recovery event request and refreshes the inbox state", async () => {
     const store = useReviewInboxStore();
 
@@ -908,6 +1003,10 @@ describe("knowledge console store", () => {
       lineageKey: "VOICE_CHAR_A",
       candidateText: "candidate voice update",
       characterId: "CHAR_A",
+      displayName: "林岑",
+      pronouns: "她",
+      role: "档案修复师",
+      aliases: "小林, 林修复",
       activeOnApprove: 0,
     });
 
@@ -924,6 +1023,97 @@ describe("knowledge console store", () => {
         method: "POST",
       }),
     );
+    const createCall = globalThis.fetch.mock.calls.find(([url, options]) =>
+      String(url).includes("/api/v1/review-items") && options?.method === "POST"
+    );
+    const requestBody = JSON.parse(createCall[1].body);
+    expect(requestBody.candidate_payload_json).toEqual(
+      expect.objectContaining({
+        display_name: "林岑",
+        pronouns: ["她"],
+        role: "档案修复师",
+        aliases: ["小林", "林修复"],
+      }),
+    );
+  });
+
+  it("treats already-active release conflicts as an idempotent knowledge success", async () => {
+    const store = useKnowledgeConsoleStore();
+    let releaseAttempted = false;
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.includes("/api/v1/review-items/review_voice_card_candidate/release")) {
+        releaseAttempted = true;
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            ok: false,
+            data: null,
+            error: { code: "REVIEW_RELEASE_CONFLICT", message: "candidate is already active" },
+          }),
+        };
+      }
+      if (url.includes("/api/v1/knowledge-entries/voice_card/VOICE_CHAR_A/workflow")) {
+        return ok({ recommended_primary_action: null, review_items: [], jobs: [], human_review_events: [] });
+      }
+      if (url.includes("/api/v1/knowledge-entries/voice_card/VOICE_CHAR_A")) {
+        return ok({ object_type: "voice_card", lineage_key: "VOICE_CHAR_A", status: "active" });
+      }
+      if (url.includes("/api/v1/knowledge-entries")) {
+        return ok({ items: [{ object_type: "voice_card", lineage_key: "VOICE_CHAR_A", status: "active" }] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    store.selectedObjectType = "voice_card";
+    store.selectedLineageKey = "VOICE_CHAR_A";
+
+    const message = await store.releaseReview("review_voice_card_candidate");
+
+    expect(releaseAttempted).toBe(true);
+    expect(message).toContain("已是最新发布状态");
+    expect(message).toContain("review_voice_card_candidate");
+    expect(store.error).toBe("");
+  });
+
+  it("explains not-verified release conflicts with the next knowledge action", async () => {
+    const store = useKnowledgeConsoleStore();
+
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes("/api/v1/review-items/review_voice_card_candidate/release")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            ok: false,
+            data: null,
+            error: { code: "REVIEW_RELEASE_CONFLICT", message: "candidate is not verified" },
+          }),
+        };
+      }
+      if (url.includes("/api/v1/knowledge-entries/voice_card/VOICE_CHAR_A/workflow")) {
+        return ok({
+          recommended_primary_action: { action: "retry_verify", job_id: "verify_review_voice_card_candidate" },
+          review_items: [],
+          jobs: [],
+          human_review_events: [],
+        });
+      }
+      if (url.includes("/api/v1/knowledge-entries/voice_card/VOICE_CHAR_A")) {
+        return ok({ object_type: "voice_card", lineage_key: "VOICE_CHAR_A", status: "candidate" });
+      }
+      if (url.includes("/api/v1/knowledge-entries")) {
+        return ok({ items: [{ object_type: "voice_card", lineage_key: "VOICE_CHAR_A", status: "candidate" }] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    store.selectedObjectType = "voice_card";
+    store.selectedLineageKey = "VOICE_CHAR_A";
+
+    await expect(store.releaseReview("review_voice_card_candidate")).rejects.toThrow("候选尚未通过校验");
+    expect(store.error).toContain("先重试校验");
   });
 
   it("applies object, scope, scope ref, and status filters to pending knowledge candidates", async () => {

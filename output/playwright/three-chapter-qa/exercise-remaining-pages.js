@@ -1,6 +1,9 @@
 async (page) => {
   const baseUrl = "http://127.0.0.1:5173";
-  const apiBase = "http://127.0.0.1:8000";
+  const loopback = "http://127.0.0.1";
+  const apiBase =
+    (typeof process !== "undefined" && process.env?.PLAYWRIGHT_API_BASE) ||
+    `${loopback}:${(typeof process !== "undefined" && process.env?.PLAYWRIGHT_BACKEND_PORT) || "8000"}`;
   const operatorRef = "qa.three-chapters.real-llm";
   const outDir = "output/playwright/three-chapter-qa";
   const headers = () => ({

@@ -1,7 +1,8 @@
 import { CURSOR_PAGINATION_DEFAULT_LIMIT, normalizeListPayload } from "./cursorPagination";
 
 const API_BASE_KEY = "novel-system-api-base";
-const DEFAULT_API_BASE = "http://127.0.0.1:8000";
+const FALLBACK_API_BASE = "http://127.0.0.1:8000";
+const DEFAULT_API_BASE = (import.meta.env.VITE_NOVEL_SYSTEM_API_BASE || FALLBACK_API_BASE).trim();
 const OPERATOR_REF_KEY = "novel-system-operator-ref";
 const DEFAULT_OPERATOR_REF = "operator";
 const LIST_QUERY_ALIASES = {
@@ -14,7 +15,12 @@ export function getApiBase() {
   if (typeof window === "undefined") {
     return DEFAULT_API_BASE;
   }
-  return window.localStorage.getItem(API_BASE_KEY) || DEFAULT_API_BASE;
+  const stored = window.localStorage.getItem(API_BASE_KEY);
+  if (stored === FALLBACK_API_BASE && DEFAULT_API_BASE !== FALLBACK_API_BASE) {
+    window.localStorage.setItem(API_BASE_KEY, DEFAULT_API_BASE);
+    return DEFAULT_API_BASE;
+  }
+  return stored || DEFAULT_API_BASE;
 }
 
 export function setApiBase(value) {

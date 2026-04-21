@@ -1,0 +1,124 @@
+{
+  "refreshedAt": "2026-04-21T07:49:20.250Z",
+  "summary": {
+    "CHOR01": {
+      "sceneId": "CHOR01_SC01",
+      "status": "archived",
+      "finalRowId": "final_scene_CHOR01_SC01_v4",
+      "bundleId": "bundle_CHOR01_SC01_v4",
+      "chars": 378,
+      "hard": {
+        "resolution": "hard_pass",
+        "issues": []
+      },
+      "soft": {
+        "resolution": "soft_waive",
+        "issues": [
+          "style_drift",
+          "imagery"
+        ]
+      },
+      "leakTerms": [],
+      "residueTerms": [],
+      "linCenWrongPronounWindows": [],
+      "contractCharacters": [
+        {
+          "id": "CHAR_LINCEN",
+          "name": "林岑",
+          "pronouns": [
+            "她"
+          ]
+        },
+        {
+          "id": "许望",
+          "name": "许望",
+          "pronouns": []
+        },
+        {
+          "id": "匿名寄件人",
+          "name": "匿名寄件人",
+          "pronouns": []
+        }
+      ]
+    },
+    "CHOR02": {
+      "sceneId": "CHOR02_SC01",
+      "status": "archived",
+      "finalRowId": "final_scene_CHOR02_SC01_v4",
+      "bundleId": "bundle_CHOR02_SC01_v4",
+      "chars": 385,
+      "hard": {
+        "resolution": "hard_pass",
+        "issues": []
+      },
+      "soft": {
+        "resolution": "soft_waive",
+        "issues": [
+          "style_deviations"
+        ]
+      },
+      "leakTerms": [],
+      "residueTerms": [],
+      "linCenWrongPronounWindows": [],
+      "contractCharacters": [
+        {
+          "id": "CHAR_LINCEN",
+          "name": "林岑",
+          "pronouns": [
+            "她"
+          ]
+        },
+        {
+          "id": "许望",
+          "name": "许望",
+          "pronouns": []
+        },
+        {
+          "id": "旧站值守记录",
+          "name": "旧站值守记录",
+          "pronouns": []
+        }
+      ]
+    },
+    "CHOR03": {
+      "sceneId": "CHOR03_SC01",
+      "status": "archived",
+      "finalRowId": "final_scene_CHOR03_SC01_v9",
+      "bundleId": "bundle_CHOR03_SC01_v9",
+      "chars": 339,
+      "hard": {
+        "resolution": "hard_pass",
+        "issues": []
+      },
+      "soft": {
+        "resolution": "soft_waive",
+        "issues": [
+          "style_drift",
+          "imagery_clarity"
+        ]
+      },
+      "leakTerms": [],
+      "residueTerms": [],
+      "linCenWrongPronounWindows": [],
+      "contractCharacters": [
+        {
+          "id": "CHAR_LINCEN",
+          "name": "林岑",
+          "pronouns": [
+            "她"
+          ]
+        },
+        {
+          "id": "许望",
+          "name": "许望",
+          "pronouns": []
+        },
+        {
+          "id": "幸存者阿砚",
+          "name": "幸存者阿砚",
+          "pronouns": []
+        }
+      ]
+    }
+  }
+}

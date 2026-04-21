@@ -197,12 +197,12 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert any("Rewrite the scene draft with stronger style adherence" in message["content"] for message in style_request.messages)
     assert sum(message["content"].count("Return JSON that matches the structured schema exactly.") for message in style_request.messages) == 1
 
-    assert neutral_draft.content == "Provider-generated neutral scene text.\n\nA red envelope changes hands."
+    assert neutral_draft.content == "Provider-generated neutral scene text."
     assert "Clocktower Roof" not in neutral_draft.content
     assert neutral_draft.generation_llm_call_id == neutral_llm_call.llm_call_id
     assert neutral_draft.source_bundle_id == bundle.bundle_id
     assert neutral_draft.source_bundle_hash == bundle.bundle_snapshot_hash
-    assert style_draft.content == "Provider-generated style scene text.\n\nA red envelope changes hands."
+    assert style_draft.content == "Provider-generated style scene text."
     assert style_draft.generation_llm_call_id == style_llm_call.llm_call_id
     assert style_draft.source_bundle_id == bundle.bundle_id
     assert style_draft.source_bundle_hash == bundle.bundle_snapshot_hash
@@ -259,7 +259,7 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert soft_qc["branch"] == "continue"
 
 
-def test_scene_generation_preserves_required_scene_text_when_provider_omits_it(session) -> None:
+def test_scene_generation_does_not_append_required_scene_text_when_provider_omits_it(session) -> None:
     _seed_scene(session)
     bundle = {
         "bundle_id": "bundle_CH100_SC01",
@@ -274,7 +274,7 @@ def test_scene_generation_preserves_required_scene_text_when_provider_omits_it(s
 
     neutral = service.generate_neutral_draft("CH100_SC01", bundle)
 
-    assert neutral.content == "Provider-generated neutral scene text.\n\nA red envelope changes hands."
+    assert neutral.content == "Provider-generated neutral scene text."
 
 
 def test_generate_style_draft_blocks_provider_when_scene_must_split(session) -> None:
@@ -489,7 +489,7 @@ def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch)
         "Offline neutral draft for CH100_SC01. The scene advances clearly, preserves continuity, "
         "and satisfies the compiled bundle constraints."
     )
-    assert "A red envelope changes hands." in neutral_draft.content
+    assert "A red envelope changes hands." not in neutral_draft.content
     assert "Clocktower Roof" not in neutral_draft.content
     assert neutral_draft.generation_llm_call_id == neutral_llm_call.llm_call_id
     assert style_draft.content != neutral_draft.content

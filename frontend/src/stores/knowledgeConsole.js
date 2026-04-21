@@ -90,6 +90,30 @@ function parseJsonField(extraPayload) {
   }
 }
 
+function parseListField(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
+  }
+  if (!value?.trim()) {
+    return [];
+  }
+  return value.split(/[,，、;；\s]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function releaseConflictKind(error) {
+  if (error?.status !== 409) {
+    return "";
+  }
+  const message = String(error?.message || "").toLowerCase();
+  if (message.includes("already active")) {
+    return "already_active";
+  }
+  if (message.includes("not verified")) {
+    return "not_verified";
+  }
+  return "";
+}
+
 function buildCreatePayload(form) {
   const itemType = form.itemType;
   const candidateText = form.candidateText?.trim() || "";
@@ -123,6 +147,20 @@ function buildCreatePayload(form) {
   }
   if (form.characterId?.trim()) {
     payload.candidate_payload_json.character_id = form.characterId.trim();
+  }
+  if (form.displayName?.trim()) {
+    payload.candidate_payload_json.display_name = form.displayName.trim();
+  }
+  const pronouns = parseListField(form.pronouns || "");
+  if (pronouns.length) {
+    payload.candidate_payload_json.pronouns = pronouns;
+  }
+  if (form.role?.trim()) {
+    payload.candidate_payload_json.role = form.role.trim();
+  }
+  const aliases = parseListField(form.aliases || "");
+  if (aliases.length) {
+    payload.candidate_payload_json.aliases = aliases;
   }
   if (form.leftCharacterId?.trim()) {
     payload.candidate_payload_json.left_character_id = form.leftCharacterId.trim();
@@ -317,6 +355,22 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         await this.refreshSelection();
         return `已发布 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
+        const conflictKind = releaseConflictKind(error);
+        if (conflictKind === "already_active") {
+          this.lastActionResult = { review_id: reviewId, release_status: "already_active" };
+          await this.refreshSelection();
+          this.error = "";
+          return `已是最新发布状态：${reviewId}`;
+        }
+        if (conflictKind === "not_verified") {
+          const message = `候选尚未通过校验：${reviewId}。请先重试校验，成功后再发布。`;
+          try {
+            await this.refreshSelection();
+          } catch {
+          }
+          this.error = message;
+          throw new Error(message);
+        }
         this.error = error.message;
         throw error;
       } finally {

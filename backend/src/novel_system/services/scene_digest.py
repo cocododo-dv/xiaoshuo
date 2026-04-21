@@ -10,7 +10,7 @@ def scene_card_digest(scene: SceneCard) -> str:
     if scene.beats_json:
         lines.append(f"Beats: {'; '.join(str(beat) for beat in scene.beats_json)}")
     if scene.must_include_text:
-        lines.append(f"Required text: {scene.must_include_text}")
+        lines.append(f"Required beats to weave naturally: {scene.must_include_text}")
     if scene.forbidden_text:
         lines.append(f"Forbidden text: {scene.forbidden_text}")
     if scene.exit_change:

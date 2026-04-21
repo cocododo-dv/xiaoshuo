@@ -26,6 +26,7 @@ class PromptSection:
 SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("chapter_goal", "Chapter Goal", ("chapter_goal",)),
     ("scene_card", "Scene Card", ("scene_card",)),
+    ("character_contract", "Character Continuity Contract", ("character_contract",)),
     ("pov_voice", "POV Voice", ("voice_card",)),
     ("style_profile", "Style Feature Contract", ("style_profile", "style_feature_contract")),
     ("style_rules", "Style Rules", ("style_rule",)),
@@ -49,6 +50,7 @@ CONTINUITY_DROP_ORDER: tuple[str, ...] = (
 
 CONTINUITY_POLICY: list[str] = [
     "drop_similar_scene_context",
+    "drop_raw_style_rules_when_style_profile_exists",
     "compress_style_observations",
     "drop_calibration_lines",
     "drop_relation_world_memory_digests",
@@ -103,6 +105,18 @@ def apply_context_budget(
         similar_scene = section_lookup.get("similar_scene_context")
         if similar_scene is not None:
             similar_scene.status = "omitted"
+
+        if _rendered_prompt_tokens(
+            system_prompt=system_prompt,
+            task_prompt=task_prompt,
+            bundle_snapshot=bundle_snapshot,
+            sections=sections,
+            split_scene_recommended=False,
+        ) > max_input_tokens:
+            style_rules = section_lookup.get("style_rules")
+            style_profile = section_lookup.get("style_profile")
+            if style_rules is not None and style_profile is not None:
+                style_rules.status = "omitted"
 
         if _rendered_prompt_tokens(
             system_prompt=system_prompt,

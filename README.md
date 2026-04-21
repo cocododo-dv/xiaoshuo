@@ -143,9 +143,9 @@ What the lifecycle wrapper does:
 
 - runs `alembic upgrade head` in `backend`
 - reruns the idempotent demo seed
-- starts FastAPI on `http://127.0.0.1:8000`
+- starts FastAPI on `http://127.0.0.1:8000` when available, otherwise the next bindable local port
 - starts Vite on `http://127.0.0.1:5173`
-- records logs under `.codex-run/`
+- records logs and the resolved backend/frontend URLs under `.codex-run/`
 
 If you want to re-verify the wrapper itself, run:
 

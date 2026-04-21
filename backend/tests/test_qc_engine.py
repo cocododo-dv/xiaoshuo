@@ -31,14 +31,18 @@ from novel_system.services.qc_validator import QCValidationError, validate_qc_re
 
 
 class FakeSceneClient:
-    def __init__(self) -> None:
+    def __init__(self, *, satisfied_source: bool = False) -> None:
         self.requests: list[LLMRequest] = []
+        self.satisfied_source = satisfied_source
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         self.requests.append(request)
         if len(self.requests) == 1:
+            scene_text = "Provider-generated neutral scene text."
+            if self.satisfied_source:
+                scene_text += " A red envelope changes hands."
             payload = {
-                "scene_text": "Provider-generated neutral scene text.",
+                "scene_text": scene_text,
                 "continuity_notes": ["kept the reunion tense"],
             }
             request_id = "resp_neutral_001"
@@ -75,6 +79,34 @@ class FakeSceneClient:
                 "finish_reason": "stop",
             },
             usage=usage,
+            finish_reason="stop",
+        )
+
+
+class FakeFixedSceneClient:
+    def __init__(self, payloads: list[dict]) -> None:
+        self.payloads = list(payloads)
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        if not self.payloads:
+            raise AssertionError("unexpected scene generation request")
+        self.requests.append(request)
+        payload = self.payloads.pop(0)
+        return LLMResponse(
+            request_id=f"resp_scene_{len(self.requests):03d}",
+            provider="fake-provider",
+            model="fake-scene-model",
+            text=json.dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={
+                "id": f"resp_scene_{len(self.requests):03d}",
+                "model": "fake-scene-model",
+                "usage": {"input_tokens": 60, "output_tokens": 18, "total_tokens": 78},
+                "finish_reason": "stop",
+            },
+            usage={"input_tokens": 60, "output_tokens": 18, "total_tokens": 78},
             finish_reason="stop",
         )
 
@@ -192,10 +224,11 @@ def _make_orchestrator(
     *,
     hard_qc_payload: dict,
     soft_qc_payloads: list[dict] | None = None,
+    scene_client: FakeSceneClient | None = None,
 ) -> Orchestrator:
     return Orchestrator(
         session,
-        scene_generation_service=SceneGenerationService(session, llm_client=FakeSceneClient()),
+        scene_generation_service=SceneGenerationService(session, llm_client=scene_client or FakeSceneClient()),
         hard_qc_engine=HardQcEngine(session, llm_client=FakeQcClient(hard_qc_payload)),
         soft_qc_engine=SoftQcEngine(
             session,
@@ -500,7 +533,7 @@ def test_run_scene_hard_qc_pass_persists_report_and_continues(session) -> None:
     assert soft_report.next_action == "pass"
     assert state.current_qc_report_id == soft_report.qc_report_id
     assert state.current_human_review_event_id is None
-    assert style_draft.content == "Provider-generated style scene text.\n\nA red envelope changes hands."
+    assert style_draft.content == "Provider-generated style scene text."
     assert final_scene.content == style_draft.content
     assert final_scene.generation_llm_call_id == style_draft.generation_llm_call_id
     assert state.current_style_draft_row_id == style_draft.row_id
@@ -595,7 +628,7 @@ def test_run_scene_soft_qc_patch_rechecks_before_finalize(session) -> None:
     assert len(reports) == 2
     assert reports[0].next_action == "patch"
     assert reports[1].next_action == "pass"
-    assert patch_draft.content == "Provider-generated patched scene text.\n\nA red envelope changes hands."
+    assert patch_draft.content == "Provider-generated patched scene text."
     assert patch_draft.content != style_draft.content
     assert final_scene.content == patch_draft.content
     assert final_scene.generation_llm_call_id == patch_draft.generation_llm_call_id
@@ -658,6 +691,145 @@ def test_run_scene_soft_qc_patch_repeat_waives_with_carry_note(session) -> None:
         "soft_patch",
         "soft_qc",
     ]
+
+
+def test_run_scene_blocks_hard_qc_when_character_pronoun_drifts(session) -> None:
+    _seed_scene(session)
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.pov_character_id = "LIN_CEN"
+    scene.onstage_chars_json = ["LIN_CEN"]
+    scene.must_include_text = ""
+    voice = session.get(VoiceProfile, "voice_profile_VOICE_CHAR_A_v1")
+    voice.voice_profile_id = "VOICE_LIN_CEN"
+    voice.character_id = "LIN_CEN"
+    voice.content = "角色名：林岑\n代词：她\n角色职责：档案修复师"
+    session.commit()
+
+    orchestrator = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
+        scene_client=FakeFixedSceneClient(
+            [
+                {
+                    "scene_text": "林岑把盐钟残片放在灯下。他确认刻痕被人改过，声音仍然很稳。",
+                    "continuity_notes": ["provider missed pronoun contract"],
+                }
+            ]
+        ),
+    )
+
+    result = orchestrator.run_scene("CH100_SC01")
+    session.commit()
+
+    state = session.get(SceneRunState, "CH100_SC01")
+    report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
+
+    assert result["scene_status"] == "hard_qc_partial_rewrite_required"
+    assert result["hard_qc"]["branch"] == "rewrite_partial"
+    assert state.current_final_scene_row_id is None
+    assert report.resolution_code == "hard_fail_partial"
+    assert report.next_action == "partial_rewrite"
+    assert report.issues_json[0]["issue_key"] == "character_pronoun_drift"
+    assert "林岑" in report.rewrite_brief_json[0]["instruction"]
+
+
+def test_run_scene_ignores_unsubstantiated_unknown_pronoun_hard_qc(session) -> None:
+    _seed_scene(session)
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.pov_character_id = "LIN_CEN"
+    scene.onstage_chars_json = ["LIN_CEN", "许望", "幸存者阿砚"]
+    scene.must_include_text = ""
+    voice = session.get(VoiceProfile, "voice_profile_VOICE_CHAR_A_v1")
+    voice.voice_profile_id = "VOICE_LIN_CEN"
+    voice.character_id = "LIN_CEN"
+    voice.content = "角色名：林岑\n代词：她\n角色职责：档案修复师"
+    neutral_text = (
+        "林岑把残片插入档案柜。许望站在她身后，记录潮声倒退的三秒。"
+        "她按下播放键，听见幸存者阿砚的呼吸，然后把证据拆成两份。"
+    )
+    session.commit()
+
+    orchestrator = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(
+            resolution_code="hard_fail_partial",
+            next_action="partial_rewrite",
+            issues=[
+                {
+                    "issue_key": "character_pronoun_ambiguity",
+                    "message": "许望的代词未明确指定，可能导致角色身份混淆。",
+                },
+                {
+                    "issue_key": "character_role_inconsistency",
+                    "message": "幸存者阿砚的角色职责未在场景中体现，需补充其存在感或行动线索。",
+                },
+            ],
+        ),
+        soft_qc_payloads=[_base_soft_qc_payload(resolution_code="soft_pass", next_action="pass")],
+        scene_client=FakeFixedSceneClient(
+            [
+                {"scene_text": neutral_text, "continuity_notes": []},
+                {"scene_text": neutral_text, "style_notes": []},
+            ]
+        ),
+    )
+
+    result = orchestrator.run_scene("CH100_SC01")
+    session.commit()
+
+    state = session.get(SceneRunState, "CH100_SC01")
+    hard_report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
+
+    assert result["scene_status"] == "archived"
+    assert result["hard_qc"]["branch"] == "continue"
+    assert state.current_final_scene_row_id is not None
+    assert hard_report.resolution_code == "hard_pass"
+    assert hard_report.issues_json == []
+
+
+def test_run_scene_does_not_waive_blocking_soft_qc_repeat_patch(session) -> None:
+    _seed_scene(session)
+    orchestrator = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
+        soft_qc_payloads=[
+            _base_soft_qc_payload(
+                resolution_code="soft_patch",
+                next_action="patch",
+                issues=[{"issue_key": "style_profile_drift", "message": "The opening needs more immediacy."}],
+                rewrite_brief=["Tighten the first paragraph."],
+            ),
+            _base_soft_qc_payload(
+                resolution_code="soft_patch",
+                next_action="patch",
+                issues=[
+                    {
+                        "issue_key": "character_pronoun_drift",
+                        "message": "林岑 expects pronoun 她 but nearby text uses 他.",
+                    }
+                ],
+                rewrite_brief=["修正林岑的代词，必要时重复角色姓名。"],
+            ),
+        ],
+    )
+
+    result = orchestrator.run_scene("CH100_SC01")
+    session.commit()
+
+    state = session.get(SceneRunState, "CH100_SC01")
+    events = session.execute(select(HumanReviewEvent)).scalars().all()
+    reports = session.execute(
+        select(QcReport).where(QcReport.qc_type == "soft_qc").order_by(QcReport.created_at.asc(), QcReport.qc_report_id.asc())
+    ).scalars().all()
+
+    assert result["scene_status"] == "human_review_required"
+    assert result["soft_qc"]["branch"] == "human_review_required"
+    assert result["soft_qc"]["stop_reason"] == "blocking_soft_qc_issue"
+    assert state.current_final_scene_row_id is None
+    assert len(events) == 1
+    assert reports[-1].resolution_code == "soft_block_human"
+    assert reports[-1].next_action == "human_review_required"
+    assert reports[-1].issues_json[0]["issue_key"] == "character_pronoun_drift"
 
 
 def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_style_generation(session) -> None:
@@ -744,6 +916,7 @@ def test_run_scene_ignores_hard_qc_forbidden_false_positive_when_required_text_i
             ],
         ),
         soft_qc_payloads=[_base_soft_qc_payload(resolution_code="soft_pass", next_action="pass")],
+        scene_client=FakeSceneClient(satisfied_source=True),
     )
 
     result = orchestrator.run_scene("CH100_SC01")
@@ -782,6 +955,7 @@ def test_run_scene_ignores_hard_qc_hook_and_style_false_positives_when_source_is
             ],
         ),
         soft_qc_payloads=[_base_soft_qc_payload(resolution_code="soft_pass", next_action="pass")],
+        scene_client=FakeSceneClient(satisfied_source=True),
     )
 
     result = orchestrator.run_scene("CH100_SC01")

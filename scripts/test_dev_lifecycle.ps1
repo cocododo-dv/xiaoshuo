@@ -72,6 +72,25 @@ function Test-PortClosed {
     ).Count -eq 0
 }
 
+function Read-RequiredText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    Assert-True -Condition (Test-Path $Path) -Message ("Missing expected file: {0}" -f $Path)
+    return (Get-Content -Path $Path -Raw).Trim()
+}
+
+function Get-PortFromUrl {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url
+    )
+
+    return ([System.Uri]$Url).Port
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $mainScript = Join-Path $repoRoot "scripts\dev.ps1"
 $startWrapper = Join-Path $repoRoot "start-dev.cmd"
@@ -80,6 +99,8 @@ $restartWrapper = Join-Path $repoRoot "restart-dev.cmd"
 $runDir = Join-Path $repoRoot ".codex-run"
 $backendPidFile = Join-Path $runDir "backend.pid"
 $frontendPidFile = Join-Path $runDir "frontend.pid"
+$backendUrlFile = Join-Path $runDir "backend.url"
+$frontendUrlFile = Join-Path $runDir "frontend.url"
 
 Assert-True -Condition (Test-Path $mainScript) -Message "Missing lifecycle script: scripts/dev.ps1"
 Assert-True -Condition (Test-Path $startWrapper) -Message "Missing wrapper: start-dev.cmd"
@@ -93,20 +114,26 @@ try {
     } -TimeoutSeconds 20
 
     Invoke-CheckedScript -FilePath $startWrapper
-    Wait-Until -Label "backend health" -Condition { Test-UrlHealthy -Url "http://127.0.0.1:8000/api/v1/chapters" } -TimeoutSeconds 90
-    Wait-Until -Label "frontend home" -Condition { Test-UrlHealthy -Url "http://127.0.0.1:5173" } -TimeoutSeconds 60
+    $backendUrl = Read-RequiredText -Path $backendUrlFile
+    $frontendUrl = Read-RequiredText -Path $frontendUrlFile
+    Wait-Until -Label "backend health" -Condition { Test-UrlHealthy -Url "$backendUrl/api/v1/chapters" } -TimeoutSeconds 90
+    Wait-Until -Label "frontend home" -Condition { Test-UrlHealthy -Url $frontendUrl } -TimeoutSeconds 60
     Assert-True -Condition (Test-Path $backendPidFile) -Message "Missing backend PID file after start."
     Assert-True -Condition (Test-Path $frontendPidFile) -Message "Missing frontend PID file after start."
 
     Invoke-CheckedScript -FilePath $restartWrapper
-    Wait-Until -Label "backend after restart" -Condition { Test-UrlHealthy -Url "http://127.0.0.1:8000/api/v1/chapters" } -TimeoutSeconds 90
-    Wait-Until -Label "frontend after restart" -Condition { Test-UrlHealthy -Url "http://127.0.0.1:5173" } -TimeoutSeconds 60
+    $backendUrl = Read-RequiredText -Path $backendUrlFile
+    $frontendUrl = Read-RequiredText -Path $frontendUrlFile
+    Wait-Until -Label "backend after restart" -Condition { Test-UrlHealthy -Url "$backendUrl/api/v1/chapters" } -TimeoutSeconds 90
+    Wait-Until -Label "frontend after restart" -Condition { Test-UrlHealthy -Url $frontendUrl } -TimeoutSeconds 60
     Assert-True -Condition (Test-Path $backendPidFile) -Message "Missing backend PID file after restart."
     Assert-True -Condition (Test-Path $frontendPidFile) -Message "Missing frontend PID file after restart."
 
+    $backendPort = Get-PortFromUrl -Url $backendUrl
+    $frontendPort = Get-PortFromUrl -Url $frontendUrl
     Invoke-CheckedScript -FilePath $stopWrapper
-    Wait-Until -Label "ports 8000/5173 to close after stop" -Condition {
-        (Test-PortClosed -Port 8000) -and (Test-PortClosed -Port 5173)
+    Wait-Until -Label "dev service ports to close after stop" -Condition {
+        (Test-PortClosed -Port $backendPort) -and (Test-PortClosed -Port $frontendPort)
     } -TimeoutSeconds 30
     Assert-True -Condition (-not (Test-Path $backendPidFile)) -Message "Backend PID file still exists after stop."
     Assert-True -Condition (-not (Test-Path $frontendPidFile)) -Message "Frontend PID file still exists after stop."

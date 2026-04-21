@@ -483,7 +483,7 @@ class VersioningServiceBase:
                 voice_profile_id=lineage_key,
                 version=version,
                 character_id=character_id,
-                content=text_value,
+                content=self._append_voice_contract_metadata(text_value, payload),
                 active_flag=0,
                 runtime_eligible=0,
                 runtime_eligibility_basis=pending_basis,
@@ -604,6 +604,34 @@ class VersioningServiceBase:
             )
 
         raise DomainError("REVIEW_ITEM_TYPE_UNSUPPORTED", f"unsupported item type {review.item_type}", status_code=400)
+
+    @staticmethod
+    def _append_voice_contract_metadata(text_value: Any, payload: dict[str, Any]) -> str:
+        base_text = str(text_value or "").strip()
+        metadata_lines: list[str] = []
+        display_name = payload.get("display_name")
+        if isinstance(display_name, str) and display_name.strip():
+            metadata_lines.append(f"角色名：{display_name.strip()}")
+        pronouns = payload.get("pronouns")
+        if isinstance(pronouns, str) and pronouns.strip():
+            metadata_lines.append(f"代词：{pronouns.strip()}")
+        elif isinstance(pronouns, list):
+            normalized_pronouns = [str(item).strip() for item in pronouns if str(item).strip()]
+            if normalized_pronouns:
+                metadata_lines.append(f"代词：{'、'.join(normalized_pronouns)}")
+        role = payload.get("role")
+        if isinstance(role, str) and role.strip():
+            metadata_lines.append(f"角色职责：{role.strip()}")
+        aliases = payload.get("aliases")
+        if isinstance(aliases, str) and aliases.strip():
+            metadata_lines.append(f"别名：{aliases.strip()}")
+        elif isinstance(aliases, list):
+            normalized_aliases = [str(item).strip() for item in aliases if str(item).strip()]
+            if normalized_aliases:
+                metadata_lines.append(f"别名：{'、'.join(normalized_aliases)}")
+        if not metadata_lines:
+            return base_text
+        return "\n".join([base_text, *metadata_lines]) if base_text else "\n".join(metadata_lines)
 
     def _registry_for_row(self, row_id: str) -> VersionRegistry | None:
         return self.session.execute(

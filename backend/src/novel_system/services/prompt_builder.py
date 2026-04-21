@@ -39,6 +39,12 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "soft_qc": 3600,
     "style_draft": 4200,
 }
+CHARACTER_CONTINUITY_INSTRUCTION = (
+    "Preserve character identity and pronoun continuity across the scene. "
+    "Do not change a character's gender, role, or name cues from the scene card, POV voice, "
+    "relation digest, previous scene memory, or source draft. "
+    "When pronouns are ambiguous, repeat the character name."
+)
 
 
 class PromptBuilder:
@@ -238,8 +244,18 @@ def _append_runtime_template_instruction(user_prompt: str, template_name: str) -
             "Preserve the source draft language; do not translate the scene while styling it. "
             "If the draft or scene card is Chinese, scene_text must remain Chinese prose."
         ),
+        "hard_qc": (
+            "If the draft under review is Chinese, write issue messages and rewrite_brief in Chinese; "
+            "preserve Chinese character names exactly and do not romanize or translate them."
+        ),
+        "soft_qc": (
+            "If the draft under review is Chinese, write issue messages and rewrite_brief in Chinese; "
+            "preserve Chinese character names exactly and do not romanize or translate them."
+        ),
     }
     instruction = instructions.get(template_name)
+    if instruction:
+        instruction = f"{instruction} {CHARACTER_CONTINUITY_INSTRUCTION}"
     if not instruction or instruction in user_prompt:
         return user_prompt
     return f"{user_prompt}\n{instruction}"

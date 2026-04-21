@@ -15,6 +15,11 @@ from novel_system.services.human_review_manager import HumanReviewManager
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_task_runner import LLMNodeContinuityError, LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.character_continuity import (
+    detect_character_pronoun_drift,
+    detect_mechanical_required_beat_listing,
+    has_blocking_qc_issue,
+)
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
 from novel_system.services.style_profile import StyleScoreService
 
@@ -24,6 +29,8 @@ CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe input budget after de
 CONTINUITY_BUDGET_REWRITE = "Split the scene and retry QC with a smaller continuity scope."
 HARD_QC_REQUIRED_ISSUE_KEYS = {"missing_required_text", "missing_hard_constraint"}
 HARD_QC_STYLE_ONLY_ISSUE_KEYS = {"style_compliance", "style_rule_violation", "style_profile_drift"}
+HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS = {"character_role_inconsistency"}
+UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {"character_pronoun_ambiguity", "character_pronoun_continuity"}
 
 
 @dataclass(slots=True)
@@ -186,6 +193,105 @@ def _reported_duplicate_appears_once(issue_blob: str, content: str) -> bool:
     return bool(quoted) and all(content.count(fragment) <= 1 for fragment in quoted)
 
 
+def _deterministic_quality_issues(scene: SceneCard, bundle: dict[str, Any], content: str) -> list[dict[str, Any]]:
+    inline_digests = bundle.get("snapshot", {}).get("inline_digests", {})
+    character_contract = inline_digests.get("character_contract") if isinstance(inline_digests, dict) else None
+    issues = detect_character_pronoun_drift(content, character_contract)
+    listing_issue = detect_mechanical_required_beat_listing(
+        content=content,
+        must_include_text=scene.must_include_text,
+    )
+    if listing_issue is not None:
+        issues.append(listing_issue)
+    return issues
+
+
+def _dedupe_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for issue in issues:
+        issue_key = str(issue.get("issue_key") or "")
+        message = str(issue.get("message") or "")
+        key = (issue_key, message)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+    return deduped
+
+
+def _drop_unsubstantiated_pronoun_continuity_issue(
+    *,
+    payload: dict[str, Any],
+    deterministic_issues: list[dict[str, Any]],
+    qc_type: str,
+) -> dict[str, Any]:
+    if any(issue.get("issue_key") == "character_pronoun_drift" for issue in deterministic_issues):
+        return payload
+
+    issues = payload.get("issues")
+    if not isinstance(issues, list):
+        return payload
+
+    kept_issues: list[Any] = []
+    removed = False
+    for issue in issues:
+        if isinstance(issue, dict) and str(issue.get("issue_key") or "").strip() in UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS:
+            removed = True
+            continue
+        kept_issues.append(issue)
+    if not removed:
+        return payload
+
+    cleaned = {**payload, "issues": kept_issues}
+    if kept_issues or payload.get("next_action") == "pass":
+        return cleaned
+
+    if qc_type == "hard_qc":
+        return {
+            **cleaned,
+            "resolution_code": "hard_pass",
+            "pass_flag": True,
+            "next_action": "pass",
+            "rewrite_brief": [],
+        }
+    if qc_type == "soft_qc":
+        return {
+            **cleaned,
+            "resolution_code": "soft_pass",
+            "pass_flag": True,
+            "next_action": "pass",
+            "rewrite_brief": [],
+            "carry_forward_note": False,
+            "note_scope": None,
+            "carry_note_text": None,
+        }
+    return cleaned
+
+
+def _rewrite_briefs_for_deterministic_issues(issues: list[dict[str, Any]]) -> list[str]:
+    briefs: list[str] = []
+    for issue in issues:
+        issue_key = issue.get("issue_key")
+        if issue_key == "character_pronoun_drift":
+            display_name = issue.get("display_name") or "角色"
+            expected = issue.get("expected_pronoun") or "既定代词"
+            briefs.append(f"修正{display_name}的代词连续性，保持使用{expected}；若指代不清，请重复角色姓名。")
+        elif issue_key == "mechanical_required_beat_listing":
+            briefs.append("将必须出现的剧情节拍自然织入动作和因果，不要在段尾追加清单。")
+    return briefs
+
+
+def _append_unique_rewrite_briefs(existing: list[Any], additions: list[str]) -> list[Any]:
+    merged = list(existing)
+    seen = {str(item).strip() for item in merged if isinstance(item, str) and item.strip()}
+    for addition in additions:
+        if addition.strip() and addition.strip() not in seen:
+            merged.append(addition.strip())
+            seen.add(addition.strip())
+    return merged
+
+
 class HardQcEngine:
     def __init__(
         self,
@@ -299,6 +405,7 @@ class HardQcEngine:
             )
 
         payload = self._apply_deterministic_sanity(scene, neutral_content, report.model_dump())
+        payload = self._apply_deterministic_quality_gates(scene, bundle, neutral_content, payload)
         report = validate_qc_report("hard_qc", payload)
         payload = report.model_dump()
         qc_report = self._persist_qc_report(
@@ -439,6 +546,45 @@ class HardQcEngine:
             "rewrite_brief": [],
         }
 
+    @staticmethod
+    def _apply_deterministic_quality_gates(
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        neutral_content: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        deterministic_issues = _deterministic_quality_issues(scene, bundle, neutral_content)
+        payload = _drop_unsubstantiated_pronoun_continuity_issue(
+            payload=payload,
+            deterministic_issues=deterministic_issues,
+            qc_type="hard_qc",
+        )
+        if not deterministic_issues:
+            return payload
+        existing_issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+        rewrite_brief = payload.get("rewrite_brief") if isinstance(payload.get("rewrite_brief"), list) else []
+        merged_issues = _dedupe_issues([*existing_issues, *deterministic_issues])
+        if payload.get("next_action") != "pass":
+            return {
+                **payload,
+                "issues": merged_issues,
+                "rewrite_brief": _append_unique_rewrite_briefs(
+                    rewrite_brief,
+                    _rewrite_briefs_for_deterministic_issues(deterministic_issues),
+                ),
+            }
+        return {
+            **payload,
+            "resolution_code": "hard_fail_partial",
+            "pass_flag": False,
+            "next_action": "partial_rewrite",
+            "issues": merged_issues,
+            "rewrite_brief": _append_unique_rewrite_briefs(
+                rewrite_brief,
+                _rewrite_briefs_for_deterministic_issues(deterministic_issues),
+            ),
+        }
+
     def _issue_contradicts_deterministic_scene_card(
         self,
         scene: SceneCard,
@@ -449,7 +595,11 @@ class HardQcEngine:
         issue_key = str(issue.get("issue_key") or "").strip()
         if issue_key == "forbidden_text":
             return not _contains_forbidden_term(scene.forbidden_text, neutral_content)
-        if issue_key in HARD_QC_STYLE_ONLY_ISSUE_KEYS or issue_key.startswith("style_"):
+        if (
+            issue_key in HARD_QC_STYLE_ONLY_ISSUE_KEYS
+            or issue_key in HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS
+            or issue_key.startswith("style_")
+        ):
             return True
         if issue_key in HARD_QC_REQUIRED_ISSUE_KEYS:
             return self._source_field_satisfies_reported_issue(scene.must_include_text, neutral_content, issue_blob) or any(
@@ -810,12 +960,23 @@ class SoftQcEngine:
             )
 
         payload = report.model_dump()
+        payload = self._apply_deterministic_quality_gates(scene, bundle, source_draft_content, payload)
+        report = validate_qc_report("soft_qc", payload)
+        payload = report.model_dump()
         branch = self._branch_for(report.next_action)
         if branch == "patch" and state.soft_patch_count >= 1:
-            payload = self._waive_repeat_patch_payload(payload)
+            if has_blocking_qc_issue(payload.get("issues", [])):
+                payload = self._block_repeat_patch_payload(payload)
+            else:
+                payload = self._waive_repeat_patch_payload(payload)
             report = validate_qc_report("soft_qc", payload)
             payload = report.model_dump()
-            branch = "waive"
+            branch = self._branch_for(report.next_action)
+        elif branch == "waive" and has_blocking_qc_issue(payload.get("issues", [])):
+            payload = self._block_repeat_patch_payload(payload)
+            report = validate_qc_report("soft_qc", payload)
+            payload = report.model_dump()
+            branch = self._branch_for(report.next_action)
 
         qc_report = self._persist_qc_report(
             scene=scene,
@@ -826,6 +987,7 @@ class SoftQcEngine:
         )
 
         if branch == "human_review_required":
+            blocking_issue = has_blocking_qc_issue(payload.get("issues", []))
             self._clear_downstream_outputs(state)
             return self._escalate_existing_report(
                 scene=scene,
@@ -834,8 +996,12 @@ class SoftQcEngine:
                 source_draft_row_id=source_draft_row_id,
                 qc_report=qc_report,
                 branch=branch,
-                failure_reason="soft_qc explicitly requested human review before finalization.",
-                trigger_reason="soft_qc_requested_human_review",
+                failure_reason=(
+                    "blocking soft_qc issue prevents finalization."
+                    if blocking_issue
+                    else "soft_qc explicitly requested human review before finalization."
+                ),
+                trigger_reason="blocking_soft_qc_issue" if blocking_issue else "soft_qc_requested_human_review",
                 llm_call_id=llm_call_id,
             )
 
@@ -900,6 +1066,64 @@ class SoftQcEngine:
             "next_action": "human_review_required",
             "issues": [issue],
             "rewrite_brief": rewrite_brief or [],
+            "carry_forward_note": False,
+            "note_scope": None,
+            "carry_note_text": None,
+        }
+
+    @staticmethod
+    def _apply_deterministic_quality_gates(
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        source_draft_content: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        deterministic_issues = _deterministic_quality_issues(scene, bundle, source_draft_content)
+        payload = _drop_unsubstantiated_pronoun_continuity_issue(
+            payload=payload,
+            deterministic_issues=deterministic_issues,
+            qc_type="soft_qc",
+        )
+        if not deterministic_issues:
+            return payload
+        existing_issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+        rewrite_brief = payload.get("rewrite_brief") if isinstance(payload.get("rewrite_brief"), list) else []
+        merged_issues = _dedupe_issues([*existing_issues, *deterministic_issues])
+        if payload.get("next_action") in {"patch", "human_review_required"}:
+            return {
+                **payload,
+                "issues": merged_issues,
+                "rewrite_brief": _append_unique_rewrite_briefs(
+                    rewrite_brief,
+                    _rewrite_briefs_for_deterministic_issues(deterministic_issues),
+                ),
+            }
+        return {
+            **payload,
+            "resolution_code": "soft_patch",
+            "pass_flag": False,
+            "next_action": "patch",
+            "issues": merged_issues,
+            "rewrite_brief": _append_unique_rewrite_briefs(
+                rewrite_brief,
+                _rewrite_briefs_for_deterministic_issues(deterministic_issues),
+            ),
+            "carry_forward_note": False,
+            "note_scope": None,
+            "carry_note_text": None,
+        }
+
+    @staticmethod
+    def _block_repeat_patch_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        rewrite_brief = [item for item in payload.get("rewrite_brief", []) if isinstance(item, str) and item.strip()]
+        if not rewrite_brief:
+            rewrite_brief = ["阻塞级质量问题仍未解决，请人工复核后再归档。"]
+        return {
+            **payload,
+            "resolution_code": "soft_block_human",
+            "pass_flag": False,
+            "next_action": "human_review_required",
+            "rewrite_brief": rewrite_brief,
             "carry_forward_note": False,
             "note_scope": None,
             "carry_note_text": None,

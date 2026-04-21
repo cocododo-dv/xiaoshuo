@@ -63,6 +63,33 @@ const currentFinalSceneRowId = computed(() =>
   || workbench.data?.final_scene?.row_id
   || "-",
 );
+const BLOCKING_QC_ISSUE_KEYS = new Set([
+  "character_pronoun_drift",
+  "instruction_residue",
+  "mechanical_required_beat_listing",
+  "scene_conflict_missing",
+  "source_leak_risk",
+]);
+const archiveQualityLabel = computed(() => {
+  if (!hasData.value) {
+    return "-";
+  }
+  const sceneStatus = workbench.data?.scene_run_state?.scene_status || "";
+  const hardIssueKeys = hardQcSummary.value?.issue_keys || [];
+  const softIssueKeys = softQcSummary.value?.issue_keys || [];
+  const hasBlockingIssue = [...hardIssueKeys, ...softIssueKeys].some((issueKey) => BLOCKING_QC_ISSUE_KEYS.has(issueKey));
+  const triggerReason = humanReviewSummary.value?.trigger_reason || "";
+  if (triggerReason === "blocking_soft_qc_issue" || (sceneStatus !== "archived" && hasBlockingIssue)) {
+    return "Blocked by deterministic QC";
+  }
+  if (sceneStatus === "archived" && (softQcSummary.value?.resolution_code === "soft_waive" || softQcSummary.value?.next_action === "pass_with_notes")) {
+    return "Archived with waived notes";
+  }
+  if (sceneStatus === "archived") {
+    return "Clean archived";
+  }
+  return formatStatus(sceneStatus);
+});
 const attemptEvidenceLabel = computed(() => (workbench.attempts.length ? `${workbench.attempts.length} 条轨迹` : "暂无轨迹"));
 const qcEvidenceLabel = computed(() => {
   if (!hasData.value) {
@@ -377,6 +404,10 @@ onDeactivated(() => {
         <div class="stat">
           <span>QC</span>
           <strong>{{ qcEvidenceLabel }}</strong>
+        </div>
+        <div class="stat" data-testid="scene-archive-quality-label">
+          <span>Archive Quality</span>
+          <strong>{{ archiveQualityLabel }}</strong>
         </div>
         <div class="stat">
           <span>运行轨迹</span>

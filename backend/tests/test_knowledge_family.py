@@ -507,6 +507,35 @@ def test_bundle_builder_includes_new_knowledge_sources_in_snapshot(client) -> No
     assert snapshot["inline_digests"]["foreshadow"] == "the old letter sender clue is now in play"
 
 
+def test_voice_card_materialization_preserves_character_contract_metadata(client) -> None:
+    _seed_story(client)
+    payload = _review_payload(
+        "review_voice_contract_metadata",
+        "voice_card_candidate",
+        candidate_text="冷静、短句，压力落在动作里。",
+        candidate_payload_json={
+            "lineage_key": "VOICE_CHAR_A",
+            "character_id": "CHAR_A",
+            "text": "冷静、短句，压力落在动作里。",
+            "display_name": "林岑",
+            "pronouns": ["她"],
+            "role": "档案修复师",
+            "aliases": ["小林"],
+        },
+    )
+
+    _create_review_item(client, payload, key="create-voice-contract-metadata")
+    _approve_review(client, payload["review_id"], key="approve-voice-contract-metadata")
+
+    detail = client.get("/api/v1/knowledge-entries/voice_card/VOICE_CHAR_A")
+    assert detail.status_code == 200
+    active_text = detail.json()["data"]["active_version"]["text"]
+    assert "角色名：林岑" in active_text
+    assert "代词：她" in active_text
+    assert "角色职责：档案修复师" in active_text
+    assert "别名：小林" in active_text
+
+
 def test_knowledge_detail_workflow_includes_pending_review_and_recommended_approve(client) -> None:
     _seed_story(client)
     _create_review_item(

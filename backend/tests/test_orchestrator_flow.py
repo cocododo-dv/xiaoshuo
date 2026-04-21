@@ -234,7 +234,7 @@ def test_rerunning_scene_appends_immutable_run_artifacts_and_replays_old_final(c
     second_scene_digest = session.get(SceneBundle, second_bundle_id).frozen_snapshot_json["inline_digests"]["scene_card"]
     assert "Goal: 让第二次运行形成新的场景目标" in second_scene_digest
     assert "Location: 旧城门廊" in second_scene_digest
-    assert "Required text: 旧信寄件人的线索" in second_scene_digest
+    assert "Required beats to weave naturally: 旧信寄件人的线索" in second_scene_digest
 
     replay_old = client.get(f"/api/v1/replay/final-scene/{first_final_row_id}")
     assert replay_old.status_code == 200

@@ -11,6 +11,7 @@ from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
 from novel_system.services.resolver import Resolver
+from novel_system.services.character_continuity import CHARACTER_CONTRACT_VERSION, build_character_contract_digest
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
 
@@ -99,6 +100,24 @@ class BundleBuilder:
                 {"slot": "relation", "ref_id": relation_profile.relation_profile_id, "digest_key": "relation_card"}
             )
             inline_digests["relation_card"] = relation_profile.content
+
+        character_contract = build_character_contract_digest(
+            pov_character_id=scene.pov_character_id,
+            onstage_character_ids=scene.onstage_chars_json,
+            voice_profile_content=voice_profile.content if voice_profile else None,
+            relation_profile_content=relation_profile.content if relation_profile else None,
+        )
+        if character_contract:
+            source_version_refs["character_contract"] = CHARACTER_CONTRACT_VERSION
+            ordered_injections.append(
+                {
+                    "slot": "character_contract",
+                    "ref_id": CHARACTER_CONTRACT_VERSION,
+                    "digest_key": "character_contract",
+                }
+            )
+            inline_digests["character_contract"] = character_contract
+
         if previous_memory:
             source_version_refs["scene_memory_prev"] = previous_memory.scene_id
             ordered_injections.append(

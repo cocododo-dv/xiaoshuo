@@ -594,6 +594,17 @@ describe("author lifecycle source", () => {
     expect(source).toContain("scene_card");
   });
 
+  it("keeps new-scene controls bound to the selected chapter while refreshes are in flight", () => {
+    const source = readFileSync(AUTHOR_VIEW_PATH, "utf8");
+
+    expect(source).toContain("const sceneActionDisabled = computed(() =>");
+    expect(source).toContain("authorWorkspace.loading");
+    expect(source).toContain("!authorWorkspace.selectedChapterId");
+    expect(source).toContain(':disabled="sceneActionDisabled"');
+    expect(source).toContain("assignSceneForm(null)");
+    expect(source).toContain("sceneForm.chapter_id = nextChapterId || chapterForm.chapter_id || \"\"");
+  });
+
   it("virtualizes author chapter and scene lists while keeping forms outside the list surfaces", () => {
     const source = readFileSync(AUTHOR_VIEW_PATH, "utf8");
 

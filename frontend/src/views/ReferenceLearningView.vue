@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onActivated, ref } from "vue";
+import { computed, onActivated, onBeforeUnmount, ref } from "vue";
 
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
@@ -14,6 +14,8 @@ const { navigate } = useShellRouter();
 const rejectReasons = ref({});
 const importExpanded = ref(false);
 const profileVisibilityFilter = ref("ready");
+const referenceLongTaskSeconds = ref(0);
+const referenceLongTaskTimer = ref(null);
 const { receipt, running, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
@@ -21,6 +23,22 @@ const { receipt, running, runFlowAction } = useFlowActionFeedback({
 const REFERENCE_IMPORT_SCOPE = "reference:import";
 const REFERENCE_RUN_SCOPE = "reference:run";
 const REFERENCE_LIBRARY_SCOPE = "reference:library";
+
+function startReferenceLongTaskTimer() {
+  stopReferenceLongTaskTimer();
+  referenceLongTaskSeconds.value = 0;
+  referenceLongTaskTimer.value = window.setInterval(() => {
+    referenceLongTaskSeconds.value += 1;
+  }, 1000);
+}
+
+function stopReferenceLongTaskTimer() {
+  if (referenceLongTaskTimer.value) {
+    window.clearInterval(referenceLongTaskTimer.value);
+    referenceLongTaskTimer.value = null;
+  }
+  referenceLongTaskSeconds.value = 0;
+}
 
 const selectedBook = computed(() => referenceLearning.detail?.book || referenceLearning.selectedBook || null);
 const coverage = computed(() => referenceLearning.coverage || {});
@@ -39,12 +57,14 @@ const visibleProfiles = computed(() =>
 );
 const coveredDimensions = computed(() => coverage.value.covered_dimensions || []);
 const coveredFindingTypes = computed(() => coverage.value.covered_finding_types || []);
+const canReplayProfileAdvance = computed(() =>
+  Boolean(readyProfiles.value.length && referenceLearning.pendingDecisionCount === 0),
+);
 const canAdvance = computed(() =>
   Boolean(
     referenceLearning.selectedBookId &&
       runId.value &&
       referenceLearning.pendingDecisionCount === 0 &&
-      !readyProfiles.value.length &&
       !referenceLearning.actionId,
   ),
 );
@@ -62,13 +82,16 @@ const advanceRunDisabledReason = computed(() => {
     return `还有 ${referenceLearning.pendingDecisionCount} 张候选卡待决策`;
   }
   if (readyProfiles.value.length) {
-    return "画像已经生成。";
+    return "画像已生成，可点击刷新状态或直接应用。";
   }
   return "";
 });
 const advanceRunLabel = computed(() => {
   if (referenceLearning.actionId === "advance-run") {
     return "分析中...";
+  }
+  if (canReplayProfileAdvance.value) {
+    return "刷新画像状态";
   }
   if (hasRoundFindings.value && referenceLearning.pendingDecisionCount === 0 && !readyProfiles.value.length) {
     return "继续生成画像";
@@ -450,22 +473,27 @@ async function startRun() {
 }
 
 async function advanceRun() {
-  await runFlowAction({
-    scopeKey: REFERENCE_RUN_SCOPE,
-    actionLabel: "继续分析",
-    runningMessage: "正在抽样片段并生成候选结论...",
-    successMessage: () => referenceLearning.lastActionMessage || "参考书学习已推进。",
-    nextStep: (result) => {
-      if (result?.profile) {
-        return "下一步：在最终画像区选择应用范围，再创建审核项。";
-      }
-      if (result?.round) {
-        return "下一步：审核下方候选卡，批准有价值的结论或拒绝低质量结论。";
-      }
-      return "下一步：根据当前卡住点继续处理。";
-    },
-    action: () => referenceLearning.advanceRun(),
-  });
+  startReferenceLongTaskTimer();
+  try {
+    await runFlowAction({
+      scopeKey: REFERENCE_RUN_SCOPE,
+      actionLabel: "继续分析",
+      runningMessage: "正在抽样片段并生成候选结论...",
+      successMessage: () => referenceLearning.lastActionMessage || "参考书学习已推进。",
+      nextStep: (result) => {
+        if (result?.profile) {
+          return "下一步：在最终画像区选择应用范围，再创建审核项。";
+        }
+        if (result?.round) {
+          return "下一步：审核下方候选卡，批准有价值的结论或拒绝低质量结论。";
+        }
+        return "下一步：根据当前卡住点继续处理。";
+      },
+      action: () => referenceLearning.advanceRun(),
+    });
+  } finally {
+    stopReferenceLongTaskTimer();
+  }
 }
 
 async function approveFinding(finding) {
@@ -522,6 +550,10 @@ function openKnowledgeConsole() {
 
 onActivated(() => {
   referenceLearning.initialize().catch((error) => emit("notice", error.message));
+});
+
+onBeforeUnmount(() => {
+  stopReferenceLongTaskTimer();
 });
 </script>
 
@@ -718,6 +750,13 @@ onActivated(() => {
             {{ advanceRunDisabledReason }}
           </p>
           <FlowActionReceipt :receipt="receipt(REFERENCE_RUN_SCOPE)" />
+          <p
+            v-if="referenceLongTaskSeconds > 0 || referenceLearning.actionId === 'advance-run'"
+            class="reference-long-task muted"
+            data-testid="reference-long-task"
+          >
+            真实模型分析可能需要数分钟，已等待 {{ referenceLongTaskSeconds }} 秒；请不要重复点击继续分析。
+          </p>
 
           <div class="reference-flow" aria-label="reference learning workflow">
             <span

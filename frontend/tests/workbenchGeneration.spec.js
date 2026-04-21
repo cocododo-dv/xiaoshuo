@@ -488,4 +488,111 @@ describe("scene workbench generation view", () => {
       mounted.unmount();
     }
   });
+
+  it("labels clean, waived, and deterministic blocked archive states", async () => {
+    const cleanSceneId = "CH003_SC01";
+    const cleanMounted = await mountWorkbenchView(
+      cleanSceneId,
+      createSceneFetchMock({
+        sceneId: cleanSceneId,
+        initialPayload: createWorkbenchPayload({
+          sceneId: cleanSceneId,
+          chapterId: "CH003",
+          sceneStatus: "archived",
+          hardQcSummary: {
+            qc_type: "hard_qc",
+            pass_flag: true,
+            resolution_code: "hard_pass",
+            issue_keys: [],
+            next_action: "pass",
+            rewrite_brief: [],
+          },
+          softQcSummary: {
+            qc_type: "soft_qc",
+            pass_flag: true,
+            resolution_code: "soft_pass",
+            issue_keys: [],
+            next_action: "pass",
+            rewrite_brief: [],
+          },
+        }),
+      }),
+    );
+
+    try {
+      expect(cleanMounted.container.textContent).toContain("Clean archived");
+    } finally {
+      cleanMounted.unmount();
+    }
+
+    const waivedSceneId = "CH004_SC01";
+    const waivedMounted = await mountWorkbenchView(
+      waivedSceneId,
+      createSceneFetchMock({
+        sceneId: waivedSceneId,
+        initialPayload: createWorkbenchPayload({
+          sceneId: waivedSceneId,
+          chapterId: "CH004",
+          sceneStatus: "archived",
+          hardQcSummary: {
+            qc_type: "hard_qc",
+            pass_flag: true,
+            resolution_code: "hard_pass",
+            issue_keys: [],
+            next_action: "pass",
+            rewrite_brief: [],
+          },
+          softQcSummary: {
+            qc_type: "soft_qc",
+            pass_flag: true,
+            resolution_code: "soft_waive",
+            issue_keys: ["style_profile_drift"],
+            next_action: "pass_with_notes",
+            rewrite_brief: ["Carry this note into scene memory."],
+          },
+        }),
+      }),
+    );
+
+    try {
+      expect(waivedMounted.container.textContent).toContain("Archived with waived notes");
+    } finally {
+      waivedMounted.unmount();
+    }
+
+    const blockedSceneId = "CH005_SC01";
+    const blockedMounted = await mountWorkbenchView(
+      blockedSceneId,
+      createSceneFetchMock({
+        sceneId: blockedSceneId,
+        initialPayload: createWorkbenchPayload({
+          sceneId: blockedSceneId,
+          chapterId: "CH005",
+          sceneStatus: "human_review_required",
+          hardQcSummary: {
+            qc_type: "hard_qc",
+            pass_flag: false,
+            resolution_code: "hard_fail_partial",
+            issue_keys: ["character_pronoun_drift"],
+            next_action: "partial_rewrite",
+            rewrite_brief: ["修正林岑的代词。"],
+          },
+          humanReviewSummary: {
+            event_id: "human_review_generation_CH005_SC01",
+            status: "needs_followup",
+            trigger_reason: "blocking_soft_qc_issue",
+            failure_reason: "character_pronoun_drift blocked finalization",
+            recommended_action: "human_review_required",
+            linked_target_ref: "scene_draft:draft_style_CH005_SC01",
+          },
+        }),
+      }),
+    );
+
+    try {
+      expect(blockedMounted.container.textContent).toContain("Blocked by deterministic QC");
+    } finally {
+      blockedMounted.unmount();
+    }
+  });
 });

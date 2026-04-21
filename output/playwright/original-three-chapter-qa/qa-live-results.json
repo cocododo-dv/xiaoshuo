@@ -1,0 +1,2149 @@
+{
+  "meta": {
+    "startedAt": "2026-04-21T07:03:00.612Z",
+    "repoRoot": "E:\\codex\\xiaoshuo\\codex",
+    "outDir": "E:\\codex\\xiaoshuo\\codex\\output\\playwright\\original-three-chapter-qa",
+    "frontendUrl": "http://127.0.0.1:5173",
+    "apiBase": "http://127.0.0.1:8052",
+    "operatorRef": "qa.original-three-chapters.1776754980611",
+    "referencePath": "C:\\Users\\duwei\\Downloads\\龙族.txt",
+    "preflight": {
+      "referenceExists": true,
+      "referenceSize": 3766420,
+      "referenceMtime": "2026-04-03T03:06:44.066Z",
+      "systemStatus": "loaded",
+      "providers": [
+        "local_qwen3"
+      ],
+      "routeReady": {
+        "neutral_draft": true,
+        "style_draft": true,
+        "style_patch": true,
+        "hard_qc": true,
+        "soft_qc": true,
+        "literary_eval_live": true,
+        "reference_sample_ranker": true,
+        "reference_style_structure_extract": true,
+        "reference_profile_synthesize": true,
+        "extraction": true,
+        "style_profile_extract": false,
+        "chapter_summary": false,
+        "continuity_compression": false,
+        "archive": false,
+        "chapter_aggregate": false
+      }
+    },
+    "finishedAt": "2026-04-21T07:14:03.760Z"
+  },
+  "steps": [
+    {
+      "name": "environment preflight",
+      "ok": true,
+      "ms": 63,
+      "data": {
+        "referenceExists": true,
+        "referenceSize": 3766420,
+        "referenceMtime": "2026-04-03T03:06:44.066Z",
+        "systemStatus": "loaded",
+        "providers": [
+          "local_qwen3"
+        ],
+        "routeReady": {
+          "neutral_draft": true,
+          "style_draft": true,
+          "style_patch": true,
+          "hard_qc": true,
+          "soft_qc": true,
+          "literary_eval_live": true,
+          "reference_sample_ranker": true,
+          "reference_style_structure_extract": true,
+          "reference_profile_synthesize": true,
+          "extraction": true,
+          "style_profile_extract": false,
+          "chapter_summary": false,
+          "continuity_compression": false,
+          "archive": false,
+          "chapter_aggregate": false
+        }
+      }
+    },
+    {
+      "name": "system config probes, evals, style profile contract/extract/review",
+      "ok": true,
+      "ms": 38067,
+      "data": {
+        "contractVersion": "STYLE_FEATURE_CONTRACT_v1",
+        "baselineMode": "baseline",
+        "liveMode": "live",
+        "styleReviewId": "review_style_profile_chapter_CHOR01_6d47b4171a1b"
+      }
+    },
+    {
+      "name": "reference learning import/analyze/decide/apply",
+      "ok": true,
+      "ms": 239626,
+      "data": {
+        "bookId": "refbook_d4ae8e00eea8",
+        "runId": "refrun_refbook_d4ae8e00eea8_8b08e73176",
+        "cloudPolicy": "segments_only",
+        "totalSegments": 843,
+        "firstAdvanceMs": 201997,
+        "longTaskHintSeen": true,
+        "decisions": [
+          {
+            "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_1",
+            "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_1",
+            "decision": "approved",
+            "findingType": "style_rule_set",
+            "dimension": "rhythm"
+          },
+          {
+            "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_2",
+            "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_2",
+            "decision": "approved",
+            "findingType": "style_observation",
+            "dimension": "imagery"
+          },
+          {
+            "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_3",
+            "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_3",
+            "decision": "approved",
+            "findingType": "narrative_pattern",
+            "dimension": "chapter hook"
+          },
+          {
+            "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_4",
+            "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_4",
+            "decision": "approved",
+            "findingType": "banned_rule_cluster",
+            "dimension": "banned move"
+          },
+          {
+            "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_5",
+            "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_5",
+            "decision": "approved",
+            "findingType": "calibration_candidate",
+            "dimension": "calibration"
+          },
+          {
+            "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_6",
+            "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_6",
+            "decision": "approved",
+            "findingType": "style_rule_set",
+            "dimension": "syntax"
+          },
+          {
+            "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_7",
+            "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_7",
+            "decision": "approved",
+            "findingType": "narrative_pattern",
+            "dimension": "conflict escalation"
+          },
+          {
+            "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_8",
+            "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_8",
+            "decision": "rejected",
+            "reason": "QA 需要覆盖拒绝路径，且前序安全抽象卡已满足画像覆盖。",
+            "blockedTerms": []
+          }
+        ],
+        "coverage": {
+          "approved_findings": 7,
+          "rejected_findings": 1,
+          "pending_findings": 0,
+          "covered_dimensions": [
+            "banned move",
+            "calibration",
+            "chapter hook",
+            "conflict escalation",
+            "imagery",
+            "rhythm",
+            "syntax"
+          ],
+          "covered_finding_types": [
+            "banned_rule_cluster",
+            "calibration_candidate",
+            "narrative_pattern",
+            "style_observation",
+            "style_rule_set"
+          ],
+          "coverage_score": 1,
+          "ready": true,
+          "profile_ready": true,
+          "profile_stale": false
+        },
+        "profileId": "refprofile_refbook_d4ae8e00eea8_4214d891d6",
+        "profileSafety": {
+          "safe": true,
+          "stripped_count": 0,
+          "blocked_markers": []
+        },
+        "applyReviewIds": [
+          "review_apply_refprofile_refbook_d4ae8e00eea8_4214d891d6_style_chapter_CHOR01",
+          "review_apply_refprofile_refbook_d4ae8e00eea8_4214d891d6_narrative_chapter_CHOR01"
+        ]
+      }
+    },
+    {
+      "name": "author workspace create original three chapters and scenes",
+      "ok": true,
+      "ms": 603,
+      "data": {
+        "chapters": [
+          "CHOR01",
+          "CHOR02",
+          "CHOR03"
+        ],
+        "scenes": [
+          "CHOR01_SC01",
+          "CHOR02_SC01",
+          "CHOR03_SC01"
+        ]
+      }
+    },
+    {
+      "name": "knowledge console create and publish original candidates",
+      "ok": true,
+      "ms": 1507,
+      "data": {
+        "published": [
+          "review_chor_voice_lincen_-00-611Z",
+          "review_chor_relation_lincen_xuwang_-00-611Z",
+          "review_chor_style_original_-00-611Z",
+          "review_chor_calibration_-00-611Z"
+        ]
+      }
+    },
+    {
+      "name": "review inbox approve pin and same-card release",
+      "ok": true,
+      "ms": 1651,
+      "data": {
+        "pinReviewId": "review_chor_pin_1776755260729",
+        "stillVisibleAfterApprove": true,
+        "visibleAfterRelease": false
+      }
+    },
+    {
+      "name": "index console promotions, recovery, ledger, target activity",
+      "ok": true,
+      "ms": 1553,
+      "data": {
+        "jobCount": 20,
+        "ledgerCount": 0,
+        "targetGroupCount": 10
+      }
+    },
+    {
+      "name": "author workspace run CHOR01 through chapter runner",
+      "ok": true,
+      "ms": 452,
+      "data": {
+        "job_id": "chapter_run_CHOR01_8fe8b0f3dd",
+        "chapter_id": "CHOR01",
+        "job_type": "chapter_run_full",
+        "status": "completed",
+        "scene_ids": [
+          "CHOR01_SC01"
+        ],
+        "current_scene_id": "CHOR01_SC01",
+        "completed_scene_ids": [
+          "CHOR01_SC01"
+        ],
+        "blocked_scene_id": null,
+        "latest_error": null,
+        "actor_ref": "qa.original-three-chapters.1776754980611"
+      }
+    },
+    {
+      "name": "scene workbench run CHOR02_SC01",
+      "ok": true,
+      "ms": 293386,
+      "data": {
+        "run": {
+          "scene_status": "archived",
+          "current_bundle_id": "bundle_CHOR02_SC01_v3",
+          "current_bundle_hash": "af02b86853697cb2ab888a167f1a93c32a856b68445210c29b453dc8f0de4491",
+          "current_final_scene_row_id": "final_scene_CHOR02_SC01_v3",
+          "current_qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+          "current_human_review_event_id": null,
+          "hard_qc": {
+            "branch": "continue",
+            "qc_report_id": "qc_report_CHOR02_SC01_e115edfdbd6b",
+            "human_review_event_id": null,
+            "resolution_code": "hard_pass",
+            "next_action": "pass",
+            "stop_reason": null
+          },
+          "soft_qc": {
+            "branch": "waive",
+            "qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+            "human_review_event_id": null,
+            "resolution_code": "soft_waive",
+            "next_action": "pass_with_notes",
+            "stop_reason": null
+          },
+          "actor_ref": "qa.original-three-chapters.1776754980611"
+        },
+        "sceneId": "CHOR02_SC01",
+        "chapterId": "CHOR02",
+        "sceneStatus": "archived",
+        "bundleId": "bundle_CHOR02_SC01_v3",
+        "finalRowId": "final_scene_CHOR02_SC01_v3",
+        "finalText": "林岑的手指在潮湿的空气中划过锈蚀的检修门，金属摩擦声在雾堤下格外清晰。她和许望穿过一道半掩的铁门，脚步声被监听站内斑驳的墙面吞噬。墙面上褪色的潮位图像一张张被盐水浸泡过的旧地图，记录着这座建筑曾见证过的潮汐与沉默。 她从工具包中取出一卷缠满盐粒的磁带，指尖在胶带上轻轻摩挲，试图剥离多余的结晶。许望调整着老旧的播放设备，电流声在空旷的空间里回荡。当磁带倒放时，一段断续的呼吸声混着三声钟鸣刺破寂静——那是幸存者的气息，也是某种未被记录的信号...",
+        "hardQc": {
+          "qc_report_id": "qc_report_CHOR02_SC01_e115edfdbd6b",
+          "qc_type": "hard_qc",
+          "pass_flag": true,
+          "resolution_code": "hard_pass",
+          "issue_keys": [],
+          "next_action": "pass",
+          "rewrite_brief": [],
+          "created_at": "2026-04-21T07:08:46.778203+00:00"
+        },
+        "softQc": {
+          "qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+          "qc_type": "soft_qc",
+          "pass_flag": true,
+          "resolution_code": "soft_waive",
+          "issue_keys": [
+            "style_drift",
+            "imagery_clarity"
+          ],
+          "next_action": "pass_with_notes",
+          "rewrite_brief": [
+            "将'手指猛地收紧，指甲在桌面上划出浅浅的痕迹'改为'指尖微微颤抖，修复术语在喉间凝滞'，以更符合林岑克制、低温的声线设定。",
+            "将'旧地图'改为'历史潮位记录'，以增强场景功能性与叙事密度。",
+            "Repeated soft QC patch request after one controlled patch pass. Carry forward: 将'手指猛地收紧，指甲在桌面上划出浅浅的痕迹'改为'指尖微微颤抖，修复术语在喉间凝滞'，以更符合林岑克制、低温的声线设定。; 将'旧地图'改为'历史潮位记录'，以增强场景功能性与叙事密度。"
+          ],
+          "created_at": "2026-04-21T07:12:37.827173+00:00",
+          "style_score": null,
+          "style_dimensions": [],
+          "style_deviations": [
+            {
+              "dimension": "emotion_curve",
+              "severity": "low",
+              "patch_brief": "调整林岑情绪爆发的表现形式，使其更符合克制、低温的声线设定。"
+            },
+            {
+              "dimension": "imagery",
+              "severity": "low",
+              "patch_brief": "增强场景功能性描述，使潮位图与监听站的历史记录功能更紧密关联。"
+            }
+          ]
+        },
+        "generationSummary": {
+          "llm_call_id": "llm_call_CHOR02_SC01_1e434b9ee2f0",
+          "step": "style_patch",
+          "raw_step": "soft_patch",
+          "provider": "openai_compatible",
+          "model": "Qwen3-14B-Q8_0.gguf",
+          "prompt_hash": "53771489fca327b01c30f2d98bc63998db64fba2a9ffadb124285686e148c025",
+          "prompt_tokens": 1556,
+          "completion_tokens": 358,
+          "total_tokens": 1914,
+          "latency_ms": 57646,
+          "finish_reason": "stop",
+          "error_code": null,
+          "created_at": "2026-04-21T07:11:41.208708+00:00",
+          "style_score_summary": {
+            "style_score": null,
+            "style_dimensions": [],
+            "style_deviations": [
+              {
+                "dimension": "emotion_curve",
+                "severity": "low",
+                "patch_brief": "调整林岑情绪爆发的表现形式，使其更符合克制、低温的声线设定。"
+              },
+              {
+                "dimension": "imagery",
+                "severity": "low",
+                "patch_brief": "增强场景功能性描述，使潮位图与监听站的历史记录功能更紧密关联。"
+              }
+            ]
+          }
+        },
+        "attempts": [
+          {
+            "step": "neutral_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v1"
+          },
+          {
+            "step": "hard_qc",
+            "status": "continue",
+            "sourceBundleId": "bundle_CHOR02_SC01_v1"
+          },
+          {
+            "step": "style_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v1"
+          },
+          {
+            "step": "soft_qc",
+            "status": "patch",
+            "sourceBundleId": "bundle_CHOR02_SC01_v1"
+          },
+          {
+            "step": "soft_patch",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v1"
+          },
+          {
+            "step": "soft_qc",
+            "status": "waive",
+            "sourceBundleId": "bundle_CHOR02_SC01_v1"
+          },
+          {
+            "step": "finalize",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v1"
+          },
+          {
+            "step": "archive",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v1"
+          },
+          {
+            "step": "neutral_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v2"
+          },
+          {
+            "step": "hard_qc",
+            "status": "continue",
+            "sourceBundleId": "bundle_CHOR02_SC01_v2"
+          },
+          {
+            "step": "style_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v2"
+          },
+          {
+            "step": "soft_qc",
+            "status": "patch",
+            "sourceBundleId": "bundle_CHOR02_SC01_v2"
+          },
+          {
+            "step": "soft_patch",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v2"
+          },
+          {
+            "step": "soft_qc",
+            "status": "waive",
+            "sourceBundleId": "bundle_CHOR02_SC01_v2"
+          },
+          {
+            "step": "finalize",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v2"
+          },
+          {
+            "step": "archive",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v2"
+          },
+          {
+            "step": "neutral_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v3"
+          },
+          {
+            "step": "hard_qc",
+            "status": "continue",
+            "sourceBundleId": "bundle_CHOR02_SC01_v3"
+          },
+          {
+            "step": "style_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v3"
+          },
+          {
+            "step": "soft_qc",
+            "status": "patch",
+            "sourceBundleId": "bundle_CHOR02_SC01_v3"
+          },
+          {
+            "step": "soft_patch",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v3"
+          },
+          {
+            "step": "soft_qc",
+            "status": "waive",
+            "sourceBundleId": "bundle_CHOR02_SC01_v3"
+          },
+          {
+            "step": "finalize",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v3"
+          },
+          {
+            "step": "archive",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR02_SC01_v3"
+          }
+        ]
+      }
+    },
+    {
+      "name": "scene workbench run CHOR03_SC01",
+      "ok": true,
+      "ms": 81105,
+      "data": {
+        "run": {
+          "scene_status": "hard_qc_partial_rewrite_required",
+          "current_bundle_id": "bundle_CHOR03_SC01_v5",
+          "current_bundle_hash": "edc0353877e3a0db7792a01a3a1ce3828018fc88ecd964471bdb0ac44d3e4324",
+          "current_final_scene_row_id": null,
+          "current_qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+          "current_human_review_event_id": null,
+          "hard_qc": {
+            "branch": "rewrite_partial",
+            "qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+            "human_review_event_id": null,
+            "resolution_code": "hard_fail_partial",
+            "next_action": "partial_rewrite",
+            "stop_reason": null
+          },
+          "actor_ref": "qa.original-three-chapters.1776754980611"
+        },
+        "sceneId": "CHOR03_SC01",
+        "chapterId": "CHOR03",
+        "sceneStatus": "hard_qc_partial_rewrite_required",
+        "bundleId": "bundle_CHOR03_SC01_v5",
+        "finalRowId": null,
+        "finalText": "",
+        "hardQc": {
+          "qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+          "qc_type": "hard_qc",
+          "pass_flag": false,
+          "resolution_code": "hard_fail_partial",
+          "issue_keys": [
+            "character_pronoun_continuity"
+          ],
+          "next_action": "partial_rewrite",
+          "rewrite_brief": [
+            "明确许望和幸存者阿砚的代词，确保角色身份清晰。",
+            "避免直接提及‘盐钟’作为关键道具，改用隐喻或模糊描述。"
+          ],
+          "created_at": "2026-04-21T07:13:59.898467+00:00"
+        },
+        "softQc": null,
+        "generationSummary": {
+          "llm_call_id": "llm_call_CHOR03_SC01_376c9a6f060d",
+          "step": "neutral_draft",
+          "raw_step": "neutral_draft",
+          "provider": "openai_compatible",
+          "model": "Qwen3-14B-Q8_0.gguf",
+          "prompt_hash": "b47cc9b9187939b0d5f4a67f159e01361b1e550b66e75e65fde7708e51052664",
+          "prompt_tokens": 1017,
+          "completion_tokens": 355,
+          "total_tokens": 1372,
+          "latency_ms": 52866,
+          "finish_reason": "stop",
+          "error_code": null,
+          "created_at": "2026-04-21T07:13:32.080169+00:00"
+        },
+        "attempts": [
+          {
+            "step": "neutral_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v1"
+          },
+          {
+            "step": "hard_qc",
+            "status": "rewrite_partial",
+            "sourceBundleId": "bundle_CHOR03_SC01_v1"
+          },
+          {
+            "step": "neutral_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v2"
+          },
+          {
+            "step": "hard_qc",
+            "status": "continue",
+            "sourceBundleId": "bundle_CHOR03_SC01_v2"
+          },
+          {
+            "step": "style_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v2"
+          },
+          {
+            "step": "soft_qc",
+            "status": "patch",
+            "sourceBundleId": "bundle_CHOR03_SC01_v2"
+          },
+          {
+            "step": "soft_patch",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v2"
+          },
+          {
+            "step": "soft_qc",
+            "status": "waive",
+            "sourceBundleId": "bundle_CHOR03_SC01_v2"
+          },
+          {
+            "step": "finalize",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v2"
+          },
+          {
+            "step": "archive",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v2"
+          },
+          {
+            "step": "neutral_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v3"
+          },
+          {
+            "step": "hard_qc",
+            "status": "continue",
+            "sourceBundleId": "bundle_CHOR03_SC01_v3"
+          },
+          {
+            "step": "style_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v3"
+          },
+          {
+            "step": "soft_qc",
+            "status": "patch",
+            "sourceBundleId": "bundle_CHOR03_SC01_v3"
+          },
+          {
+            "step": "soft_patch",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v3"
+          },
+          {
+            "step": "soft_qc",
+            "status": "waive",
+            "sourceBundleId": "bundle_CHOR03_SC01_v3"
+          },
+          {
+            "step": "finalize",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v3"
+          },
+          {
+            "step": "archive",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v3"
+          },
+          {
+            "step": "neutral_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v4"
+          },
+          {
+            "step": "hard_qc",
+            "status": "continue",
+            "sourceBundleId": "bundle_CHOR03_SC01_v4"
+          },
+          {
+            "step": "style_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v4"
+          },
+          {
+            "step": "soft_qc",
+            "status": "patch",
+            "sourceBundleId": "bundle_CHOR03_SC01_v4"
+          },
+          {
+            "step": "soft_patch",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v4"
+          },
+          {
+            "step": "soft_qc",
+            "status": "waive",
+            "sourceBundleId": "bundle_CHOR03_SC01_v4"
+          },
+          {
+            "step": "finalize",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v4"
+          },
+          {
+            "step": "archive",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v4"
+          },
+          {
+            "step": "neutral_draft",
+            "status": "completed",
+            "sourceBundleId": "bundle_CHOR03_SC01_v5"
+          },
+          {
+            "step": "hard_qc",
+            "status": "rewrite_partial",
+            "sourceBundleId": "bundle_CHOR03_SC01_v5"
+          }
+        ]
+      }
+    },
+    {
+      "name": "generate original three scenes",
+      "ok": true,
+      "ms": 376842,
+      "data": {
+        "CHOR01": {
+          "sceneId": "CHOR01_SC01",
+          "chapterId": "CHOR01",
+          "sceneStatus": "archived",
+          "bundleId": "bundle_CHOR01_SC01_v2",
+          "finalRowId": "final_scene_CHOR01_SC01_v2",
+          "finalText": "林岑的手指在潮湿的纸页边缘停顿。档案盒内侧积着盐霜，像某种未干透的痕迹。她将残片放在工作台上，蓝白盐粒沿着裂纹爬行，仿佛潮水退去后留下的刻痕。\n\n声纹仪的蓝光扫过残片，又扫过一叠泛黄的潮汐记录。纸张在仪器下微微颤动，像被无形的手翻动。林岑盯着屏幕，指节收紧。缺页的编号在屏幕上连成一条倒置的船线，从档案库最深处延伸至她此刻的桌面。\n\n盐钟在无人触碰时响了一下。档案盒里多出一页纸，墨迹未干，印着明天的潮位表。林岑将残片收进证物袋，指尖在袋口停顿片刻，然后转身走向电话机。",
+          "hardQc": {
+            "qc_report_id": "qc_report_CHOR01_SC01_9edd475c111e",
+            "qc_type": "hard_qc",
+            "pass_flag": true,
+            "resolution_code": "hard_pass",
+            "issue_keys": [],
+            "next_action": "pass",
+            "rewrite_brief": [],
+            "created_at": "2026-04-21T06:02:12.275355+00:00"
+          },
+          "softQc": {
+            "qc_report_id": "qc_report_CHOR01_SC01_71c08a632067",
+            "qc_type": "soft_qc",
+            "pass_flag": true,
+            "resolution_code": "soft_waive",
+            "issue_keys": [
+              "style_drift",
+              "emotion_curve"
+            ],
+            "next_action": "pass_with_notes",
+            "rewrite_brief": [
+              "Reorient the narrative to begin with a concrete anomaly (e.g., the salt clock ringing) before introducing context or explanation.",
+              "Use more physical actions and short sentences to reflect emotional shifts, especially when revealing the missing page and the inverted ship line of missing pages.",
+              "Ensure that each paragraph ends with a tangible object or clue that propels the narrative forward.",
+              "Repeated soft QC patch request after one controlled patch pass. Carry forward: Reorient the narrative to begin with a concrete anomaly (e.g., the salt clock ringing) before introducing context or explanation.; Use more physical actions and short sentences to reflect emotional shifts, especially when revealing the missing page and the inverted ship line of missing pages.; Ensure that each paragraph ends with a tangible object or clue that propels the narrative forward."
+            ],
+            "created_at": "2026-04-21T06:05:13.300491+00:00",
+            "style_score": null,
+            "style_dimensions": [],
+            "style_deviations": [
+              {
+                "dimension": "rhythm",
+                "severity": "medium",
+                "patch_brief": "Replace informational exposition with engaging prose to establish rhythm and emotional engagement early."
+              },
+              {
+                "dimension": "emotion_curve",
+                "severity": "medium",
+                "patch_brief": "Introduce emotional shifts through physical actions (e.g., tightening of fingers, abrupt movements) rather than explanatory sentences."
+              }
+            ]
+          },
+          "generationSummary": {
+            "llm_call_id": "llm_call_CHOR01_SC01_d92674a1462e",
+            "step": "style_patch",
+            "raw_step": "soft_patch",
+            "provider": "openai_compatible",
+            "model": "Qwen3-14B-Q8_0.gguf",
+            "prompt_hash": "8c09c69bdb34c43c43f9e453aac4f5a2755398345e42b9eca1dd1fdffab7c711",
+            "prompt_tokens": 2814,
+            "completion_tokens": 204,
+            "total_tokens": 3018,
+            "latency_ms": 35512,
+            "finish_reason": "stop",
+            "error_code": null,
+            "created_at": "2026-04-21T06:04:15.427748+00:00",
+            "style_score_summary": {
+              "style_score": null,
+              "style_dimensions": [],
+              "style_deviations": [
+                {
+                  "dimension": "rhythm",
+                  "severity": "medium",
+                  "patch_brief": "Replace informational exposition with engaging prose to establish rhythm and emotional engagement early."
+                },
+                {
+                  "dimension": "emotion_curve",
+                  "severity": "medium",
+                  "patch_brief": "Introduce emotional shifts through physical actions (e.g., tightening of fingers, abrupt movements) rather than explanatory sentences."
+                }
+              ]
+            }
+          },
+          "attempts": [
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v1"
+            },
+            {
+              "step": "hard_qc",
+              "status": "continue",
+              "sourceBundleId": "bundle_CHOR01_SC01_v1"
+            },
+            {
+              "step": "style_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v1"
+            },
+            {
+              "step": "soft_qc",
+              "status": "patch",
+              "sourceBundleId": "bundle_CHOR01_SC01_v1"
+            },
+            {
+              "step": "soft_patch",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v1"
+            },
+            {
+              "step": "soft_qc",
+              "status": "waive",
+              "sourceBundleId": "bundle_CHOR01_SC01_v1"
+            },
+            {
+              "step": "finalize",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v1"
+            },
+            {
+              "step": "archive",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v1"
+            },
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v2"
+            },
+            {
+              "step": "hard_qc",
+              "status": "continue",
+              "sourceBundleId": "bundle_CHOR01_SC01_v2"
+            },
+            {
+              "step": "style_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v2"
+            },
+            {
+              "step": "soft_qc",
+              "status": "patch",
+              "sourceBundleId": "bundle_CHOR01_SC01_v2"
+            },
+            {
+              "step": "soft_patch",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v2"
+            },
+            {
+              "step": "soft_qc",
+              "status": "waive",
+              "sourceBundleId": "bundle_CHOR01_SC01_v2"
+            },
+            {
+              "step": "finalize",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v2"
+            },
+            {
+              "step": "archive",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR01_SC01_v2"
+            }
+          ],
+          "chapterRun": {
+            "job_id": "chapter_run_CHOR01_8fe8b0f3dd",
+            "chapter_id": "CHOR01",
+            "job_type": "chapter_run_full",
+            "status": "completed",
+            "scene_ids": [
+              "CHOR01_SC01"
+            ],
+            "current_scene_id": "CHOR01_SC01",
+            "completed_scene_ids": [
+              "CHOR01_SC01"
+            ],
+            "blocked_scene_id": null,
+            "latest_error": null,
+            "actor_ref": "qa.original-three-chapters.1776754980611"
+          }
+        },
+        "CHOR02": {
+          "run": {
+            "scene_status": "archived",
+            "current_bundle_id": "bundle_CHOR02_SC01_v3",
+            "current_bundle_hash": "af02b86853697cb2ab888a167f1a93c32a856b68445210c29b453dc8f0de4491",
+            "current_final_scene_row_id": "final_scene_CHOR02_SC01_v3",
+            "current_qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+            "current_human_review_event_id": null,
+            "hard_qc": {
+              "branch": "continue",
+              "qc_report_id": "qc_report_CHOR02_SC01_e115edfdbd6b",
+              "human_review_event_id": null,
+              "resolution_code": "hard_pass",
+              "next_action": "pass",
+              "stop_reason": null
+            },
+            "soft_qc": {
+              "branch": "waive",
+              "qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+              "human_review_event_id": null,
+              "resolution_code": "soft_waive",
+              "next_action": "pass_with_notes",
+              "stop_reason": null
+            },
+            "actor_ref": "qa.original-three-chapters.1776754980611"
+          },
+          "sceneId": "CHOR02_SC01",
+          "chapterId": "CHOR02",
+          "sceneStatus": "archived",
+          "bundleId": "bundle_CHOR02_SC01_v3",
+          "finalRowId": "final_scene_CHOR02_SC01_v3",
+          "finalText": "林岑的手指在潮湿的空气中划过锈蚀的检修门，金属摩擦声在雾堤下格外清晰。她和许望穿过一道半掩的铁门，脚步声被监听站内斑驳的墙面吞噬。墙面上褪色的潮位图像一张张被盐水浸泡过的旧地图，记录着这座建筑曾见证过的潮汐与沉默。\n\n她从工具包中取出一卷缠满盐粒的磁带，指尖在胶带上轻轻摩挲，试图剥离多余的结晶。许望调整着老旧的播放设备，电流声在空旷的空间里回荡。当磁带倒放时，一段断续的呼吸声混着三声钟鸣刺破寂静——那是幸存者的气息，也是某种未被记录的信号。\n\n林岑的手指猛地收紧，指甲在桌面上划出浅浅的痕迹。她低声重复着修复术语，声音冷静得近乎冰冷：\"反向声纹确认，幸存者编号存在，但未被官方档案收录。\"\n\n就在她将数据同步到便携终端时，监听站内死寂的线路突然亮起幽蓝的光。扬声器里传出的，是她自己的心跳声，与现实中的脉搏重叠，仿佛某种未知的系统正在唤醒沉睡的过去。\n\n许望的目光扫过她紧绷的背影，低声说：\"我们找到的东西，可能比失踪案本身更危险。\"\n\n林岑没有回应，她的手指停留在终端屏幕上，那里正闪烁着指向无灯船坞的坐标。\"数据校准完成，坐标锁定。\"",
+          "hardQc": {
+            "qc_report_id": "qc_report_CHOR02_SC01_e115edfdbd6b",
+            "qc_type": "hard_qc",
+            "pass_flag": true,
+            "resolution_code": "hard_pass",
+            "issue_keys": [],
+            "next_action": "pass",
+            "rewrite_brief": [],
+            "created_at": "2026-04-21T07:08:46.778203+00:00"
+          },
+          "softQc": {
+            "qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+            "qc_type": "soft_qc",
+            "pass_flag": true,
+            "resolution_code": "soft_waive",
+            "issue_keys": [
+              "style_drift",
+              "imagery_clarity"
+            ],
+            "next_action": "pass_with_notes",
+            "rewrite_brief": [
+              "将'手指猛地收紧，指甲在桌面上划出浅浅的痕迹'改为'指尖微微颤抖，修复术语在喉间凝滞'，以更符合林岑克制、低温的声线设定。",
+              "将'旧地图'改为'历史潮位记录'，以增强场景功能性与叙事密度。",
+              "Repeated soft QC patch request after one controlled patch pass. Carry forward: 将'手指猛地收紧，指甲在桌面上划出浅浅的痕迹'改为'指尖微微颤抖，修复术语在喉间凝滞'，以更符合林岑克制、低温的声线设定。; 将'旧地图'改为'历史潮位记录'，以增强场景功能性与叙事密度。"
+            ],
+            "created_at": "2026-04-21T07:12:37.827173+00:00",
+            "style_score": null,
+            "style_dimensions": [],
+            "style_deviations": [
+              {
+                "dimension": "emotion_curve",
+                "severity": "low",
+                "patch_brief": "调整林岑情绪爆发的表现形式，使其更符合克制、低温的声线设定。"
+              },
+              {
+                "dimension": "imagery",
+                "severity": "low",
+                "patch_brief": "增强场景功能性描述，使潮位图与监听站的历史记录功能更紧密关联。"
+              }
+            ]
+          },
+          "generationSummary": {
+            "llm_call_id": "llm_call_CHOR02_SC01_1e434b9ee2f0",
+            "step": "style_patch",
+            "raw_step": "soft_patch",
+            "provider": "openai_compatible",
+            "model": "Qwen3-14B-Q8_0.gguf",
+            "prompt_hash": "53771489fca327b01c30f2d98bc63998db64fba2a9ffadb124285686e148c025",
+            "prompt_tokens": 1556,
+            "completion_tokens": 358,
+            "total_tokens": 1914,
+            "latency_ms": 57646,
+            "finish_reason": "stop",
+            "error_code": null,
+            "created_at": "2026-04-21T07:11:41.208708+00:00",
+            "style_score_summary": {
+              "style_score": null,
+              "style_dimensions": [],
+              "style_deviations": [
+                {
+                  "dimension": "emotion_curve",
+                  "severity": "low",
+                  "patch_brief": "调整林岑情绪爆发的表现形式，使其更符合克制、低温的声线设定。"
+                },
+                {
+                  "dimension": "imagery",
+                  "severity": "low",
+                  "patch_brief": "增强场景功能性描述，使潮位图与监听站的历史记录功能更紧密关联。"
+                }
+              ]
+            }
+          },
+          "attempts": [
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v1"
+            },
+            {
+              "step": "hard_qc",
+              "status": "continue",
+              "sourceBundleId": "bundle_CHOR02_SC01_v1"
+            },
+            {
+              "step": "style_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v1"
+            },
+            {
+              "step": "soft_qc",
+              "status": "patch",
+              "sourceBundleId": "bundle_CHOR02_SC01_v1"
+            },
+            {
+              "step": "soft_patch",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v1"
+            },
+            {
+              "step": "soft_qc",
+              "status": "waive",
+              "sourceBundleId": "bundle_CHOR02_SC01_v1"
+            },
+            {
+              "step": "finalize",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v1"
+            },
+            {
+              "step": "archive",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v1"
+            },
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v2"
+            },
+            {
+              "step": "hard_qc",
+              "status": "continue",
+              "sourceBundleId": "bundle_CHOR02_SC01_v2"
+            },
+            {
+              "step": "style_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v2"
+            },
+            {
+              "step": "soft_qc",
+              "status": "patch",
+              "sourceBundleId": "bundle_CHOR02_SC01_v2"
+            },
+            {
+              "step": "soft_patch",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v2"
+            },
+            {
+              "step": "soft_qc",
+              "status": "waive",
+              "sourceBundleId": "bundle_CHOR02_SC01_v2"
+            },
+            {
+              "step": "finalize",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v2"
+            },
+            {
+              "step": "archive",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v2"
+            },
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v3"
+            },
+            {
+              "step": "hard_qc",
+              "status": "continue",
+              "sourceBundleId": "bundle_CHOR02_SC01_v3"
+            },
+            {
+              "step": "style_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v3"
+            },
+            {
+              "step": "soft_qc",
+              "status": "patch",
+              "sourceBundleId": "bundle_CHOR02_SC01_v3"
+            },
+            {
+              "step": "soft_patch",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v3"
+            },
+            {
+              "step": "soft_qc",
+              "status": "waive",
+              "sourceBundleId": "bundle_CHOR02_SC01_v3"
+            },
+            {
+              "step": "finalize",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v3"
+            },
+            {
+              "step": "archive",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR02_SC01_v3"
+            }
+          ]
+        },
+        "CHOR03": {
+          "run": {
+            "scene_status": "hard_qc_partial_rewrite_required",
+            "current_bundle_id": "bundle_CHOR03_SC01_v5",
+            "current_bundle_hash": "edc0353877e3a0db7792a01a3a1ce3828018fc88ecd964471bdb0ac44d3e4324",
+            "current_final_scene_row_id": null,
+            "current_qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+            "current_human_review_event_id": null,
+            "hard_qc": {
+              "branch": "rewrite_partial",
+              "qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+              "human_review_event_id": null,
+              "resolution_code": "hard_fail_partial",
+              "next_action": "partial_rewrite",
+              "stop_reason": null
+            },
+            "actor_ref": "qa.original-three-chapters.1776754980611"
+          },
+          "sceneId": "CHOR03_SC01",
+          "chapterId": "CHOR03",
+          "sceneStatus": "hard_qc_partial_rewrite_required",
+          "bundleId": "bundle_CHOR03_SC01_v5",
+          "finalRowId": null,
+          "finalText": "",
+          "hardQc": {
+            "qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+            "qc_type": "hard_qc",
+            "pass_flag": false,
+            "resolution_code": "hard_fail_partial",
+            "issue_keys": [
+              "character_pronoun_continuity"
+            ],
+            "next_action": "partial_rewrite",
+            "rewrite_brief": [
+              "明确许望和幸存者阿砚的代词，确保角色身份清晰。",
+              "避免直接提及‘盐钟’作为关键道具，改用隐喻或模糊描述。"
+            ],
+            "created_at": "2026-04-21T07:13:59.898467+00:00"
+          },
+          "softQc": null,
+          "generationSummary": {
+            "llm_call_id": "llm_call_CHOR03_SC01_376c9a6f060d",
+            "step": "neutral_draft",
+            "raw_step": "neutral_draft",
+            "provider": "openai_compatible",
+            "model": "Qwen3-14B-Q8_0.gguf",
+            "prompt_hash": "b47cc9b9187939b0d5f4a67f159e01361b1e550b66e75e65fde7708e51052664",
+            "prompt_tokens": 1017,
+            "completion_tokens": 355,
+            "total_tokens": 1372,
+            "latency_ms": 52866,
+            "finish_reason": "stop",
+            "error_code": null,
+            "created_at": "2026-04-21T07:13:32.080169+00:00"
+          },
+          "attempts": [
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v1"
+            },
+            {
+              "step": "hard_qc",
+              "status": "rewrite_partial",
+              "sourceBundleId": "bundle_CHOR03_SC01_v1"
+            },
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v2"
+            },
+            {
+              "step": "hard_qc",
+              "status": "continue",
+              "sourceBundleId": "bundle_CHOR03_SC01_v2"
+            },
+            {
+              "step": "style_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v2"
+            },
+            {
+              "step": "soft_qc",
+              "status": "patch",
+              "sourceBundleId": "bundle_CHOR03_SC01_v2"
+            },
+            {
+              "step": "soft_patch",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v2"
+            },
+            {
+              "step": "soft_qc",
+              "status": "waive",
+              "sourceBundleId": "bundle_CHOR03_SC01_v2"
+            },
+            {
+              "step": "finalize",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v2"
+            },
+            {
+              "step": "archive",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v2"
+            },
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v3"
+            },
+            {
+              "step": "hard_qc",
+              "status": "continue",
+              "sourceBundleId": "bundle_CHOR03_SC01_v3"
+            },
+            {
+              "step": "style_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v3"
+            },
+            {
+              "step": "soft_qc",
+              "status": "patch",
+              "sourceBundleId": "bundle_CHOR03_SC01_v3"
+            },
+            {
+              "step": "soft_patch",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v3"
+            },
+            {
+              "step": "soft_qc",
+              "status": "waive",
+              "sourceBundleId": "bundle_CHOR03_SC01_v3"
+            },
+            {
+              "step": "finalize",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v3"
+            },
+            {
+              "step": "archive",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v3"
+            },
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v4"
+            },
+            {
+              "step": "hard_qc",
+              "status": "continue",
+              "sourceBundleId": "bundle_CHOR03_SC01_v4"
+            },
+            {
+              "step": "style_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v4"
+            },
+            {
+              "step": "soft_qc",
+              "status": "patch",
+              "sourceBundleId": "bundle_CHOR03_SC01_v4"
+            },
+            {
+              "step": "soft_patch",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v4"
+            },
+            {
+              "step": "soft_qc",
+              "status": "waive",
+              "sourceBundleId": "bundle_CHOR03_SC01_v4"
+            },
+            {
+              "step": "finalize",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v4"
+            },
+            {
+              "step": "archive",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v4"
+            },
+            {
+              "step": "neutral_draft",
+              "status": "completed",
+              "sourceBundleId": "bundle_CHOR03_SC01_v5"
+            },
+            {
+              "step": "hard_qc",
+              "status": "rewrite_partial",
+              "sourceBundleId": "bundle_CHOR03_SC01_v5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "interop worksheet preview/import/export and final scene replay",
+      "ok": true,
+      "ms": 1021,
+      "data": {
+        "worksheetBundleId": "bundle_interop_chor_1776755640840",
+        "previewStatus": "computed",
+        "importedBundleId": "bundle_interop_chor_1776755640840",
+        "exportedBundleId": "bundle_CHOR01_SC01_v2",
+        "replayFinalRowId": "final_scene_CHOR01_SC01_v2",
+        "replayEnvelopeBundleId": "bundle_CHOR01_SC01_v2"
+      }
+    },
+    {
+      "name": "author trash isolated lifecycle",
+      "ok": true,
+      "ms": 1898,
+      "data": {
+        "chapterId": "CHOR_TRASH_55641801",
+        "sceneId": "CHOR_TRASH_55641801_SC01",
+        "purgedChapterId": "CHOR_TRASH_55641801"
+      }
+    }
+  ],
+  "screenshots": [
+    "output/playwright/original-three-chapter-qa/system-config-complete.png",
+    "output/playwright/original-three-chapter-qa/reference-initial.png",
+    "output/playwright/original-three-chapter-qa/reference-after-profile-apply.png",
+    "output/playwright/original-three-chapter-qa/author-workspace-complete.png",
+    "output/playwright/original-three-chapter-qa/knowledge-console-complete.png",
+    "output/playwright/original-three-chapter-qa/review-inbox-complete.png",
+    "output/playwright/original-three-chapter-qa/index-console-complete.png",
+    "output/playwright/original-three-chapter-qa/workbench-chor02_sc01.png",
+    "output/playwright/original-three-chapter-qa/workbench-chor03_sc01.png",
+    "output/playwright/original-three-chapter-qa/interop-center-complete.png",
+    "output/playwright/original-three-chapter-qa/author-trash-complete.png"
+  ],
+  "console": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 409 (Conflict)"
+    }
+  ],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "http://127.0.0.1:8052/api/v1/reference-books",
+      "method": "GET",
+      "error": "net::ERR_ABORTED"
+    }
+  ],
+  "warnings": [
+    "release review_chor_voice_lincen_-00-611Z deferred: POST /api/v1/review-items/review_chor_voice_lincen_-00-611Z/release failed 409: candidate is already active",
+    "release review_chor_relation_lincen_xuwang_-00-611Z deferred: POST /api/v1/review-items/review_chor_relation_lincen_xuwang_-00-611Z/release failed 409: candidate is already active",
+    "release review_chor_style_original_-00-611Z deferred: POST /api/v1/review-items/review_chor_style_original_-00-611Z/release failed 409: candidate is already active",
+    "release review_chor_calibration_-00-611Z deferred: POST /api/v1/review-items/review_chor_calibration_-00-611Z/release failed 409: candidate is not verified"
+  ],
+  "reference": {
+    "bookId": "refbook_d4ae8e00eea8",
+    "runId": "refrun_refbook_d4ae8e00eea8_8b08e73176",
+    "cloudPolicy": "segments_only",
+    "totalSegments": 843,
+    "firstAdvanceMs": 201997,
+    "longTaskHintSeen": true,
+    "decisions": [
+      {
+        "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_1",
+        "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_1",
+        "decision": "approved",
+        "findingType": "style_rule_set",
+        "dimension": "rhythm"
+      },
+      {
+        "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_2",
+        "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_2",
+        "decision": "approved",
+        "findingType": "style_observation",
+        "dimension": "imagery"
+      },
+      {
+        "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_3",
+        "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_3",
+        "decision": "approved",
+        "findingType": "narrative_pattern",
+        "dimension": "chapter hook"
+      },
+      {
+        "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_4",
+        "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_4",
+        "decision": "approved",
+        "findingType": "banned_rule_cluster",
+        "dimension": "banned move"
+      },
+      {
+        "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_5",
+        "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_5",
+        "decision": "approved",
+        "findingType": "calibration_candidate",
+        "dimension": "calibration"
+      },
+      {
+        "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_6",
+        "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_6",
+        "decision": "approved",
+        "findingType": "style_rule_set",
+        "dimension": "syntax"
+      },
+      {
+        "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_7",
+        "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_7",
+        "decision": "approved",
+        "findingType": "narrative_pattern",
+        "dimension": "conflict escalation"
+      },
+      {
+        "findingId": "reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_8",
+        "reviewId": "review_reffind_refround_refrun_refbook_d4ae8e00eea8_8b08e73176_1_8",
+        "decision": "rejected",
+        "reason": "QA 需要覆盖拒绝路径，且前序安全抽象卡已满足画像覆盖。",
+        "blockedTerms": []
+      }
+    ],
+    "coverage": {
+      "approved_findings": 7,
+      "rejected_findings": 1,
+      "pending_findings": 0,
+      "covered_dimensions": [
+        "banned move",
+        "calibration",
+        "chapter hook",
+        "conflict escalation",
+        "imagery",
+        "rhythm",
+        "syntax"
+      ],
+      "covered_finding_types": [
+        "banned_rule_cluster",
+        "calibration_candidate",
+        "narrative_pattern",
+        "style_observation",
+        "style_rule_set"
+      ],
+      "coverage_score": 1,
+      "ready": true,
+      "profile_ready": true,
+      "profile_stale": false
+    },
+    "profileId": "refprofile_refbook_d4ae8e00eea8_4214d891d6",
+    "profileSafety": {
+      "safe": true,
+      "stripped_count": 0,
+      "blocked_markers": []
+    },
+    "applyReviewIds": [
+      "review_apply_refprofile_refbook_d4ae8e00eea8_4214d891d6_style_chapter_CHOR01",
+      "review_apply_refprofile_refbook_d4ae8e00eea8_4214d891d6_narrative_chapter_CHOR01"
+    ]
+  },
+  "config": {
+    "contractVersion": "STYLE_FEATURE_CONTRACT_v1",
+    "baselineMode": "baseline",
+    "liveMode": "live",
+    "styleReviewId": "review_style_profile_chapter_CHOR01_6d47b4171a1b"
+  },
+  "review": {
+    "pinReviewId": "review_chor_pin_1776755260729",
+    "stillVisibleAfterApprove": true,
+    "visibleAfterRelease": false
+  },
+  "knowledge": {
+    "published": [
+      "review_chor_voice_lincen_-00-611Z",
+      "review_chor_relation_lincen_xuwang_-00-611Z",
+      "review_chor_style_original_-00-611Z",
+      "review_chor_calibration_-00-611Z"
+    ]
+  },
+  "chapters": {
+    "CHOR01": {
+      "sceneId": "CHOR01_SC01",
+      "chapterId": "CHOR01",
+      "sceneStatus": "archived",
+      "bundleId": "bundle_CHOR01_SC01_v2",
+      "finalRowId": "final_scene_CHOR01_SC01_v2",
+      "finalText": "林岑的手指在潮湿的纸页边缘停顿。档案盒内侧积着盐霜，像某种未干透的痕迹。她将残片放在工作台上，蓝白盐粒沿着裂纹爬行，仿佛潮水退去后留下的刻痕。\n\n声纹仪的蓝光扫过残片，又扫过一叠泛黄的潮汐记录。纸张在仪器下微微颤动，像被无形的手翻动。林岑盯着屏幕，指节收紧。缺页的编号在屏幕上连成一条倒置的船线，从档案库最深处延伸至她此刻的桌面。\n\n盐钟在无人触碰时响了一下。档案盒里多出一页纸，墨迹未干，印着明天的潮位表。林岑将残片收进证物袋，指尖在袋口停顿片刻，然后转身走向电话机。",
+      "hardQc": {
+        "qc_report_id": "qc_report_CHOR01_SC01_9edd475c111e",
+        "qc_type": "hard_qc",
+        "pass_flag": true,
+        "resolution_code": "hard_pass",
+        "issue_keys": [],
+        "next_action": "pass",
+        "rewrite_brief": [],
+        "created_at": "2026-04-21T06:02:12.275355+00:00"
+      },
+      "softQc": {
+        "qc_report_id": "qc_report_CHOR01_SC01_71c08a632067",
+        "qc_type": "soft_qc",
+        "pass_flag": true,
+        "resolution_code": "soft_waive",
+        "issue_keys": [
+          "style_drift",
+          "emotion_curve"
+        ],
+        "next_action": "pass_with_notes",
+        "rewrite_brief": [
+          "Reorient the narrative to begin with a concrete anomaly (e.g., the salt clock ringing) before introducing context or explanation.",
+          "Use more physical actions and short sentences to reflect emotional shifts, especially when revealing the missing page and the inverted ship line of missing pages.",
+          "Ensure that each paragraph ends with a tangible object or clue that propels the narrative forward.",
+          "Repeated soft QC patch request after one controlled patch pass. Carry forward: Reorient the narrative to begin with a concrete anomaly (e.g., the salt clock ringing) before introducing context or explanation.; Use more physical actions and short sentences to reflect emotional shifts, especially when revealing the missing page and the inverted ship line of missing pages.; Ensure that each paragraph ends with a tangible object or clue that propels the narrative forward."
+        ],
+        "created_at": "2026-04-21T06:05:13.300491+00:00",
+        "style_score": null,
+        "style_dimensions": [],
+        "style_deviations": [
+          {
+            "dimension": "rhythm",
+            "severity": "medium",
+            "patch_brief": "Replace informational exposition with engaging prose to establish rhythm and emotional engagement early."
+          },
+          {
+            "dimension": "emotion_curve",
+            "severity": "medium",
+            "patch_brief": "Introduce emotional shifts through physical actions (e.g., tightening of fingers, abrupt movements) rather than explanatory sentences."
+          }
+        ]
+      },
+      "generationSummary": {
+        "llm_call_id": "llm_call_CHOR01_SC01_d92674a1462e",
+        "step": "style_patch",
+        "raw_step": "soft_patch",
+        "provider": "openai_compatible",
+        "model": "Qwen3-14B-Q8_0.gguf",
+        "prompt_hash": "8c09c69bdb34c43c43f9e453aac4f5a2755398345e42b9eca1dd1fdffab7c711",
+        "prompt_tokens": 2814,
+        "completion_tokens": 204,
+        "total_tokens": 3018,
+        "latency_ms": 35512,
+        "finish_reason": "stop",
+        "error_code": null,
+        "created_at": "2026-04-21T06:04:15.427748+00:00",
+        "style_score_summary": {
+          "style_score": null,
+          "style_dimensions": [],
+          "style_deviations": [
+            {
+              "dimension": "rhythm",
+              "severity": "medium",
+              "patch_brief": "Replace informational exposition with engaging prose to establish rhythm and emotional engagement early."
+            },
+            {
+              "dimension": "emotion_curve",
+              "severity": "medium",
+              "patch_brief": "Introduce emotional shifts through physical actions (e.g., tightening of fingers, abrupt movements) rather than explanatory sentences."
+            }
+          ]
+        }
+      },
+      "attempts": [
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v1"
+        },
+        {
+          "step": "hard_qc",
+          "status": "continue",
+          "sourceBundleId": "bundle_CHOR01_SC01_v1"
+        },
+        {
+          "step": "style_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v1"
+        },
+        {
+          "step": "soft_qc",
+          "status": "patch",
+          "sourceBundleId": "bundle_CHOR01_SC01_v1"
+        },
+        {
+          "step": "soft_patch",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v1"
+        },
+        {
+          "step": "soft_qc",
+          "status": "waive",
+          "sourceBundleId": "bundle_CHOR01_SC01_v1"
+        },
+        {
+          "step": "finalize",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v1"
+        },
+        {
+          "step": "archive",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v1"
+        },
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v2"
+        },
+        {
+          "step": "hard_qc",
+          "status": "continue",
+          "sourceBundleId": "bundle_CHOR01_SC01_v2"
+        },
+        {
+          "step": "style_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v2"
+        },
+        {
+          "step": "soft_qc",
+          "status": "patch",
+          "sourceBundleId": "bundle_CHOR01_SC01_v2"
+        },
+        {
+          "step": "soft_patch",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v2"
+        },
+        {
+          "step": "soft_qc",
+          "status": "waive",
+          "sourceBundleId": "bundle_CHOR01_SC01_v2"
+        },
+        {
+          "step": "finalize",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v2"
+        },
+        {
+          "step": "archive",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR01_SC01_v2"
+        }
+      ],
+      "chapterRun": {
+        "job_id": "chapter_run_CHOR01_8fe8b0f3dd",
+        "chapter_id": "CHOR01",
+        "job_type": "chapter_run_full",
+        "status": "completed",
+        "scene_ids": [
+          "CHOR01_SC01"
+        ],
+        "current_scene_id": "CHOR01_SC01",
+        "completed_scene_ids": [
+          "CHOR01_SC01"
+        ],
+        "blocked_scene_id": null,
+        "latest_error": null,
+        "actor_ref": "qa.original-three-chapters.1776754980611"
+      }
+    },
+    "CHOR02": {
+      "run": {
+        "scene_status": "archived",
+        "current_bundle_id": "bundle_CHOR02_SC01_v3",
+        "current_bundle_hash": "af02b86853697cb2ab888a167f1a93c32a856b68445210c29b453dc8f0de4491",
+        "current_final_scene_row_id": "final_scene_CHOR02_SC01_v3",
+        "current_qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+        "current_human_review_event_id": null,
+        "hard_qc": {
+          "branch": "continue",
+          "qc_report_id": "qc_report_CHOR02_SC01_e115edfdbd6b",
+          "human_review_event_id": null,
+          "resolution_code": "hard_pass",
+          "next_action": "pass",
+          "stop_reason": null
+        },
+        "soft_qc": {
+          "branch": "waive",
+          "qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+          "human_review_event_id": null,
+          "resolution_code": "soft_waive",
+          "next_action": "pass_with_notes",
+          "stop_reason": null
+        },
+        "actor_ref": "qa.original-three-chapters.1776754980611"
+      },
+      "sceneId": "CHOR02_SC01",
+      "chapterId": "CHOR02",
+      "sceneStatus": "archived",
+      "bundleId": "bundle_CHOR02_SC01_v3",
+      "finalRowId": "final_scene_CHOR02_SC01_v3",
+      "finalText": "林岑的手指在潮湿的空气中划过锈蚀的检修门，金属摩擦声在雾堤下格外清晰。她和许望穿过一道半掩的铁门，脚步声被监听站内斑驳的墙面吞噬。墙面上褪色的潮位图像一张张被盐水浸泡过的旧地图，记录着这座建筑曾见证过的潮汐与沉默。\n\n她从工具包中取出一卷缠满盐粒的磁带，指尖在胶带上轻轻摩挲，试图剥离多余的结晶。许望调整着老旧的播放设备，电流声在空旷的空间里回荡。当磁带倒放时，一段断续的呼吸声混着三声钟鸣刺破寂静——那是幸存者的气息，也是某种未被记录的信号。\n\n林岑的手指猛地收紧，指甲在桌面上划出浅浅的痕迹。她低声重复着修复术语，声音冷静得近乎冰冷：\"反向声纹确认，幸存者编号存在，但未被官方档案收录。\"\n\n就在她将数据同步到便携终端时，监听站内死寂的线路突然亮起幽蓝的光。扬声器里传出的，是她自己的心跳声，与现实中的脉搏重叠，仿佛某种未知的系统正在唤醒沉睡的过去。\n\n许望的目光扫过她紧绷的背影，低声说：\"我们找到的东西，可能比失踪案本身更危险。\"\n\n林岑没有回应，她的手指停留在终端屏幕上，那里正闪烁着指向无灯船坞的坐标。\"数据校准完成，坐标锁定。\"",
+      "hardQc": {
+        "qc_report_id": "qc_report_CHOR02_SC01_e115edfdbd6b",
+        "qc_type": "hard_qc",
+        "pass_flag": true,
+        "resolution_code": "hard_pass",
+        "issue_keys": [],
+        "next_action": "pass",
+        "rewrite_brief": [],
+        "created_at": "2026-04-21T07:08:46.778203+00:00"
+      },
+      "softQc": {
+        "qc_report_id": "qc_report_CHOR02_SC01_62817c357662",
+        "qc_type": "soft_qc",
+        "pass_flag": true,
+        "resolution_code": "soft_waive",
+        "issue_keys": [
+          "style_drift",
+          "imagery_clarity"
+        ],
+        "next_action": "pass_with_notes",
+        "rewrite_brief": [
+          "将'手指猛地收紧，指甲在桌面上划出浅浅的痕迹'改为'指尖微微颤抖，修复术语在喉间凝滞'，以更符合林岑克制、低温的声线设定。",
+          "将'旧地图'改为'历史潮位记录'，以增强场景功能性与叙事密度。",
+          "Repeated soft QC patch request after one controlled patch pass. Carry forward: 将'手指猛地收紧，指甲在桌面上划出浅浅的痕迹'改为'指尖微微颤抖，修复术语在喉间凝滞'，以更符合林岑克制、低温的声线设定。; 将'旧地图'改为'历史潮位记录'，以增强场景功能性与叙事密度。"
+        ],
+        "created_at": "2026-04-21T07:12:37.827173+00:00",
+        "style_score": null,
+        "style_dimensions": [],
+        "style_deviations": [
+          {
+            "dimension": "emotion_curve",
+            "severity": "low",
+            "patch_brief": "调整林岑情绪爆发的表现形式，使其更符合克制、低温的声线设定。"
+          },
+          {
+            "dimension": "imagery",
+            "severity": "low",
+            "patch_brief": "增强场景功能性描述，使潮位图与监听站的历史记录功能更紧密关联。"
+          }
+        ]
+      },
+      "generationSummary": {
+        "llm_call_id": "llm_call_CHOR02_SC01_1e434b9ee2f0",
+        "step": "style_patch",
+        "raw_step": "soft_patch",
+        "provider": "openai_compatible",
+        "model": "Qwen3-14B-Q8_0.gguf",
+        "prompt_hash": "53771489fca327b01c30f2d98bc63998db64fba2a9ffadb124285686e148c025",
+        "prompt_tokens": 1556,
+        "completion_tokens": 358,
+        "total_tokens": 1914,
+        "latency_ms": 57646,
+        "finish_reason": "stop",
+        "error_code": null,
+        "created_at": "2026-04-21T07:11:41.208708+00:00",
+        "style_score_summary": {
+          "style_score": null,
+          "style_dimensions": [],
+          "style_deviations": [
+            {
+              "dimension": "emotion_curve",
+              "severity": "low",
+              "patch_brief": "调整林岑情绪爆发的表现形式，使其更符合克制、低温的声线设定。"
+            },
+            {
+              "dimension": "imagery",
+              "severity": "low",
+              "patch_brief": "增强场景功能性描述，使潮位图与监听站的历史记录功能更紧密关联。"
+            }
+          ]
+        }
+      },
+      "attempts": [
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v1"
+        },
+        {
+          "step": "hard_qc",
+          "status": "continue",
+          "sourceBundleId": "bundle_CHOR02_SC01_v1"
+        },
+        {
+          "step": "style_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v1"
+        },
+        {
+          "step": "soft_qc",
+          "status": "patch",
+          "sourceBundleId": "bundle_CHOR02_SC01_v1"
+        },
+        {
+          "step": "soft_patch",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v1"
+        },
+        {
+          "step": "soft_qc",
+          "status": "waive",
+          "sourceBundleId": "bundle_CHOR02_SC01_v1"
+        },
+        {
+          "step": "finalize",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v1"
+        },
+        {
+          "step": "archive",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v1"
+        },
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v2"
+        },
+        {
+          "step": "hard_qc",
+          "status": "continue",
+          "sourceBundleId": "bundle_CHOR02_SC01_v2"
+        },
+        {
+          "step": "style_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v2"
+        },
+        {
+          "step": "soft_qc",
+          "status": "patch",
+          "sourceBundleId": "bundle_CHOR02_SC01_v2"
+        },
+        {
+          "step": "soft_patch",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v2"
+        },
+        {
+          "step": "soft_qc",
+          "status": "waive",
+          "sourceBundleId": "bundle_CHOR02_SC01_v2"
+        },
+        {
+          "step": "finalize",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v2"
+        },
+        {
+          "step": "archive",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v2"
+        },
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v3"
+        },
+        {
+          "step": "hard_qc",
+          "status": "continue",
+          "sourceBundleId": "bundle_CHOR02_SC01_v3"
+        },
+        {
+          "step": "style_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v3"
+        },
+        {
+          "step": "soft_qc",
+          "status": "patch",
+          "sourceBundleId": "bundle_CHOR02_SC01_v3"
+        },
+        {
+          "step": "soft_patch",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v3"
+        },
+        {
+          "step": "soft_qc",
+          "status": "waive",
+          "sourceBundleId": "bundle_CHOR02_SC01_v3"
+        },
+        {
+          "step": "finalize",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v3"
+        },
+        {
+          "step": "archive",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR02_SC01_v3"
+        }
+      ]
+    },
+    "CHOR03": {
+      "run": {
+        "scene_status": "hard_qc_partial_rewrite_required",
+        "current_bundle_id": "bundle_CHOR03_SC01_v5",
+        "current_bundle_hash": "edc0353877e3a0db7792a01a3a1ce3828018fc88ecd964471bdb0ac44d3e4324",
+        "current_final_scene_row_id": null,
+        "current_qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+        "current_human_review_event_id": null,
+        "hard_qc": {
+          "branch": "rewrite_partial",
+          "qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+          "human_review_event_id": null,
+          "resolution_code": "hard_fail_partial",
+          "next_action": "partial_rewrite",
+          "stop_reason": null
+        },
+        "actor_ref": "qa.original-three-chapters.1776754980611"
+      },
+      "sceneId": "CHOR03_SC01",
+      "chapterId": "CHOR03",
+      "sceneStatus": "hard_qc_partial_rewrite_required",
+      "bundleId": "bundle_CHOR03_SC01_v5",
+      "finalRowId": null,
+      "finalText": "",
+      "hardQc": {
+        "qc_report_id": "qc_report_CHOR03_SC01_01eeef4ced2b",
+        "qc_type": "hard_qc",
+        "pass_flag": false,
+        "resolution_code": "hard_fail_partial",
+        "issue_keys": [
+          "character_pronoun_continuity"
+        ],
+        "next_action": "partial_rewrite",
+        "rewrite_brief": [
+          "明确许望和幸存者阿砚的代词，确保角色身份清晰。",
+          "避免直接提及‘盐钟’作为关键道具，改用隐喻或模糊描述。"
+        ],
+        "created_at": "2026-04-21T07:13:59.898467+00:00"
+      },
+      "softQc": null,
+      "generationSummary": {
+        "llm_call_id": "llm_call_CHOR03_SC01_376c9a6f060d",
+        "step": "neutral_draft",
+        "raw_step": "neutral_draft",
+        "provider": "openai_compatible",
+        "model": "Qwen3-14B-Q8_0.gguf",
+        "prompt_hash": "b47cc9b9187939b0d5f4a67f159e01361b1e550b66e75e65fde7708e51052664",
+        "prompt_tokens": 1017,
+        "completion_tokens": 355,
+        "total_tokens": 1372,
+        "latency_ms": 52866,
+        "finish_reason": "stop",
+        "error_code": null,
+        "created_at": "2026-04-21T07:13:32.080169+00:00"
+      },
+      "attempts": [
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v1"
+        },
+        {
+          "step": "hard_qc",
+          "status": "rewrite_partial",
+          "sourceBundleId": "bundle_CHOR03_SC01_v1"
+        },
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v2"
+        },
+        {
+          "step": "hard_qc",
+          "status": "continue",
+          "sourceBundleId": "bundle_CHOR03_SC01_v2"
+        },
+        {
+          "step": "style_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v2"
+        },
+        {
+          "step": "soft_qc",
+          "status": "patch",
+          "sourceBundleId": "bundle_CHOR03_SC01_v2"
+        },
+        {
+          "step": "soft_patch",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v2"
+        },
+        {
+          "step": "soft_qc",
+          "status": "waive",
+          "sourceBundleId": "bundle_CHOR03_SC01_v2"
+        },
+        {
+          "step": "finalize",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v2"
+        },
+        {
+          "step": "archive",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v2"
+        },
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v3"
+        },
+        {
+          "step": "hard_qc",
+          "status": "continue",
+          "sourceBundleId": "bundle_CHOR03_SC01_v3"
+        },
+        {
+          "step": "style_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v3"
+        },
+        {
+          "step": "soft_qc",
+          "status": "patch",
+          "sourceBundleId": "bundle_CHOR03_SC01_v3"
+        },
+        {
+          "step": "soft_patch",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v3"
+        },
+        {
+          "step": "soft_qc",
+          "status": "waive",
+          "sourceBundleId": "bundle_CHOR03_SC01_v3"
+        },
+        {
+          "step": "finalize",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v3"
+        },
+        {
+          "step": "archive",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v3"
+        },
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v4"
+        },
+        {
+          "step": "hard_qc",
+          "status": "continue",
+          "sourceBundleId": "bundle_CHOR03_SC01_v4"
+        },
+        {
+          "step": "style_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v4"
+        },
+        {
+          "step": "soft_qc",
+          "status": "patch",
+          "sourceBundleId": "bundle_CHOR03_SC01_v4"
+        },
+        {
+          "step": "soft_patch",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v4"
+        },
+        {
+          "step": "soft_qc",
+          "status": "waive",
+          "sourceBundleId": "bundle_CHOR03_SC01_v4"
+        },
+        {
+          "step": "finalize",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v4"
+        },
+        {
+          "step": "archive",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v4"
+        },
+        {
+          "step": "neutral_draft",
+          "status": "completed",
+          "sourceBundleId": "bundle_CHOR03_SC01_v5"
+        },
+        {
+          "step": "hard_qc",
+          "status": "rewrite_partial",
+          "sourceBundleId": "bundle_CHOR03_SC01_v5"
+        }
+      ]
+    }
+  },
+  "interop": {
+    "worksheetBundleId": "bundle_interop_chor_1776755640840",
+    "previewStatus": "computed",
+    "importedBundleId": "bundle_interop_chor_1776755640840",
+    "exportedBundleId": "bundle_CHOR01_SC01_v2",
+    "replayFinalRowId": "final_scene_CHOR01_SC01_v2",
+    "replayEnvelopeBundleId": "bundle_CHOR01_SC01_v2"
+  },
+  "trash": {
+    "chapterId": "CHOR_TRASH_55641801",
+    "sceneId": "CHOR_TRASH_55641801_SC01",
+    "purgedChapterId": "CHOR_TRASH_55641801"
+  },
+  "safety": {
+    "chapterScores": {
+      "CHOR01": {
+        "sceneId": "CHOR01_SC01",
+        "finalRowId": "final_scene_CHOR01_SC01_v2",
+        "characters": 235,
+        "originality": 9,
+        "conflictProgression": 7,
+        "characterTension": 8,
+        "sceneCausality": 8,
+        "continuity": 9,
+        "languageTexture": 9,
+        "sourceLeakRisk": 10,
+        "leakTerms": []
+      },
+      "CHOR02": {
+        "sceneId": "CHOR02_SC01",
+        "finalRowId": "final_scene_CHOR02_SC01_v3",
+        "characters": 471,
+        "originality": 9,
+        "conflictProgression": 7,
+        "characterTension": 9,
+        "sceneCausality": 8,
+        "continuity": 9,
+        "languageTexture": 9,
+        "sourceLeakRisk": 10,
+        "leakTerms": []
+      },
+      "CHOR03": {
+        "sceneId": "CHOR03_SC01",
+        "finalRowId": null,
+        "characters": 0,
+        "originality": 9,
+        "conflictProgression": 1,
+        "characterTension": 1,
+        "sceneCausality": 1,
+        "continuity": 1,
+        "languageTexture": 1,
+        "sourceLeakRisk": 10,
+        "leakTerms": []
+      }
+    },
+    "combinedLeakTerms": []
+  },
+  "index": {
+    "jobCount": 20,
+    "ledgerCount": 0,
+    "targetGroupCount": 10
+  }
+}

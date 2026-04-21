@@ -43,6 +43,15 @@ function buildLookup(items, key) {
   }, {});
 }
 
+function mergePinnedReviewItems(items, pinnedItems) {
+  if (!pinnedItems?.length) {
+    return items;
+  }
+  const seen = new Set(items.map((item) => item?.review_id).filter(Boolean));
+  const missingPinnedItems = pinnedItems.filter((item) => item?.review_id && !seen.has(item.review_id));
+  return [...missingPinnedItems, ...items];
+}
+
 function buildHumanReviewLookups(items) {
   const byId = {};
   const bySource = {};
@@ -92,6 +101,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
     humanReviewItemLookupBySource: {},
     systemRecoveryItemsCache: [],
     systemRecoveryItemLookup: {},
+    pinnedApprovedReviewItems: [],
     lastActionResult: null,
     loaded: false,
     stale: false,
@@ -150,10 +160,30 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       this.humanReviewFilterSignature = nextSignature;
     },
     assignReviewItems(items) {
-      const snapshotItems = snapshotPayloadList(items);
+      const pinnedItems = this.reviewFilters.status === "pending" ? this.pinnedApprovedReviewItems : [];
+      const snapshotItems = snapshotPayloadList(mergePinnedReviewItems(items, pinnedItems));
       this.items = snapshotItems;
       this.reviewItemLookup = buildLookup(snapshotItems, "review_id");
       this.reviewItemsVersion += 1;
+    },
+    pinApprovedReview(reviewId, result = {}) {
+      const currentItem = this.items.find((item) => item.review_id === reviewId) || {};
+      const pinnedItem = {
+        ...currentItem,
+        ...result,
+        review_id: reviewId,
+        status: "approved",
+        materialize_status: result.materialize_status || currentItem.materialize_status || "succeeded",
+        approved_item_row_id: result.approved_item_row_id ?? currentItem.approved_item_row_id ?? null,
+        approved_item_id: result.approved_item_id ?? currentItem.approved_item_id ?? null,
+      };
+      this.pinnedApprovedReviewItems = [
+        pinnedItem,
+        ...this.pinnedApprovedReviewItems.filter((item) => item.review_id !== reviewId),
+      ];
+    },
+    unpinApprovedReview(reviewId) {
+      this.pinnedApprovedReviewItems = this.pinnedApprovedReviewItems.filter((item) => item.review_id !== reviewId);
     },
     assignHumanReviewItems(items) {
       const snapshotItems = snapshotPayloadList(items);
@@ -272,6 +302,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       try {
         const result = await approveReview(reviewId, payload);
         this.lastActionResult = result;
+        this.pinApprovedReview(reviewId, result);
         await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已批准 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
@@ -287,6 +318,7 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       try {
         const result = await releaseReview(reviewId);
         this.lastActionResult = result;
+        this.unpinApprovedReview(reviewId);
         await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已发布 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {

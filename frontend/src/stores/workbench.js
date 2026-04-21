@@ -45,6 +45,20 @@ function rememberWorkbenchSceneId(sceneId) {
   }
 }
 
+function forgetWorkbenchSceneId(sceneId) {
+  const value = String(sceneId || "").trim();
+  if (!value || typeof localStorage === "undefined") {
+    return;
+  }
+  try {
+    if (localStorage.getItem(LAST_WORKBENCH_SCENE_ID_KEY) === value) {
+      localStorage.removeItem(LAST_WORKBENCH_SCENE_ID_KEY);
+    }
+  } catch {
+    // Storage can be unavailable in private or embedded browser contexts.
+  }
+}
+
 export const useWorkbenchStore = defineStore("workbench", {
   state: () => ({
     sceneId: readLastWorkbenchSceneId(),
@@ -153,6 +167,13 @@ export const useWorkbenchStore = defineStore("workbench", {
         rememberWorkbenchSceneId(nextSceneId);
         this.markFresh();
       } else {
+        if (!this.data && readLastWorkbenchSceneId() === nextSceneId) {
+          forgetWorkbenchSceneId(nextSceneId);
+          this.sceneId = "";
+          this.humanReviewItems = [];
+          this.attempts = [];
+          this.syncAttemptPager("", { reset: true });
+        }
         this.loaded = false;
       }
     },

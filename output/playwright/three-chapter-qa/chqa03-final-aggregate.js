@@ -1,6 +1,10 @@
 ﻿async (page) => {
+  const loopback = 'http://127.0.0.1';
+  const apiBase =
+    (typeof process !== 'undefined' && process.env?.PLAYWRIGHT_API_BASE) ||
+    `${loopback}:${(typeof process !== 'undefined' && process.env?.PLAYWRIGHT_BACKEND_PORT) || '8000'}`;
   const headers = { 'X-Operator-Ref': 'qa.three-chapters.real-llm', 'X-Idempotency-Key': `qa-chqa03-mark-last-${Date.now()}` };
-  await page.request.post('http://127.0.0.1:8000/api/v1/chapters/CHQA03/scene-order', {
+  await page.request.post(`${apiBase}/api/v1/chapters/CHQA03/scene-order`, {
     headers,
     data: { scene_ids: ['CHQA03_SC01'], last_scene_id: 'CHQA03_SC01' },
   });
@@ -25,6 +29,6 @@
     page.getByTestId('chapter-final-aggregate-button').click(),
   ]);
   const aggregatePayload = await aggregateResponse.json();
-  const chapterStatus = await (await page.request.get('http://127.0.0.1:8000/api/v1/chapters/CHQA03/status', { headers: { 'X-Operator-Ref': 'qa.three-chapters.real-llm' } })).json();
+  const chapterStatus = await (await page.request.get(`${apiBase}/api/v1/chapters/CHQA03/status`, { headers: { 'X-Operator-Ref': 'qa.three-chapters.real-llm' } })).json();
   return { aggregatePayload, chapterStatus };
 }

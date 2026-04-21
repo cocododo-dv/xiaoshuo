@@ -18,6 +18,15 @@ const SOURCE_DEFINITIONS = [
     digestKey: "relation_card",
   },
   {
+    key: "character_contract",
+    label: "Character Continuity Contract",
+    collection: "source_version_refs",
+    logicalIdKey: "character_contract",
+    rowIdKey: null,
+    versionKey: null,
+    digestKey: "character_contract",
+  },
+  {
     key: "scene_memory_prev",
     label: "上一场景记忆",
     collection: "source_version_refs",
@@ -118,6 +127,7 @@ const SLOT_LABELS = {
   scene_card: "场景卡片",
   pov_voice: "视角声线",
   relation: "关系设定",
+  character_contract: "Character Continuity Contract",
   prev_scene_memory: "上一场景记忆",
   style_rules: "风格规则",
   style_profile: "风格画像契约",

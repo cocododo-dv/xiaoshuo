@@ -397,4 +397,21 @@ describe("reference learning store", () => {
     expect(styleSource).toContain("overflow-wrap: anywhere");
     expect(styleSource).not.toContain("grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));");
   });
+
+  it("surfaces long-running reference analysis progress for real LLM waits", () => {
+    const source = readFileSync(REFERENCE_VIEW_PATH, "utf8");
+
+    expect(source).toContain("referenceLongTaskSeconds");
+    expect(source).toContain("reference-long-task");
+    expect(source).toContain("真实模型分析可能需要数分钟");
+    expect(source).toContain("已等待");
+  });
+
+  it("keeps completed safe profiles replayable from the advance control instead of forcing API fallback", () => {
+    const source = readFileSync(REFERENCE_VIEW_PATH, "utf8");
+
+    expect(source).toContain("canReplayProfileAdvance");
+    expect(source).toContain('return "刷新画像状态"');
+    expect(source).toContain('return "画像已生成，可点击刷新状态或直接应用。"');
+  });
 });

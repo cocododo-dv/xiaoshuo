@@ -40,6 +40,11 @@ def _bundle_snapshot() -> dict:
         "inline_digests": {
             "chapter_goal": "Close the reunion chapter with a traceable reveal.",
             "scene_card": "Reunite the leads and turn the old letter into immediate action.",
+            "character_contract": (
+                '{"contract_version":"CHARACTER_CONTRACT_v1","characters":'
+                '[{"character_id":"CHAR_A","display_name":"Mira","pronouns":["she"],'
+                '"role":"archivist","aliases":["M"]}]}'
+            ),
             "voice_card": "Short clipped lines; pressure makes the tone harder.",
             "style_rule": "Keep emotion in gesture and pause.",
             "banned_rule": "Do not explain the whole backstory at reunion time.",
@@ -74,7 +79,11 @@ def test_prompt_builder_includes_required_sections_and_stable_hash() -> None:
     assert payload["structured_schema"]["type"] == "object"
     assert "Chapter Goal" in payload["user_prompt"]
     assert "Scene Card" in payload["user_prompt"]
+    assert "Character Continuity Contract" in payload["user_prompt"]
+    assert '"display_name":"Mira"' in payload["user_prompt"]
     assert "same language as the chapter goal and scene card" in payload["user_prompt"]
+    assert "Preserve character identity and pronoun continuity" in payload["user_prompt"]
+    assert "When pronouns are ambiguous, repeat the character name" in payload["user_prompt"]
     assert "Required top-level JSON keys: scene_text" in payload["user_prompt"]
     assert "Return only valid JSON. Do not wrap it in markdown fences." in payload["user_prompt"]
     assert "POV Voice" in payload["user_prompt"]
@@ -185,6 +194,7 @@ def test_prompt_builder_renders_style_feature_contract_for_style_draft() -> None
     payload = builder.build(snapshot, "style_draft")
 
     assert "## Style Feature Contract" in payload["user_prompt"]
+    assert "Preserve character identity and pronoun continuity" in payload["user_prompt"]
     assert "STYLE_FEATURE_CONTRACT_v1" in payload["user_prompt"]
     assert "rhythm" in payload["user_prompt"]
     assert "syntax" in payload["user_prompt"]
@@ -529,7 +539,7 @@ def test_bundle_builder_scene_digest_includes_operational_scene_constraints(sess
     assert "Goal: Test the initiate without copying source material." in scene_digest
     assert "Location: Moon bridge" in scene_digest
     assert "Beats: arrival; seal wakes; choice under pressure" in scene_digest
-    assert "Required text: the spirit seal glows like cold jade" in scene_digest
+    assert "Required beats to weave naturally: the spirit seal glows like cold jade" in scene_digest
     assert "Forbidden text: Do not use source names." in scene_digest
     assert "Exit change: The mountain gate answers." in scene_digest
     assert "Hook: continue" in scene_digest

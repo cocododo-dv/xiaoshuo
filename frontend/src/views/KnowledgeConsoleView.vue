@@ -47,6 +47,10 @@ const draft = reactive({
   chapterId: "CH001",
   sceneId: "CH001_SC01",
   characterId: "",
+  displayName: "",
+  pronouns: "",
+  role: "",
+  aliases: "",
   leftCharacterId: "",
   rightCharacterId: "",
   ruleTier: "",
@@ -834,6 +838,22 @@ watch(
             <label>
               <span>角色 ID</span>
               <input v-model="draft.characterId" class="control-input" />
+            </label>
+            <label>
+              <span>角色名</span>
+              <input v-model="draft.displayName" class="control-input" />
+            </label>
+            <label>
+              <span>代词</span>
+              <input v-model="draft.pronouns" class="control-input" placeholder="她 / 他 / TA" />
+            </label>
+            <label>
+              <span>角色职责</span>
+              <input v-model="draft.role" class="control-input" />
+            </label>
+            <label>
+              <span>别名</span>
+              <input v-model="draft.aliases" class="control-input" placeholder="用逗号分隔" />
             </label>
             <label>
               <span>左角色</span>

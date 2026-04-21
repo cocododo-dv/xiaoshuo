@@ -100,6 +100,9 @@ const sceneRowMapVersion = computed(() => [
   scenes.value.length,
   chapterRunStatus.value?.completed_scene_ids?.join("|") || "",
 ].join("::"));
+const sceneActionDisabled = computed(() =>
+  authorWorkspace.loading || !authorWorkspace.selectedChapterId || authorWorkspace.actionId === "load-scene-draft",
+);
 
 function sceneBatchState(sceneId) {
   if (chapterRunStatus.value?.blocked_scene_id === sceneId) {
@@ -138,7 +141,7 @@ function textToList(value) {
 
 function assignSceneForm(nextScene) {
   if (!nextScene) {
-    Object.assign(sceneForm, createEmptySceneForm(authorWorkspace.selectedChapterId));
+    Object.assign(sceneForm, createEmptySceneForm(authorWorkspace.selectedChapterId || chapterForm.chapter_id));
     return;
   }
   Object.assign(sceneForm, createEmptySceneForm(nextScene.chapter_id), {
@@ -435,7 +438,7 @@ watch(
       assignSceneForm(selectedScene.value);
     } else {
       assignSceneForm(null);
-      sceneForm.chapter_id = nextChapterId || "";
+      sceneForm.chapter_id = nextChapterId || chapterForm.chapter_id || "";
     }
   },
   { immediate: true },
@@ -492,7 +495,7 @@ onActivated(() => {
           <button
             class="ghost"
             data-testid="author-quick-scene-button"
-            :disabled="!authorWorkspace.selectedChapterId || authorWorkspace.actionId === 'load-scene-draft'"
+            :disabled="sceneActionDisabled"
             @click="startQuickScene"
           >
             快速新建场景
@@ -500,7 +503,7 @@ onActivated(() => {
           <button
             class="ghost"
             data-testid="author-new-scene-button"
-            :disabled="!authorWorkspace.selectedChapterId"
+            :disabled="sceneActionDisabled"
             @click="startNewScene"
           >
             新建场景
@@ -851,7 +854,7 @@ onActivated(() => {
 
             <div class="card-actions">
               <button
-                :disabled="authorWorkspace.actionId.startsWith('save-scene') || !sceneForm.scene_id"
+                :disabled="sceneActionDisabled || authorWorkspace.actionId.startsWith('save-scene') || !sceneForm.scene_id"
                 data-testid="author-save-scene-button"
                 @click="saveScene"
               >

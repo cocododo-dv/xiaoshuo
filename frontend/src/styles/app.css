@@ -2296,6 +2296,14 @@ pre {
   line-height: 1.5;
 }
 
+.reference-long-task {
+  margin: 0.75rem 0 0;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid rgba(46, 125, 84, 0.28);
+  border-radius: 6px;
+  background: rgba(46, 125, 84, 0.08);
+}
+
 .reference-next-action {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.25fr);

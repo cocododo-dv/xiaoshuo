@@ -175,7 +175,7 @@ class SceneGenerationService:
                 offline_client_factory=OfflineNeutralClient,
             )
             response = node_result.response
-            neutral_content = _ensure_required_scene_text(scene, _extract_scene_text(response))
+            neutral_content = _extract_scene_text(response)
         except LLMNodeExecutionError as exc:
             self._record_runner_failure_attempt(
                 scene=scene,
@@ -355,7 +355,7 @@ class SceneGenerationService:
                 source_draft_row_id=source_draft_row_id,
                 source_draft_content=source_draft_content,
             )
-            style_content = _ensure_required_scene_text(scene, _extract_scene_text(node_result.response))
+            style_content = _extract_scene_text(node_result.response)
         except LLMNodeExecutionError as exc:
             self._record_runner_failure_attempt(
                 scene=scene,
@@ -577,13 +577,6 @@ def _extract_scene_text(response: LLMResponse) -> str:
     if isinstance(scene_text, str) and scene_text.strip():
         return scene_text.strip()
     raise ValueError("neutral_draft response missing scene_text")
-
-
-def _ensure_required_scene_text(scene: SceneCard, content: str) -> str:
-    required = (scene.must_include_text or "").strip()
-    if not required or required in content:
-        return content
-    return f"{content.rstrip()}\n\n{required}"
 
 
 def _extract_scene_id(request: LLMRequest) -> str:

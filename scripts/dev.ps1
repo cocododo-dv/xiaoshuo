@@ -86,15 +86,48 @@ function Test-UrlHealthy {
     }
 }
 
-function Test-PortListening {
+function Test-PortBindable {
     param(
         [Parameter(Mandatory = $true)]
         [int]$Port
     )
 
-    return @(
-        Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
-    ).Count -gt 0
+    $listener = $null
+    try {
+        $address = [System.Net.IPAddress]::Parse("127.0.0.1")
+        $listener = [System.Net.Sockets.TcpListener]::new($address, $Port)
+        $listener.Start()
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($null -ne $listener) {
+            $listener.Stop()
+        }
+    }
+}
+
+function Resolve-AvailablePort {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$PreferredPort,
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+        [int]$ScanLimit = 200
+    )
+
+    for ($port = $PreferredPort; $port -le ($PreferredPort + $ScanLimit); $port++) {
+        if (Test-PortBindable -Port $port) {
+            if ($port -ne $PreferredPort) {
+                Write-Step -Message ("{0} preferred port {1} is unavailable; using {2}." -f $Label, $PreferredPort, $port)
+            }
+            return $port
+        }
+    }
+
+    throw ("No available {0} port found in range {1}-{2}." -f $Label, $PreferredPort, ($PreferredPort + $ScanLimit))
 }
 
 function Get-RecordedRootProcessIds {
@@ -161,7 +194,7 @@ function Get-DescendantProcessIds {
 }
 
 function Remove-RunState {
-    Remove-Item $script:BackendPidFile, $script:FrontendPidFile -ErrorAction SilentlyContinue
+    Remove-Item $script:BackendPidFile, $script:FrontendPidFile, $script:BackendUrlFile, $script:FrontendUrlFile -ErrorAction SilentlyContinue
 }
 
 function Clear-PreviousLogs {
@@ -198,8 +231,8 @@ function Assert-PortAvailable {
         [string]$Label
     )
 
-    if (Test-PortListening -Port $Port) {
-        throw ("{0} port {1} is already in use. Run .\\stop-dev.cmd or .\\restart-dev.cmd first." -f $Label, $Port)
+    if (-not (Test-PortBindable -Port $Port)) {
+        throw ("{0} port {1} is unavailable. Run .\\stop-dev.cmd or .\\restart-dev.cmd first, or choose another port." -f $Label, $Port)
     }
 }
 
@@ -252,7 +285,9 @@ function Start-TrackedServices {
     }
 
     Remove-RunState
-    Assert-PortAvailable -Port $script:BackendPort -Label "Backend"
+    $script:BackendPort = Resolve-AvailablePort -PreferredPort $script:BackendPreferredPort -Label "Backend"
+    $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
+    $script:BackendHealthUrl = "$script:BackendUrl/api/v1/chapters"
     Assert-PortAvailable -Port $script:FrontendPort -Label "Frontend"
 
     New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
@@ -261,14 +296,16 @@ function Start-TrackedServices {
 
     try {
         Write-Step -Message "Starting backend on $script:BackendUrl"
-        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; python -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port 8000 --app-dir src'
+        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; python -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port {0} --app-dir src' -f $script:BackendPort
         $backendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory $script:BackendDir -RedirectStandardOutput $script:BackendOutLog -RedirectStandardError $script:BackendErrLog -PassThru
         Set-Content -Path $script:BackendPidFile -Value $backendProcess.Id
+        Set-Content -Path $script:BackendUrlFile -Value $script:BackendUrl
 
         Write-Step -Message "Starting frontend on $script:FrontendUrl"
-        $frontendCommand = 'npm.cmd run dev -- --host 127.0.0.1 --port 5173'
+        $frontendCommand = '$env:VITE_NOVEL_SYSTEM_API_BASE = ''{0}''; npm.cmd run dev -- --host 127.0.0.1 --port {1}' -f $script:BackendUrl, $script:FrontendPort
         $frontendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $frontendCommand) -WorkingDirectory $script:FrontendDir -RedirectStandardOutput $script:FrontendOutLog -RedirectStandardError $script:FrontendErrLog -PassThru
         Set-Content -Path $script:FrontendPidFile -Value $frontendProcess.Id
+        Set-Content -Path $script:FrontendUrlFile -Value $script:FrontendUrl
 
         Wait-Until -Label "backend health" -Condition { Test-UrlHealthy -Url $script:BackendHealthUrl } -TimeoutSeconds 90
         Wait-Until -Label "frontend home" -Condition { Test-UrlHealthy -Url $script:FrontendUrl } -TimeoutSeconds 60
@@ -289,14 +326,17 @@ $script:FrontendDir = Join-Path $repoRoot "frontend"
 $script:RunDir = Join-Path $repoRoot ".codex-run"
 $script:BackendPidFile = Join-Path $script:RunDir "backend.pid"
 $script:FrontendPidFile = Join-Path $script:RunDir "frontend.pid"
+$script:BackendUrlFile = Join-Path $script:RunDir "backend.url"
+$script:FrontendUrlFile = Join-Path $script:RunDir "frontend.url"
 $script:SkipDemoSeedMarker = Join-Path $script:RunDir "skip-demo-seed"
 $script:BackendOutLog = Join-Path $script:RunDir "backend.out.log"
 $script:BackendErrLog = Join-Path $script:RunDir "backend.err.log"
 $script:FrontendOutLog = Join-Path $script:RunDir "frontend.out.log"
 $script:FrontendErrLog = Join-Path $script:RunDir "frontend.err.log"
-$script:BackendPort = 8000
+$script:BackendPreferredPort = 8000
+$script:BackendPort = $script:BackendPreferredPort
 $script:FrontendPort = 5173
-$script:BackendUrl = "http://127.0.0.1:8000"
+$script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
 $script:BackendHealthUrl = "$script:BackendUrl/api/v1/chapters"
 $script:FrontendUrl = "http://127.0.0.1:5173"
 

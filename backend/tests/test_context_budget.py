@@ -108,6 +108,30 @@ def test_apply_context_budget_uses_expected_compaction_order_and_warning_shape()
     }
 
 
+def test_apply_context_budget_omits_raw_style_rules_when_profile_contract_exists() -> None:
+    snapshot = _bundle_snapshot()
+    snapshot["inline_digests"] = {
+        "chapter_goal": "Goal pressure.",
+        "scene_card": "Scene pressure.",
+        "style_profile": "STYLE_FEATURE_CONTRACT_v1\nrhythm: keep tactile pressure.",
+        "style_rule": " ".join(["duplicated raw style rule"] * 220),
+    }
+
+    result = apply_context_budget(
+        system_prompt="System prompt.",
+        task_prompt="Task prompt.",
+        bundle_snapshot=snapshot,
+        sections=collect_prompt_sections(snapshot),
+        max_input_tokens=120,
+    )
+    budget = result["budget"]
+
+    assert budget["split_scene_recommended"] is False
+    assert budget["section_status"]["style_profile"]["status"] == "included"
+    assert budget["section_status"]["style_rules"]["status"] == "omitted"
+    assert "duplicated raw style rule" not in result["user_prompt"]
+
+
 def test_prompt_builder_surfaces_continuity_warning_into_token_budget() -> None:
     payload = PromptBuilder().build(_bundle_snapshot(), "neutral_draft", max_input_tokens=120)
 

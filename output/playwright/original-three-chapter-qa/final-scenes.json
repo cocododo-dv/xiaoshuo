@@ -1,0 +1,774 @@
+{
+  "CHOR01": {
+    "sceneId": "CHOR01_SC01",
+    "chapterId": "CHOR01",
+    "sceneStatus": "archived",
+    "bundleId": "bundle_CHOR01_SC01_v4",
+    "finalRowId": "final_scene_CHOR01_SC01_v4",
+    "finalText": "林岑的手指在受潮的档案盒边缘停顿了半秒。纸张泛出盐渍的痕迹，像某种未愈合的伤口。她将盒内文件逐页摊开，指尖扫过模糊的字迹，忽然触到一片异样的质感——盐钟残片嵌在纸页夹层，边缘凝结着蓝白相间的盐霜。\n\n她用镊子夹起残片，对着窗边的光细看。盐霜在光线下折射出微弱的波纹，仿佛某种被冻结的潮声。林岑将残片与档案中的潮汐记录比对，发现二十年前的缺页编号连成一条倒置的船线，像被刻意抹去的航道。\n\n她翻出声纹分析仪，将残片的盐霜纹理输入系统。仪器发出一声类似潮汐的低频震颤，屏幕上浮现出一段断续的潮汐声纹，与档案中缺失的记录完全吻合。林岑的手指在键盘上停顿片刻，她指尖微微收紧，仿佛攥住了一枚无形的证据，最终敲下许望的联络代码。\n\n档案盒突然震动了一下，盐钟在无人触碰时突然震颤，发出一声类似潮汐回声的闷响。林岑低头看去，发现盒底多出一页崭新的潮位表，日期却是明天。",
+    "hardQc": {
+      "qc_report_id": "qc_report_CHOR01_SC01_3b0f907e0a19",
+      "qc_type": "hard_qc",
+      "pass_flag": true,
+      "resolution_code": "hard_pass",
+      "issue_keys": [],
+      "next_action": "pass",
+      "rewrite_brief": [],
+      "created_at": "2026-04-21T07:40:39.495382+00:00"
+    },
+    "softQc": {
+      "qc_report_id": "qc_report_CHOR01_SC01_c6553d045e70",
+      "qc_type": "soft_qc",
+      "pass_flag": true,
+      "resolution_code": "soft_waive",
+      "issue_keys": [
+        "style_drift",
+        "imagery"
+      ],
+      "next_action": "pass_with_notes",
+      "rewrite_brief": [
+        "将‘仪器发出一声类似潮汐的低频震颤’改为‘仪器发出一声仿佛来自深海的低频震颤，像是某种被封存的声音苏醒’以增强冷意与悬念。",
+        "将‘档案盒突然震动了一下，盐钟在无人触碰时突然震颤’改为‘档案盒忽然震颤，盐钟在无人触碰下发出一声闷响，仿佛回应了什么’，使描写更具象征性与环境张力。",
+        "Repeated soft QC patch request after one controlled patch pass. Carry forward: 将‘仪器发出一声类似潮汐的低频震颤’改为‘仪器发出一声仿佛来自深海的低频震颤，像是某种被封存的声音苏醒’以增强冷意与悬念。; 将‘档案盒突然震动了一下，盐钟在无人触碰时突然震颤’改为‘档案盒忽然震颤，盐钟在无人触碰下发出一声闷响，仿佛回应了什么’，使描写更具象征性与环境张力。"
+      ],
+      "created_at": "2026-04-21T07:44:32.816560+00:00",
+      "style_score": null,
+      "style_dimensions": [],
+      "style_deviations": [
+        {
+          "dimension": "imagery",
+          "severity": "low",
+          "patch_brief": "增强冷意与悬念感，避免直白描述，改用象征性语言。"
+        },
+        {
+          "dimension": "syntax",
+          "severity": "low",
+          "patch_brief": "减少信息密集的句子结构，增加短句与节奏变化以匹配‘克制、低温’的声线。"
+        }
+      ]
+    },
+    "generationSummary": {
+      "llm_call_id": "llm_call_CHOR01_SC01_e072097c4246",
+      "step": "style_patch",
+      "raw_step": "soft_patch",
+      "provider": "openai_compatible",
+      "model": "Qwen3-14B-Q8_0.gguf",
+      "prompt_hash": "5dcdfbc39aece3ba0cdb2d3006cf004811ad27189d413fb5bf88ccdb2130ddc9",
+      "prompt_tokens": 4054,
+      "completion_tokens": 310,
+      "total_tokens": 4364,
+      "latency_ms": 54083,
+      "finish_reason": "stop",
+      "error_code": null,
+      "created_at": "2026-04-21T07:43:25.363024+00:00",
+      "style_score_summary": {
+        "style_score": null,
+        "style_dimensions": [],
+        "style_deviations": [
+          {
+            "dimension": "imagery",
+            "severity": "low",
+            "patch_brief": "增强冷意与悬念感，避免直白描述，改用象征性语言。"
+          },
+          {
+            "dimension": "syntax",
+            "severity": "low",
+            "patch_brief": "减少信息密集的句子结构，增加短句与节奏变化以匹配‘克制、低温’的声线。"
+          }
+        ]
+      }
+    },
+    "characterContract": "{\"contract_version\":\"CHARACTER_CONTRACT_v1\",\"characters\":[{\"character_id\":\"CHAR_LINCEN\",\"display_name\":\"林岑\",\"pronouns\":[\"她\"],\"role\":\"档案修复师\",\"aliases\":[\"小林\"]},{\"character_id\":\"许望\",\"display_name\":\"许望\",\"pronouns\":[],\"role\":\"\",\"aliases\":[]},{\"character_id\":\"匿名寄件人\",\"display_name\":\"匿名寄件人\",\"pronouns\":[],\"role\":\"\",\"aliases\":[]}]}",
+    "sourceLeakTerms": [],
+    "residueTerms": [],
+    "linCenWrongPronounWindows": [],
+    "attempts": [
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v1"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR01_SC01_v1"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v1"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR01_SC01_v1"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v1"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR01_SC01_v1"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v1"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v1"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v2"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR01_SC01_v2"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v2"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR01_SC01_v2"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v2"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR01_SC01_v2"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v2"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v2"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "failed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v3"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v4"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR01_SC01_v4"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v4"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR01_SC01_v4"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v4"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR01_SC01_v4"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v4"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR01_SC01_v4"
+      }
+    ]
+  },
+  "CHOR02": {
+    "sceneId": "CHOR02_SC01",
+    "chapterId": "CHOR02",
+    "sceneStatus": "archived",
+    "bundleId": "bundle_CHOR02_SC01_v4",
+    "finalRowId": "final_scene_CHOR02_SC01_v4",
+    "finalText": "林岑和许望穿过雾堤检修门，铁锈的门轴发出刺耳的摩擦声。监听站内壁贴满褪色潮位图，像一张张被时间腐蚀的旧伤疤。她蹲下身，从防潮箱中取出一卷被盐水泡坏的磁带，指尖在胶带上轻轻摩挲，试图找出尚存的可用部分。\n\n“这段录音可能已经失真了。”\n\n“但不是完全无用。”林岑将磁带装入老旧的播放器，按下倒放键。一阵沙沙声后，是微弱的呼吸声，接着是三声盐钟的回响。\n\n她猛地抬头，声音低而冷：“幸存者编号——07。”\n\n许望皱眉：“这和官方报告中的失踪名单不符。”\n\n“有人有预谋地抹去了这段记录。”林岑的手指在播放器上快速操作，声音几乎压低到耳语，“这不是意外，是人为遮蔽。”\n\n突然，监听站的死线路亮起幽蓝的光，扬声器里传出林岑自己的心跳声。她停顿片刻，低声说：“我们得去无灯船坞。”\n\n“为什么？”\n\n“因为这里被远程唤醒了。”她站起身，目光冷静如冰，“有人不想让我们找到真相。”",
+    "hardQc": {
+      "qc_report_id": "qc_report_CHOR02_SC01_9e3933224332",
+      "qc_type": "hard_qc",
+      "pass_flag": true,
+      "resolution_code": "hard_pass",
+      "issue_keys": [],
+      "next_action": "pass",
+      "rewrite_brief": [],
+      "created_at": "2026-04-21T07:45:51.097006+00:00"
+    },
+    "softQc": {
+      "qc_report_id": "qc_report_CHOR02_SC01_543a4fa7a78d",
+      "qc_type": "soft_qc",
+      "pass_flag": true,
+      "resolution_code": "soft_waive",
+      "issue_keys": [
+        "style_deviations"
+      ],
+      "next_action": "pass_with_notes",
+      "rewrite_brief": [
+        "在林岑说出'有人有预谋地抹去了这段记录'时，将'声音几乎压低到耳语'改为'指尖在播放器上停顿，喉结微动'。",
+        "将'她停顿片刻，低声说'改为'她喉结微动，指节轻叩播放器边缘，声音近乎耳语'。",
+        "Repeated soft QC patch request after one controlled patch pass. Carry forward: 在林岑说出'有人有预谋地抹去了这段记录'时，将'声音几乎压低到耳语'改为'指尖在播放器上停顿，喉结微动'。; 将'她停顿片刻，低声说'改为'她喉结微动，指节轻叩播放器边缘，声音近乎耳语'。"
+      ],
+      "created_at": "2026-04-21T07:48:40.778149+00:00",
+      "style_score": null,
+      "style_dimensions": [],
+      "style_deviations": [
+        {
+          "dimension": "emotion_curve",
+          "severity": "low",
+          "patch_brief": "林岑的情绪爆发应通过手部动作、修复术语和短句体现，避免直接情绪表达。"
+        }
+      ]
+    },
+    "generationSummary": {
+      "llm_call_id": "llm_call_CHOR02_SC01_7381279ad08e",
+      "step": "style_patch",
+      "raw_step": "soft_patch",
+      "provider": "openai_compatible",
+      "model": "Qwen3-14B-Q8_0.gguf",
+      "prompt_hash": "aa303c478d0cfc7559980450f53fc38b65412b8d444e0516f3c777862d6fef66",
+      "prompt_tokens": 1479,
+      "completion_tokens": 308,
+      "total_tokens": 1787,
+      "latency_ms": 49600,
+      "finish_reason": "stop",
+      "error_code": null,
+      "created_at": "2026-04-21T07:48:02.279306+00:00",
+      "style_score_summary": {
+        "style_score": null,
+        "style_dimensions": [],
+        "style_deviations": [
+          {
+            "dimension": "emotion_curve",
+            "severity": "low",
+            "patch_brief": "林岑的情绪爆发应通过手部动作、修复术语和短句体现，避免直接情绪表达。"
+          }
+        ]
+      }
+    },
+    "characterContract": "{\"contract_version\":\"CHARACTER_CONTRACT_v1\",\"characters\":[{\"character_id\":\"CHAR_LINCEN\",\"display_name\":\"林岑\",\"pronouns\":[\"她\"],\"role\":\"档案修复师\",\"aliases\":[\"小林\"]},{\"character_id\":\"许望\",\"display_name\":\"许望\",\"pronouns\":[],\"role\":\"\",\"aliases\":[]},{\"character_id\":\"旧站值守记录\",\"display_name\":\"旧站值守记录\",\"pronouns\":[],\"role\":\"\",\"aliases\":[]}]}",
+    "sourceLeakTerms": [],
+    "residueTerms": [],
+    "linCenWrongPronounWindows": [],
+    "attempts": [
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v1"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR02_SC01_v1"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v1"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR02_SC01_v1"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v1"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR02_SC01_v1"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v1"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v1"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v2"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR02_SC01_v2"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v2"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR02_SC01_v2"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v2"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR02_SC01_v2"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v2"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v2"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v3"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR02_SC01_v3"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v3"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR02_SC01_v3"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v3"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR02_SC01_v3"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v3"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v3"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v4"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR02_SC01_v4"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v4"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR02_SC01_v4"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v4"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR02_SC01_v4"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v4"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR02_SC01_v4"
+      }
+    ]
+  },
+  "CHOR03": {
+    "sceneId": "CHOR03_SC01",
+    "chapterId": "CHOR03",
+    "sceneStatus": "archived",
+    "bundleId": "bundle_CHOR03_SC01_v9",
+    "finalRowId": "final_scene_CHOR03_SC01_v9",
+    "finalText": "无灯船坞的水面没有倒影，只有暗潮在脚下无声涌动。林岑握紧盐钟残片，金属边缘硌着掌心，像某种未愈合的旧伤。许望站在她身后，呼吸声被潮湿空气吞没。\n\n档案柜在墙角泛着青灰，锁孔形状与盐钟残片吻合。林岑将碎片嵌入，潮声突然倒退三秒，仿佛时间被抽走了一瞬。柜门弹开时，咸腥的风裹着纸张的霉味扑面而来。\n\n她抽出一叠泛黄的录音带，指尖在标签上停顿——幸存者阿砚的名字被红笔反复划过。许望的声音从背后传来：\"还在追踪。\"\n\n林岑的手指收紧，纸张边缘在她掌心留下浅痕。\"公开真相会让更多人暴露。\"她说，声音冷得像未融化的盐粒。\n\n她将录音带分成两份，一份藏入怀中，另一份塞进许望手中。\"先转移幸存者。\"她低声说，语气里第一次透出决断。船坞外的雾墙上，第二枚盐钟的影子悄然浮现，像一双未闭的眼。",
+    "hardQc": {
+      "qc_report_id": "qc_report_CHOR03_SC01_1d33135a8036",
+      "qc_type": "hard_qc",
+      "pass_flag": true,
+      "resolution_code": "hard_pass",
+      "issue_keys": [],
+      "next_action": "pass",
+      "rewrite_brief": [],
+      "created_at": "2026-04-21T07:32:45.219891+00:00"
+    },
+    "softQc": {
+      "qc_report_id": "qc_report_CHOR03_SC01_e80da0a40e15",
+      "qc_type": "soft_qc",
+      "pass_flag": true,
+      "resolution_code": "soft_waive",
+      "issue_keys": [
+        "style_drift",
+        "imagery_clarity"
+      ],
+      "next_action": "pass_with_notes",
+      "rewrite_brief": [
+        "将‘语气里第一次透出决断’改为‘她指尖在录音带上停顿，动作比言语更坚定’，以符合林岑克制的声线和情绪爆发方式。",
+        "将‘像一双未闭的眼’改为‘像某种未愈合的旧伤’，与开头‘金属边缘硌着掌心，像某种未愈合的旧伤’形成呼应，增强意象统一性。",
+        "Repeated soft QC patch request after one controlled patch pass. Carry forward: 将‘语气里第一次透出决断’改为‘她指尖在录音带上停顿，动作比言语更坚定’，以符合林岑克制的声线和情绪爆发方式。; 将‘像一双未闭的眼’改为‘像某种未愈合的旧伤’，与开头‘金属边缘硌着掌心，像某种未愈合的旧伤’形成呼应，增强意象统一性。"
+      ],
+      "created_at": "2026-04-21T07:36:12.818534+00:00",
+      "style_score": null,
+      "style_dimensions": [],
+      "style_deviations": [
+        {
+          "dimension": "emotion_curve",
+          "severity": ".25",
+          "patch_brief": "将直白的情绪描述改为通过动作和术语体现林岑的决断，以符合‘情绪爆发只通过手部动作、修复术语和短句露出’的风格要求。"
+        },
+        {
+          "dimension": "imagery",
+          "severity": ".15",
+          "patch_brief": "调整盐钟影子的比喻，使其与整体意象统一，避免突兀感。"
+        }
+      ]
+    },
+    "generationSummary": {
+      "llm_call_id": "llm_call_CHOR03_SC01_fc8f26768049",
+      "step": "style_patch",
+      "raw_step": "soft_patch",
+      "provider": "openai_compatible",
+      "model": "Qwen3-14B-Q8_0.gguf",
+      "prompt_hash": "ce00a47299d653575662002b81adc321d55168a13f4b5ed6650108e400b27d70",
+      "prompt_tokens": 1495,
+      "completion_tokens": 286,
+      "total_tokens": 1781,
+      "latency_ms": 46644,
+      "finish_reason": "stop",
+      "error_code": null,
+      "created_at": "2026-04-21T07:35:11.688825+00:00",
+      "style_score_summary": {
+        "style_score": null,
+        "style_dimensions": [],
+        "style_deviations": [
+          {
+            "dimension": "emotion_curve",
+            "severity": ".25",
+            "patch_brief": "将直白的情绪描述改为通过动作和术语体现林岑的决断，以符合‘情绪爆发只通过手部动作、修复术语和短句露出’的风格要求。"
+          },
+          {
+            "dimension": "imagery",
+            "severity": ".15",
+            "patch_brief": "调整盐钟影子的比喻，使其与整体意象统一，避免突兀感。"
+          }
+        ]
+      }
+    },
+    "characterContract": "{\"contract_version\":\"CHARACTER_CONTRACT_v1\",\"characters\":[{\"character_id\":\"CHAR_LINCEN\",\"display_name\":\"林岑\",\"pronouns\":[\"她\"],\"role\":\"档案修复师\",\"aliases\":[\"小林\"]},{\"character_id\":\"许望\",\"display_name\":\"许望\",\"pronouns\":[],\"role\":\"\",\"aliases\":[]},{\"character_id\":\"幸存者阿砚\",\"display_name\":\"幸存者阿砚\",\"pronouns\":[],\"role\":\"\",\"aliases\":[]}]}",
+    "sourceLeakTerms": [],
+    "residueTerms": [],
+    "linCenWrongPronounWindows": [],
+    "attempts": [
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v1"
+      },
+      {
+        "step": "hard_qc",
+        "status": "rewrite_partial",
+        "sourceBundleId": "bundle_CHOR03_SC01_v1"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v2"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR03_SC01_v2"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v2"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR03_SC01_v2"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v2"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR03_SC01_v2"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v2"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v2"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v3"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR03_SC01_v3"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v3"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR03_SC01_v3"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v3"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR03_SC01_v3"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v3"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v3"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v4"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR03_SC01_v4"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v4"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR03_SC01_v4"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v4"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR03_SC01_v4"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v4"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v4"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v5"
+      },
+      {
+        "step": "hard_qc",
+        "status": "rewrite_partial",
+        "sourceBundleId": "bundle_CHOR03_SC01_v5"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v6"
+      },
+      {
+        "step": "hard_qc",
+        "status": "rewrite_partial",
+        "sourceBundleId": "bundle_CHOR03_SC01_v6"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v7"
+      },
+      {
+        "step": "hard_qc",
+        "status": "human_review_required",
+        "sourceBundleId": "bundle_CHOR03_SC01_v7"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v8"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR03_SC01_v8"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v8"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR03_SC01_v8"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v8"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR03_SC01_v8"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v8"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v8"
+      },
+      {
+        "step": "neutral_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v9"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue",
+        "sourceBundleId": "bundle_CHOR03_SC01_v9"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v9"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch",
+        "sourceBundleId": "bundle_CHOR03_SC01_v9"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v9"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive",
+        "sourceBundleId": "bundle_CHOR03_SC01_v9"
+      },
+      {
+        "step": "finalize",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v9"
+      },
+      {
+        "step": "archive",
+        "status": "completed",
+        "sourceBundleId": "bundle_CHOR03_SC01_v9"
+      }
+    ]
+  }
+}

@@ -1,4 +1,8 @@
 ﻿async (page) => {
+  const loopback = 'http://127.0.0.1';
+  const apiBase =
+    (typeof process !== 'undefined' && process.env?.PLAYWRIGHT_API_BASE) ||
+    `${loopback}:${(typeof process !== 'undefined' && process.env?.PLAYWRIGHT_BACKEND_PORT) || '8000'}`;
   await page.reload();
   await page.getByTestId('nav-author').click();
   await page.getByTestId('author-workspace-view').waitFor({ timeout: 30000 });
@@ -16,7 +20,7 @@
     ]);
     const payload = await response.json();
     await page.getByTestId(`author-chapter-select-${chapterId}`).click();
-    const statusResponse = await page.request.get(`http://127.0.0.1:8000/api/v1/chapters/${chapterId}/run-status`);
+    const statusResponse = await page.request.get(`${apiBase}/api/v1/chapters/${chapterId}/run-status`);
     const statusPayload = await statusResponse.json();
     results.push({ chapterId, httpStatus: response.status(), payload, status: statusPayload });
   }
