@@ -3,6 +3,8 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *.db
+*.db-shm
+*.db-wal
 *.egg-info/
 .pytest_cache/
 .venv/
