@@ -79,6 +79,9 @@ function buildListQueryPath(path, filters = {}, aliases = {}) {
 
 function normalizeRequestError(error) {
   if (error instanceof Error) {
+    if (error.code || error.status) {
+      return error;
+    }
     if (error.message === "Failed to fetch") {
       return new Error("连接接口失败，请确认 API 地址和后端服务是否可用。");
     }
@@ -88,15 +91,25 @@ function normalizeRequestError(error) {
 }
 
 async function parseEnvelope(response) {
-  const payload = await response.json();
-  if (!response.ok || payload.ok === false) {
-    const error = new Error(payload.error?.message || `请求失败：${response.status}`);
-    error.code = payload.error?.code || null;
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok || payload?.ok === false) {
+    const responseError = payload?.error || {};
+    const fallbackMessage =
+      responseError.code === "DATABASE_BUSY"
+        ? "数据库正忙，请稍后重试。"
+        : `请求失败：${response.status}`;
+    const error = new Error(responseError.message || fallbackMessage);
+    error.code = responseError.code || null;
     error.status = response.status;
-    error.details = payload.error?.details || {};
+    error.details = responseError.details || {};
     throw error;
   }
-  return payload.data;
+  return payload?.data;
 }
 
 export async function apiGet(path) {
@@ -341,6 +354,14 @@ export function purgeScenes(sceneIds) {
 
 export function runFullScene(sceneId) {
   return apiPost(`/api/v1/scenes/${sceneId}/run/full`);
+}
+
+export function startSceneRunJob(sceneId) {
+  return apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs`);
+}
+
+export function fetchRunJob(jobId) {
+  return apiGet(`/api/v1/run-jobs/${encodeURIComponent(jobId)}`);
 }
 
 export function runChapterBackfill(chapterId, stageId, strategy) {

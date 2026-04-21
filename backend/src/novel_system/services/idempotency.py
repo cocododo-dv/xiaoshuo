@@ -6,8 +6,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from novel_system.db.models import IdempotencyKey, OperationLog, ReviewItem, SceneRunState, VerifyJob
+from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
 from novel_system.services.human_review_support import structured_target
 from novel_system.settings import get_settings
@@ -145,6 +147,17 @@ def execute_with_idempotency(
     except DomainError:
         record.status = "failed"
         session.commit()
+        raise
+    except OperationalError as exc:
+        record.status = "failed"
+        session.commit()
+        if is_database_busy_error(exc):
+            raise DomainError(
+                "DATABASE_BUSY",
+                "database is busy; retry after the current long-running operation finishes",
+                status_code=503,
+                details={"retryable": True},
+            ) from exc
         raise
     except Exception as exc:
         record.status = "failed"

@@ -211,6 +211,36 @@ function providerDraftFrom(provider = {}) {
   };
 }
 
+function providerDraftIsDefault(draft = {}) {
+  return (
+    !draft.provider_id
+    || (
+      draft.provider_id === DEFAULT_PROVIDER_DRAFT.provider_id
+      && draft.base_url === DEFAULT_PROVIDER_DRAFT.base_url
+      && draft.modelsText === DEFAULT_PROVIDER_DRAFT.modelsText
+    )
+  );
+}
+
+function selectPreferredProvider(providers = {}, nodeRoutes = {}) {
+  const providerRows = Object.values(providers || {});
+  if (!providerRows.length) {
+    return null;
+  }
+  const routedProvider = Object.values(nodeRoutes || {})
+    .map((route) => providers?.[route?.provider_id])
+    .find((provider) => provider && provider.enabled !== false);
+  if (routedProvider) {
+    return routedProvider;
+  }
+  return (
+    providerRows.find((provider) => provider.enabled !== false && String(provider.provider_id || "").includes("qwen"))
+    || providerRows.find((provider) => provider.enabled !== false && String(provider.base_url || "").includes("127.0.0.1:8080"))
+    || providerRows.find((provider) => provider.enabled !== false)
+    || providerRows[0]
+  );
+}
+
 function providerViewReady(provider = {}) {
   if (!provider || provider.enabled === false) {
     return false;
@@ -381,6 +411,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
       models_snapshot: null,
     },
     providerDraft: { ...DEFAULT_PROVIDER_DRAFT },
+    providerDraftTouched: false,
     oauthDraft: { ...DEFAULT_OAUTH_DRAFT },
     nodeRouteDrafts: normalizeNodeRouteDrafts({}),
     providerProbeResults: {},
@@ -601,6 +632,10 @@ export const useSystemConfigStore = defineStore("systemConfig", {
           models_snapshot: payload.models_snapshot || null,
         };
         this.nodeRouteDrafts = normalizeNodeRouteDrafts(this.llm.node_routes);
+        const preferredProvider = selectPreferredProvider(this.llm.providers, this.llm.node_routes);
+        if (preferredProvider && !this.providerDraftTouched && providerDraftIsDefault(this.providerDraft)) {
+          this.providerDraft = providerDraftFrom(preferredProvider);
+        }
         return this.llm;
       } catch (error) {
         this.error = error.message;
@@ -611,6 +646,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     },
     editLlmProviderDraft(provider) {
       this.providerDraft = providerDraftFrom(provider);
+      this.providerDraftTouched = true;
     },
     applyLocalProviderPreset(presetId = "ollama") {
       const preset = LOCAL_PROVIDER_PRESETS[presetId] || LOCAL_PROVIDER_PRESETS.custom;
@@ -623,6 +659,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         api_mode: "chat",
         api_key: "",
       };
+      this.providerDraftTouched = true;
     },
     async saveLlmProvider() {
       this.llmSaving = true;

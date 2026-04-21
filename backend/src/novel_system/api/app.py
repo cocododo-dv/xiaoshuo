@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import OperationalError
 
 from novel_system.api.response import error
 from novel_system.api.routes import (
@@ -22,6 +23,7 @@ from novel_system.api.routes import (
 from novel_system.db import models  # noqa: F401
 from novel_system.db.base import Base
 from novel_system.db.session import engine
+from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
 
 
@@ -54,6 +56,34 @@ def create_app() -> FastAPI:
             exc.message,
             status_code=exc.status_code,
             details=exc.details,
+            req_id=getattr(request.state, "request_id", None),
+        )
+
+    @app.exception_handler(OperationalError)
+    async def operational_error_handler(request: Request, exc: OperationalError):
+        if is_database_busy_error(exc):
+            return error(
+                "DATABASE_BUSY",
+                "database is busy; retry after the current long-running operation finishes",
+                status_code=503,
+                details={"retryable": True},
+                req_id=getattr(request.state, "request_id", None),
+            )
+        return error(
+            "DATABASE_OPERATION_FAILED",
+            "database operation failed",
+            status_code=500,
+            details={"retryable": False},
+            req_id=getattr(request.state, "request_id", None),
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(request: Request, exc: Exception):
+        return error(
+            "INTERNAL_ERROR",
+            str(exc) or "internal server error",
+            status_code=500,
+            details={"retryable": False},
             req_id=getattr(request.state, "request_id", None),
         )
 

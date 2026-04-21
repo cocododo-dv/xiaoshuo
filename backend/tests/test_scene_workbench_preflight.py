@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import HumanReviewEvent, LlmCall, QcReport, RelationProfile, SceneRunState, VoiceProfile
+from novel_system.db.models import HumanReviewEvent, LlmCall, QcReport, RelationProfile, SceneCard, SceneRunState, VoiceProfile
 
 
 def create_chapter(client, chapter_id: str = "CH910") -> None:
@@ -108,6 +108,9 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
         "blocking_items": [],
         "warning_items": [],
         "context_items": [],
+        "missing_dependencies": [],
+        "create_actions": [],
+        "constraint_conflicts": [],
     }
     assert payload["generation_summary"] is None
     assert payload["hard_qc_summary"] is None
@@ -215,6 +218,91 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
         "SCENE_ONSTAGE_CHARACTERS_MISSING",
         "SCENE_BEATS_MISSING",
     ]
+
+
+def test_workbench_preflight_returns_structured_create_actions_for_missing_dependencies(client) -> None:
+    create_chapter(client, "CH918")
+    create_scene(client, chapter_id="CH918", scene_id="CH918_SC01")
+
+    response = client.get("/api/v1/scenes/CH918_SC01/workbench")
+
+    assert response.status_code == 200
+    preflight = response.json()["data"]["run_preflight"]
+    assert preflight["can_run"] is False
+    assert [item["dependency_type"] for item in preflight["missing_dependencies"]] == [
+        "voice_card",
+        "relation_card",
+    ]
+    assert preflight["missing_dependencies"][0] == {
+        "dependency_type": "voice_card",
+        "lineage_key": "VOICE_CHAR_A",
+        "character_id": "CHAR_A",
+        "blocking_code": "VOICE_PROFILE_MISSING",
+    }
+    assert preflight["missing_dependencies"][1] == {
+        "dependency_type": "relation_card",
+        "lineage_key": "REL_CHAR_A_CHAR_B",
+        "character_ids": ["CHAR_A", "CHAR_B"],
+        "blocking_code": "RELATION_PROFILE_MISSING",
+    }
+    assert [action["action"] for action in preflight["create_actions"]] == [
+        "create_minimal_voice_card",
+        "create_minimal_relation_card",
+    ]
+    assert preflight["create_actions"][0]["review"]["item_type"] == "voice_profile"
+    assert preflight["create_actions"][1]["review"]["item_type"] == "relation_profile"
+
+
+def test_workbench_preflight_surfaces_constraint_conflicts(client, session: Session) -> None:
+    create_chapter(client, "CH919")
+    create_scene(client, chapter_id="CH919", scene_id="CH919_SC01")
+    seed_voice_profile(session)
+    seed_relation_profile(session)
+    scene = session.get(SceneCard, "CH919_SC01")
+    scene.hook = "以死亡证明作为雨夜钩子。"
+    scene.forbidden_text = "死亡证明"
+    session.commit()
+
+    response = client.get("/api/v1/scenes/CH919_SC01/workbench")
+
+    assert response.status_code == 200
+    preflight = response.json()["data"]["run_preflight"]
+    assert preflight["can_run"] is False
+    assert preflight["overall_status"] == "blocked"
+    assert preflight["constraint_conflicts"] == [
+        {
+            "term": "死亡证明",
+            "required_source": "scene_card.hook",
+            "forbidden_source": "scene_card.forbidden_text",
+            "severity": "blocking",
+            "human_readable_reason": "场景要求使用该词，但禁用规则又禁止该词；请先选择保留或替换。",
+        }
+    ]
+
+
+def test_create_scene_rejects_corrupted_user_text(client) -> None:
+    create_chapter(client, "CH920")
+
+    response = client.post(
+        "/api/v1/scenes",
+        json={
+            "scene_id": "CH920_SC01",
+            "chapter_id": "CH920",
+            "scene_seq": 1,
+            "pov_character_id": "CHAR_A",
+            "onstage_chars_json": ["CHAR_A"],
+            "location": "Old city gate",
+            "scene_goal": "???",
+            "beats_json": ["beat-1"],
+            "target_length_band": "short",
+            "scene_type": "reunion",
+            "is_chapter_last": 0,
+        },
+        headers={"X-Idempotency-Key": "scene-corrupted-text"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "TEXT_ENCODING_INVALID"
 
 
 def test_workbench_preflight_keeps_manual_hold_and_backfill_as_context_only(client, session: Session) -> None:

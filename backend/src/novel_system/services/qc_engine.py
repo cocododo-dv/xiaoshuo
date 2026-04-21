@@ -155,6 +155,118 @@ def _scene_card_source_texts(scene: SceneCard) -> list[str]:
     return [text for text in texts if isinstance(text, str) and text.strip()]
 
 
+def _named_scene_card_source_texts(scene: SceneCard) -> list[tuple[str, str]]:
+    sources: list[tuple[str, str]] = []
+    for name, value in (
+        ("scene_card.hook", scene.hook),
+        ("scene_card.must_include_text", scene.must_include_text),
+        ("scene_card.exit_change", scene.exit_change),
+        ("scene_card.scene_goal", scene.scene_goal),
+        ("scene_card.location", scene.location),
+    ):
+        if isinstance(value, str) and value.strip():
+            sources.append((name, value))
+    beats = scene.beats_json if isinstance(scene.beats_json, list) else []
+    for index, beat in enumerate(beats):
+        if isinstance(beat, str) and beat.strip():
+            sources.append((f"scene_card.beats_json[{index}]", beat))
+    return sources
+
+
+def _terms_from_qc_text(text: str) -> list[str]:
+    terms: list[str] = []
+    terms.extend(match.strip() for match in re.findall(r"[\"'“”‘’]([^\"'“”‘’]{2,40})[\"'“”‘’]", text))
+    terms.extend(match.strip() for match in re.findall(r"[\u4e00-\u9fff]{2,12}", text))
+    terms.extend(match.strip() for match in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,40}", text))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for term in terms:
+        normalized = term.strip()
+        if not normalized or normalized.lower() in seen:
+            continue
+        seen.add(normalized.lower())
+        unique.append(normalized)
+    return unique
+
+
+def _constraint_conflicts_for_text(scene: SceneCard, text: str) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    for term in _terms_from_qc_text(text):
+        for source_name, source_text in _named_scene_card_source_texts(scene):
+            if term in source_text:
+                conflicts.append(
+                    {
+                        "term": term,
+                        "constraint_source": source_name,
+                        "conflicts_with": "hard_qc",
+                        "human_readable_reason": "QC requests changing a term that the scene card requires.",
+                    }
+                )
+                break
+    return conflicts
+
+
+def _evidence_spans_for_text(content: str, text: str) -> list[dict[str, Any]]:
+    spans: list[dict[str, Any]] = []
+    for term in _terms_from_qc_text(text):
+        start = content.find(term)
+        if start < 0:
+            continue
+        spans.append({"text": term, "start": start, "end": start + len(term)})
+        if len(spans) >= 5:
+            break
+    return spans
+
+
+def _annotate_qc_issues(scene: SceneCard, source_content: str, payload: dict[str, Any]) -> dict[str, Any]:
+    issues = payload.get("issues")
+    if not isinstance(issues, list):
+        return payload
+    annotated: list[Any] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            annotated.append(issue)
+            continue
+        blob = " ".join(str(issue.get(key) or "") for key in ("issue_key", "message"))
+        conflicts = _constraint_conflicts_for_text(scene, blob)
+        evidence_spans = _evidence_spans_for_text(source_content, blob)
+        severity = "high" if conflicts else ("medium" if not payload.get("pass_flag") else "low")
+        annotated.append(
+            {
+                **issue,
+                "evidence_spans": issue.get("evidence_spans") or evidence_spans,
+                "constraint_source": conflicts[0]["constraint_source"] if conflicts else issue.get("constraint_source", "source_draft"),
+                "conflicts_with": issue.get("conflicts_with") or conflicts,
+                "severity": issue.get("severity") or severity,
+                "human_readable_reason": issue.get("human_readable_reason") or issue.get("message") or issue.get("issue_key") or "QC issue",
+            }
+        )
+    return {**payload, "issues": annotated}
+
+
+def _promote_constraint_conflicts_to_human_review(payload: dict[str, Any]) -> dict[str, Any]:
+    issues = payload.get("issues")
+    if not isinstance(issues, list):
+        return payload
+    has_conflict = any(
+        isinstance(issue, dict) and bool(issue.get("conflicts_with"))
+        for issue in issues
+    )
+    if not has_conflict or payload.get("next_action") == "human_review_required":
+        return payload
+    rewrite_brief = payload.get("rewrite_brief") if isinstance(payload.get("rewrite_brief"), list) else []
+    return {
+        **payload,
+        "resolution_code": "hard_block_human",
+        "pass_flag": False,
+        "next_action": "human_review_required",
+        "rewrite_brief": [
+            *rewrite_brief,
+            "Constraint conflict detected: choose whether to keep the scene-card term or revise the conflicting QC instruction.",
+        ],
+    }
+
+
 def _source_field_satisfied(source_text: str, content: str) -> bool:
     source_text = source_text.strip()
     if source_text in content:
@@ -408,14 +520,17 @@ class HardQcEngine:
         payload = self._apply_deterministic_quality_gates(scene, bundle, neutral_content, payload)
         report = validate_qc_report("hard_qc", payload)
         payload = report.model_dump()
+        payload = _annotate_qc_issues(scene, neutral_content, payload)
+        payload = _promote_constraint_conflicts_to_human_review(payload)
         qc_report = self._persist_qc_report(
             scene=scene,
             state=state,
             bundle=bundle,
             neutral_draft_row_id=neutral_draft_row_id,
+            neutral_content=neutral_content,
             payload=payload,
         )
-        branch = self._branch_for(report.next_action)
+        branch = self._branch_for(payload["next_action"])
         self._apply_issue_tracking(state, payload["issues"])
         self._apply_branch_counters(state, branch)
 
@@ -508,8 +623,28 @@ class HardQcEngine:
         }
 
     @staticmethod
-    def _serialize_rewrite_brief(rewrite_brief: list[str]) -> list[dict[str, str]]:
-        return [{"instruction": item} for item in rewrite_brief]
+    def _serialize_rewrite_brief(
+        rewrite_brief: list[str],
+        *,
+        scene: SceneCard | None = None,
+        source_content: str = "",
+        issues: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        issue_blob = _issue_blob(issues or [], rewrite_brief)
+        entries: list[dict[str, Any]] = []
+        for item in rewrite_brief:
+            entry: dict[str, Any] = {"instruction": item}
+            if scene is not None:
+                blob = f"{item}\n{issue_blob}"
+                evidence_spans = _evidence_spans_for_text(source_content, blob)
+                conflicts = _constraint_conflicts_for_text(scene, blob)
+                if evidence_spans or conflicts:
+                    entry["constraint_source"] = "hard_qc"
+                    entry["severity"] = "high" if conflicts else "medium"
+                    entry["evidence_spans"] = evidence_spans
+                    entry["conflicts_with"] = conflicts
+            entries.append(entry)
+        return entries
 
     @staticmethod
     def _primary_issue_key(issues: list[dict[str, Any]]) -> str | None:
@@ -629,6 +764,7 @@ class HardQcEngine:
         bundle: dict[str, Any],
         neutral_draft_row_id: str,
         payload: dict[str, Any],
+        neutral_content: str = "",
     ) -> QcReport:
         qc_report = QcReport(
             qc_report_id=f"qc_report_{scene.scene_id}_{uuid.uuid4().hex[:12]}",
@@ -641,7 +777,12 @@ class HardQcEngine:
             pass_flag=1 if payload["pass_flag"] else 0,
             next_action=payload["next_action"],
             issues_json=payload["issues"],
-            rewrite_brief_json=self._serialize_rewrite_brief(payload["rewrite_brief"]),
+            rewrite_brief_json=self._serialize_rewrite_brief(
+                payload["rewrite_brief"],
+                scene=scene,
+                source_content=neutral_content,
+                issues=payload["issues"],
+            ),
         )
         self.session.add(qc_report)
         self.session.flush()

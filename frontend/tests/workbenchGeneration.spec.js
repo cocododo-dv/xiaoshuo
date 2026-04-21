@@ -96,13 +96,34 @@ function createSceneFetchMock({
   return vi.fn(async (url) => {
     const requestUrl = String(url);
 
-    if (requestUrl.includes(`/scenes/${sceneId}/run/full`)) {
+    if (requestUrl.includes(`/scenes/${sceneId}/run/jobs`)) {
       hasRun = true;
       return {
         ok: true,
         json: async () => ({
           ok: true,
-          data: runResult,
+          data: {
+            job_id: `scene_run_job_${sceneId}`,
+            scene_id: sceneId,
+            status: "queued",
+            current_step: "bundle_built",
+          },
+        }),
+      };
+    }
+
+    if (requestUrl.includes(`/run-jobs/scene_run_job_${sceneId}`)) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          data: {
+            job_id: `scene_run_job_${sceneId}`,
+            scene_id: sceneId,
+            status: "completed",
+            current_step: "archived",
+            result_summary: runResult,
+          },
         }),
       };
     }
@@ -432,7 +453,8 @@ describe("scene workbench generation view", () => {
       const refreshedQcCard = mounted.container.querySelector('[data-testid="scene-qc-report-card"]');
       const runReceipt = mounted.container.querySelector('[data-testid="scene-run-receipt"]');
 
-      expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/scenes/CH001_SC01/run/full", expect.any(Object));
+      expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/scenes/CH001_SC01/run/jobs", expect.any(Object));
+      expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/run-jobs/scene_run_job_CH001_SC01");
       expect(runReceipt).not.toBeNull();
       expect(runReceipt.textContent).toContain("bundle_CH001_SC01");
       expect(refreshedGenerationCard.textContent).not.toContain("暂无生成证据");

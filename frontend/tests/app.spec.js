@@ -252,16 +252,37 @@ describe("workbench store", () => {
 
   it("runs a full scene and refreshes the workbench state", async () => {
     globalThis.fetch = vi.fn(async (url) => {
-      if (url.includes("/run/full")) {
+      if (url.includes("/run/jobs")) {
         return {
           ok: true,
           json: async () => ({
             ok: true,
             data: {
-              scene_status: "archived",
-              current_bundle_id: "bundle_CH001_SC01",
-              current_bundle_hash: "hash_123",
-              current_final_scene_row_id: "final_scene_CH001_SC01",
+              job_id: "scene_run_job_CH001_SC01",
+              scene_id: "CH001_SC01",
+              status: "queued",
+              current_step: "bundle_built",
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/run-jobs/scene_run_job_CH001_SC01")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              job_id: "scene_run_job_CH001_SC01",
+              scene_id: "CH001_SC01",
+              status: "completed",
+              current_step: "archived",
+              result_summary: {
+                scene_status: "archived",
+                current_bundle_id: "bundle_CH001_SC01",
+                current_bundle_hash: "hash_123",
+                current_final_scene_row_id: "final_scene_CH001_SC01",
+              },
             },
           }),
         };
@@ -336,7 +357,12 @@ describe("workbench store", () => {
         scene_id: "CH001_SC01",
       }),
     ]);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(5);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/scenes/CH001_SC01/run/jobs",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/run-jobs/scene_run_job_CH001_SC01");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/human-review-events?scene_id=CH001_SC01",
     );
@@ -356,7 +382,7 @@ describe("workbench store", () => {
     };
 
     globalThis.fetch = vi.fn(async (url) => {
-      if (url.includes("/run/full")) {
+      if (url.includes("/run/jobs")) {
         return {
           ok: false,
           json: async () => ({
@@ -589,6 +615,29 @@ describe("api helpers", () => {
     expect(source).toContain("fetchBundleWorksheetExport");
     expect(source).toContain("fetchReplayFinalScene");
     expect(source).toContain("fetchReplayDraft");
+  });
+
+  it("preserves structured database-busy API errors", async () => {
+    const { fetchRunJob } = await import("../src/lib/api.js");
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        ok: false,
+        error: {
+          code: "DATABASE_BUSY",
+          message: "DATABASE_BUSY: writer lock is held",
+          details: { retry_after_ms: 1000 },
+        },
+      }),
+    });
+
+    await expect(fetchRunJob("job_busy")).rejects.toMatchObject({
+      code: "DATABASE_BUSY",
+      message: "DATABASE_BUSY: writer lock is held",
+      status: 503,
+      details: { retry_after_ms: 1000 },
+    });
   });
 });
 

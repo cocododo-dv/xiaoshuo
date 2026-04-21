@@ -12,6 +12,7 @@ from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.text_validation import validate_user_text_payload
 
 router = APIRouter(tags=["chapters"])
 
@@ -97,6 +98,7 @@ def purge_chapters(payload: dict, request: Request, session: Session = Depends(g
 
 
 def _create_chapter(session: Session, payload: dict) -> dict:
+    validate_user_text_payload(payload, field_prefix="chapter")
     chapter = session.get(ChapterGoal, payload["chapter_id"])
     if chapter is None:
         chapter = ChapterGoal(**payload)

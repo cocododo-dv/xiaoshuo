@@ -13,13 +13,21 @@ class Aggregator:
     def run_final_aggregate(self, chapter_id: str) -> dict | None:
         chapter_state = self.session.get(ChapterState, chapter_id)
         if chapter_state.chapter_backfill_pending_count != 0 or chapter_state.aggregate_block_reason != "none":
-            return None
+            return {
+                "status": "blocked",
+                "reason": "aggregate_gate_blocked",
+                "chapter_memory_row_id": None,
+            }
 
         scene_memories = self.session.execute(
             select(SceneMemory).where(SceneMemory.chapter_id == chapter_id, SceneMemory.active_flag == 1)
         ).scalars().all()
         if not scene_memories:
-            return None
+            return {
+                "status": "no_op",
+                "reason": "no_scene_memories",
+                "chapter_memory_row_id": None,
+            }
 
         content = "\n".join(memory.content for memory in scene_memories)
         existing_finals = self.session.execute(
@@ -45,4 +53,4 @@ class Aggregator:
         )
         self.session.add(memory)
         chapter_state.last_final_memory_row_id = row_id
-        return {"chapter_memory_row_id": row_id}
+        return {"status": "created", "reason": "scene_memories_aggregated", "chapter_memory_row_id": row_id}

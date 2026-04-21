@@ -255,6 +255,79 @@ describe("workbench chapter runtime store", () => {
     );
   });
 
+  it("returns no aggregate content when the final aggregate receipt is a no-op", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes("/runtime/aggregate/final")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: {
+              chapter_state: {
+                chapter_backfill_pending_count: 0,
+                last_final_memory_row_id: null,
+              },
+              receipt: {
+                action: "run_final_aggregate",
+                chapter_id: "CH200",
+                status: "no_op",
+                reason: "no_scene_memories",
+              },
+            },
+          }),
+        };
+      }
+
+      if (url.includes("/scenes/CH200_SC01/workbench")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: buildWorkbenchPayload({
+              pendingCount: 0,
+              aggregateBlockReason: "none",
+              stagedStatus: "completed",
+            }),
+          }),
+        };
+      }
+
+      if (url.includes("/human-review-events?scene_id=CH200_SC01")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: { items: [] },
+          }),
+        };
+      }
+
+      if (url.includes("/scenes/CH200_SC01/attempts")) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            data: buildAttemptsPayload(),
+          }),
+        };
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const store = useWorkbenchStore();
+    const message = await store.runChapterFinalAggregate("CH200", "CH200_SC01");
+
+    expect(message).toBe("无可聚合内容");
+    expect(store.lastChapterActionResult).toEqual(
+      expect.objectContaining({
+        action: "run_final_aggregate",
+        status: "no_op",
+        reason: "no_scene_memories",
+      }),
+    );
+  });
+
   it("sets and clears manual hold through chapter runtime endpoints", async () => {
     let holdActive = true;
     globalThis.fetch = vi.fn(async (url) => {

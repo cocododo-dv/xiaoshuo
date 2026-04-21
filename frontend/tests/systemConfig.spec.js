@@ -590,6 +590,54 @@ describe("system config store", () => {
     expect(providerMessage).toContain("local_ollama");
   });
 
+  it("initializes the provider form from the configured local_qwen3 provider", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.endsWith("/api/v1/system-config/llm")) {
+        return ok({
+          provider_catalog: {
+            openai_compatible: {
+              label: "本地 / OpenAI 兼容",
+              credential_modes: ["none", "api_key"],
+            },
+          },
+          providers: {
+            local_qwen3: {
+              provider_id: "local_qwen3",
+              provider_type: "openai_compatible",
+              account_id: "local",
+              base_url: "http://127.0.0.1:8080/v1",
+              enabled: true,
+              credential_mode: "none",
+              api_mode: "chat",
+              models: ["qwen3"],
+              secret: { configured: false, secret_type: "none" },
+            },
+          },
+          node_routes: {
+            neutral_draft: {
+              node_id: "neutral_draft",
+              status: "active",
+              configured: true,
+              provider: "openai_compatible",
+              provider_id: "local_qwen3",
+              model: "qwen3",
+            },
+          },
+        });
+      }
+      return ok({});
+    });
+
+    await store.loadLlmConfig();
+
+    expect(store.providerDraft.provider_id).toBe("local_qwen3");
+    expect(store.providerDraft.base_url).toBe("http://127.0.0.1:8080/v1");
+    expect(store.providerDraft.credential_mode).toBe("none");
+    expect(store.providerDraft.modelsText).toBe("qwen3");
+  });
+
   it("normalizes a pasted chat completions endpoint before saving a local provider", async () => {
     const { useSystemConfigStore } = await import("../src/stores/systemConfig");
     const store = useSystemConfigStore();

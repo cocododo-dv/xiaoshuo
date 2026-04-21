@@ -105,6 +105,12 @@ PROFILE_BLOCKED_MARKERS = (
     "rain, cold, fog",
     "frozen landscapes",
     "entertainers",
+    "lonely George",
+    "路明非",
+    "楚子航",
+    "卡塞尔",
+    "龙族",
+    "江南",
 )
 PROFILE_MAX_SAFE_STRING_CHARS = 320
 
@@ -565,6 +571,12 @@ class ReferenceLearningService:
                 "reference_book_id": book_id,
             }
         )
+        profile_payload = _enrich_reference_profile_payload(
+            profile_payload,
+            locale_hint_text="\n".join([book.title, *(finding.summary for finding in findings)]),
+            stripped_count=safety_summary["stripped_count"],
+        )
+        safety_summary = _profile_safety_summary(profile_payload, stripped_count=safety_summary["stripped_count"])
         profile_id = f"refprofile_{book_id}_{_short_hash(f'{run.run_id}:{canonical_json(approved_finding_ids)}')}"
         profile = self.session.get(ReferenceProfile, profile_id)
         if profile is None:
@@ -1219,6 +1231,95 @@ def _sanitize_reference_profile_payload(profile_json: dict[str, Any]) -> tuple[d
     return sanitized, _profile_safety_summary(sanitized, stripped_count=stats["stripped_count"])
 
 
+def _enrich_reference_profile_payload(
+    profile_json: dict[str, Any],
+    *,
+    locale_hint_text: str = "",
+    stripped_count: int = 0,
+) -> dict[str, Any]:
+    enriched = dict(profile_json or {})
+    locale = enriched.get("locale") if isinstance(enriched.get("locale"), str) else _detect_locale(
+        "\n".join([locale_hint_text, *(_profile_strings(enriched))])
+    )
+    repetition_score = _profile_repetition_score(_profile_strings(enriched))
+    source_term_audit = {
+        "safe": not _blocked_profile_markers(json.dumps(enriched, ensure_ascii=False, sort_keys=True)),
+        "blocked_markers": _blocked_profile_markers(json.dumps(enriched, ensure_ascii=False, sort_keys=True)),
+    }
+    safety_findings: list[str] = []
+    if source_term_audit["blocked_markers"]:
+        safety_findings.append("source_terms_blocked")
+    else:
+        safety_findings.append("source_terms_clear")
+    if repetition_score > 0.35:
+        safety_findings.append("repetition_high")
+    if stripped_count:
+        safety_findings.append("source_text_sanitized")
+    quality_score = max(
+        0.0,
+        min(
+            1.0,
+            1.0
+            - (0.45 if source_term_audit["blocked_markers"] else 0.0)
+            - min(0.35, repetition_score * 0.5)
+            - (0.15 if not _has_profile_dimensions(enriched) else 0.0),
+        ),
+    )
+    enriched.update(
+        {
+            "locale": locale,
+            "quality_score": round(quality_score, 3),
+            "source_term_audit": source_term_audit,
+            "repetition_score": round(repetition_score, 3),
+            "safety_findings": safety_findings,
+        }
+    )
+    return enriched
+
+
+def _detect_locale(text: str) -> str:
+    return "zh" if re.search(r"[\u4e00-\u9fff]", text or "") else "en"
+
+
+def _profile_strings(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        strings: list[str] = []
+        for key, item in value.items():
+            if key in {"source_term_audit", "safety_findings"}:
+                continue
+            strings.extend(_profile_strings(item))
+        return strings
+    if isinstance(value, list):
+        strings: list[str] = []
+        for item in value:
+            strings.extend(_profile_strings(item))
+        return strings
+    if isinstance(value, str) and value.strip():
+        return [re.sub(r"\s+", " ", value).strip()]
+    return []
+
+
+def _profile_repetition_score(strings: list[str]) -> float:
+    normalized = [item.lower() for item in strings if item.strip()]
+    if not normalized:
+        return 1.0
+    counts = Counter(normalized)
+    repeated = sum(count - 1 for count in counts.values() if count > 1)
+    return repeated / max(1, len(normalized))
+
+
+def _has_profile_dimensions(profile_json: dict[str, Any]) -> bool:
+    style_profile = profile_json.get("style_profile")
+    if isinstance(style_profile, dict):
+        features = style_profile.get("features")
+        if isinstance(features, dict):
+            return any(
+                isinstance(payload, dict) and bool(payload.get("guidance"))
+                for payload in features.values()
+            )
+    return bool(profile_json.get("narrative_patterns"))
+
+
 def _sanitize_reference_profile_value(value: Any, stats: dict[str, int]) -> Any:
     if isinstance(value, dict):
         return {key: _sanitize_reference_profile_value(item, stats) for key, item in value.items()}
@@ -1245,7 +1346,7 @@ def _sanitize_reference_profile_text(value: str) -> tuple[str, int]:
         cleaned = _abstract_profile_fallback(original)
         stripped_count += 1
     if _blocked_profile_markers(cleaned) or len(cleaned) > PROFILE_MAX_SAFE_STRING_CHARS:
-        cleaned = "Convert the reference into abstract craft guidance and avoid recognizable source material."
+        cleaned = "将参考内容转化为抽象写作技法，避免保留可识别源文本。"
         stripped_count += 1
     return cleaned, stripped_count
 
@@ -1287,7 +1388,7 @@ def _sanitize_reference_finding_text(value: str) -> tuple[str, dict[str, Any]]:
         cleaned = _abstract_profile_fallback(original)
         stripped_count += 1
     if _blocked_profile_markers(cleaned) or len(cleaned) > PROFILE_MAX_SAFE_STRING_CHARS:
-        cleaned = "Convert the reference into abstract craft guidance and avoid recognizable source material."
+        cleaned = "将参考内容转化为抽象写作技法，避免保留可识别源文本。"
         stripped_count += 1
 
     return cleaned, _reference_safety_notes(
@@ -1377,16 +1478,16 @@ def _is_reference_review_payload(payload: dict[str, Any]) -> bool:
 def _abstract_profile_fallback(text: str) -> str:
     lowered = text.lower()
     if "do not copy" in lowered or "forbidden" in lowered or "banned" in lowered:
-        return "Do not copy protected expression, names, settings, signature lines, or identifiable scene bridges from the reference text."
+        return "不要复制受保护表达、专名、设定、标志性句子或可识别桥段。"
     if "calibrat" in lowered:
-        return "Calibrate toward compact pressure, tactile imagery, and emotional release without reusing source wording."
+        return "校准为抽象写作技法：压缩压力节拍、触感意象与情绪释放，不复用源文本措辞。"
     if "hook" in lowered or "anomaly" in lowered or "consequence" in lowered or "narrative" in lowered:
-        return "Open with a concrete anomaly, delay explanation, then turn the scene through visible consequence."
+        return "用具体现象开场，延迟解释，再通过可见后果推动场景转折。"
     if "imagery" in lowered or "sensory" in lowered or "tactile" in lowered:
-        return "Use sensory contrast and tactile imagery while keeping source wording out of the draft."
+        return "使用感官反差与触感意象，但避开源文本措辞。"
     if "pressure" in lowered or "rhythm" in lowered or "syntax" in lowered:
-        return "Use compact pressure beats before a longer emotional release sentence."
-    return "Convert the reference into abstract craft guidance and avoid recognizable source material."
+        return "先用紧凑压力节拍推进，再用更长的情绪释放句收束。"
+    return "将参考内容转化为抽象写作技法，避免保留可识别源文本。"
 
 
 def _profile_preview_items(profile_json: dict[str, Any]) -> list[str]:

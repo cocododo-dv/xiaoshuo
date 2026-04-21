@@ -39,7 +39,14 @@ const runPreflight = computed(() => workbench.data?.run_preflight || {
   blocking_items: [],
   warning_items: [],
   context_items: [],
+  missing_dependencies: [],
+  create_actions: [],
+  constraint_conflicts: [],
 });
+const missingDependencies = computed(() => runPreflight.value.missing_dependencies || []);
+const createActions = computed(() => runPreflight.value.create_actions || []);
+const constraintConflicts = computed(() => runPreflight.value.constraint_conflicts || []);
+const runJob = computed(() => workbench.runJob || null);
 const generationSummary = computed(() => workbench.data?.generation_summary || null);
 const hardQcSummary = computed(() => workbench.data?.hard_qc_summary || null);
 const softQcSummary = computed(() => workbench.data?.soft_qc_summary || null);
@@ -148,6 +155,29 @@ function formatAction(action) {
 
 function formatPreflightStatus(status) {
   return PREFLIGHT_STATUS_LABELS[status] || status || "-";
+}
+
+function formatRunJobStatus(job) {
+  if (!job) {
+    return "未启动";
+  }
+  return [job.status, job.current_step || job.stage].filter(Boolean).join(" / ") || "-";
+}
+
+function formatDependencyLabel(item) {
+  return item.title || item.label || item.dependency_type || item.kind || item.code || "缺失依赖";
+}
+
+function formatDependencyDetail(item) {
+  return item.detail || item.message || item.reason || item.lineage_key || item.target_ref || "-";
+}
+
+function formatCreateActionLabel(item) {
+  return item.label || item.title || item.action || item.action_type || "可创建依赖";
+}
+
+function formatConflictLabel(item) {
+  return item.title || item.label || item.term || item.code || "约束冲突";
 }
 
 function resolveSceneId() {
@@ -374,11 +404,11 @@ onDeactivated(() => {
           />
           <button data-testid="scene-load-button" @click="loadWorkbench">读取</button>
           <button
-            :disabled="workbench.actionId === 'run-scene' || !runPreflight.can_run || !resolveSceneId()"
+            :disabled="workbench.actionId === 'run-scene' || workbench.runJobPolling || !runPreflight.can_run || !resolveSceneId()"
             data-testid="run-full-scene-button"
             @click="runScene"
           >
-            {{ workbench.actionId === "run-scene" ? "运行中..." : "运行完整场景" }}
+            {{ workbench.actionId === "run-scene" || workbench.runJobPolling ? "运行中..." : "启动场景运行" }}
           </button>
         </div>
       </template>
@@ -412,6 +442,10 @@ onDeactivated(() => {
         <div class="stat">
           <span>运行轨迹</span>
           <strong>{{ attemptEvidenceLabel }}</strong>
+        </div>
+        <div class="stat" data-testid="scene-run-job-summary">
+          <span>运行任务</span>
+          <strong>{{ formatRunJobStatus(runJob) }}</strong>
         </div>
       </div>
 
@@ -545,11 +579,122 @@ onDeactivated(() => {
             </ProgressiveList>
           </div>
 
+          <div
+            v-if="missingDependencies.length"
+            class="preflight-group"
+            data-testid="scene-run-preflight-missing-dependencies"
+          >
+            <h4>缺失依赖</h4>
+            <ProgressiveList
+              :items="missingDependencies"
+              :initial-count="6"
+              :batch-size="6"
+              :threshold="6"
+              test-id="scene-run-preflight-missing-dependencies-progressive-list"
+            >
+              <template #default="{ items }">
+                <article
+                  v-for="item in items"
+                  :key="item.lineage_key || item.code || item.dependency_type"
+                  class="preflight-item preflight-item-blocking"
+                >
+                  <div class="preflight-item-head">
+                    <strong>{{ formatDependencyLabel(item) }}</strong>
+                    <span class="badge ghost">{{ item.lineage_key || item.code || item.dependency_type }}</span>
+                  </div>
+                  <p>{{ formatDependencyDetail(item) }}</p>
+                </article>
+              </template>
+            </ProgressiveList>
+          </div>
+
+          <div
+            v-if="createActions.length"
+            class="preflight-group"
+            data-testid="scene-run-preflight-create-actions"
+          >
+            <h4>可一键补齐</h4>
+            <ProgressiveList
+              :items="createActions"
+              :initial-count="6"
+              :batch-size="6"
+              :threshold="6"
+              test-id="scene-run-preflight-create-actions-progressive-list"
+            >
+              <template #default="{ items }">
+                <article
+                  v-for="item in items"
+                  :key="item.action_id || item.action || item.lineage_key"
+                  class="preflight-item"
+                >
+                  <div class="preflight-item-head">
+                    <strong>{{ formatCreateActionLabel(item) }}</strong>
+                    <span class="badge ghost">{{ item.action || item.action_type || "create" }}</span>
+                  </div>
+                  <p>{{ item.detail || item.description || item.lineage_key || item.target_ref || "系统可根据当前场景生成最小可运行知识卡。" }}</p>
+                </article>
+              </template>
+            </ProgressiveList>
+          </div>
+
+          <div
+            v-if="constraintConflicts.length"
+            class="preflight-group"
+            data-testid="scene-run-preflight-constraint-conflicts"
+          >
+            <h4>约束冲突</h4>
+            <ProgressiveList
+              :items="constraintConflicts"
+              :initial-count="6"
+              :batch-size="6"
+              :threshold="6"
+              test-id="scene-run-preflight-constraint-conflicts-progressive-list"
+            >
+              <template #default="{ items }">
+                <article
+                  v-for="item in items"
+                  :key="item.conflict_id || item.term || item.code"
+                  class="preflight-item preflight-item-blocking"
+                >
+                  <div class="preflight-item-head">
+                    <strong>{{ formatConflictLabel(item) }}</strong>
+                    <span class="badge ghost">{{ item.severity || item.code || "conflict" }}</span>
+                  </div>
+                  <p>{{ item.human_readable_reason || item.detail || item.message || item.conflicts_with || "-" }}</p>
+                  <p v-if="item.constraint_source" class="muted"><code>{{ item.constraint_source }}</code></p>
+                </article>
+              </template>
+            </ProgressiveList>
+          </div>
+
           <p
-            v-if="!runPreflight.blocking_items.length && !runPreflight.warning_items.length && !runPreflight.context_items.length"
+            v-if="!runPreflight.blocking_items.length && !runPreflight.warning_items.length && !runPreflight.context_items.length && !missingDependencies.length && !createActions.length && !constraintConflicts.length"
             class="muted"
           >
             当前没有预检提示，可以直接执行完整场景运行。
+          </p>
+        </article>
+
+        <article
+          v-if="runJob"
+          class="paper receipt-card"
+          data-testid="scene-run-job-status"
+        >
+          <div class="receipt-head">
+            <div>
+              <h3>后台运行任务</h3>
+              <p class="muted receipt-copy">场景运行已交给后台 Job，当前页面通过轮询刷新阶段和结果。</p>
+            </div>
+            <span class="badge">{{ workbench.runJobPolling ? "轮询中" : "已同步" }}</span>
+          </div>
+          <div class="receipt-grid">
+            <p><strong>任务</strong><br />{{ runJob.job_id || "-" }}</p>
+            <p><strong>状态</strong><br />{{ runJob.status || "-" }}</p>
+            <p><strong>阶段</strong><br />{{ runJob.current_step || runJob.stage || "-" }}</p>
+            <p><strong>人工处理</strong><br />{{ runJob.needs_human_review ? "需要" : "无需" }}</p>
+          </div>
+          <p v-if="runJob.error_text || runJob.error_code" class="muted">
+            {{ runJob.error_code || "error" }}：{{ runJob.error_text || "-" }}
           </p>
         </article>
 

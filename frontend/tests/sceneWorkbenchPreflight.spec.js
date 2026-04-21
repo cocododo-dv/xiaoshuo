@@ -95,6 +95,27 @@ describe("scene workbench preflight store", () => {
               ],
               warning_items: [],
               context_items: [],
+              missing_dependencies: [
+                {
+                  dependency_type: "voice_card",
+                  lineage_key: "VOICE_CHAR_A",
+                  detail: "POV voice card is required before generation",
+                },
+              ],
+              create_actions: [
+                {
+                  action: "create_minimal_voice_card",
+                  lineage_key: "VOICE_CHAR_A",
+                  label: "Create minimal voice card",
+                },
+              ],
+              constraint_conflicts: [
+                {
+                  term: "死亡证明",
+                  severity: "blocking",
+                  human_readable_reason: "Hook requires a term that another constraint forbids",
+                },
+              ],
             }),
           }),
         };
@@ -116,6 +137,24 @@ describe("scene workbench preflight store", () => {
             technical_hint: "expected active voice profile: VOICE_CHAR_A",
           }),
         ],
+        missing_dependencies: [
+          expect.objectContaining({
+            dependency_type: "voice_card",
+            lineage_key: "VOICE_CHAR_A",
+          }),
+        ],
+        create_actions: [
+          expect.objectContaining({
+            action: "create_minimal_voice_card",
+            lineage_key: "VOICE_CHAR_A",
+          }),
+        ],
+        constraint_conflicts: [
+          expect.objectContaining({
+            term: "死亡证明",
+            severity: "blocking",
+          }),
+        ],
       }),
     );
   });
@@ -129,8 +168,13 @@ describe("scene workbench preflight view wiring", () => {
     expect(source).toContain('data-testid="scene-run-preflight-blocking"');
     expect(source).toContain('data-testid="scene-run-preflight-warning"');
     expect(source).toContain('data-testid="scene-run-preflight-context"');
+    expect(source).toContain('data-testid="scene-run-preflight-missing-dependencies"');
+    expect(source).toContain('data-testid="scene-run-preflight-create-actions"');
+    expect(source).toContain('data-testid="scene-run-preflight-constraint-conflicts"');
     expect(source).toContain('data-testid="scene-run-preflight-status"');
     expect(source).toContain("runPreflight");
+    expect(source).toContain("missingDependencies");
+    expect(source).toContain("constraintConflicts");
     expect(source).toContain("item.detail");
     expect(source).toContain("item.technical_hint");
     expect(source).toContain("!runPreflight.can_run");

@@ -861,6 +861,66 @@ def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_styl
     assert session.execute(select(FinalScene)).scalars().all() == []
 
 
+def test_hard_qc_report_adds_evidence_and_constraint_conflict_metadata(session) -> None:
+    _seed_scene(session)
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.hook = "以死亡证明作为雨夜钩子。"
+    scene.must_include_text = "死亡证明必须出现在开场。"
+    session.add(
+        SceneDraft(
+            row_id="draft_neutral_CH100_SC01",
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            stage="neutral_draft",
+            content="雨水打湿死亡证明，灯光忽然熄灭。",
+            source_bundle_id="bundle_CH100_SC01",
+            source_bundle_hash="bundle_hash_CH100_SC01",
+        )
+    )
+    session.commit()
+
+    engine = HardQcEngine(
+        session,
+        llm_client=FakeQcClient(
+            _base_qc_payload(
+                resolution_code="hard_fail_partial",
+                next_action="partial_rewrite",
+                issues=[
+                    {
+                        "issue_key": "unsafe_concrete_term",
+                        "message": "Replace 死亡证明 with a neutral clue.",
+                    }
+                ],
+            )
+        ),
+    )
+
+    decision = engine.evaluate(
+        scene_id="CH100_SC01",
+        bundle={
+            "bundle_id": "bundle_CH100_SC01",
+            "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+            "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+        },
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content="雨水打湿死亡证明，灯光忽然熄灭。",
+    )
+    session.commit()
+
+    report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
+    issue = report.issues_json[0]
+    rewrite = report.rewrite_brief_json[0]
+
+    assert decision.branch == "human_review_required"
+    assert issue["severity"] == "high"
+    assert issue["human_readable_reason"]
+    assert issue["evidence_spans"][0]["text"] == "死亡证明"
+    assert issue["conflicts_with"][0]["constraint_source"] == "scene_card.hook"
+    assert issue["conflicts_with"][0]["term"] == "死亡证明"
+    assert rewrite["constraint_source"] == "hard_qc"
+    assert rewrite["conflicts_with"][0]["constraint_source"] == "scene_card.hook"
+
+
 def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -> None:
     _seed_scene(session)
     first = _make_orchestrator(

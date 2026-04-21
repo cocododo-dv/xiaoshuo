@@ -27,8 +27,10 @@ from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
+from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.style_profile import StyleScoreService
+from novel_system.services.text_validation import validate_user_text_payload
 
 router = APIRouter(tags=["scenes"])
 
@@ -98,6 +100,7 @@ def create_scene(payload: dict, request: Request, session: Session = Depends(get
 
 
 def _create_scene(session: Session, payload: dict) -> dict:
+    validate_user_text_payload(payload, field_prefix="scene")
     lifecycle = AuthorLifecycleService(session)
     chapter_id = payload.get("chapter_id")
     if not isinstance(chapter_id, str) or not chapter_id:
@@ -148,6 +151,25 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/scenes/{scene_id}/run/jobs")
+def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    service = SceneRunJobService(session)
+    job = service.create_job(scene_id, actor_ref=actor_ref)
+    payload = service.serialize_job(job)
+    session.commit()
+    if start:
+        start_scene_run_job_worker(job.job_id)
+    return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v1/run-jobs/{job_id}")
+def get_run_job(job_id: str, request: Request, session: Session = Depends(get_session)):
+    service = SceneRunJobService(session)
+    job = service.get_job(job_id)
+    return ok(service.serialize_job(job), req_id=getattr(request.state, "request_id", None))
 
 
 @router.get("/api/v1/scenes/{scene_id}/status")
@@ -394,6 +416,11 @@ def _serialize_qc_summary(report: QcReport | None) -> dict | None:
         "rewrite_brief": _extract_rewrite_brief(report.rewrite_brief_json or []),
         "created_at": report.created_at,
     }
+    if report.issues_json:
+        summary["issues"] = report.issues_json
+    evidence_spans = _extract_evidence_spans(report.issues_json or [])
+    if evidence_spans:
+        summary["evidence_spans"] = evidence_spans
     style_summary = StyleScoreService.summary_from_rewrite_brief(report.rewrite_brief_json or [])
     if style_summary is not None:
         summary.update(style_summary)
@@ -416,6 +443,17 @@ def _extract_issue_keys(entries: list[dict]) -> list[str]:
         if isinstance(issue_key, str) and issue_key.strip():
             issue_keys.append(issue_key.strip())
     return issue_keys
+
+
+def _extract_evidence_spans(entries: list[dict]) -> list[dict[str, Any]]:
+    spans: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_spans = entry.get("evidence_spans")
+        if isinstance(entry_spans, list):
+            spans.extend(span for span in entry_spans if isinstance(span, dict))
+    return spans
 
 
 def _extract_rewrite_brief(entries: list[dict]) -> list[str]:

@@ -3,12 +3,14 @@ import { defineStore } from "pinia";
 import {
   clearChapterManualHold,
   fetchHumanReviewEvents,
+  fetchRunJob,
   fetchSceneAttempts,
   fetchWorkbench,
   runChapterBackfill as postChapterBackfill,
   runChapterFinalAggregate as postChapterFinalAggregate,
   runFullScene,
   setChapterManualHold as postChapterManualHold,
+  startSceneRunJob,
 } from "../lib/api";
 import {
   advanceCursorPager,
@@ -59,6 +61,81 @@ function forgetWorkbenchSceneId(sceneId) {
   }
 }
 
+const RUN_JOB_TERMINAL_STATUSES = new Set([
+  "archived",
+  "blocked",
+  "cancelled",
+  "completed",
+  "failed",
+  "human_review_required",
+  "manual_review_required",
+]);
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function normalizeRunJobPayload(payload) {
+  if (!payload) {
+    return null;
+  }
+  const details = payload.payload || payload.payload_json || {};
+  const resultSummary = payload.result_summary || payload.result_summary_json || payload.result || {};
+  return {
+    ...payload,
+    scene_id: payload.scene_id || details.scene_id || resultSummary.scene_id || "",
+    chapter_id: payload.chapter_id || details.chapter_id || resultSummary.chapter_id || "",
+    current_step: payload.current_step || details.current_step || payload.stage || payload.status || "queued",
+    stage: payload.stage || payload.current_step || details.current_step || payload.status || "queued",
+    result_summary: resultSummary,
+    needs_human_review:
+      payload.needs_human_review
+      || payload.status === "human_review_required"
+      || resultSummary.needs_human_review
+      || false,
+  };
+}
+
+function runJobIsTerminal(job) {
+  if (!job) {
+    return false;
+  }
+  return RUN_JOB_TERMINAL_STATUSES.has(job.status) || Boolean(job.finished_at);
+}
+
+function sceneResultFromRunJob(job) {
+  const result = job?.result_summary || {};
+  return {
+    job_id: job?.job_id || "",
+    job_status: job?.status || "",
+    current_step: job?.current_step || job?.stage || "",
+    scene_status: result.scene_status || result.status || job?.scene_status || job?.status || "",
+    current_bundle_id: result.current_bundle_id || result.bundle_id || null,
+    current_bundle_hash: result.current_bundle_hash || result.bundle_hash || null,
+    current_final_scene_row_id: result.current_final_scene_row_id || result.final_scene_row_id || null,
+  };
+}
+
+function canFallbackToBlockingRun(error) {
+  return error?.status === 404 || error?.status === 405 || error?.code === "NOT_FOUND";
+}
+
+function isNoAggregateReceipt(receipt = {}) {
+  const values = [
+    receipt.status,
+    receipt.result,
+    receipt.code,
+    receipt.reason,
+    receipt.reason_code,
+    receipt.message,
+  ]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase());
+  return values.some((value) => value.includes("no_op") || value.includes("no_scene_memories"));
+}
+
 export const useWorkbenchStore = defineStore("workbench", {
   state: () => ({
     sceneId: readLastWorkbenchSceneId(),
@@ -74,6 +151,8 @@ export const useWorkbenchStore = defineStore("workbench", {
     attemptLoading: false,
     actionId: "",
     lastRunResult: null,
+    runJob: null,
+    runJobPolling: false,
     lastChapterActionResult: null,
     error: "",
   }),
@@ -194,20 +273,62 @@ export const useWorkbenchStore = defineStore("workbench", {
       await this.loadAttempts(this.sceneId);
       this.markFresh();
     },
+    async pollRunJob(jobId, sceneId = this.sceneId, { intervalMs = 1200, maxPolls = 120 } = {}) {
+      if (!jobId) {
+        return null;
+      }
+      this.runJobPolling = true;
+      try {
+        for (let pollIndex = 0; pollIndex < maxPolls; pollIndex += 1) {
+          const job = normalizeRunJobPayload(await fetchRunJob(jobId));
+          this.runJob = snapshotPayload(job);
+          if (runJobIsTerminal(job)) {
+            this.lastRunResult = snapshotPayload(sceneResultFromRunJob(job));
+            this.syncAttemptPager(sceneId, { reset: true });
+            await this.refreshAll(sceneId, { force: true });
+            return job;
+          }
+          if (pollIndex < maxPolls - 1) {
+            await delay(intervalMs);
+          }
+        }
+        return this.runJob;
+      } finally {
+        this.runJobPolling = false;
+      }
+    },
     async runScene(sceneId = this.sceneId) {
       const previousSceneId = this.sceneId;
       this.actionId = "run-scene";
       this.error = "";
       try {
+        const job = normalizeRunJobPayload(await startSceneRunJob(sceneId));
+        this.runJob = snapshotPayload(job);
+        if (runJobIsTerminal(job)) {
+          this.lastRunResult = snapshotPayload(sceneResultFromRunJob(job));
+          await this.refreshAll(sceneId, { force: true });
+          return `场景运行任务已完成：${sceneId}`;
+        }
+        const firstPoll = await this.pollRunJob(job.job_id, sceneId, { intervalMs: 0, maxPolls: 1 });
+        if (runJobIsTerminal(firstPoll)) {
+          return `场景运行任务已完成：${sceneId}`;
+        }
+        this.pollRunJob(job.job_id, sceneId).catch((error) => {
+          this.error = error.message;
+        });
+        return `已启动场景运行任务 ${job.job_id || sceneId}`;
+      } catch (error) {
+        if (!canFallbackToBlockingRun(error)) {
+          this.sceneId = previousSceneId;
+          this.error = error.message;
+          throw error;
+        }
         const result = await runFullScene(sceneId);
         this.lastRunResult = snapshotPayload(result);
+        this.runJob = null;
         this.syncAttemptPager(sceneId, { reset: true });
         await this.refreshAll(sceneId, { force: true });
-        return `已运行 ${sceneId} 的完整场景流程`;
-      } catch (error) {
-        this.sceneId = previousSceneId;
-        this.error = error.message;
-        throw error;
+        return `已使用兼容模式运行 ${sceneId} 的完整场景流程`;
       } finally {
         this.actionId = "";
       }
@@ -234,6 +355,9 @@ export const useWorkbenchStore = defineStore("workbench", {
         const result = await postChapterFinalAggregate(chapterId);
         this.lastChapterActionResult = snapshotPayload(result.receipt);
         await this.refreshAll(sceneId, { force: true });
+        if (isNoAggregateReceipt(result.receipt)) {
+          return "无可聚合内容";
+        }
         return `已运行 ${chapterId} 的最终聚合`;
       } catch (error) {
         this.error = error.message;

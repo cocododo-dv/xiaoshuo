@@ -6,7 +6,7 @@ from pathlib import Path
 from novel_system.db.models import ChapterGoal, LlmCall, ReferenceBookSegment, ReferenceFinding, ReviewItem, SceneCard, SceneRunState
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_client import LLMResponse
-from novel_system.services.reference_learning import ReferenceLearningService
+from novel_system.services.reference_learning import ReferenceLearningService, _sanitize_reference_profile_text
 from novel_system.services.versioning.review_materialization import ReviewMaterializationService
 
 
@@ -642,8 +642,22 @@ def test_reference_profile_sanitizes_llm_evidence_and_source_markers(session, tm
     assert profile["status"] == "ready"
     assert profile["safety_summary"]["safe"] is True
     assert profile["safety_summary"]["stripped_count"] >= 1
+    assert profile["profile_json"]["locale"] == "zh"
+    assert 0 <= profile["profile_json"]["quality_score"] <= 1
+    assert profile["profile_json"]["source_term_audit"]["blocked_markers"] == []
+    assert "repetition_score" in profile["profile_json"]
+    assert "safety_findings" in profile["profile_json"]
     for marker in ["Evidence:", "Evidence pattern:", "txt8080", "声明：本书", "路明非", "楚子航", "卡塞尔", "江南"]:
         assert marker not in serialized_profile
+
+
+def test_reference_profile_sanitizer_blocks_source_phrase_and_uses_chinese_fallback() -> None:
+    cleaned, stripped_count = _sanitize_reference_profile_text("Keep lonely George as an emotional calibration phrase.")
+
+    assert stripped_count >= 1
+    assert "lonely George" not in cleaned
+    assert "Convert the reference" not in cleaned
+    assert "抽象写作技法" in cleaned
 
 
 def test_local_only_reference_learning_does_not_call_llm(session, tmp_path: Path) -> None:
