@@ -84,6 +84,9 @@ class LLMResponse:
     usage: dict[str, int]
     finish_reason: str | None = None
     native_reasoning: dict[str, Any] | None = None
+    attempt_count: int = 1
+    max_retries: int = 0
+    retryable: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -189,6 +192,7 @@ class LLMClient:
                         "LLM_REQUEST_TIMEOUT",
                         f"llm request timed out after {timeout_seconds} seconds",
                         retryable=True,
+                        details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
                     ) from exc
                 except httpx.RequestError as exc:
                     if attempt < self._max_retries:
@@ -197,6 +201,7 @@ class LLMClient:
                         "LLM_HTTP_REQUEST_FAILED",
                         f"llm request failed: {exc}",
                         retryable=True,
+                        details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
                     ) from exc
 
                 if response.status_code == 429:
@@ -207,7 +212,11 @@ class LLMClient:
                         _error_message_for_status(response),
                         status_code=429,
                         retryable=True,
-                        details=_extract_error_details(response),
+                        details=_with_attempt_metadata(
+                            _extract_error_details(response),
+                            attempt=attempt,
+                            max_retries=self._max_retries,
+                        ),
                     )
 
                 if response.status_code in RETRYABLE_STATUS_CODES:
@@ -218,7 +227,11 @@ class LLMClient:
                         _error_message_for_status(response),
                         status_code=response.status_code,
                         retryable=True,
-                        details=_extract_error_details(response),
+                        details=_with_attempt_metadata(
+                            _extract_error_details(response),
+                            attempt=attempt,
+                            max_retries=self._max_retries,
+                        ),
                     )
 
                 if response.is_error:
@@ -226,7 +239,11 @@ class LLMClient:
                         "LLM_HTTP_FAILURE",
                         _error_message_for_status(response),
                         status_code=response.status_code,
-                        details=_extract_error_details(response),
+                        details=_with_attempt_metadata(
+                            _extract_error_details(response),
+                            attempt=attempt,
+                            max_retries=self._max_retries,
+                        ),
                     )
 
                 try:
@@ -235,19 +252,34 @@ class LLMClient:
                     raise LLMResponseError(
                         "LLM_RESPONSE_INVALID",
                         "llm provider returned invalid JSON",
+                        details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
                     ) from exc
 
                 try:
-                    return self._parse_response(body, request, provider_config, native_reasoning=native_reasoning)
+                    return self._parse_response(
+                        body,
+                        request,
+                        provider_config,
+                        native_reasoning=native_reasoning,
+                        attempt_count=attempt + 1,
+                        max_retries=self._max_retries,
+                    )
                 except LLMResponseError as exc:
                     if exc.code in RETRYABLE_RESPONSE_ERROR_CODES and attempt < self._max_retries:
                         continue
+                    exc.details = _with_attempt_metadata(
+                        exc.details,
+                        attempt=attempt,
+                        max_retries=self._max_retries,
+                    )
+                    exc.retryable = exc.code in RETRYABLE_RESPONSE_ERROR_CODES
                     raise
 
         raise LLMHTTPError(
             "LLM_HTTP_FAILURE",
             "llm request failed without a response",
             retryable=True,
+            details=_with_attempt_metadata({}, attempt=self._max_retries, max_retries=self._max_retries),
         )
 
     def _resolve_provider_config(self, request: LLMRequest) -> ProviderRuntimeConfig:
@@ -440,6 +472,8 @@ class LLMClient:
         provider_config: ProviderRuntimeConfig,
         *,
         native_reasoning: dict[str, Any] | None,
+        attempt_count: int,
+        max_retries: int,
     ) -> LLMResponse:
         text = self._extract_output_text(body, request=request, provider_type=provider_config.provider_type)
         structured_output: dict[str, Any] | None = None
@@ -468,6 +502,9 @@ class LLMClient:
             usage=_normalize_usage(body.get("usage") or body.get("usageMetadata")),
             finish_reason=_extract_finish_reason(body, request.api_mode, provider_type=provider_config.provider_type),
             native_reasoning=native_reasoning,
+            attempt_count=attempt_count,
+            max_retries=max_retries,
+            retryable=False,
         )
 
     def _extract_output_text(
@@ -965,6 +1002,14 @@ def _extract_error_details(response: httpx.Response) -> dict[str, Any]:
     if isinstance(error, dict):
         return error
     return body
+
+
+def _with_attempt_metadata(details: dict[str, Any], *, attempt: int, max_retries: int) -> dict[str, Any]:
+    return {
+        **dict(details),
+        "attempt_count": attempt + 1,
+        "max_retries": max_retries,
+    }
 
 
 def _error_message_for_status(response: httpx.Response) -> str:

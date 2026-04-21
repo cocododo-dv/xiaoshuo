@@ -929,8 +929,12 @@ def test_hard_qc_engine_turns_malformed_payload_into_human_review_required(sessi
 
     report = session.execute(select(QcReport)).scalars().one()
     event = session.execute(select(HumanReviewEvent)).scalars().one()
+    attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "hard_qc")).scalars().one()
+    llm_call = session.execute(select(LlmCall).where(LlmCall.step == "hard_qc")).scalars().one()
 
     assert decision.branch == "human_review_required"
+    assert attempt.details_json["llm_call_id"] == llm_call.llm_call_id
+    assert llm_call.error_code is None
     assert report.resolution_code == "hard_block_human"
     assert report.next_action == "human_review_required"
     assert report.pass_flag == 0
@@ -1121,8 +1125,13 @@ def test_hard_qc_engine_turns_runtime_failure_into_human_review_with_distinct_re
 
     report = session.execute(select(QcReport)).scalars().one()
     event = session.execute(select(HumanReviewEvent)).scalars().one()
+    attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "hard_qc")).scalars().one()
+    llm_call = session.execute(select(LlmCall).where(LlmCall.step == "hard_qc")).scalars().one()
 
     assert decision.branch == "human_review_required"
+    assert attempt.details_json["llm_call_id"] == llm_call.llm_call_id
+    assert attempt.details_json["error_code"] == "RuntimeError"
+    assert llm_call.error_code == "RuntimeError"
     assert report.resolution_code == "hard_block_human"
     assert event.details_json["trigger_reason"] == "hard_qc_execution_failed"
     assert "execution failed" in event.details_json["failure_reason"]

@@ -8,6 +8,7 @@ from novel_system.db.models import AttemptTracker, FinalScene, QcReport, SceneCa
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.bundle_builder import BundleBuilder
+from novel_system.services.llm_task_runner import LLMNodeRunner
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_generation import SceneGenerationService, versioned_scene_artifact_id
 from novel_system.services.version_manager import VersionManager
@@ -27,9 +28,10 @@ class Orchestrator:
         self.archiver = Archiver(session)
         self.aggregator = Aggregator(session)
         self.version_manager = VersionManager(session)
-        self.scene_generation_service = scene_generation_service or SceneGenerationService(session)
-        self.hard_qc_engine = hard_qc_engine or HardQcEngine(session)
-        self.soft_qc_engine = soft_qc_engine or SoftQcEngine(session)
+        llm_runner = LLMNodeRunner(session)
+        self.scene_generation_service = scene_generation_service or SceneGenerationService(session, llm_runner=llm_runner)
+        self.hard_qc_engine = hard_qc_engine or HardQcEngine(session, llm_runner=llm_runner)
+        self.soft_qc_engine = soft_qc_engine or SoftQcEngine(session, llm_runner=llm_runner)
 
     def run_scene(self, scene_id: str, from_step: str = "bundle", resume: bool = False) -> dict:
         self.version_manager.recover_stuck_jobs()

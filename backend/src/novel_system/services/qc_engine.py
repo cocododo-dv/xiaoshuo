@@ -11,14 +11,12 @@ from sqlalchemy.orm import Session
 
 from novel_system.contracts.qc import SoftQCOutput
 from novel_system.db.models import AttemptTracker, QcReport, SceneCard, SceneRunState
-from novel_system.services.context_budget import finalize_request_budget
 from novel_system.services.human_review_manager import HumanReviewManager
-from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse, load_model_routing_config
+from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_task_runner import LLMNodeContinuityError, LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
 from novel_system.services.style_profile import StyleScoreService
-from novel_system.services.system_config import load_llm_provider_runtime_configs
-from novel_system.settings import get_settings
 
 
 CONTINUITY_BUDGET_ISSUE_KEY = "continuity_budget_exceeded"
@@ -105,10 +103,6 @@ class OfflineSoftQcClient:
             usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
             finish_reason="offline_fallback",
         )
-
-
-def _requires_scene_split(continuity_warning: Any) -> bool:
-    return isinstance(continuity_warning, dict) and bool(continuity_warning.get("requires_scene_split"))
 
 
 def _continuity_warning_message(continuity_warning: Any) -> str:
@@ -198,13 +192,12 @@ class HardQcEngine:
         session: Session,
         *,
         llm_client: Any | None = None,
+        llm_runner: LLMNodeRunner | None = None,
         human_review_manager: HumanReviewManager | None = None,
     ) -> None:
         self.session = session
         self.prompt_builder = PromptBuilder()
-        self.routing_config = load_model_routing_config()
-        self.settings = get_settings()
-        self._llm_client = llm_client
+        self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
         self.human_review_manager = human_review_manager or HumanReviewManager(session)
 
     def evaluate(
@@ -217,59 +210,64 @@ class HardQcEngine:
     ) -> HardQcDecision:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        llm_call_id: str | None = None
         try:
             prompt = self.prompt_builder.build(bundle["snapshot"], "hard_qc")
             final_user_prompt = self._build_user_prompt(prompt["user_prompt"], neutral_content)
-            final_budget = finalize_request_budget(
-                system_prompt=prompt["system_prompt"],
-                user_prompt=final_user_prompt,
-                base_budget=prompt["token_budget"],
-            )
-            prompt["token_budget"] = final_budget["budget"]
-            prompt["continuity_warning"] = final_budget["continuity_warning"]
-            continuity_warning = prompt.get("continuity_warning")
-            if _requires_scene_split(continuity_warning):
-                self._clear_downstream_outputs(state)
-                return self._human_review_decision(
-                    scene=scene,
-                    state=state,
-                    bundle=bundle,
-                    neutral_draft_row_id=neutral_draft_row_id,
-                    failure_reason=(
-                        "hard_qc prompt exceeded the safe continuity budget after deterministic compaction; "
-                        "split the scene before retrying QC."
-                    ),
-                    trigger_reason="hard_qc_continuity_budget_exceeded",
-                    fallback_payload=self._fallback_block_payload(
-                        issue_key=_continuity_warning_issue_key(continuity_warning),
-                        message=_continuity_warning_message(continuity_warning),
-                        rewrite_brief=[CONTINUITY_BUDGET_REWRITE],
-                        continuity_warning=continuity_warning,
-                    ),
-                    continuity_warning=continuity_warning,
-                )
-            task_config = self.routing_config.node_routing["hard_qc"]
-            request = LLMRequest(
-                model=task_config.model,
-                messages=[
-                    {"role": "system", "content": prompt["system_prompt"]},
-                    {"role": "user", "content": final_user_prompt},
-                ],
-                temperature=task_config.temperature,
-                max_output_tokens=task_config.max_output_tokens,
-                response_format=task_config.response_format,
-                provider=task_config.provider,
+            node_result = self._llm_runner.run(
+                scene_id=scene_id,
+                chapter_id=scene.chapter_id,
+                bundle_id=bundle["bundle_id"],
+                bundle_hash=bundle["bundle_snapshot_hash"],
                 node_id="hard_qc",
-                provider_id=task_config.provider_id,
-                account_id=task_config.account_id,
-                reasoning_level=task_config.reasoning_level,
-                api_mode=task_config.api_mode,
-                credential_mode=task_config.credential_mode,
-                provider_options=task_config.provider_options,
-                response_schema=_response_schema(prompt),
+                step="hard_qc",
+                prompt=prompt,
+                user_prompt=final_user_prompt,
+                offline_client_factory=OfflineHardQcClient,
+                source_draft_row_id=neutral_draft_row_id,
+                source_draft_content=neutral_content,
             )
-            response = self._client().generate(request)
-            payload = response.structured_output or {}
+            llm_call_id = node_result.llm_call_id
+            payload = node_result.response.structured_output or {}
+        except LLMNodeContinuityError as exc:
+            self._clear_downstream_outputs(state)
+            return self._human_review_decision(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                neutral_draft_row_id=neutral_draft_row_id,
+                failure_reason=(
+                    "hard_qc prompt exceeded the safe continuity budget after deterministic compaction; "
+                    "split the scene before retrying QC."
+                ),
+                trigger_reason="hard_qc_continuity_budget_exceeded",
+                fallback_payload=self._fallback_block_payload(
+                    issue_key=_continuity_warning_issue_key(exc.continuity_warning),
+                    message=_continuity_warning_message(exc.continuity_warning),
+                    rewrite_brief=[CONTINUITY_BUDGET_REWRITE],
+                    continuity_warning=exc.continuity_warning,
+                ),
+                continuity_warning=exc.continuity_warning,
+                llm_call_id=exc.llm_call_id,
+                error_code=exc.error_code,
+                retryable=exc.retryable,
+            )
+        except LLMNodeExecutionError as exc:
+            return self._human_review_decision(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                neutral_draft_row_id=neutral_draft_row_id,
+                failure_reason=f"hard_qc execution failed before a valid QC payload was produced: {exc.message}",
+                trigger_reason="hard_qc_execution_failed",
+                fallback_payload=self._fallback_block_payload(
+                    issue_key="hard_qc_execution_failed",
+                    message=f"QC execution failed: {exc.message}",
+                ),
+                llm_call_id=exc.llm_call_id,
+                error_code=exc.error_code,
+                retryable=exc.retryable,
+            )
         except Exception as exc:
             return self._human_review_decision(
                 scene=scene,
@@ -297,6 +295,7 @@ class HardQcEngine:
                     issue_key="invalid_hard_qc_payload",
                     message=f"QC payload validation failed: {exc}",
                 ),
+                llm_call_id=llm_call_id,
             )
 
         payload = self._apply_deterministic_sanity(scene, neutral_content, report.model_dump())
@@ -324,6 +323,7 @@ class HardQcEngine:
                 branch=branch,
                 failure_reason=self._failure_reason_for_circuit_breaker(circuit_breaker_reason, branch),
                 trigger_reason=circuit_breaker_reason,
+                llm_call_id=llm_call_id,
             )
 
         if branch == "human_review_required":
@@ -337,6 +337,7 @@ class HardQcEngine:
                 branch=branch,
                 failure_reason="hard_qc explicitly requested human review before style generation.",
                 trigger_reason="hard_qc_requested_human_review",
+                llm_call_id=llm_call_id,
             )
 
         if branch == "rewrite_partial":
@@ -355,6 +356,7 @@ class HardQcEngine:
             resolution_code=qc_report.resolution_code or "",
             next_action=qc_report.next_action or "",
             human_review_event_id=None,
+            llm_call_id=llm_call_id,
         )
         self.session.flush()
         return HardQcDecision(
@@ -550,7 +552,25 @@ class HardQcEngine:
         resolution_code: str,
         next_action: str,
         human_review_event_id: str | None,
+        llm_call_id: str | None = None,
+        error_code: str | None = None,
+        retryable: bool | None = None,
+        continuity_warning: dict[str, Any] | None = None,
     ) -> None:
+        details_json: dict[str, Any] = {
+            "qc_report_id": qc_report_id,
+            "resolution_code": resolution_code,
+            "next_action": next_action,
+            "human_review_event_id": human_review_event_id,
+        }
+        if llm_call_id is not None:
+            details_json["llm_call_id"] = llm_call_id
+        if error_code is not None:
+            details_json["error_code"] = error_code
+        if retryable is not None:
+            details_json["retryable"] = retryable
+        if continuity_warning is not None:
+            details_json["continuity_warning"] = continuity_warning
         self.session.add(
             AttemptTracker(
                 scene_id=scene_id,
@@ -558,12 +578,7 @@ class HardQcEngine:
                 step="hard_qc",
                 status=branch,
                 source_bundle_id=source_bundle_id,
-                details_json={
-                    "qc_report_id": qc_report_id,
-                    "resolution_code": resolution_code,
-                    "next_action": next_action,
-                    "human_review_event_id": human_review_event_id,
-                },
+                details_json=details_json,
             )
         )
 
@@ -583,6 +598,9 @@ class HardQcEngine:
         trigger_reason: str,
         fallback_payload: dict[str, Any],
         continuity_warning: dict[str, Any] | None = None,
+        llm_call_id: str | None = None,
+        error_code: str | None = None,
+        retryable: bool | None = None,
     ) -> HardQcDecision:
         qc_report = self._persist_qc_report(
             scene=scene,
@@ -601,6 +619,9 @@ class HardQcEngine:
             failure_reason=failure_reason,
             trigger_reason=trigger_reason,
             continuity_warning=continuity_warning,
+            llm_call_id=llm_call_id,
+            error_code=error_code,
+            retryable=retryable,
         )
 
     def _escalate_existing_report(
@@ -615,6 +636,9 @@ class HardQcEngine:
         failure_reason: str,
         trigger_reason: str,
         continuity_warning: dict[str, Any] | None = None,
+        llm_call_id: str | None = None,
+        error_code: str | None = None,
+        retryable: bool | None = None,
     ) -> HardQcDecision:
         replay_context = {
             "scene_id": scene.scene_id,
@@ -626,6 +650,12 @@ class HardQcEngine:
             "scene_status_before_block": state.scene_status,
             "total_attempt_count": state.total_attempt_count,
         }
+        if llm_call_id is not None:
+            replay_context["llm_call_id"] = llm_call_id
+        if error_code is not None:
+            replay_context["error_code"] = error_code
+        if retryable is not None:
+            replay_context["retryable"] = retryable
         if continuity_warning is not None:
             replay_context["continuity_warning"] = continuity_warning
         event = self.human_review_manager.create_generation_blocker_event(
@@ -651,6 +681,10 @@ class HardQcEngine:
             resolution_code=qc_report.resolution_code or "",
             next_action=qc_report.next_action or "",
             human_review_event_id=event.event_id,
+            llm_call_id=llm_call_id,
+            error_code=error_code,
+            retryable=retryable,
+            continuity_warning=continuity_warning,
         )
         self.session.flush()
         return HardQcDecision(
@@ -663,33 +697,18 @@ class HardQcEngine:
             stop_reason=trigger_reason,
         )
 
-    def _client(self) -> Any:
-        if self._llm_client is not None:
-            return self._llm_client
-        if not self.settings.llm_enabled:
-            return OfflineHardQcClient()
-        return LLMClient(
-            provider=self.settings.llm_provider,
-            base_url=self.settings.llm_base_url,
-            api_key=self.settings.llm_api_key,
-            timeout_seconds=self.settings.llm_timeout_seconds,
-            provider_configs=load_llm_provider_runtime_configs(),
-        )
-
-
 class SoftQcEngine:
     def __init__(
         self,
         session: Session,
         *,
         llm_client: Any | None = None,
+        llm_runner: LLMNodeRunner | None = None,
         human_review_manager: HumanReviewManager | None = None,
     ) -> None:
         self.session = session
         self.prompt_builder = PromptBuilder()
-        self.routing_config = load_model_routing_config()
-        self.settings = get_settings()
-        self._llm_client = llm_client
+        self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
         self.human_review_manager = human_review_manager or HumanReviewManager(session)
 
     def evaluate(
@@ -702,59 +721,64 @@ class SoftQcEngine:
     ) -> SoftQcDecision:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        llm_call_id: str | None = None
         try:
             prompt = self.prompt_builder.build(bundle["snapshot"], "soft_qc")
             final_user_prompt = self._build_user_prompt(prompt["user_prompt"], source_draft_content)
-            final_budget = finalize_request_budget(
-                system_prompt=prompt["system_prompt"],
-                user_prompt=final_user_prompt,
-                base_budget=prompt["token_budget"],
-            )
-            prompt["token_budget"] = final_budget["budget"]
-            prompt["continuity_warning"] = final_budget["continuity_warning"]
-            continuity_warning = prompt.get("continuity_warning")
-            if _requires_scene_split(continuity_warning):
-                self._clear_downstream_outputs(state)
-                return self._human_review_decision(
-                    scene=scene,
-                    state=state,
-                    bundle=bundle,
-                    source_draft_row_id=source_draft_row_id,
-                    failure_reason=(
-                        "soft_qc prompt exceeded the safe continuity budget after deterministic compaction; "
-                        "split the scene before retrying QC."
-                    ),
-                    trigger_reason="soft_qc_continuity_budget_exceeded",
-                    fallback_payload=self._fallback_block_payload(
-                        issue_key=_continuity_warning_issue_key(continuity_warning),
-                        message=_continuity_warning_message(continuity_warning),
-                        rewrite_brief=[CONTINUITY_BUDGET_REWRITE],
-                        continuity_warning=continuity_warning,
-                    ),
-                    continuity_warning=continuity_warning,
-                )
-            task_config = self.routing_config.node_routing["soft_qc"]
-            request = LLMRequest(
-                model=task_config.model,
-                messages=[
-                    {"role": "system", "content": prompt["system_prompt"]},
-                    {"role": "user", "content": final_user_prompt},
-                ],
-                temperature=task_config.temperature,
-                max_output_tokens=task_config.max_output_tokens,
-                response_format=task_config.response_format,
-                provider=task_config.provider,
+            node_result = self._llm_runner.run(
+                scene_id=scene_id,
+                chapter_id=scene.chapter_id,
+                bundle_id=bundle["bundle_id"],
+                bundle_hash=bundle["bundle_snapshot_hash"],
                 node_id="soft_qc",
-                provider_id=task_config.provider_id,
-                account_id=task_config.account_id,
-                reasoning_level=task_config.reasoning_level,
-                api_mode=task_config.api_mode,
-                credential_mode=task_config.credential_mode,
-                provider_options=task_config.provider_options,
-                response_schema=_response_schema(prompt),
+                step="soft_qc",
+                prompt=prompt,
+                user_prompt=final_user_prompt,
+                offline_client_factory=OfflineSoftQcClient,
+                source_draft_row_id=source_draft_row_id,
+                source_draft_content=source_draft_content,
             )
-            response = self._client().generate(request)
-            payload = response.structured_output or {}
+            llm_call_id = node_result.llm_call_id
+            payload = node_result.response.structured_output or {}
+        except LLMNodeContinuityError as exc:
+            self._clear_downstream_outputs(state)
+            return self._human_review_decision(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                source_draft_row_id=source_draft_row_id,
+                failure_reason=(
+                    "soft_qc prompt exceeded the safe continuity budget after deterministic compaction; "
+                    "split the scene before retrying QC."
+                ),
+                trigger_reason="soft_qc_continuity_budget_exceeded",
+                fallback_payload=self._fallback_block_payload(
+                    issue_key=_continuity_warning_issue_key(exc.continuity_warning),
+                    message=_continuity_warning_message(exc.continuity_warning),
+                    rewrite_brief=[CONTINUITY_BUDGET_REWRITE],
+                    continuity_warning=exc.continuity_warning,
+                ),
+                continuity_warning=exc.continuity_warning,
+                llm_call_id=exc.llm_call_id,
+                error_code=exc.error_code,
+                retryable=exc.retryable,
+            )
+        except LLMNodeExecutionError as exc:
+            return self._human_review_decision(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                source_draft_row_id=source_draft_row_id,
+                failure_reason=f"soft_qc execution failed before a valid QC payload was produced: {exc.message}",
+                trigger_reason="soft_qc_execution_failed",
+                fallback_payload=self._fallback_block_payload(
+                    issue_key="soft_qc_execution_failed",
+                    message=f"soft QC execution failed: {exc.message}",
+                ),
+                llm_call_id=exc.llm_call_id,
+                error_code=exc.error_code,
+                retryable=exc.retryable,
+            )
         except Exception as exc:
             return self._human_review_decision(
                 scene=scene,
@@ -782,6 +806,7 @@ class SoftQcEngine:
                     issue_key="invalid_soft_qc_payload",
                     message=f"soft QC payload validation failed: {exc}",
                 ),
+                llm_call_id=llm_call_id,
             )
 
         payload = report.model_dump()
@@ -811,6 +836,7 @@ class SoftQcEngine:
                 branch=branch,
                 failure_reason="soft_qc explicitly requested human review before finalization.",
                 trigger_reason="soft_qc_requested_human_review",
+                llm_call_id=llm_call_id,
             )
 
         self._apply_issue_tracking(state, payload["issues"])
@@ -832,6 +858,7 @@ class SoftQcEngine:
             next_action=qc_report.next_action or "",
             human_review_event_id=None,
             rewrite_brief=payload["rewrite_brief"],
+            llm_call_id=llm_call_id,
         )
         self.session.flush()
         return SoftQcDecision(
@@ -982,7 +1009,27 @@ class SoftQcEngine:
         next_action: str,
         human_review_event_id: str | None,
         rewrite_brief: list[str],
+        llm_call_id: str | None = None,
+        error_code: str | None = None,
+        retryable: bool | None = None,
+        continuity_warning: dict[str, Any] | None = None,
     ) -> None:
+        details_json: dict[str, Any] = {
+            "qc_report_id": qc_report_id,
+            "resolution_code": resolution_code,
+            "next_action": next_action,
+            "source_draft_row_id": source_draft_row_id,
+            "human_review_event_id": human_review_event_id,
+            "rewrite_brief": rewrite_brief,
+        }
+        if llm_call_id is not None:
+            details_json["llm_call_id"] = llm_call_id
+        if error_code is not None:
+            details_json["error_code"] = error_code
+        if retryable is not None:
+            details_json["retryable"] = retryable
+        if continuity_warning is not None:
+            details_json["continuity_warning"] = continuity_warning
         self.session.add(
             AttemptTracker(
                 scene_id=scene_id,
@@ -990,14 +1037,7 @@ class SoftQcEngine:
                 step="soft_qc",
                 status=branch,
                 source_bundle_id=source_bundle_id,
-                details_json={
-                    "qc_report_id": qc_report_id,
-                    "resolution_code": resolution_code,
-                    "next_action": next_action,
-                    "source_draft_row_id": source_draft_row_id,
-                    "human_review_event_id": human_review_event_id,
-                    "rewrite_brief": rewrite_brief,
-                },
+                details_json=details_json,
             )
         )
 
@@ -1017,6 +1057,9 @@ class SoftQcEngine:
         trigger_reason: str,
         fallback_payload: dict[str, Any],
         continuity_warning: dict[str, Any] | None = None,
+        llm_call_id: str | None = None,
+        error_code: str | None = None,
+        retryable: bool | None = None,
     ) -> SoftQcDecision:
         qc_report = self._persist_qc_report(
             scene=scene,
@@ -1035,6 +1078,9 @@ class SoftQcEngine:
             failure_reason=failure_reason,
             trigger_reason=trigger_reason,
             continuity_warning=continuity_warning,
+            llm_call_id=llm_call_id,
+            error_code=error_code,
+            retryable=retryable,
         )
 
     def _escalate_existing_report(
@@ -1049,6 +1095,9 @@ class SoftQcEngine:
         failure_reason: str,
         trigger_reason: str,
         continuity_warning: dict[str, Any] | None = None,
+        llm_call_id: str | None = None,
+        error_code: str | None = None,
+        retryable: bool | None = None,
     ) -> SoftQcDecision:
         replay_context = {
             "scene_id": scene.scene_id,
@@ -1060,6 +1109,12 @@ class SoftQcEngine:
             "scene_status_before_block": state.scene_status,
             "soft_patch_count": state.soft_patch_count,
         }
+        if llm_call_id is not None:
+            replay_context["llm_call_id"] = llm_call_id
+        if error_code is not None:
+            replay_context["error_code"] = error_code
+        if retryable is not None:
+            replay_context["retryable"] = retryable
         if continuity_warning is not None:
             replay_context["continuity_warning"] = continuity_warning
         event = self.human_review_manager.create_generation_blocker_event(
@@ -1087,6 +1142,10 @@ class SoftQcEngine:
             next_action=qc_report.next_action or "",
             human_review_event_id=event.event_id,
             rewrite_brief=qc_report.rewrite_brief_json or [],
+            llm_call_id=llm_call_id,
+            error_code=error_code,
+            retryable=retryable,
+            continuity_warning=continuity_warning,
         )
         self.session.flush()
         return SoftQcDecision(
@@ -1098,20 +1157,3 @@ class SoftQcEngine:
             should_continue=False,
             stop_reason=trigger_reason,
         )
-
-    def _client(self) -> Any:
-        if self._llm_client is not None:
-            return self._llm_client
-        if not self.settings.llm_enabled:
-            return OfflineSoftQcClient()
-        return LLMClient(
-            provider=self.settings.llm_provider,
-            base_url=self.settings.llm_base_url,
-            api_key=self.settings.llm_api_key,
-            timeout_seconds=self.settings.llm_timeout_seconds,
-            provider_configs=load_llm_provider_runtime_configs(),
-        )
-
-
-def _response_schema(prompt: dict[str, Any]) -> dict[str, Any]:
-    return {"name": str(prompt["template_name"]), "schema": prompt["structured_schema"]}

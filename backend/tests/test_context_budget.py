@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from novel_system.db.models import ChapterGoal, HumanReviewEvent, QcReport, SceneCard, SceneDraft, SceneRunState
+from novel_system.db.models import AttemptTracker, ChapterGoal, HumanReviewEvent, LlmCall, QcReport, SceneCard, SceneDraft, SceneRunState
 from novel_system.services.context_budget import (
     CONTINUITY_DROP_ORDER,
     apply_context_budget,
@@ -228,10 +228,15 @@ def test_hard_qc_engine_escalates_continuity_warning_before_llm_call(session) ->
 
     report = session.execute(select(QcReport)).scalars().one()
     event = session.execute(select(HumanReviewEvent)).scalars().one()
+    attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "hard_qc")).scalars().one()
+    llm_call = session.execute(select(LlmCall).where(LlmCall.step == "hard_qc")).scalars().one()
 
     assert client.requests == []
     assert decision.branch == "human_review_required"
     assert decision.stop_reason == "hard_qc_continuity_budget_exceeded"
+    assert attempt.details_json["llm_call_id"] == llm_call.llm_call_id
+    assert attempt.details_json["continuity_warning"]["requires_scene_split"] is True
+    assert llm_call.error_code == "CONTINUITY_BUDGET_EXCEEDED"
     assert report.next_action == "human_review_required"
     assert report.issues_json[0]["issue_key"] == "continuity_budget_exceeded"
     assert report.issues_json[0]["message"] == continuity_warning["message"]
@@ -345,10 +350,15 @@ def test_soft_qc_engine_escalates_continuity_warning_before_llm_call(session) ->
 
     report = session.execute(select(QcReport)).scalars().one()
     event = session.execute(select(HumanReviewEvent)).scalars().one()
+    attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "soft_qc")).scalars().one()
+    llm_call = session.execute(select(LlmCall).where(LlmCall.step == "soft_qc")).scalars().one()
 
     assert client.requests == []
     assert decision.branch == "human_review_required"
     assert decision.stop_reason == "soft_qc_continuity_budget_exceeded"
+    assert attempt.details_json["llm_call_id"] == llm_call.llm_call_id
+    assert attempt.details_json["continuity_warning"]["requires_scene_split"] is True
+    assert llm_call.error_code == "CONTINUITY_BUDGET_EXCEEDED"
     assert report.next_action == "human_review_required"
     assert report.issues_json[0]["issue_key"] == "continuity_budget_exceeded"
     assert report.issues_json[0]["message"] == continuity_warning["message"]

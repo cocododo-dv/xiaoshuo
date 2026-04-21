@@ -140,6 +140,9 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     session.commit()
 
     llm_calls = session.execute(select(LlmCall).order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())).scalars().all()
+    llm_calls_by_step = {llm_call.step: llm_call for llm_call in llm_calls}
+    neutral_llm_call = llm_calls_by_step["neutral_draft"]
+    style_llm_call = llm_calls_by_step["style_draft"]
     bundle = session.execute(select(SceneBundle)).scalars().one()
     neutral_draft = session.execute(
         select(SceneDraft).where(SceneDraft.stage == "neutral_draft")
@@ -196,49 +199,50 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
 
     assert neutral_draft.content == "Provider-generated neutral scene text.\n\nA red envelope changes hands."
     assert "Clocktower Roof" not in neutral_draft.content
-    assert neutral_draft.generation_llm_call_id == llm_calls[0].llm_call_id
+    assert neutral_draft.generation_llm_call_id == neutral_llm_call.llm_call_id
     assert neutral_draft.source_bundle_id == bundle.bundle_id
     assert neutral_draft.source_bundle_hash == bundle.bundle_snapshot_hash
     assert style_draft.content == "Provider-generated style scene text.\n\nA red envelope changes hands."
-    assert style_draft.generation_llm_call_id == llm_calls[1].llm_call_id
+    assert style_draft.generation_llm_call_id == style_llm_call.llm_call_id
     assert style_draft.source_bundle_id == bundle.bundle_id
     assert style_draft.source_bundle_hash == bundle.bundle_snapshot_hash
 
-    assert llm_calls[0].provider == "fake-provider"
-    assert llm_calls[0].node_id == "neutral_draft"
-    assert llm_calls[0].reasoning_level == "medium"
-    assert llm_calls[0].model == "fake-neutral-model"
-    assert llm_calls[0].step == "neutral_draft"
-    assert llm_calls[0].scene_id == "CH100_SC01"
-    assert llm_calls[0].chapter_id == "CH100"
-    assert llm_calls[0].prompt_hash
-    assert llm_calls[0].prompt_tokens == 111
-    assert llm_calls[0].completion_tokens == 29
-    assert llm_calls[0].total_tokens == 140
-    assert llm_calls[0].finish_reason == "stop"
-    assert llm_calls[0].error_code is None
-    assert llm_calls[0].request_payload_summary["token_budget"]["estimated_input_tokens"] == sum(
+    assert {"neutral_draft", "hard_qc", "style_draft", "soft_qc"}.issubset(llm_calls_by_step)
+    assert neutral_llm_call.provider == "fake-provider"
+    assert neutral_llm_call.node_id == "neutral_draft"
+    assert neutral_llm_call.reasoning_level == "medium"
+    assert neutral_llm_call.model == "fake-neutral-model"
+    assert neutral_llm_call.step == "neutral_draft"
+    assert neutral_llm_call.scene_id == "CH100_SC01"
+    assert neutral_llm_call.chapter_id == "CH100"
+    assert neutral_llm_call.prompt_hash
+    assert neutral_llm_call.prompt_tokens == 111
+    assert neutral_llm_call.completion_tokens == 29
+    assert neutral_llm_call.total_tokens == 140
+    assert neutral_llm_call.finish_reason == "stop"
+    assert neutral_llm_call.error_code is None
+    assert neutral_llm_call.request_payload_summary["token_budget"]["estimated_input_tokens"] == sum(
         estimate_tokens(message["content"]) for message in request.messages
     )
-    assert llm_calls[1].provider == "fake-provider"
-    assert llm_calls[1].node_id == "style_draft"
-    assert llm_calls[1].reasoning_level == "medium"
-    assert llm_calls[1].model == "fake-style-model"
-    assert llm_calls[1].step == "style_draft"
-    assert llm_calls[1].scene_id == "CH100_SC01"
-    assert llm_calls[1].chapter_id == "CH100"
-    assert llm_calls[1].prompt_hash
-    assert llm_calls[1].prompt_tokens == 121
-    assert llm_calls[1].completion_tokens == 33
-    assert llm_calls[1].total_tokens == 154
-    assert llm_calls[1].finish_reason == "stop"
-    assert llm_calls[1].error_code is None
-    assert llm_calls[1].request_payload_summary["token_budget"]["estimated_input_tokens"] == sum(
+    assert style_llm_call.provider == "fake-provider"
+    assert style_llm_call.node_id == "style_draft"
+    assert style_llm_call.reasoning_level == "medium"
+    assert style_llm_call.model == "fake-style-model"
+    assert style_llm_call.step == "style_draft"
+    assert style_llm_call.scene_id == "CH100_SC01"
+    assert style_llm_call.chapter_id == "CH100"
+    assert style_llm_call.prompt_hash
+    assert style_llm_call.prompt_tokens == 121
+    assert style_llm_call.completion_tokens == 33
+    assert style_llm_call.total_tokens == 154
+    assert style_llm_call.finish_reason == "stop"
+    assert style_llm_call.error_code is None
+    assert style_llm_call.request_payload_summary["token_budget"]["estimated_input_tokens"] == sum(
         estimate_tokens(message["content"]) for message in style_request.messages
     )
 
     assert attempt.source_bundle_id == bundle.bundle_id
-    assert attempt.details_json == {"row_id": neutral_draft.row_id}
+    assert attempt.details_json == {"row_id": neutral_draft.row_id, "llm_call_id": neutral_llm_call.llm_call_id}
     assert state.current_neutral_draft_row_id == neutral_draft.row_id
     assert state.current_bundle_id == bundle.bundle_id
     assert state.current_bundle_hash == bundle.bundle_snapshot_hash
@@ -416,11 +420,22 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
                         "max_output_tokens": 6000,
                         "response_format": "json_object",
                     },
-                )()
+                )(),
+                "hard_qc": type(
+                    "TaskConfig",
+                    (),
+                    {
+                        "provider": "offline_deterministic",
+                        "model": "offline-hard-qc",
+                        "temperature": 0.0,
+                        "max_output_tokens": 4000,
+                        "response_format": "json_object",
+                    },
+                )(),
             }
 
     monkeypatch.setattr(
-        "novel_system.services.scene_generation.load_model_routing_config",
+        "novel_system.services.llm_task_runner.load_model_routing_config",
         lambda: FakeRoutingConfig(),
     )
 
@@ -435,9 +450,11 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
     attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "style_draft")).scalars().one()
     state = session.get(SceneRunState, "CH100_SC01")
 
-    assert [llm_call.step for llm_call in llm_calls] == ["neutral_draft", "style_draft"]
+    assert [llm_call.step for llm_call in llm_calls] == ["neutral_draft", "hard_qc", "style_draft"]
     assert llm_calls[-1].error_code == "KeyError"
     assert attempt.status == "failed"
+    assert attempt.details_json["llm_call_id"] == llm_calls[-1].llm_call_id
+    assert attempt.details_json["error_code"] == "KeyError"
     assert state.current_style_draft_row_id is None
 
 
@@ -454,6 +471,9 @@ def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch)
     llm_calls = session.execute(
         select(LlmCall).order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())
     ).scalars().all()
+    llm_calls_by_step = {llm_call.step: llm_call for llm_call in llm_calls}
+    neutral_llm_call = llm_calls_by_step["neutral_draft"]
+    style_llm_call = llm_calls_by_step["style_draft"]
     neutral_draft = session.execute(
         select(SceneDraft).where(SceneDraft.stage == "neutral_draft")
     ).scalars().one()
@@ -462,7 +482,7 @@ def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch)
     ).scalars().one()
     final_scene = session.execute(select(FinalScene)).scalars().one()
 
-    assert [llm_call.step for llm_call in llm_calls] == ["neutral_draft", "style_draft"]
+    assert {"neutral_draft", "hard_qc", "style_draft", "soft_qc"}.issubset(llm_calls_by_step)
     assert all(llm_call.provider == "offline_deterministic" for llm_call in llm_calls)
     assert all(llm_call.finish_reason == "offline_fallback" for llm_call in llm_calls)
     assert neutral_draft.content.startswith(
@@ -471,9 +491,9 @@ def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch)
     )
     assert "A red envelope changes hands." in neutral_draft.content
     assert "Clocktower Roof" not in neutral_draft.content
-    assert neutral_draft.generation_llm_call_id == llm_calls[0].llm_call_id
+    assert neutral_draft.generation_llm_call_id == neutral_llm_call.llm_call_id
     assert style_draft.content != neutral_draft.content
-    assert style_draft.generation_llm_call_id == llm_calls[1].llm_call_id
+    assert style_draft.generation_llm_call_id == style_llm_call.llm_call_id
     assert final_scene.content == style_draft.content
     assert final_scene.generation_llm_call_id == style_draft.generation_llm_call_id
     assert result["current_bundle_id"]

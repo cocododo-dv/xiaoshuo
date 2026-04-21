@@ -196,6 +196,9 @@ def test_llm_client_retries_http_429_before_succeeding() -> None:
         "total_tokens": 14,
     }
     assert response.finish_reason == "stop"
+    assert response.attempt_count == 2
+    assert response.max_retries == 1
+    assert response.retryable is False
 
 
 def test_llm_client_retries_malformed_json_before_succeeding() -> None:
@@ -244,6 +247,9 @@ def test_llm_client_retries_malformed_json_before_succeeding() -> None:
     assert attempts == 2
     assert response.request_id == "resp_good_json_retry"
     assert response.structured_output == {"scene_text": "ok"}
+    assert response.attempt_count == 2
+    assert response.max_retries == 1
+    assert response.retryable is False
 
 
 def test_llm_client_raises_normalized_error_for_malformed_json_response() -> None:
@@ -424,6 +430,8 @@ def test_llm_client_preserves_provider_error_details_for_non_429_http_failure() 
         "message": "invalid api key",
         "type": "invalid_request_error",
         "code": "invalid_api_key",
+        "attempt_count": 1,
+        "max_retries": 2,
     }
     assert "invalid api key" in exc_info.value.message
 
@@ -468,6 +476,8 @@ def test_llm_client_preserves_provider_error_details_for_429_failure() -> None:
         "message": "too many requests",
         "type": "rate_limit_error",
         "code": "rate_limit_exceeded",
+        "attempt_count": 1,
+        "max_retries": 0,
     }
     assert "too many requests" in exc_info.value.message
 
@@ -498,6 +508,8 @@ def test_llm_client_normalizes_timeout_failures() -> None:
 
     assert exc_info.value.code == "LLM_REQUEST_TIMEOUT"
     assert exc_info.value.retryable is True
+    assert exc_info.value.details["attempt_count"] == 1
+    assert exc_info.value.details["max_retries"] == 0
 
 
 def test_llm_client_normalizes_request_failures() -> None:
@@ -526,6 +538,8 @@ def test_llm_client_normalizes_request_failures() -> None:
 
     assert exc_info.value.code == "LLM_HTTP_REQUEST_FAILED"
     assert exc_info.value.retryable is True
+    assert exc_info.value.details["attempt_count"] == 1
+    assert exc_info.value.details["max_retries"] == 0
 
 
 def test_llm_settings_and_model_routing_config_load_from_env_and_repo_config(

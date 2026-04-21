@@ -11,13 +11,18 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import AttemptTracker, LlmCall, SceneCard, SceneDraft, SceneRunState
-from novel_system.services.context_budget import finalize_request_budget
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse, load_model_routing_config
-from novel_system.services.system_config import load_llm_provider_runtime_configs
+from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_task_runner import (
+    CONTINUITY_BUDGET_ERROR_CODE,
+    CONTINUITY_BUDGET_MESSAGE,
+    SCENE_SPLIT_RECOMMENDATION,
+    LLMNodeContinuityError,
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+)
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.settings import get_settings
 
 
 @dataclass(slots=True)
@@ -38,7 +43,6 @@ class StyleGenerationResult:
     bundle_hash: str
 
 
-SCENE_SPLIT_RECOMMENDATION = "Split the scene and retry generation with a smaller continuity scope."
 JSON_SCHEMA_INSTRUCTION = "Return JSON that matches the structured schema exactly."
 
 
@@ -123,112 +127,65 @@ class OfflineStyleClient:
 
 
 class SceneGenerationService:
-    def __init__(self, session: Session, *, llm_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        llm_client: Any | None = None,
+        llm_runner: LLMNodeRunner | None = None,
+    ) -> None:
         self.session = session
-        self.settings = get_settings()
-        self._llm_client = llm_client
+        self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
         self._prompt_builder_instance: PromptBuilder | None = None
-        self._routing_config_cache: Any | None = None
 
     def generate_neutral_draft(self, scene_id: str, bundle: dict[str, Any]) -> NeutralGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
-        llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
+        fallback_llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
-        task_config: Any | None = None
-        request_summary: dict[str, Any] = {}
 
         try:
             prompt = self._prompt_builder().build(bundle["snapshot"], "neutral_draft")
-            task_config = self._task_config("neutral_draft")
-            request = LLMRequest(
-                model=task_config.model,
-                messages=[
-                    {"role": "system", "content": prompt["system_prompt"]},
-                    {"role": "user", "content": prompt["user_prompt"]},
-                ],
-                temperature=task_config.temperature,
-                max_output_tokens=task_config.max_output_tokens,
-                response_format=task_config.response_format,
-                provider=task_config.provider,
-                node_id="neutral_draft",
-                provider_id=getattr(task_config, "provider_id", None),
-                account_id=getattr(task_config, "account_id", None),
-                reasoning_level=getattr(task_config, "reasoning_level", "medium"),
-                response_schema=_response_schema(prompt),
-                api_mode=getattr(task_config, "api_mode", "responses"),
-                credential_mode=getattr(task_config, "credential_mode", None),
-                provider_options=getattr(task_config, "provider_options", {}),
-            )
-            final_budget = finalize_request_budget(
-                system_prompt=request.messages[0]["content"],
-                user_prompt=request.messages[1]["content"],
-                base_budget=prompt["token_budget"],
-            )
-            request_summary = {
-                "template_name": prompt["template_name"],
-                "template_version": prompt["template_version"],
-                "messages": request.messages,
-                "temperature": request.temperature,
-                "max_output_tokens": request.max_output_tokens,
-                "response_format": request.response_format,
-                "provider": request.provider,
-                "provider_id": request.provider_id,
-                "account_id": request.account_id,
-                "reasoning_level": request.reasoning_level,
-                "credential_mode": request.credential_mode,
-                "token_budget": final_budget["budget"],
-                "continuity_warning": final_budget["continuity_warning"],
-            }
-            self._raise_if_scene_split_required(final_budget["continuity_warning"])
-            response = self._client().generate(request)
-            neutral_content = _ensure_required_scene_text(scene, _extract_scene_text(response))
         except Exception as exc:
             self._persist_generation_failure(
                 scene=scene,
                 state=state,
                 bundle=bundle,
-                llm_call_id=llm_call_id,
+                llm_call_id=fallback_llm_call_id,
                 step="neutral_draft",
                 started_at=started_at,
-                task_config=task_config,
+                task_config=None,
                 prompt=prompt,
-                request_summary=request_summary,
+                request_summary={},
                 exc=exc,
             )
             raise
 
-        self.session.add(
-            LlmCall(
-                llm_call_id=llm_call_id,
-                provider=response.provider,
-                provider_id=request.provider_id,
-                account_id=request.account_id,
-                model=response.model,
-                node_id=request.node_id,
-                reasoning_level=request.reasoning_level,
-                native_reasoning_json=response.native_reasoning,
-                credential_mode=request.credential_mode,
-                prompt_hash=prompt["prompt_hash"],
-                step="neutral_draft",
+        try:
+            node_result = self._llm_runner.run(
                 scene_id=scene_id,
                 chapter_id=scene.chapter_id,
-                request_payload_summary=request_summary,
-                response_payload_summary={
-                    "request_id": response.request_id,
-                    "response_format": response.response_format,
-                    "structured_output": response.structured_output,
-                },
-                prompt_tokens=response.usage.get("input_tokens", 0),
-                completion_tokens=response.usage.get("output_tokens", 0),
-                total_tokens=response.usage.get("total_tokens", 0),
-                latency_ms=int((time.perf_counter() - started_at) * 1000),
-                finish_reason=response.finish_reason,
-                error_code=None,
+                bundle_id=bundle["bundle_id"],
+                bundle_hash=bundle["bundle_snapshot_hash"],
+                node_id="neutral_draft",
+                step="neutral_draft",
+                prompt=prompt,
+                user_prompt=prompt["user_prompt"],
+                offline_client_factory=OfflineNeutralClient,
             )
-        )
-        self.session.flush()
+            response = node_result.response
+            neutral_content = _ensure_required_scene_text(scene, _extract_scene_text(response))
+        except LLMNodeExecutionError as exc:
+            self._record_runner_failure_attempt(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                step="neutral_draft",
+                prompt=prompt,
+                exc=exc,
+            )
+            self._raise_original_runner_error(exc)
 
         neutral_row_id = versioned_scene_artifact_id("draft_neutral", scene_id, bundle)
         self.session.add(
@@ -240,7 +197,7 @@ class SceneGenerationService:
                 content=neutral_content,
                 source_bundle_id=bundle["bundle_id"],
                 source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=llm_call_id,
+                generation_llm_call_id=node_result.llm_call_id,
             )
         )
         self.session.flush()
@@ -252,7 +209,7 @@ class SceneGenerationService:
                 step="neutral_draft",
                 status="completed",
                 source_bundle_id=bundle["bundle_id"],
-                details_json={"row_id": neutral_row_id},
+                details_json={"row_id": neutral_row_id, "llm_call_id": node_result.llm_call_id},
             )
         )
         self.session.flush()
@@ -266,7 +223,7 @@ class SceneGenerationService:
         return NeutralGenerationResult(
             row_id=neutral_row_id,
             content=neutral_content,
-            llm_call_id=llm_call_id,
+            llm_call_id=node_result.llm_call_id,
             bundle_id=bundle["bundle_id"],
             bundle_hash=bundle["bundle_snapshot_hash"],
         )
@@ -353,95 +310,63 @@ class SceneGenerationService:
         patch_brief: list[str] | None = None,
         attempt_details_extra: dict[str, Any] | None = None,
     ) -> StyleGenerationResult:
-        llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
+        fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
         prompt: dict[str, Any] | None = None
-        task_config: Any | None = None
-        request: LLMRequest | None = None
-        request_summary: dict[str, Any] = {}
 
         try:
             prompt = self._prompt_builder().build(bundle["snapshot"], "style_draft")
-            request = self._build_style_request(
-                prompt,
-                neutral_content=neutral_content,
-                source_label=source_label,
-                source_row_id=source_row_id,
-                extra_instruction=extra_instruction,
-                patch_brief=patch_brief,
-            )
-            task_config = self._task_config("style_patch" if patch_brief else "style_draft")
-            final_budget = finalize_request_budget(
-                system_prompt=request.messages[0]["content"],
-                user_prompt=request.messages[1]["content"],
-                base_budget=prompt["token_budget"],
-            )
-            request_summary = {
-                "template_name": prompt["template_name"],
-                "template_version": prompt["template_version"],
-                "messages": request.messages,
-                "temperature": request.temperature,
-                "max_output_tokens": request.max_output_tokens,
-                "response_format": request.response_format,
-                "provider": request.provider,
-                "provider_id": request.provider_id,
-                "account_id": request.account_id,
-                "reasoning_level": request.reasoning_level,
-                "credential_mode": request.credential_mode,
-                "token_budget": final_budget["budget"],
-                "continuity_warning": final_budget["continuity_warning"],
-                "source_draft_row_id": source_draft_row_id,
-                "source_draft_content": source_draft_content,
-            }
-            self._raise_if_scene_split_required(final_budget["continuity_warning"])
-            response = self._client(kind=client_kind).generate(request)
-            style_content = _ensure_required_scene_text(scene, _extract_scene_text(response))
         except Exception as exc:
             self._persist_generation_failure(
                 scene=scene,
                 state=state,
                 bundle=bundle,
-                llm_call_id=llm_call_id,
+                llm_call_id=fallback_llm_call_id,
                 step=llm_step,
                 started_at=started_at,
-                task_config=task_config,
+                task_config=None,
                 prompt=prompt,
-                request_summary=request_summary,
+                request_summary={},
                 exc=exc,
                 source_draft_row_id=source_draft_row_id,
             )
             raise
 
-        self.session.add(
-            LlmCall(
-                llm_call_id=llm_call_id,
-                provider=response.provider,
-                provider_id=request.provider_id,
-                account_id=request.account_id,
-                model=response.model,
-                node_id=request.node_id,
-                reasoning_level=request.reasoning_level,
-                native_reasoning_json=response.native_reasoning,
-                credential_mode=request.credential_mode,
-                prompt_hash=prompt["prompt_hash"],
-                step=llm_step,
+        user_prompt = self._build_style_user_prompt(
+            prompt["user_prompt"],
+            neutral_content=neutral_content,
+            source_label=source_label,
+            source_row_id=source_row_id,
+            extra_instruction=extra_instruction,
+            patch_brief=patch_brief,
+        )
+        node_id = "style_patch" if patch_brief else "style_draft"
+        try:
+            node_result = self._llm_runner.run(
                 scene_id=scene.scene_id,
                 chapter_id=scene.chapter_id,
-                request_payload_summary=request_summary,
-                response_payload_summary={
-                    "request_id": response.request_id,
-                    "response_format": response.response_format,
-                    "structured_output": response.structured_output,
-                },
-                prompt_tokens=response.usage.get("input_tokens", 0),
-                completion_tokens=response.usage.get("output_tokens", 0),
-                total_tokens=response.usage.get("total_tokens", 0),
-                latency_ms=int((time.perf_counter() - started_at) * 1000),
-                finish_reason=response.finish_reason,
-                error_code=None,
+                bundle_id=bundle["bundle_id"],
+                bundle_hash=bundle["bundle_snapshot_hash"],
+                node_id=node_id,
+                step=llm_step,
+                prompt=prompt,
+                user_prompt=user_prompt,
+                offline_client_factory=lambda: OfflineStyleClient(patch_mode=client_kind == "patch"),
+                source_draft_row_id=source_draft_row_id,
+                source_draft_content=source_draft_content,
             )
-        )
-        self.session.flush()
+            style_content = _ensure_required_scene_text(scene, _extract_scene_text(node_result.response))
+        except LLMNodeExecutionError as exc:
+            self._record_runner_failure_attempt(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                step=llm_step,
+                prompt=prompt,
+                exc=exc,
+                source_draft_row_id=source_draft_row_id,
+            )
+            self._raise_original_runner_error(exc)
 
         self.session.add(
             SceneDraft(
@@ -452,7 +377,7 @@ class SceneGenerationService:
                 content=style_content,
                 source_bundle_id=bundle["bundle_id"],
                 source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=llm_call_id,
+                generation_llm_call_id=node_result.llm_call_id,
             )
         )
         self.session.flush()
@@ -466,7 +391,7 @@ class SceneGenerationService:
                 source_bundle_id=bundle["bundle_id"],
                 details_json={
                     "row_id": row_id,
-                    "llm_call_id": llm_call_id,
+                    "llm_call_id": node_result.llm_call_id,
                     "source_draft_row_id": source_draft_row_id,
                     **(attempt_details_extra or {}),
                 },
@@ -482,49 +407,9 @@ class SceneGenerationService:
         return StyleGenerationResult(
             row_id=row_id,
             content=style_content,
-            llm_call_id=llm_call_id,
+            llm_call_id=node_result.llm_call_id,
             bundle_id=bundle["bundle_id"],
             bundle_hash=bundle["bundle_snapshot_hash"],
-        )
-
-    def _build_style_request(
-        self,
-        prompt: dict[str, Any],
-        *,
-        neutral_content: str,
-        source_label: str,
-        source_row_id: str,
-        extra_instruction: str,
-        patch_brief: list[str] | None = None,
-    ) -> LLMRequest:
-        user_prompt = self._build_style_user_prompt(
-            prompt["user_prompt"],
-            neutral_content=neutral_content,
-            source_label=source_label,
-            source_row_id=source_row_id,
-            extra_instruction=extra_instruction,
-            patch_brief=patch_brief,
-        )
-        node_id = "style_patch" if patch_brief else "style_draft"
-        task_config = self._task_config(node_id)
-        return LLMRequest(
-            model=task_config.model,
-            messages=[
-                {"role": "system", "content": prompt["system_prompt"]},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=task_config.temperature,
-            max_output_tokens=task_config.max_output_tokens,
-            response_format=task_config.response_format,
-            provider=task_config.provider,
-            node_id=node_id,
-            provider_id=getattr(task_config, "provider_id", None),
-            account_id=getattr(task_config, "account_id", None),
-            reasoning_level=getattr(task_config, "reasoning_level", "medium"),
-            response_schema=_response_schema(prompt),
-            api_mode=getattr(task_config, "api_mode", "responses"),
-            credential_mode=getattr(task_config, "credential_mode", None),
-            provider_options=getattr(task_config, "provider_options", {}),
         )
 
     @staticmethod
@@ -558,58 +443,65 @@ class SceneGenerationService:
             prompt_parts.extend(["", JSON_SCHEMA_INSTRUCTION])
         return "\n".join(prompt_parts).strip()
 
-    @staticmethod
-    def _raise_if_scene_split_required(continuity_warning: Any) -> None:
-        if not isinstance(continuity_warning, dict) or not continuity_warning.get("requires_scene_split"):
-            return
-        raise DomainError(
-            "CONTINUITY_BUDGET_EXCEEDED",
-            "Prompt still exceeds the safe continuity budget after deterministic compaction.",
-            status_code=409,
-            details={
-                "continuity_warning": continuity_warning,
-                "recommended_action": SCENE_SPLIT_RECOMMENDATION,
-            },
-        )
-
-    def _client(self, *, kind: str = "neutral") -> Any:
-        if self._llm_client is not None:
-            return self._llm_client
-        if not self.settings.llm_enabled:
-            if kind == "neutral":
-                return OfflineNeutralClient()
-            if kind == "patch":
-                return OfflineStyleClient(patch_mode=True)
-            return OfflineStyleClient()
-        return LLMClient(
-            provider=self.settings.llm_provider,
-            base_url=self.settings.llm_base_url,
-            api_key=self.settings.llm_api_key,
-            timeout_seconds=self.settings.llm_timeout_seconds,
-            provider_configs=load_llm_provider_runtime_configs(),
-        )
-
     def _prompt_builder(self) -> PromptBuilder:
         if self._prompt_builder_instance is None:
             self._prompt_builder_instance = PromptBuilder()
         return self._prompt_builder_instance
 
-    def _routing_config(self) -> Any:
-        if self._routing_config_cache is None:
-            self._routing_config_cache = load_model_routing_config()
-        return self._routing_config_cache
+    def _record_runner_failure_attempt(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        bundle: dict[str, Any],
+        step: str,
+        prompt: dict[str, Any],
+        exc: LLMNodeExecutionError,
+        source_draft_row_id: str | None = None,
+    ) -> None:
+        details_json: dict[str, Any] = {
+            "llm_call_id": exc.llm_call_id,
+            "error_code": exc.error_code,
+            "message": exc.message,
+            "retryable": exc.retryable,
+        }
+        if prompt is not None:
+            details_json["template_name"] = prompt.get("template_name")
+            details_json["template_version"] = prompt.get("template_version")
+        if source_draft_row_id is not None:
+            details_json["source_draft_row_id"] = source_draft_row_id
+        if isinstance(exc, LLMNodeContinuityError):
+            details_json["continuity_warning"] = exc.continuity_warning
+        self.session.add(
+            AttemptTracker(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                step=step,
+                status="failed",
+                source_bundle_id=bundle["bundle_id"],
+                details_json=details_json,
+            )
+        )
+        state.current_bundle_id = bundle["bundle_id"]
+        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+        state.total_attempt_count += 1
+        self.session.flush()
 
-    def _task_config(self, node_id: str) -> Any:
-        routing = self._routing_config()
-        node_routing = getattr(routing, "node_routing", None)
-        if isinstance(node_routing, dict) and node_id in node_routing:
-            return node_routing[node_id]
-        task_routing = getattr(routing, "task_routing", {})
-        if node_id in task_routing:
-            return task_routing[node_id]
-        if node_id in {"style_draft", "style_patch"} and "stylize" in task_routing:
-            return task_routing["stylize"]
-        raise KeyError(node_id)
+    @staticmethod
+    def _raise_original_runner_error(exc: LLMNodeExecutionError) -> None:
+        if isinstance(exc, LLMNodeContinuityError):
+            raise DomainError(
+                CONTINUITY_BUDGET_ERROR_CODE,
+                CONTINUITY_BUDGET_MESSAGE,
+                status_code=409,
+                details={
+                    "continuity_warning": exc.continuity_warning,
+                    "recommended_action": SCENE_SPLIT_RECOMMENDATION,
+                },
+            ) from exc
+        if exc.original_error is not None:
+            raise exc.original_error
+        raise exc
 
     def _persist_generation_failure(
         self,
@@ -638,7 +530,7 @@ class SceneGenerationService:
                 reasoning_level=getattr(task_config, "reasoning_level", None),
                 native_reasoning_json=None,
                 credential_mode=getattr(task_config, "credential_mode", None),
-                prompt_hash=prompt["prompt_hash"] if prompt is not None else None,
+                prompt_hash=prompt.get("prompt_hash") if isinstance(prompt, dict) else None,
                 step=step,
                 scene_id=scene.scene_id,
                 chapter_id=scene.chapter_id,
@@ -659,8 +551,8 @@ class SceneGenerationService:
             "message": str(exc),
         }
         if prompt is not None:
-            details_json["template_name"] = prompt["template_name"]
-            details_json["template_version"] = prompt["template_version"]
+            details_json["template_name"] = prompt.get("template_name")
+            details_json["template_version"] = prompt.get("template_version")
         if source_draft_row_id is not None:
             details_json["source_draft_row_id"] = source_draft_row_id
         self.session.add(
@@ -692,10 +584,6 @@ def _ensure_required_scene_text(scene: SceneCard, content: str) -> str:
     if not required or required in content:
         return content
     return f"{content.rstrip()}\n\n{required}"
-
-
-def _response_schema(prompt: dict[str, Any]) -> dict[str, Any]:
-    return {"name": str(prompt["template_name"]), "schema": prompt["structured_schema"]}
 
 
 def _extract_scene_id(request: LLMRequest) -> str:
