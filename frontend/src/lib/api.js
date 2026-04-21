@@ -223,10 +223,6 @@ export function probeLlmProvider(providerId, payload = {}, adminToken) {
   return apiAdminPost(`/api/v1/system-config/llm/providers/${encodeURIComponent(providerId)}/probe`, payload, adminToken);
 }
 
-export function startLlmOAuth(providerType, payload, adminToken) {
-  return apiAdminPost(`/api/v1/system-config/llm/oauth/${encodeURIComponent(providerType)}/start`, payload, adminToken);
-}
-
 export function fetchLiteraryEvalLatest() {
   return apiGet("/api/v1/literary-eval/latest");
 }

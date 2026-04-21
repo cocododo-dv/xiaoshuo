@@ -6,7 +6,6 @@ from sqlalchemy import select
 
 from novel_system.api.app import create_app
 from novel_system.db.models import SystemSecret
-from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.services.settings_helpers import llm_generation_mode
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
@@ -396,6 +395,34 @@ def test_system_config_rejects_invalid_models_yaml(client, monkeypatch) -> None:
     assert "task_routing must be a mapping" in payload["message"]
 
 
+def test_system_config_rejects_oauth2_in_model_routing_yaml(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    models_yaml = """
+task_routing:
+  neutral_draft:
+    provider: gemini
+    model: gemini-2.5-pro
+    temperature: 0.2
+    max_output_tokens: 1000
+    response_format: json_object
+    credential_mode: oauth2
+retry_budget: {}
+job_runtime: {}
+""".strip()
+
+    response = client.post(
+        "/api/v1/system-config/drafts",
+        headers=ADMIN_HEADERS,
+        json={"category": "models", "yaml_raw": models_yaml},
+    )
+
+    assert response.status_code == 422
+    payload = response.json()["error"]
+    assert payload["code"] == "CONFIG_VALIDATION_FAILED"
+    assert "unsupported credential_mode oauth2" in payload["message"]
+
+
 def test_llm_config_provider_secret_and_node_routes_do_not_leak_credentials(client, session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
@@ -525,6 +552,98 @@ def test_llm_config_supports_local_openai_compatible_without_secret(client, sess
     assert stored_secret is None
 
 
+def test_llm_config_rejects_oauth2_credential_mode(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "gemini_oauth",
+            "provider_type": "gemini",
+            "account_id": "acct_google",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "enabled": True,
+            "credential_mode": "oauth2",
+            "api_mode": "chat",
+            "models": ["gemini-2.5-pro"],
+        },
+    )
+
+    assert response.status_code == 422
+    payload = response.json()["error"]
+    assert payload["code"] == "CONFIG_PROVIDER_INVALID"
+    assert "unsupported credential_mode oauth2" in payload["message"]
+
+
+def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(client, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "cli_proxy",
+            "provider_type": "openai_compatible",
+            "account_id": "relay",
+            "base_url": "http://127.0.0.1:8317/v1/models",
+            "enabled": True,
+            "credential_mode": "api_key",
+            "api_mode": "chat",
+            "models": ["gpt-5"],
+            "api_key": "cliproxy-secret",
+        },
+    )
+
+    assert provider_response.status_code == 200
+    provider = provider_response.json()["data"]["provider"]
+    assert provider["provider_id"] == "cli_proxy"
+    assert provider["provider_type"] == "openai_compatible"
+    assert provider["base_url"] == "http://127.0.0.1:8317/v1"
+    assert provider["credential_mode"] == "api_key"
+    assert provider["secret"]["configured"] is True
+    assert "cliproxy-secret" not in provider_response.text
+
+    stored_secret = session.execute(
+        select(SystemSecret).where(SystemSecret.secret_id == "llm_provider:cli_proxy:api_key")
+    ).scalars().one()
+    assert stored_secret.secret_type == "api_key"
+    assert stored_secret.metadata_json["provider_id"] == "cli_proxy"
+    assert "cliproxy-secret" not in stored_secret.encrypted_value
+
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+        assert url == "http://127.0.0.1:8317/v1/models"
+        assert headers == {"Authorization": "Bearer cliproxy-secret"}
+        assert timeout == 10.0
+        return httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
+
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
+        assert url == "http://127.0.0.1:8317/v1/chat/completions"
+        assert headers == {"Authorization": "Bearer cliproxy-secret"}
+        assert timeout == 10.0
+        assert json["model"] == "gpt-5"
+        assert json["stream"] is False
+        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+
+    probe_response = client.post(
+        "/api/v1/system-config/llm/providers/cli_proxy/probe",
+        headers=ADMIN_HEADERS,
+        json={"model": "gpt-5", "check_completion": True},
+    )
+
+    assert probe_response.status_code == 200
+    probe = probe_response.json()["data"]
+    assert probe["ok"] is True
+    assert probe["checks"]["connection"]["ok"] is True
+    assert probe["checks"]["model"]["ok"] is True
+    assert probe["checks"]["completion"]["ok"] is True
+
+
 def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
@@ -619,50 +738,7 @@ def test_llm_provider_probe_reports_available_models_when_local_name_does_not_ma
     assert "qwen3:14b" in payload["message"]
 
 
-def test_llm_config_oauth_start_is_gemini_only_and_uses_signed_state(client, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
-    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-
-    response = client.post(
-        "/api/v1/system-config/llm/oauth/gemini/start",
-        headers=ADMIN_HEADERS,
-        json={
-            "provider_id": "gemini_oauth",
-            "account_id": "acct_google",
-            "client_id": "google-client-id",
-            "redirect_uri": "http://127.0.0.1:8000/api/v1/system-config/llm/oauth/callback",
-            "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()["data"]
-    assert payload["provider_type"] == "gemini"
-    assert payload["provider_id"] == "gemini_oauth"
-    assert "accounts.google.com" in payload["authorization_url"]
-    assert "state=" in payload["authorization_url"]
-    assert payload["state"]
-
-    unsupported = client.post(
-        "/api/v1/system-config/llm/oauth/openai/start",
-        headers=ADMIN_HEADERS,
-        json={
-            "provider_id": "openai_oauth",
-            "account_id": "acct_openai",
-            "client_id": "unused",
-            "redirect_uri": "http://127.0.0.1/callback",
-        },
-    )
-
-    assert unsupported.status_code == 422
-    assert unsupported.json()["error"]["code"] == "CONFIG_OAUTH_UNSUPPORTED"
-
-
-def test_llm_config_oauth_callback_exchanges_code_and_saves_server_secret(
-    client,
-    session,
-    monkeypatch,
-) -> None:
+def test_llm_oauth_routes_are_removed(client, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
@@ -673,63 +749,14 @@ def test_llm_config_oauth_callback_exchanges_code_and_saves_server_secret(
             "provider_id": "gemini_oauth",
             "account_id": "acct_google",
             "client_id": "google-client-id",
-            "client_secret": "google-client-secret",
             "redirect_uri": "http://127.0.0.1:8000/api/v1/system-config/llm/oauth/callback",
             "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
         },
     )
-    assert start_response.status_code == 200
-    state = start_response.json()["data"]["state"]
-
-    def fake_token_exchange(url: str, *, data: dict, timeout: float):
-        assert url == "https://oauth2.googleapis.com/token"
-        assert timeout == 20.0
-        assert data["code"] == "auth-code"
-        assert data["client_id"] == "google-client-id"
-        assert data["client_secret"] == "google-client-secret"
-        assert data["grant_type"] == "authorization_code"
-        return httpx.Response(
-            200,
-            json={
-                "access_token": "ya29.access-token",
-                "refresh_token": "1//refresh-token",
-                "expires_in": 3600,
-                "token_type": "Bearer",
-            },
-        )
-
-    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_token_exchange)
-
     callback_response = client.get(
         "/api/v1/system-config/llm/oauth/callback",
-        params={"state": state, "code": "auth-code"},
+        params={"state": "legacy-state", "code": "auth-code"},
     )
 
-    assert callback_response.status_code == 200
-    assert "ya29.access-token" not in callback_response.text
-    assert "1//refresh-token" not in callback_response.text
-    payload = callback_response.json()["data"]
-    assert payload["provider"]["provider_id"] == "gemini_oauth"
-    assert payload["provider"]["credential_mode"] == "oauth2"
-    assert payload["provider"]["secret"]["configured"] is True
-    assert payload["provider"]["secret"]["secret_type"] == "oauth2"
-    assert payload["provider"]["secret"]["expires_at"]
-
-    session.expire_all()
-    token_secret = session.execute(
-        select(SystemSecret).where(SystemSecret.secret_id == "llm_provider:gemini_oauth:oauth2")
-    ).scalars().one()
-    assert token_secret.secret_type == "oauth2"
-    assert token_secret.metadata_json["account_id"] == "acct_google"
-    assert "ya29.access-token" not in token_secret.encrypted_value
-    assert (
-        session.execute(
-            select(SystemSecret).where(SystemSecret.secret_id == "llm_provider:gemini_oauth:oauth_pending")
-        ).scalar_one_or_none()
-        is None
-    )
-
-    runtime_configs = load_llm_provider_runtime_configs()
-    assert runtime_configs["gemini_oauth"].credential_mode == "oauth2"
-    assert runtime_configs["gemini_oauth"].access_token == "ya29.access-token"
-    assert runtime_configs["gemini_oauth"].refresh_token == "1//refresh-token"
+    assert start_response.status_code == 404
+    assert callback_response.status_code == 404

@@ -15,10 +15,8 @@ from novel_system.services.llm_client import (
     LLMResponseError,
     LLMTimeoutError,
     ProviderRuntimeConfig,
-    build_oauth_state,
     load_model_routing_config,
     parse_model_routing_config,
-    validate_oauth_state,
 )
 
 
@@ -739,6 +737,27 @@ def test_parse_model_routing_config_rejects_invalid_reasoning_level() -> None:
         )
 
 
+def test_parse_model_routing_config_rejects_oauth2_credential_mode() -> None:
+    with pytest.raises(LLMConfigurationError, match="unsupported credential_mode oauth2"):
+        parse_model_routing_config(
+            {
+                "node_routing": {
+                    "neutral_draft": {
+                        "provider": "gemini",
+                        "provider_id": "gemini_oauth",
+                        "model": "gemini-2.5-pro",
+                        "temperature": 0.2,
+                        "max_output_tokens": 1000,
+                        "response_format": "json_object",
+                        "credential_mode": "oauth2",
+                    }
+                },
+                "retry_budget": {},
+                "job_runtime": {},
+            }
+        )
+
+
 def test_openai_adapter_maps_reasoning_and_json_schema() -> None:
     captured: dict[str, object] = {}
 
@@ -949,78 +968,3 @@ def test_provider_adapters_normalize_successful_json_responses(
     assert response.structured_output
     assert response.usage["total_tokens"] > 0
     assert response.finish_reason
-
-
-def test_gemini_oauth_credential_uses_bearer_without_api_key_query() -> None:
-    captured: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal captured
-        captured = {
-            "url": str(request.url),
-            "headers": dict(request.headers),
-            "body": json.loads(request.content.decode("utf-8")),
-        }
-        return httpx.Response(
-            200,
-            json={
-                "candidates": [{"content": {"parts": [{"text": '{"scene_text": "oauth"}'}]}, "finishReason": "STOP"}],
-                "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 2, "totalTokenCount": 3},
-            },
-        )
-
-    client = LLMClient(
-        provider="gemini",
-        base_url="https://unused.test",
-        api_key=None,
-        timeout_seconds=12,
-        transport=httpx.MockTransport(handler),
-        provider_configs={
-            "gemini_oauth": ProviderRuntimeConfig(
-                provider_id="gemini_oauth",
-                provider_type="gemini",
-                base_url="https://generativelanguage.googleapis.test/v1beta",
-                credential_mode="oauth2",
-                access_token="ya29.test-token",
-            )
-        },
-    )
-
-    response = client.generate(
-        LLMRequest(
-            node_id="literary_eval_live",
-            provider_id="gemini_oauth",
-            credential_mode="oauth2",
-            model="gemini-2.5-pro",
-            messages=[{"role": "user", "content": "Return JSON."}],
-            temperature=0.1,
-            max_output_tokens=500,
-            response_format="json_object",
-            reasoning_level="low",
-        )
-    )
-
-    assert "key=" not in captured["url"]
-    assert captured["headers"]["authorization"] == "Bearer ya29.test-token"
-    assert response.structured_output == {"scene_text": "oauth"}
-
-
-def test_oauth_state_is_signed_and_tamper_resistant() -> None:
-    state = build_oauth_state(
-        provider_type="gemini",
-        provider_id="gemini_oauth",
-        account_id="acct_google",
-        redirect_path="/api/v1/system-config/llm/oauth/callback",
-        secret="config-secret",
-    )
-
-    payload = validate_oauth_state(state, secret="config-secret")
-    payload_part, signature_part = state.split(".", 1)
-    replacement = "A" if payload_part[-1] != "A" else "B"
-    tampered = f"{payload_part[:-1]}{replacement}.{signature_part}"
-
-    assert payload["provider_type"] == "gemini"
-    assert payload["provider_id"] == "gemini_oauth"
-    assert payload["account_id"] == "acct_google"
-    with pytest.raises(LLMConfigurationError, match="invalid oauth state"):
-        validate_oauth_state(tampered, secret="config-secret")

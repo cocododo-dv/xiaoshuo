@@ -93,10 +93,6 @@ function probeLlmProvider(providerId) {
   runAction(() => systemConfig.probeLlmProvider(providerId), { actionLabel: "测试模型连接", runningMessage: "正在测试模型提供方连接...", nextStep: "下一步：连接成功后保存路由；失败则检查密钥或模型名。" });
 }
 
-function startGeminiOAuth() {
-  runAction(() => systemConfig.startLlmOAuth(), { actionLabel: "启动 OAuth", runningMessage: "正在启动 OAuth 授权...", nextStep: "下一步：按浏览器授权结果继续配置。" });
-}
-
 function editLlmProvider(provider) {
   systemConfig.editLlmProviderDraft(provider);
 }
@@ -334,7 +330,7 @@ function selectConfigSection(sectionId) {
         data-testid="config-llm-provider-panel"
         eyebrow="Model Access"
         title="模型接入"
-        description="本地模型走 OpenAI-compatible 地址；云厂商走服务端密钥管理。"
+        description="本地 / 中转站 / 云厂商 API Key 统一接入；OpenAI-compatible 可覆盖 Ollama、LM Studio、CLIProxyAPI、NewAPI、OpenRouter 等。"
       >
         <template #actions>
           <button
@@ -394,6 +390,15 @@ function selectConfigSection(sectionId) {
           >
             <strong>自定义本地服务</strong>
             <span>vLLM、LocalAI、llama.cpp server 等兼容 /v1 的地址</span>
+          </button>
+          <button
+            class="llm-mode-card"
+            data-testid="config-llm-local-preset-cli-proxy"
+            type="button"
+            @click="systemConfig.applyLocalProviderPreset('cli-proxy')"
+          >
+            <strong>中转站 / CLIProxyAPI</strong>
+            <span>默认 http://127.0.0.1:8317/v1，填写 API Key 和自定义模型名</span>
           </button>
           <div class="llm-mode-card passive">
             <strong>云厂商 API Key</strong>
@@ -477,7 +482,7 @@ function selectConfigSection(sectionId) {
               />
             </label>
             <label v-if='systemConfig.providerDraft.credential_mode !== "none"' class="config-wide-field">
-              <span>API Key（云厂商）</span>
+              <span>API Key（云厂商 / 中转站）</span>
               <input
                 v-model="systemConfig.providerDraft.api_key"
                 class="control-input"
@@ -541,59 +546,6 @@ function selectConfigSection(sectionId) {
               </div>
             </div>
           </div>
-        </div>
-      </PanelShell>
-
-      <PanelShell
-        class="config-wide-panel"
-        data-testid="config-llm-oauth-panel"
-        eyebrow="OAuth2"
-        title="Gemini 授权"
-        description="首版启用 Google/Gemini OAuth2，授权完成后由服务端保存和刷新 token。"
-      >
-        <div class="config-oauth-grid">
-          <label>
-            <span>Provider ID</span>
-            <input v-model="systemConfig.oauthDraft.provider_id" class="control-input" placeholder="gemini_oauth" />
-          </label>
-          <label>
-            <span>账号</span>
-            <input v-model="systemConfig.oauthDraft.account_id" class="control-input" placeholder="acct_google" />
-          </label>
-          <label>
-            <span>Client ID</span>
-            <input v-model="systemConfig.oauthDraft.client_id" class="control-input" />
-          </label>
-          <label>
-            <span>Redirect URI</span>
-            <input v-model="systemConfig.oauthDraft.redirect_uri" class="control-input" />
-          </label>
-          <label class="config-wide-field">
-            <span>Scopes</span>
-            <textarea
-              v-model="systemConfig.oauthDraft.scopesText"
-              class="control-input control-textarea llm-scope-editor"
-              spellcheck="false"
-            />
-          </label>
-        </div>
-        <div class="config-action-row">
-          <button
-            data-testid="config-llm-oauth-start"
-            :disabled="systemConfig.llmSaving"
-            @click="startGeminiOAuth"
-          >
-            开始 Gemini OAuth
-          </button>
-          <a
-            v-if="systemConfig.oauthStart?.authorization_url"
-            class="badge"
-            :href="systemConfig.oauthStart.authorization_url"
-            target="_blank"
-            rel="noreferrer"
-          >
-            打开授权页
-          </a>
         </div>
       </PanelShell>
       </section>

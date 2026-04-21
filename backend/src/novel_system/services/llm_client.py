@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import json
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -20,7 +16,7 @@ SUPPORTED_PROVIDERS = {"openai_compatible", "openai", "anthropic", "deepseek", "
 SUPPORTED_RESPONSE_FORMATS = {"json_object", "text"}
 SUPPORTED_API_MODES = {"responses", "chat"}
 SUPPORTED_REASONING_LEVELS = {"off", "low", "medium", "high"}
-SUPPORTED_CREDENTIAL_MODES = {"api_key", "oauth2", "none"}
+SUPPORTED_CREDENTIAL_MODES = {"api_key", "none"}
 
 DEFAULT_PROVIDER_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
@@ -43,13 +39,9 @@ class ProviderRuntimeConfig:
     api_key: str | None = None
     account_id: str | None = None
     enabled: bool = True
-    credential_mode: Literal["api_key", "oauth2", "none"] = "api_key"
+    credential_mode: Literal["api_key", "none"] = "api_key"
     api_mode: Literal["responses", "chat"] = "chat"
     models: tuple[str, ...] = ()
-    access_token: str | None = None
-    refresh_token: str | None = None
-    token_expires_at: str | None = None
-    scopes: tuple[str, ...] = ()
     provider_options: dict[str, Any] = field(default_factory=dict)
 
 
@@ -68,7 +60,7 @@ class LLMRequest:
     account_id: str | None = None
     reasoning_level: Literal["off", "low", "medium", "high"] = "medium"
     response_schema: dict[str, Any] | None = None
-    credential_mode: Literal["api_key", "oauth2", "none"] | None = None
+    credential_mode: Literal["api_key", "none"] | None = None
     provider_options: dict[str, Any] | None = None
 
 
@@ -100,7 +92,7 @@ class TaskModelConfig:
     account_id: str | None = None
     reasoning_level: Literal["off", "low", "medium", "high"] = "medium"
     api_mode: Literal["responses", "chat"] = "responses"
-    credential_mode: Literal["api_key", "oauth2", "none"] | None = None
+    credential_mode: Literal["api_key", "none"] | None = None
     provider_options: dict[str, Any] = field(default_factory=dict)
 
 
@@ -442,7 +434,7 @@ class LLMClient:
 
         endpoint = f"/models/{quote(request.model, safe='')}:generateContent"
         credential_mode = request.credential_mode or provider_config.credential_mode
-        if credential_mode != "oauth2" and provider_config.api_key:
+        if provider_config.api_key:
             endpoint = f"{endpoint}?key={quote(provider_config.api_key, safe='')}"
         return endpoint, payload, self._build_headers(provider_config, request=request), native_reasoning
 
@@ -459,9 +451,7 @@ class LLMClient:
             if provider_config.api_key:
                 headers["x-api-key"] = provider_config.api_key
             return headers
-        if credential_mode == "oauth2" and provider_config.access_token:
-            headers["Authorization"] = f"Bearer {provider_config.access_token}"
-        elif credential_mode == "api_key" and provider_config.api_key and provider_config.provider_type != "gemini":
+        if credential_mode == "api_key" and provider_config.api_key and provider_config.provider_type != "gemini":
             headers["Authorization"] = f"Bearer {provider_config.api_key}"
         return headers
 
@@ -621,45 +611,6 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
     )
 
 
-def build_oauth_state(
-    *,
-    provider_type: str,
-    provider_id: str,
-    account_id: str,
-    redirect_path: str,
-    secret: str,
-) -> str:
-    payload = {
-        "provider_type": provider_type,
-        "provider_id": provider_id,
-        "account_id": account_id,
-        "redirect_path": redirect_path,
-        "iat": int(time.time()),
-    }
-    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    signature = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).digest()
-    return ".".join((_b64(payload_bytes), _b64(signature)))
-
-
-def validate_oauth_state(state: str, *, secret: str) -> dict[str, Any]:
-    try:
-        payload_part, signature_part = state.split(".", 1)
-        payload_bytes = _b64decode(payload_part)
-        expected = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).digest()
-        actual = _b64decode(signature_part)
-    except Exception as exc:
-        raise LLMConfigurationError("LLM_OAUTH_STATE_INVALID", "invalid oauth state") from exc
-    if not hmac.compare_digest(expected, actual):
-        raise LLMConfigurationError("LLM_OAUTH_STATE_INVALID", "invalid oauth state")
-    try:
-        payload = json.loads(payload_bytes.decode("utf-8"))
-    except ValueError as exc:
-        raise LLMConfigurationError("LLM_OAUTH_STATE_INVALID", "invalid oauth state") from exc
-    if not isinstance(payload, dict):
-        raise LLMConfigurationError("LLM_OAUTH_STATE_INVALID", "invalid oauth state")
-    return payload
-
-
 def _default_models_config_path() -> Path:
     return Path(__file__).resolve().parents[4] / "config" / "models.yaml"
 
@@ -766,7 +717,7 @@ def _parse_api_mode(task_name: str, payload: dict[str, Any]) -> Literal["respons
     return value  # type: ignore[return-value]
 
 
-def _parse_credential_mode(task_name: str, payload: dict[str, Any]) -> Literal["api_key", "oauth2", "none"] | None:
+def _parse_credential_mode(task_name: str, payload: dict[str, Any]) -> Literal["api_key", "none"] | None:
     if payload.get("credential_mode") is None:
         return None
     value = str(payload.get("credential_mode"))
@@ -1018,12 +969,3 @@ def _error_message_for_status(response: httpx.Response) -> str:
     if isinstance(detail_message, str) and detail_message:
         return detail_message
     return f"llm request failed with status {response.status_code}"
-
-
-def _b64(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
-
-
-def _b64decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode((value + padding).encode("ascii"))

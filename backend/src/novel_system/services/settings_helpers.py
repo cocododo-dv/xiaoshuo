@@ -18,6 +18,6 @@ def llm_generation_mode() -> str:
             continue
         if provider_config.credential_mode == "none":
             return "live"
-        if provider_config.api_key or provider_config.access_token:
+        if provider_config.api_key:
             return "live"
     return "offline_placeholder"

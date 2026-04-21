@@ -1641,8 +1641,7 @@ pre {
   grid-column: 1 / -1;
 }
 
-.llm-provider-grid,
-.config-oauth-grid {
+.llm-provider-grid {
   display: grid;
   gap: 1rem;
   margin-top: 1rem;
@@ -1735,8 +1734,7 @@ pre {
   grid-template-columns: minmax(18rem, 0.95fr) minmax(0, 1.05fr);
 }
 
-.llm-provider-form,
-.config-oauth-grid {
+.llm-provider-form {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -1748,7 +1746,6 @@ pre {
 }
 
 .llm-provider-form label,
-.config-oauth-grid label,
 .llm-node-controls label {
   display: grid;
   gap: 0.35rem;
@@ -1759,12 +1756,6 @@ pre {
   min-height: 7.5rem;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 0.9rem;
-}
-
-.llm-scope-editor {
-  min-height: 5.4rem;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 0.86rem;
 }
 
 .llm-account-row {
@@ -2553,7 +2544,6 @@ pre {
   .llm-connection-shortcuts,
   .llm-provider-grid,
   .llm-provider-form,
-  .config-oauth-grid,
   .config-readiness-grid,
   .llm-node-row,
   .llm-node-controls,

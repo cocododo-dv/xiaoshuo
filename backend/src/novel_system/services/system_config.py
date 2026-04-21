@@ -5,10 +5,8 @@ import hashlib
 import time
 import uuid
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 
 import httpx
 import yaml
@@ -27,9 +25,7 @@ from novel_system.services.llm_client import (
     ProviderRuntimeConfig,
     SUPPORTED_CREDENTIAL_MODES,
     SUPPORTED_PROVIDERS,
-    build_oauth_state,
     parse_model_routing_config,
-    validate_oauth_state,
 )
 from novel_system.services.prompt_builder import PromptConfigurationError, parse_prompt_templates
 
@@ -127,14 +123,6 @@ def llm_provider_api_key_secret_id(provider_id: str) -> str:
     return f"{LLM_PROVIDER_SECRET_PREFIX}:{provider_id}:api_key"
 
 
-def llm_provider_oauth_secret_id(provider_id: str) -> str:
-    return f"{LLM_PROVIDER_SECRET_PREFIX}:{provider_id}:oauth2"
-
-
-def llm_provider_oauth_pending_secret_id(provider_id: str) -> str:
-    return f"{LLM_PROVIDER_SECRET_PREFIX}:{provider_id}:oauth_pending"
-
-
 def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
     payload = load_active_config_payload("api") or {}
     llm_payload = _coerce_api_payload(payload) if payload else {}
@@ -158,20 +146,11 @@ def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
     runtime_configs: dict[str, ProviderRuntimeConfig] = {}
     for provider_id, provider_payload in providers.items():
         credential_mode = str(provider_payload.get("credential_mode") or "api_key")
-        secret_id = (
-            llm_provider_oauth_secret_id(provider_id)
-            if credential_mode == "oauth2"
-            else llm_provider_api_key_secret_id(provider_id)
-        )
+        if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
+            continue
+        secret_id = llm_provider_api_key_secret_id(provider_id)
         secret_value = load_secret_value(secret_id)
         legacy_api_key = load_secret_value(LLM_API_KEY_SECRET_ID) if provider_id in {"openai_compatible", "openai"} else None
-        oauth_payload: dict[str, Any] = {}
-        if credential_mode == "oauth2" and secret_value:
-            try:
-                loaded = yaml.safe_load(secret_value)
-                oauth_payload = loaded if isinstance(loaded, dict) else {"access_token": secret_value}
-            except yaml.YAMLError:
-                oauth_payload = {"access_token": secret_value}
         runtime_configs[provider_id] = ProviderRuntimeConfig(
             provider_id=provider_id,
             provider_type=str(provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id),
@@ -184,10 +163,6 @@ def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
             api_mode=str(provider_payload.get("api_mode") or "chat"),  # type: ignore[arg-type]
             enabled=_bool_value(provider_payload.get("enabled", True)),
             models=tuple(str(item) for item in provider_payload.get("models", []) if isinstance(item, str)),
-            access_token=_optional_text(oauth_payload.get("access_token")),
-            refresh_token=_optional_text(oauth_payload.get("refresh_token")),
-            token_expires_at=_optional_text(provider_payload.get("expires_at") or oauth_payload.get("expires_at")),
-            scopes=tuple(str(item) for item in provider_payload.get("scopes", oauth_payload.get("scopes", [])) if isinstance(item, str)),
             provider_options=dict(provider_payload.get("provider_options") or {}),
         )
     return runtime_configs
@@ -316,21 +291,16 @@ class SystemConfigService:
         provider_id = _optional_text(provider_payload.get("provider_id"))
         default_credential_mode = "none" if provider_id and not provider_payload.get("api_key") else "api_key"
         credential_mode = str(provider_payload.get("credential_mode") or default_credential_mode)
+        if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
+            raise DomainError(
+                "CONFIG_PROVIDER_INVALID",
+                f"unsupported credential_mode {credential_mode}",
+                status_code=422,
+            )
         api_key = None
         if credential_mode == "api_key":
             provider_secret = load_secret_value(llm_provider_api_key_secret_id(provider_id)) if provider_id else None
             api_key = provider_payload.get("api_key") or provider_secret or load_secret_value(LLM_API_KEY_SECRET_ID)
-        elif credential_mode == "oauth2" and provider_id:
-            oauth_secret = load_secret_value(llm_provider_oauth_secret_id(provider_id))
-            if oauth_secret:
-                try:
-                    oauth_payload = yaml.safe_load(oauth_secret)
-                    if isinstance(oauth_payload, dict):
-                        api_key = oauth_payload.get("access_token")
-                    else:
-                        api_key = oauth_secret
-                except yaml.YAMLError:
-                    api_key = oauth_secret
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         timeout_value = provider_payload.get("timeout_seconds")
         timeout_seconds = _float_value(10.0 if timeout_value is None else timeout_value, "timeout_seconds")
@@ -458,7 +428,10 @@ class SystemConfigService:
         }
 
     def save_llm_provider(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
-        provider = _normalize_provider_payload(payload)
+        try:
+            provider = _normalize_provider_payload(payload)
+        except ValueError as exc:
+            raise DomainError("CONFIG_PROVIDER_INVALID", str(exc), status_code=422) from exc
         provider_id = provider["provider_id"]
         api_key = _optional_text(payload.get("api_key"))
         llm_payload = self._current_api_llm_payload()
@@ -532,181 +505,6 @@ class SystemConfigService:
         probe_payload = dict(provider)
         probe_payload.update(payload or {})
         return self.test_provider(payload=probe_payload)
-
-    def start_llm_oauth(self, *, provider_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if provider_type != "gemini":
-            raise DomainError(
-                "CONFIG_OAUTH_UNSUPPORTED",
-                f"oauth2 is not supported for {provider_type} in this release",
-                status_code=422,
-            )
-        secret = _config_secret()
-        if not secret:
-            raise DomainError("CONFIG_SECRET_REQUIRED", "NOVEL_SYSTEM_CONFIG_SECRET is required to manage oauth", 403)
-        provider_id = _required_text(payload.get("provider_id"), "provider_id")
-        account_id = _required_text(payload.get("account_id"), "account_id")
-        client_id = _required_text(payload.get("client_id"), "client_id")
-        redirect_uri = _required_text(payload.get("redirect_uri"), "redirect_uri")
-        client_secret = _optional_text(payload.get("client_secret"))
-        scopes = payload.get("scopes") if isinstance(payload.get("scopes"), list) else []
-        if not scopes:
-            scopes = ["https://www.googleapis.com/auth/cloud-platform"]
-        state = build_oauth_state(
-            provider_type=provider_type,
-            provider_id=provider_id,
-            account_id=account_id,
-            redirect_path="/api/v1/system-config/llm/oauth/callback",
-            secret=secret,
-        )
-        params = urlencode(
-            {
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "response_type": "code",
-                "scope": " ".join(str(item) for item in scopes),
-                "access_type": "offline",
-                "prompt": "consent",
-                "state": state,
-            }
-        )
-        self._save_secret_value(
-            secret_id=llm_provider_oauth_pending_secret_id(provider_id),
-            raw_value=client_secret or "",
-            actor_ref="oauth_start",
-            secret_type="oauth_pending",
-            metadata={
-                "provider_type": provider_type,
-                "provider_id": provider_id,
-                "account_id": account_id,
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "scopes": [str(item) for item in scopes],
-                "state": state,
-            },
-        )
-        self.session.commit()
-        return {
-            "provider_type": provider_type,
-            "provider_id": provider_id,
-            "account_id": account_id,
-            "authorization_url": f"https://accounts.google.com/o/oauth2/v2/auth?{params}",
-            "state": state,
-            "scopes": scopes,
-        }
-
-    def finish_llm_oauth(self, *, state: str, code: str | None, error: str | None, actor_ref: str) -> dict[str, Any]:
-        if error:
-            raise DomainError("CONFIG_OAUTH_DENIED", f"oauth provider returned error: {error}", status_code=400)
-        if not code:
-            raise DomainError("CONFIG_OAUTH_CODE_REQUIRED", "oauth callback requires code", status_code=400)
-        secret = _config_secret()
-        if not secret:
-            raise DomainError("CONFIG_SECRET_REQUIRED", "NOVEL_SYSTEM_CONFIG_SECRET is required to manage oauth", 403)
-        try:
-            state_payload = validate_oauth_state(state, secret=secret)
-        except LLMConfigurationError as exc:
-            raise DomainError("CONFIG_OAUTH_STATE_INVALID", "invalid oauth state", status_code=400) from exc
-        if state_payload.get("provider_type") != "gemini":
-            raise DomainError("CONFIG_OAUTH_UNSUPPORTED", "oauth callback only supports gemini", status_code=422)
-
-        provider_id = _required_text(state_payload.get("provider_id"), "provider_id")
-        account_id = _required_text(state_payload.get("account_id"), "account_id")
-        pending_secret = self.session.get(SystemSecret, llm_provider_oauth_pending_secret_id(provider_id))
-        pending_metadata = pending_secret.metadata_json if pending_secret is not None else {}
-        client_id = _required_text(pending_metadata.get("client_id"), "client_id")
-        redirect_uri = _required_text(pending_metadata.get("redirect_uri"), "redirect_uri")
-        client_secret = _decrypt_secret(pending_secret.encrypted_value) if pending_secret is not None else ""
-        token_payload: dict[str, Any] = {
-            "code": code,
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        }
-        if client_secret:
-            token_payload["client_secret"] = client_secret
-
-        try:
-            response = httpx.post("https://oauth2.googleapis.com/token", data=token_payload, timeout=20.0)
-        except httpx.RequestError as exc:
-            raise DomainError("CONFIG_OAUTH_TOKEN_EXCHANGE_FAILED", str(exc), status_code=502) from exc
-        if not response.is_success:
-            raise DomainError(
-                "CONFIG_OAUTH_TOKEN_EXCHANGE_FAILED",
-                _provider_error_summary(response),
-                status_code=502,
-            )
-        try:
-            token_response = response.json()
-        except ValueError as exc:
-            raise DomainError("CONFIG_OAUTH_TOKEN_EXCHANGE_FAILED", "oauth token response was not JSON", status_code=502) from exc
-        access_token = _required_text(token_response.get("access_token"), "access_token")
-        expires_at = _oauth_expires_at(token_response.get("expires_in"))
-        scopes = pending_metadata.get("scopes") if isinstance(pending_metadata.get("scopes"), list) else []
-        token_secret = yaml.safe_dump(
-            {
-                "access_token": access_token,
-                "refresh_token": _optional_text(token_response.get("refresh_token")),
-                "expires_at": expires_at,
-                "scopes": [str(item) for item in scopes],
-                "token_type": _optional_text(token_response.get("token_type")),
-                "account_id": account_id,
-            },
-            allow_unicode=True,
-            sort_keys=False,
-        )
-        secret_status = self._save_secret_value(
-            secret_id=llm_provider_oauth_secret_id(provider_id),
-            raw_value=token_secret,
-            actor_ref=actor_ref,
-            secret_type="oauth2",
-            metadata={
-                "provider_id": provider_id,
-                "provider_type": "gemini",
-                "account_id": account_id,
-                "scopes": [str(item) for item in scopes],
-                "token_type": _optional_text(token_response.get("token_type")),
-            },
-            expires_at=expires_at,
-        )
-        if pending_secret is not None:
-            self.session.delete(pending_secret)
-
-        llm_payload = self._current_api_llm_payload()
-        providers = _provider_payloads_from_llm(llm_payload)
-        provider_payload = dict(providers.get(provider_id) or {})
-        provider_payload.update(
-            {
-                "provider_id": provider_id,
-                "provider_type": "gemini",
-                "account_id": account_id,
-                "base_url": provider_payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS["gemini"],
-                "enabled": True,
-                "credential_mode": "oauth2",
-                "api_mode": provider_payload.get("api_mode") or "chat",
-                "scopes": [str(item) for item in scopes],
-                "models": provider_payload.get("models") or [],
-                "provider_options": dict(provider_payload.get("provider_options") or {}),
-            }
-        )
-        providers[provider_id] = _normalize_provider_payload(provider_payload)
-        llm_payload["providers"] = providers
-        llm_payload["default_provider_id"] = llm_payload.get("default_provider_id") or provider_id
-        snapshot = self._store_config_snapshot(
-            category="api",
-            parsed={"llm": llm_payload},
-            validation={"ok": True, "message": "api config is valid"},
-            status="active",
-            active=True,
-            actor_ref=actor_ref,
-        )
-        provider_view = self._serialize_provider(provider_id, providers[provider_id])
-        provider_view["secret"] = secret_status
-        self.session.commit()
-        return {
-            "provider": provider_view,
-            "snapshot": _serialize_snapshot(snapshot),
-            "state": {"provider_type": "gemini", "provider_id": provider_id, "account_id": account_id},
-        }
 
     def _category_payload(self, category: str) -> dict[str, Any]:
         active = _active_snapshot(self.session, category)
@@ -837,7 +635,7 @@ class SystemConfigService:
 
     def _serialize_provider(self, provider_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         credential_mode = str(payload.get("credential_mode") or "api_key")
-        secret_id = llm_provider_oauth_secret_id(provider_id) if credential_mode == "oauth2" else llm_provider_api_key_secret_id(provider_id)
+        secret_id = llm_provider_api_key_secret_id(provider_id)
         secret_status = _none_secret_status() if credential_mode == "none" else self._secret_status(secret_id)
         return {
             "provider_id": provider_id,
@@ -848,7 +646,6 @@ class SystemConfigService:
             "credential_mode": credential_mode,
             "api_mode": payload.get("api_mode", "chat"),
             "models": list(payload.get("models") or []),
-            "scopes": list(payload.get("scopes") or []),
             "provider_options": dict(payload.get("provider_options") or {}),
             "secret": secret_status,
         }
@@ -1027,7 +824,6 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not base_url:
         raise ValueError("provider base_url is required")
     models = payload.get("models") if isinstance(payload.get("models"), list) else []
-    scopes = payload.get("scopes") if isinstance(payload.get("scopes"), list) else []
     provider_options = payload.get("provider_options") if isinstance(payload.get("provider_options"), dict) else {}
     return {
         "provider_id": provider_id,
@@ -1038,7 +834,6 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "credential_mode": credential_mode,
         "api_mode": str(payload.get("api_mode") or ("responses" if provider_type in {"openai", "openai_compatible"} else "chat")),
         "models": [str(model) for model in models if isinstance(model, str) and model.strip()],
-        "scopes": [str(scope) for scope in scopes if isinstance(scope, str) and scope.strip()],
         "provider_options": dict(provider_options),
     }
 
@@ -1072,7 +867,7 @@ def _provider_catalog() -> dict[str, dict[str, Any]]:
         },
         "gemini": {
             "label": "Gemini / Google",
-            "credential_modes": ["api_key", "oauth2"],
+            "credential_modes": ["api_key"],
             "default_base_url": DEFAULT_PROVIDER_BASE_URLS["gemini"],
         },
     }
@@ -1282,14 +1077,6 @@ def _optional_text(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
-
-
-def _oauth_expires_at(expires_in: Any) -> str | None:
-    try:
-        seconds = int(expires_in)
-    except (TypeError, ValueError):
-        return None
-    return (datetime.now(UTC) + timedelta(seconds=max(seconds, 0))).isoformat()
 
 
 def _coerce_api_payload(payload: dict[str, Any]) -> dict[str, Any]:

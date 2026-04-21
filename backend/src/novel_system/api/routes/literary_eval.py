@@ -122,6 +122,6 @@ def _live_credentials_available(api_key: str | None, provider_configs: dict, *, 
             continue
         if provider_config.credential_mode == "none":
             return True
-        if provider_config.api_key or provider_config.access_token:
+        if provider_config.api_key:
             return True
     return False

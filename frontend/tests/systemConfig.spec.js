@@ -51,16 +51,6 @@ describe("system config api helpers", () => {
       "admin-token",
     );
     await api.probeLlmProvider("openai_primary", {}, "admin-token");
-    await api.startLlmOAuth(
-      "gemini",
-      {
-        provider_id: "gemini_oauth",
-        account_id: "acct_google",
-        client_id: "client-id",
-        redirect_uri: "http://127.0.0.1/callback",
-      },
-      "admin-token",
-    );
     await api.exportSystemConfigCategory("models");
     await api.fetchLiteraryEvalLatest();
     await api.runLiteraryEval({ mode: "baseline" });
@@ -120,13 +110,6 @@ describe("system config api helpers", () => {
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/system-config/llm/providers/openai_primary/probe",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
-      }),
-    );
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/api/v1/system-config/llm/oauth/gemini/start",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
@@ -214,7 +197,7 @@ describe("system config store", () => {
               default_base_url: "http://127.0.0.1:11434/v1",
             },
             openai: { label: "OpenAI", credential_modes: ["api_key"] },
-            gemini: { label: "Gemini / Google", credential_modes: ["api_key", "oauth2"] },
+            gemini: { label: "Gemini / Google", credential_modes: ["api_key"] },
           },
           providers: {
             openai_primary: {
@@ -306,14 +289,6 @@ describe("system config store", () => {
             model: { ok: true, requested_model: "qwen3:14b" },
             completion: { ok: true },
           },
-        });
-      }
-      if (url.endsWith("/api/v1/system-config/llm/oauth/gemini/start") && options.method === "POST") {
-        return ok({
-          provider_type: "gemini",
-          provider_id: "gemini_oauth",
-          authorization_url: "https://accounts.google.com/o/oauth2/v2/auth?state=signed",
-          state: "signed",
         });
       }
       if (url.endsWith("/api/v1/literary-eval/latest") && !options.method) {
@@ -444,7 +419,7 @@ describe("system config store", () => {
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8010/api/v1/system-config");
   });
 
-  it("loads llm provider config and saves provider, node routes, probes, and oauth start", async () => {
+  it("loads llm provider config and saves provider, node routes, and probes", async () => {
     const { useSystemConfigStore } = await import("../src/stores/systemConfig");
     const store = useSystemConfigStore();
     store.setAdminToken("admin-token");
@@ -464,13 +439,6 @@ describe("system config store", () => {
     store.nodeRouteDrafts.neutral_draft.reasoning_level = "high";
     const routeMessage = await store.saveLlmNodeRoutes();
     const probeMessage = await store.probeLlmProvider("openai_primary");
-    const oauthMessage = await store.startLlmOAuth({
-      provider_id: "gemini_oauth",
-      account_id: "acct_google",
-      client_id: "client-id",
-      redirect_uri: "http://127.0.0.1/callback",
-    });
-
     expect(store.llm.providers.openai_primary.secret.hint).toBe("sk-...test");
     expect(store.nodeRouteRows.some((row) => row.node_id === "chapter_summary" && row.status === "reserved")).toBe(true);
     expect(store.configDashboardSummary).toEqual({
@@ -486,8 +454,6 @@ describe("system config store", () => {
     expect(providerMessage).toContain("openai_primary");
     expect(routeMessage).toContain("config_models_llm_001");
     expect(probeMessage).toContain("成功");
-    expect(oauthMessage).toContain("Gemini");
-    expect(store.oauthStart.authorization_url).toContain("accounts.google.com");
     expect(store.providerDraft.api_key).toBe("");
   });
 
@@ -588,6 +554,21 @@ describe("system config store", () => {
     expect(store.providerDraft.base_url).toBe("http://127.0.0.1:11434/v1");
     expect(store.providerDraft.api_key).toBe("");
     expect(providerMessage).toContain("local_ollama");
+  });
+
+  it("prefills a CLIProxyAPI relay provider with api key mode and manual models", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+
+    store.applyLocalProviderPreset("cli-proxy");
+
+    expect(store.providerDraft.provider_id).toBe("cli_proxy");
+    expect(store.providerDraft.provider_type).toBe("openai_compatible");
+    expect(store.providerDraft.account_id).toBe("relay");
+    expect(store.providerDraft.base_url).toBe("http://127.0.0.1:8317/v1");
+    expect(store.providerDraft.credential_mode).toBe("api_key");
+    expect(store.providerDraft.api_mode).toBe("chat");
+    expect(store.providerDraft.modelsText).toBe("");
   });
 
   it("initializes the provider form from the configured local_qwen3 provider", async () => {
@@ -885,11 +866,12 @@ describe("system config shell registration", () => {
     expect(viewSource).toContain("config-llm-provider-panel");
     expect(viewSource).toContain("config-llm-local-preset-ollama");
     expect(viewSource).toContain("config-llm-local-preset-lm-studio");
+    expect(viewSource).toContain("config-llm-local-preset-cli-proxy");
     expect(viewSource).toContain("config-llm-local-preset-custom");
     expect(viewSource).toContain("systemConfig.applyLocalProviderPreset");
     expect(viewSource).toContain("systemConfig.providerDraft.credential_mode !== \"none\"");
     expect(viewSource).toContain("无需密钥");
-    expect(viewSource).toContain("config-llm-oauth-panel");
+    expect(viewSource).not.toContain("config-llm-oauth-panel");
     expect(viewSource).toContain("config-llm-node-matrix");
     expect(viewSource).toContain("config-llm-node-row-");
     expect(viewSource).toContain("systemConfig.nodeRouteRows");

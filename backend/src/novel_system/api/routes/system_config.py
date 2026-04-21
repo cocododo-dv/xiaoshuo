@@ -47,7 +47,6 @@ class LlmProviderConfigRequest(BaseModel):
     credential_mode: str = "api_key"
     api_mode: str | None = None
     models: list[str] | None = None
-    scopes: list[str] | None = None
     provider_options: dict[str, Any] | None = None
     api_key: str | None = None
 
@@ -59,17 +58,6 @@ class LlmNodeRoutesRequest(BaseModel):
     retry_budget: dict[str, Any] | None = None
     job_runtime: dict[str, Any] | None = None
     activate: bool = False
-
-
-class LlmOAuthStartRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    provider_id: str
-    account_id: str
-    client_id: str
-    client_secret: str | None = None
-    redirect_uri: str
-    scopes: list[str] | None = None
 
 
 @router.get("/api/v1/system-config")
@@ -176,34 +164,4 @@ def probe_system_config_llm_provider(
     return ok(
         SystemConfigService(session).probe_llm_provider(provider_id=provider_id, payload=payload.model_dump(mode="json", exclude_none=True) if payload else {}),
         req_id=None,
-    )
-
-
-@router.post("/api/v1/system-config/llm/oauth/{provider_type}/start")
-def start_system_config_llm_oauth(
-    provider_type: str,
-    payload: LlmOAuthStartRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
-):
-    require_admin_token(x_admin_token, client_host=_client_host(request))
-    return ok(
-        SystemConfigService(session).start_llm_oauth(provider_type=provider_type, payload=payload.model_dump(mode="json", exclude_none=True)),
-        req_id=None,
-    )
-
-
-@router.get("/api/v1/system-config/llm/oauth/callback")
-def finish_system_config_llm_oauth(
-    request: Request,
-    state: str,
-    code: str | None = None,
-    error: str | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "oauth_callback"
-    return ok(
-        SystemConfigService(session).finish_llm_oauth(state=state, code=code, error=error, actor_ref=actor_ref),
-        req_id=getattr(request.state, "request_id", None),
     )

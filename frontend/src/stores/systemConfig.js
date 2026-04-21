@@ -18,7 +18,6 @@ import {
   saveSystemConfigDraft,
   setApiBase,
   setOperatorRef,
-  startLlmOAuth as startLlmOAuthRequest,
   submitStyleProfileCandidate as submitStyleProfileCandidateRequest,
   testSystemConfigProvider,
 } from "../lib/api";
@@ -66,19 +65,19 @@ const LOCAL_PROVIDER_PRESETS = {
     base_url: "http://127.0.0.1:1234/v1",
     modelsText: "local-model",
   },
+  "cli-proxy": {
+    provider_id: "cli_proxy",
+    account_id: "relay",
+    base_url: "http://127.0.0.1:8317/v1",
+    credential_mode: "api_key",
+    modelsText: "",
+  },
   custom: {
     provider_id: "local_llm",
     account_id: "local",
     base_url: "http://127.0.0.1:8080/v1",
     modelsText: "local-model",
   },
-};
-const DEFAULT_OAUTH_DRAFT = {
-  provider_id: "gemini_oauth",
-  account_id: "",
-  client_id: "",
-  redirect_uri: "",
-  scopesText: "https://www.googleapis.com/auth/cloud-platform",
 };
 const DEFAULT_NODE_ROUTE = {
   provider: "openai",
@@ -412,12 +411,10 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     },
     providerDraft: { ...DEFAULT_PROVIDER_DRAFT },
     providerDraftTouched: false,
-    oauthDraft: { ...DEFAULT_OAUTH_DRAFT },
     nodeRouteDrafts: normalizeNodeRouteDrafts({}),
     providerProbeResults: {},
     llmActionMessage: "",
     llmActionTone: "",
-    oauthStart: null,
     exportResult: null,
     literaryEval: { report: null },
     literaryEvalModel: "",
@@ -655,7 +652,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         ...preset,
         provider_type: "openai_compatible",
         enabled: true,
-        credential_mode: "none",
+        credential_mode: preset.credential_mode || "none",
         api_mode: "chat",
         api_key: "",
       };
@@ -726,26 +723,6 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         throw error;
       } finally {
         this.testing = false;
-      }
-    },
-    async startLlmOAuth(payload = this.oauthDraft) {
-      this.llmSaving = true;
-      this.error = "";
-      try {
-        const requestPayload = {
-          provider_id: String(payload.provider_id || "").trim(),
-          account_id: String(payload.account_id || "").trim(),
-          client_id: String(payload.client_id || "").trim(),
-          redirect_uri: String(payload.redirect_uri || "").trim(),
-          scopes: Array.isArray(payload.scopes) ? payload.scopes : parseTextList(payload.scopesText),
-        };
-        this.oauthStart = await startLlmOAuthRequest("gemini", requestPayload, this.adminToken);
-        return `Gemini OAuth 授权已创建：${this.oauthStart.provider_id}`;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.llmSaving = false;
       }
     },
     async exportCategory(category = this.selectedCategory) {
