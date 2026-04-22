@@ -193,39 +193,6 @@ async function apiPost(apiPath, data = {}, timeoutMs = 30000) {
   }
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-const SCENE_RUN_JOB_TERMINAL_STATUSES = new Set([
-  "archived",
-  "blocked",
-  "cancelled",
-  "completed",
-  "failed",
-  "human_review_required",
-  "manual_review_required",
-]);
-
-async function pollSceneRunJob(jobId, sceneId, { intervalMs = 1000, maxPolls = 720 } = {}) {
-  if (!jobId) {
-    throw new Error(`scene run for ${sceneId} did not return a job id`);
-  }
-  let latest = null;
-  for (let pollIndex = 0; pollIndex < maxPolls; pollIndex += 1) {
-    latest = await apiGet(`/api/v1/run-jobs/${encodeURIComponent(jobId)}`);
-    if (SCENE_RUN_JOB_TERMINAL_STATUSES.has(latest.status) || latest.finished_at) {
-      return latest;
-    }
-    if (pollIndex < maxPolls - 1) {
-      await sleep(intervalMs);
-    }
-  }
-  throw new Error(`scene run job ${jobId} for ${sceneId} did not finish; latest status: ${latest?.status || "unknown"}`);
-}
-
 async function parseEnvelope(response, method, apiPath) {
   let payload = null;
   try {
@@ -809,20 +776,17 @@ async function runGeneration(page) {
         .catch(() => null);
       const [resp] = await Promise.all([
         page.waitForResponse(
-          (response) =>
-            response.url().includes(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs`) &&
-            response.request().method() === "POST",
-          { timeout: 30000 },
+          (response) => response.url().includes(`/api/v1/scenes/${sceneId}/run/full`) && response.request().method() === "POST",
+          { timeout: 600000 },
         ),
         page.getByTestId("run-full-scene-button").click(),
       ]);
       const payload = await resp.json();
-      const runJob = await pollSceneRunJob(payload.data?.job_id, sceneId);
       await page
         .waitForResponse((resp) => resp.url().includes(`/api/v1/scenes/${sceneId}/workbench`), { timeout: 60000 })
         .catch(() => null);
       const collected = await collectSceneOutput(sceneId);
-      return { run: runJob, ...collected };
+      return { run: payload.data, ...collected };
     });
     outputs[sceneId.slice(0, 6)] = sceneOutput;
     await screenshot(page, `workbench-${sceneId.toLowerCase()}`);

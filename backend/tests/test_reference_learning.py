@@ -3,11 +3,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from novel_system.db.models import ChapterGoal, LlmCall, ReferenceBookSegment, ReferenceFinding, ReviewItem, SceneCard, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    LlmCall,
+    ReferenceBookSegment,
+    ReferenceFinding,
+    ReferenceLearningRound,
+    ReviewItem,
+    SceneCard,
+    SceneRunState,
+)
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.reference_learning import ReferenceLearningService, _sanitize_reference_profile_text
 from novel_system.services.versioning.review_materialization import ReviewMaterializationService
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
 
 
 def _idempotency_headers(key: str) -> dict[str, str]:
@@ -44,6 +57,19 @@ def _book_text() -> str:
 
 她把钥匙放进他掌心，没有解释，也没有告别。
 """.strip()
+
+
+def _many_reference_text(segment_count: int) -> str:
+    return "\n\n".join(
+        [
+            (
+                f"Scene {index}: The corridor light clicked twice, then held its breath. "
+                "A character noticed the silence before anyone explained it, and the room "
+                "shifted through gesture, pressure, and a delayed emotional release."
+            )
+            for index in range(1, segment_count + 1)
+        ]
+    )
 
 
 def _import_reference_book(client, tmp_path: Path) -> str:
@@ -347,11 +373,21 @@ def test_learning_run_pauses_for_review_then_completes_profile(client, tmp_path:
     )
     assert completed.status_code == 200
     data = completed.json()["data"]
-    assert data["run"]["status"] == "completed"
-    assert data["profile"]["status"] == "ready"
-    assert data["profile"]["coverage"]["approved_findings"] >= 4
-    assert "style_profile" in data["profile"]["profile_json"]
-    assert "narrative_patterns" in data["profile"]["profile_json"]
+    if data["run"]["coverage"]["learning_complete"]:
+        assert data["run"]["status"] == "completed"
+        profile = data["profile"]
+    else:
+        assert data["run"]["status"] == "waiting_review"
+        assert data["run"]["coverage"]["learning_complete"] is False
+        assert data["run"]["coverage"]["pending_findings"] > 0
+        assert "round" in data
+        detail = client.get(f"/api/v1/reference-books/{book_id}")
+        assert detail.status_code == 200
+        profile = detail.json()["data"]["profiles"][0]
+    assert profile["status"] == "ready"
+    assert profile["coverage"]["approved_findings"] >= 4
+    assert "style_profile" in profile["profile_json"]
+    assert "narrative_patterns" in profile["profile_json"]
 
 
 def test_reference_finding_response_hides_source_excerpt_by_default(client, tmp_path: Path) -> None:
@@ -364,9 +400,385 @@ def test_reference_finding_response_hides_source_excerpt_by_default(client, tmp_
     assert finding["evidence_preview"] is None
     assert finding["source_segment"]["preview"] is None
     assert finding["source_segment"]["chapter_hint"] is None
-    assert finding["source_segment"]["display_label"].endswith("segment")
+    assert "片段" in finding["source_segment"]["display_label"]
+    assert not finding["source_segment"]["display_label"].endswith("segment")
     assert finding["source_segment"]["segment_kind"]
     assert finding["summary"]
+    assert _has_cjk(finding["summary"])
+
+
+def test_reference_learning_profile_ready_still_allows_more_unsampled_segments(session, tmp_path: Path) -> None:
+    book_path = tmp_path / "many-reference.md"
+    book_path.write_text(_many_reference_text(12), encoding="utf-8")
+    service = ReferenceLearningService(session)
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="Many Reference",
+        author_label="reference",
+        cloud_policy="local_only",
+        analysis_focus="style_structure",
+    )
+    book_id = imported["book_id"]
+    run = service.start_run(book_id, batch_size=5)["run"]
+    first_advance = service.advance_run(book_id, run["run_id"])
+    first_segment_ids = {
+        finding["source_segment"]["segment_id"]
+        for finding in first_advance["round"]["findings"]
+    }
+
+    review_service = ReviewMaterializationService(session)
+    for finding in first_advance["round"]["findings"]:
+        review_service.materialize_review(finding["review"]["review_id"])
+
+    ready_coverage = service.coverage_for_run(run["run_id"])
+    assert ready_coverage["ready"] is True
+    assert ready_coverage["sampled_segments"] == 5
+    assert ready_coverage["eligible_segments"] == 12
+    assert ready_coverage["remaining_segments"] == 7
+    assert ready_coverage["sample_coverage_score"] < 1
+    assert ready_coverage["dimension_coverage_score"] == ready_coverage["coverage_score"]
+    assert ready_coverage["learning_complete"] is False
+    assert ready_coverage["next_round_available"] is True
+
+    continuation = service.advance_run(book_id, run["run_id"])
+    assert continuation["run"]["status"] == "waiting_review"
+    assert "round" in continuation
+    second_segment_ids = {
+        finding["source_segment"]["segment_id"]
+        for finding in continuation["round"]["findings"]
+    }
+    assert first_segment_ids.isdisjoint(second_segment_ids)
+
+    detail = service.detail(book_id)
+    assert detail["profiles"]
+    assert detail["profiles"][0]["status"] == "ready"
+    assert detail["latest_run"]["coverage"]["profile_ready"] is True
+    assert detail["latest_run"]["coverage"]["learning_complete"] is False
+
+
+def test_reference_learning_uses_round_ledger_to_skip_partially_created_round_segments(
+    session,
+    tmp_path: Path,
+) -> None:
+    book_path = tmp_path / "partial-round-reference.md"
+    book_path.write_text(_many_reference_text(10), encoding="utf-8")
+    service = ReferenceLearningService(session)
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="Partial Round Reference",
+        author_label="reference",
+        cloud_policy="local_only",
+        analysis_focus="style_structure",
+    )
+    book_id = imported["book_id"]
+    run = service.start_run(book_id, batch_size=5)["run"]
+    first_segment_ids = [
+        segment.segment_id
+        for segment in session.query(ReferenceBookSegment)
+        .filter(ReferenceBookSegment.book_id == book_id)
+        .order_by(ReferenceBookSegment.segment_index.asc())
+        .limit(5)
+        .all()
+    ]
+    session.add(
+        ReferenceLearningRound(
+            round_id=f"refround_{run['run_id']}_1",
+            book_id=book_id,
+            run_id=run["run_id"],
+            round_index=1,
+            status="completed",
+            segment_ids_json=first_segment_ids,
+            finding_ids_json=[],
+        )
+    )
+    run_row = service._run(book_id, run["run_id"])
+    run_row.round_count = 1
+    session.flush()
+
+    coverage = service.coverage_for_run(run["run_id"])
+    assert coverage["sampled_segments"] == 5
+    assert coverage["remaining_segments"] == 5
+
+    continuation = service.advance_run(book_id, run["run_id"])
+    second_segment_ids = {
+        finding["source_segment"]["segment_id"]
+        for finding in continuation["round"]["findings"]
+    }
+    assert second_segment_ids
+    assert second_segment_ids.isdisjoint(first_segment_ids)
+
+
+def test_reference_learning_skips_segments_attempted_by_earlier_runs(
+    session,
+    tmp_path: Path,
+) -> None:
+    book_path = tmp_path / "cross-run-reference.md"
+    book_path.write_text(_many_reference_text(12), encoding="utf-8")
+    service = ReferenceLearningService(session)
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="Cross Run Reference",
+        author_label="reference",
+        cloud_policy="local_only",
+        analysis_focus="style_structure",
+    )
+    book_id = imported["book_id"]
+    first_run = service.start_run(book_id, batch_size=5)["run"]
+    first_advance = service.advance_run(book_id, first_run["run_id"])
+    first_segment_ids = {
+        finding["source_segment"]["segment_id"]
+        for finding in first_advance["round"]["findings"]
+    }
+
+    for segment_id in first_segment_ids:
+        segment = session.get(ReferenceBookSegment, segment_id)
+        segment.selected_count = 0
+    session.flush()
+
+    second_run = service.start_run(book_id, batch_size=5)["run"]
+    second_advance = service.advance_run(book_id, second_run["run_id"])
+    second_segment_ids = {
+        finding["source_segment"]["segment_id"]
+        for finding in second_advance["round"]["findings"]
+    }
+    assert second_segment_ids
+    assert second_segment_ids.isdisjoint(first_segment_ids)
+
+
+def test_reference_learning_advance_reuses_waiting_round_without_findings(
+    session,
+    tmp_path: Path,
+) -> None:
+    book_path = tmp_path / "duplicate-advance-reference.md"
+    book_path.write_text(_many_reference_text(8), encoding="utf-8")
+    service = ReferenceLearningService(session)
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="Duplicate Advance Reference",
+        author_label="reference",
+        cloud_policy="local_only",
+        analysis_focus="style_structure",
+    )
+    book_id = imported["book_id"]
+    run = service.start_run(book_id, batch_size=5)["run"]
+    first_segment_ids = [
+        segment.segment_id
+        for segment in session.query(ReferenceBookSegment)
+        .filter(ReferenceBookSegment.book_id == book_id)
+        .order_by(ReferenceBookSegment.segment_index.asc())
+        .limit(5)
+        .all()
+    ]
+    session.add(
+        ReferenceLearningRound(
+            round_id=f"refround_{run['run_id']}_1",
+            book_id=book_id,
+            run_id=run["run_id"],
+            round_index=1,
+            status="waiting_review",
+            segment_ids_json=first_segment_ids,
+            finding_ids_json=[],
+        )
+    )
+    session.flush()
+
+    replayed = service.advance_run(book_id, run["run_id"])
+    assert replayed["round"]["round_index"] == 1
+    assert replayed["round"]["findings"] == []
+    assert session.query(ReferenceLearningRound).filter(ReferenceLearningRound.run_id == run["run_id"]).count() == 1
+
+
+def test_reference_learning_filters_front_matter_synopsis_and_epigraph_from_candidates(
+    session,
+    tmp_path: Path,
+) -> None:
+    book_path = tmp_path / "front-matter-candidates.txt"
+    book_path.write_text(
+        "\n\n".join(
+            [
+                "《Example》合集\n包含《Example One》《Example Two》\nSomeone 著",
+                "内容简介：\n《Example One》：A plain marketing synopsis that explains the plot instead of showing craft.",
+                "Example·First Dawn\nSomeone 著",
+                "When you feel most lonely and desperate,\nthere will be a door open for you.",
+                *_many_reference_text(5).split("\n\n"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = ReferenceLearningService(session)
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="Front Matter Candidates",
+        author_label="reference",
+        cloud_policy="local_only",
+        analysis_focus="style_structure",
+    )
+    run = service.start_run(imported["book_id"], batch_size=5)["run"]
+    first_advance = service.advance_run(imported["book_id"], run["run_id"])
+
+    selected_segment_ids = [finding["source_segment"]["segment_id"] for finding in first_advance["round"]["findings"]]
+    selected_segments = session.query(ReferenceBookSegment).filter(ReferenceBookSegment.segment_id.in_(selected_segment_ids)).all()
+    selected_text = "\n".join(segment.text for segment in selected_segments)
+    assert "合集" not in selected_text
+    assert "内容简介" not in selected_text
+    assert "Someone 著" not in selected_text
+    assert "When you feel most lonely" not in selected_text
+    assert service.coverage_for_run(run["run_id"])["eligible_segments"] == 5
+
+
+def test_reference_learning_completes_only_after_all_analysis_worthy_segments_sampled(session, tmp_path: Path) -> None:
+    book_path = tmp_path / "small-reference.md"
+    book_path.write_text(_many_reference_text(5), encoding="utf-8")
+    service = ReferenceLearningService(session)
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="Small Reference",
+        author_label="reference",
+        cloud_policy="local_only",
+        analysis_focus="style_structure",
+    )
+    book_id = imported["book_id"]
+    run = service.start_run(book_id, batch_size=5)["run"]
+    first_advance = service.advance_run(book_id, run["run_id"])
+
+    review_service = ReviewMaterializationService(session)
+    for finding in first_advance["round"]["findings"]:
+        review_service.materialize_review(finding["review"]["review_id"])
+
+    completed = service.advance_run(book_id, run["run_id"])
+    assert completed["run"]["status"] == "completed"
+    assert completed["profile"]["status"] == "ready"
+    assert completed["run"]["coverage"]["sampled_segments"] == 5
+    assert completed["run"]["coverage"]["eligible_segments"] == 5
+    assert completed["run"]["coverage"]["remaining_segments"] == 0
+    assert completed["run"]["coverage"]["sample_coverage_score"] == 1
+    assert completed["run"]["coverage"]["learning_complete"] is True
+    assert completed["run"]["coverage"]["next_round_available"] is False
+
+
+def test_reference_segment_excerpt_is_loaded_on_demand_and_blocks_invalid_sources(
+    client,
+    session,
+    tmp_path: Path,
+) -> None:
+    book_id = _import_reference_book(client, tmp_path)
+    first_advance = _start_and_advance(client, book_id)
+    finding = first_advance["round"]["findings"][0]
+    segment_id = finding["source_segment"]["segment_id"]
+
+    assert finding["source_excerpt_hidden"] is True
+    assert finding["source_segment"]["preview"] is None
+
+    excerpt_response = client.get(f"/api/v1/reference-books/{book_id}/segments/{segment_id}/excerpt")
+    assert excerpt_response.status_code == 200
+    excerpt = excerpt_response.json()["data"]
+    assert excerpt["segment_id"] == segment_id
+    assert excerpt["display_label"]
+    assert excerpt["source_visibility"] == "review_only"
+    assert excerpt["max_chars"] == 800
+    assert 0 < len(excerpt["excerpt"]) <= 800
+    assert "仅供审核" in excerpt["safety_note"]
+
+    second_book_path = tmp_path / "second-reference.md"
+    second_book_path.write_text(_many_reference_text(5), encoding="utf-8")
+    second = client.post(
+        "/api/v1/reference-books/import-path",
+        json={
+            "file_path": str(second_book_path),
+            "title": "Second Reference",
+            "author_label": "reference",
+            "cloud_policy": "local_only",
+            "analysis_focus": "style_structure",
+        },
+        headers=_idempotency_headers("import-second-reference-book"),
+    )
+    assert second.status_code == 200
+    wrong_book_id = second.json()["data"]["book_id"]
+    wrong_book_response = client.get(f"/api/v1/reference-books/{wrong_book_id}/segments/{segment_id}/excerpt")
+    assert wrong_book_response.status_code == 404
+
+    boilerplate_path = tmp_path / "boilerplate-reference.md"
+    boilerplate_path.write_text(
+        "\n\n".join(
+            [
+                "txt8080 http://example.com copyright notice only, please support the original author.",
+                *_many_reference_text(5).split("\n\n"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    boilerplate = client.post(
+        "/api/v1/reference-books/import-path",
+        json={
+            "file_path": str(boilerplate_path),
+            "title": "Boilerplate Reference",
+            "author_label": "reference",
+            "cloud_policy": "local_only",
+            "analysis_focus": "style_structure",
+        },
+        headers=_idempotency_headers("import-boilerplate-excerpt-book"),
+    )
+    assert boilerplate.status_code == 200
+    boilerplate_book_id = boilerplate.json()["data"]["book_id"]
+    boilerplate_segment = (
+        session.query(ReferenceBookSegment)
+        .filter(
+            ReferenceBookSegment.book_id == boilerplate_book_id,
+            ReferenceBookSegment.segment_kind == "boilerplate",
+        )
+        .first()
+    )
+    assert boilerplate_segment is not None
+    blocked_response = client.get(
+        f"/api/v1/reference-books/{boilerplate_book_id}/segments/{boilerplate_segment.segment_id}/excerpt"
+    )
+    assert blocked_response.status_code == 404
+
+    front_matter_path = tmp_path / "front-matter-reference.md"
+    front_matter_path.write_text(
+        "\n\n".join(
+            [
+                "《Example》合集 包含《Example One》《Example Two》 Someone 著",
+                *_many_reference_text(5).split("\n\n"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    front_matter_import = client.post(
+        "/api/v1/reference-books/import-path",
+        json={
+            "file_path": str(front_matter_path),
+            "title": "Front Matter Reference",
+            "author_label": "reference",
+            "cloud_policy": "local_only",
+            "analysis_focus": "style_structure",
+        },
+        headers=_idempotency_headers("import-front-matter-excerpt-book"),
+    )
+    assert front_matter_import.status_code == 200
+    front_matter_book_id = front_matter_import.json()["data"]["book_id"]
+    front_matter_segment = (
+        session.query(ReferenceBookSegment)
+        .filter(
+            ReferenceBookSegment.book_id == front_matter_book_id,
+            ReferenceBookSegment.text.like("%合集%"),
+        )
+        .first()
+    )
+    assert front_matter_segment is not None
+    blocked_front_matter = client.get(
+        f"/api/v1/reference-books/{front_matter_book_id}/segments/{front_matter_segment.segment_id}/excerpt"
+    )
+    assert blocked_front_matter.status_code == 404
+    front_matter_detail = client.get(f"/api/v1/reference-books/{front_matter_book_id}")
+    assert front_matter_detail.status_code == 200
+    assert front_matter_detail.json()["data"]["coverage"]["eligible_segments"] == 5
 
 
 def test_reference_finding_sanitizes_llm_source_markers_before_review(session, tmp_path: Path) -> None:
@@ -462,9 +874,46 @@ def test_reference_finding_serializer_sanitizes_legacy_raw_review_rows(session, 
     ]:
         assert marker not in serialized_json
     assert serialized["source_segment"]["chapter_hint"] is None
-    assert serialized["source_segment"]["display_label"].endswith("segment")
+    assert "片段" in serialized["source_segment"]["display_label"]
+    assert "segment" not in serialized["source_segment"]["display_label"]
     assert serialized["review"]["candidate_payload_json"]["lineage_key"] == "refbook_legacy_safe_output"
     assert serialized["review"]["candidate_payload_json"]["safety_notes"]["source_excerpt_hidden"] is True
+
+
+def test_reference_finding_serializer_localizes_legacy_english_summary_for_chinese_reference(
+    session,
+    tmp_path: Path,
+) -> None:
+    book_path = tmp_path / "legacy-english-reference.md"
+    book_path.write_text(_book_text(), encoding="utf-8")
+    service = ReferenceLearningService(session)
+
+    imported = service.import_path(
+        file_path=str(book_path),
+        title="雨夜参考书",
+        author_label="reference",
+        cloud_policy="local_only",
+        analysis_focus="style_structure",
+    )
+    run = service.start_run(imported["book_id"], batch_size=5)["run"]
+    first_advance = service.advance_run(imported["book_id"], run["run_id"])
+    finding_id = first_advance["round"]["findings"][0]["finding_id"]
+    finding = session.get(ReferenceFinding, finding_id)
+    assert finding is not None
+
+    finding.summary = (
+        "The opening segment uses a catalog-like structure to introduce the series, "
+        "which may disrupt the reader's immersion."
+    )
+    session.flush()
+
+    serialized = service.serialize_finding(finding)
+
+    assert _has_cjk(serialized["summary"])
+    assert "The opening segment" not in serialized["summary"]
+    assert "catalog-like" not in serialized["summary"]
+    assert "片段" in serialized["source_segment"]["display_label"]
+    assert "segment" not in serialized["source_segment"]["display_label"]
 
 
 def test_review_reject_marks_status_and_does_not_materialize(client, session) -> None:
@@ -520,7 +969,13 @@ def test_apply_profile_creates_scoped_reviews_and_bundle_uses_released_narrative
         json={},
         headers=_idempotency_headers("advance-apply-reference-run-complete"),
     )
-    profile_id = completed.json()["data"]["profile"]["profile_id"]
+    completed_data = completed.json()["data"]
+    if "profile" in completed_data:
+        profile_id = completed_data["profile"]["profile_id"]
+    else:
+        detail_for_profile = client.get(f"/api/v1/reference-books/{book_id}")
+        assert detail_for_profile.status_code == 200
+        profile_id = detail_for_profile.json()["data"]["profiles"][0]["profile_id"]
 
     apply_response = client.post(
         f"/api/v1/reference-books/{book_id}/profiles/{profile_id}/apply",
@@ -532,6 +987,27 @@ def test_apply_profile_creates_scoped_reviews_and_bundle_uses_released_narrative
     assert apply_data["applied"] is False
     assert {item["item_type"] for item in apply_data["reviews"]} >= {"style_rule_set", "narrative_pattern"}
     assert all(item["status"] == "pending" for item in apply_data["reviews"])
+    assert apply_data["application_status"]["total"] == len(apply_data["reviews"])
+    assert apply_data["application_status"]["pending"] == len(apply_data["reviews"])
+    assert apply_data["application_status"]["approved"] == 0
+    assert apply_data["application_status"]["rejected"] == 0
+    assert apply_data["application_status"]["scope"] == "chapter"
+    assert apply_data["application_status"]["scope_ref_id"] == "CHREF"
+    assert set(apply_data["application_status"]["review_ids"]) == {
+        item["review_id"] for item in apply_data["reviews"]
+    }
+
+    detail = client.get(f"/api/v1/reference-books/{book_id}")
+    assert detail.status_code == 200
+    applied_profile = next(
+        item
+        for item in detail.json()["data"]["profiles"]
+        if item["profile_id"] == profile_id
+    )
+    assert applied_profile["application_status"]["pending"] == len(apply_data["reviews"])
+    assert set(applied_profile["application_status"]["review_ids"]) == {
+        item["review_id"] for item in apply_data["reviews"]
+    }
 
     narrative_review = next(item for item in apply_data["reviews"] if item["item_type"] == "narrative_pattern")
     approve = client.post(
@@ -568,7 +1044,7 @@ def test_apply_profile_creates_scoped_reviews_and_bundle_uses_released_narrative
 
     bundle = BundleBuilder(session).build("CHREF_SC01")["snapshot"]
     assert "narrative_pattern_ids" in bundle["source_version_refs"]
-    assert "chapter hook" in bundle["inline_digests"]["narrative_pattern"]
+    assert "章节钩子" in bundle["inline_digests"]["narrative_pattern"]
 
 
 def test_llm_enabled_reference_learning_uses_ranker_extractor_and_profile_synthesizer(session, tmp_path: Path) -> None:
@@ -595,16 +1071,28 @@ def test_llm_enabled_reference_learning_uses_ranker_extractor_and_profile_synthe
     } >= {"reference_sample_ranker", "reference_style_structure_extract"}
     finding_types = {finding["finding_type"] for finding in first_advance["round"]["findings"]}
     assert {"style_rule_set", "narrative_pattern", "style_observation"} <= finding_types
-    assert first_advance["round"]["findings"][0]["summary"].startswith("LLM style rule")
+    assert first_advance["round"]["findings"][0]["model_trace"]["provider"] == "fake"
+    assert first_advance["round"]["findings"][0]["model_trace"]["node_id"] == "reference_style_structure_extract"
+    first_summary = first_advance["round"]["findings"][0]["summary"]
+    assert _has_cjk(first_summary)
+    assert not first_summary.startswith("LLM style rule")
+    style_request = next(
+        request for request in fake_client.requests if request.node_id == "reference_style_structure_extract"
+    )
+    assert '"locale_hint": "zh"' in style_request.messages[1]["content"]
+    assert "中文" in style_request.messages[1]["content"]
 
     review_service = ReviewMaterializationService(session)
     for finding in first_advance["round"]["findings"]:
         review_service.materialize_review(finding["review"]["review_id"])
 
-    completed = service.advance_run(book_id, run["run_id"])
-    assert completed["profile"]["profile_json"]["narrative_patterns"] == ["LLM synthesized hook escalation."]
-    assert len(completed["profile"]["source_finding_ids"]) == len(first_advance["round"]["findings"])
-    assert fake_client.requests[-1].node_id == "reference_profile_synthesize"
+    advanced = service.advance_run(book_id, run["run_id"])
+    profile = advanced.get("profile") or service.detail(book_id)["profiles"][0]
+    assert profile["profile_json"]["narrative_patterns"] == ["LLM synthesized hook escalation."]
+    assert profile["model_trace"]["provider"] == "fake"
+    assert profile["model_trace"]["success_count"] >= 1
+    assert len(profile["source_finding_ids"]) == len(first_advance["round"]["findings"])
+    assert any(request.node_id == "reference_profile_synthesize" for request in fake_client.requests)
     llm_nodes = {
         row.node_id
         for row in session.query(LlmCall).filter(LlmCall.node_id.like("reference_%")).all()
@@ -635,8 +1123,8 @@ def test_reference_profile_sanitizes_llm_evidence_and_source_markers(session, tm
     for finding in first_advance["round"]["findings"]:
         review_service.materialize_review(finding["review"]["review_id"])
 
-    completed = service.advance_run(imported["book_id"], run["run_id"])
-    profile = completed["profile"]
+    advanced = service.advance_run(imported["book_id"], run["run_id"])
+    profile = advanced.get("profile") or service.detail(imported["book_id"])["profiles"][0]
     serialized_profile = json.dumps(profile["profile_json"], ensure_ascii=False)
 
     assert profile["status"] == "ready"
@@ -764,7 +1252,13 @@ def test_rejected_after_profile_marks_profile_stale_and_blocks_apply(client, ses
         headers=_idempotency_headers("advance-stale-profile-complete"),
     )
     assert completed.status_code == 200
-    profile = completed.json()["data"]["profile"]
+    completed_data = completed.json()["data"]
+    if "profile" in completed_data:
+        profile = completed_data["profile"]
+    else:
+        detail_for_profile = client.get(f"/api/v1/reference-books/{book_id}")
+        assert detail_for_profile.status_code == 200
+        profile = detail_for_profile.json()["data"]["profiles"][0]
     assert profile["status"] == "ready"
     assert profile["source_finding_ids"]
 

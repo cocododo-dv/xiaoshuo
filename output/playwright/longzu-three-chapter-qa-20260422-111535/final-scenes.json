@@ -1,0 +1,340 @@
+{
+  "CHOR03": {
+    "sceneId": "CHOR03_SC01",
+    "chapterId": "CHOR03",
+    "sceneStatus": "archived",
+    "bundleId": "bundle_CHOR03_SC01_v1",
+    "finalRowId": "final_scene_CHOR03_SC01_v1",
+    "finalText": "无灯船坞的水面没有倒影，只有潮声在黑暗中起伏。林岑和许望站在隐藏档案间的门前，她将盐钟残片插入锁孔，金属与金属摩擦的瞬间，潮声仿佛被倒退三秒，柜门随之开启。\n\n档案柜里躺着一卷录音带，标签上写着‘幸存者阿砚’。林岑的手指在播放键上方停顿片刻，最终按下开关。录音里传来断续的喘息和低语，提到追踪者仍在附近活动，且有人试图篡改记录。\n\n她将录音带放入密封袋，动作迅速而精准。许望盯着她，语气低沉：\"如果公开这些，可能会让更多人被盯上。\"\n\n林岑没有抬头，只是将档案分装进多个防水袋，声音冷静：\"先保护活人，再谈真相。\"\n\n她将一部分证据藏入船坞深处的石缝中，另一部分交给许望。当她转身时，船坞外的雾墙上，第二枚盐钟的影子悄然浮现，仿佛有人在暗处窥视着他们的选择。",
+    "hardQc": {
+      "qc_report_id": "qc_report_CHOR03_SC01_0ccfa2a41564",
+      "qc_type": "hard_qc",
+      "pass_flag": true,
+      "resolution_code": "hard_pass",
+      "issue_keys": [],
+      "next_action": "pass",
+      "rewrite_brief": [],
+      "created_at": "2026-04-22T03:41:05.281200+00:00"
+    },
+    "softQc": {
+      "qc_report_id": "qc_report_CHOR03_SC01_840b5d485ba6",
+      "qc_type": "soft_qc",
+      "pass_flag": true,
+      "resolution_code": "soft_waive",
+      "issue_keys": [
+        "style_drift",
+        "imagery_clarity"
+      ],
+      "next_action": "pass_with_notes",
+      "rewrite_brief": [
+        "确保林岑的情绪表达仅通过手部动作、修复术语和短句体现，避免直接描述情绪。",
+        "强化‘潮声倒退三秒’与盐钟残片之间的隐喻联系，例如加入‘盐钟的震动仿佛让时间回溯’等表述。",
+        "Repeated soft QC patch request after one controlled patch pass. Carry forward: 确保林岑的情绪表达仅通过手部动作、修复术语和短句体现，避免直接描述情绪。; 强化‘潮声倒退三秒’与盐钟残片之间的隐喻联系，例如加入‘盐钟的震动仿佛让时间回溯’等表述。"
+      ],
+      "created_at": "2026-04-22T03:44:10.543280+00:00",
+      "issues": [
+        {
+          "issue_key": "style_drift",
+          "message": "林岑的情绪爆发未完全通过手部动作、修复术语和短句体现，部分情绪表达略显直白，与POV声线设定存在轻微偏差。"
+        },
+        {
+          "issue_key": "imagery_clarity",
+          "message": "‘潮声仿佛被倒退三秒’的意象虽符合场景设定，但可进一步强化其与盐钟残片的关联性，以增强画面感和隐喻深度。"
+        }
+      ],
+      "style_score": null,
+      "style_dimensions": [],
+      "style_deviations": [
+        {
+          "dimension": "emotion_curve",
+          "severity": "low",
+          "patch_brief": "将‘她将录音带放入密封袋，动作迅速而精准’改为‘她的手指在密封袋边缘轻轻摩挲，仿佛在确认每一道封口的完整性’，以更符合克制、低温的情绪表达。"
+        },
+        {
+          "dimension": "imagery",
+          "severity": "low",
+          "patch_brief": "将‘潮声仿佛被倒退三秒’改为‘盐钟的震动让潮声短暂回溯，如同时间在锁孔中倒流’，以增强意象与场景的关联性。"
+        }
+      ]
+    },
+    "generationSummary": {
+      "llm_call_id": "llm_call_CHOR03_SC01_342c456989ad",
+      "step": "style_patch",
+      "raw_step": "soft_patch",
+      "provider": "openai_compatible",
+      "model": "Qwen3-14B-Q8_0.gguf",
+      "prompt_hash": "ce00a47299d653575662002b81adc321d55168a13f4b5ed6650108e400b27d70",
+      "prompt_tokens": 1447,
+      "completion_tokens": 257,
+      "total_tokens": 1704,
+      "latency_ms": 36439,
+      "finish_reason": "stop",
+      "error_code": null,
+      "created_at": "2026-04-22T03:43:09.221778+00:00",
+      "style_score_summary": {
+        "style_score": null,
+        "style_dimensions": [],
+        "style_deviations": [
+          {
+            "dimension": "emotion_curve",
+            "severity": "low",
+            "patch_brief": "将‘她将录音带放入密封袋，动作迅速而精准’改为‘她的手指在密封袋边缘轻轻摩挲，仿佛在确认每一道封口的完整性’，以更符合克制、低温的情绪表达。"
+          },
+          {
+            "dimension": "imagery",
+            "severity": "low",
+            "patch_brief": "将‘潮声仿佛被倒退三秒’改为‘盐钟的震动让潮声短暂回溯，如同时间在锁孔中倒流’，以增强意象与场景的关联性。"
+          }
+        ]
+      }
+    },
+    "attempts": [
+      {
+        "step": "neutral_draft",
+        "status": "completed"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive"
+      },
+      {
+        "step": "finalize",
+        "status": "completed"
+      },
+      {
+        "step": "archive",
+        "status": "completed"
+      }
+    ]
+  },
+  "CHOR01": {
+    "sceneId": "CHOR01_SC01",
+    "chapterId": "CHOR01",
+    "sceneStatus": "archived",
+    "bundleId": "bundle_CHOR01_SC01_v1",
+    "finalRowId": "final_scene_CHOR01_SC01_v1",
+    "finalText": "林岑的手指在潮湿的纸页边缘停顿，盐蚀库房的空气里浮着细小的晶体。她将一叠受潮档案摊开在修复台上，纸张发出类似叹息的窸窣声。忽然，一枚金属残片从档案夹层滑落，在工作灯下泛起冷光。\n\n盐钟残片边缘凝结着蓝白盐霜，像是某种未解的痕迹。她用镊子夹起它，指尖触到内侧刻痕——那是一串数字，与档案编号完全吻合。潮汐记录的缺页位置在她脑海中浮现，那些被抹去的日期连成一条倒置的船线。\n\n她将残片放在声纹分析仪上，仪器低鸣着吐出一串波形图。林岑盯着屏幕，喉结微动，手指在键盘上停顿了半秒。档案盒里突然多出一页纸，墨迹未干的潮位表标注着明天的数字。\n\n她将残片和那页纸收进证物袋，指尖在袋口封口处压出一道浅痕。盐钟在无人触碰时发出一声低沉的嗡鸣。林岑把证物袋放进背包，转身走向电话机，拨通了许望的号码。",
+    "hardQc": {
+      "qc_report_id": "qc_report_CHOR01_SC01_ab654233d5db",
+      "qc_type": "hard_qc",
+      "pass_flag": true,
+      "resolution_code": "hard_pass",
+      "issue_keys": [],
+      "next_action": "pass",
+      "rewrite_brief": [],
+      "created_at": "2026-04-22T03:21:09.688498+00:00"
+    },
+    "softQc": {
+      "qc_report_id": "qc_report_CHOR01_SC01_7ccecb8c1349",
+      "qc_type": "soft_qc",
+      "pass_flag": true,
+      "resolution_code": "soft_waive",
+      "issue_keys": [
+        "style_drift",
+        "emotion_curve"
+      ],
+      "next_action": "pass_with_notes",
+      "rewrite_brief": [
+        "将‘那是一串数字，与档案编号完全吻合’改为‘那是一串数字，与她记忆中的档案编号重叠’以延后解释。",
+        "将‘档案盒里突然多出一页纸，墨迹未干的潮位表标注着明天的数字’改为‘档案盒里多出一页纸，墨迹未干，潮位表上写着明天的数字’以增强悬念感。",
+        "Repeated soft QC patch request after one controlled patch pass. Carry forward: 将‘那是一串数字，与档案编号完全吻合’改为‘那是一串数字，与她记忆中的档案编号重叠’以延后解释。; 将‘档案盒里突然多出一页纸，墨迹未干的潮位表标注着明天的数字’改为‘档案盒里多出一页纸，墨迹未干，潮位表上写着明天的数字’以增强悬念感。"
+      ],
+      "created_at": "2026-04-22T03:24:40.711709+00:00",
+      "issues": [
+        {
+          "issue_key": "style_drift",
+          "message": "在描述盐钟残片和档案盒里的潮位表时，使用了较为直白的解释性语言，略微偏离了‘物证先亮相，解释延后’的节奏要求。"
+        },
+        {
+          "issue_key": "emotion_curve",
+          "message": "情绪爆发部分通过手部动作和术语体现，但整体情绪曲线可以更紧凑，以增强紧张感。"
+        }
+      ],
+      "style_score": null,
+      "style_dimensions": [],
+      "style_deviations": [
+        {
+          "dimension": "rhythm",
+          "severity": "low",
+          "patch_brief": "调整解释性语言的位置，使物证先亮相，解释延后。"
+        },
+        {
+          "dimension": "emotion_curve",
+          "severity": "medium",
+          "patch_brief": "增强情绪曲线的紧凑度，通过更精准的动作描写和术语体现情绪变化。"
+        }
+      ]
+    },
+    "generationSummary": {
+      "llm_call_id": "llm_call_CHOR01_SC01_ce1b3217b473",
+      "step": "style_patch",
+      "raw_step": "soft_patch",
+      "provider": "openai_compatible",
+      "model": "Qwen3-14B-Q8_0.gguf",
+      "prompt_hash": "767470cc959b8eec84c40aefa3ae54f66335af77d42492adcb740243ba884f14",
+      "prompt_tokens": 2284,
+      "completion_tokens": 292,
+      "total_tokens": 2576,
+      "latency_ms": 48245,
+      "finish_reason": "stop",
+      "error_code": null,
+      "created_at": "2026-04-22T03:23:40.282024+00:00",
+      "style_score_summary": {
+        "style_score": null,
+        "style_dimensions": [],
+        "style_deviations": [
+          {
+            "dimension": "rhythm",
+            "severity": "low",
+            "patch_brief": "调整解释性语言的位置，使物证先亮相，解释延后。"
+          },
+          {
+            "dimension": "emotion_curve",
+            "severity": "medium",
+            "patch_brief": "增强情绪曲线的紧凑度，通过更精准的动作描写和术语体现情绪变化。"
+          }
+        ]
+      }
+    },
+    "attempts": [
+      {
+        "step": "neutral_draft",
+        "status": "completed"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive"
+      },
+      {
+        "step": "finalize",
+        "status": "completed"
+      },
+      {
+        "step": "archive",
+        "status": "completed"
+      }
+    ]
+  },
+  "CHOR02": {
+    "sceneId": "CHOR02_SC01",
+    "chapterId": "CHOR02",
+    "sceneStatus": "archived",
+    "bundleId": "bundle_CHOR02_SC01_v1",
+    "finalRowId": "final_scene_CHOR02_SC01_v1",
+    "finalText": "林岑的手指在锈蚀的门把手上停顿片刻，金属表面凝结的盐粒在她指尖留下细碎的白痕。许望的脚步声在狭窄的通道里回荡，像某种未完成的声纹记录。监听站内壁贴满褪色潮位图，水渍在纸面洇出模糊的年份，1973、1982、1995——这些数字与她档案室里的失踪案编号逐渐重叠。\n\n磁带机在潮湿空气中发出齿轮卡顿的呻吟。林岑将泡胀的磁带浸入特制溶液，溶液表面浮起细小的气泡，像被压抑的呼吸。当倒放键按下时，一段断续的呼吸声从扬声器溢出，伴随三声短促的钟鸣，与她此前在失踪者记录中见过的盐钟声纹完全吻合。\n\n“幸存者编号……S-07。”林岑的声音几乎贴着磁带机边缘，手指在记录本上快速划动。许望的影子投在墙上的潮位图上，与她身后的编号重叠成某种隐秘的坐标。\n\n忽然，监听站内所有死线路同时亮起幽蓝的光。扬声器里传来林岑自己的心跳声，规律而冰冷，如同某种机械装置正在重新校准。她将修复好的磁带塞进档案袋，指尖微微发白。“有人在遮蔽真相。”她说，声音没有起伏，只有档案修复师惯常的精准与克制。“我们得去无灯船坞。”",
+    "hardQc": {
+      "qc_report_id": "qc_report_CHOR02_SC01_ba60062c9400",
+      "qc_type": "hard_qc",
+      "pass_flag": true,
+      "resolution_code": "hard_pass",
+      "issue_keys": [],
+      "next_action": "pass",
+      "rewrite_brief": [],
+      "created_at": "2026-04-22T03:25:43.672181+00:00"
+    },
+    "softQc": {
+      "qc_report_id": "qc_report_CHOR02_SC01_046db5f5d855",
+      "qc_type": "soft_qc",
+      "pass_flag": true,
+      "resolution_code": "soft_waive",
+      "issue_keys": [
+        "style_deviations"
+      ],
+      "next_action": "pass_with_notes",
+      "rewrite_brief": [
+        "确保林岑的情绪表达始终通过手部动作、修复术语和短句体现，避免直接情绪描述。",
+        "检查并调整‘她将修复好的磁带塞进档案袋，指尖微微发白’一句，使情绪线索更符合克制与精准的档案修复师形象。",
+        "保持现有节奏与细节描写，但强化林岑作为档案修复师的专业性与冷静感。",
+        "Repeated soft QC patch request after one controlled patch pass. Carry forward: 确保林岑的情绪表达始终通过手部动作、修复术语和短句体现，避免直接情绪描述。; 检查并调整‘她将修复好的磁带塞进档案袋，指尖微微发白’一句，使情绪线索更符合克制与精准的档案修复师形象。; 保持现有节奏与细节描写，但强化林岑作为档案修复师的专业性与冷静感。"
+      ],
+      "created_at": "2026-04-22T03:28:49.713772+00:00",
+      "issues": [
+        {
+          "issue_key": "style_deviations",
+          "message": "林岑的情绪爆发未完全通过手部动作、修复术语和短句露出，部分段落存在轻微情绪波动，与POV voice设定略有偏离。"
+        }
+      ]
+    },
+    "generationSummary": {
+      "llm_call_id": "llm_call_CHOR02_SC01_59b792de0225",
+      "step": "style_patch",
+      "raw_step": "soft_patch",
+      "provider": "openai_compatible",
+      "model": "Qwen3-14B-Q8_0.gguf",
+      "prompt_hash": "aa303c478d0cfc7559980450f53fc38b65412b8d444e0516f3c777862d6fef66",
+      "prompt_tokens": 1547,
+      "completion_tokens": 359,
+      "total_tokens": 1906,
+      "latency_ms": 55433,
+      "finish_reason": "stop",
+      "error_code": null,
+      "created_at": "2026-04-22T03:28:18.427761+00:00"
+    },
+    "attempts": [
+      {
+        "step": "neutral_draft",
+        "status": "completed"
+      },
+      {
+        "step": "hard_qc",
+        "status": "continue"
+      },
+      {
+        "step": "style_draft",
+        "status": "completed"
+      },
+      {
+        "step": "soft_qc",
+        "status": "patch"
+      },
+      {
+        "step": "soft_patch",
+        "status": "completed"
+      },
+      {
+        "step": "soft_qc",
+        "status": "waive"
+      },
+      {
+        "step": "finalize",
+        "status": "completed"
+      },
+      {
+        "step": "archive",
+        "status": "completed"
+      }
+    ]
+  }
+}

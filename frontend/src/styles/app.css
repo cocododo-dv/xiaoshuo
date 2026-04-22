@@ -2084,8 +2084,8 @@ pre {
 }
 
 .reference-coverage {
-  width: 8rem;
-  aspect-ratio: 1;
+  width: min(18rem, 100%);
+  min-height: 7rem;
   display: grid;
   place-items: center;
   align-content: center;
@@ -2096,12 +2096,20 @@ pre {
 }
 
 .reference-coverage strong {
-  font-size: 1.85rem;
+  font-size: 1.25rem;
   line-height: 1;
+  text-align: center;
 }
 
 .reference-coverage span {
   color: rgba(27, 24, 21, 0.58);
+  text-align: center;
+}
+
+.reference-coverage small {
+  color: rgba(27, 24, 21, 0.56);
+  text-align: center;
+  line-height: 1.35;
 }
 
 .reference-layout {
@@ -2403,6 +2411,46 @@ pre {
   border-left: 3px solid rgba(163, 63, 47, 0.32);
   color: rgba(27, 24, 21, 0.66);
   font-size: 0.92rem;
+}
+
+.reference-model-trace,
+.reference-application-status,
+.reference-source-excerpt {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  color: rgba(27, 24, 21, 0.66);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.reference-model-trace {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid rgba(37, 51, 66, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.reference-source-excerpt {
+  padding: 0.75rem;
+  border-left: 3px solid rgba(56, 122, 96, 0.36);
+  background: rgba(56, 122, 96, 0.08);
+}
+
+.reference-source-excerpt p,
+.reference-source-excerpt small,
+.reference-model-trace span,
+.reference-model-trace small,
+.reference-application-status span {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.reference-application-status {
+  padding: 0.75rem;
+  border: 1px solid rgba(56, 122, 96, 0.2);
+  border-radius: 8px;
+  background: rgba(56, 122, 96, 0.08);
 }
 
 .reference-profile-summary {

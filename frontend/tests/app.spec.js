@@ -371,6 +371,68 @@ describe("workbench store", () => {
     );
   });
 
+  it("keeps polling long-running local model scene jobs until they complete", async () => {
+    let pollCount = 0;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.includes("/run-jobs/long_qwen_scene_job")) {
+        pollCount += 1;
+        return ok({
+          job_id: "long_qwen_scene_job",
+          scene_id: "CHQWEN_SC01",
+          status: pollCount > 180 ? "completed" : "running",
+          current_step: pollCount > 180 ? "archived" : "style_draft",
+          result_summary: pollCount > 180
+            ? {
+                scene_status: "archived",
+                current_bundle_id: "bundle_CHQWEN_SC01",
+                current_bundle_hash: "hash_qwen",
+                current_final_scene_row_id: "final_scene_CHQWEN_SC01",
+              }
+            : {},
+        });
+      }
+
+      if (url.includes("/scenes/CHQWEN_SC01/workbench")) {
+        return ok({
+          scene_card: { scene_id: "CHQWEN_SC01" },
+          scene_run_state: { scene_status: "archived" },
+          bundle: { bundle_id: "bundle_CHQWEN_SC01" },
+          attempts: [],
+        });
+      }
+
+      if (url.includes("/human-review-events?scene_id=CHQWEN_SC01")) {
+        return ok({ items: [] });
+      }
+
+      if (url.includes("/scenes/CHQWEN_SC01/attempts")) {
+        return ok({
+          items: [],
+          pagination: {
+            mode: "cursor",
+            limit: 25,
+            page: null,
+            page_size: null,
+            returned: 0,
+            total: 0,
+            has_next: false,
+            next_cursor: null,
+          },
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const store = useWorkbenchStore();
+    const job = await store.pollRunJob("long_qwen_scene_job", "CHQWEN_SC01", { intervalMs: 0 });
+
+    expect(job.status).toBe("completed");
+    expect(pollCount).toBe(181);
+    expect(store.lastRunResult.current_final_scene_row_id).toBe("final_scene_CHQWEN_SC01");
+    expect(store.data.scene_run_state.scene_status).toBe("archived");
+  });
+
   it("keeps the current scene context when a run request fails", async () => {
     const store = useWorkbenchStore();
     store.sceneId = "CH001_SC01";

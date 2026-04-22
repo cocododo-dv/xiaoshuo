@@ -30,14 +30,22 @@ function Invoke-Python {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $resetScript = Join-Path $repoRoot "scripts\reset_runtime_keep_llm.ps1"
 $devScript = Join-Path $repoRoot "scripts\dev.ps1"
+$resetWrapper = Join-Path $repoRoot "reset-runtime-keep-llm.cmd"
 
 Assert-True -Condition (Test-Path $resetScript) -Message "Missing reset script."
 Assert-True -Condition (Test-Path $devScript) -Message "Missing dev lifecycle script."
+Assert-True -Condition (Test-Path $resetWrapper) -Message "Missing one-click reset wrapper."
 
 $devSource = Get-Content -LiteralPath $devScript -Raw
 Assert-True -Condition ($devSource.Contains("skip-demo-seed")) -Message "dev.ps1 must honor the clean reset marker."
 Assert-True -Condition ($devSource.Contains("NOVEL_SYSTEM_SKIP_DEMO_SEED")) -Message "dev.ps1 must support the env var seed skip override."
 Assert-True -Condition ($devSource.Contains("Demo seed skipped; clean reset marker is active.")) -Message "dev.ps1 must print a clear skip message."
+
+$wrapperSource = Get-Content -LiteralPath $resetWrapper -Raw
+Assert-True -Condition ($wrapperSource.Contains("scripts\reset_runtime_keep_llm.ps1")) -Message "One-click wrapper must call the reset script."
+Assert-True -Condition ($wrapperSource.Contains("-StopServices")) -Message "One-click wrapper must stop repo services before resetting."
+Assert-True -Condition ($wrapperSource.Contains("-ExecutionPolicy Bypass")) -Message "One-click wrapper must be runnable on default Windows PowerShell policy."
+Assert-True -Condition ($wrapperSource.Contains("exit /b %exit_code%")) -Message "One-click wrapper must return the reset script exit code."
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("novel-reset-test-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempRoot | Out-Null

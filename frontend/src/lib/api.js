@@ -281,6 +281,12 @@ export function fetchReferenceBook(bookId) {
   return apiGet(`/api/v1/reference-books/${encodeURIComponent(bookId)}`);
 }
 
+export function fetchReferenceSegmentExcerpt(bookId, segmentId) {
+  return apiGet(
+    `/api/v1/reference-books/${encodeURIComponent(bookId)}/segments/${encodeURIComponent(segmentId)}/excerpt`,
+  );
+}
+
 export function importReferenceBookPath(payload) {
   return apiPost("/api/v1/reference-books/import-path", payload);
 }

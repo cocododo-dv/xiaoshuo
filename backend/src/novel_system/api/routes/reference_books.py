@@ -110,6 +110,19 @@ def reference_book_detail(book_id: str, request: Request, session: Session = Dep
     )
 
 
+@router.get("/api/v1/reference-books/{book_id}/segments/{segment_id}/excerpt")
+def reference_book_segment_excerpt(
+    book_id: str,
+    segment_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    return ok(
+        ReferenceLearningService(session).segment_excerpt(book_id, segment_id),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
 @router.post("/api/v1/reference-books/{book_id}/runs")
 def start_reference_learning_run(
     book_id: str,

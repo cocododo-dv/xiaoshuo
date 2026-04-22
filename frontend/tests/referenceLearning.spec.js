@@ -1,15 +1,23 @@
-import { existsSync, readFileSync } from "node:fs";
+// @vitest-environment jsdom
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+import { createApp, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as api from "../src/lib/api";
+import { useShellRouter } from "../src/router";
+import { useReferenceLearningStore } from "../src/stores/referenceLearning";
+import ReferenceLearningView from "../src/views/ReferenceLearningView.vue";
 
-const REFERENCE_VIEW_PATH = new URL("../src/views/ReferenceLearningView.vue", import.meta.url);
-const REFERENCE_STORE_PATH = new URL("../src/stores/referenceLearning.js", import.meta.url);
-const API_PATH = new URL("../src/lib/api.js", import.meta.url);
-const APP_PATH = new URL("../src/App.vue", import.meta.url);
-const STYLE_PATH = new URL("../src/styles/app.css", import.meta.url);
+const REFERENCE_VIEW_PATH = resolve(process.cwd(), "src/views/ReferenceLearningView.vue");
+const REFERENCE_STORE_PATH = resolve(process.cwd(), "src/stores/referenceLearning.js");
+const ROUTER_PATH = resolve(process.cwd(), "src/router.js");
+const API_PATH = resolve(process.cwd(), "src/lib/api.js");
+const APP_PATH = resolve(process.cwd(), "src/App.vue");
+const STYLE_PATH = resolve(process.cwd(), "src/styles/app.css");
 
 function ok(data) {
   return {
@@ -40,6 +48,14 @@ function referenceDetail(status = "waiting_review") {
       approved_findings: status === "completed" ? 5 : 0,
       pending_findings: status === "waiting_review" ? 2 : 0,
       coverage_score: status === "completed" ? 1 : 0.25,
+      dimension_coverage_score: status === "completed" ? 1 : 0.25,
+      sample_coverage_score: status === "completed" ? 0.63 : 0.25,
+      sampled_segments: status === "completed" ? 5 : 2,
+      eligible_segments: 8,
+      remaining_segments: status === "completed" ? 3 : 6,
+      learning_complete: false,
+      profile_ready: status === "completed",
+      next_round_available: true,
       ready: status === "completed",
     },
     latest_run: {
@@ -55,7 +71,35 @@ function referenceDetail(status = "waiting_review") {
               profile_id: "refprofile_alpha",
               title: "Reference Alpha profile",
               status: "ready",
-              coverage: { approved_findings: 5, ready: true, profile_stale: false },
+              coverage: {
+                approved_findings: 5,
+                ready: true,
+                profile_stale: false,
+                sampled_segments: 5,
+                eligible_segments: 8,
+                remaining_segments: 3,
+                sample_coverage_score: 0.63,
+                learning_complete: false,
+                next_round_available: true,
+              },
+              application_status: {
+                total: 0,
+                pending: 0,
+                approved: 0,
+                rejected: 0,
+                review_ids: [],
+                scope: null,
+                scope_ref_id: null,
+              },
+              model_trace: {
+                provider: "local",
+                model: "local-heuristic",
+                node_id: "reference_profile_synthesize",
+                success_count: 0,
+                failure_count: 0,
+                quality_score: 0.82,
+                mode: "local_heuristic",
+              },
               safety_summary: { safe: true, stripped_count: 2, blocked_markers: [] },
               profile_json: {
                 style_profile: {
@@ -112,7 +156,16 @@ function roundPayload() {
           dimension: "rhythm",
           summary: "Use short pressure beats before release.",
           status: "pending",
+          model_trace: {
+            provider: "fake",
+            model: "qwen3-local",
+            node_id: "reference_style_structure_extract",
+            success_count: 1,
+            failure_count: 0,
+            quality_score: 0.91,
+          },
           source_segment: {
+            segment_id: "refseg_alpha_0001",
             preview: null,
             chapter_hint: "第一章 雨夜来信",
             display_label: "opening segment",
@@ -126,7 +179,17 @@ function roundPayload() {
           dimension: "chapter hook",
           summary: "Use chapter hook escalation.",
           status: "pending",
+          model_trace: {
+            provider: "local",
+            model: "local-heuristic",
+            node_id: "reference_style_structure_extract",
+            success_count: 0,
+            failure_count: 0,
+            quality_score: 0.72,
+            mode: "local_heuristic",
+          },
           source_segment: {
+            segment_id: "refseg_alpha_0002",
             preview: null,
             chapter_hint: "第二章 卡塞尔访客",
             display_label: "structure segment",
@@ -139,10 +202,79 @@ function roundPayload() {
   };
 }
 
+async function flushUi() {
+  await nextTick();
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
+async function mountReferenceLearningViewWithRound(payload = roundPayload()) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  useShellRouter().reset();
+  globalThis.fetch = vi.fn(async () => ok({ items: [] }));
+
+  const store = useReferenceLearningStore();
+  store.books = [{ book_id: "refbook_alpha", title: "Reference Alpha", status: "waiting_review" }];
+  store.selectedBookId = "refbook_alpha";
+  store.detail = referenceDetail("waiting_review");
+  store.currentRun = payload.run;
+  store.currentRound = payload.round;
+  store.loaded = true;
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const app = createApp(ReferenceLearningView);
+  app.use(pinia);
+  app.mount(container);
+  await flushUi();
+
+  return {
+    container,
+    unmount() {
+      app.unmount();
+      container.remove();
+    },
+  };
+}
+
+async function mountReferenceLearningViewWithDetail(detail) {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  useShellRouter().reset();
+  globalThis.fetch = vi.fn(async () => ok({ items: [] }));
+
+  const store = useReferenceLearningStore();
+  store.books = [{ book_id: detail.book.book_id, title: detail.book.title, status: detail.book.status }];
+  store.selectedBookId = detail.book.book_id;
+  store.detail = detail;
+  store.currentRun = detail.latest_run;
+  store.currentRound = null;
+  store.loaded = true;
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+
+  const app = createApp(ReferenceLearningView);
+  app.use(pinia);
+  app.mount(container);
+  await flushUi();
+
+  return {
+    container,
+    unmount() {
+      app.unmount();
+      container.remove();
+    },
+  };
+}
+
 describe("reference learning shell registration", () => {
   it("adds the reference learning view to the shell navigation", () => {
-    const appSource = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
-    const routerSource = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
+    const appSource = readFileSync(APP_PATH, "utf8");
+    const routerSource = readFileSync(ROUTER_PATH, "utf8");
 
     expect(existsSync(REFERENCE_VIEW_PATH)).toBe(true);
     expect(existsSync(REFERENCE_STORE_PATH)).toBe(true);
@@ -170,6 +302,7 @@ describe("reference learning api helpers", () => {
       analysis_focus: "style_structure",
     });
     await api.fetchReferenceBook("refbook_alpha");
+    await api.fetchReferenceSegmentExcerpt("refbook_alpha", "refseg_alpha_0001");
     await api.startReferenceLearningRun("refbook_alpha", { batch_size: 8 });
     await api.advanceReferenceLearningRun("refbook_alpha", "refrun_alpha");
     await api.applyReferenceProfile("refbook_alpha", "refprofile_alpha", {
@@ -184,6 +317,9 @@ describe("reference learning api helpers", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha/segments/refseg_alpha_0001/excerpt",
+    );
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha/runs",
       expect.objectContaining({ method: "POST" }),
@@ -219,6 +355,16 @@ describe("reference learning store", () => {
       if (url.endsWith("/api/v1/reference-books/refbook_alpha/runs/refrun_alpha/advance")) {
         return ok(roundPayload());
       }
+      if (url.endsWith("/api/v1/reference-books/refbook_alpha/segments/refseg_alpha_0001/excerpt")) {
+        return ok({
+          segment_id: "refseg_alpha_0001",
+          display_label: "开篇片段",
+          excerpt: "雨敲在窗台上，房间里只剩屏幕的蓝光。",
+          max_chars: 800,
+          source_visibility: "review_only",
+          safety_note: "仅供审核，不进入生成链路。",
+        });
+      }
       if (url.endsWith("/api/v1/review-items/review_reffind_1/approve")) {
         return ok({ review_id: "review_reffind_1", materialize_status: "succeeded" });
       }
@@ -226,7 +372,19 @@ describe("reference learning store", () => {
         return ok({ review_id: "review_reffind_2", status: "rejected" });
       }
       if (url.endsWith("/api/v1/reference-books/refbook_alpha/profiles/refprofile_alpha/apply")) {
-        return ok({ applied: false, reviews: [{ review_id: "review_apply_ref", item_type: "narrative_pattern" }] });
+        return ok({
+          applied: false,
+          reviews: [{ review_id: "review_apply_ref", item_type: "narrative_pattern", status: "pending" }],
+          application_status: {
+            total: 1,
+            pending: 1,
+            approved: 0,
+            rejected: 0,
+            review_ids: ["review_apply_ref"],
+            scope: "chapter",
+            scope_ref_id: "CH001",
+          },
+        });
       }
       if (url.endsWith("/api/v1/reference-books/refbook_alpha")) {
         return ok(referenceDetail(options.method === "POST" ? "waiting_review" : "completed"));
@@ -271,6 +429,12 @@ describe("reference learning store", () => {
     store.detail = referenceDetail("completed");
     await store.applyProfile("refprofile_alpha", { scope: "chapter", scope_ref_id: "CH001" });
     expect(store.lastActionMessage).toContain("已创建 1 个应用审核项");
+    expect(store.detail.profiles[0].application_status.pending).toBe(1);
+    expect(store.detail.profiles[0].application_status.review_ids).toEqual(["review_apply_ref"]);
+
+    const excerpt = await store.fetchSegmentExcerpt("refseg_alpha_0001");
+    expect(excerpt.excerpt).toContain("雨敲在窗台上");
+    expect(store.segmentExcerpts.refseg_alpha_0001.source_visibility).toBe("review_only");
   });
 
   it("refreshes detail and explains stale profile apply failures", async () => {
@@ -310,6 +474,116 @@ describe("reference learning store", () => {
     expect(source).toContain("rejectLabel");
     expect(source).toContain("reference-flow");
     expect(source).toContain("reference-secondary");
+  });
+
+  it("renders reference finding source labels and safety status in Chinese", async () => {
+    const mounted = await mountReferenceLearningViewWithRound();
+
+    try {
+      const text = mounted.container.textContent || "";
+      expect(text).toContain("开篇片段");
+      expect(text).toContain("结构片段");
+      expect(text).toContain("源文片段已隐藏");
+      expect(text).toContain("已抽象化");
+      expect(text).not.toContain("opening segment");
+      expect(text).not.toContain("source excerpt hidden");
+      expect(text).not.toContain("abstract summary only");
+      expect(text).not.toContain("Use short pressure beats");
+      expect(text).not.toContain("Use chapter hook escalation");
+      expect(text).not.toContain("Reference Learning");
+      expect(text).not.toContain("Import");
+      expect(text).not.toContain("Library");
+      expect(text).not.toContain("Learning Run");
+      expect(text).not.toContain("Decision Cards");
+      expect(text).not.toContain("Profiles");
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("renders legacy English profile previews through Chinese reference-learning labels", async () => {
+    const detail = referenceDetail("completed");
+    detail.coverage.covered_dimensions = ["rhythm", "chapter hook", "dialogue ratio"];
+    detail.profiles[0].title = "抽象参考：龙族 reference profile";
+    detail.profiles[0].display_profile_json = detail.profiles[0].profile_json;
+    detail.profiles[0].preview_items = [
+      "dialogue_ratio: Use of layered syntax to juxtapose mundane dialogue with emotionally charged internal monologues.",
+      "narrative: Begin with a specific phenomenon, delay explanation, and drive scene transitions through visible consequences.",
+    ];
+    const mounted = await mountReferenceLearningViewWithDetail(detail);
+
+    try {
+      const text = mounted.container.textContent || "";
+      expect(text).toContain("节奏");
+      expect(text).toContain("章节钩子");
+      expect(text).toContain("对话比例");
+      expect(text).toContain("抽象参考：龙族 · 参考画像");
+      expect(text).toContain("对话比例：用分层句法承载对话与内心张力");
+      expect(text).toContain("叙事模式：先给具体现象，延后解释");
+      expect(text).not.toContain("reference profile");
+      expect(text).not.toContain("Use of layered syntax");
+      expect(text).not.toContain("Begin with a specific phenomenon");
+      expect(text).not.toContain("dialogue_ratio:");
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("shows sampled book progress, model source, application status, and expandable source evidence", async () => {
+    const detail = referenceDetail("completed");
+    detail.profiles[0].application_status = {
+      total: 2,
+      pending: 2,
+      approved: 0,
+      rejected: 0,
+      review_ids: ["review_apply_style", "review_apply_narrative"],
+      scope: "chapter",
+      scope_ref_id: "CH001",
+    };
+    const mounted = await mountReferenceLearningViewWithDetail(detail);
+
+    try {
+      const text = mounted.container.textContent || "";
+      expect(text).toContain("已抽样 5/8");
+      expect(text).toContain("剩余 3");
+      expect(text).toContain("继续学习更多片段");
+      expect(text).toContain("模型来源");
+      expect(text).toContain("本地启发式提取");
+      expect(text).toContain("已创建 2 个应用审核项，等待审核收件箱批准");
+      expect(text).not.toContain("100%覆盖度");
+    } finally {
+      mounted.unmount();
+    }
+
+    const roundMounted = await mountReferenceLearningViewWithRound();
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.endsWith("/api/v1/reference-books/refbook_alpha/segments/refseg_alpha_0001/excerpt")) {
+        return ok({
+          segment_id: "refseg_alpha_0001",
+          display_label: "开篇片段",
+          excerpt: "雨敲在窗台上，房间里只剩屏幕的蓝光。",
+          max_chars: 800,
+          source_visibility: "review_only",
+          safety_note: "仅供审核，不进入生成链路。",
+        });
+      }
+      return ok({});
+    });
+    try {
+      const toggle = roundMounted.container.querySelector('[data-testid="reference-toggle-excerpt-refseg_alpha_0001"]');
+      expect(toggle).toBeTruthy();
+      toggle.click();
+      await flushUi();
+
+      const text = roundMounted.container.textContent || "";
+      expect(text).toContain("雨敲在窗台上");
+      expect(text).toContain("仅供审核，不进入生成链路");
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha/segments/refseg_alpha_0001/excerpt",
+      );
+    } finally {
+      roundMounted.unmount();
+    }
   });
 
   it("surfaces the current blocker, guarded run controls, and collapsible import", () => {
@@ -380,6 +654,10 @@ describe("reference learning store", () => {
     expect(source).toContain("findingSourceLabel");
     expect(source).toContain("findingSafetyLabel");
     expect(source).toContain("source_segment?.display_label");
+    expect(source).toContain("源文片段已隐藏");
+    expect(source).toContain("仅显示抽象摘要");
+    expect(source).not.toContain("source excerpt hidden");
+    expect(source).not.toContain("abstract summary only");
     expect(source).toContain("已抽象化");
     expect(source).toContain("已移除源书专名");
     expect(source).toContain("profile.preview_items");

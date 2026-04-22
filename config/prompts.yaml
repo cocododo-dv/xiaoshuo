@@ -301,6 +301,7 @@ templates:
     task_prompt: |
       Rank the supplied segment metadata and short previews.
       Return 5 to 8 segment ids with a reason, target dimension, and risk note for each.
+      If locale_hint is zh, write all returned string fields in Chinese (中文) while preserving the JSON schema keys.
     structured_schema:
       type: object
       additionalProperties: false
@@ -339,6 +340,7 @@ templates:
     task_prompt: |
       Analyze the supplied segment and return one review-ready finding.
       The finding must be suitable for style_rule_set, style_observation, narrative_pattern, banned_rule_cluster, or calibration_candidate.
+      If locale_hint is zh, write all returned string fields in Chinese (中文) while preserving the JSON schema keys.
     structured_schema:
       type: object
       additionalProperties: false
@@ -371,6 +373,7 @@ templates:
     task_prompt: |
       Combine the approved findings into a compact reference profile.
       Separate prose features from narrative patterns and include clear forbidden replication rules.
+      If locale_hint is zh, write all returned string fields in Chinese (中文) while preserving the JSON schema keys.
     structured_schema:
       type: object
       additionalProperties: false

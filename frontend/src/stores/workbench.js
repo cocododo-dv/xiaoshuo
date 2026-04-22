@@ -70,6 +70,7 @@ const RUN_JOB_TERMINAL_STATUSES = new Set([
   "human_review_required",
   "manual_review_required",
 ]);
+const DEFAULT_RUN_JOB_MAX_POLLS = 600;
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -273,7 +274,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       await this.loadAttempts(this.sceneId);
       this.markFresh();
     },
-    async pollRunJob(jobId, sceneId = this.sceneId, { intervalMs = 1200, maxPolls = 120 } = {}) {
+    async pollRunJob(jobId, sceneId = this.sceneId, { intervalMs = 1200, maxPolls = DEFAULT_RUN_JOB_MAX_POLLS } = {}) {
       if (!jobId) {
         return null;
       }

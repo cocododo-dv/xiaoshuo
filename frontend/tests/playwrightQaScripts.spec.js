@@ -28,4 +28,20 @@ describe("three-chapter QA script portability", () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it("waits for scene run jobs instead of the legacy blocking scene run response", () => {
+    const script = readFileSync(path.join(QA_ROOTS[1], "run-original-three-chapter-qa.cjs"), "utf8");
+
+    expect(script).toContain("/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs");
+    expect(script).not.toContain("/api/v1/scenes/${sceneId}/run/full");
+  });
+
+  it("uses the current root-level bundle worksheet envelope shape", () => {
+    const script = readFileSync(path.join(QA_ROOTS[1], "run-original-three-chapter-qa.cjs"), "utf8");
+
+    expect(script).toContain("bundle_id: ${worksheetBundleId}");
+    expect(script).toContain("scene_id: CHOR01_SC01");
+    expect(script).toContain("chapter_id: CHOR01");
+    expect(script).not.toContain("bundle:\n  bundle_id:");
+  });
 });

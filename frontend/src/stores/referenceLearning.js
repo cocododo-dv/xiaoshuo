@@ -6,6 +6,7 @@ import {
   approveReview,
   fetchReferenceBook,
   fetchReferenceBooks,
+  fetchReferenceSegmentExcerpt,
   importReferenceBookPath,
   importReferenceBookUpload,
   rejectReview,
@@ -73,6 +74,8 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
       scope: "chapter",
       scope_ref_id: "",
     },
+    segmentExcerpts: {},
+    segmentExcerptLoading: {},
     loaded: false,
     stale: false,
   }),
@@ -143,6 +146,8 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
         this.detail = null;
         this.currentRun = null;
         this.currentRound = null;
+        this.segmentExcerpts = {};
+        this.segmentExcerptLoading = {};
         return null;
       }
       this.actionId = `select:${bookId}`;
@@ -153,6 +158,8 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
         this.detail = snapshotPayload(detail);
         this.currentRun = snapshotPayload(detail.latest_run || null);
         this.currentRound = snapshotPayload(detail.latest_round || this.currentRound || null);
+        this.segmentExcerpts = {};
+        this.segmentExcerptLoading = {};
         return this.detail;
       } catch (error) {
         this.error = error.message;
@@ -343,6 +350,15 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
           scope_ref_id: payload.scope === "global" ? "global" : payload.scope_ref_id,
         });
         const reviewIds = (result.reviews || []).map((review) => review.review_id).filter(Boolean);
+        this.mergeProfileApplicationStatus(profileId, result.application_status || {
+          total: reviewIds.length,
+          pending: reviewIds.length,
+          approved: 0,
+          rejected: 0,
+          review_ids: reviewIds,
+          scope: payload.scope || "global",
+          scope_ref_id: payload.scope === "global" ? "global" : payload.scope_ref_id,
+        });
         this.lastActionMessage = `已创建 ${reviewIds.length || 1} 个应用审核项，请到审核收件箱确认。`;
         return result;
       } catch (error) {
@@ -360,6 +376,51 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
         throw error;
       } finally {
         this.actionId = "";
+      }
+    },
+    mergeProfileApplicationStatus(profileId, applicationStatus) {
+      if (!profileId || !this.detail?.profiles?.length || !applicationStatus) {
+        return;
+      }
+      this.detail = snapshotPayload({
+        ...this.detail,
+        profiles: this.detail.profiles.map((profile) =>
+          profile.profile_id === profileId
+            ? {
+                ...profile,
+                application_status: {
+                  ...(profile.application_status || {}),
+                  ...applicationStatus,
+                },
+              }
+            : profile,
+        ),
+      });
+    },
+    async fetchSegmentExcerpt(segmentId) {
+      const bookId = this.selectedBookId || this.detail?.book?.book_id;
+      if (!bookId || !segmentId) {
+        throw new Error("缺少参考书片段");
+      }
+      if (this.segmentExcerpts[segmentId]) {
+        return this.segmentExcerpts[segmentId];
+      }
+      this.segmentExcerptLoading = {
+        ...this.segmentExcerptLoading,
+        [segmentId]: true,
+      };
+      try {
+        const result = await fetchReferenceSegmentExcerpt(bookId, segmentId);
+        this.segmentExcerpts = {
+          ...this.segmentExcerpts,
+          [segmentId]: snapshotPayload(result),
+        };
+        return result;
+      } finally {
+        this.segmentExcerptLoading = {
+          ...this.segmentExcerptLoading,
+          [segmentId]: false,
+        };
       }
     },
   },

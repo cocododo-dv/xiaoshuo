@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -55,6 +56,27 @@ DIMENSIONS = (
     "conflict escalation",
     "dialogue ratio",
 )
+SEGMENT_KIND_LABELS = {
+    "opening": "开篇片段",
+    "dialogue": "对话片段",
+    "imagery": "意象片段",
+    "action": "动作片段",
+    "emotion": "情绪片段",
+    "structure": "结构片段",
+    "closing": "结尾片段",
+    "boilerplate": "站点声明片段",
+    "reference": "参考片段",
+}
+DIMENSION_LABELS = {
+    "rhythm": "节奏",
+    "imagery": "意象",
+    "chapter hook": "章节钩子",
+    "banned move": "禁复刻点",
+    "calibration": "校准",
+    "syntax": "句法",
+    "conflict escalation": "冲突升级",
+    "dialogue ratio": "对话比例",
+}
 BOILERPLATE_MARKERS = (
     "txt8080",
     "八零电子书",
@@ -273,8 +295,14 @@ class ReferenceLearningService:
             return {"run": self.serialize_run(run), "round": self.serialize_round(pending_round)}
 
         coverage = self.coverage_for_run(run_id)
-        if _coverage_complete(coverage):
+        profile: ReferenceProfile | None = None
+        if coverage.get("ready"):
             profile = self._ensure_profile(book_id, run, coverage)
+            run.profile_id = profile.profile_id
+            coverage = self.coverage_for_run(run_id)
+
+        if _coverage_complete(coverage):
+            profile = profile or self._ensure_profile(book_id, run, coverage)
             run.status = "completed"
             run.profile_id = profile.profile_id
             run.coverage_json = coverage
@@ -283,6 +311,14 @@ class ReferenceLearningService:
             return {"run": self.serialize_run(run), "profile": self.serialize_profile(profile)}
 
         round_payload = self._create_round(book_id, run)
+        if "profile" in round_payload:
+            run.status = "completed"
+            if round_payload["profile"].get("profile_id"):
+                run.profile_id = round_payload["profile"]["profile_id"]
+            run.coverage_json = self.coverage_for_run(run_id)
+            self._book(book_id).status = "completed"
+            self.session.flush()
+            return {"run": self.serialize_run(run), "profile": round_payload["profile"]}
         run.status = "waiting_review"
         run.coverage_json = self.coverage_for_run(run_id)
         self.session.flush()
@@ -328,7 +364,29 @@ class ReferenceLearningService:
             "profile_id": profile.profile_id,
             "book_id": book_id,
             "applied": False,
+            "application_status": self._application_status_for_reviews(reviews),
             "reviews": [self.serialize_review(review) for review in reviews],
+        }
+
+    def segment_excerpt(self, book_id: str, segment_id: str, *, max_chars: int = 800) -> dict[str, Any]:
+        self._book(book_id)
+        segment = self.session.get(ReferenceBookSegment, segment_id)
+        if segment is None or segment.book_id != book_id:
+            raise DomainError("REFERENCE_SEGMENT_NOT_FOUND", f"reference segment {segment_id} not found", status_code=404)
+        if _is_non_evidence_segment(segment):
+            raise DomainError(
+                "REFERENCE_SEGMENT_EXCERPT_UNAVAILABLE",
+                "source excerpt is not available for boilerplate or copyright-noise segments",
+                status_code=404,
+            )
+        limit = max(1, min(int(max_chars or 800), 800))
+        return {
+            "segment_id": segment.segment_id,
+            "display_label": _segment_display_label(segment),
+            "excerpt": _preview(segment.text, limit=limit),
+            "max_chars": limit,
+            "source_visibility": "review_only",
+            "safety_note": "仅供审核，不进入生成链路；不会写入画像、bundle 或模型 prompt。",
         }
 
     def _create_round(self, book_id: str, run: ReferenceLearningRun) -> dict[str, Any]:
@@ -341,6 +399,9 @@ class ReferenceLearningService:
 
         round_index = run.round_count + 1
         round_id = f"refround_{run.run_id}_{round_index}"
+        existing_round = self.session.get(ReferenceLearningRound, round_id)
+        if existing_round is not None:
+            return self.serialize_round(existing_round)
         round_row = ReferenceLearningRound(
             round_id=round_id,
             book_id=book_id,
@@ -350,7 +411,14 @@ class ReferenceLearningService:
             segment_ids_json=[segment.segment_id for segment in segments],
         )
         self.session.add(round_row)
-        self.session.flush()
+        try:
+            self.session.flush()
+        except IntegrityError:
+            self.session.rollback()
+            existing_round = self.session.get(ReferenceLearningRound, round_id)
+            if existing_round is None:
+                raise
+            return self.serialize_round(existing_round)
 
         finding_ids: list[str] = []
         for index, segment in enumerate(segments):
@@ -384,6 +452,13 @@ class ReferenceLearningService:
             segment=segment,
         )
         summary, summary_notes = _sanitize_reference_finding_text(raw_summary)
+        summary = _localize_reference_finding_summary(
+            summary,
+            finding_type=finding_type,
+            dimension=dimension,
+            segment=segment,
+            book=book,
+        )
         raw_payload_extra = llm_finding.get("payload_extra")
         if not isinstance(raw_payload_extra, dict):
             raw_payload_extra = {}
@@ -517,7 +592,7 @@ class ReferenceLearningService:
                 and safety_summary["safe"]
             ):
                 existing.coverage_json = {
-                    **dict(existing.coverage_json or {}),
+                    **coverage,
                     "profile_ready": True,
                     "profile_stale": False,
                     "safety_summary": safety_summary,
@@ -527,7 +602,7 @@ class ReferenceLearningService:
             if existing.status == PROFILE_STATUS_READY:
                 existing.status = PROFILE_STATUS_STALE
                 existing.coverage_json = {
-                    **dict(existing.coverage_json or {}),
+                    **coverage,
                     "profile_ready": False,
                     "profile_stale": True,
                     "safety_summary": safety_summary,
@@ -604,12 +679,7 @@ class ReferenceLearningService:
         return profile
 
     def _select_segments(self, book_id: str, run: ReferenceLearningRun) -> list[ReferenceBookSegment]:
-        reviewed_segment_ids = {
-            finding.segment_id
-            for finding in self.session.execute(
-                select(ReferenceFinding).where(ReferenceFinding.run_id == run.run_id)
-            ).scalars().all()
-        }
+        attempted_segment_ids = self._attempted_segment_ids_for_book(book_id)
         segments = [
             segment
             for segment in self.session.execute(
@@ -617,11 +687,13 @@ class ReferenceLearningService:
                 .where(ReferenceBookSegment.book_id == book_id)
                 .order_by(ReferenceBookSegment.selected_count.asc(), ReferenceBookSegment.segment_index.asc())
             ).scalars().all()
-            if segment.segment_id not in reviewed_segment_ids
+            if segment.segment_id not in attempted_segment_ids
         ]
         if not segments:
             return []
         analysis_segments = _analysis_worthy_segments(segments)
+        if not analysis_segments:
+            return []
         ranked_segments = self._rank_segments_with_llm(self._book(book_id), run, analysis_segments)
         if ranked_segments:
             return ranked_segments[: run.batch_size]
@@ -640,6 +712,23 @@ class ReferenceLearningService:
                 break
         return chosen
 
+    def _attempted_segment_ids_for_book(self, book_id: str) -> set[str]:
+        attempted: set[str] = set()
+        rounds = self.session.execute(
+            select(ReferenceLearningRound).where(ReferenceLearningRound.book_id == book_id)
+        ).scalars().all()
+        for round_row in rounds:
+            for segment_id in round_row.segment_ids_json or []:
+                if segment_id:
+                    attempted.add(str(segment_id))
+        findings = self.session.execute(
+            select(ReferenceFinding).where(ReferenceFinding.book_id == book_id)
+        ).scalars().all()
+        for finding in findings:
+            if finding.segment_id:
+                attempted.add(finding.segment_id)
+        return attempted
+
     def _rank_segments_with_llm(
         self,
         book: ReferenceBook,
@@ -655,6 +744,7 @@ class ReferenceLearningService:
                 "cloud_policy": book.cloud_policy,
                 "analysis_focus": book.analysis_focus,
             },
+            "locale_hint": _reference_locale_hint(book=book, segments=segments),
             "batch_size": run.batch_size,
             "segments": [
                 {
@@ -708,6 +798,7 @@ class ReferenceLearningService:
                 "cloud_policy": book.cloud_policy,
                 "analysis_focus": book.analysis_focus,
             },
+            "locale_hint": _reference_locale_hint(book=book, segment=segment),
             "run_id": run.run_id,
             "round_index": round_row.round_index,
             "preferred_item_type": fallback_type,
@@ -764,6 +855,7 @@ class ReferenceLearningService:
                 "cloud_policy": book.cloud_policy,
                 "analysis_focus": book.analysis_focus,
             },
+            "locale_hint": _detect_locale("\n".join([book.title, *(finding.summary for finding in findings)])),
             "run_id": run.run_id,
             "coverage": coverage,
             "approved_findings": [
@@ -1006,6 +1098,8 @@ class ReferenceLearningService:
             .order_by(ReferenceLearningRound.round_index.desc())
         ).scalars().all()
         for round_row in rounds:
+            if round_row.status == "waiting_review":
+                return round_row
             findings = self.session.execute(
                 select(ReferenceFinding).where(ReferenceFinding.round_id == round_row.round_id)
             ).scalars().all()
@@ -1017,9 +1111,11 @@ class ReferenceLearningService:
         runs = self.session.execute(
             select(ReferenceLearningRun).where(ReferenceLearningRun.book_id == book_id).order_by(ReferenceLearningRun.created_at.desc())
         ).scalars().all()
-        return self.coverage_for_run(runs[0].run_id) if runs else _empty_coverage()
+        return self.coverage_for_run(runs[0].run_id) if runs else self._empty_coverage_for_book(book_id)
 
     def coverage_for_run(self, run_id: str) -> dict[str, Any]:
+        self._sync_findings(run_id)
+        run = self.session.get(ReferenceLearningRun, run_id)
         findings = self.session.execute(select(ReferenceFinding).where(ReferenceFinding.run_id == run_id)).scalars().all()
         approved = [finding for finding in findings if finding.status == "approved"]
         rejected = [finding for finding in findings if finding.status == "rejected"]
@@ -1040,16 +1136,68 @@ class ReferenceLearningService:
             and _profile_safety_summary(profile.profile_json, stripped_count=_profile_stripped_count(profile))["safe"]
             for profile in profiles
         )
+        progress = self._segment_progress_for_book(run.book_id if run else "", findings)
+        dimension_coverage_score = min(1.0, len(dimensions) / 4)
+        ready = len(approved) >= 4 and "narrative_pattern" in finding_types and "style_rule_set" in finding_types
+        learning_complete = progress["eligible_segments"] > 0 and progress["remaining_segments"] == 0 and len(pending) == 0
         return {
             "approved_findings": len(approved),
             "rejected_findings": len(rejected),
             "pending_findings": len(pending),
             "covered_dimensions": dimensions,
             "covered_finding_types": finding_types,
-            "coverage_score": min(1.0, len(dimensions) / 4),
-            "ready": len(approved) >= 4 and "narrative_pattern" in finding_types and "style_rule_set" in finding_types,
+            "coverage_score": dimension_coverage_score,
+            "dimension_coverage_score": dimension_coverage_score,
+            "sample_coverage_score": progress["sample_coverage_score"],
+            "sampled_segments": progress["sampled_segments"],
+            "eligible_segments": progress["eligible_segments"],
+            "remaining_segments": progress["remaining_segments"],
+            "learning_complete": learning_complete,
+            "ready": ready,
             "profile_ready": profile_ready,
             "profile_stale": profile_stale,
+            "next_round_available": progress["remaining_segments"] > 0 and len(pending) == 0,
+        }
+
+    def _empty_coverage_for_book(self, book_id: str) -> dict[str, Any]:
+        progress = self._segment_progress_for_book(book_id, [])
+        return {
+            **_empty_coverage(),
+            "sample_coverage_score": progress["sample_coverage_score"],
+            "sampled_segments": progress["sampled_segments"],
+            "eligible_segments": progress["eligible_segments"],
+            "remaining_segments": progress["remaining_segments"],
+            "learning_complete": progress["eligible_segments"] > 0 and progress["remaining_segments"] == 0,
+            "next_round_available": progress["remaining_segments"] > 0,
+        }
+
+    def _segment_progress_for_book(self, book_id: str, findings: list[ReferenceFinding]) -> dict[str, Any]:
+        if not book_id:
+            return {
+                "sampled_segments": 0,
+                "eligible_segments": 0,
+                "remaining_segments": 0,
+                "sample_coverage_score": 0.0,
+            }
+        segments = self.session.execute(
+            select(ReferenceBookSegment)
+            .where(ReferenceBookSegment.book_id == book_id)
+            .order_by(ReferenceBookSegment.segment_index.asc())
+        ).scalars().all()
+        eligible_ids = {
+            segment.segment_id
+            for segment in segments
+            if not _is_non_evidence_segment(segment)
+        }
+        sampled_ids = self._attempted_segment_ids_for_book(book_id) & eligible_ids
+        eligible_count = len(eligible_ids)
+        sampled_count = len(sampled_ids)
+        remaining = max(0, eligible_count - sampled_count)
+        return {
+            "sampled_segments": sampled_count,
+            "eligible_segments": eligible_count,
+            "remaining_segments": remaining,
+            "sample_coverage_score": (sampled_count / eligible_count) if eligible_count else 0.0,
         }
 
     def serialize_book_with_summary(self, book: ReferenceBook) -> dict[str, Any]:
@@ -1112,6 +1260,12 @@ class ReferenceLearningService:
         segment = self.session.get(ReferenceBookSegment, finding.segment_id)
         review = self.session.get(ReviewItem, finding.review_id)
         display_summary, _ = _sanitize_reference_finding_text(finding.summary)
+        display_summary = _localize_reference_finding_summary(
+            display_summary,
+            finding_type=finding.finding_type,
+            dimension=finding.dimension,
+            segment=segment,
+        )
         return {
             "finding_id": finding.finding_id,
             "finding_type": finding.finding_type,
@@ -1127,6 +1281,7 @@ class ReferenceLearningService:
                 "chapter_hint": None,
                 "preview": None,
             },
+            "model_trace": self._model_trace_for_finding(finding),
             "review": self.serialize_review(review) if review else None,
         }
 
@@ -1158,8 +1313,7 @@ class ReferenceLearningService:
             "approved_item_row_id": review.approved_item_row_id,
         }
 
-    @staticmethod
-    def serialize_profile(profile: ReferenceProfile) -> dict[str, Any]:
+    def serialize_profile(self, profile: ReferenceProfile) -> dict[str, Any]:
         safety_summary = _profile_safety_summary(profile.profile_json, stripped_count=_profile_stripped_count(profile))
         display_profile_json, display_safety_summary = _sanitize_reference_profile_payload(dict(profile.profile_json or {}))
         coverage = dict(profile.coverage_json or {})
@@ -1178,8 +1332,110 @@ class ReferenceLearningService:
             "safety_summary": safety_summary,
             "display_safety_summary": display_safety_summary,
             "source_finding_ids": profile.source_finding_ids_json,
+            "application_status": self._profile_application_status(profile),
+            "model_trace": self._model_trace_for_profile(profile),
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
+        }
+
+    def _profile_application_status(self, profile: ReferenceProfile) -> dict[str, Any]:
+        prefix = f"review_apply_{_safe_key(profile.profile_id)}_"
+        reviews = [
+            review
+            for review in self.session.execute(
+                select(ReviewItem)
+                .where(ReviewItem.review_id.like("review_apply_%"))
+                .order_by(ReviewItem.created_at.asc(), ReviewItem.review_id.asc())
+            ).scalars().all()
+            if review.review_id.startswith(prefix)
+        ]
+        return self._application_status_for_reviews(reviews)
+
+    def _application_status_for_reviews(self, reviews: list[ReviewItem]) -> dict[str, Any]:
+        ordered_reviews = sorted(reviews, key=lambda item: (item.created_at or "", item.review_id))
+        payloads = [
+            review.candidate_payload_json
+            for review in ordered_reviews
+            if isinstance(review.candidate_payload_json, dict)
+        ]
+        scopes = sorted({str(payload.get("scope")) for payload in payloads if payload.get("scope")})
+        scope_refs = sorted({str(payload.get("scope_ref_id")) for payload in payloads if payload.get("scope_ref_id")})
+        return {
+            "total": len(ordered_reviews),
+            "pending": sum(1 for review in ordered_reviews if review.status == "pending"),
+            "approved": sum(1 for review in ordered_reviews if review.status == "approved"),
+            "rejected": sum(1 for review in ordered_reviews if review.status == "rejected"),
+            "review_ids": [review.review_id for review in ordered_reviews],
+            "scope": scopes[0] if len(scopes) == 1 else "multiple" if scopes else None,
+            "scope_ref_id": scope_refs[0] if len(scope_refs) == 1 else "multiple" if scope_refs else None,
+        }
+
+    def _model_trace_for_finding(self, finding: ReferenceFinding) -> dict[str, Any]:
+        payload = finding.candidate_payload_json if isinstance(finding.candidate_payload_json, dict) else {}
+        quality_score = payload.get("confidence")
+        if not isinstance(quality_score, (int, float)):
+            quality_score = None
+        return self._reference_model_trace(
+            book_id=finding.book_id,
+            run_id=finding.run_id,
+            segment_id=finding.segment_id,
+            default_node_id=str(payload.get("llm_node_id") or "reference_style_structure_extract"),
+            quality_score=quality_score,
+        )
+
+    def _model_trace_for_profile(self, profile: ReferenceProfile) -> dict[str, Any]:
+        profile_json = profile.profile_json if isinstance(profile.profile_json, dict) else {}
+        quality_score = profile_json.get("quality_score")
+        if not isinstance(quality_score, (int, float)):
+            quality_score = None
+        return self._reference_model_trace(
+            book_id=profile.book_id,
+            run_id=profile.run_id,
+            default_node_id="reference_profile_synthesize",
+            quality_score=quality_score,
+        )
+
+    def _reference_model_trace(
+        self,
+        *,
+        book_id: str,
+        run_id: str | None = None,
+        segment_id: str | None = None,
+        default_node_id: str,
+        quality_score: float | None = None,
+    ) -> dict[str, Any]:
+        rows = self.session.execute(
+            select(LlmCall)
+            .where(LlmCall.node_id.like("reference_%"))
+            .order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())
+        ).scalars().all()
+        calls = [
+            row
+            for row in rows
+            if _llm_call_matches_reference(row, book_id=book_id, run_id=run_id, segment_id=segment_id)
+        ]
+        if not calls:
+            return {
+                "provider": "local",
+                "model": "local-heuristic",
+                "node_id": default_node_id,
+                "node_ids": [default_node_id],
+                "success_count": 0,
+                "failure_count": 0,
+                "quality_score": quality_score,
+                "mode": "local_heuristic",
+            }
+        latest = next((row for row in reversed(calls) if not row.error_code), calls[-1])
+        node_ids = sorted({str(row.node_id) for row in calls if row.node_id})
+        return {
+            "provider": latest.provider or "unknown",
+            "model": latest.model or "unknown",
+            "node_id": latest.node_id or default_node_id,
+            "node_ids": node_ids or [default_node_id],
+            "success_count": sum(1 for row in calls if not row.error_code),
+            "failure_count": sum(1 for row in calls if row.error_code),
+            "quality_score": quality_score,
+            "mode": "llm",
         }
 
     def _book(self, book_id: str) -> ReferenceBook:
@@ -1466,9 +1722,75 @@ def _merge_reference_safety_notes(*notes: dict[str, Any]) -> dict[str, Any]:
 
 def _segment_display_label(segment: ReferenceBookSegment | None) -> str:
     if segment is None:
-        return "reference segment"
-    segment_kind = str(segment.segment_kind or "reference").replace("_", " ").strip() or "reference"
-    return f"{segment_kind} segment"
+        return SEGMENT_KIND_LABELS["reference"]
+    segment_kind = str(segment.segment_kind or "reference").strip().lower().replace(" ", "_")
+    return SEGMENT_KIND_LABELS.get(segment_kind, SEGMENT_KIND_LABELS["reference"])
+
+
+def _dimension_display_label(dimension: str) -> str:
+    normalized = str(dimension or "").strip().lower().replace("_", " ")
+    if not normalized:
+        return "技法"
+    if normalized in DIMENSION_LABELS:
+        return DIMENSION_LABELS[normalized]
+    for key, label in DIMENSION_LABELS.items():
+        if key in normalized:
+            return label
+    return str(dimension or "").strip()
+
+
+def _reference_locale_hint(
+    *,
+    book: ReferenceBook | None = None,
+    segment: ReferenceBookSegment | None = None,
+    segments: list[ReferenceBookSegment] | None = None,
+) -> str:
+    values: list[str] = []
+    if book is not None:
+        values.extend([book.title or "", book.author_label or ""])
+    if segment is not None:
+        values.extend([segment.chapter_hint or "", segment.text or ""])
+    for item in segments or []:
+        values.extend([item.chapter_hint or "", item.text or ""])
+    return _detect_locale("\n".join(values))
+
+
+def _chinese_reference_finding_summary(
+    *,
+    finding_type: str,
+    dimension: str,
+    segment: ReferenceBookSegment | None,
+) -> str:
+    segment_label = _segment_display_label(segment)
+    dimension_label = _dimension_display_label(dimension)
+    if finding_type == "narrative_pattern":
+        return f"从{segment_label}提炼{dimension_label}结构：先抛出具体现象，延后解释，再让可见后果推动场景转向。"
+    if finding_type == "banned_rule_cluster":
+        return "禁止复刻参考书中的专名、设定、人物关系、原句和可识别桥段，只保留抽象写作边界。"
+    if finding_type == "calibration_candidate":
+        return f"把{segment_label}仅作为{dimension_label}校准：学习压力节拍、触感意象和情绪释放，不复用源文措辞。"
+    if finding_type == "style_observation":
+        return f"从{segment_label}抽象{dimension_label}观察：用具体现象和感官后果承载信息，减少直接说明。"
+    return f"将{segment_label}转化为{dimension_label}文笔规则：先用短促压力节拍推进，再用较长情绪句释放。"
+
+
+def _localize_reference_finding_summary(
+    summary: str,
+    *,
+    finding_type: str,
+    dimension: str,
+    segment: ReferenceBookSegment | None,
+    book: ReferenceBook | None = None,
+) -> str:
+    if _reference_locale_hint(book=book, segment=segment) != "zh":
+        return summary
+    if _detect_locale(summary) == "zh":
+        return summary
+    return _chinese_reference_finding_summary(
+        finding_type=finding_type,
+        dimension=dimension,
+        segment=segment,
+    )
 
 
 def _is_reference_review_payload(payload: dict[str, Any]) -> bool:
@@ -1602,12 +1924,49 @@ def _split_long_segment(text: str, *, max_chars: int = 900) -> list[str]:
 
 
 def _analysis_worthy_segments(segments: list[ReferenceBookSegment]) -> list[ReferenceBookSegment]:
-    quality_segments = [
+    return [
         segment
         for segment in segments
-        if segment.segment_kind != "boilerplate" and not _is_boilerplate_segment(segment.text)
+        if not _is_non_evidence_segment(segment)
     ]
-    return quality_segments or segments
+
+
+def _is_non_evidence_segment(segment: ReferenceBookSegment) -> bool:
+    return segment.segment_kind == "boilerplate" or _is_boilerplate_segment(segment.text) or _is_front_matter_segment(segment.text)
+
+
+def _is_front_matter_segment(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text or "")
+    raw = str(text or "").strip()
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    lower = compact.lower()
+    if not compact:
+        return True
+    if any(marker in compact for marker in ("内容简介", "內容簡介", "内容提要", "作品简介")):
+        return True
+    if any(marker in compact for marker in ("目录", "目錄", "鐩綍")) and len(compact) <= 260:
+        return True
+    if (
+        any(marker in compact for marker in ("合集", "鍚堥泦"))
+        and any(marker in compact for marker in ("包含", "鍖呭惈"))
+        and any(marker in compact for marker in ("著", "作者", "钁?", "浣滆€?"))
+    ):
+        return True
+    title_mark_count = compact.count("《") + compact.count("》") + compact.count("銆?")
+    if title_mark_count >= 3 and any(marker in compact for marker in ("著", "作者", "目录", "钁?", "浣滆€?", "鐩綍")):
+        return True
+    if len(compact) <= 120 and len(lines) <= 3 and any(line.endswith(("著", "作者")) for line in lines):
+        return True
+    has_cjk = any("\u4e00" <= char <= "\u9fff" for char in raw)
+    looks_like_numbered_scene = re.match(r"scene\d+[:：]", lower) is not None
+    if not has_cjk and len(compact) <= 160 and len(lines) <= 4 and not looks_like_numbered_scene:
+        return True
+    if len(compact) > 260:
+        return False
+    if "合集" in compact and "包含《" in compact and "著" in compact:
+        return True
+    title_mark_count = compact.count("《")
+    return title_mark_count >= 3 and ("作者" in compact or "著" in compact or "目录" in compact)
 
 
 def _is_boilerplate_segment(text: str) -> bool:
@@ -1650,6 +2009,12 @@ def _segment_stats(segments: list[ReferenceBookSegment], *, total_chars: int) ->
 
 
 def _finding_summary(*, finding_type: str, dimension: str, segment: ReferenceBookSegment) -> str:
+    if _reference_locale_hint(segment=segment) == "zh":
+        return _chinese_reference_finding_summary(
+            finding_type=finding_type,
+            dimension=dimension,
+            segment=segment,
+        )
     if finding_type == "narrative_pattern":
         return (
             f"Use chapter hook escalation: open with a concrete anomaly, delay explanation, "
@@ -1681,9 +2046,20 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _reference_user_prompt(task_prompt: str, payload: dict[str, Any]) -> str:
-    return "\n".join(
+    locale_hint = str(payload.get("locale_hint") or "").strip().lower()
+    parts = [task_prompt]
+    if locale_hint == "zh":
+        parts.extend(
+            [
+                "",
+                (
+                    "Language rule: all user-facing string fields in the returned JSON must be written in Chinese (中文). "
+                    "Keep JSON keys exactly as required by the schema, and do not include source excerpts."
+                ),
+            ]
+        )
+    parts.extend(
         [
-            task_prompt,
             "",
             "Input JSON:",
             json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
@@ -1691,6 +2067,7 @@ def _reference_user_prompt(task_prompt: str, payload: dict[str, Any]) -> str:
             "Return JSON that matches the structured schema exactly.",
         ]
     )
+    return "\n".join(parts)
 
 
 def _prompt_hash(
@@ -1730,8 +2107,29 @@ def _sanitize_llm_payload(value: Any) -> Any:
     return value
 
 
+def _llm_call_matches_reference(
+    call: LlmCall,
+    *,
+    book_id: str,
+    run_id: str | None,
+    segment_id: str | None,
+) -> bool:
+    summary = call.request_payload_summary if isinstance(call.request_payload_summary, dict) else {}
+    payload = summary.get("payload") if isinstance(summary.get("payload"), dict) else {}
+    book_payload = payload.get("book") if isinstance(payload.get("book"), dict) else {}
+    if book_id and book_payload.get("book_id") != book_id:
+        return False
+    payload_run_id = payload.get("run_id")
+    if run_id and payload_run_id and payload_run_id != run_id:
+        return False
+    if segment_id:
+        payload_segment = payload.get("segment") if isinstance(payload.get("segment"), dict) else {}
+        return summary.get("segment_id") == segment_id or payload_segment.get("segment_id") == segment_id
+    return True
+
+
 def _coverage_complete(coverage: dict[str, Any]) -> bool:
-    return bool(coverage.get("ready"))
+    return bool(coverage.get("learning_complete"))
 
 
 def _empty_coverage() -> dict[str, Any]:
@@ -1742,7 +2140,16 @@ def _empty_coverage() -> dict[str, Any]:
         "covered_dimensions": [],
         "covered_finding_types": [],
         "coverage_score": 0.0,
+        "dimension_coverage_score": 0.0,
+        "sample_coverage_score": 0.0,
+        "sampled_segments": 0,
+        "eligible_segments": 0,
+        "remaining_segments": 0,
+        "learning_complete": False,
         "ready": False,
+        "profile_ready": False,
+        "profile_stale": False,
+        "next_round_available": False,
     }
 
 
