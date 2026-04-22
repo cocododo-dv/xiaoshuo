@@ -29,4 +29,39 @@ describe("api base defaults", () => {
     expect(api.getApiBase()).toBe("http://127.0.0.1:8052");
     expect(localStorage.getItem("novel-system-api-base")).toBe("http://127.0.0.1:8052");
   });
+
+  it("replaces a stale prior dev-server default when the injected backend URL changes again", async () => {
+    localStorage.setItem("novel-system-api-base", "http://127.0.0.1:8052");
+    localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8052");
+    vi.stubEnv("VITE_NOVEL_SYSTEM_API_BASE", "http://127.0.0.1:8000");
+    vi.resetModules();
+
+    const api = await import("../src/lib/api.js");
+
+    expect(api.getApiBase()).toBe("http://127.0.0.1:8000");
+    expect(localStorage.getItem("novel-system-api-base")).toBe("http://127.0.0.1:8000");
+  });
+
+  it("replaces a stale local dev URL from older builds that did not record the injected default", async () => {
+    localStorage.setItem("novel-system-api-base", "http://127.0.0.1:8052");
+    vi.stubEnv("VITE_NOVEL_SYSTEM_API_BASE", "http://127.0.0.1:8000");
+    vi.resetModules();
+
+    const api = await import("../src/lib/api.js");
+
+    expect(api.getApiBase()).toBe("http://127.0.0.1:8000");
+    expect(localStorage.getItem("novel-system-api-base")).toBe("http://127.0.0.1:8000");
+  });
+
+  it("keeps an explicit custom API base instead of replacing it with the dev-server default", async () => {
+    localStorage.setItem("novel-system-api-base", "https://api.example.test");
+    localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8052");
+    vi.stubEnv("VITE_NOVEL_SYSTEM_API_BASE", "http://127.0.0.1:8000");
+    vi.resetModules();
+
+    const api = await import("../src/lib/api.js");
+
+    expect(api.getApiBase()).toBe("https://api.example.test");
+    expect(localStorage.getItem("novel-system-api-base")).toBe("https://api.example.test");
+  });
 });

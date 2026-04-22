@@ -1,6 +1,7 @@
 import { CURSOR_PAGINATION_DEFAULT_LIMIT, normalizeListPayload } from "./cursorPagination";
 
 const API_BASE_KEY = "novel-system-api-base";
+const API_BASE_DEFAULT_KEY = "novel-system-api-base-default";
 const FALLBACK_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_API_BASE = (import.meta.env.VITE_NOVEL_SYSTEM_API_BASE || FALLBACK_API_BASE).trim();
 const OPERATOR_REF_KEY = "novel-system-operator-ref";
@@ -11,22 +12,51 @@ const LIST_QUERY_ALIASES = {
   stuckOnly: "stuck_only",
 };
 
+function isLoopbackApiBase(value) {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      ["127.0.0.1", "localhost"].includes(url.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function shouldUseInjectedDefault(stored, storedDefault) {
+  if (!stored) {
+    return true;
+  }
+  if (stored === FALLBACK_API_BASE) {
+    return true;
+  }
+  if (storedDefault && stored === storedDefault) {
+    return true;
+  }
+  return !storedDefault && isLoopbackApiBase(stored) && isLoopbackApiBase(DEFAULT_API_BASE);
+}
+
 export function getApiBase() {
   if (typeof window === "undefined") {
     return DEFAULT_API_BASE;
   }
-  const stored = window.localStorage.getItem(API_BASE_KEY);
-  if (stored === FALLBACK_API_BASE && DEFAULT_API_BASE !== FALLBACK_API_BASE) {
+  const stored = (window.localStorage.getItem(API_BASE_KEY) || "").trim();
+  const storedDefault = (window.localStorage.getItem(API_BASE_DEFAULT_KEY) || "").trim();
+  if (shouldUseInjectedDefault(stored, storedDefault)) {
     window.localStorage.setItem(API_BASE_KEY, DEFAULT_API_BASE);
+    window.localStorage.setItem(API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
     return DEFAULT_API_BASE;
   }
-  return stored || DEFAULT_API_BASE;
+  window.localStorage.setItem(API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
+  return stored;
 }
 
 export function setApiBase(value) {
   const normalized = value.trim() || DEFAULT_API_BASE;
   if (typeof window !== "undefined") {
     window.localStorage.setItem(API_BASE_KEY, normalized);
+    window.localStorage.setItem(API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
   }
   return normalized;
 }
