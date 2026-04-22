@@ -296,6 +296,14 @@ export function fetchChapters() {
   return apiGet("/api/v1/chapters");
 }
 
+export function fetchChapterManuscripts() {
+  return apiGet("/api/v1/chapter-manuscripts");
+}
+
+export function fetchChapterManuscriptDetail(chapterId) {
+  return apiGet(`/api/v1/chapter-manuscripts/${encodeURIComponent(chapterId)}`);
+}
+
 export function fetchAuthorWorkspace(chapterId) {
   return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/author-workspace`);
 }

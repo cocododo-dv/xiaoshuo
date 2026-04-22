@@ -18,6 +18,11 @@ const views = [
     cacheMode: "light",
   },
   {
+    id: "manuscripts",
+    label: "章节成稿中心",
+    cacheMode: "light",
+  },
+  {
     id: "trash",
     label: "作者回收站",
     cacheMode: "light",
@@ -102,6 +107,9 @@ export function useShellRouter() {
   }
 
   function targetView(targetType) {
+    if (targetType === "chapter_manuscript") {
+      return "manuscripts";
+    }
     if (targetType === "chapter_goal") {
       return "author";
     }

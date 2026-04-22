@@ -2494,6 +2494,203 @@ pre {
   color: var(--navy);
 }
 
+.chapter-manuscript-view {
+  min-width: 0;
+}
+
+.manuscript-layout {
+  display: grid;
+  grid-template-columns: minmax(15rem, 0.72fr) minmax(22rem, 1.08fr) minmax(24rem, 1.2fr);
+  gap: 1rem;
+  align-items: start;
+  margin-top: 1.2rem;
+  min-width: 0;
+}
+
+.manuscript-list-panel,
+.manuscript-management,
+.manuscript-reader {
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.manuscript-chapter-list,
+.manuscript-scene-list,
+.manuscript-trash-grid {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.manuscript-chapter-list {
+  max-height: 32rem;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.manuscript-list-row,
+.manuscript-scene-row,
+.trash-choice {
+  display: grid;
+  gap: 0.75rem;
+  align-items: start;
+  min-width: 0;
+  border: 1px solid rgba(37, 51, 66, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.manuscript-list-row {
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 0.75rem;
+}
+
+.manuscript-list-row.active,
+.manuscript-scene-row.active {
+  border-color: rgba(163, 63, 47, 0.38);
+  background: rgba(255, 248, 239, 0.86);
+}
+
+.manuscript-list-button,
+.manuscript-scene-main {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.manuscript-list-button:hover,
+.manuscript-scene-main:hover {
+  transform: none;
+}
+
+.manuscript-list-button span,
+.manuscript-scene-main span {
+  overflow-wrap: anywhere;
+}
+
+.manuscript-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin: 1rem 0;
+}
+
+.manuscript-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.manuscript-form-grid label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.manuscript-wide {
+  grid-column: 1 / -1;
+}
+
+.manuscript-scene-area,
+.manuscript-trash-panel {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1.2rem;
+  padding-top: 1.1rem;
+  border-top: 1px dashed var(--line);
+}
+
+.manuscript-scene-row {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 0.75rem;
+}
+
+.manuscript-scene-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(2.6rem, auto));
+  gap: 0.4rem;
+}
+
+.manuscript-scene-actions button {
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+}
+
+.scene-form {
+  margin-top: 0.35rem;
+}
+
+.manuscript-trash-grid {
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.trash-choice {
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 0.65rem 0.75rem;
+}
+
+.trash-choice span {
+  overflow-wrap: anywhere;
+}
+
+.manuscript-view-mode {
+  width: min(100%, 12rem);
+}
+
+.manuscript-reader-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-top: 1rem;
+  min-width: 0;
+}
+
+.manuscript-reader-grid.single {
+  grid-template-columns: 1fr;
+}
+
+.manuscript-pane {
+  display: grid;
+  grid-template-rows: auto minmax(18rem, 64vh);
+  min-width: 0;
+  border: 1px solid rgba(37, 51, 66, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.52);
+  overflow: hidden;
+}
+
+.manuscript-pane-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: flex-start;
+  padding: 0.8rem;
+  border-bottom: 1px solid rgba(37, 51, 66, 0.1);
+}
+
+.manuscript-pane-head h4,
+.manuscript-pane-head p {
+  margin: 0;
+}
+
+.manuscript-text {
+  margin: 0;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 0;
+  background: rgba(250, 247, 239, 0.78);
+  line-height: 1.78;
+  font-size: 0.98rem;
+}
+
 @media (max-width: 980px) {
   .shell {
     grid-template-columns: 1fr;
@@ -2536,6 +2733,7 @@ pre {
   .knowledge-layout,
   .reference-layout,
   .author-layout,
+  .manuscript-layout,
   .trash-layout,
   .interop-layout,
   .config-layout,
@@ -2554,8 +2752,18 @@ pre {
   .knowledge-filter-grid,
   .knowledge-form-grid,
   .config-form-grid,
-  .author-form-grid {
+  .author-form-grid,
+  .manuscript-form-grid,
+  .manuscript-reader-grid,
+  .manuscript-reader-grid.single {
     grid-template-columns: 1fr;
+  }
+
+  .manuscript-scene-row,
+  .manuscript-pane-head {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .reference-hero,

@@ -8,6 +8,7 @@ from sqlalchemy.exc import OperationalError
 
 from novel_system.api.response import error
 from novel_system.api.routes import (
+    chapter_manuscripts,
     chapters,
     domain,
     indexing,
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(chapters.router)
+    app.include_router(chapter_manuscripts.router)
     app.include_router(scenes.router)
     app.include_router(review.router)
     app.include_router(domain.router)
