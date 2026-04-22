@@ -449,7 +449,7 @@ onDeactivated(() => {
         </div>
       </div>
 
-      <div v-if="workbench.loading" class="empty">正在加载场景工作台...</div>
+      <div v-if="workbench.loading" class="empty loading-pulse">正在加载场景工作台...</div>
       <template v-else-if="hasData">
         <article v-if="workbench.error" class="paper inline-error">
           <h3>最新错误</h3>

@@ -3,9 +3,19 @@
   --paper: #efe6d3;
   --paper-strong: #f7f1e5;
   --accent: #a33f2f;
+  --accent-hover: #c44d3b;
+  --navy: #253342;
+  --navy-hover: #364a60;
   --shadow: rgba(27, 24, 21, 0.16);
   --line: rgba(27, 24, 21, 0.12);
-  --navy: #253342;
+  --line-focus: rgba(163, 63, 47, 0.45);
+  --shadow-focus: 0 0 0 3px rgba(163, 63, 47, 0.15);
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
   font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
   color: var(--ink);
   background:
@@ -38,11 +48,17 @@ button {
   cursor: pointer;
   padding: 0.72rem 1.1rem;
   touch-action: manipulation;
-  transition: transform 120ms ease, opacity 120ms ease, background-color 120ms ease;
+  transition: transform var(--transition-fast), opacity var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 button:hover {
   transform: translateY(-1px);
+  background-color: var(--navy-hover);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 button:active {
@@ -54,10 +70,12 @@ button:disabled {
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+  background-color: var(--navy);
 }
 
 button:disabled:hover {
   transform: none;
+  background-color: var(--navy);
 }
 
 input,
@@ -67,6 +85,15 @@ textarea {
   border-radius: 1rem;
   background: rgba(255, 255, 255, 0.72);
   padding: 0.7rem 1rem;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--line-focus);
+  box-shadow: var(--shadow-focus);
 }
 
 select {
@@ -176,6 +203,33 @@ pre {
   color: var(--ink);
   font-size: 0.9rem;
   overflow-wrap: anywhere;
+}
+
+.notice-fade-enter-active,
+.notice-fade-leave-active {
+  transition: opacity var(--transition-normal), transform var(--transition-normal);
+}
+
+.notice-fade-enter-from {
+  opacity: 0;
+  transform: translateX(1rem);
+}
+
+.notice-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-1rem);
+}
+
+.notice-fade-leave-active {
+  position: absolute;
+}
+
+@keyframes loading-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+.loading-pulse {
+  animation: loading-pulse 1.5s ease-in-out infinite;
 }
 
 .flow-action-receipt {
@@ -1338,6 +1392,13 @@ pre {
   border: 1px solid var(--line);
   border-radius: 1rem;
   background: rgba(255, 255, 255, 0.62);
+  transition: all var(--transition-fast);
+}
+
+.author-list-row:not(.disabled):hover,
+.trash-row:not(.disabled):hover {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(27, 24, 21, 0.2);
 }
 
 .author-list-row.disabled,
@@ -1423,6 +1484,12 @@ pre {
   border: 1px solid var(--line);
   border-radius: 1rem;
   background: rgba(255, 255, 255, 0.62);
+  transition: all var(--transition-fast);
+}
+
+.author-scene-row:not(.active):hover {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(27, 24, 21, 0.2);
 }
 
 .author-scene-row.active {

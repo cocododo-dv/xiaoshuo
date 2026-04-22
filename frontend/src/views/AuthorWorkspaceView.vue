@@ -512,7 +512,7 @@ onActivated(() => {
       </template>
       <FlowActionReceipt :receipt="receipt(AUTHOR_WORKSPACE_SCOPE)" />
 
-      <div v-if="authorWorkspace.loading" class="empty">正在加载作者工作台...</div>
+      <div v-if="authorWorkspace.loading" class="empty loading-pulse">正在加载作者工作台...</div>
       <div v-else-if="authorWorkspace.error" class="empty">{{ authorWorkspace.error }}</div>
       <div v-else class="author-layout">
         <article class="paper author-sidebar">

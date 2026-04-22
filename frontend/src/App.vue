@@ -123,11 +123,11 @@ onBeforeUnmount(() => {
     </aside>
 
     <main class="stage">
-      <div v-if="notices.length" class="notice-stack stage-notices shell-notices" data-testid="notice-stack">
+      <TransitionGroup name="notice-fade" tag="div" class="notice-stack stage-notices shell-notices" data-testid="notice-stack">
         <div v-for="notice in notices" :key="notice.id" class="notice">
           {{ notice.message }}
         </div>
-      </div>
+      </TransitionGroup>
 
       <div class="view-stack">
         <Transition name="view-fade">
