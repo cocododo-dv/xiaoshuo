@@ -194,6 +194,10 @@ pre {
   gap: 0.65rem;
 }
 
+.notice-stack:empty {
+  display: none;
+}
+
 .notice {
   padding: 0.9rem 1rem;
   border: 1px solid rgba(37, 51, 66, 0.14);

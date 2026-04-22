@@ -48,6 +48,16 @@ describe("shell smoothness architecture", () => {
     expect(source).not.toContain("v-show=\"activeView === 'workbench'\"");
   });
 
+  it("keeps an empty animated notice stack from reserving stage spacing", () => {
+    const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+    const styles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
+    const emptyNoticeBlock = styles.match(/\.notice-stack:empty\s*\{[^}]*\}/)?.[0] || "";
+
+    expect(source).toContain("<TransitionGroup");
+    expect(source).toContain('data-testid="notice-stack"');
+    expect(emptyNoticeBlock).toContain("display: none");
+  });
+
   it("keeps shell navigation free of global refresh reloaders", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
 

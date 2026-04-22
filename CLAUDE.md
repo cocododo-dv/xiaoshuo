@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The backend is located in the `backend/` directory and uses Python 3.12.
 - Activate environment: `cd backend` then `.\.venv\Scripts\Activate.ps1` (or `source .venv/bin/activate` on Linux/WSL)
 - Run tests (Windows-safe): `cd backend` then `python -m pytest` or `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1 -BackendOnly`
-- Run all tests (requires WSL Ubuntu 24.04): `wsl -d Ubuntu-24.04 bash -lc "cd <current-checkout-in-wsl> && bash scripts/verify_wsl_strict.sh"`
+- Verify WSL strict (real Chroma, WSL Ubuntu 24.04): `wsl -d Ubuntu-24.04 bash -lc "cd <current-checkout-in-wsl> && bash scripts/verify_wsl_strict.sh"`
 - Reset demo data: `cd backend && alembic upgrade head && python -m novel_system.tools.seed_demo`
 
 ### Frontend (Vue 3 + Vite)
