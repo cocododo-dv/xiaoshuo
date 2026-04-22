@@ -911,6 +911,83 @@ describe("review inbox store", () => {
     expect(store.items).toEqual([]);
   });
 
+  it("localizes not-verified release failures in the review inbox", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/review-items/review_style_pending/release")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            ok: false,
+            data: null,
+            error: { code: "RELEASE_PRECONDITION_FAILED", message: "candidate is not verified" },
+          }),
+        };
+      }
+      if (requestUrl.endsWith("/review-items/review_style_pending")) {
+        return ok({
+          review_id: "review_style_pending",
+          status: "approved",
+          materialize_status: "succeeded",
+          release_state: {
+            state: "blocked",
+            blocked_reason: "not_verified",
+            message: "候选尚未通过索引校验，请先在索引控制台重试校验，成功后再发布。",
+            recommended_action: "retry_verify",
+            verify_job_id: "verify_review_style_pending",
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const store = useReviewInboxStore();
+
+    await expect(store.release("review_style_pending")).rejects.toThrow("候选尚未通过索引校验");
+    expect(store.error).toContain("索引控制台");
+    expect(store.error).not.toContain("candidate is not verified");
+  });
+
+  it("reconciles failed approve requests when the latest review state is already approved", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/review-items/review_style_pending/approve")) {
+        throw new TypeError("Failed to fetch");
+      }
+      if (requestUrl.endsWith("/review-items/review_style_pending")) {
+        return ok({
+          review_id: "review_style_pending",
+          status: "approved",
+          materialize_status: "succeeded",
+          approved_item_row_id: "style_observation_review_style_pending_v1",
+          release_state: {
+            state: "ready",
+            blocked_reason: "",
+            message: "候选已批准、已物化且校验通过，可以发布到运行时。",
+            recommended_action: "none",
+            verify_job_id: "verify_review_style_pending",
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const store = useReviewInboxStore();
+    const message = await store.approve("review_style_pending");
+
+    expect(message).toContain("当前状态已完成");
+    expect(message).toContain("已批准");
+    expect(store.error).toBe("");
+    expect(store.pinnedApprovedReviewItems).toEqual([
+      expect.objectContaining({
+        review_id: "review_style_pending",
+        status: "approved",
+        materialize_status: "succeeded",
+      }),
+    ]);
+  });
+
   it("retries a recovery event request and refreshes the inbox state", async () => {
     const store = useReviewInboxStore();
 

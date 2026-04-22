@@ -28,7 +28,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["approve", "release", "open-target", "open-reference"]);
+const emit = defineEmits(["approve", "release", "open-target", "open-reference", "open-verify-job"]);
 
 const payloadExpanded = ref(false);
 const riskAcknowledged = ref(false);
@@ -172,6 +172,26 @@ const approvalPayload = computed(() => {
     },
   };
 });
+const releaseState = computed(() =>
+  props.item.release_state && typeof props.item.release_state === "object" ? props.item.release_state : null,
+);
+const releaseStateStatus = computed(() => releaseState.value?.state || "");
+const releaseStateMessage = computed(() => releaseState.value?.message || "");
+const releaseVerifyJobId = computed(() => releaseState.value?.verify_job_id || "");
+const canReleaseReview = computed(() => {
+  if (props.item.materialize_status !== "succeeded") {
+    return false;
+  }
+  if (!releaseState.value) {
+    return true;
+  }
+  return releaseStateStatus.value === "ready";
+});
+const releaseBlocked = computed(() => releaseStateStatus.value === "blocked");
+const showVerifyAction = computed(
+  () => releaseState.value?.recommended_action === "retry_verify" && Boolean(releaseVerifyJobId.value),
+);
+const releaseButtonLabel = computed(() => (releaseStateStatus.value === "active" ? "已生效" : "发布"));
 
 function formatStatus(status) {
   return STATUS_LABELS[status] || status || "-";
@@ -179,6 +199,10 @@ function formatStatus(status) {
 
 function approveReview() {
   emit("approve", props.item.review_id, approvalPayload.value);
+}
+
+function openVerifyJob() {
+  emit("open-verify-job", releaseVerifyJobId.value, props.item.review_id);
 }
 
 function reviewTechnicalPayload() {
@@ -316,6 +340,19 @@ watch(
 
     <pre v-if="payloadExpanded" class="json-block">{{ formattedPayload }}</pre>
 
+    <div class="review-action-guide" data-testid="review-action-guide">
+      <span><strong>批准：</strong>确认候选并落地候选版本。</span>
+      <span><strong>发布：</strong>将已批准且校验通过的候选切换为运行时生效版本。</span>
+    </div>
+    <p
+      v-if="releaseStateMessage"
+      class="muted review-release-state"
+      :class="{ 'is-blocked': releaseBlocked }"
+      :data-testid="`review-release-state-${props.item.review_id}`"
+    >
+      {{ releaseStateMessage }}
+    </p>
+
     <div class="card-actions">
       <button
         :disabled="loading || !canApproveReview"
@@ -325,11 +362,19 @@ watch(
         批准
       </button>
       <button
-        :disabled="loading || props.item.materialize_status !== 'succeeded'"
+        :disabled="loading || !canReleaseReview"
         :data-testid="`review-release-${props.item.review_id}`"
         @click="emit('release', props.item.review_id)"
       >
-        发布
+        {{ releaseButtonLabel }}
+      </button>
+      <button
+        v-if="showVerifyAction"
+        class="ghost"
+        :data-testid="`review-open-verify-${props.item.review_id}`"
+        @click="openVerifyJob"
+      >
+        打开校验任务
       </button>
       <button
         class="ghost"

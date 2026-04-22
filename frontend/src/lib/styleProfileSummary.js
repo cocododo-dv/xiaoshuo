@@ -110,10 +110,18 @@ function diffStatusFor(before, after) {
 }
 
 function runtimeImpactForReview(item) {
-  if (item?.status === "released") {
+  const releaseState = item?.release_state && typeof item.release_state === "object" ? item.release_state : null;
+  if (item?.status === "released" || releaseState?.state === "active") {
     return {
       runtimeLabel: "已进入运行时",
-      runtimeDetail: "发布完成，后续 bundle 构建会读取该版本。",
+      runtimeDetail: releaseState?.message || "发布完成，后续 bundle 构建会读取该版本。",
+    };
+  }
+
+  if (releaseState?.state === "blocked") {
+    return {
+      runtimeLabel: releaseState.blocked_reason === "not_verified" ? "需先完成校验" : "暂不可发布",
+      runtimeDetail: releaseState.message || "候选尚未满足发布条件。",
     };
   }
 

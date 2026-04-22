@@ -127,6 +127,59 @@ describe("decision review decluttering", () => {
     }
   });
 
+  it("blocks release for approved vector reviews until verify succeeds", async () => {
+    const release = vi.fn();
+    const openVerifyJob = vi.fn();
+    const reviewId = "review_style_waiting_verify";
+    const mounted = await mount(ReviewCard, {
+      item: {
+        review_id: reviewId,
+        item_type: "style_observation",
+        target_collection: "style_observations",
+        status: "approved",
+        materialize_status: "succeeded",
+        active_on_approve: 0,
+        candidate_text: "hold the image until the final line snaps shut",
+        release_state: {
+          state: "blocked",
+          blocked_reason: "not_verified",
+          message: "候选尚未通过索引校验，请先在索引控制台重试校验，成功后再发布。",
+          recommended_action: "retry_verify",
+          verify_job_id: `verify_${reviewId}`,
+        },
+        candidate_payload_json: {
+          source: "knowledge_console",
+          scope: "global",
+          scope_ref_id: "global",
+          lineage_key: "STY_WAITING_VERIFY",
+        },
+      },
+      onApprove: vi.fn(),
+      onRelease: release,
+      onOpenTarget: vi.fn(),
+      onOpenVerifyJob: openVerifyJob,
+    });
+
+    try {
+      const card = mounted.container.querySelector(".review-card");
+      const releaseButton = card.querySelector(`[data-testid="review-release-${reviewId}"]`);
+      expect(releaseButton.disabled).toBe(true);
+      expect(card.textContent).toContain("候选尚未通过索引校验");
+      expect(card.textContent).toContain("批准：确认候选");
+      expect(card.textContent).toContain("发布：将已批准且校验通过的候选切换为运行时生效版本");
+
+      releaseButton.click();
+      await nextTick();
+      expect(release).not.toHaveBeenCalled();
+
+      card.querySelector(`[data-testid="review-open-verify-${reviewId}"]`).click();
+      await nextTick();
+      expect(openVerifyJob).toHaveBeenCalledWith(`verify_${reviewId}`, reviewId);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
   it("keeps reference candidate reversal controls visible after approval", () => {
     const viewSource = readFileSync(path.join(SOURCE_ROOT, "src/views/ReferenceLearningView.vue"), "utf8");
     const styleSource = readFileSync(path.join(SOURCE_ROOT, "src/styles/app.css"), "utf8");

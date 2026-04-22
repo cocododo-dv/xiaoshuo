@@ -1150,6 +1150,26 @@ pre {
   line-height: 1.45;
 }
 
+.review-action-guide {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.8rem 0 0.35rem;
+  color: rgba(27, 24, 21, 0.68);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.review-release-state {
+  margin: 0.25rem 0 0.65rem;
+  padding-left: 0.7rem;
+  border-left: 3px solid rgba(37, 51, 66, 0.2);
+}
+
+.review-release-state.is-blocked {
+  border-left-color: rgba(163, 63, 47, 0.45);
+  color: rgba(108, 48, 34, 0.82);
+}
+
 .review-inbox-section {
   display: grid;
   gap: 1rem;

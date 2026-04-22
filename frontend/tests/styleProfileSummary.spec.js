@@ -164,6 +164,36 @@ describe("style profile summary", () => {
     expect(directRuntimeImpact.runtimeLabel).toBe("批准后进入运行时");
     expect(directRuntimeImpact.runtimeDetail).toContain("后续 bundle 构建会读取");
 
+    const verifyBlockedImpact = buildReviewImpactSummary({
+      ...item,
+      status: "approved",
+      materialize_status: "succeeded",
+      release_state: {
+        state: "blocked",
+        blocked_reason: "not_verified",
+        message: "候选尚未通过索引校验，请先在索引控制台重试校验，成功后再发布。",
+        recommended_action: "retry_verify",
+        verify_job_id: "verify_review_style_profile_global_global_abc123",
+      },
+    });
+    expect(verifyBlockedImpact.runtimeLabel).toBe("需先完成校验");
+    expect(verifyBlockedImpact.runtimeDetail).toContain("索引控制台");
+
+    const activeImpact = buildReviewImpactSummary({
+      ...item,
+      status: "approved",
+      materialize_status: "succeeded",
+      release_state: {
+        state: "active",
+        blocked_reason: "",
+        message: "候选已是当前运行时生效版本，无需再次发布。",
+        recommended_action: "none",
+        verify_job_id: "verify_review_style_profile_global_global_abc123",
+      },
+    });
+    expect(activeImpact.runtimeLabel).toBe("已进入运行时");
+    expect(activeImpact.runtimeDetail).toContain("无需再次发布");
+
     const mounted = await mount(ReviewCard, {
       item,
       onApprove: vi.fn(),

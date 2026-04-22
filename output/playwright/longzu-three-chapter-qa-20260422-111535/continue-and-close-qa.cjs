@@ -5,8 +5,15 @@ const { chromium } = require("../../../frontend/node_modules/playwright");
 
 const repoRoot = path.resolve(__dirname, "../../..");
 const outDir = __dirname;
-const frontendUrl = process.env.PLAYWRIGHT_FRONTEND_URL || "http://127.0.0.1:5173";
-const apiBase = process.env.PLAYWRIGHT_API_BASE || "http://127.0.0.1:8000";
+const codexRunDir = path.join(repoRoot, ".codex-run");
+const frontendUrl =
+  process.env.PLAYWRIGHT_FRONTEND_URL ||
+  readTextIfExists(path.join(codexRunDir, "frontend.url")) ||
+  "http://127.0.0.1:5173";
+const apiBase =
+  process.env.PLAYWRIGHT_API_BASE ||
+  readTextIfExists(path.join(codexRunDir, "backend.url")) ||
+  `http://127.0.0.1:${process.env.PLAYWRIGHT_BACKEND_PORT || "8000"}`;
 const operatorRef = process.env.PLAYWRIGHT_OPERATOR_REF || "qa.longzu.three-chapters.20260422";
 const referencePath = process.env.REFERENCE_BOOK_PATH || path.join("C:/Users/duwei/Downloads", "\u9f99\u65cf.txt");
 const resultPath = path.join(outDir, "qa-live-results.json");
@@ -44,6 +51,15 @@ const terminalJobStatuses = new Set([
   "human_review_required",
   "manual_review_required",
 ]);
+
+function readTextIfExists(filePath) {
+  try {
+    const value = fs.readFileSync(filePath, "utf8").trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
 
 function loadResult() {
   try {

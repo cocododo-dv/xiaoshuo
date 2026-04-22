@@ -113,7 +113,7 @@ function normalizeRequestError(error) {
       return error;
     }
     if (error.message === "Failed to fetch") {
-      return new Error("连接接口失败，请确认 API 地址和后端服务是否可用。");
+      return new Error(`连接接口失败，请确认 API 地址和后端服务是否可用。当前 API 地址：${getApiBase()}`);
     }
     return error;
   }
@@ -453,6 +453,10 @@ export function fetchReviewItems(filters = {}) {
       chapterId: "chapter_id",
     }),
   ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
+}
+
+export function fetchReviewItem(reviewId) {
+  return apiGet(`/api/v1/review-items/${encodeURIComponent(reviewId)}`);
 }
 
 export function createReviewItem(payload) {

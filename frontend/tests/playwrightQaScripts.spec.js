@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 const QA_ROOTS = [
   path.resolve(process.cwd(), "../output/playwright/three-chapter-qa"),
   path.resolve(process.cwd(), "../output/playwright/original-three-chapter-qa"),
+  path.resolve(process.cwd(), "../output/playwright/longzu-three-chapter-qa-20260422-111535"),
 ];
 
 describe("three-chapter QA script portability", () => {
@@ -19,6 +20,7 @@ describe("three-chapter QA script portability", () => {
         "run-scenes-workbench.js",
       ],
       [QA_ROOTS[1]]: ["run-original-three-chapter-qa.cjs"],
+      [QA_ROOTS[2]]: ["run-longzu-three-chapter-qa.cjs", "continue-and-close-qa.cjs"],
     };
     const offenders = Object.entries(filesByRoot).flatMap(([root, files]) =>
       files
@@ -30,10 +32,19 @@ describe("three-chapter QA script portability", () => {
   });
 
   it("waits for scene run jobs instead of the legacy blocking scene run response", () => {
-    const script = readFileSync(path.join(QA_ROOTS[1], "run-original-three-chapter-qa.cjs"), "utf8");
+    const scripts = [
+      path.join(QA_ROOTS[1], "run-original-three-chapter-qa.cjs"),
+      path.join(QA_ROOTS[2], "run-longzu-three-chapter-qa.cjs"),
+    ];
 
-    expect(script).toContain("/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs");
-    expect(script).not.toContain("/api/v1/scenes/${sceneId}/run/full");
+    const offenders = scripts
+      .filter((scriptPath) => readFileSync(scriptPath, "utf8").includes("/api/v1/scenes/${sceneId}/run/full"))
+      .map((scriptPath) => path.relative(process.cwd(), scriptPath));
+
+    expect(offenders).toEqual([]);
+    for (const scriptPath of scripts) {
+      expect(readFileSync(scriptPath, "utf8")).toContain("/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs");
+    }
   });
 
   it("uses the current root-level bundle worksheet envelope shape", () => {

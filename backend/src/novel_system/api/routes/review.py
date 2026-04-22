@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
-from novel_system.db.models import HumanReviewEvent, ReviewItem, VersionRegistry
+from novel_system.db.models import HumanReviewEvent, ReviewItem, VectorAliasRegistry, VerifyJob, VersionRegistry
 from novel_system.services.errors import DomainError
 from novel_system.services.human_review_manager import HumanReviewManager
 from novel_system.services.human_review_support import (
@@ -332,10 +332,156 @@ def _serialize_review(item: ReviewItem, *, session: Session | None = None) -> di
         "materialize_status": item.materialize_status,
         "approved_item_row_id": item.approved_item_row_id,
     }
+    if session is not None:
+        payload["release_state"] = _release_state(item, session=session)
     baseline = _style_profile_baseline(session, item)
     if baseline is not None:
         payload["style_profile_baseline"] = baseline
     return payload
+
+
+def _release_state_payload(
+    *,
+    state: str,
+    blocked_reason: str = "",
+    message: str,
+    recommended_action: str = "none",
+    verify_job_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "state": state,
+        "blocked_reason": blocked_reason,
+        "message": message,
+        "recommended_action": recommended_action,
+        "verify_job_id": verify_job_id,
+    }
+
+
+def _latest_verify_job_id(session: Session, review_id: str) -> str | None:
+    job = session.execute(
+        select(VerifyJob).where(VerifyJob.review_id == review_id).order_by(VerifyJob.job_id.desc())
+    ).scalars().first()
+    return job.job_id if job is not None else None
+
+
+def _registry_for_row(session: Session, row_id: str) -> VersionRegistry | None:
+    return session.execute(select(VersionRegistry).where(VersionRegistry.physical_row_id == row_id)).scalar_one_or_none()
+
+
+def _alias_scope_for_row(descriptor, row: Any) -> str:
+    scope = getattr(row, "scope", "global")
+    scope_ref_id = getattr(row, "scope_ref_id", None) or "global"
+    return f"{descriptor.object_type}:{scope}:{scope_ref_id}"
+
+
+def _release_state(item: ReviewItem, *, session: Session) -> dict[str, Any]:
+    verify_job_id = _latest_verify_job_id(session, item.review_id)
+
+    if item.status == "rejected":
+        return _release_state_payload(
+            state="not_applicable",
+            blocked_reason="",
+            message="审核项已拒绝，不进入发布链路。",
+            verify_job_id=verify_job_id,
+        )
+    if item.status != "approved":
+        return _release_state_payload(
+            state="blocked",
+            blocked_reason="not_approved",
+            message="请先批准审核，批准会生成可发布的候选版本。",
+            recommended_action="approve",
+            verify_job_id=verify_job_id,
+        )
+    if item.materialize_status == "failed":
+        return _release_state_payload(
+            state="blocked",
+            blocked_reason="materialize_failed",
+            message="候选物化失败，请修复候选或重新批准后再发布。",
+            recommended_action="retry_materialize",
+            verify_job_id=verify_job_id,
+        )
+    if item.materialize_status != "succeeded":
+        return _release_state_payload(
+            state="blocked",
+            blocked_reason="materialize_pending",
+            message="候选尚未物化完成，物化成功后才能发布。",
+            recommended_action="retry_materialize",
+            verify_job_id=verify_job_id,
+        )
+    if not item.approved_item_row_id:
+        return _release_state_payload(
+            state="blocked",
+            blocked_reason="missing_candidate",
+            message="未找到已批准候选行，请检查物化结果后再发布。",
+            recommended_action="retry_materialize",
+            verify_job_id=verify_job_id,
+        )
+
+    try:
+        descriptor = descriptor_for_item_type(item.item_type)
+    except (DomainError, KeyError):
+        return _release_state_payload(
+            state="not_applicable",
+            blocked_reason="",
+            message="该审核项类型没有运行时发布链路。",
+            verify_job_id=verify_job_id,
+        )
+
+    approved_row = session.get(descriptor.model_cls, item.approved_item_row_id)
+    if approved_row is None:
+        return _release_state_payload(
+            state="blocked",
+            blocked_reason="missing_candidate",
+            message="已批准候选行不存在，请重新物化后再发布。",
+            recommended_action="retry_materialize",
+            verify_job_id=verify_job_id,
+        )
+    if getattr(approved_row, "active_flag", 0) == 1:
+        return _release_state_payload(
+            state="active",
+            message="候选已是当前运行时生效版本，无需再次发布。",
+            verify_job_id=verify_job_id,
+        )
+    if not PromotionService._is_due_for_activation(getattr(approved_row, "effective_at", None)):
+        return _release_state_payload(
+            state="blocked",
+            blocked_reason="not_due",
+            message="候选尚未到达生效时间，等到生效窗口后再发布。",
+            recommended_action="wait_until_due",
+            verify_job_id=verify_job_id,
+        )
+
+    if descriptor.storage_kind == "vector":
+        registry = _registry_for_row(session, approved_row.row_id)
+        if registry is None or registry.verify_status != "succeeded":
+            return _release_state_payload(
+                state="blocked",
+                blocked_reason="not_verified",
+                message="候选尚未通过索引校验，请先在索引控制台重试校验，成功后再发布。",
+                recommended_action="retry_verify",
+                verify_job_id=verify_job_id,
+            )
+        alias_scope = registry.alias_scope or _alias_scope_for_row(descriptor, approved_row)
+        alias = session.get(VectorAliasRegistry, alias_scope)
+        if (
+            alias is None
+            or alias.candidate_alias is None
+            or alias.candidate_snapshot_version is None
+            or alias.candidate_embedding_version is None
+        ):
+            return _release_state_payload(
+                state="blocked",
+                blocked_reason="missing_candidate",
+                message="候选索引别名尚未准备好，请先重试索引校验。",
+                recommended_action="retry_verify",
+                verify_job_id=verify_job_id,
+            )
+
+    return _release_state_payload(
+        state="ready",
+        message="候选已批准、已物化且校验通过，可以发布到运行时。",
+        verify_job_id=verify_job_id,
+    )
 
 
 def _style_profile_baseline(session: Session | None, item: ReviewItem) -> dict | None:

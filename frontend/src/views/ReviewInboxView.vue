@@ -319,6 +319,23 @@ function handleReviewOpenTarget(reviewId) {
   emit("notice", `已打开 ${target.target_ref}`);
 }
 
+function handleReviewOpenVerifyJob(jobId, reviewId) {
+  if (!jobId) {
+    return;
+  }
+  const target = {
+    target_type: "verify_job",
+    target_id: jobId,
+    target_ref: `verify_job:${jobId}`,
+  };
+  openTarget(target, {
+    view_id: "index",
+    source_type: "review_verify_job",
+    source_id: reviewId,
+  });
+  emit("notice", `已打开校验任务 ${jobId}`);
+}
+
 function handleReviewOpenReference(reviewId) {
   navigate("reference");
   emit("notice", reviewId ? `已回到参考书学习：${reviewId}` : "已回到参考书学习");
@@ -485,6 +502,7 @@ watch(
                   @release="release"
                   @open-target="handleReviewOpenTarget"
                   @open-reference="handleReviewOpenReference"
+                  @open-verify-job="handleReviewOpenVerifyJob"
                 />
                 <FlowActionReceipt compact :receipt="receipt(reviewReceiptScope(row.reviewId))" />
               </div>

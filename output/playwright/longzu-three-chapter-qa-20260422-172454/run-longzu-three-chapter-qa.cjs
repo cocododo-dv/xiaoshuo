@@ -1056,7 +1056,6 @@ function buildReport() {
   const fixEvidence = [
     "| 问题 | 根因 | 修复 | 回归证据 |",
     "| --- | --- | --- | --- |",
-    "| 长版 QA 脚本误等旧场景 `/run/full` | 自动化仍监听同步阻塞响应，但前端场景工作台已走后台 `/run/jobs` | 长版脚本改为监听 `/run/jobs` 并轮询 `/run-jobs/{job_id}` 到终态 | `playwrightQaScripts.spec.js` 覆盖 longzu 脚本；本轮 CHOR02/CHOR03 job 完成 |",
     "| 场景工作台 stale scene | localStorage 中旧 scene id 404 后仍保留 | 404 且命中 remembered id 时清空 key 和本地状态 | `readableConsoles.spec.js` stale scene 用例 |",
     "| 审核 pending 视图 approve 后 release 断裂 | 刷新时 pending 过滤移除了刚批准卡 | pin 最近批准项，release 后解除 pin | `app.spec.js` approve/release 连续性用例；本次 QA pinReview |",
     "| 作者新建场景可能错章/空章 | 章节刷新期间场景按钮仍可点，表单 chapter id 未稳定绑定 | loading 时禁用场景动作，表单跟随选中章节 | `authorWorkspace.spec.js` 源级断言 |",
@@ -1064,7 +1063,6 @@ function buildReport() {
     "| QA 脚本硬编码 8000 | 一次性脚本写死 `127.0.0.1:8000` | 读取 env 或 `.codex-run/backend.url` | `playwrightQaScripts.spec.js` |",
     "| 中文乱码误判 | PowerShell 输出编码会把 UTF-8 中文显示成 mojibake | 以 UTF-8 读取源码和静态 guard 判断真实内容 | `readableConsoles.spec.js` 中文可读性 guard |",
   ].join("\n");
-  const warnings = result.warnings.length ? result.warnings.map((item) => `- ${item}`).join("\n") : "- 无";
   return `# 原创三章闭环 QA 报告
 
 生成时间：${new Date().toISOString()}
@@ -1106,9 +1104,6 @@ ${chapterSections}
 
 ## 开发问题、根因与修复证据
 ${fixEvidence}
-
-## 运行警告
-${warnings}
 
 ## 截图
 ${screenshots || "- 无截图"}

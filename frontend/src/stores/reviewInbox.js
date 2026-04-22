@@ -1,6 +1,13 @@
 import { defineStore } from "pinia";
 
-import { actOnHumanReviewEvent, approveReview, fetchHumanReviewEvents, fetchReviewItems, releaseReview } from "../lib/api";
+import {
+  actOnHumanReviewEvent,
+  approveReview,
+  fetchHumanReviewEvents,
+  fetchReviewItem,
+  fetchReviewItems,
+  releaseReview,
+} from "../lib/api";
 import {
   advanceCursorPager,
   applyCursorPayload,
@@ -50,6 +57,37 @@ function mergePinnedReviewItems(items, pinnedItems) {
   const seen = new Set(items.map((item) => item?.review_id).filter(Boolean));
   const missingPinnedItems = pinnedItems.filter((item) => item?.review_id && !seen.has(item.review_id));
   return [...missingPinnedItems, ...items];
+}
+
+function releaseConflictKind(error) {
+  const message = String(error?.message || "").toLowerCase();
+  if (message.includes("candidate is already active")) {
+    return "already_active";
+  }
+  if (message.includes("candidate is not verified")) {
+    return "not_verified";
+  }
+  return "";
+}
+
+function reviewReleaseState(item) {
+  return item?.release_state && typeof item.release_state === "object" ? item.release_state : {};
+}
+
+function isApprovalCompleted(item) {
+  return item?.status === "approved" && (item.materialize_status === "succeeded" || Boolean(item.approved_item_row_id));
+}
+
+function isReleaseCompleted(item) {
+  return reviewReleaseState(item).state === "active";
+}
+
+function notVerifiedMessage(reviewId, item = null) {
+  const releaseState = reviewReleaseState(item);
+  return (
+    releaseState.message ||
+    `候选尚未通过索引校验：${reviewId}。请先在索引控制台重试校验，成功后再发布。`
+  );
 }
 
 function buildHumanReviewLookups(items) {
@@ -212,6 +250,31 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
       });
       this.assignHumanReviewItems(applyCursorPayload(this.humanReviewPager, payload));
     },
+    async fetchLatestReviewItem(reviewId) {
+      return fetchReviewItem(reviewId);
+    },
+    async reconcileCompletedReviewAction(reviewId, action) {
+      let latest = null;
+      try {
+        latest = await this.fetchLatestReviewItem(reviewId);
+      } catch {
+        return "";
+      }
+
+      if (action === "approve" && isApprovalCompleted(latest)) {
+        this.lastActionResult = latest;
+        this.pinApprovedReview(reviewId, latest);
+        this.error = "";
+        return `当前状态已完成：${reviewId} 已批准。上一条请求返回失败，但最新状态可以继续发布或刷新。`;
+      }
+      if (action === "release" && isReleaseCompleted(latest)) {
+        this.lastActionResult = latest;
+        this.unpinApprovedReview(reviewId);
+        this.error = "";
+        return `当前状态已完成：${reviewId} 已发布到运行时。上一条请求返回失败，但最新状态已经生效。`;
+      }
+      return "";
+    },
     async load({ resetReview = false, resetHumanReview = false, force = false } = {}) {
       if (this.loaded && !this.stale && !force && !resetReview && !resetHumanReview) {
         return;
@@ -306,6 +369,10 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已批准 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
+        const reconciled = await this.reconcileCompletedReviewAction(reviewId, "approve");
+        if (reconciled) {
+          return reconciled;
+        }
         this.error = error.message;
         throw error;
       } finally {
@@ -322,6 +389,25 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已发布 ${reviewId}${result.actor_ref ? `，操作员 ${result.actor_ref}` : ""}`;
       } catch (error) {
+        const reconciled = await this.reconcileCompletedReviewAction(reviewId, "release");
+        if (reconciled) {
+          return reconciled;
+        }
+        const conflictKind = releaseConflictKind(error);
+        if (conflictKind === "already_active") {
+          this.error = "";
+          return `当前状态已完成：${reviewId} 已发布到运行时。`;
+        }
+        if (conflictKind === "not_verified") {
+          let latest = null;
+          try {
+            latest = await this.fetchLatestReviewItem(reviewId);
+          } catch {
+          }
+          const message = notVerifiedMessage(reviewId, latest);
+          this.error = message;
+          throw new Error(message);
+        }
         this.error = error.message;
         throw error;
       } finally {
