@@ -4,6 +4,7 @@ __all__ = [
     "indexing",
     "interop",
     "knowledge",
+    "longform_control",
     "reference_books",
     "review",
     "scenes",

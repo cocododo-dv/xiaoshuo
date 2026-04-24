@@ -74,6 +74,16 @@ const selectedScene = computed(() => scenes.value.find((scene) => scene.scene_id
 const assembled = computed(() => detail.value?.assembled || null);
 const aggregate = computed(() => detail.value?.aggregate || null);
 const writerReviewSummary = computed(() => detail.value?.writer_review_summary || null);
+const editorialWorkspace = computed(() => detail.value?.editorial_workspace || null);
+const editorialChapterReview = computed(() => editorialWorkspace.value?.chapter_review || writerReviewSummary.value);
+const editorialSceneReviews = computed(() => editorialWorkspace.value?.scene_reviews || []);
+const editorialRevisionCandidates = computed(() => editorialWorkspace.value?.revision_candidates || []);
+const editorialOpenCounts = computed(() => editorialWorkspace.value?.open_issue_counts || {
+  open_candidates: 0,
+  findings: 0,
+  requires_human_review: 0,
+  reviewed_objects: 0,
+});
 const missingSceneIds = computed(() => assembled.value?.missing_scene_ids || []);
 const canUseAggregate = computed(() => manuscripts.canUseAggregate);
 const showAssembled = computed(() => readingSource.value === "both" || readingSource.value === "assembled");
@@ -101,6 +111,22 @@ function statusLabel(value) {
     aggregate_matches_current: "聚合已同步",
     aggregate_differs_current: "聚合不同步",
   }[value] || value || "-";
+}
+
+function reviewScoreLabel(review) {
+  const score = review?.latest_score ?? review?.latest_evaluation?.overall_score;
+  if (score === null || score === undefined) {
+    return "未诊断";
+  }
+  return `${Math.round(Number(score) * 100)} 分`;
+}
+
+function reviewFindings(review) {
+  return review?.latest_evaluation?.findings || [];
+}
+
+function candidateSummary(candidate) {
+  return candidate?.diff_summary?.summary || candidate?.proposed_text || "候选修订已记录在账本中。";
 }
 
 function listToText(value) {
@@ -786,15 +812,107 @@ onActivated(() => {
           </div>
         </section>
 
-        <WriterReviewCard
-          :summary="writerReviewSummary"
-          :busy="manuscripts.actionId === 'writer-review' || manuscripts.actionId.startsWith('revision-')"
-          title="这一章读起来是否成立"
-          run-label="运行章节诊断"
-          @run="runWriterReview"
-          @accept="acceptWriterRevision"
-          @reject="rejectWriterRevision"
-        />
+        <section class="paper manuscript-editorial-workspace" data-testid="manuscript-editorial-workspace">
+          <div class="receipt-head">
+            <div>
+              <h3>成稿编辑台</h3>
+              <p class="muted receipt-copy">集中查看章节诊断、场景证据、悬而未决的候选修订。</p>
+            </div>
+            <span class="badge">{{ editorialWorkspace?.reading_source || "assembled" }}</span>
+          </div>
+          <div class="manuscript-editorial-stats">
+            <span class="badge">候选 {{ editorialOpenCounts.open_candidates || 0 }}</span>
+            <span class="badge">证据 {{ editorialOpenCounts.findings || 0 }}</span>
+            <span class="badge">人工 {{ editorialOpenCounts.requires_human_review || 0 }}</span>
+            <span class="badge">已诊断 {{ editorialOpenCounts.reviewed_objects || 0 }}</span>
+          </div>
+
+          <WriterReviewCard
+            :summary="editorialChapterReview"
+            :busy="manuscripts.actionId === 'writer-review' || manuscripts.actionId.startsWith('revision-')"
+            title="这一章读起来是否成立"
+            run-label="运行章节诊断"
+            @run="runWriterReview"
+            @accept="acceptWriterRevision"
+            @reject="rejectWriterRevision"
+          />
+
+          <section class="manuscript-editorial-section">
+            <div class="receipt-head compact">
+              <div>
+                <h4>场景诊断</h4>
+                <p class="muted receipt-copy">按场景列出证据摘录和修订方向。</p>
+              </div>
+            </div>
+            <div v-if="!editorialSceneReviews.length" class="empty">还没有场景级作家诊断。</div>
+            <article
+              v-for="item in editorialSceneReviews"
+              :key="item.scene_id"
+              class="manuscript-editorial-row"
+              :data-testid="`manuscript-scene-review-${item.scene_id}`"
+            >
+              <div class="receipt-head compact">
+                <div>
+                  <strong>{{ item.scene_seq }}. {{ item.scene_id }}</strong>
+                  <p class="muted">{{ item.scene_goal || "未填写场景目标" }}</p>
+                </div>
+                <span class="badge">{{ reviewScoreLabel(item.review) }}</span>
+              </div>
+              <ul v-if="reviewFindings(item.review).length" class="manuscript-evidence-list">
+                <li v-for="finding in reviewFindings(item.review)" :key="`${item.scene_id}-${finding.dimension}-${finding.issue}`">
+                  <strong>{{ finding.dimension }}</strong>
+                  <span>{{ finding.issue }}</span>
+                  <small>{{ finding.recommendation }}</small>
+                  <small v-if="finding.evidence_excerpt">证据：{{ finding.evidence_excerpt }}</small>
+                  <small v-if="finding.why_it_matters">判断：{{ finding.why_it_matters }}</small>
+                </li>
+              </ul>
+              <div class="card-actions">
+                <button class="ghost" @click="openSceneWorkbench(item.scene_id)">打开场景工作台</button>
+              </div>
+            </article>
+          </section>
+
+          <section v-if="editorialRevisionCandidates.length" class="manuscript-editorial-section">
+            <div class="receipt-head compact">
+              <div>
+                <h4>候选账本</h4>
+                <p class="muted receipt-copy">采纳只记录作者决定，不会覆盖终稿。</p>
+              </div>
+            </div>
+            <article
+              v-for="candidate in editorialRevisionCandidates"
+              :key="candidate.revision_id"
+              class="manuscript-editorial-row"
+            >
+              <div class="receipt-head compact">
+                <div>
+                  <strong>{{ candidate.scope_label || candidate.object_id }}</strong>
+                  <p class="muted">{{ candidateSummary(candidate) }}</p>
+                </div>
+                <span class="badge">{{ candidate.status }}</span>
+              </div>
+              <pre>{{ candidate.proposed_text }}</pre>
+              <div class="card-actions">
+                <button
+                  type="button"
+                  :disabled="manuscripts.actionId.startsWith('revision-') || candidate.status !== 'candidate'"
+                  @click="acceptWriterRevision(candidate.revision_id)"
+                >
+                  采纳
+                </button>
+                <button
+                  type="button"
+                  class="ghost"
+                  :disabled="manuscripts.actionId.startsWith('revision-') || candidate.status !== 'candidate'"
+                  @click="rejectWriterRevision(candidate.revision_id)"
+                >
+                  拒绝
+                </button>
+              </div>
+            </article>
+          </section>
+        </section>
 
         <section class="paper manuscript-reader">
           <div class="receipt-head">

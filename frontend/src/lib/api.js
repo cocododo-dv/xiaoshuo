@@ -368,6 +368,10 @@ export function fetchChapterManuscriptDetail(chapterId) {
   return apiGet(`/api/v1/chapter-manuscripts/${encodeURIComponent(chapterId)}`);
 }
 
+export function fetchLongformControl() {
+  return apiGet("/api/v1/longform-control");
+}
+
 export function fetchAuthorWorkspace(chapterId) {
   return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/author-workspace`);
 }

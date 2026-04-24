@@ -25,7 +25,7 @@ describe("author shell registration", () => {
       /(?:id:\s*"author"[\s\S]*?label:\s*"2 编排章节"[\s\S]*?legacyLabel:\s*"作者工作台"|legacyLabel:\s*"作者工作台"[\s\S]*?label:\s*"2 编排章节"[\s\S]*?id:\s*"author")/,
     );
     expect(viewsBlock[0]).toMatch(
-      /(?:id:\s*"trash"[\s\S]*?label:\s*"6 回收内容"[\s\S]*?legacyLabel:\s*"作者回收站"|legacyLabel:\s*"作者回收站"[\s\S]*?label:\s*"6 回收内容"[\s\S]*?id:\s*"trash")/,
+      /(?:id:\s*"trash"[\s\S]*?label:\s*"7 回收内容"[\s\S]*?legacyLabel:\s*"作者回收站"|legacyLabel:\s*"作者回收站"[\s\S]*?label:\s*"7 回收内容"[\s\S]*?id:\s*"trash")/,
     );
   });
 

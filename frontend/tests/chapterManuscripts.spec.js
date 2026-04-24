@@ -130,6 +130,95 @@ function manuscriptDetail(overrides = {}) {
       source_profile_ids: [],
       checked_at: "2026-04-23T00:00:00+00:00",
     },
+    editorial_workspace: {
+      reading_source: "assembled",
+      chapter_review: {
+        status: "reviewed",
+        object_type: "chapter",
+        object_id: "CHM900",
+        latest_score: 0.61,
+        candidate_count: 1,
+        latest_evaluation: {
+          evaluation_id: "writer_eval_CHM900",
+          overall_score: 0.61,
+          scores: { ending_drive: 0.52 },
+          findings: [
+            {
+              dimension: "ending_drive",
+              severity: "major",
+              issue: "chapter ending stalls",
+              recommendation: "end on a sharper choice",
+              evidence_excerpt: "aggregate evidence excerpt",
+              evidence_location: "chapter close",
+              why_it_matters: "keeps the next chapter urgent",
+            },
+          ],
+          revision_brief: [{ dimension: "ending_drive", action: "sharpen the final beat", priority: "high" }],
+          requires_human_review: false,
+        },
+        candidates: [
+          {
+            revision_id: "revision_CHM900",
+            object_type: "chapter",
+            object_id: "CHM900",
+            revision_type: "chapter_revision",
+            proposed_text: "chapter revision plan preview",
+            status: "candidate",
+            diff_summary: {
+              summary: "reshape the closing beat",
+              changed_dimensions: ["ending_drive"],
+              candidate_kind: "revision_plan",
+              rewrite_strategy: "revision_plan",
+            },
+          },
+        ],
+      },
+      scene_reviews: [
+        {
+          scene_id: "CHM900_SC01",
+          scene_seq: 1,
+          scene_goal: "鎵惧埌绾跨储",
+          review: {
+            status: "reviewed",
+            latest_evaluation: {
+              evaluation_id: "writer_eval_CHM900_SC01",
+              overall_score: 0.57,
+              scores: { dialogue_edge: 0.49 },
+              findings: [
+                {
+                  dimension: "dialogue_edge",
+                  severity: "major",
+                  issue: "scene reply is too soft",
+                  recommendation: "cut polite filler",
+                  evidence_excerpt: "scene evidence excerpt",
+                  evidence_location: "scene 1",
+                  why_it_matters: "power shift needs to be visible",
+                },
+              ],
+              revision_brief: [{ dimension: "dialogue_edge", action: "make the reply cost something", priority: "high" }],
+              requires_human_review: true,
+            },
+            candidates: [],
+          },
+        },
+      ],
+      revision_candidates: [
+        {
+          revision_id: "revision_CHM900",
+          object_type: "chapter",
+          object_id: "CHM900",
+          status: "candidate",
+          proposed_text: "chapter revision plan preview",
+          diff_summary: { summary: "reshape the closing beat", candidate_kind: "revision_plan" },
+        },
+      ],
+      open_issue_counts: {
+        open_candidates: 1,
+        findings: 2,
+        requires_human_review: 1,
+        reviewed_objects: 2,
+      },
+    },
     ...overrides,
   };
 }
@@ -345,6 +434,11 @@ describe("chapter manuscript view", () => {
       expect(container.querySelector('[data-testid="manuscript-source-safety-card"]')).not.toBeNull();
       expect(container.textContent).toContain("源书安全扫描");
 
+      expect(container.querySelector('[data-testid="manuscript-editorial-workspace"]')).not.toBeNull();
+      expect(container.textContent).toContain("aggregate evidence excerpt");
+      expect(container.textContent).toContain("scene evidence excerpt");
+      expect(container.textContent).toContain("chapter revision plan preview");
+
       container.querySelector('[data-testid="copy-assembled-button"]').click();
       await flushUi();
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("第一场正文"));
@@ -368,5 +462,7 @@ describe("chapter manuscript view", () => {
     expect(source).toContain("trashScenes");
     expect(source).toContain("manuscript-source-safety-card");
     expect(source).toContain("sourceSafetyScan");
+    expect(source).toContain("editorialWorkspace");
+    expect(source).toContain("manuscript-editorial-workspace");
   });
 });

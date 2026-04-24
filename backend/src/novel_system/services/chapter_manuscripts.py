@@ -5,7 +5,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterGoal, ChapterMemory, ChapterState, FinalScene, SceneBundle, SceneCard, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    ChapterMemory,
+    ChapterState,
+    FinalScene,
+    RevisionCandidate,
+    SceneBundle,
+    SceneCard,
+    SceneRunState,
+)
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
 from novel_system.services.writer_review import WriterReviewService
@@ -34,6 +43,15 @@ class ChapterManuscriptService:
             [assembled["content"], aggregate["content"] if aggregate else ""],
             source_profile_ids=self._source_profile_ids_for_entries(scene_entries),
         )
+        writer_review = WriterReviewService(self.session)
+        writer_review_summary = writer_review.chapter_summary(chapter_id)
+        editorial_workspace = self._editorial_workspace(
+            chapter_id=chapter_id,
+            scene_entries=scene_entries,
+            chapter_review=writer_review_summary,
+            writer_review=writer_review,
+            aggregate=aggregate,
+        )
         return {
             "chapter": self.lifecycle.serialize_chapter(chapter),
             "chapter_state": self.lifecycle.serialize_chapter_state(chapter_state, chapter_id),
@@ -45,7 +63,8 @@ class ChapterManuscriptService:
             "assembled": assembled,
             "aggregate": aggregate,
             "source_safety_scan": source_safety_scan,
-            "writer_review_summary": WriterReviewService(self.session).chapter_summary(chapter_id),
+            "writer_review_summary": writer_review_summary,
+            "editorial_workspace": editorial_workspace,
             "scenes": scene_entries,
         }
 
@@ -151,6 +170,75 @@ class ChapterManuscriptService:
                 seen.add(value)
                 values.append(value)
         return values
+
+    def _editorial_workspace(
+        self,
+        *,
+        chapter_id: str,
+        scene_entries: list[dict[str, Any]],
+        chapter_review: dict[str, Any],
+        writer_review: WriterReviewService,
+        aggregate: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        scene_reviews = [
+            {
+                "scene_id": scene["scene_id"],
+                "scene_seq": scene.get("scene_seq"),
+                "scene_goal": scene.get("scene_goal"),
+                "review": writer_review.scene_summary(scene["scene_id"]),
+            }
+            for scene in scene_entries
+        ]
+        candidates = self._chapter_revision_candidates(chapter_id, [scene["scene_id"] for scene in scene_entries])
+        review_summaries = [chapter_review, *[item["review"] for item in scene_reviews]]
+        return {
+            "reading_source": "aggregate" if aggregate else "assembled",
+            "chapter_review": chapter_review,
+            "scene_reviews": scene_reviews,
+            "revision_candidates": candidates,
+            "open_issue_counts": self._open_issue_counts(review_summaries),
+        }
+
+    def _chapter_revision_candidates(self, chapter_id: str, scene_ids: list[str]) -> list[dict[str, Any]]:
+        object_pairs = {("chapter", chapter_id), *{("scene", scene_id) for scene_id in scene_ids}}
+        rows = self.session.execute(
+            select(RevisionCandidate)
+            .where(RevisionCandidate.chapter_id == chapter_id)
+            .order_by(
+                RevisionCandidate.object_type.asc(),
+                RevisionCandidate.created_at.desc(),
+                RevisionCandidate.revision_id.asc(),
+            )
+        ).scalars().all()
+        serialized: list[dict[str, Any]] = []
+        for row in rows:
+            if (row.object_type, row.object_id) not in object_pairs:
+                continue
+            payload = WriterReviewService.serialize_revision(row)
+            payload["scope_label"] = "chapter" if row.object_type == "chapter" else row.scene_id or row.object_id
+            serialized.append(payload)
+        return serialized
+
+    @staticmethod
+    def _open_issue_counts(review_summaries: list[dict[str, Any]]) -> dict[str, int]:
+        open_candidates = 0
+        findings = 0
+        requires_human_review = 0
+        reviewed_objects = 0
+        for summary in review_summaries:
+            evaluation = summary.get("latest_evaluation")
+            if evaluation:
+                reviewed_objects += 1
+                findings += len(evaluation.get("findings") or [])
+                if evaluation.get("requires_human_review"):
+                    requires_human_review += 1
+            open_candidates += sum(1 for candidate in summary.get("candidates") or [] if candidate.get("status") == "candidate")
+        return {
+            "open_candidates": open_candidates,
+            "findings": findings,
+            "requires_human_review": requires_human_review,
+            "reviewed_objects": reviewed_objects,
+        }
 
     def _resolve_final_aggregate(self, chapter_id: str, chapter_state: ChapterState | None) -> ChapterMemory | None:
         if chapter_state is not None and chapter_state.last_final_memory_row_id:
