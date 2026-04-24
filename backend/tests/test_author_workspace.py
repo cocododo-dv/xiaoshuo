@@ -4,6 +4,24 @@ from sqlalchemy import select
 
 from novel_system.db.models import ChapterState, SceneCard, SceneRunState
 
+EMPTY_CHAPTER_WRITER_BRIEF = {
+    "core_promise": "",
+    "plot_movement": "",
+    "character_shift": "",
+    "chapter_question": "",
+    "ending_aftertaste": "",
+}
+
+EMPTY_SCENE_WRITER_BRIEF = {
+    "character_desire": "",
+    "obstacle": "",
+    "stakes": "",
+    "secret_or_misunderstanding": "",
+    "subtext": "",
+    "irreversible_change": "",
+    "reader_question": "",
+}
+
 
 def _create_chapter(client, chapter_id: str, *, goal: str = "Author a chapter") -> None:
     response = client.post(
@@ -132,6 +150,7 @@ def test_chapter_list_and_author_workspace_include_author_and_runtime_state(clie
             "ending_effect": "ending CH100",
             "must_not": "avoid CH100",
             "notes": "notes CH100",
+            "writer_brief_json": EMPTY_CHAPTER_WRITER_BRIEF,
         },
         "chapter_state": {
             "chapter_id": "CH100",
@@ -154,6 +173,7 @@ def test_chapter_list_and_author_workspace_include_author_and_runtime_state(clie
                 "forbidden_text": "forbidden CH100_SC01",
                 "exit_change": "exit CH100_SC01",
                 "hook": "hook CH100_SC01",
+                "writer_brief_json": EMPTY_SCENE_WRITER_BRIEF,
                 "target_length_band": "medium",
                 "scene_type": "reunion",
                 "is_chapter_last": 0,
@@ -175,6 +195,7 @@ def test_chapter_list_and_author_workspace_include_author_and_runtime_state(clie
                 "forbidden_text": "forbidden CH100_SC02",
                 "exit_change": "exit CH100_SC02",
                 "hook": "hook CH100_SC02",
+                "writer_brief_json": EMPTY_SCENE_WRITER_BRIEF,
                 "target_length_band": "medium",
                 "scene_type": "reunion",
                 "is_chapter_last": 1,

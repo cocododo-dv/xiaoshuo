@@ -330,14 +330,17 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.ui-mode-writer .workflow-nav,
 .ui-mode-guided .workflow-nav {
   gap: 0.72rem;
 }
 
+.ui-mode-writer .workflow-nav-group-head span,
 .ui-mode-guided .workflow-nav-group-head span {
   display: none;
 }
 
+.ui-mode-writer .workflow-nav-btn,
 .ui-mode-guided .workflow-nav-btn {
   min-height: 2.75rem;
 }
@@ -1742,6 +1745,119 @@ pre {
   line-height: 1.25;
 }
 
+.badge.danger {
+  background: rgba(159, 58, 45, 0.14);
+  color: var(--danger-bg);
+}
+
+.writer-review-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.writer-review-actions button,
+.revision-candidate-card button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.writer-score-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.55rem;
+}
+
+.writer-score-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  padding: 0.58rem 0.68rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.writer-score-item span {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.writer-review-section {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.writer-review-section h4 {
+  margin: 0;
+}
+
+.writer-review-section ul {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.writer-review-section li {
+  padding-left: 0.1rem;
+}
+
+.writer-review-section li strong {
+  margin-right: 0.45rem;
+}
+
+.writer-review-section li small {
+  display: block;
+  margin-top: 0.16rem;
+  color: var(--muted);
+}
+
+.writer-evidence {
+  padding-left: 0.3rem;
+  border-left: 2px solid rgba(63, 111, 163, 0.22);
+}
+
+.writer-candidate-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.revision-candidate-card {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.revision-candidate-card pre {
+  max-height: 18rem;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow: auto;
+  font-family: inherit;
+  line-height: 1.7;
+}
+
+.reference-profile-writer-review {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.8rem;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.reference-profile-writer-review ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.05rem;
+}
+
 .cursor-pager {
   margin-top: 1rem;
   align-items: center;
@@ -1933,8 +2049,18 @@ pre {
   gap: 0.45rem;
 }
 
+.author-form-grid.compact {
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+}
+
 .author-wide {
   grid-column: 1 / -1;
+}
+
+.writer-brief-block {
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--line);
 }
 
 .author-runtime-summary {

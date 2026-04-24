@@ -29,8 +29,10 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
+from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
 from novel_system.services.style_profile import StyleScoreService
 from novel_system.services.text_validation import validate_user_text_payload
+from novel_system.services.writer_review import WriterReviewService, normalize_scene_writer_brief
 
 router = APIRouter(tags=["scenes"])
 
@@ -101,6 +103,10 @@ def create_scene(payload: dict, request: Request, session: Session = Depends(get
 
 def _create_scene(session: Session, payload: dict) -> dict:
     validate_user_text_payload(payload, field_prefix="scene")
+    payload = {
+        **payload,
+        "writer_brief_json": normalize_scene_writer_brief(payload.get("writer_brief_json")),
+    }
     lifecycle = AuthorLifecycleService(session)
     chapter_id = payload.get("chapter_id")
     if not isinstance(chapter_id, str) or not chapter_id:
@@ -246,6 +252,10 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     neutral = session.get(SceneDraft, state.current_neutral_draft_row_id) if state.current_neutral_draft_row_id else None
     style = session.get(SceneDraft, state.current_style_draft_row_id) if state.current_style_draft_row_id else None
     final = session.get(FinalScene, state.current_final_scene_row_id) if state.current_final_scene_row_id else None
+    source_safety_scan = scan_source_safety(
+        final.content if final else "",
+        source_profile_ids=source_profile_ids_from_snapshot(bundle.frozen_snapshot_json if bundle else None),
+    )
     memory = session.execute(
         select(SceneMemory).where(SceneMemory.scene_id == scene_id, SceneMemory.active_flag == 1)
     ).scalars().first()
@@ -284,6 +294,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
             "neutral_draft": {"row_id": neutral.row_id, "content": neutral.content} if neutral else None,
             "style_draft": {"row_id": style.row_id, "content": style.content} if style else None,
             "final_scene": {"row_id": final.row_id, "content": final.content} if final else None,
+            "source_safety_scan": source_safety_scan,
             "scene_memory": {"row_id": memory.row_id, "content": memory.content} if memory else None,
             "generation_summary": _serialize_generation_summary(session, scene_id, state),
             "hard_qc_summary": _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "hard_qc")),
@@ -296,6 +307,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
                 "repeat_issue_count": state.repeat_issue_count,
             },
             "human_review_summary": _serialize_human_review_summary(_resolve_human_review_event(session, scene_id, state)),
+            "writer_review_summary": WriterReviewService(session).scene_summary(scene_id),
             "attempts": [_serialize_attempt(item) for item in attempts],
         },
         req_id=getattr(request.state, "request_id", None),

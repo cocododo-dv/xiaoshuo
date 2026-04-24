@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from novel_system.services.resolver import Resolver
 from novel_system.services.character_continuity import CHARACTER_CONTRACT_VERSION, build_character_contract_digest
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
+from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 
 class BundleBuilder:
@@ -66,6 +68,36 @@ class BundleBuilder:
             "chapter_goal": chapter.chapter_goal,
             "scene_card": scene_card_digest(scene),
         }
+        chapter_writer_brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
+        if any(chapter_writer_brief.values()):
+            source_version_refs["chapter_writer_brief"] = chapter.chapter_id
+            ordered_injections.append(
+                {
+                    "slot": "chapter_writer_brief",
+                    "ref_id": chapter.chapter_id,
+                    "digest_key": "chapter_writer_brief",
+                }
+            )
+            inline_digests["chapter_writer_brief"] = json.dumps(
+                chapter_writer_brief,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        scene_writer_brief = normalize_scene_writer_brief(scene.writer_brief_json)
+        if any(scene_writer_brief.values()):
+            source_version_refs["scene_writer_brief"] = scene.scene_id
+            ordered_injections.append(
+                {
+                    "slot": "scene_writer_brief",
+                    "ref_id": scene.scene_id,
+                    "digest_key": "scene_writer_brief",
+                }
+            )
+            inline_digests["scene_writer_brief"] = json.dumps(
+                scene_writer_brief,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
 
         voice_profile_id = self.resolver.resolve_voice_profile_id(scene)
         voice_profile = self.resolver.resolve_active_voice_profile(self.session, scene)

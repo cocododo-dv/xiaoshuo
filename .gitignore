@@ -22,3 +22,5 @@ frontend/test-results/
 .codex-run/
 .playwright-cli/
 .worktrees/
+output/playwright/longzu-full-cloud-qa-*/
+output/playwright/runner-logs/

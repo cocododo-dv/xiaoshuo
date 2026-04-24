@@ -401,3 +401,253 @@ templates:
           type: array
           items:
             type: string
+
+  writer_scene_diagnosis:
+    version: "2026-04-24.v1"
+    input_token_budget: 2200
+    system_prompt: |
+      You are a professional fiction editor diagnosing whether a scene works dramatically.
+      Focus on desire, obstacle, stakes, turn, subtext, irreversible change, scene necessity, reader hook, and continuity.
+      Also evaluate character agency, dialogue edge, information rhythm, imagery freshness, expression repetition, power shift, and ending drive.
+      Do not overwrite final prose; produce structured diagnosis and actionable revision briefs only.
+    task_prompt: |
+      Diagnose the supplied scene against drama_effectiveness_v1.
+      Write string fields in Chinese while preserving the schema keys.
+      Every finding must cite concrete source-text evidence, where it appears, and why it matters to the reader.
+      If any required rubric field is uncertain or missing, mark requires_human_review true and add a blocker finding.
+    structured_schema: &writer_diagnosis_schema
+      type: object
+      additionalProperties: false
+      required:
+        - overall_score
+        - scores
+        - findings
+        - revision_brief
+        - requires_human_review
+      properties:
+        overall_score:
+          type: number
+        scores:
+          type: object
+          additionalProperties: false
+          required:
+            - desire
+            - obstacle
+            - stakes
+            - turn
+            - subtext
+            - irreversible_change
+            - scene_necessity
+            - reader_hook
+            - continuity
+            - character_agency
+            - dialogue_edge
+            - information_rhythm
+            - imagery_freshness
+            - expression_repetition
+            - power_shift
+            - ending_drive
+          properties:
+            desire:
+              type: number
+            obstacle:
+              type: number
+            stakes:
+              type: number
+            turn:
+              type: number
+            subtext:
+              type: number
+            irreversible_change:
+              type: number
+            scene_necessity:
+              type: number
+            reader_hook:
+              type: number
+            continuity:
+              type: number
+            character_agency:
+              type: number
+            dialogue_edge:
+              type: number
+            information_rhythm:
+              type: number
+            imagery_freshness:
+              type: number
+            expression_repetition:
+              type: number
+            power_shift:
+              type: number
+            ending_drive:
+              type: number
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - dimension
+              - severity
+              - issue
+              - recommendation
+              - evidence_excerpt
+              - evidence_location
+              - why_it_matters
+            properties:
+              dimension:
+                type: string
+              severity:
+                type: string
+              issue:
+                type: string
+              recommendation:
+                type: string
+              evidence_excerpt:
+                type: string
+              evidence_location:
+                type: string
+              why_it_matters:
+                type: string
+        revision_brief:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - dimension
+              - action
+              - priority
+            properties:
+              dimension:
+                type: string
+              action:
+                type: string
+              priority:
+                type: string
+        requires_human_review:
+          type: boolean
+
+  writer_scene_revision:
+    version: "2026-04-24.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are preparing a candidate revision for a fiction author.
+      Keep the candidate separate from the approved final text; never claim it has been applied.
+    task_prompt: |
+      Rewrite the supplied scene using the writer diagnosis and revision brief.
+      Preserve continuity and source language. If the source is Chinese, output Chinese prose.
+      Return a complete revised scene as revised_text, not advice appended to the old text.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - revised_text
+        - diff_summary
+        - changed_dimensions
+        - rewrite_strategy
+      properties:
+        revised_text:
+          type: string
+        diff_summary:
+          type: string
+        changed_dimensions:
+          type: array
+          items:
+            type: string
+        rewrite_strategy:
+          type: string
+
+  writer_chapter_diagnosis:
+    version: "2026-04-24.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are a professional fiction editor diagnosing chapter-level dramatic effectiveness.
+      Focus on chapter promise, scene necessity, rhythm breakpoints, continuity, escalation, ending hook, and missing scene functions.
+      Also evaluate character agency, dialogue edge, information rhythm, imagery freshness, expression repetition, power shift, and ending drive.
+    task_prompt: |
+      Diagnose the assembled or aggregate chapter against drama_effectiveness_v1.
+      Write string fields in Chinese while preserving the schema keys.
+      Every finding must cite concrete source-text evidence, where it appears, and why it matters to the reader.
+      If the chapter lacks enough source text or a required dimension is unclear, mark requires_human_review true.
+    structured_schema: *writer_diagnosis_schema
+
+  writer_chapter_revision:
+    version: "2026-04-25.v1"
+    input_token_budget: 3600
+    system_prompt: |
+      You are preparing a chapter-level candidate revision plan for a fiction author.
+      Keep the candidate separate from approved final text; never claim it has been applied.
+      Do not rewrite the whole chapter unless explicitly asked. Prefer a concise plan plus selected high-impact passage rewrites.
+    task_prompt: |
+      Use the writer diagnosis and revision brief to produce a chapter revision plan.
+      Write all strings in Chinese while preserving schema keys.
+      Preserve continuity and source language. For selected passages, quote only short source excerpts and provide rewritten replacements.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - revision_plan
+        - selected_rewrite_passages
+        - diff_summary
+      properties:
+        revision_plan:
+          type: array
+          items:
+            type: string
+        selected_rewrite_passages:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - source_excerpt
+              - revised_text
+              - reason
+            properties:
+              source_excerpt:
+                type: string
+              revised_text:
+                type: string
+              reason:
+                type: string
+        diff_summary:
+          type: string
+        changed_dimensions:
+          type: array
+          items:
+            type: string
+        rewrite_strategy:
+          type: string
+
+  writer_reference_application_review:
+    version: "2026-04-24.v1"
+    input_token_budget: 2200
+    system_prompt: |
+      You review whether learned reference techniques are applied as transferable craft rather than copied expression.
+      Separate usable technique, forbidden replication, and suitable application scene.
+    task_prompt: |
+      Review the reference profile and current target scene/chapter.
+      Return concise Chinese guidance using stable English schema keys.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - transferable_techniques
+        - forbidden_replication
+        - suitable_scenes
+        - requires_human_review
+      properties:
+        transferable_techniques:
+          type: array
+          items:
+            type: string
+        forbidden_replication:
+          type: array
+          items:
+            type: string
+        suitable_scenes:
+          type: array
+          items:
+            type: string
+        requires_human_review:
+          type: boolean

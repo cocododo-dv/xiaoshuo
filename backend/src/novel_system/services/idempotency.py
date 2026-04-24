@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from novel_system.db.models import IdempotencyKey, OperationLog, ReviewItem, SceneRunState, VerifyJob
 from novel_system.services.database_errors import is_database_busy_error
@@ -70,7 +70,19 @@ def execute_with_idempotency(
                 },
             )
         )
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            raise DomainError(
+                "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+                "request with the same idempotency key is still running",
+                status_code=409,
+                details={
+                    "retryable": True,
+                    "next_action": "wait for the original request to finish, then retry or poll the related resource",
+                },
+            ) from exc
     else:
         if record.request_hash != request_hash:
             raise DomainError(

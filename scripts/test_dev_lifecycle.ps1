@@ -118,6 +118,8 @@ try {
     $frontendUrl = Read-RequiredText -Path $frontendUrlFile
     Wait-Until -Label "backend health" -Condition { Test-UrlHealthy -Url "$backendUrl/api/v1/chapters" } -TimeoutSeconds 90
     Wait-Until -Label "frontend home" -Condition { Test-UrlHealthy -Url $frontendUrl } -TimeoutSeconds 60
+    $overview = Invoke-RestMethod -UseBasicParsing -Uri "$backendUrl/api/v1/system-config" -TimeoutSec 5
+    Assert-True -Condition ($overview.data.runtime.secret_configured -eq $true) -Message "Dev backend must provide NOVEL_SYSTEM_CONFIG_SECRET so local API-key providers can be saved."
     Assert-True -Condition (Test-Path $backendPidFile) -Message "Missing backend PID file after start."
     Assert-True -Condition (Test-Path $frontendPidFile) -Message "Missing frontend PID file after start."
 
@@ -126,6 +128,8 @@ try {
     $frontendUrl = Read-RequiredText -Path $frontendUrlFile
     Wait-Until -Label "backend after restart" -Condition { Test-UrlHealthy -Url "$backendUrl/api/v1/chapters" } -TimeoutSeconds 90
     Wait-Until -Label "frontend after restart" -Condition { Test-UrlHealthy -Url $frontendUrl } -TimeoutSeconds 60
+    $overview = Invoke-RestMethod -UseBasicParsing -Uri "$backendUrl/api/v1/system-config" -TimeoutSec 5
+    Assert-True -Condition ($overview.data.runtime.secret_configured -eq $true) -Message "Restarted dev backend must keep NOVEL_SYSTEM_CONFIG_SECRET configured."
     Assert-True -Condition (Test-Path $backendPidFile) -Message "Missing backend PID file after restart."
     Assert-True -Condition (Test-Path $frontendPidFile) -Message "Missing frontend PID file after restart."
 

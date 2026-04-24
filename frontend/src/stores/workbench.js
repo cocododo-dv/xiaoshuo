@@ -1,14 +1,17 @@
 import { defineStore } from "pinia";
 
 import {
+  acceptRevisionCandidate,
   clearChapterManualHold,
   fetchHumanReviewEvents,
   fetchRunJob,
   fetchSceneAttempts,
   fetchWorkbench,
+  rejectRevisionCandidate,
   runChapterBackfill as postChapterBackfill,
   runChapterFinalAggregate as postChapterFinalAggregate,
   runFullScene,
+  runSceneWriterReview,
   setChapterManualHold as postChapterManualHold,
   startSceneRunJob,
 } from "../lib/api";
@@ -330,6 +333,51 @@ export const useWorkbenchStore = defineStore("workbench", {
         this.syncAttemptPager(sceneId, { reset: true });
         await this.refreshAll(sceneId, { force: true });
         return `已使用兼容模式运行 ${sceneId} 的完整场景流程`;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async runWriterReview(sceneId = this.sceneId) {
+      this.actionId = "writer-review";
+      this.error = "";
+      try {
+        const result = await runSceneWriterReview(sceneId);
+        await this.load(sceneId);
+        this.markFresh();
+        return `作家诊断已完成：${result.latest_score ?? result.evaluation?.overall_score ?? "-"}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async acceptRevision(revisionId, sceneId = this.sceneId) {
+      this.actionId = `revision-accept:${revisionId}`;
+      this.error = "";
+      try {
+        const result = await acceptRevisionCandidate(revisionId, { note: "author accepted from scene workbench" });
+        await this.load(sceneId);
+        this.markFresh();
+        return `已采纳修订候选：${result.revision?.revision_id || revisionId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async rejectRevision(revisionId, sceneId = this.sceneId) {
+      this.actionId = `revision-reject:${revisionId}`;
+      this.error = "";
+      try {
+        const result = await rejectRevisionCandidate(revisionId, { note: "author rejected from scene workbench" });
+        await this.load(sceneId);
+        this.markFresh();
+        return `已拒绝修订候选：${result.revision?.revision_id || revisionId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
       } finally {
         this.actionId = "";
       }

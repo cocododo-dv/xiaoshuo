@@ -210,6 +210,30 @@ def test_chapter_summary_schema_requires_carry_forward() -> None:
     assert payload["structured_schema"]["required"] == ["summary", "carry_forward"]
 
 
+def test_writer_diagnosis_schema_requires_textual_evidence_fields() -> None:
+    payload = PromptBuilder().build(_bundle_snapshot(), "writer_scene_diagnosis")
+    finding_schema = payload["structured_schema"]["properties"]["findings"]["items"]
+
+    assert {"evidence_excerpt", "evidence_location", "why_it_matters"}.issubset(
+        set(finding_schema["required"])
+    )
+    assert finding_schema["properties"]["evidence_excerpt"]["type"] == "string"
+    assert finding_schema["properties"]["why_it_matters"]["type"] == "string"
+
+
+def test_writer_chapter_revision_schema_returns_plan_and_selected_passages() -> None:
+    payload = PromptBuilder().build(_bundle_snapshot(), "writer_chapter_revision")
+
+    assert payload["structured_schema"]["required"] == [
+        "revision_plan",
+        "selected_rewrite_passages",
+        "diff_summary",
+    ]
+    passage_schema = payload["structured_schema"]["properties"]["selected_rewrite_passages"]["items"]
+    assert passage_schema["required"] == ["source_excerpt", "revised_text", "reason"]
+    assert "Required top-level JSON keys: revision_plan, selected_rewrite_passages, diff_summary" in payload["user_prompt"]
+
+
 def test_hard_qc_uses_runtime_minimum_budget_for_default_runs(tmp_path) -> None:
     prompt_path = tmp_path / "prompts.yaml"
     prompt_path.write_text(

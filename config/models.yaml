@@ -59,6 +59,36 @@ task_routing:
     temperature: 0.4
     max_output_tokens: 4000
     response_format: json_object
+  writer_scene_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 2200
+    response_format: json_object
+  writer_scene_revision:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.5
+    max_output_tokens: 5000
+    response_format: json_object
+  writer_chapter_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 3200
+    response_format: json_object
+  writer_chapter_revision:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.45
+    max_output_tokens: 4200
+    response_format: json_object
+  writer_reference_application_review:
+    provider: openai_compatible
+    model: gpt-5-mini
+    temperature: 0.1
+    max_output_tokens: 1800
+    response_format: json_object
 
 retry_budget:
   hard_partial_max: 2

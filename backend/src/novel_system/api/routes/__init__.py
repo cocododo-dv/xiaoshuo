@@ -8,4 +8,5 @@ __all__ = [
     "review",
     "scenes",
     "system_config",
+    "writer_review",
 ]

@@ -197,6 +197,33 @@ function Remove-RunState {
     Remove-Item $script:BackendPidFile, $script:FrontendPidFile, $script:BackendUrlFile, $script:FrontendUrlFile -ErrorAction SilentlyContinue
 }
 
+function ConvertTo-SingleQuotedPowerShellLiteral {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    return "'{0}'" -f ($Value -replace "'", "''")
+}
+
+function Resolve-DevConfigSecret {
+    if ($env:NOVEL_SYSTEM_CONFIG_SECRET) {
+        return $env:NOVEL_SYSTEM_CONFIG_SECRET
+    }
+
+    New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
+    if (Test-Path -LiteralPath $script:ConfigSecretFile) {
+        $existing = (Get-Content -LiteralPath $script:ConfigSecretFile -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($existing) {
+            return $existing
+        }
+    }
+
+    $secret = "{0}{1}" -f ([guid]::NewGuid().ToString("N")), ([guid]::NewGuid().ToString("N"))
+    Set-Content -LiteralPath $script:ConfigSecretFile -Value $secret -NoNewline
+    return $secret
+}
+
 function Clear-PreviousLogs {
     Remove-Item $script:BackendOutLog, $script:BackendErrLog, $script:FrontendOutLog, $script:FrontendErrLog -ErrorAction SilentlyContinue
 }
@@ -239,10 +266,12 @@ function Assert-PortAvailable {
 function Invoke-BackendBootstrap {
     $previousPythonPath = $env:PYTHONPATH
     $previousVectorBackend = $env:NOVEL_SYSTEM_VECTOR_BACKEND
+    $previousConfigSecret = $env:NOVEL_SYSTEM_CONFIG_SECRET
 
     try {
         $env:PYTHONPATH = "src"
         $env:NOVEL_SYSTEM_VECTOR_BACKEND = "memory"
+        $env:NOVEL_SYSTEM_CONFIG_SECRET = Resolve-DevConfigSecret
         Invoke-NativeStep -Label "Backend migration" -WorkingDirectory $script:BackendDir -FilePath "python" -ArgumentList @("-m", "alembic", "upgrade", "head")
         if (Test-DemoSeedSkipped) {
             Write-Step -Message "Demo seed skipped; clean reset marker is active."
@@ -264,6 +293,13 @@ function Invoke-BackendBootstrap {
         }
         else {
             $env:NOVEL_SYSTEM_VECTOR_BACKEND = $previousVectorBackend
+        }
+
+        if ($null -eq $previousConfigSecret) {
+            Remove-Item Env:NOVEL_SYSTEM_CONFIG_SECRET -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:NOVEL_SYSTEM_CONFIG_SECRET = $previousConfigSecret
         }
     }
 }
@@ -296,7 +332,8 @@ function Start-TrackedServices {
 
     try {
         Write-Step -Message "Starting backend on $script:BackendUrl"
-        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; python -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port {0} --app-dir src' -f $script:BackendPort
+        $configSecretLiteral = ConvertTo-SingleQuotedPowerShellLiteral -Value (Resolve-DevConfigSecret)
+        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; $env:NOVEL_SYSTEM_CONFIG_SECRET = {0}; python -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port {1} --app-dir src' -f $configSecretLiteral, $script:BackendPort
         $backendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory $script:BackendDir -RedirectStandardOutput $script:BackendOutLog -RedirectStandardError $script:BackendErrLog -PassThru
         Set-Content -Path $script:BackendPidFile -Value $backendProcess.Id
         Set-Content -Path $script:BackendUrlFile -Value $script:BackendUrl
@@ -329,6 +366,7 @@ $script:FrontendPidFile = Join-Path $script:RunDir "frontend.pid"
 $script:BackendUrlFile = Join-Path $script:RunDir "backend.url"
 $script:FrontendUrlFile = Join-Path $script:RunDir "frontend.url"
 $script:SkipDemoSeedMarker = Join-Path $script:RunDir "skip-demo-seed"
+$script:ConfigSecretFile = Join-Path $script:RunDir "config.secret"
 $script:BackendOutLog = Join-Path $script:RunDir "backend.out.log"
 $script:BackendErrLog = Join-Path $script:RunDir "backend.err.log"
 $script:FrontendOutLog = Join-Path $script:RunDir "frontend.out.log"

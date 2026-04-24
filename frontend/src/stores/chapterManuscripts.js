@@ -1,16 +1,19 @@
 import { defineStore } from "pinia";
 
 import {
+  acceptRevisionCandidate,
   fetchAuthorTrash,
   fetchChapterManuscriptDetail,
   fetchChapterManuscripts,
   purgeChapters as postPurgeChapters,
   purgeScenes as postPurgeScenes,
+  rejectRevisionCandidate,
   reorderChapterScenes,
   restoreChapters as postRestoreChapters,
   restoreScenes as postRestoreScenes,
   runChapterFinalAggregate,
   runChapterFull,
+  runChapterWriterReview,
   saveChapter as postChapter,
   saveScene as postScene,
   trashChapters as postTrashChapters,
@@ -231,6 +234,51 @@ export const useChapterManuscriptsStore = defineStore("chapterManuscripts", {
         const result = await runChapterFinalAggregate(chapterId);
         await this.refreshSelected(chapterId);
         return `最终聚合 ${result.status}: ${result.chapter_memory_row_id || chapterId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async runWriterReview(chapterId = this.selectedChapterId) {
+      this.actionId = "writer-review";
+      this.error = "";
+      try {
+        const result = await runChapterWriterReview(chapterId);
+        await this.refreshSelected(chapterId);
+        this.markFresh();
+        return `作家诊断已完成：${result.latest_score ?? result.evaluation?.overall_score ?? "-"}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async acceptRevision(revisionId, chapterId = this.selectedChapterId) {
+      this.actionId = `revision-accept:${revisionId}`;
+      this.error = "";
+      try {
+        const result = await acceptRevisionCandidate(revisionId, { note: "author accepted from manuscript center" });
+        await this.refreshSelected(chapterId);
+        this.markFresh();
+        return `已采纳修订候选：${result.revision?.revision_id || revisionId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async rejectRevision(revisionId, chapterId = this.selectedChapterId) {
+      this.actionId = `revision-reject:${revisionId}`;
+      this.error = "";
+      try {
+        const result = await rejectRevisionCandidate(revisionId, { note: "author rejected from manuscript center" });
+        await this.refreshSelected(chapterId);
+        this.markFresh();
+        return `已拒绝修订候选：${result.revision?.revision_id || revisionId}`;
       } catch (error) {
         this.error = error.message;
         throw error;

@@ -616,13 +616,13 @@ def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(clien
     def fake_models(url: str, *, headers: dict[str, str], timeout: float):
         assert url == "http://127.0.0.1:8317/v1/models"
         assert headers == {"Authorization": "Bearer cliproxy-secret"}
-        assert timeout == 10.0
+        assert timeout == 30.0
         return httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
 
     def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
         assert url == "http://127.0.0.1:8317/v1/chat/completions"
         assert headers == {"Authorization": "Bearer cliproxy-secret"}
-        assert timeout == 10.0
+        assert timeout == 30.0
         assert json["model"] == "gpt-5"
         assert json["stream"] is False
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
@@ -642,6 +642,98 @@ def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(clien
     assert probe["checks"]["connection"]["ok"] is True
     assert probe["checks"]["model"]["ok"] is True
     assert probe["checks"]["completion"]["ok"] is True
+
+
+def test_llm_config_normalizes_host_only_openai_compatible_base_url_to_v1(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "cli_proxy",
+            "provider_type": "openai_compatible",
+            "account_id": "relay",
+            "base_url": "http://127.0.0.1:8317",
+            "enabled": True,
+            "credential_mode": "api_key",
+            "api_mode": "chat",
+            "models": ["gemini-3.1-pro-preview"],
+            "api_key": "cliproxy-secret",
+        },
+    )
+
+    assert provider_response.status_code == 200
+    assert provider_response.json()["data"]["provider"]["base_url"] == "http://127.0.0.1:8317/v1"
+
+    overview = client.get("/api/v1/system-config/llm")
+    assert overview.status_code == 200
+    assert overview.json()["data"]["providers"]["cli_proxy"]["base_url"] == "http://127.0.0.1:8317/v1"
+
+
+def test_llm_provider_probe_uses_active_llm_timeout_seconds(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    draft_response = client.post(
+        "/api/v1/system-config/drafts",
+        headers=ADMIN_HEADERS,
+        json={
+            "category": "api",
+            "yaml_raw": """
+llm:
+  enabled: true
+  timeout_seconds: 180
+  default_provider_id: local_qwen
+  providers:
+    local_qwen:
+      provider_type: openai_compatible
+      account_id: local
+      base_url: "https://local-llm.test"
+      enabled: true
+      credential_mode: none
+      api_mode: chat
+      models:
+        - "qwen3:14b"
+""".lstrip(),
+        },
+    )
+    assert draft_response.status_code == 200
+    snapshot_id = draft_response.json()["data"]["snapshot"]["snapshot_id"]
+
+    activate_response = client.post(
+        f"/api/v1/system-config/{snapshot_id}/activate",
+        headers=ADMIN_HEADERS,
+    )
+    assert activate_response.status_code == 200
+
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+        assert url == "https://local-llm.test/v1/models"
+        assert headers == {}
+        assert timeout == 180.0
+        return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}]})
+
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
+        assert url == "https://local-llm.test/v1/chat/completions"
+        assert headers == {}
+        assert timeout == 180.0
+        assert json["model"] == "qwen3:14b"
+        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+
+    response = client.post(
+        "/api/v1/system-config/llm/providers/local_qwen/probe",
+        headers=ADMIN_HEADERS,
+        json={"model": "qwen3:14b", "check_completion": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["ok"] is True
+    assert payload["checks"]["completion"]["ok"] is True
 
 
 def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, monkeypatch) -> None:
@@ -667,13 +759,13 @@ def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, 
     def fake_models(url: str, *, headers: dict[str, str], timeout: float):
         assert url == "https://local-llm.test/v1/models"
         assert headers == {}
-        assert timeout == 10.0
+        assert timeout == 30.0
         return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}]})
 
     def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
         assert url == "https://local-llm.test/v1/chat/completions"
         assert headers == {}
-        assert timeout == 10.0
+        assert timeout == 30.0
         assert json["model"] == "qwen3:14b"
         assert json["messages"][0]["content"] == "ping"
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
@@ -695,6 +787,59 @@ def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, 
     assert payload["checks"]["completion"]["ok"] is True
     assert payload["checks"]["model"]["requested_model"] == "qwen3:14b"
     assert "qwen3:14b" in payload["message"]
+
+
+def test_llm_provider_probe_accepts_completion_when_models_endpoint_is_unavailable(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "cli_proxy",
+            "provider_type": "openai_compatible",
+            "account_id": "relay",
+            "base_url": "http://127.0.0.1:8317/v1",
+            "enabled": True,
+            "credential_mode": "api_key",
+            "api_mode": "chat",
+            "models": ["gemini-3.1-pro-preview"],
+            "api_key": "cliproxy-secret",
+        },
+    )
+    assert provider_response.status_code == 200
+
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+        assert url == "http://127.0.0.1:8317/v1/models"
+        assert headers == {"Authorization": "Bearer cliproxy-secret"}
+        assert timeout == 30.0
+        return httpx.Response(404, text="404 page not found")
+
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
+        assert url == "http://127.0.0.1:8317/v1/chat/completions"
+        assert headers == {"Authorization": "Bearer cliproxy-secret"}
+        assert timeout == 30.0
+        assert json["model"] == "gemini-3.1-pro-preview"
+        assert json["stream"] is False
+        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+
+    probe_response = client.post(
+        "/api/v1/system-config/llm/providers/cli_proxy/probe",
+        headers=ADMIN_HEADERS,
+        json={"model": "gemini-3.1-pro-preview", "check_completion": True},
+    )
+
+    assert probe_response.status_code == 200
+    probe = probe_response.json()["data"]
+    assert probe["ok"] is True
+    assert probe["checks"]["connection"]["ok"] is False
+    assert probe["checks"]["completion"]["ok"] is True
+    assert probe["checks"]["completion"]["model"] == "gemini-3.1-pro-preview"
+    assert "gemini-3.1-pro-preview" in probe["message"]
 
 
 def test_llm_provider_probe_reports_available_models_when_local_name_does_not_match(client, monkeypatch) -> None:

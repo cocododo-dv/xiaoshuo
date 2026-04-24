@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import HumanReviewEvent, LlmCall, QcReport, RelationProfile, SceneCard, SceneRunState, VoiceProfile
+from novel_system.db.models import (
+    FinalScene,
+    HumanReviewEvent,
+    LlmCall,
+    QcReport,
+    RelationProfile,
+    SceneBundle,
+    SceneCard,
+    SceneRunState,
+    VoiceProfile,
+)
 
 
 def create_chapter(client, chapter_id: str = "CH910") -> None:
@@ -123,6 +133,12 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
         "repeat_issue_count": 0,
     }
     assert payload["human_review_summary"] is None
+    assert payload["source_safety_scan"] == {
+        "safe": True,
+        "blocked_terms": [],
+        "source_profile_ids": [],
+        "checked_at": payload["source_safety_scan"]["checked_at"],
+    }
 
 
 def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_run(client, session: Session) -> None:
@@ -146,6 +162,53 @@ def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_ru
         "repeat_issue_count": 0,
     }
     assert data["human_review_summary"] is None
+
+
+def test_workbench_payload_scans_final_scene_for_protected_source_terms(client, session: Session) -> None:
+    create_chapter(client, "CH921")
+    create_scene(client, chapter_id="CH921", scene_id="CH921_SC01")
+    seed_voice_profile(session)
+    seed_relation_profile(session)
+    bundle = SceneBundle(
+        bundle_id="bundle_CH921_SC01_v1",
+        scene_id="CH921_SC01",
+        chapter_id="CH921",
+        bundle_snapshot_hash="hash_CH921_SC01_v1",
+        frozen_snapshot_json={
+            "scene_id": "CH921_SC01",
+            "chapter_id": "CH921",
+            "source_version_refs": {
+                "reference_profile_id": "refprofile_longzu_safe",
+                "style_rule_set_id": "STYLE_LONGZU_ABSTRACT",
+            },
+        },
+    )
+    final = FinalScene(
+        row_id="final_scene_CH921_SC01_v1",
+        scene_id="CH921_SC01",
+        chapter_id="CH921",
+        content="这一版误把路明非和卡塞尔写进了原创场景。",
+        status="approved",
+        source_bundle_id=bundle.bundle_id,
+        source_bundle_hash=bundle.bundle_snapshot_hash,
+    )
+    state = session.get(SceneRunState, "CH921_SC01")
+    assert state is not None
+    state.scene_status = "archived"
+    state.current_bundle_id = bundle.bundle_id
+    state.current_bundle_hash = bundle.bundle_snapshot_hash
+    state.current_final_scene_row_id = final.row_id
+    session.add_all([bundle, final])
+    session.commit()
+
+    response = client.get("/api/v1/scenes/CH921_SC01/workbench")
+
+    assert response.status_code == 200
+    scan = response.json()["data"]["source_safety_scan"]
+    assert scan["safe"] is False
+    assert scan["blocked_terms"] == ["路明非", "卡塞尔"]
+    assert scan["source_profile_ids"] == ["refprofile_longzu_safe", "STYLE_LONGZU_ABSTRACT"]
+    assert scan["checked_at"]
 
 
 def test_workbench_preflight_blocks_when_voice_profile_is_missing(client, session: Session) -> None:

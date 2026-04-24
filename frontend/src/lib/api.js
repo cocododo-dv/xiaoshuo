@@ -332,6 +332,30 @@ export function fetchSceneGenerationHistory(sceneId) {
   return apiGet(`/api/v1/scenes/${sceneId}/generation-history`);
 }
 
+export function fetchSceneWriterReview(sceneId) {
+  return apiGet(`/api/v1/scenes/${encodeURIComponent(sceneId)}/writer-review`);
+}
+
+export function runSceneWriterReview(sceneId) {
+  return apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/writer-review/run`);
+}
+
+export function fetchChapterWriterReview(chapterId) {
+  return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/writer-review`);
+}
+
+export function runChapterWriterReview(chapterId) {
+  return apiPost(`/api/v1/chapters/${encodeURIComponent(chapterId)}/writer-review/run`);
+}
+
+export function acceptRevisionCandidate(revisionId, payload = {}) {
+  return apiPost(`/api/v1/revision-candidates/${encodeURIComponent(revisionId)}/accept`, payload);
+}
+
+export function rejectRevisionCandidate(revisionId, payload = {}) {
+  return apiPost(`/api/v1/revision-candidates/${encodeURIComponent(revisionId)}/reject`, payload);
+}
+
 export function fetchChapters() {
   return apiGet("/api/v1/chapters");
 }

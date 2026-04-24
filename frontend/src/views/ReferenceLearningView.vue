@@ -733,6 +733,18 @@ function profilePreviewItems(profile) {
   return [...featureGuidance, ...narrativePatterns].slice(0, 4);
 }
 
+function profileWriterReview(profile) {
+  return profile?.writer_review_summary || {
+    transferable_techniques: [],
+    forbidden_replication: [],
+    suitable_scenes: [],
+  };
+}
+
+function profileWriterReviewList(profile, key) {
+  return (profileWriterReview(profile)[key] || []).filter(Boolean).slice(0, 4);
+}
+
 function nextDecisionStep() {
   if (referenceLearning.pendingDecisionCount === 0) {
     return "下一步：本轮候选已经清零，点击「继续分析」进入下一轮或生成画像。";
@@ -1414,6 +1426,32 @@ onBeforeUnmount(() => {
                   <button type="button" class="ghost" @click="openReviewInbox">去审核收件箱</button>
                 </div>
                 <p>{{ profileSummary(profile) }}</p>
+                <div class="reference-profile-writer-review" data-testid="reference-profile-writer-review">
+                  <section>
+                    <strong>可迁移技法</strong>
+                    <ul>
+                      <li v-for="item in profileWriterReviewList(profile, 'transferable_techniques')" :key="`tech-${item}`">
+                        {{ item }}
+                      </li>
+                    </ul>
+                  </section>
+                  <section>
+                    <strong>禁复刻</strong>
+                    <ul>
+                      <li v-for="item in profileWriterReviewList(profile, 'forbidden_replication')" :key="`ban-${item}`">
+                        {{ item }}
+                      </li>
+                    </ul>
+                  </section>
+                  <section>
+                    <strong>适用场景</strong>
+                    <ul>
+                      <li v-for="item in profileWriterReviewList(profile, 'suitable_scenes')" :key="`scene-${item}`">
+                        {{ item }}
+                      </li>
+                    </ul>
+                  </section>
+                </div>
                 <p v-if="isProfileStale(profile)" class="reference-risk">
                   审核决策已变化，请继续分析重新生成画像；过期画像不会进入审核或生成链路。
                 </p>

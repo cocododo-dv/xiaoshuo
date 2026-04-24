@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from novel_system.services.errors import DomainError
+from novel_system.services.idempotency import execute_with_idempotency
+
 
 def chapter_payload(goal: str) -> dict:
     return {
@@ -52,3 +58,24 @@ def test_same_key_different_payload_is_rejected(client) -> None:
     assert first.status_code == 200
     assert second.status_code == 409
     assert second.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD"
+
+
+def test_concurrent_same_key_insert_is_reported_as_in_progress(session, monkeypatch) -> None:
+    def raise_duplicate_key() -> None:
+        raise IntegrityError("INSERT INTO idempotency_keys", {}, Exception("duplicate key"))
+
+    monkeypatch.setattr(session, "flush", raise_duplicate_key)
+
+    with pytest.raises(DomainError) as exc_info:
+        execute_with_idempotency(
+            session,
+            idempotency_key="chapter-create-race",
+            method="POST",
+            path_template="/api/v1/chapters",
+            payload=chapter_payload("race"),
+            action=lambda: {"created": True},
+        )
+
+    assert exc_info.value.code == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.details["retryable"] is True

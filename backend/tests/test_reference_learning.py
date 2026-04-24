@@ -390,6 +390,74 @@ def test_learning_run_pauses_for_review_then_completes_profile(client, tmp_path:
     assert "narrative_patterns" in profile["profile_json"]
 
 
+def test_reference_learning_tree_exposes_run_round_review_profile_and_application_state(client, tmp_path: Path) -> None:
+    book_id = _import_reference_book(client, tmp_path)
+    first_advance = _start_and_advance(client, book_id)
+    run_id = first_advance["run"]["run_id"]
+    findings = first_advance["round"]["findings"]
+
+    for index, finding in enumerate(findings):
+        review_id = finding["review"]["review_id"]
+        if index == 0:
+            reject = client.post(
+                f"/api/v1/review-items/{review_id}/reject",
+                json={"reason": "覆盖拒绝路径"},
+                headers=_idempotency_headers(f"tree-reject-reference-review-{index}"),
+            )
+            assert reject.status_code == 200
+        else:
+            approve = client.post(
+                f"/api/v1/review-items/{review_id}/approve",
+                json={},
+                headers=_idempotency_headers(f"tree-approve-reference-review-{index}"),
+            )
+            assert approve.status_code == 200
+
+    completed = client.post(
+        f"/api/v1/reference-books/{book_id}/runs/{run_id}/advance",
+        json={},
+        headers=_idempotency_headers("tree-advance-reference-run-complete"),
+    )
+    assert completed.status_code == 200
+    profile_id = (completed.json()["data"].get("profile") or {}).get("profile_id")
+    if not profile_id:
+        detail_for_profile = client.get(f"/api/v1/reference-books/{book_id}")
+        assert detail_for_profile.status_code == 200
+        profile_id = detail_for_profile.json()["data"]["profiles"][0]["profile_id"]
+
+    apply_response = client.post(
+        f"/api/v1/reference-books/{book_id}/profiles/{profile_id}/apply",
+        json={"scope": "chapter", "scope_ref_id": "CHTREE"},
+        headers=_idempotency_headers("tree-apply-reference-profile"),
+    )
+    assert apply_response.status_code == 200
+
+    tree_response = client.get(f"/api/v1/reference-books/{book_id}/learning-tree")
+    assert tree_response.status_code == 200
+    tree = tree_response.json()["data"]
+
+    assert tree["book"]["book_id"] == book_id
+    assert tree["summary"]["run_count"] == 1
+    assert tree["summary"]["round_count"] >= 1
+    assert tree["summary"]["finding_count"] >= len(findings)
+    assert tree["summary"]["profile_count"] >= 1
+    assert tree["runs"][0]["run_id"] == run_id
+    assert tree["runs"][0]["rounds"][0]["round_id"] == first_advance["round"]["round_id"]
+    tree_findings = tree["runs"][0]["rounds"][0]["findings"]
+    assert {finding["review"]["status"] for finding in tree_findings} >= {"approved", "rejected"}
+    assert all(finding["source_excerpt_hidden"] is True for finding in tree_findings)
+    assert tree["profiles"][0]["profile_id"] == profile_id
+    assert tree["profiles"][0]["application_status"]["scope"] == "chapter"
+    assert tree["profiles"][0]["application_status"]["scope_ref_id"] == "CHTREE"
+    assert tree["active_knowledge_refs"] == []
+
+    detail_response = client.get(f"/api/v1/reference-books/{book_id}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()["data"]
+    assert detail["learning_tree_summary"]["run_count"] == tree["summary"]["run_count"]
+    assert detail["learning_tree_summary"]["profile_count"] == tree["summary"]["profile_count"]
+
+
 def test_reference_finding_response_hides_source_excerpt_by_default(client, tmp_path: Path) -> None:
     book_id = _import_reference_book(client, tmp_path)
     first_advance = _start_and_advance(client, book_id)

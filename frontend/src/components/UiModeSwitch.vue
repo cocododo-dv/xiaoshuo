@@ -16,12 +16,12 @@ const { uiMode, setUiMode } = useUiMode();
       <button
         type="button"
         class="ui-mode-option"
-        :class="{ active: uiMode === 'guided' }"
-        :aria-pressed="uiMode === 'guided'"
-        data-testid="ui-mode-guided"
-        @click="setUiMode('guided')"
+        :class="{ active: uiMode === 'writer' }"
+        :aria-pressed="uiMode === 'writer'"
+        data-testid="ui-mode-writer"
+        @click="setUiMode('writer')"
       >
-        引导
+        作家
       </button>
       <button
         type="button"

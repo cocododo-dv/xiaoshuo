@@ -24,6 +24,10 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.writer_review import (
+    normalize_chapter_writer_brief,
+    normalize_scene_writer_brief,
+)
 
 TRASH_BLOCK_REASON_HAS_TRASHED_SCENES = "章节下已有单独移入回收站的场景"
 SCENE_RUNTIME_ARTIFACTS_REASON = "场景已有下游运行产物"
@@ -368,6 +372,7 @@ class AuthorLifecycleService:
             "ending_effect": chapter.ending_effect,
             "must_not": chapter.must_not,
             "notes": chapter.notes,
+            "writer_brief_json": normalize_chapter_writer_brief(chapter.writer_brief_json),
         }
 
     def serialize_chapter_state(self, chapter_state: ChapterState | None, chapter_id: str) -> dict:
@@ -400,6 +405,7 @@ class AuthorLifecycleService:
             "forbidden_text": scene.forbidden_text,
             "exit_change": scene.exit_change,
             "hook": scene.hook,
+            "writer_brief_json": normalize_scene_writer_brief(scene.writer_brief_json),
             "target_length_band": scene.target_length_band,
             "scene_type": scene.scene_type,
             "is_chapter_last": scene.is_chapter_last,

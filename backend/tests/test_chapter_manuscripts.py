@@ -155,6 +155,23 @@ def test_chapter_manuscript_detail_compares_aggregate_with_current_assembled_tex
     assert data["comparison_status"] == "aggregate_differs_current"
 
 
+def test_chapter_manuscript_detail_scans_current_manuscript_for_protected_source_terms(client, session) -> None:
+    _create_chapter(client, "CHM250", goal="Scan protected terms")
+    _create_scene(client, "CHM250_SC01", chapter_id="CHM250", scene_seq=1)
+    _create_scene(client, "CHM250_SC02", chapter_id="CHM250", scene_seq=2, is_chapter_last=1)
+    _finalize_scene(session, "CHM250_SC01", "CHM250", "第一场是干净的原创线索。")
+    _finalize_scene(session, "CHM250_SC02", "CHM250", "第二场错误出现了龙族与楚子航。")
+
+    response = client.get("/api/v1/chapter-manuscripts/CHM250")
+
+    assert response.status_code == 200
+    scan = response.json()["data"]["source_safety_scan"]
+    assert scan["safe"] is False
+    assert scan["blocked_terms"] == ["龙族", "楚子航"]
+    assert scan["source_profile_ids"] == []
+    assert scan["checked_at"]
+
+
 def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(client, session) -> None:
     _create_chapter(client, "CHM300", goal="Visible chapter")
     _create_scene(client, "CHM300_SC01", chapter_id="CHM300", scene_seq=1)

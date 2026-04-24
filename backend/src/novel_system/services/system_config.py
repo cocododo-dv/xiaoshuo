@@ -7,6 +7,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import yaml
@@ -93,7 +94,10 @@ def apply_active_api_config(settings):
         return replace(
             settings,
             llm_provider=provider_payload.get("provider_type", provider_payload.get("provider", settings.llm_provider)),
-            llm_base_url=provider_payload.get("base_url", settings.llm_base_url),
+            llm_base_url=_normalize_provider_base_url(
+                provider_payload.get("base_url", settings.llm_base_url),
+                provider_payload.get("provider_type", provider_payload.get("provider", settings.llm_provider)),
+            ),
             llm_enabled=llm_payload.get("enabled", provider_payload.get("enabled", settings.llm_enabled)),
             llm_timeout_seconds=llm_payload.get("timeout_seconds", settings.llm_timeout_seconds),
             llm_api_key=provider_secret or api_key or settings.llm_api_key,
@@ -101,7 +105,10 @@ def apply_active_api_config(settings):
     return replace(
         settings,
         llm_provider=llm_payload.get("provider", settings.llm_provider),
-        llm_base_url=llm_payload.get("base_url", settings.llm_base_url),
+        llm_base_url=_normalize_provider_base_url(
+            llm_payload.get("base_url", settings.llm_base_url),
+            llm_payload.get("provider", settings.llm_provider),
+        ),
         llm_enabled=llm_payload.get("enabled", settings.llm_enabled),
         llm_timeout_seconds=llm_payload.get("timeout_seconds", settings.llm_timeout_seconds),
         llm_api_key=api_key or settings.llm_api_key,
@@ -156,7 +163,8 @@ def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
             provider_type=str(provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id),
             account_id=_optional_text(provider_payload.get("account_id")),
             base_url=_normalize_provider_base_url(
-                provider_payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(str(provider_payload.get("provider_type")), "")
+                provider_payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(str(provider_payload.get("provider_type")), ""),
+                provider_payload.get("provider_type") or provider_payload.get("provider") or provider_id,
             ),
             api_key=(secret_value or legacy_api_key) if credential_mode == "api_key" else None,
             credential_mode=credential_mode if credential_mode in SUPPORTED_CREDENTIAL_MODES else "api_key",
@@ -284,7 +292,7 @@ class SystemConfigService:
         if provider not in SUPPORTED_PROVIDERS:
             raise DomainError("CONFIG_PROVIDER_UNSUPPORTED", f"unsupported provider {provider}", status_code=422)
 
-        base_url = _normalize_provider_base_url(provider_payload.get("base_url"))
+        base_url = _normalize_provider_base_url(provider_payload.get("base_url"), provider)
         if not base_url:
             raise DomainError("CONFIG_PROVIDER_INVALID", "provider base_url is required", status_code=422)
 
@@ -304,6 +312,8 @@ class SystemConfigService:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         timeout_value = provider_payload.get("timeout_seconds")
         timeout_seconds = _float_value(10.0 if timeout_value is None else timeout_value, "timeout_seconds")
+        requested_model = _requested_probe_model(provider_payload)
+        should_check_completion = bool(requested_model) and _bool_value(provider_payload.get("check_completion", False))
         started_at = time.perf_counter()
         try:
             response = httpx.get(f"{base_url}/models", headers=headers, timeout=timeout_seconds)
@@ -332,6 +342,26 @@ class SystemConfigService:
             }
         }
         if not response.is_success:
+            if should_check_completion and requested_model:
+                completion_result = _probe_chat_completion(
+                    provider=provider,
+                    base_url=base_url,
+                    headers=headers,
+                    model=str(requested_model),
+                    timeout_seconds=timeout_seconds,
+                )
+                checks["completion"] = completion_result
+                if completion_result["ok"] is True:
+                    return {
+                        "ok": True,
+                        "status_code": completion_result.get("status_code") or response.status_code,
+                        "latency_ms": int((time.perf_counter() - started_at) * 1000),
+                        "message": (
+                            f"模型 {requested_model} 已通过最小生成探测；"
+                            f"/models 不可用：{_provider_error_summary(response)}"
+                        ),
+                        "checks": checks,
+                    }
             return {
                 "ok": False,
                 "status_code": response.status_code,
@@ -341,7 +371,6 @@ class SystemConfigService:
             }
 
         model_ids = _extract_model_ids(response)
-        requested_model = _requested_probe_model(provider_payload)
         if requested_model:
             model_ok = requested_model in model_ids
             checks["model"] = {
@@ -359,7 +388,6 @@ class SystemConfigService:
                     "checks": checks,
                 }
 
-        should_check_completion = bool(requested_model) and _bool_value(provider_payload.get("check_completion", False))
         if should_check_completion:
             completion_result = _probe_chat_completion(
                 provider=provider,
@@ -499,10 +527,12 @@ class SystemConfigService:
         return {"snapshot": _serialize_snapshot(snapshot)}
 
     def probe_llm_provider(self, *, provider_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        llm_payload = self._current_api_llm_payload()
         provider = self.llm_overview()["providers"].get(provider_id)
         if provider is None:
             raise DomainError("CONFIG_PROVIDER_NOT_FOUND", f"provider {provider_id} was not found", status_code=404)
         probe_payload = dict(provider)
+        probe_payload["timeout_seconds"] = llm_payload.get("timeout_seconds", 30.0)
         probe_payload.update(payload or {})
         return self.test_provider(payload=probe_payload)
 
@@ -637,11 +667,12 @@ class SystemConfigService:
         credential_mode = str(payload.get("credential_mode") or "api_key")
         secret_id = llm_provider_api_key_secret_id(provider_id)
         secret_status = _none_secret_status() if credential_mode == "none" else self._secret_status(secret_id)
+        provider_type = payload.get("provider_type") or payload.get("provider")
         return {
             "provider_id": provider_id,
-            "provider_type": payload.get("provider_type") or payload.get("provider"),
+            "provider_type": provider_type,
             "account_id": payload.get("account_id"),
-            "base_url": payload.get("base_url"),
+            "base_url": _normalize_provider_base_url(payload.get("base_url"), provider_type),
             "enabled": _bool_value(payload.get("enabled", True)),
             "credential_mode": credential_mode,
             "api_mode": payload.get("api_mode", "chat"),
@@ -776,7 +807,7 @@ def _validate_api_config(parsed: dict[str, Any]) -> dict[str, Any]:
     if provider not in SUPPORTED_PROVIDERS:
         raise ValueError(f"unsupported provider {provider}")
 
-    base_url = _normalize_provider_base_url(llm.get("base_url"))
+    base_url = _normalize_provider_base_url(llm.get("base_url"), provider)
     if not base_url:
         raise ValueError("llm.base_url is required")
 
@@ -803,12 +834,20 @@ def _provider_payloads_from_llm(llm: dict[str, Any]) -> dict[str, dict[str, Any]
     return {}
 
 
-def _normalize_provider_base_url(value: Any) -> str:
+def _normalize_provider_base_url(value: Any, provider: Any | None = None) -> str:
     base_url = str(value or "").strip().rstrip("/")
     for suffix in ("/chat/completions", "/completions", "/responses", "/models"):
         if base_url.endswith(suffix):
             base_url = base_url[: -len(suffix)].rstrip("/")
             break
+    provider_name = str(provider or "").strip()
+    if provider_name in {"openai", "openai_compatible", "deepseek"}:
+        try:
+            parts = urlsplit(base_url)
+        except ValueError:
+            parts = None
+        if parts is not None and parts.scheme and parts.netloc and parts.path in {"", "/"}:
+            base_url = f"{base_url}/v1"
     return base_url
 
 
@@ -820,7 +859,7 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     credential_mode = str(payload.get("credential_mode") or "api_key")
     if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
         raise ValueError(f"unsupported credential_mode {credential_mode}")
-    base_url = _normalize_provider_base_url(payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(provider_type))
+    base_url = _normalize_provider_base_url(payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(provider_type), provider_type)
     if not base_url:
         raise ValueError("provider base_url is required")
     models = payload.get("models") if isinstance(payload.get("models"), list) else []
@@ -1213,6 +1252,7 @@ def _probe_chat_completion(
     return {
         "ok": response.is_success,
         "status_code": response.status_code,
+        "model": model,
         "message": "minimal completion succeeded" if response.is_success else _provider_error_summary(response),
     }
 

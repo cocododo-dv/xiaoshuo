@@ -4,6 +4,7 @@ import { createApp, nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useUiMode } from "../src/composables/useUiMode";
 import { useShellRouter } from "../src/router";
 import { useWorkbenchStore } from "../src/stores/workbench";
 import SceneWorkbenchView from "../src/views/SceneWorkbenchView.vue";
@@ -197,6 +198,7 @@ async function mountWorkbenchView(sceneId, fetchMock) {
 
   const router = useShellRouter();
   router.reset();
+  useUiMode().setUiMode("advanced");
 
   const store = useWorkbenchStore();
   store.sceneId = sceneId;

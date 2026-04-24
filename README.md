@@ -1,5 +1,11 @@
 # Novel System P2
 
+## Operator Manual
+
+For day-to-day operation, start with the new operator-facing manual:
+
+- [docs/operator-manual.md](docs/operator-manual.md)
+
 This repository currently uses a split verification strategy for the vector layer:
 
 - Windows native Python is supported for non-Chroma unit and contract tests.

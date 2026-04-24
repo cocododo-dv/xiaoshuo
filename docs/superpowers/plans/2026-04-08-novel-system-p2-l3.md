@@ -4,7 +4,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a runnable FastAPI + SQLite + Chroma-backed novel workflow that reaches the L3 milestone defined in `2026-04-07-novel-system-p2-design_v1_3_5.md`, including scene orchestration, review materialization, vector verify gates, replay/interop APIs, and the three required frontend consoles.
+**Goal:** Build a runnable FastAPI + SQLite + Chroma-backed novel workflow that reaches the original L3 milestone for this repository, including scene orchestration, review materialization, vector verify gates, replay/interop APIs, and the three required frontend consoles.
 
 **Architecture:** Use a small monorepo with `backend/` and `frontend/`. The backend owns the schema, deterministic services, idempotency/recovery, and REST APIs. The frontend is a Vue 3 SPA driven only by the documented GET/list/read endpoints and the required POST actions.
 

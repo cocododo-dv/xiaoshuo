@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, Computed, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, CheckConstraint, Computed, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from novel_system.db.base import Base
@@ -25,6 +25,7 @@ class ChapterGoal(Base):
     ending_effect: Mapped[str | None] = mapped_column(Text, nullable=True)
     must_not: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    writer_brief_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
     trashed_flag: Mapped[int] = mapped_column(Integer, default=0)
     trashed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     trashed_by: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -48,6 +49,7 @@ class SceneCard(Base):
     forbidden_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     exit_change: Mapped[str | None] = mapped_column(Text, nullable=True)
     hook: Mapped[str | None] = mapped_column(Text, nullable=True)
+    writer_brief_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
     target_length_band: Mapped[str | None] = mapped_column(String, nullable=True)
     scene_type: Mapped[str | None] = mapped_column(String, nullable=True)
     is_chapter_last: Mapped[int] = mapped_column(Integer, default=0)
@@ -223,6 +225,54 @@ class QcReport(Base):
     issues_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     rewrite_brief_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class WriterEvaluation(Base):
+    __tablename__ = "writer_evaluations"
+
+    evaluation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    rubric_id: Mapped[str] = mapped_column(String)
+    source_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    evaluator_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    scores_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    findings_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    revision_brief_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    requires_human_review: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String, default="completed")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class RevisionCandidate(Base):
+    __tablename__ = "revision_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('candidate','accepted','rejected','superseded')",
+            name="ck_revision_candidates_status",
+        ),
+    )
+
+    revision_id: Mapped[str] = mapped_column(String, primary_key=True)
+    evaluation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    revision_type: Mapped[str] = mapped_column(String)
+    source_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    proposed_text: Mapped[str] = mapped_column(Text)
+    instruction_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    diff_summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String, default="candidate")
+    author_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="writer_engine")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
 class FinalScene(Base):

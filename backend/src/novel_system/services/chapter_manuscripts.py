@@ -5,8 +5,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterGoal, ChapterMemory, ChapterState, FinalScene, SceneCard, SceneRunState
+from novel_system.db.models import ChapterGoal, ChapterMemory, ChapterState, FinalScene, SceneBundle, SceneCard, SceneRunState
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
+from novel_system.services.writer_review import WriterReviewService
 
 
 class ChapterManuscriptService:
@@ -28,6 +30,10 @@ class ChapterManuscriptService:
         scene_entries = [self._scene_entry(scene, scene_states.get(scene.scene_id)) for scene in scenes]
         assembled = self._assembled_payload(scene_entries)
         aggregate = self._aggregate_payload(self._resolve_final_aggregate(chapter_id, chapter_state))
+        source_safety_scan = scan_source_safety(
+            [assembled["content"], aggregate["content"] if aggregate else ""],
+            source_profile_ids=self._source_profile_ids_for_entries(scene_entries),
+        )
         return {
             "chapter": self.lifecycle.serialize_chapter(chapter),
             "chapter_state": self.lifecycle.serialize_chapter_state(chapter_state, chapter_id),
@@ -38,6 +44,8 @@ class ChapterManuscriptService:
             "comparison_status": self._comparison_status(assembled["content"], aggregate),
             "assembled": assembled,
             "aggregate": aggregate,
+            "source_safety_scan": source_safety_scan,
+            "writer_review_summary": WriterReviewService(self.session).chapter_summary(chapter_id),
             "scenes": scene_entries,
         }
 
@@ -59,6 +67,7 @@ class ChapterManuscriptService:
             ),
             "comparison_status": self._comparison_status(assembled["content"], aggregate),
             "aggregate_row_id": aggregate["row_id"] if aggregate else None,
+            "writer_review_summary": WriterReviewService(self.session).chapter_summary(chapter.chapter_id),
         }
 
     def _active_scenes(self, chapter_id: str) -> list[SceneCard]:
@@ -124,6 +133,24 @@ class ChapterManuscriptService:
             "generated_scene_count": len(generated_contents),
             "missing_scene_ids": missing_scene_ids,
         }
+
+    def _source_profile_ids_for_entries(self, scene_entries: list[dict[str, Any]]) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for scene in scene_entries:
+            final_scene = scene.get("final_scene")
+            if not isinstance(final_scene, dict):
+                continue
+            row = self.session.get(FinalScene, final_scene.get("row_id"))
+            if row is None or not row.source_bundle_id:
+                continue
+            bundle = self.session.get(SceneBundle, row.source_bundle_id)
+            for value in source_profile_ids_from_snapshot(bundle.frozen_snapshot_json if bundle else None):
+                if value in seen:
+                    continue
+                seen.add(value)
+                values.append(value)
+        return values
 
     def _resolve_final_aggregate(self, chapter_id: str, chapter_state: ChapterState | None) -> ChapterMemory | None:
         if chapter_state is not None and chapter_state.last_final_memory_row_id:

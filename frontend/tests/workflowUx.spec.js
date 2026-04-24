@@ -82,16 +82,16 @@ describe("workflow-driven shell metadata", () => {
   });
 });
 
-describe("guided and advanced UI modes", () => {
+describe("writer and advanced UI modes", () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  it("defaults to guided mode and persists advanced mode", async () => {
+  it("defaults to writer mode and persists advanced mode", async () => {
     const { UI_MODE_STORAGE_KEY, useUiMode } = await import("../src/composables/useUiMode.js");
     const mode = useUiMode();
 
-    expect(mode.uiMode.value).toBe("guided");
+    expect(mode.uiMode.value).toBe("writer");
     expect(mode.isAdvancedMode.value).toBe(false);
 
     mode.setUiMode("advanced");
@@ -101,7 +101,7 @@ describe("guided and advanced UI modes", () => {
     expect(localStorage.getItem(UI_MODE_STORAGE_KEY)).toBe("advanced");
 
     mode.toggleUiMode();
-    expect(mode.uiMode.value).toBe("guided");
+    expect(mode.uiMode.value).toBe("writer");
   });
 
   it("provides shared workflow and evidence components", () => {

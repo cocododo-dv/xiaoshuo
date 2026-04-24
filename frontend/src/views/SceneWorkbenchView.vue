@@ -13,6 +13,7 @@ import PanelShell from "../components/PanelShell.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
 import QcReportCard from "../components/QcReportCard.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
+import WriterReviewCard from "../components/WriterReviewCard.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useUiMode } from "../composables/useUiMode";
 import { useShellRouter } from "../router";
@@ -56,6 +57,7 @@ const hardQcSummary = computed(() => workbench.data?.hard_qc_summary || null);
 const softQcSummary = computed(() => workbench.data?.soft_qc_summary || null);
 const rewriteCounters = computed(() => workbench.data?.rewrite_counters || null);
 const humanReviewSummary = computed(() => workbench.data?.human_review_summary || null);
+const writerReviewSummary = computed(() => workbench.data?.writer_review_summary || null);
 const sourceSafetyScan = computed(() => workbench.data?.source_safety_scan || {
   safe: true,
   blocked_terms: [],
@@ -322,6 +324,44 @@ async function runScene() {
   }
 }
 
+async function runWriterReview() {
+  const sceneId = resolveSceneId();
+  if (!sceneId) {
+    emit("notice", "请先选择场景，再运行作家诊断。");
+    return;
+  }
+  await runFlowAction({
+    scopeKey: WORKBENCH_MAIN_SCOPE,
+    actionLabel: "运行作家诊断",
+    runningMessage: "正在诊断这一场是否成立...",
+    successMessage: (message) => message || "作家诊断已完成。",
+    nextStep: () => "下一步：阅读问题列表，决定是否采纳候选修订。",
+    action: () => workbench.runWriterReview(sceneId),
+  });
+}
+
+async function acceptWriterRevision(revisionId) {
+  await runFlowAction({
+    scopeKey: WORKBENCH_MAIN_SCOPE,
+    actionLabel: "采纳修订候选",
+    runningMessage: "正在记录作者采纳...",
+    successMessage: (message) => message || "修订候选已采纳；终稿未被覆盖。",
+    nextStep: () => "下一步：人工合并需要的句段，或继续运行章节诊断。",
+    action: () => workbench.acceptRevision(revisionId, resolveSceneId()),
+  });
+}
+
+async function rejectWriterRevision(revisionId) {
+  await runFlowAction({
+    scopeKey: WORKBENCH_MAIN_SCOPE,
+    actionLabel: "拒绝修订候选",
+    runningMessage: "正在记录作者拒绝...",
+    successMessage: (message) => message || "修订候选已拒绝。",
+    nextStep: () => "下一步：可调整戏剧卡后重新运行诊断。",
+    action: () => workbench.rejectRevision(revisionId, resolveSceneId()),
+  });
+}
+
 async function runChapterBackfill(stageId) {
   await runFlowAction({
     scopeKey: WORKBENCH_CHAPTER_SCOPE,
@@ -510,6 +550,16 @@ onDeactivated(() => {
             <strong>{{ formatStatus(workbench.data.scene_run_state.scene_status) }}</strong>
           </div>
         </div>
+
+        <WriterReviewCard
+          :summary="writerReviewSummary"
+          :busy="workbench.actionId === 'writer-review' || workbench.actionId.startsWith('revision-')"
+          title="这一场是否成立"
+          run-label="运行戏剧诊断"
+          @run="runWriterReview"
+          @accept="acceptWriterRevision"
+          @reject="rejectWriterRevision"
+        />
 
         <article class="paper preflight-card" data-testid="scene-run-preflight-card">
           <div class="receipt-head">
@@ -780,10 +830,12 @@ onDeactivated(() => {
         >
           <div class="workbench-columns" data-testid="scene-workbench-summary-row">
             <GenerationSummaryCard
+              v-if="isAdvancedMode"
               data-testid="scene-generation-summary-card"
               :summary="generationSummary"
             />
             <QcReportCard
+              v-if="isAdvancedMode"
               data-testid="scene-qc-report-card"
               :hard-summary="hardQcSummary"
               :soft-summary="softQcSummary"

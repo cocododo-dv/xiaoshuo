@@ -21,6 +21,28 @@ const AUTHOR_CHAPTER_SCOPE = "author:chapter";
 const AUTHOR_SCENE_SCOPE = "author:scene";
 const AUTHOR_ORDER_SCOPE = "author:order";
 
+const chapterWriterBriefFields = [
+  { key: "core_promise", label: "核心承诺" },
+  { key: "plot_movement", label: "主线推进" },
+  { key: "character_shift", label: "人物变化" },
+  { key: "chapter_question", label: "章节问题" },
+  { key: "ending_aftertaste", label: "结尾余味" },
+];
+
+const sceneWriterBriefFields = [
+  { key: "character_desire", label: "人物欲望" },
+  { key: "obstacle", label: "阻碍" },
+  { key: "stakes", label: "风险/代价" },
+  { key: "secret_or_misunderstanding", label: "秘密/误解" },
+  { key: "subtext", label: "潜台词" },
+  { key: "irreversible_change", label: "不可逆变化" },
+  { key: "reader_question", label: "读者问题" },
+];
+
+function createEmptyWriterBrief(fields) {
+  return Object.fromEntries(fields.map((field) => [field.key, ""]));
+}
+
 function createEmptyChapterForm() {
   return {
     chapter_id: "",
@@ -32,6 +54,7 @@ function createEmptyChapterForm() {
     ending_effect: "",
     must_not: "",
     notes: "",
+    writer_brief_json: createEmptyWriterBrief(chapterWriterBriefFields),
   };
 }
 
@@ -50,6 +73,7 @@ function createEmptySceneForm(chapterId = "") {
     hook: "",
     target_length_band: "medium",
     scene_type: "reunion",
+    writer_brief_json: createEmptyWriterBrief(sceneWriterBriefFields),
   };
 }
 
@@ -124,6 +148,10 @@ function sceneBatchLabel(sceneId) {
 
 function assignChapterForm(nextChapter) {
   Object.assign(chapterForm, createEmptyChapterForm(), nextChapter || {});
+  chapterForm.writer_brief_json = {
+    ...createEmptyWriterBrief(chapterWriterBriefFields),
+    ...(nextChapter?.writer_brief_json || {}),
+  };
   if (!nextChapter) {
     chapterForm.chapter_id = "";
   }
@@ -159,6 +187,10 @@ function assignSceneForm(nextScene) {
     hook: nextScene.hook || "",
     target_length_band: nextScene.target_length_band || "medium",
     scene_type: nextScene.scene_type || "reunion",
+    writer_brief_json: {
+      ...createEmptyWriterBrief(sceneWriterBriefFields),
+      ...(nextScene.writer_brief_json || {}),
+    },
   });
 }
 
@@ -674,6 +706,20 @@ onActivated(() => {
               <span>备注</span>
               <textarea v-model="chapterForm.notes" class="control-input" />
             </label>
+            <section class="author-wide writer-brief-block" data-testid="author-chapter-writer-brief">
+              <div class="receipt-head compact">
+                <div>
+                  <h4>戏剧卡</h4>
+                  <p class="muted">让章节先有可读的承诺、推进和余味。</p>
+                </div>
+              </div>
+              <div class="author-form-grid compact">
+                <label v-for="field in chapterWriterBriefFields" :key="field.key">
+                  <span>{{ field.label }}</span>
+                  <textarea v-model="chapterForm.writer_brief_json[field.key]" class="control-input" />
+                </label>
+              </div>
+            </section>
           </div>
 
           <div class="card-actions">
@@ -852,6 +898,20 @@ onActivated(() => {
                 <span>场景类型</span>
                 <input v-model="sceneForm.scene_type" class="control-input" />
               </label>
+              <section class="author-wide writer-brief-block" data-testid="author-scene-writer-brief">
+                <div class="receipt-head compact">
+                  <div>
+                    <h4>戏剧卡</h4>
+                    <p class="muted">把人物要什么、被什么挡住、读者追问什么写清楚。</p>
+                  </div>
+                </div>
+                <div class="author-form-grid compact">
+                  <label v-for="field in sceneWriterBriefFields" :key="field.key">
+                    <span>{{ field.label }}</span>
+                    <textarea v-model="sceneForm.writer_brief_json[field.key]" class="control-input" />
+                  </label>
+                </div>
+              </section>
             </div>
 
             <div class="card-actions">

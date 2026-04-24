@@ -4,6 +4,7 @@ import { computed, onActivated, onMounted, reactive, ref, watch } from "vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
+import WriterReviewCard from "../components/WriterReviewCard.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useShellRouter } from "../router";
 import { useChapterManuscriptsStore } from "../stores/chapterManuscripts";
@@ -72,6 +73,7 @@ const scenes = computed(() => detail.value?.scenes || []);
 const selectedScene = computed(() => scenes.value.find((scene) => scene.scene_id === selectedSceneId.value) || null);
 const assembled = computed(() => detail.value?.assembled || null);
 const aggregate = computed(() => detail.value?.aggregate || null);
+const writerReviewSummary = computed(() => detail.value?.writer_review_summary || null);
 const missingSceneIds = computed(() => assembled.value?.missing_scene_ids || []);
 const canUseAggregate = computed(() => manuscripts.canUseAggregate);
 const showAssembled = computed(() => readingSource.value === "both" || readingSource.value === "assembled");
@@ -400,6 +402,39 @@ function openSceneWorkbench(sceneId) {
 
 function openTrashView() {
   navigate("trash");
+}
+
+async function runWriterReview() {
+  await runFlowAction({
+    scopeKey: MANUSCRIPT_SCOPE,
+    actionLabel: "运行章节作家诊断",
+    runningMessage: "正在诊断章节阅读效果...",
+    successMessage: (message) => message || "章节作家诊断已完成。",
+    nextStep: () => "下一步：查看节奏断点、场景缺口和候选修订。",
+    action: () => manuscripts.runWriterReview(manuscripts.selectedChapterId),
+  });
+}
+
+async function acceptWriterRevision(revisionId) {
+  await runFlowAction({
+    scopeKey: MANUSCRIPT_SCOPE,
+    actionLabel: "采纳章节修订候选",
+    runningMessage: "正在记录作者采纳...",
+    successMessage: (message) => message || "修订候选已采纳；章节正文未被覆盖。",
+    nextStep: () => "下一步：人工合并候选，或继续调整章节结构。",
+    action: () => manuscripts.acceptRevision(revisionId, manuscripts.selectedChapterId),
+  });
+}
+
+async function rejectWriterRevision(revisionId) {
+  await runFlowAction({
+    scopeKey: MANUSCRIPT_SCOPE,
+    actionLabel: "拒绝章节修订候选",
+    runningMessage: "正在记录作者拒绝...",
+    successMessage: (message) => message || "修订候选已拒绝。",
+    nextStep: () => "下一步：可修改戏剧卡后重新诊断。",
+    action: () => manuscripts.rejectRevision(revisionId, manuscripts.selectedChapterId),
+  });
 }
 
 async function copyManuscript(source) {
@@ -750,6 +785,16 @@ onActivated(() => {
             <FlowActionReceipt :receipt="receipt(TRASH_SCOPE)" />
           </div>
         </section>
+
+        <WriterReviewCard
+          :summary="writerReviewSummary"
+          :busy="manuscripts.actionId === 'writer-review' || manuscripts.actionId.startsWith('revision-')"
+          title="这一章读起来是否成立"
+          run-label="运行章节诊断"
+          @run="runWriterReview"
+          @accept="acceptWriterRevision"
+          @reject="rejectWriterRevision"
+        />
 
         <section class="paper manuscript-reader">
           <div class="receipt-head">

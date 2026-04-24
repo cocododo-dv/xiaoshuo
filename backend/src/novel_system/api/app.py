@@ -20,6 +20,7 @@ from novel_system.api.routes import (
     scenes,
     style_profile,
     system_config,
+    writer_review,
 )
 from novel_system.db import models  # noqa: F401
 from novel_system.db.base import Base
@@ -91,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(chapters.router)
     app.include_router(chapter_manuscripts.router)
     app.include_router(scenes.router)
+    app.include_router(writer_review.router)
     app.include_router(review.router)
     app.include_router(domain.router)
     app.include_router(knowledge.router)

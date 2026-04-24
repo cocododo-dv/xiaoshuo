@@ -258,6 +258,7 @@ class ReferenceLearningService:
     def detail(self, book_id: str) -> dict[str, Any]:
         book = self._book(book_id)
         self._sync_profiles_for_book(book_id)
+        learning_tree_summary = self.learning_tree_summary(book_id)
         return {
             "book": self.serialize_book(book),
             "stats": dict(book.stats_json or {}),
@@ -265,7 +266,57 @@ class ReferenceLearningService:
             "latest_run": self._latest_run_payload(book_id),
             "latest_round": self._latest_round_payload(book_id),
             "profiles": [self.serialize_profile(profile) for profile in self._profiles_for_book(book_id)],
+            "learning_tree_summary": learning_tree_summary,
         }
+
+    def learning_tree(self, book_id: str) -> dict[str, Any]:
+        book = self._book(book_id)
+        self._sync_profiles_for_book(book_id)
+        runs = self._runs_for_book(book_id)
+        profiles = self._profiles_for_book(book_id)
+        run_payloads: list[dict[str, Any]] = []
+        review_decisions: list[dict[str, Any]] = []
+        finding_count = 0
+        round_count = 0
+        for run in runs:
+            round_payloads = [self.serialize_round(round_row) for round_row in self._rounds_for_run(run.run_id)]
+            for round_payload in round_payloads:
+                findings = round_payload.get("findings") or []
+                finding_count += len(findings)
+                review_decisions.extend(
+                    finding["review"]
+                    for finding in findings
+                    if isinstance(finding, dict) and isinstance(finding.get("review"), dict)
+                )
+            run_payload = self.serialize_run(run)
+            run_payload["rounds"] = round_payloads
+            run_payloads.append(run_payload)
+            round_count += len(round_payloads)
+        profile_payloads = [self.serialize_profile(profile) for profile in profiles]
+        apply_reviews = self._apply_reviews_for_profiles(profiles)
+        active_knowledge_refs = self._active_knowledge_refs_from_reviews(apply_reviews)
+        summary = self._learning_tree_summary(
+            runs=runs,
+            round_count=round_count,
+            finding_count=finding_count,
+            review_decisions=review_decisions,
+            profiles=profiles,
+            apply_reviews=apply_reviews,
+            active_knowledge_refs=active_knowledge_refs,
+        )
+        return {
+            "book": self.serialize_book(book),
+            "summary": summary,
+            "runs": run_payloads,
+            "review_decisions": review_decisions,
+            "profiles": profile_payloads,
+            "apply_reviews": apply_reviews,
+            "active_knowledge_refs": active_knowledge_refs,
+        }
+
+    def learning_tree_summary(self, book_id: str) -> dict[str, Any]:
+        tree = self.learning_tree(book_id)
+        return dict(tree["summary"])
 
     def start_run(self, book_id: str, *, batch_size: int = 8) -> dict[str, Any]:
         book = self._book(book_id)
@@ -1333,6 +1384,7 @@ class ReferenceLearningService:
             "display_safety_summary": display_safety_summary,
             "source_finding_ids": profile.source_finding_ids_json,
             "application_status": self._profile_application_status(profile),
+            "writer_review_summary": _reference_writer_review_summary(display_profile_json),
             "model_trace": self._model_trace_for_profile(profile),
             "created_at": profile.created_at,
             "updated_at": profile.updated_at,
@@ -1449,6 +1501,76 @@ class ReferenceLearningService:
         if run is None or run.book_id != book_id:
             raise DomainError("REFERENCE_RUN_NOT_FOUND", f"reference run {run_id} not found", status_code=404)
         return run
+
+    def _runs_for_book(self, book_id: str) -> list[ReferenceLearningRun]:
+        return self.session.execute(
+            select(ReferenceLearningRun)
+            .where(ReferenceLearningRun.book_id == book_id)
+            .order_by(ReferenceLearningRun.created_at.asc(), ReferenceLearningRun.run_id.asc())
+        ).scalars().all()
+
+    def _rounds_for_run(self, run_id: str) -> list[ReferenceLearningRound]:
+        return self.session.execute(
+            select(ReferenceLearningRound)
+            .where(ReferenceLearningRound.run_id == run_id)
+            .order_by(ReferenceLearningRound.round_index.asc(), ReferenceLearningRound.created_at.asc())
+        ).scalars().all()
+
+    def _apply_reviews_for_profiles(self, profiles: list[ReferenceProfile]) -> list[dict[str, Any]]:
+        reviews: list[ReviewItem] = []
+        for profile in sorted(profiles, key=lambda item: (item.created_at or "", item.profile_id)):
+            prefix = f"review_apply_{_safe_key(profile.profile_id)}_"
+            rows = self.session.execute(
+                select(ReviewItem)
+                .where(ReviewItem.review_id.like(f"{prefix}%"))
+                .order_by(ReviewItem.created_at.asc(), ReviewItem.review_id.asc())
+            ).scalars().all()
+            reviews.extend(rows)
+        return [self.serialize_review(review) for review in reviews]
+
+    @staticmethod
+    def _active_knowledge_refs_from_reviews(apply_reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        refs: list[dict[str, Any]] = []
+        for review in apply_reviews:
+            if review.get("status") != "approved":
+                continue
+            approved_ref = review.get("approved_item_id") or review.get("approved_item_row_id")
+            if not approved_ref:
+                continue
+            refs.append(
+                {
+                    "review_id": review.get("review_id"),
+                    "item_type": review.get("item_type"),
+                    "target_collection": review.get("target_collection"),
+                    "approved_item_id": review.get("approved_item_id"),
+                    "approved_item_row_id": review.get("approved_item_row_id"),
+                }
+            )
+        return refs
+
+    @staticmethod
+    def _learning_tree_summary(
+        *,
+        runs: list[ReferenceLearningRun],
+        round_count: int,
+        finding_count: int,
+        review_decisions: list[dict[str, Any]],
+        profiles: list[ReferenceProfile],
+        apply_reviews: list[dict[str, Any]],
+        active_knowledge_refs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        review_statuses = [str(review.get("status") or "unknown") for review in review_decisions]
+        return {
+            "run_count": len(runs),
+            "round_count": round_count,
+            "finding_count": finding_count,
+            "pending_findings": review_statuses.count("pending"),
+            "approved_findings": review_statuses.count("approved"),
+            "rejected_findings": review_statuses.count("rejected"),
+            "profile_count": len(profiles),
+            "apply_review_count": len(apply_reviews),
+            "active_knowledge_ref_count": len(active_knowledge_refs),
+        }
 
     def _latest_run_payload(self, book_id: str) -> dict[str, Any] | None:
         run = self.session.execute(
@@ -1839,6 +1961,23 @@ def _profile_preview_items(profile_json: dict[str, Any]) -> list[str]:
             if len(preview_items) >= 4:
                 break
     return preview_items[:4]
+
+
+def _reference_writer_review_summary(profile_json: dict[str, Any]) -> dict[str, Any]:
+    preview_items = _profile_preview_items(profile_json)
+    banned = profile_json.get("banned_replication_rules")
+    if not isinstance(banned, list):
+        banned = profile_json.get("banned_moves")
+    if not isinstance(banned, list):
+        banned = []
+    narrative_patterns = profile_json.get("narrative_patterns")
+    suitable_scenes = narrative_patterns if isinstance(narrative_patterns, list) else []
+    return {
+        "status": "ready" if preview_items else "not_ready",
+        "transferable_techniques": [str(item) for item in preview_items[:5]],
+        "forbidden_replication": [str(item) for item in banned[:5]],
+        "suitable_scenes": [str(item) for item in suitable_scenes[:5]],
+    }
 
 
 def _profile_stripped_count(profile: ReferenceProfile) -> int:
