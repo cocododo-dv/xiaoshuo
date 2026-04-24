@@ -4,6 +4,7 @@ import { computed, onActivated, reactive, ref, watch } from "vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useShellRouter } from "../router";
 import { useAuthorWorkspaceStore } from "../stores/authorWorkspace";
@@ -483,6 +484,7 @@ onActivated(() => {
 
 <template>
   <section class="panel-grid" data-testid="author-workspace-view">
+    <WorkflowPageHeader view-id="author" />
     <PanelShell
       eyebrow="作者工作台"
       title="在进入运行时之前编排活跃章节"

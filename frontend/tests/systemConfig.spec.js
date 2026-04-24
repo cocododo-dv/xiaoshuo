@@ -704,6 +704,87 @@ describe("system config store", () => {
     expect(store.providerProbeResults.local_qwen.checks.completion.ok).toBe(true);
   });
 
+  it("tracks llm provider probe loading per provider", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+
+    await store.loadLlmConfig();
+
+    let resolveProbe;
+    globalThis.fetch = vi.fn((url, options = {}) => {
+      if (url.endsWith("/api/v1/system-config/llm/providers/openai_primary/probe") && options.method === "POST") {
+        return new Promise((resolve) => {
+          resolveProbe = () => resolve(ok({
+            ok: true,
+            status_code: 200,
+            latency_ms: 42,
+            message: "模型 gpt-5.4 已在服务列表中找到",
+            checks: {
+              connection: { ok: true },
+              model: { ok: true, requested_model: "gpt-5.4" },
+            },
+          }));
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const probePromise = store.probeLlmProvider("openai_primary");
+    await Promise.resolve();
+
+    expect(store.testing).toBe(false);
+    expect(store.providerProbePending.openai_primary).toBe(true);
+    expect(store.providerProbePending.local_qwen).toBeUndefined();
+
+    resolveProbe();
+    await probePromise;
+
+    expect(store.providerProbePending).toEqual({});
+    expect(store.providerProbeResults.openai_primary.ok).toBe(true);
+  });
+
+  it("drops stale provider probe results when provider config reloads", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.providerProbeResults = {
+      cli_proxy: {
+        ok: false,
+        message: "404 page not found",
+        checks: {
+          connection: { ok: false },
+          completion: { ok: false },
+        },
+      },
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url.endsWith("/api/v1/system-config/llm")) {
+        return ok({
+          provider_catalog: {},
+          providers: {
+            cli_proxy: {
+              provider_id: "cli_proxy",
+              provider_type: "openai_compatible",
+              account_id: "relay",
+              base_url: "http://127.0.0.1:8317/v1",
+              enabled: true,
+              credential_mode: "api_key",
+              api_mode: "chat",
+              models: ["gemini-3.1-pro-preview"],
+              secret: { configured: true, hint: "****" },
+            },
+          },
+          node_routes: {},
+        });
+      }
+      return ok({});
+    });
+
+    await store.loadLlmConfig();
+
+    expect(store.providerProbeResults).toEqual({});
+  });
+
   it("loads and runs the literary eval summary from system config", async () => {
     const { useSystemConfigStore } = await import("../src/stores/systemConfig");
     const store = useSystemConfigStore();
@@ -826,7 +907,8 @@ describe("system config shell registration", () => {
 
     expect(appSource).toContain("SystemConfigView");
     expect(routerSource).toContain('id: "config"');
-    expect(routerSource).toContain('label: "系统配置"');
+    expect(routerSource).toContain('label: "1 配置环境"');
+    expect(routerSource).toContain('legacyLabel: "系统配置"');
     expect(existsSync(new URL("../src/stores/systemConfig.js", import.meta.url))).toBe(true);
     expect(existsSync(new URL("../src/views/SystemConfigView.vue", import.meta.url))).toBe(true);
     expect(viewSource).toContain("config-literary-eval-summary");

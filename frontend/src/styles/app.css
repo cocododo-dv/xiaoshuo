@@ -4,6 +4,8 @@
   --paper-strong: #f7f1e5;
   --accent: #a33f2f;
   --accent-hover: #c44d3b;
+  --sage: #4f6f63;
+  --blue: #315a73;
   --navy: #253342;
   --navy-hover: #364a60;
   --shadow: rgba(27, 24, 21, 0.16);
@@ -123,6 +125,10 @@ pre {
   grid-template-columns: 14.5rem minmax(0, 1fr);
 }
 
+.shell.ui-mode-advanced {
+  grid-template-columns: 16rem minmax(0, 1fr);
+}
+
 .rail {
   background: linear-gradient(180deg, rgba(36, 50, 60, 0.96), rgba(31, 38, 42, 0.96));
   color: #f5ecde;
@@ -173,6 +179,144 @@ pre {
   display: grid;
   gap: 0.65rem;
   align-content: start;
+}
+
+.workflow-nav {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.workflow-nav-group {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.workflow-nav-group-head {
+  display: grid;
+  gap: 0.12rem;
+  padding: 0 0.25rem;
+}
+
+.workflow-nav-group-head strong {
+  font-size: 0.78rem;
+  color: rgba(245, 236, 222, 0.92);
+}
+
+.workflow-nav-group-head span {
+  color: rgba(245, 236, 222, 0.58);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.workflow-nav-btn {
+  width: 100%;
+  min-height: 3.15rem;
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: center;
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.workflow-nav-btn.active {
+  background: linear-gradient(135deg, var(--accent) 0%, #c96b48 100%);
+}
+
+.workflow-nav-icon {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.workflow-nav-copy {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.workflow-nav-copy strong,
+.workflow-nav-copy small {
+  overflow-wrap: anywhere;
+}
+
+.workflow-nav-copy strong {
+  font-size: 0.95rem;
+}
+
+.workflow-nav-copy small {
+  color: rgba(245, 236, 222, 0.68);
+  font-size: 0.76rem;
+}
+
+.workflow-nav-route {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.12rem 0.38rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(245, 236, 222, 0.62);
+  font-size: 0.68rem;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.ui-mode-guided .workflow-nav {
+  gap: 0.72rem;
+}
+
+.ui-mode-guided .workflow-nav-group-head span {
+  display: none;
+}
+
+.ui-mode-guided .workflow-nav-btn {
+  min-height: 2.75rem;
+}
+
+.ui-mode-advanced .workflow-nav-btn {
+  min-height: 3.8rem;
+}
+
+.ui-mode-switch {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.ui-mode-switch-head {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  color: rgba(245, 236, 222, 0.78);
+  font-size: 0.78rem;
+}
+
+.ui-mode-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.ui-mode-option {
+  min-height: 2.25rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  text-align: center;
+}
+
+.ui-mode-option.active {
+  background: rgba(245, 236, 222, 0.94);
+  color: var(--navy);
 }
 
 .nav-btn {
@@ -448,6 +592,130 @@ pre {
   margin-top: 0;
 }
 
+.workflow-page-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, auto);
+  gap: 1.1rem;
+  align-items: start;
+  padding: 1.15rem 1.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.68), rgba(247, 241, 229, 0.82)),
+    rgba(247, 241, 229, 0.94);
+  box-shadow: 0 12px 28px rgba(27, 24, 21, 0.1);
+}
+
+.workflow-page-copy {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.workflow-step-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.workflow-step-kicker span {
+  padding: 0.16rem 0.5rem;
+  border-radius: 8px;
+  background: rgba(163, 63, 47, 0.1);
+}
+
+.workflow-page-header h1 {
+  margin: 0;
+  line-height: 1.05;
+  font-size: clamp(1.55rem, 2vw, 2.15rem);
+}
+
+.workflow-page-header p {
+  margin: 0;
+  max-width: 54rem;
+  color: rgba(27, 24, 21, 0.68);
+  line-height: 1.55;
+}
+
+.workflow-guided-brief,
+.workflow-advanced-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-top: 0.25rem;
+}
+
+.workflow-guided-brief span,
+.workflow-advanced-meta span {
+  padding: 0.24rem 0.52rem;
+  border-radius: 8px;
+  font-size: 0.75rem;
+}
+
+.workflow-guided-brief span {
+  background: rgba(79, 111, 99, 0.13);
+  color: #365f53;
+  font-weight: 700;
+}
+
+.workflow-guided-brief strong {
+  color: rgba(27, 24, 21, 0.76);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.workflow-advanced-meta span {
+  background: rgba(37, 51, 66, 0.08);
+  color: rgba(37, 51, 66, 0.74);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.ui-mode-advanced .workflow-page-header {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(238, 243, 241, 0.8)),
+    rgba(247, 241, 229, 0.94);
+  box-shadow: inset 4px 0 0 rgba(49, 90, 115, 0.24), 0 12px 28px rgba(27, 24, 21, 0.1);
+}
+
+.workflow-next {
+  display: grid;
+  gap: 0.55rem;
+  justify-items: end;
+}
+
+.workflow-next > span {
+  color: rgba(27, 24, 21, 0.58);
+  font-size: 0.78rem;
+}
+
+.workflow-next-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+
+.workflow-next-actions button {
+  min-height: 2.35rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+}
+
+.workflow-next-actions .ghost {
+  color: var(--navy);
+  background: rgba(37, 51, 66, 0.08);
+}
+
+.workflow-next-actions .ghost:hover {
+  color: #fff;
+  background: var(--navy);
+}
+
 .view-fade-enter-active,
 .view-fade-leave-active {
   transition: opacity 90ms ease, transform 90ms ease;
@@ -462,7 +730,7 @@ pre {
 .panel {
   background: rgba(247, 241, 229, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.6);
-  border-radius: 1.7rem;
+  border-radius: 8px;
   padding: 1.4rem;
   box-shadow: 0 14px 32px rgba(27, 24, 21, 0.12);
 }
@@ -509,9 +777,64 @@ pre {
   flex: 1 1 260px;
   min-width: 0;
   padding: 1rem 1.1rem;
-  border-radius: 1.2rem;
+  border-radius: 8px;
   background: var(--paper-strong);
   border: 1px solid var(--line);
+}
+
+.evidence-disclosure {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid rgba(37, 51, 66, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.evidence-disclosure-advanced {
+  border-color: rgba(49, 90, 115, 0.24);
+  box-shadow: inset 4px 0 0 rgba(49, 90, 115, 0.22);
+}
+
+.evidence-disclosure-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.evidence-disclosure-head h3 {
+  margin: 0;
+}
+
+.evidence-disclosure-toggle {
+  flex: 0 0 auto;
+  min-height: 2.35rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+}
+
+.evidence-disclosure-body {
+  display: grid;
+  gap: 1rem;
+}
+
+.danger-confirm {
+  display: grid;
+  gap: 0.45rem;
+  justify-items: start;
+}
+
+.danger-confirm-message {
+  margin: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  background: rgba(163, 63, 47, 0.1);
+  color: #7c2b20;
+}
+
+.danger-button {
+  background: var(--accent);
 }
 
 .paper h3 {
@@ -2832,7 +3155,11 @@ pre {
 
 @media (max-width: 980px) {
   .shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shell.ui-mode-advanced {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .stage {
@@ -2845,6 +3172,8 @@ pre {
 
   .rail {
     padding: 1.2rem;
+    width: 100%;
+    max-width: 100%;
     min-height: auto;
     position: static;
   }
@@ -2852,7 +3181,9 @@ pre {
   .panel-head,
   .actions,
   .field-inline,
-  .job-row {
+  .job-row,
+  .workflow-page-header,
+  .evidence-disclosure-head {
     flex-direction: column;
     align-items: stretch;
   }
@@ -2896,6 +3227,18 @@ pre {
   .manuscript-reader-grid,
   .manuscript-reader-grid.single {
     grid-template-columns: 1fr;
+  }
+
+  .workflow-page-header {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-next {
+    justify-items: start;
+  }
+
+  .workflow-next-actions {
+    justify-content: flex-start;
   }
 
   .manuscript-scene-row,

@@ -23,6 +23,7 @@ function createWorkbenchPayload({
     repeat_issue_count: 0,
   },
   humanReviewSummary = null,
+  source_safety_scan = null,
 } = {}) {
   return {
     chapter_goal: {
@@ -76,6 +77,12 @@ function createWorkbenchPayload({
     final_scene: sceneStatus === "archived" ? { row_id: `final_scene_${sceneId}`, content: "Final scene" } : null,
     scene_memory: sceneStatus === "archived" ? { row_id: `scene_memory_${sceneId}`, content: "Scene memory" } : null,
     attempts: [],
+    source_safety_scan: source_safety_scan || {
+      safe: true,
+      blocked_terms: [],
+      source_profile_ids: [],
+      checked_at: "2026-04-23T00:00:00+00:00",
+    },
   };
 }
 
@@ -346,6 +353,50 @@ describe("scene workbench generation evidence", () => {
         repeat_issue_key: null,
       }),
     );
+  });
+
+  it("renders deterministic source safety scan status for archived scene text", async () => {
+    const sceneId = "CH003_SC01";
+    const unsafeScan = {
+      safe: false,
+      blocked_terms: ["龙族", "路明非"],
+      source_profile_ids: ["refprofile_longzu_safe"],
+      checked_at: "2026-04-23T00:00:00+00:00",
+    };
+    const mounted = await mountWorkbenchView(
+      sceneId,
+      createSceneFetchMock({
+        sceneId,
+        initialPayload: createWorkbenchPayload({
+          sceneId,
+          chapterId: "CH003",
+          sceneStatus: "archived",
+          source_safety_scan: unsafeScan,
+        }),
+        refreshedPayload: createWorkbenchPayload({
+          sceneId,
+          chapterId: "CH003",
+          sceneStatus: "archived",
+          source_safety_scan: unsafeScan,
+        }),
+      }),
+    );
+    const _unusedSafetyScan = {
+      safe: false,
+      blocked_terms: ["龙族", "路明非"],
+      source_profile_ids: ["refprofile_longzu_safe"],
+      checked_at: "2026-04-23T00:00:00+00:00",
+    };
+    await flushUi();
+
+    try {
+      expect(mounted.container.querySelector('[data-testid="scene-source-safety-card"]')).not.toBeNull();
+      expect(mounted.container.textContent).toContain("源书安全扫描");
+      expect(mounted.container.textContent).toContain("命中 2 个保护标记");
+      expect(mounted.container.textContent).toContain("refprofile_longzu_safe");
+    } finally {
+      mounted.unmount();
+    }
   });
 });
 

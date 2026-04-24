@@ -4,14 +4,17 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, reacti
 import ActivitySectionCard from "../components/ActivitySectionCard.vue";
 import AliasScopeCard from "../components/AliasScopeCard.vue";
 import CursorPager from "../components/CursorPager.vue";
+import EvidenceDisclosure from "../components/EvidenceDisclosure.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import TargetActivityGroupCard from "../components/TargetActivityGroupCard.vue";
 import VirtualList from "../components/VirtualList.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { useUiMode } from "../composables/useUiMode";
 import { shouldClearIndexFocus } from "../lib/filterFocus";
 import { prioritizeMatchingItem } from "../lib/listPriority";
-import { formatReadableTargetRef } from "../lib/readableRefs";
+import { formatGuidedTargetRef, formatReadableTargetRef } from "../lib/readableRefs";
 import { useShellRouter } from "../router";
 import { useIndexConsoleStore } from "../stores/indexConsole";
 
@@ -22,6 +25,7 @@ const isViewActive = ref(false);
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
+const { isAdvancedMode } = useUiMode();
 const INDEX_ACTION_SCOPE = "index:action";
 const INDEX_JOB_SCOPE = "index:job";
 
@@ -75,6 +79,7 @@ const failedVerificationCount = computed(() =>
 const recoveryEventCount = computed(() =>
   indexConsole.lastRecoveryResult?.created_human_review_events ?? indexConsole.recoveryTimelineItems.length,
 );
+const indexUiModeVersion = computed(() => (isAdvancedMode.value ? "advanced" : "guided"));
 
 const prioritizedJobs = computed(() => {
   const focusJobId = ["verify_job", "reindex_job"].includes(focusTargetType.value) ? focusTargetId.value : null;
@@ -163,7 +168,16 @@ const recoveryResolution = (item) => item?.resolution_reason || item?.details_js
 const recoveryAction = (item) => item?.action || item?.last_action || item?.details_json?.last_action || item?.default_action || "inspect";
 const recoveryFollowup = (item) => [item?.followup_action || item?.details_json?.followup_action, item?.followup_target_ref || item?.details_json?.followup_target_ref].filter(Boolean).join(" -> ") || "-";
 const operatorSummary = (item) => [fmtAction(item?.action, item?.action || "-"), fmtStatus(item?.status_before, item?.status_before || "-"), "->", fmtStatus(item?.status_after, item?.status_after || "-")].join(" ");
-const targetSummary = (item) => [fmtSource(item?.source, item?.source || "-"), fmtStatus(item?.status, item?.status || "-"), fmtValue(item?.actor_ref), fmtValue(item?.timestamp)].join(" | ");
+const targetSummary = (item) => {
+  const visibleParts = [fmtSource(item?.source, item?.source || "-"), fmtStatus(item?.status, item?.status || "-")];
+  if (!isAdvancedMode.value) return [...visibleParts, fmtValue(item?.timestamp)].join(" | ");
+  return [...visibleParts, fmtValue(item?.actor_ref), fmtValue(item?.timestamp)].join(" | ");
+};
+
+function displayTargetRef(targetRef) {
+  const readable = isAdvancedMode.value ? formatReadableTargetRef(targetRef) : formatGuidedTargetRef(targetRef);
+  return readable.label || readable.raw || "-";
+}
 
 function parseTargetRef(targetRef) {
   if (!targetRef || !targetRef.includes(":")) return null;
@@ -207,14 +221,17 @@ function indexRecoveryRow(item) {
   const activityKey = activityItemKey("recovery_timeline", item);
   const action = recoveryAction(item);
   const followup = recoveryFollowup(item);
+  const targetRef = recoveryTargetRef(item);
 
   return {
     item,
     activityKey,
     eventId: item?.event_id,
-    title: item?.event_id || item?.label || "Recovery event",
+    title: isAdvancedMode.value ? (item?.event_id || item?.label || "Recovery event") : (item?.label || "恢复事件"),
     meta: `${recoveryTimestamp(item)} | ${fmtStatus(item?.status, item?.status || "-")} | ${recoveryActor(item)}`,
-    detail: `Target: ${recoveryTargetRef(item)} | Action: ${fmtAction(action, action)} | Result: ${recoveryResolution(item)}`,
+    detail: isAdvancedMode.value
+      ? `target_ref: ${targetRef} | action: ${fmtAction(action, action)} | result: ${recoveryResolution(item)}`
+      : `目标：${displayTargetRef(targetRef)} | 建议：${fmtAction(action, action)} | 结果：${recoveryResolution(item)}`,
     followup,
     showFollowup: followup !== "-",
     humanTarget: humanReviewTarget(item?.event_id),
@@ -269,14 +286,18 @@ function indexTargetGroupRow(group) {
 
 function indexJobRow(item) {
   const readableAlias = formatReadableTargetRef(item?.alias_scope);
+  const jobTypeLabel = fmtJobType(item?.job_type, item?.job_type || "-");
+  const statusLabel = fmtStatus(item?.status, item?.status || "-");
   return {
     item,
     jobId: item?.job_id || "",
+    reviewId: item?.review_id || "",
     jobType: item?.job_type || "",
-    jobTypeLabel: fmtJobType(item?.job_type, item?.job_type || "-"),
+    jobTypeLabel,
     aliasScope: readableAlias.label,
     rawAliasScope: readableAlias.raw || "-",
-    statusLabel: fmtStatus(item?.status, item?.status || "-"),
+    statusLabel,
+    jobSummary: [jobTypeLabel, statusLabel, readableAlias.label].filter(Boolean).join(" · "),
     targetSnapshotVersion: item?.target_snapshot_version || "-",
     targetEmbeddingVersion: item?.target_embedding_version || "-",
     workerId: item?.worker_id || "-",
@@ -571,6 +592,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="panel-grid" data-testid="index-console-view">
+    <WorkflowPageHeader view-id="index" />
     <PanelShell
       eyebrow="索引控制台"
       title="发布、校验与恢复"
@@ -608,29 +630,38 @@ onBeforeUnmount(() => {
       <div v-if="indexConsole.loading" class="empty">正在加载别名范围...</div>
       <div v-else-if="indexConsole.error && !indexConsole.aliasScopes.length && !indexConsole.jobs.length" class="empty">{{ indexConsole.error }}</div>
       <template v-else>
-        <div class="field-inline">
-          <select v-model="indexConsole.aliasFilters.verifyStatus" data-testid="index-alias-filter-verify-status"><option value="">全部别名校验状态</option><option value="pending">待处理</option><option value="failed">失败</option><option value="succeeded">成功</option></select>
-          <button data-testid="index-alias-filter-refresh" @click="refreshIndex">刷新</button>
-          <button data-testid="index-alias-filter-clear" @click="clearAliasFilters">清空</button>
-        </div>
-        <div class="field-inline">
-          <select v-model="indexConsole.jobFilters.jobType" data-testid="index-job-filter-job-type"><option value="">全部任务</option><option value="verify">校验任务</option><option value="reindex">重建任务</option></select>
-          <input v-model="indexConsole.jobFilters.reviewId" data-testid="index-job-filter-review-id" placeholder="审核 ID" />
-          <input v-model="indexConsole.jobFilters.workerId" data-testid="index-job-filter-worker-id" placeholder="工作器 ID" />
-          <label class="checkbox-inline"><input v-model="indexConsole.jobFilters.stuckOnly" data-testid="index-job-filter-stuck-only" type="checkbox" /><span>仅看卡住任务</span></label>
-          <button data-testid="index-job-filter-refresh" @click="refreshIndex">刷新</button>
-          <button data-testid="index-job-filter-clear" @click="clearJobFilters">清空</button>
-        </div>
-        <div class="field-inline">
-          <input v-model="indexConsole.ledgerFilters.targetRef" data-testid="index-ledger-filter-target-ref" placeholder="目标引用" />
-          <select v-model="indexConsole.ledgerFilters.source" data-testid="index-ledger-filter-source"><option value="">全部来源</option><option value="recovery_timeline">恢复时间线</option><option value="system_runtime">系统活动</option><option value="operator_action">人工操作活动</option></select>
-          <button data-testid="index-ledger-filter-refresh" @click="refreshIndex">刷新</button>
-          <button data-testid="index-ledger-filter-clear" @click="clearLedgerFilters">清空</button>
-        </div>
-        <div v-if="!indexConsole.aliasScopes.length" class="empty">还没有别名范围。</div>
-        <div v-else class="alias-grid">
-          <AliasScopeCard v-for="item in indexConsole.aliasScopes" :key="item.alias_scope" :item="item" />
-        </div>
+        <EvidenceDisclosure
+          title="高级索引证据"
+          summary="别名范围、任务筛选和目标引用适合排查发布链路时查看。"
+          test-id="index-advanced-evidence"
+        >
+          <div class="field-inline">
+            <select v-model="indexConsole.aliasFilters.verifyStatus" data-testid="index-alias-filter-verify-status"><option value="">全部别名校验状态</option><option value="pending">待处理</option><option value="failed">失败</option><option value="succeeded">成功</option></select>
+            <button data-testid="index-alias-filter-refresh" @click="refreshIndex">刷新</button>
+            <button data-testid="index-alias-filter-clear" @click="clearAliasFilters">清空</button>
+          </div>
+          <div class="field-inline">
+            <select v-model="indexConsole.jobFilters.jobType" data-testid="index-job-filter-job-type"><option value="">全部任务</option><option value="verify">校验任务</option><option value="reindex">重建任务</option></select>
+            <input v-model="indexConsole.jobFilters.reviewId" data-testid="index-job-filter-review-id" :placeholder='isAdvancedMode ? "审核 ID" : "审核线索"' />
+            <input v-model="indexConsole.jobFilters.workerId" data-testid="index-job-filter-worker-id" :placeholder='isAdvancedMode ? "工作器 ID" : "工作器"' />
+            <label class="checkbox-inline"><input v-model="indexConsole.jobFilters.stuckOnly" data-testid="index-job-filter-stuck-only" type="checkbox" /><span>仅看卡住任务</span></label>
+            <button data-testid="index-job-filter-refresh" @click="refreshIndex">刷新</button>
+            <button data-testid="index-job-filter-clear" @click="clearJobFilters">清空</button>
+          </div>
+          <div class="field-inline">
+            <input v-model="indexConsole.ledgerFilters.targetRef" data-testid="index-ledger-filter-target-ref" :placeholder='isAdvancedMode ? "目标引用" : "目标线索"' />
+            <select v-model="indexConsole.ledgerFilters.source" data-testid="index-ledger-filter-source"><option value="">全部来源</option><option value="recovery_timeline">恢复时间线</option><option value="system_runtime">系统活动</option><option value="operator_action">人工操作活动</option></select>
+            <button data-testid="index-ledger-filter-refresh" @click="refreshIndex">刷新</button>
+            <button data-testid="index-ledger-filter-clear" @click="clearLedgerFilters">清空</button>
+          </div>
+          <p v-if="isAdvancedMode" class="muted" data-testid="index-target-filter-technical-ref">
+            支持 target_ref、review_id、job_id 等原始引用筛选。
+          </p>
+          <div v-if="!indexConsole.aliasScopes.length" class="empty">还没有别名范围。</div>
+          <div v-else class="alias-grid">
+            <AliasScopeCard v-for="item in indexConsole.aliasScopes" :key="item.alias_scope" :item="item" />
+          </div>
+        </EvidenceDisclosure>
 
         <!-- RECEIPTS -->
         <article v-if="indexConsole.lastRecoveryResult" class="paper receipt-card" data-testid="recovery-receipt" :class="{ 'focused-card': isFocusedSource('recovery_sweep', indexConsole.lastRecoveryResult?.actor_ref || '__recovery_sweep__') }">
@@ -671,10 +702,10 @@ onBeforeUnmount(() => {
             <p><strong>已发布数量</strong><br />{{ indexConsole.lastPromotionResult.promoted ?? 0 }}</p>
             <p><strong>执行者</strong><br />{{ indexConsole.lastPromotionResult.actor_ref || "-" }}</p>
             <p><strong>别名范围</strong><br />{{ indexConsole.lastPromotionResult.promoted_alias_scopes?.join(", ") || "-" }}</p>
-            <p><strong>审核 ID</strong><br />{{ indexConsole.lastPromotionResult.promoted_review_ids?.join(", ") || "-" }}</p>
+            <p><strong>{{ isAdvancedMode ? "审核 ID" : "审核线索" }}</strong><br />{{ isAdvancedMode ? (indexConsole.lastPromotionResult.promoted_review_ids?.join(", ") || "-") : `${indexConsole.lastPromotionResult.promoted ?? 0} 个审核已进入发布链路` }}</p>
           </div>
           <div v-if="(indexConsole.lastPromotionResult.promoted_review_targets || []).length" class="card-actions">
-            <button v-for="item in indexConsole.lastPromotionResult.promoted_review_targets" :key="item.review_id" type="button" class="ghost" :data-testid="`promotion-open-review-${item.review_id}`" @click="jumpToTarget(withIndexFocusTarget(item.target || reviewTarget(item.review_id), 'promotion_receipt', indexConsole.lastPromotionResult?.actor_ref || '__promotion_receipt__'))">打开审核 {{ item.review_id }}</button>
+            <button v-for="item in indexConsole.lastPromotionResult.promoted_review_targets" :key="item.review_id" type="button" class="ghost" :data-testid="`promotion-open-review-${item.review_id}`" @click="jumpToTarget(withIndexFocusTarget(item.target || reviewTarget(item.review_id), 'promotion_receipt', indexConsole.lastPromotionResult?.actor_ref || '__promotion_receipt__'))">{{ isAdvancedMode ? `打开审核 ${item.review_id}` : "打开审核" }}</button>
           </div>
         </article>
 
@@ -697,6 +728,7 @@ onBeforeUnmount(() => {
               :estimated-item-height="176"
               :threshold="8"
               :viewport-height="560"
+              :map-version="indexUiModeVersion"
               :map-item="indexRecoveryRow"
               test-id="index-recovery-virtual-list"
             >
@@ -782,6 +814,7 @@ onBeforeUnmount(() => {
               :threshold="8"
               :viewport-height="560"
               :pinned-keys="pinnedSystemRuntimeKeys"
+              :map-version="indexUiModeVersion"
               :map-item="indexSystemRuntimeRow"
               test-id="index-system-runtime-virtual-list"
             >
@@ -841,6 +874,7 @@ onBeforeUnmount(() => {
               :threshold="8"
               :viewport-height="560"
               :pinned-keys="pinnedOperatorActionKeys"
+              :map-version="indexUiModeVersion"
               :map-item="indexOperatorActionRow"
               test-id="index-operator-action-virtual-list"
             >
@@ -955,21 +989,26 @@ onBeforeUnmount(() => {
           <div class="job-row" :data-testid="`verify-job-${row.jobId}`" :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === row.jobId }">
           <div class="job-main">
             <strong>{{ row.jobTypeLabel }}</strong>
-            <div class="muted">{{ row.jobId }}</div>
+            <div class="muted">{{ isAdvancedMode ? row.jobId : row.jobSummary }}</div>
             <div class="muted">{{ row.aliasScope }}</div>
-            <div class="muted">高级详情：{{ row.rawAliasScope }}</div>
+            <div v-if="isAdvancedMode" class="muted" data-testid="index-job-technical-ref">
+              任务 ID：{{ row.jobId || "-" }} | 审核 ID：{{ row.reviewId || "-" }} | 别名：{{ row.rawAliasScope }}
+            </div>
           </div>
           <div class="job-diagnostics">
             <p><strong>状态</strong><br />{{ row.statusLabel }}</p>
-            <p><strong>目标快照</strong><br />{{ row.targetSnapshotVersion }}</p>
-            <p><strong>目标嵌入</strong><br />{{ row.targetEmbeddingVersion }}</p>
-            <p><strong>工作器</strong><br />{{ row.workerId }}</p>
-            <p><strong>尝试次数</strong><br />{{ row.attemptNo }}</p>
-            <p><strong>心跳时间</strong><br />{{ row.heartbeatAt }}</p>
-            <p><strong>租约到期</strong><br />{{ row.leaseExpiresAt }}</p>
-            <p><strong>开始时间</strong><br />{{ row.startedAt }}</p>
-            <p><strong>完成时间</strong><br />{{ row.finishedAt }}</p>
-            <p><strong>错误</strong><br />{{ row.errorText }}</p>
+            <p><strong>范围</strong><br />{{ row.aliasScope }}</p>
+            <template v-if="isAdvancedMode">
+              <p><strong>目标快照</strong><br />{{ row.targetSnapshotVersion }}</p>
+              <p><strong>目标嵌入</strong><br />{{ row.targetEmbeddingVersion }}</p>
+              <p><strong>工作器</strong><br />{{ row.workerId }}</p>
+              <p><strong>尝试次数</strong><br />{{ row.attemptNo }}</p>
+              <p><strong>心跳时间</strong><br />{{ row.heartbeatAt }}</p>
+              <p><strong>租约到期</strong><br />{{ row.leaseExpiresAt }}</p>
+              <p><strong>开始时间</strong><br />{{ row.startedAt }}</p>
+              <p><strong>完成时间</strong><br />{{ row.finishedAt }}</p>
+            </template>
+            <p v-if="row.errorText !== '-' || isAdvancedMode"><strong>{{ isAdvancedMode ? "错误" : "需要关注" }}</strong><br />{{ row.errorText }}</p>
           </div>
           <div class="job-actions">
             <p v-if="row.statusLabel === '失败' || row.errorText !== '-'" class="muted">

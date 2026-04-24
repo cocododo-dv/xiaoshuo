@@ -3,6 +3,7 @@ import { computed, onActivated, onMounted, reactive, ref, watch } from "vue";
 
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useShellRouter } from "../router";
 import { useChapterManuscriptsStore } from "../stores/chapterManuscripts";
@@ -75,6 +76,19 @@ const missingSceneIds = computed(() => assembled.value?.missing_scene_ids || [])
 const canUseAggregate = computed(() => manuscripts.canUseAggregate);
 const showAssembled = computed(() => readingSource.value === "both" || readingSource.value === "assembled");
 const showAggregate = computed(() => readingSource.value === "both" || readingSource.value === "aggregate");
+const sourceSafetyScan = computed(() => detail.value?.source_safety_scan || {
+  safe: true,
+  blocked_terms: [],
+  source_profile_ids: [],
+  checked_at: "",
+});
+const sourceSafetyBlockedTerms = computed(() => sourceSafetyScan.value.blocked_terms || []);
+const sourceSafetyProfileIds = computed(() => sourceSafetyScan.value.source_profile_ids || []);
+const sourceSafetyStatusLabel = computed(() =>
+  sourceSafetyScan.value.safe
+    ? "未命中保护标记"
+    : `命中 ${sourceSafetyBlockedTerms.value.length} 个保护标记`,
+);
 
 function statusLabel(value) {
   return {
@@ -472,6 +486,7 @@ onActivated(() => {
 
 <template>
   <section class="panel-grid chapter-manuscript-view" data-testid="chapter-manuscript-view">
+    <WorkflowPageHeader view-id="manuscripts" />
     <PanelShell
       eyebrow="章节成稿中心"
       title="查看完整章节，管理生成后的正文"
@@ -555,6 +570,16 @@ onActivated(() => {
             <span class="badge">实时 {{ assembled?.generated_scene_count || 0 }}/{{ assembled?.scene_count || 0 }} 场</span>
             <span class="badge">聚合 {{ aggregate?.row_id || "未生成" }}</span>
           </div>
+          <article class="paper mini" data-testid="manuscript-source-safety-card">
+            <h4>源书安全扫描</h4>
+            <p><strong>{{ sourceSafetyStatusLabel }}</strong></p>
+            <p class="muted">
+              {{ sourceSafetyBlockedTerms.length ? sourceSafetyBlockedTerms.join("、") : "没有命中源书专名、设定或受保护桥段标记。" }}
+            </p>
+            <p class="muted">
+              {{ sourceSafetyProfileIds.length ? sourceSafetyProfileIds.join(", ") : "暂无参考画像来源 ID" }}
+            </p>
+          </article>
           <p v-if="missingSceneIds.length" class="inline-warning">
             缺失终稿场景：{{ missingSceneIds.join(", ") }}
           </p>

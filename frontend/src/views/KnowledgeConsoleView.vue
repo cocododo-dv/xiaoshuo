@@ -9,7 +9,9 @@ import StyleProfileDiffSummary from "../components/StyleProfileDiffSummary.vue";
 import StyleProfileRiskWarning from "../components/StyleProfileRiskWarning.vue";
 import StyleProfileSummary from "../components/StyleProfileSummary.vue";
 import VirtualList from "../components/VirtualList.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { useUiMode } from "../composables/useUiMode";
 import { prioritizeMatchingItem } from "../lib/listPriority";
 import {
   styleProfileDiffFromKnowledgeDetail,
@@ -25,6 +27,7 @@ const emit = defineEmits(["notice"]);
 const knowledgeConsole = useKnowledgeConsoleStore();
 const { focusTarget, navigate, openTarget } = useShellRouter();
 const isViewActive = ref(false);
+const { isAdvancedMode } = useUiMode();
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
@@ -717,6 +720,7 @@ watch(
 
 <template>
   <section class="panel-grid" data-testid="knowledge-console-view">
+    <WorkflowPageHeader view-id="knowledge" />
     <PanelShell
       eyebrow="知识控制台"
       title="新建候选并查看生效知识"
@@ -785,7 +789,7 @@ watch(
           </div>
           <div class="knowledge-form-grid">
             <label>
-              <span>审核 ID</span>
+              <span>{{ isAdvancedMode ? "审核 ID" : "来源审核" }}</span>
               <input v-model="draft.reviewId" class="control-input" data-testid="knowledge-review-id" />
             </label>
             <label>
@@ -807,7 +811,7 @@ watch(
               </select>
             </label>
             <label>
-              <span>作者标签：血缘键</span>
+              <span>{{ isAdvancedMode ? "血缘 key" : "知识名称" }}</span>
               <input v-model="draft.lineageKey" class="control-input" data-testid="knowledge-lineage-key" />
               <small>同一条长期知识的稳定名字，例如某个角色声线、关系或全局风格。</small>
             </label>
@@ -820,23 +824,23 @@ watch(
               <small>选择“否”时，需要先完成校验，再发布到运行时。</small>
             </label>
             <label>
-              <span>作用域</span>
+              <span>{{ isAdvancedMode ? "作用域" : "应用范围" }}</span>
               <input v-model="draft.scope" class="control-input" />
             </label>
             <label>
-              <span>作用域引用</span>
+              <span>{{ isAdvancedMode ? "作用域引用" : "范围对象" }}</span>
               <input v-model="draft.scopeRefId" class="control-input" />
             </label>
             <label>
-              <span>章节 ID</span>
+              <span>{{ isAdvancedMode ? "章节 ID" : "章节" }}</span>
               <input v-model="draft.chapterId" class="control-input" />
             </label>
             <label>
-              <span>场景 ID</span>
+              <span>{{ isAdvancedMode ? "场景 ID" : "场景" }}</span>
               <input v-model="draft.sceneId" class="control-input" />
             </label>
             <label>
-              <span>角色 ID</span>
+              <span>{{ isAdvancedMode ? "角色 ID" : "角色" }}</span>
               <input v-model="draft.characterId" class="control-input" />
             </label>
             <label>
@@ -871,7 +875,7 @@ watch(
               <span>候选文本</span>
               <textarea v-model="draft.candidateText" class="control-input control-textarea" data-testid="knowledge-candidate-text" />
             </label>
-            <label class="knowledge-wide">
+            <label v-if="isAdvancedMode" class="knowledge-wide" data-testid="knowledge-extra-payload-field">
               <span>附加载荷 JSON</span>
               <textarea v-model="draft.extraPayload" class="control-input control-textarea" placeholder='{"expires_at":"2099-01-01T00:00:00+00:00"}' />
             </label>
@@ -971,7 +975,7 @@ watch(
               <p><strong>会影响哪里</strong><br />{{ knowledgeConsole.detail.runtime_refs?.alias_scope || knowledgeConsole.detail.runtime_refs?.mode || "直接读取" }}</p>
               <p><strong>来自哪个审核</strong><br />{{ workflowReviewItems[0]?.review_id || detailReviewRefs[0] || "暂无关联审核" }}</p>
             </div>
-            <p data-testid="knowledge-detail-lineage"><strong>血缘</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
+            <p data-testid="knowledge-detail-lineage"><strong>{{ isAdvancedMode ? "血缘" : "知识名称" }}</strong><br />{{ knowledgeConsole.detail.lineage_key }}</p>
             <p><strong>生效版本</strong><br />{{ previewText(knowledgeConsole.detail.active_version) }}</p>
             <p><strong>候选版本</strong><br />{{ previewText(knowledgeConsole.detail.candidate_version) }}</p>
             <StyleProfileSummary

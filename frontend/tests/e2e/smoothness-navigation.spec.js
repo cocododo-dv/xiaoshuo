@@ -100,6 +100,42 @@ async function exerciseVirtualScroll(locator) {
   );
 }
 
+async function openIndexAdvancedEvidence(page) {
+  const mode = await page.evaluate(() => window.localStorage.getItem("novel-system:ui-mode"));
+  if (mode !== "advanced") {
+    await page.getByTestId("ui-mode-advanced").click();
+  }
+  const reviewIdFilter = page.getByTestId("index-job-filter-review-id");
+  if (!(await reviewIdFilter.isVisible().catch(() => false))) {
+    await page.getByTestId("index-advanced-evidence-toggle").click();
+  }
+  await expect(reviewIdFilter).toBeVisible();
+}
+
+test("keeps guided navigation compact and advanced mode usable on mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.addInitScript(({ nextApiBase }) => {
+    window.localStorage.setItem("novel-system:ui-mode", "guided");
+    window.localStorage.setItem("novel-system-api-base", nextApiBase);
+    window.localStorage.setItem("novel-system-operator-ref", "ops.mobile-mode.e2e");
+  }, { nextApiBase: apiBase });
+
+  await page.goto("/");
+  await expect(page.getByTestId("workflow-nav")).toBeVisible();
+  await expect(page.getByTestId("nav-workbench-route")).toHaveCount(0);
+
+  await page.getByTestId("ui-mode-advanced").click();
+  await expect(page.getByTestId("nav-workbench-route")).toBeVisible();
+
+  const metrics = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+    mode: window.localStorage.getItem("novel-system:ui-mode"),
+  }));
+  expect(metrics.mode).toBe("advanced");
+  expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
+});
+
 test("defers unopened views and keeps heavy review payloads collapsed until expanded", async ({ page }) => {
   const requestedPaths = [];
 
@@ -331,6 +367,8 @@ test("preserves view state across a workbench-review-index-workbench round trip 
   await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.roundtrip" });
 
   await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
+  await page.getByTestId("scene-id-input").fill("CH001_SC01");
+  await page.getByTestId("scene-load-button").click();
   await expect(page.getByTestId("scene-id-input")).toHaveValue("CH001_SC01");
 
   await page.getByTestId("nav-review").click();
@@ -343,6 +381,7 @@ test("preserves view state across a workbench-review-index-workbench round trip 
   await page.getByTestId("nav-index").click();
   await expect(page.getByTestId("index-console-view")).toBeVisible();
   await expect(page.getByTestId("review-filter-status")).toHaveCount(0);
+  await openIndexAdvancedEvidence(page);
   await page.getByTestId("index-job-filter-review-id").fill("review_style_pending");
   await expect(page.getByTestId("index-job-filter-review-id")).toHaveValue("review_style_pending");
   const indexActivityRequestsBeforeHide =
@@ -364,5 +403,6 @@ test("preserves view state across a workbench-review-index-workbench round trip 
 
   await page.getByTestId("nav-index").click();
   await expect(page.getByTestId("index-console-view")).toBeVisible();
+  await openIndexAdvancedEvidence(page);
   await expect(page.getByTestId("index-job-filter-review-id")).toHaveValue("review_style_pending");
 });

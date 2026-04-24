@@ -4,10 +4,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import { createApp, h, nextTick } from "vue";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import CursorPager from "../src/components/CursorPager.vue";
 import ReviewCard from "../src/components/ReviewCard.vue";
+import { useUiMode } from "../src/composables/useUiMode";
 
 const SOURCE_ROOT = process.cwd();
 
@@ -31,6 +32,11 @@ async function mount(component, props = {}) {
 }
 
 describe("decision review decluttering", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useUiMode().setUiMode("guided");
+  });
+
   it("labels cursor pagers, keeps disabled direction visible, and can hide empty pagers", async () => {
     const mounted = await mount(CursorPager, {
       label: "审核项",
@@ -122,6 +128,47 @@ describe("decision review decluttering", () => {
       await nextTick();
       expect(card.textContent).toContain(reviewId);
       expect(card.textContent).toContain(lineageKey);
+    } finally {
+      mounted.unmount();
+    }
+  });
+
+  it("reveals review ids only when advanced mode is enabled", async () => {
+    const reviewId = "review_style_waiting_verify";
+    const mode = useUiMode();
+    mode.setUiMode("guided");
+
+    const mounted = await mount(ReviewCard, {
+      item: {
+        review_id: reviewId,
+        item_type: "style_observation",
+        target_collection: "style_observations",
+        status: "pending",
+        materialize_status: "pending",
+        candidate_text: "hold the image until the final line snaps shut",
+        candidate_payload_json: {
+          source: "knowledge_console",
+          scope: "global",
+          scope_ref_id: "global",
+        },
+      },
+      onApprove: vi.fn(),
+      onRelease: vi.fn(),
+      onOpenTarget: vi.fn(),
+    });
+
+    try {
+      const card = mounted.container.querySelector(".review-card");
+      const reference = card.querySelector('[data-testid="review-technical-ref"]');
+
+      expect(reference.textContent).toContain("审核线索");
+      expect(card.textContent).not.toContain(reviewId);
+
+      mode.setUiMode("advanced");
+      await nextTick();
+
+      expect(reference.textContent).toContain("审核 ID");
+      expect(card.textContent).toContain(reviewId);
     } finally {
       mounted.unmount();
     }

@@ -51,3 +51,18 @@ export function formatReadableTargetRef(targetRef) {
   }
   return { label: typeLabel || raw, raw };
 }
+
+export function formatGuidedTargetRef(targetRef) {
+  const readable = formatReadableTargetRef(targetRef);
+  if (!readable.raw) {
+    return readable;
+  }
+
+  const [objectType] = readable.raw.split(":", 1);
+  const typeLabel = labelForObjectType(objectType);
+  if (typeLabel && ["review_item", "human_review_event", "verify_job", "reindex_job"].includes(objectType)) {
+    return { label: typeLabel, raw: readable.raw };
+  }
+
+  return readable;
+}

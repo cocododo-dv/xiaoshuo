@@ -66,7 +66,7 @@ test("moves author records through trash, blocks ambiguous chapter delete, resto
   await expect(page.getByTestId("author-trash-scene-row-CH310_SC02")).toContainText("请先恢复所属章节，再恢复该场景");
   await expect(page.getByTestId("author-trash-scene-row-CH310_SC02")).toContainText("该场景随章节一起回收，请在章节行中处理");
   await page.getByTestId("author-trash-chapter-select-CH310").check();
-  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByTestId("author-trash-purge-chapters-button").click();
   await page.getByTestId("author-trash-purge-chapters-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已彻底清理");
 
