@@ -280,7 +280,8 @@ describe("reference learning shell registration", () => {
     expect(existsSync(REFERENCE_STORE_PATH)).toBe(true);
     expect(appSource).toContain("ReferenceLearningView");
     expect(routerSource).toContain('id: "reference"');
-    expect(routerSource).toContain('label: "参考书学习"');
+    expect(routerSource).toContain('label: "9 学习参考"');
+    expect(routerSource).toContain('legacyLabel: "参考书学习"');
   });
 });
 
@@ -302,6 +303,7 @@ describe("reference learning api helpers", () => {
       analysis_focus: "style_structure",
     });
     await api.fetchReferenceBook("refbook_alpha");
+    await api.fetchReferenceLearningTree("refbook_alpha");
     await api.fetchReferenceSegmentExcerpt("refbook_alpha", "refseg_alpha_0001");
     await api.startReferenceLearningRun("refbook_alpha", { batch_size: 8 });
     await api.advanceReferenceLearningRun("refbook_alpha", "refrun_alpha");
@@ -317,6 +319,9 @@ describe("reference learning api helpers", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith("http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha/learning-tree",
+    );
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/reference-books/refbook_alpha/segments/refseg_alpha_0001/excerpt",
     );
@@ -363,6 +368,33 @@ describe("reference learning store", () => {
           max_chars: 800,
           source_visibility: "review_only",
           safety_note: "仅供审核，不进入生成链路。",
+        });
+      }
+      if (url.endsWith("/api/v1/reference-books/refbook_alpha/learning-tree")) {
+        return ok({
+          book: { book_id: "refbook_alpha", title: "Reference Alpha" },
+          summary: {
+            run_count: 1,
+            round_count: 1,
+            finding_count: 2,
+            profile_count: 1,
+            apply_review_count: 1,
+          },
+          runs: [
+            {
+              run_id: "refrun_alpha",
+              status: "completed",
+              rounds: [
+                {
+                  round_id: "refround_alpha_1",
+                  round_index: 1,
+                  findings: roundPayload().round.findings,
+                },
+              ],
+            },
+          ],
+          profiles: [{ profile_id: "refprofile_alpha", application_status: { total: 1, pending: 1 } }],
+          active_knowledge_refs: [],
         });
       }
       if (url.endsWith("/api/v1/review-items/review_reffind_1/approve")) {
@@ -435,6 +467,10 @@ describe("reference learning store", () => {
     const excerpt = await store.fetchSegmentExcerpt("refseg_alpha_0001");
     expect(excerpt.excerpt).toContain("雨敲在窗台上");
     expect(store.segmentExcerpts.refseg_alpha_0001.source_visibility).toBe("review_only");
+
+    const tree = await store.loadLearningTree();
+    expect(tree.summary.run_count).toBe(1);
+    expect(store.learningTree.runs[0].rounds[0].findings).toHaveLength(2);
   });
 
   it("refreshes detail and explains stale profile apply failures", async () => {
@@ -683,6 +719,25 @@ describe("reference learning store", () => {
     expect(source).toContain("reference-long-task");
     expect(source).toContain("真实模型分析可能需要数分钟");
     expect(source).toContain("已等待");
+    expect(source).toContain("referenceLearningPhaseSteps");
+    expect(source).toContain("导入");
+    expect(source).toContain("分段");
+    expect(source).toContain("全文分析");
+    expect(source).toContain("画像合成");
+  });
+
+  it("renders a read-only learning tree so authors can see the reference workflow without raw payloads", () => {
+    const source = readFileSync(REFERENCE_VIEW_PATH, "utf8");
+    const storeSource = readFileSync(REFERENCE_STORE_PATH, "utf8");
+
+    expect(storeSource).toContain("learningTree");
+    expect(storeSource).toContain("loadLearningTree");
+    expect(source).toContain("reference-learning-tree");
+    expect(source).toContain("学习树");
+    expect(source).toContain("运行");
+    expect(source).toContain("轮次");
+    expect(source).toContain("结论");
+    expect(source).not.toContain("Evidence:");
   });
 
   it("keeps completed safe profiles replayable from the advance control instead of forcing API fallback", () => {

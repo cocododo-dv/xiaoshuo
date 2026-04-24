@@ -3,6 +3,7 @@ import { computed, onActivated, onBeforeUnmount, ref } from "vue";
 
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useShellRouter } from "../router";
 import { useReferenceLearningStore } from "../stores/referenceLearning";
@@ -24,6 +25,7 @@ const { receipt, running, runFlowAction } = useFlowActionFeedback({
 const REFERENCE_IMPORT_SCOPE = "reference:import";
 const REFERENCE_RUN_SCOPE = "reference:run";
 const REFERENCE_LIBRARY_SCOPE = "reference:library";
+const REFERENCE_TREE_SCOPE = "reference:learning-tree";
 const SEGMENT_KIND_LABELS = {
   opening: "开篇片段",
   dialogue: "对话片段",
@@ -113,6 +115,29 @@ const activeApplicationStatus = computed(() => {
     status.review_ids.push(...(Array.isArray(item.review_ids) ? item.review_ids : []));
   }
   return status;
+});
+const learningTree = computed(() => referenceLearning.learningTree || null);
+const learningTreeSummary = computed(() => learningTree.value?.summary || referenceLearning.detail?.learning_tree_summary || {});
+const learningTreeRuns = computed(() => learningTree.value?.runs || []);
+const referenceLearningPhaseSteps = computed(() => {
+  const summary = learningTreeSummary.value || {};
+  const totalSegments = Number(selectedBook.value?.total_segments || referenceLearning.detail?.stats?.total_segments || 0);
+  const findingCount = Number(summary.finding_count || findings.value.length || 0);
+  const runCount = Number(summary.run_count || (runId.value ? 1 : 0));
+  const profileCount = Number(summary.profile_count || profiles.value.length || 0);
+  const applyReviewCount = Number(summary.apply_review_count || activeApplicationStatus.value.total || 0);
+  return [
+    { key: "import", label: "导入", done: Boolean(selectedBook.value) },
+    { key: "segment", label: "分段", done: totalSegments > 0 },
+    {
+      key: "analysis",
+      label: cloudPolicy.value === "allow_full_cloud" ? "全文分析" : "抽样分析",
+      done: runCount > 0 || findingCount > 0 || profileCount > 0,
+    },
+    { key: "candidate", label: "候选生成", done: findingCount > 0 },
+    { key: "profile", label: "画像合成", done: profileCount > 0 },
+    { key: "apply", label: "应用审核", done: applyReviewCount > 0 },
+  ];
 });
 const hasPendingApplicationReviews = computed(() => activeApplicationStatus.value.pending > 0);
 const canReplayProfileAdvance = computed(() =>
@@ -736,6 +761,17 @@ async function ensureLoaded() {
   });
 }
 
+async function loadLearningTree() {
+  await runFlowAction({
+    scopeKey: REFERENCE_TREE_SCOPE,
+    actionLabel: "刷新学习树",
+    runningMessage: "正在读取参考学习树...",
+    successMessage: () => "参考学习树已刷新。",
+    nextStep: () => "下一步：按运行、轮次、结论、画像和应用审核检查闭环覆盖。",
+    action: () => referenceLearning.loadLearningTree(),
+  });
+}
+
 async function importPath() {
   const result = await runFlowAction({
     scopeKey: REFERENCE_IMPORT_SCOPE,
@@ -862,6 +898,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="reference-learning-view" data-testid="reference-learning-view">
+    <WorkflowPageHeader view-id="reference" />
     <header class="reference-hero panel">
       <div>
         <div class="eyebrow">参考学习</div>
@@ -1112,6 +1149,59 @@ onBeforeUnmount(() => {
               {{ labelForFindingType(type) }}
             </span>
           </div>
+        </article>
+
+        <article class="reference-section panel" data-testid="reference-learning-tree">
+          <div class="reference-section-head">
+            <div>
+              <div class="eyebrow">覆盖树</div>
+              <h3>学习树</h3>
+            </div>
+            <button type="button" class="ghost" :disabled="referenceLearning.learningTreeLoading" @click="loadLearningTree">
+              {{ referenceLearning.learningTreeLoading ? "刷新中..." : "刷新学习树" }}
+            </button>
+          </div>
+          <FlowActionReceipt compact :receipt="receipt(REFERENCE_TREE_SCOPE)" />
+          <div class="reference-flow" aria-label="reference learning phase progress">
+            <span
+              v-for="step in referenceLearningPhaseSteps"
+              :key="step.key"
+              class="reference-flow-step"
+              :class="{ done: step.done }"
+            >
+              {{ step.label }}
+            </span>
+          </div>
+          <div class="reference-metrics">
+            <div>
+              <strong>{{ learningTreeSummary.run_count || 0 }}</strong>
+              <span>运行</span>
+            </div>
+            <div>
+              <strong>{{ learningTreeSummary.round_count || 0 }}</strong>
+              <span>轮次</span>
+            </div>
+            <div>
+              <strong>{{ learningTreeSummary.finding_count || 0 }}</strong>
+              <span>结论</span>
+            </div>
+            <div>
+              <strong>{{ learningTreeSummary.profile_count || 0 }}</strong>
+              <span>画像</span>
+            </div>
+          </div>
+          <div v-if="learningTreeRuns.length" class="reference-tree-runs">
+            <article v-for="run in learningTreeRuns" :key="run.run_id" class="reference-tree-run">
+              <strong>运行 {{ run.run_id }}</strong>
+              <p class="muted">{{ labelForStatus(run.status) }} · {{ run.rounds?.length || 0 }} 轮次</p>
+              <ul>
+                <li v-for="round in run.rounds || []" :key="round.round_id">
+                  轮次 {{ round.round_index }} · 结论 {{ round.findings?.length || 0 }} · {{ labelForStatus(round.status) }}
+                </li>
+              </ul>
+            </article>
+          </div>
+          <p v-else class="muted">刷新后可查看运行、轮次、结论、审核、画像和应用审核的只读覆盖关系。</p>
         </article>
 
         <article class="reference-section panel">

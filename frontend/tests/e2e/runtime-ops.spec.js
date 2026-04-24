@@ -2,6 +2,24 @@ import { expect, test } from "@playwright/test";
 
 import { configureConnection } from "./helpers.js";
 
+async function openIndexAdvancedEvidence(page) {
+  const mode = await page.evaluate(() => window.localStorage.getItem("novel-system:ui-mode"));
+  if (mode !== "advanced") {
+    await page.getByTestId("ui-mode-advanced").click();
+  }
+  await expect(page.getByTestId("index-advanced-evidence")).toBeVisible();
+  const jobTypeFilter = page.getByTestId("index-job-filter-job-type");
+  const ledgerClear = page.getByTestId("index-ledger-filter-clear");
+  const isOpen =
+    (await jobTypeFilter.isVisible().catch(() => false)) &&
+    (await ledgerClear.isVisible().catch(() => false));
+  if (!isOpen) {
+    await page.getByTestId("index-advanced-evidence-toggle").click();
+  }
+  await expect(jobTypeFilter).toBeVisible();
+  await expect(ledgerClear).toBeVisible();
+}
+
 test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.runtime.e2e" });
@@ -23,6 +41,7 @@ test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await expect(page.getByTestId("notice-stack")).toContainText("已批准 review_demo_style_observation，操作员 ops.runtime.e2e");
 
   await page.getByTestId("nav-index").click();
+  await openIndexAdvancedEvidence(page);
   await page.getByTestId("index-job-filter-job-type").selectOption("verify");
   await page.getByTestId("index-job-filter-review-id").fill("review_demo_style_observation");
   await page.getByTestId("index-job-filter-refresh").click();
@@ -38,6 +57,7 @@ test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await expect(page.getByTestId("notice-stack")).toContainText("已发布 review_demo_style_observation，操作员 ops.runtime.e2e");
 
   await page.getByTestId("nav-index").click();
+  await openIndexAdvancedEvidence(page);
   await page.getByTestId("index-ledger-filter-target-ref").fill("review_item:review_demo_due_promotion");
   await page.getByTestId("index-ledger-filter-source").selectOption("system_runtime");
   await page.getByTestId("index-ledger-filter-refresh").click();
@@ -63,6 +83,7 @@ test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await recoveryEvent.getByTestId("human-review-open-followup-human_review_idempotency_recovery_approve-review-demo-recovery-followup").click();
 
   await page.getByTestId("nav-index").click();
+  await openIndexAdvancedEvidence(page);
   await page.getByTestId("index-job-filter-job-type").selectOption("verify");
   await page.getByTestId("index-job-filter-review-id").fill("review_demo_recovery_followup");
   await page.getByTestId("index-job-filter-refresh").click();
@@ -76,7 +97,9 @@ test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await expect(recoveryEvent).toHaveCount(0);
 
   await page.getByTestId("nav-index").click();
+  await openIndexAdvancedEvidence(page);
   await page.getByTestId("index-job-filter-clear").click();
+  await openIndexAdvancedEvidence(page);
   await page.getByTestId("index-ledger-filter-clear").click();
   await expect(page.getByTestId("recovery-followup-receipt")).toContainText("ops.runtime.e2e");
   const followupTargetActivity = page.getByTestId("target-activity-group-review_item:review_demo_recovery_followup");

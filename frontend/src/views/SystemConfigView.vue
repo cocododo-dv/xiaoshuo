@@ -1,15 +1,19 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
+import EvidenceDisclosure from "../components/EvidenceDisclosure.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { useUiMode } from "../composables/useUiMode";
 import { buildLiteraryEvalCaseRows } from "../lib/literaryEvalSummary";
 import { useSystemConfigStore } from "../stores/systemConfig";
 
 const emit = defineEmits(["notice"]);
 const systemConfig = useSystemConfigStore();
 const activeConfigSection = ref("setup");
+const { isAdvancedMode } = useUiMode();
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
@@ -39,6 +43,12 @@ const providerRows = computed(() => systemConfig.providerRows);
 const configDashboardSummary = computed(() => systemConfig.configDashboardSummary);
 const reasoningLevels = ["off", "low", "medium", "high"];
 const responseFormatOptions = ["text", "json_object", "json_schema"];
+
+watch(isAdvancedMode, (advanced) => {
+  if (!advanced && activeConfigSection.value === "advanced") {
+    activeConfigSection.value = "setup";
+  }
+});
 
 onMounted(async () => {
   if (!Object.keys(systemConfig.categories).length) {
@@ -156,12 +166,16 @@ function updateOperatorRef() {
 }
 
 function selectConfigSection(sectionId) {
+  if (sectionId === "advanced" && !isAdvancedMode.value) {
+    return;
+  }
   activeConfigSection.value = sectionId;
 }
 </script>
 
 <template>
   <div class="system-config-view" data-testid="system-config-view">
+    <WorkflowPageHeader view-id="config" />
     <PanelShell
       eyebrow="System Config"
       title="配置驾驶舱"
@@ -245,6 +259,7 @@ function selectConfigSection(sectionId) {
         <span>最后探测、评测、确认快照</span>
       </button>
       <button
+        v-if="isAdvancedMode"
         id="config-dashboard-tab-advanced"
         class="config-dashboard-tab"
         :class="{ active: activeConfigSection === 'advanced' }"
@@ -409,7 +424,7 @@ function selectConfigSection(sectionId) {
         <div class="llm-provider-grid">
           <form class="llm-provider-form" autocomplete="off" @submit.prevent="saveLlmProvider">
             <label>
-              <span>接入 ID</span>
+              <span>{{ isAdvancedMode ? "接入 ID" : "接入名称" }}</span>
               <input
                 v-model="systemConfig.providerDraft.provider_id"
                 class="control-input"
@@ -520,11 +535,16 @@ function selectConfigSection(sectionId) {
                       : "未配置密钥"
                 }}
               </span>
-              <span class="badge">{{ provider.models?.length || 0 }} models</span>
+              <span class="badge">{{ provider.models?.length || 0 }}{{ isAdvancedMode ? " models" : " 个模型" }}</span>
               <div class="config-action-row">
                 <button class="ghost" type="button" @click="editLlmProvider(provider)">编辑</button>
-                <button class="ghost" type="button" :disabled="systemConfig.testing" @click="probeLlmProvider(provider.provider_id)">
-                  验证模型
+                <button
+                  class="ghost"
+                  type="button"
+                  :disabled="systemConfig.providerProbePending[provider.provider_id]"
+                  @click="probeLlmProvider(provider.provider_id)"
+                >
+                  {{ systemConfig.providerProbePending[provider.provider_id] ? "验证中..." : "验证模型" }}
                 </button>
               </div>
               <div v-if="systemConfig.providerProbeResults[provider.provider_id]" class="llm-probe-result">
@@ -543,6 +563,12 @@ function selectConfigSection(sectionId) {
                     {{ check.label }} {{ check.ok === true ? "通过" : check.ok === false ? "未通过" : "跳过" }}
                   </span>
                 </div>
+              </div>
+              <div v-else-if="systemConfig.providerProbePending[provider.provider_id]" class="llm-probe-result is-pending">
+                <p class="muted">正在验证模型...</p>
+              </div>
+              <div v-else class="llm-probe-result is-empty">
+                <p class="muted">尚未验证</p>
               </div>
             </div>
           </div>
@@ -589,7 +615,7 @@ function selectConfigSection(sectionId) {
             </div>
             <div v-if="systemConfig.nodeRouteDrafts[row.node_id]" class="llm-node-controls">
               <label>
-                <span>provider</span>
+                <span>{{ isAdvancedMode ? "provider" : "模型渠道" }}</span>
                 <select v-model="systemConfig.nodeRouteDrafts[row.node_id].provider" class="control-input">
                   <option
                     v-for="provider in providerTypeOptions"
@@ -601,7 +627,7 @@ function selectConfigSection(sectionId) {
                 </select>
               </label>
               <label>
-                <span>account</span>
+                <span>{{ isAdvancedMode ? "account" : "接入账号" }}</span>
                 <select v-model="systemConfig.nodeRouteDrafts[row.node_id].provider_id" class="control-input">
                   <option value="">默认账号</option>
                   <option v-for="provider in providerRows" :key="provider.provider_id" :value="provider.provider_id">
@@ -610,17 +636,17 @@ function selectConfigSection(sectionId) {
                 </select>
               </label>
               <label>
-                <span>model</span>
+                <span>{{ isAdvancedMode ? "model" : "模型名称" }}</span>
                 <input v-model="systemConfig.nodeRouteDrafts[row.node_id].model" class="control-input" />
               </label>
               <label>
-                <span>reasoning</span>
+                <span>{{ isAdvancedMode ? "reasoning" : "思考强度" }}</span>
                 <select v-model="systemConfig.nodeRouteDrafts[row.node_id].reasoning_level" class="control-input">
                   <option v-for="level in reasoningLevels" :key="level" :value="level">{{ level }}</option>
                 </select>
               </label>
               <label>
-                <span>temp</span>
+                <span>{{ isAdvancedMode ? "temp" : "创作随机度" }}</span>
                 <input
                   v-model.number="systemConfig.nodeRouteDrafts[row.node_id].temperature"
                   class="control-input"
@@ -631,7 +657,7 @@ function selectConfigSection(sectionId) {
                 />
               </label>
               <label>
-                <span>tokens</span>
+                <span>{{ isAdvancedMode ? "tokens" : "输出上限" }}</span>
                 <input
                   v-model.number="systemConfig.nodeRouteDrafts[row.node_id].max_output_tokens"
                   class="control-input"
@@ -641,7 +667,7 @@ function selectConfigSection(sectionId) {
                 />
               </label>
               <label>
-                <span>json</span>
+                <span>{{ isAdvancedMode ? "json" : "输出格式" }}</span>
                 <select v-model="systemConfig.nodeRouteDrafts[row.node_id].response_format" class="control-input">
                   <option v-for="format in responseFormatOptions" :key="format" :value="format">{{ format }}</option>
                 </select>
@@ -793,12 +819,18 @@ function selectConfigSection(sectionId) {
       </section>
 
       <section
+        v-if="isAdvancedMode"
         id="config-section-advanced"
         v-show="activeConfigSection === 'advanced'"
         class="config-dashboard-section config-section-advanced"
         aria-labelledby="config-dashboard-tab-advanced"
         data-testid="config-section-advanced"
         role="tabpanel"
+      >
+      <EvidenceDisclosure
+        title="高级配置证据"
+        summary="YAML、历史、风格画像契约和导出内容默认收起，避免干扰日常配置。"
+        test-id="config-advanced-evidence"
       >
       <PanelShell eyebrow="Style Profile" title="风格画像契约" description="结构化风格特征的调试样例，用于校准提示词和 QC 输出。">
         <div class="config-overview" data-testid="config-style-profile-contract">
@@ -924,6 +956,7 @@ function selectConfigSection(sectionId) {
       <PanelShell v-if="systemConfig.exportResult" eyebrow="Export" title="导出 YAML" description="当前导出内容。">
         <pre class="config-export-block" data-testid="config-export-yaml">{{ systemConfig.exportResult.yaml_raw }}</pre>
       </PanelShell>
+      </EvidenceDisclosure>
       </section>
     </div>
   </div>

@@ -104,5 +104,5 @@ test("learns a reference book through review decisions and applies it to a chapt
   const workbench = page.getByTestId("scene-workbench-view");
   await expect(workbench).toContainText("STYLE_FEATURE_CONTRACT_v1");
   await expect(workbench).toContainText("叙事结构");
-  await expect(workbench).toContainText("Use chapter hook escalation");
+  await expect(workbench).toContainText("从意象片段提炼章节钩子结构");
 });

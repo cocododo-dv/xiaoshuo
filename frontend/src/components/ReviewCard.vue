@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 
 import StyleProfileRiskWarning from "./StyleProfileRiskWarning.vue";
 import StyleProfileSummary from "./StyleProfileSummary.vue";
+import { useUiMode } from "../composables/useUiMode";
 import {
   buildReviewImpactSummary,
   styleProfileRiskFromReviewItem,
@@ -33,6 +34,7 @@ const emit = defineEmits(["approve", "release", "open-target", "open-reference",
 const payloadExpanded = ref(false);
 const riskAcknowledged = ref(false);
 const riskReason = ref("");
+const { isAdvancedMode } = useUiMode();
 
 const STATUS_LABELS = {
   pending: "待处理",
@@ -124,6 +126,12 @@ const reviewTitle = computed(() => {
   }
   return `${collectionLabel.value} · ${sourceLabel.value}`;
 });
+const reviewGuidedReference = computed(() =>
+  [collectionLabel.value, sourceLabel.value, formatStatus(props.item.status)].filter(Boolean).join(" · "),
+);
+const reviewReference = computed(() =>
+  isAdvancedMode.value ? props.item.review_id : reviewGuidedReference.value,
+);
 
 const payloadSummary = computed(() => {
   if (payload.value.source === "reference_profile_apply") {
@@ -263,6 +271,9 @@ watch(
     <h3>{{ reviewTitle }}</h3>
     <p class="muted">状态：{{ formatStatus(props.item.status) }}</p>
     <p class="muted">摘要：{{ payloadSummary }}</p>
+    <p class="muted" data-testid="review-technical-ref">
+      {{ isAdvancedMode ? "审核 ID" : "审核线索" }}：{{ reviewReference }}
+    </p>
 
     <dl v-if="publicReviewImpactSummary.available" class="review-impact-summary" data-testid="review-impact-summary">
       <div>
@@ -326,7 +337,7 @@ watch(
         :data-testid="`review-toggle-payload-${props.item.review_id}`"
         @click="payloadExpanded = !payloadExpanded"
       >
-        {{ payloadExpanded ? "收起技术详情" : "技术详情" }}
+        {{ payloadExpanded ? (isAdvancedMode ? "收起技术详情" : "收起证据") : (isAdvancedMode ? "技术详情" : "查看证据") }}
       </button>
       <button
         v-if="isReferenceSource"
@@ -351,6 +362,13 @@ watch(
       :data-testid="`review-release-state-${props.item.review_id}`"
     >
       {{ releaseStateMessage }}
+    </p>
+    <p
+      v-if="showVerifyAction"
+      class="muted"
+      :data-testid="`review-verify-technical-ref-${props.item.review_id}`"
+    >
+      {{ isAdvancedMode ? "校验任务 ID" : "校验任务" }}：{{ isAdvancedMode ? releaseVerifyJobId : "等待重试后确认" }}
     </p>
 
     <div class="card-actions">

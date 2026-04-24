@@ -281,6 +281,10 @@ export function fetchReferenceBook(bookId) {
   return apiGet(`/api/v1/reference-books/${encodeURIComponent(bookId)}`);
 }
 
+export function fetchReferenceLearningTree(bookId) {
+  return apiGet(`/api/v1/reference-books/${encodeURIComponent(bookId)}/learning-tree`);
+}
+
 export function fetchReferenceSegmentExcerpt(bookId, segmentId) {
   return apiGet(
     `/api/v1/reference-books/${encodeURIComponent(bookId)}/segments/${encodeURIComponent(segmentId)}/excerpt`,

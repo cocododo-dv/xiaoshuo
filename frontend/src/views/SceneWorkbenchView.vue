@@ -4,6 +4,7 @@ import { computed, onActivated, onDeactivated, ref, watch } from "vue";
 import AttemptTimeline from "../components/AttemptTimeline.vue";
 import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
 import CursorPager from "../components/CursorPager.vue";
+import EvidenceDisclosure from "../components/EvidenceDisclosure.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import GenerationSummaryCard from "../components/GenerationSummaryCard.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
@@ -11,7 +12,9 @@ import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
 import QcReportCard from "../components/QcReportCard.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { useUiMode } from "../composables/useUiMode";
 import { useShellRouter } from "../router";
 import { useWorkbenchStore } from "../stores/workbench";
 
@@ -23,6 +26,7 @@ const requestedSceneId = ref(workbench.sceneId);
 const manualHoldReason = ref("");
 const selectedStrategies = ref({});
 const isViewActive = ref(false);
+const { isAdvancedMode } = useUiMode();
 const DEFAULT_BACKFILL_STRATEGY = "create_tracker_now";
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
@@ -52,6 +56,19 @@ const hardQcSummary = computed(() => workbench.data?.hard_qc_summary || null);
 const softQcSummary = computed(() => workbench.data?.soft_qc_summary || null);
 const rewriteCounters = computed(() => workbench.data?.rewrite_counters || null);
 const humanReviewSummary = computed(() => workbench.data?.human_review_summary || null);
+const sourceSafetyScan = computed(() => workbench.data?.source_safety_scan || {
+  safe: true,
+  blocked_terms: [],
+  source_profile_ids: [],
+  checked_at: "",
+});
+const sourceSafetyBlockedTerms = computed(() => sourceSafetyScan.value.blocked_terms || []);
+const sourceSafetyProfileIds = computed(() => sourceSafetyScan.value.source_profile_ids || []);
+const sourceSafetyStatusLabel = computed(() =>
+  sourceSafetyScan.value.safe
+    ? "未命中保护标记"
+    : `命中 ${sourceSafetyBlockedTerms.value.length} 个保护标记`,
+);
 const pendingStagedBackfillItems = computed(() =>
   (chapterState.value.staged_backfill_items || []).filter((item) => item.status === "pending"),
 );
@@ -67,6 +84,24 @@ const isFocusedRunReceipt = computed(
 const currentFinalSceneRowId = computed(() =>
   workbench.data?.scene_run_state?.current_final_scene_row_id
   || workbench.lastRunResult?.current_final_scene_row_id
+  || workbench.data?.final_scene?.row_id
+  || "-",
+);
+const receiptBundleId = computed(() =>
+  workbench.lastRunResult?.current_bundle_id
+  || workbench.data?.bundle?.bundle_id
+  || workbench.data?.scene_run_state?.current_bundle_id
+  || "-",
+);
+const receiptBundleHash = computed(() =>
+  workbench.lastRunResult?.current_bundle_hash
+  || workbench.data?.bundle?.bundle_snapshot_hash
+  || workbench.data?.scene_run_state?.current_bundle_hash
+  || "-",
+);
+const receiptFinalSceneRowId = computed(() =>
+  workbench.lastRunResult?.current_final_scene_row_id
+  || workbench.data?.scene_run_state?.current_final_scene_row_id
   || workbench.data?.final_scene?.row_id
   || "-",
 );
@@ -389,6 +424,7 @@ onDeactivated(() => {
 
 <template>
   <section class="panel-grid" data-testid="scene-workbench-view">
+    <WorkflowPageHeader view-id="workbench" />
     <PanelShell
       eyebrow="场景工作台"
       title="场景循环与归档"
@@ -428,7 +464,7 @@ onDeactivated(() => {
           <strong>{{ hasData ? formatPreflightStatus(runPreflight.overall_status) : "等待加载" }}</strong>
         </div>
         <div class="stat">
-          <span>终稿行</span>
+          <span>{{ isAdvancedMode ? "终稿行" : "成稿" }}</span>
           <strong>{{ currentFinalSceneRowId }}</strong>
         </div>
         <div class="stat">
@@ -436,11 +472,11 @@ onDeactivated(() => {
           <strong>{{ qcEvidenceLabel }}</strong>
         </div>
         <div class="stat" data-testid="scene-archive-quality-label">
-          <span>Archive Quality</span>
+          <span>{{ isAdvancedMode ? "Archive Quality" : "归档质量" }}</span>
           <strong>{{ archiveQualityLabel }}</strong>
         </div>
         <div class="stat">
-          <span>运行轨迹</span>
+          <span>{{ isAdvancedMode ? "运行轨迹" : "运行记录" }}</span>
           <strong>{{ attemptEvidenceLabel }}</strong>
         </div>
         <div class="stat" data-testid="scene-run-job-summary">
@@ -458,10 +494,14 @@ onDeactivated(() => {
 
         <div class="stats">
           <div class="stat">
+            <span>运行快照</span>
+            <strong>{{ workbench.data.bundle?.bundle_id ? "已生成" : "尚未生成" }}</strong>
+          </div>
+          <div v-if="isAdvancedMode" class="stat" data-testid="scene-bundle-technical-stats">
             <span>构包</span>
             <strong>{{ workbench.data.bundle?.bundle_id || "-" }}</strong>
           </div>
-          <div class="stat">
+          <div v-if="isAdvancedMode" class="stat">
             <span>哈希</span>
             <strong>{{ workbench.data.bundle?.bundle_snapshot_hash || "-" }}</strong>
           </div>
@@ -713,9 +753,9 @@ onDeactivated(() => {
           </div>
           <div class="receipt-grid">
             <p><strong>状态</strong><br />{{ formatStatus(workbench.lastRunResult.scene_status) }}</p>
-            <p><strong>构包</strong><br />{{ workbench.lastRunResult.current_bundle_id || "-" }}</p>
-            <p><strong>哈希</strong><br />{{ workbench.lastRunResult.current_bundle_hash || "-" }}</p>
-            <p><strong>最终场景</strong><br />{{ workbench.lastRunResult.current_final_scene_row_id || "-" }}</p>
+            <p><strong>{{ isAdvancedMode ? "构包" : "运行快照" }}</strong><br />{{ receiptBundleId }}</p>
+            <p v-if="isAdvancedMode"><strong>哈希</strong><br />{{ receiptBundleHash }}</p>
+            <p><strong>最终场景</strong><br />{{ receiptFinalSceneRowId }}</p>
           </div>
           <div class="card-actions">
             <button
@@ -733,19 +773,35 @@ onDeactivated(() => {
         </article>
         <FlowActionReceipt :receipt="receipt(WORKBENCH_CHAPTER_SCOPE)" />
 
-        <div class="workbench-columns" data-testid="scene-workbench-summary-row">
-          <GenerationSummaryCard
-            data-testid="scene-generation-summary-card"
-            :summary="generationSummary"
-          />
-          <QcReportCard
-            data-testid="scene-qc-report-card"
-            :hard-summary="hardQcSummary"
-            :soft-summary="softQcSummary"
-            :rewrite-counters="rewriteCounters"
-            :human-review-summary="humanReviewSummary"
-          />
-        </div>
+        <EvidenceDisclosure
+          title="生成与验收证据"
+          summary="生成调用、QC、源书安全扫描默认收起；高级模式会自动展开。"
+          test-id="scene-workbench-evidence-disclosure"
+        >
+          <div class="workbench-columns" data-testid="scene-workbench-summary-row">
+            <GenerationSummaryCard
+              data-testid="scene-generation-summary-card"
+              :summary="generationSummary"
+            />
+            <QcReportCard
+              data-testid="scene-qc-report-card"
+              :hard-summary="hardQcSummary"
+              :soft-summary="softQcSummary"
+              :rewrite-counters="rewriteCounters"
+              :human-review-summary="humanReviewSummary"
+            />
+            <article class="paper" data-testid="scene-source-safety-card">
+              <h3>源书安全扫描</h3>
+              <p><strong>{{ sourceSafetyStatusLabel }}</strong></p>
+              <p class="muted">
+                {{ sourceSafetyBlockedTerms.length ? sourceSafetyBlockedTerms.join("、") : "没有命中源书专名、设定或受保护桥段标记。" }}
+              </p>
+              <p class="muted">
+                {{ sourceSafetyProfileIds.length ? sourceSafetyProfileIds.join(", ") : "暂无参考画像来源 ID" }}
+              </p>
+            </article>
+          </div>
+        </EvidenceDisclosure>
 
         <div class="workbench-columns">
           <article

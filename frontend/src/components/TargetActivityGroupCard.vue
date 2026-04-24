@@ -3,7 +3,8 @@ import { computed } from "vue";
 
 import CursorPager from "./CursorPager.vue";
 import ProgressiveList from "./ProgressiveList.vue";
-import { formatReadableTargetRef } from "../lib/readableRefs";
+import { useUiMode } from "../composables/useUiMode";
+import { formatGuidedTargetRef, formatReadableTargetRef } from "../lib/readableRefs";
 
 const props = defineProps({
   group: {
@@ -49,7 +50,13 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["toggle", "open-target", "previous", "next"]);
-const readableTarget = computed(() => formatReadableTargetRef(props.group.target.target_ref));
+const { isAdvancedMode } = useUiMode();
+const readableTarget = computed(() =>
+  isAdvancedMode.value
+    ? formatReadableTargetRef(props.group.target.target_ref)
+    : formatGuidedTargetRef(props.group.target.target_ref),
+);
+const rawTarget = computed(() => formatReadableTargetRef(props.group.target.target_ref).raw || "-");
 
 function formatValue(value, fallback = "-") {
   return value === null || value === undefined || value === "" ? fallback : String(value);
@@ -79,6 +86,13 @@ function targetButtonLabel(target) {
 }
 
 function activitySummaryFor(item) {
+  if (!isAdvancedMode.value) {
+    return [
+      item?.label || item?.source || "活动",
+      item?.status || "-",
+      formatValue(item?.timestamp),
+    ].join(" | ");
+  }
   return [
     item?.source || "-",
     item?.status || "-",
@@ -137,7 +151,9 @@ function targetActivityRow(item) {
     <div class="target-group-head">
       <div class="target-group-meta">
         <strong>{{ readableTarget.label }}</strong><br />
-        <span class="muted">高级详情：{{ readableTarget.raw }}</span><br />
+        <span v-if="isAdvancedMode" class="muted" data-testid="index-target-technical-ref">
+          高级详情：{{ rawTarget }}
+        </span><br v-if="isAdvancedMode" />
         最近时间：{{ props.group.latest_at || "-" }} | 数量：{{ props.group.activity_count ?? 0 }} | 来源：{{ formatSources(props.group.sources) }}
       </div>
       <button
@@ -166,7 +182,7 @@ function targetActivityRow(item) {
           :batch-size="6"
           :threshold="8"
           :map-item="targetActivityRow"
-          :map-version="`${props.focusedActivityKey}:${props.sourceLinkedActivityKey}`"
+          :map-version="`${props.focusedActivityKey}:${props.sourceLinkedActivityKey}:${isAdvancedMode ? 'advanced' : 'guided'}`"
           test-id="target-group-progressive-list"
         >
           <template #default="{ items }">

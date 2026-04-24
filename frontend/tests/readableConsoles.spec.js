@@ -220,7 +220,8 @@ describe("readable knowledge console", () => {
 
     expect(source).toContain("长期设定与风格知识库");
     expect(source).toContain("创建候选 -> 批准 -> 必要时校验 -> 发布/生效");
-    expect(source).toContain("作者标签：血缘键");
+    expect(source).toContain("知识名称");
+    expect(source).toContain('isAdvancedMode ? "血缘 key" : "知识名称"');
     expect(source).toContain("生效范围与证据");
     expect(source).toContain("高级引用");
   });

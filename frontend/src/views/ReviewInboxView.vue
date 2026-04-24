@@ -7,6 +7,7 @@ import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
 import PanelShell from "../components/PanelShell.vue";
 import ReviewCard from "../components/ReviewCard.vue";
 import VirtualList from "../components/VirtualList.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { getVisibleHumanReviewItems, shouldClearReviewFocus } from "../lib/filterFocus";
 import { prioritizeMatchingItem } from "../lib/listPriority";
@@ -387,6 +388,7 @@ watch(
 
 <template>
   <section class="panel-grid" data-testid="review-inbox-view">
+    <WorkflowPageHeader view-id="review" />
     <PanelShell
       eyebrow="审核收件箱"
       title="批准、落地与发布"

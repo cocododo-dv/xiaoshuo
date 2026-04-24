@@ -251,6 +251,29 @@ function providerViewReady(provider = {}) {
   return provider.secret?.configured === true;
 }
 
+function providerProbeSignature(provider = {}) {
+  return JSON.stringify({
+    provider_id: provider.provider_id || "",
+    provider_type: provider.provider_type || provider.provider || "",
+    base_url: provider.base_url || "",
+    credential_mode: provider.credential_mode || "api_key",
+    api_mode: provider.api_mode || "",
+    models: parseTextList(provider.models || []).join("\n"),
+    secret_configured: provider.secret?.configured === true,
+    secret_hint: provider.secret?.hint || "",
+  });
+}
+
+function reconcileProviderProbeResults(results = {}, providers = {}) {
+  return Object.entries(results || {}).reduce((nextResults, [providerId, result]) => {
+    const provider = providers?.[providerId];
+    if (provider && result?._provider_signature === providerProbeSignature(provider)) {
+      nextResults[providerId] = result;
+    }
+    return nextResults;
+  }, {});
+}
+
 function routeReadinessFromDraft(draft, source = {}, providers = {}) {
   const status = draft.status || source.status || "active";
   const providerId = draft.provider_id || "";
@@ -413,6 +436,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     providerDraftTouched: false,
     nodeRouteDrafts: normalizeNodeRouteDrafts({}),
     providerProbeResults: {},
+    providerProbePending: {},
     llmActionMessage: "",
     llmActionTone: "",
     exportResult: null,
@@ -628,6 +652,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
           api_snapshot: payload.api_snapshot || null,
           models_snapshot: payload.models_snapshot || null,
         };
+        this.providerProbeResults = reconcileProviderProbeResults(this.providerProbeResults, this.llm.providers);
         this.nodeRouteDrafts = normalizeNodeRouteDrafts(this.llm.node_routes);
         const preferredProvider = selectPreferredProvider(this.llm.providers, this.llm.node_routes);
         if (preferredProvider && !this.providerDraftTouched && providerDraftIsDefault(this.providerDraft)) {
@@ -704,7 +729,10 @@ export const useSystemConfigStore = defineStore("systemConfig", {
       }
     },
     async probeLlmProvider(providerId) {
-      this.testing = true;
+      this.providerProbePending = {
+        ...this.providerProbePending,
+        [providerId]: true,
+      };
       this.error = "";
       try {
         const provider = this.llm.providers?.[providerId] || {};
@@ -712,7 +740,10 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         const result = await probeLlmProviderRequest(providerId, probePayload, this.adminToken);
         this.providerProbeResults = {
           ...this.providerProbeResults,
-          [providerId]: result,
+          [providerId]: {
+            ...result,
+            _provider_signature: providerProbeSignature(provider),
+          },
         };
         if (!result.ok) {
           return `模型验证失败：${result.message || providerId}`;
@@ -722,7 +753,9 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         this.error = error.message;
         throw error;
       } finally {
-        this.testing = false;
+        const providerProbePending = { ...this.providerProbePending };
+        delete providerProbePending[providerId];
+        this.providerProbePending = providerProbePending;
       }
     },
     async exportCategory(category = this.selectedCategory) {

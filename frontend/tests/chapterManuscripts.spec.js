@@ -124,6 +124,12 @@ function manuscriptDetail(overrides = {}) {
         final_scene: null,
       },
     ],
+    source_safety_scan: {
+      safe: true,
+      blocked_terms: [],
+      source_profile_ids: [],
+      checked_at: "2026-04-23T00:00:00+00:00",
+    },
     ...overrides,
   };
 }
@@ -336,6 +342,8 @@ describe("chapter manuscript view", () => {
       expect(container.querySelector('[data-testid="copy-assembled-button"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="download-aggregate-button"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="run-final-aggregate-button"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="manuscript-source-safety-card"]')).not.toBeNull();
+      expect(container.textContent).toContain("源书安全扫描");
 
       container.querySelector('[data-testid="copy-assembled-button"]').click();
       await flushUi();
@@ -358,5 +366,7 @@ describe("chapter manuscript view", () => {
     expect(source).toContain("saveScene");
     expect(source).toContain("reorderScenes");
     expect(source).toContain("trashScenes");
+    expect(source).toContain("manuscript-source-safety-card");
+    expect(source).toContain("sourceSafetyScan");
   });
 });

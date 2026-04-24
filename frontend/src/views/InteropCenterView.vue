@@ -5,7 +5,9 @@ import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { useUiMode } from "../composables/useUiMode";
 import { useShellRouter } from "../router";
 import { useInteropCenterStore } from "../stores/interopCenter";
 
@@ -13,6 +15,7 @@ const emit = defineEmits(["notice"]);
 
 const interopCenter = useInteropCenterStore();
 const { openTarget } = useShellRouter();
+const { isAdvancedMode } = useUiMode();
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
@@ -160,6 +163,7 @@ function openBundleScene() {
 
 <template>
   <section class="panel-grid" data-testid="interop-center-view">
+    <WorkflowPageHeader view-id="interop" />
     <PanelShell
       eyebrow="互操作中心"
       title="预览、导入、导出与回放工作表"
@@ -175,7 +179,7 @@ function openBundleScene() {
             <span class="badge">worksheet_yaml</span>
           </div>
           <label class="interop-wide">
-            <span>工作表 YAML</span>
+            <span>{{ isAdvancedMode ? "工作表 YAML" : "粘贴工作表" }}</span>
             <textarea
               v-model="interopCenter.worksheetYaml"
               class="control-input control-textarea interop-editor"
@@ -203,11 +207,11 @@ function openBundleScene() {
 
           <article v-if="previewSummary" class="paper mini" data-testid="interop-preview-summary">
             <h4>预览结果</h4>
-            <p><strong>包 ID</strong><br />{{ previewSummary.bundle_id }}</p>
+            <p><strong>{{ isAdvancedMode ? "包 ID" : "导入包" }}</strong><br />{{ previewSummary.bundle_id }}</p>
             <p><strong>场景 / 章节</strong><br />{{ previewSummary.scene_id }} / {{ previewSummary.chapter_id }}</p>
             <p><strong>执行模式</strong><br />{{ previewSummary.execution_mode }}</p>
             <p><strong>对比项数量</strong><br />{{ previewSummary.comparison_count }}</p>
-            <p><strong>哈希契约</strong><br />{{ interopCenter.previewResult?.envelope?.hash_contract_version || "-" }}</p>
+            <p v-if="isAdvancedMode"><strong>哈希契约</strong><br />{{ interopCenter.previewResult?.envelope?.hash_contract_version || "-" }}</p>
           </article>
 
           <article
@@ -216,7 +220,7 @@ function openBundleScene() {
             data-testid="interop-import-receipt"
           >
             <h4>导入回执</h4>
-            <p><strong>包 ID</strong><br />{{ activeEnvelope?.bundle_id || "-" }}</p>
+            <p><strong>{{ isAdvancedMode ? "包 ID" : "导入包" }}</strong><br />{{ activeEnvelope?.bundle_id || "-" }}</p>
             <p><strong>产物类型</strong><br />{{ activeArtifactReceipt.artifact_kind }}</p>
             <p><strong>产物路径</strong><br />{{ activeArtifactReceipt.file_path }}</p>
           </article>
@@ -233,7 +237,7 @@ function openBundleScene() {
 
           <div class="interop-query-grid">
             <label>
-              <span>包 ID</span>
+              <span>{{ isAdvancedMode ? "包 ID" : "要导出的包" }}</span>
               <input
                 v-model="query.exportBundleId"
                 class="control-input"
@@ -250,7 +254,7 @@ function openBundleScene() {
             </button>
 
             <label>
-              <span>终稿场景行 ID</span>
+              <span>{{ isAdvancedMode ? "终稿场景行 ID" : "终稿记录" }}</span>
               <input
                 v-model="query.replayFinalRowId"
                 class="control-input"
@@ -267,7 +271,7 @@ function openBundleScene() {
             </button>
 
             <label>
-              <span>草稿行 ID</span>
+              <span>{{ isAdvancedMode ? "草稿行 ID" : "草稿记录" }}</span>
               <input
                 v-model="query.replayDraftRowId"
                 class="control-input"
@@ -301,8 +305,8 @@ function openBundleScene() {
 
           <div v-if="activeEnvelope" data-testid="interop-envelope-panel">
             <div class="receipt-grid">
-              <p><strong>包 ID</strong><br />{{ activeEnvelope.bundle_id }}</p>
-              <p><strong>哈希</strong><br />{{ activeEnvelope.bundle_snapshot_hash || "-" }}</p>
+              <p><strong>{{ isAdvancedMode ? "包 ID" : "结果包" }}</strong><br />{{ activeEnvelope.bundle_id }}</p>
+              <p v-if="isAdvancedMode" data-testid="interop-envelope-technical"><strong>哈希</strong><br />{{ activeEnvelope.bundle_snapshot_hash || "-" }}</p>
               <p><strong>执行模式</strong><br />{{ activeEnvelope.execution_mode || "-" }}</p>
               <p><strong>创建动作</strong><br />{{ activeEnvelope.created_by_action || "-" }}</p>
             </div>
@@ -310,6 +314,7 @@ function openBundleScene() {
               <button class="ghost" @click="openBundleScene">打开场景工作台</button>
             </div>
             <LazySection
+              v-if="isAdvancedMode"
               :key="`interop-envelope-${activeEnvelope.bundle_id || interopCenter.activeMode}`"
               title="结果信封详情"
               toggle-test-id="interop-toggle-envelope"

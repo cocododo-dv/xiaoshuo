@@ -1,17 +1,17 @@
 # Reference Learning Fixture
 
-Rain pressed softly against the classroom windows while the corridor lights flickered in slow, patient beats.
+雨线贴着旧教室的窗玻璃往下滑，走廊尽头的灯忽明忽暗，像有人把一段迟到的心跳藏在墙里。米拉没有先说害怕，她只是把铅笔横在桌沿，等它自己滚向门口。
 
-"You heard it too?" Mira asked, keeping her voice low enough that the empty desks seemed to lean closer.
+“你也听见了吗？”她问。乔恩点头，却没有立刻回答，因为那声音不是脚步，更像一页纸在很远的地方被反复翻开。空桌椅安静得过分，连椅脚的影子都像在屏息。
 
-The door at the far end opened without a hand on the handle, and every old poster on the wall snapped flat.
+门把手没有转动，门却自己开了一条缝。墙上的旧海报啪地贴平，所有褪色的字同时朝他们看过来。米拉向前半步，又停住，把手心贴在冰凉的桌面上。
 
-Jon did not answer at once; he counted his breaths, then realized the rhythm no longer matched his own chest.
+乔恩开始数自己的呼吸，数到第七下时突然发现节拍不属于他。窗外的雨声变慢，教室里的钟却快了起来，两个节奏在胸口撞出一种说不清的预感。
 
-The letter on the floor was dry except for one dark fingerprint, as if someone had brought the storm inside.
+地上躺着一封干燥的信，只有封口处有一枚深色指纹，像有人把整场雨带进来，又只留下最轻的一点证据。米拉蹲下去，没有碰信，先看向门外。
 
-They moved together only after the bell rang once, a short metallic note that made the lockers answer in sequence.
+铃声响了一下，短促、尖亮，整排储物柜在远处依次回应。乔恩终于说：“这不是警告我们离开。”他的声音压得很低，却让米拉的眼神一下子亮起来。
 
-At the stairwell, the clue finally turned: the warning was not about the night, but about the person waiting after it.
+楼梯口的线索在最后一刻反转：信里写的夜晚并不危险，危险的是等在夜晚之后的人。米拉把信折回原样，像把一个答案重新放回问题里面。
 
-When the last light went out, Mira smiled like she had already chosen the dangerous version of tomorrow.
+最后一盏灯熄灭时，她笑了一下，不是轻松，而是已经选好了更危险的明天。乔恩跟上去，两个人的脚步同时落下，走廊终于承认他们已经进入故事深处。

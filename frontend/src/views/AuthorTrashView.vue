@@ -1,9 +1,11 @@
 <script setup>
 import { computed, onActivated, ref, watch } from "vue";
 
+import DangerConfirm from "../components/DangerConfirm.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
+import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useAuthorTrashStore } from "../stores/authorTrash";
 
@@ -144,7 +146,7 @@ async function restoreSelectedChapters() {
 
 async function purgeSelectedChapters() {
   const chapterIds = [...selectedPurgeableChapterIds.value];
-  if (!chapterIds.length || !confirmAction(`确认永久清除选中的 ${chapterIds.length} 个章节吗？此操作不可撤销。`)) {
+  if (!chapterIds.length) {
     return;
   }
   const result = await runFlowAction({
@@ -180,7 +182,7 @@ async function restoreSelectedScenes() {
 
 async function purgeSelectedScenes() {
   const sceneIds = [...selectedPurgeableSceneIds.value];
-  if (!sceneIds.length || !confirmAction(`确认永久清除选中的 ${sceneIds.length} 个场景吗？此操作不可撤销。`)) {
+  if (!sceneIds.length) {
     return;
   }
   const result = await runFlowAction({
@@ -211,6 +213,7 @@ onActivated(() => {
 
 <template>
   <section class="panel-grid" data-testid="author-trash-view">
+    <WorkflowPageHeader view-id="trash" />
     <PanelShell
       eyebrow="作者回收站"
       title="恢复或永久清除作者记录"
@@ -246,14 +249,14 @@ onActivated(() => {
             >
               恢复所选章节
             </button>
-            <button
-              class="danger-button"
-              data-testid="author-trash-purge-chapters-button"
+            <DangerConfirm
+              label="永久清除所选章节"
+              confirm-label="确认永久清除"
+              :message="`将永久清除 ${selectedPurgeableChapterIds.length} 个章节。此操作不可撤销。`"
+              test-id="author-trash-purge-chapters-button"
               :disabled="!selectedPurgeableChapterIds.length || authorTrash.actionId === 'purge-chapters'"
-              @click="purgeSelectedChapters"
-            >
-              永久清除所选章节
-            </button>
+              @confirm="purgeSelectedChapters"
+            />
           </div>
           <FlowActionReceipt compact :receipt="receipt(TRASH_CHAPTER_SCOPE)" />
 
@@ -326,14 +329,14 @@ onActivated(() => {
             >
               恢复所选场景
             </button>
-            <button
-              class="danger-button"
-              data-testid="author-trash-purge-scenes-button"
+            <DangerConfirm
+              label="永久清除所选场景"
+              confirm-label="确认永久清除"
+              :message="`将永久清除 ${selectedPurgeableSceneIds.length} 个场景。此操作不可撤销。`"
+              test-id="author-trash-purge-scenes-button"
               :disabled="!selectedPurgeableSceneIds.length || authorTrash.actionId === 'purge-scenes'"
-              @click="purgeSelectedScenes"
-            >
-              永久清除所选场景
-            </button>
+              @confirm="purgeSelectedScenes"
+            />
           </div>
           <FlowActionReceipt compact :receipt="receipt(TRASH_SCENE_SCOPE)" />
 

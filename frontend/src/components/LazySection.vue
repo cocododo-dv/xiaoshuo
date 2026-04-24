@@ -1,5 +1,7 @@
 <script setup>
-import { ref } from "vue";
+import { ref, watch } from "vue";
+
+import { useUiMode } from "../composables/useUiMode";
 
 const props = defineProps({
   title: {
@@ -24,7 +26,12 @@ const props = defineProps({
   },
 });
 
-const expanded = ref(props.initiallyOpen);
+const { isAdvancedMode } = useUiMode();
+const expanded = ref(props.initiallyOpen || isAdvancedMode.value);
+
+watch(isAdvancedMode, (advanced) => {
+  expanded.value = advanced || props.initiallyOpen;
+});
 </script>
 
 <template>

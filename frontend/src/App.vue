@@ -1,6 +1,9 @@
 <script setup>
 import { computed, defineAsyncComponent, onBeforeUnmount, ref } from "vue";
 
+import UiModeSwitch from "./components/UiModeSwitch.vue";
+import WorkflowNav from "./components/WorkflowNav.vue";
+import { useUiMode } from "./composables/useUiMode";
 import { useShellRouter } from "./router";
 
 const VIEW_COMPONENTS = {
@@ -16,7 +19,8 @@ const VIEW_COMPONENTS = {
   config: defineAsyncComponent(() => import("./views/SystemConfigView.vue")),
 };
 
-const { activeView, views, navigate } = useShellRouter();
+const { activeView, views, workflowGroups, navigate } = useShellRouter();
+const { uiMode } = useUiMode();
 const notices = ref([]);
 const noticeTimers = new Map();
 const NOTICE_TTL_MS = 10000;
@@ -100,26 +104,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="shell">
+  <div class="shell" :class="`ui-mode-${uiMode}`" :data-ui-mode="uiMode">
     <aside class="rail">
       <div class="brand">
-        <div class="eyebrow">P2 编辑运营台</div>
+        <div class="eyebrow">P2 Workflow Ops</div>
         <h1>小说系统控制台</h1>
-        <p>把作者编排、运行时审核与索引协作收拢到同一个共享指挥台。</p>
+        <p>按步骤完成配置、编排、运行、审核、成稿和知识沉淀。</p>
       </div>
 
-      <nav class="nav">
-        <button
-          v-for="view in views"
-          :key="view.id"
-          class="nav-btn"
-          :class="{ active: activeView === view.id }"
-          :data-testid="`nav-${view.id}`"
-          @click="navigate(view.id)"
-        >
-          {{ view.label }}
-        </button>
-      </nav>
+      <UiModeSwitch />
+      <WorkflowNav
+        :views="views"
+        :groups="workflowGroups"
+        :active-view="activeView"
+        @navigate="navigate"
+      />
     </aside>
 
     <main class="stage">

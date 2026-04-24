@@ -2,6 +2,8 @@
 import { reactive } from "vue";
 
 import ProgressiveList from "./ProgressiveList.vue";
+import { useUiMode } from "../composables/useUiMode";
+import { formatGuidedTargetRef, formatReadableTargetRef } from "../lib/readableRefs";
 
 const props = defineProps({
   items: {
@@ -26,6 +28,7 @@ const emit = defineEmits(["action", "open-target"]);
 
 const expandedDetails = reactive({});
 const expandedHistory = reactive({});
+const { isAdvancedMode } = useUiMode();
 
 const ACTION_LABELS = {
   retry_request: "重试请求",
@@ -71,18 +74,33 @@ function replaySummary(replayResult) {
     return "";
   }
   if (replayResult.review_id && replayResult.materialize_status) {
-    return `${replayResult.review_id} -> ${replayResult.materialize_status}`;
+    return isAdvancedMode.value
+      ? `${replayResult.review_id} -> ${replayResult.materialize_status}`
+      : `审核项 -> ${formatStatus(replayResult.materialize_status)}`;
   }
   if (replayResult.review_id && replayResult.released !== undefined) {
-    return `${replayResult.review_id} -> 已发布 ${replayResult.released ? "是" : "否"}`;
+    return isAdvancedMode.value
+      ? `${replayResult.review_id} -> 已发布 ${replayResult.released ? "是" : "否"}`
+      : `审核项 -> 已发布 ${replayResult.released ? "是" : "否"}`;
   }
   if (replayResult.job_id && replayResult.status) {
-    return `${replayResult.job_id} -> ${replayResult.status}`;
+    return isAdvancedMode.value
+      ? `${replayResult.job_id} -> ${replayResult.status}`
+      : `校验任务 -> ${formatStatus(replayResult.status)}`;
   }
   return JSON.stringify(replayResult);
 }
 
+function targetDisplay(targetRef) {
+  const readable = isAdvancedMode.value ? formatReadableTargetRef(targetRef) : formatGuidedTargetRef(targetRef);
+  return readable.label || readable.raw || "-";
+}
+
 function targetSummary(item) {
+  return targetDisplay(item.linked_target?.target_ref || item.details_json?.linked_target_ref);
+}
+
+function rawTargetSummary(item) {
   return item.linked_target?.target_ref || item.details_json?.linked_target_ref || "-";
 }
 
@@ -225,6 +243,7 @@ function historyRows(item, eventId) {
       statusLabel: formatStatus(entry.status_after),
       actor: entry.actor_ref || "-",
       linkedTargetRef: entry.linked_target_ref,
+      linkedTargetLabel: targetDisplay(entry.linked_target_ref),
       resolutionReason: entry.resolution_reason,
       replayResult: entry.replay_result,
       replaySummary: replaySummary(entry.replay_result),
@@ -246,6 +265,7 @@ function humanReviewRow(item) {
     eventSourceLabel: eventSourceLabel(item.event_source),
     statusLabel: formatStatus(item.status),
     targetSummary: targetSummary(item),
+    rawTargetSummary: rawTargetSummary(item),
     actionSummary: actions.map((action) => action.label).join(" / ") || "-",
     defaultActionLabel: actionLabel(item.default_action),
     lastAction: lastActionSummary(item),
@@ -285,22 +305,29 @@ function formattedDetails(item) {
           :class="{ 'focused-card': props.focusEventId && row.eventId === props.focusEventId }"
         >
           <h3>{{ row.eventSourceLabel }}</h3>
+          <p class="muted" data-testid="human-review-technical-ref">
+            {{ isAdvancedMode ? "事件 ID" : "事件" }}：{{ isAdvancedMode ? row.eventId : row.eventSourceLabel }}
+          </p>
           <p class="muted">状态：{{ row.statusLabel }}</p>
-          <p class="muted">对象：{{ row.item.object_ref || "-" }}</p>
+          <p class="muted">对象：{{ isAdvancedMode ? (row.item.object_ref || "-") : row.eventSourceLabel }}</p>
           <p class="muted">关联目标：{{ row.targetSummary }}</p>
 
-          <p v-if="row.item.details_json?.request_path_template" class="muted">
+          <p v-if="isAdvancedMode && row.rawTargetSummary !== '-'" class="muted">
+            target_ref：{{ row.rawTargetSummary }}
+          </p>
+
+          <p v-if="isAdvancedMode && row.item.details_json?.request_path_template" class="muted">
             请求模板：{{ row.item.details_json.request_path_template }}
           </p>
 
-          <p v-if="row.item.details_json?.created_by_ref" class="muted">
+          <p v-if="isAdvancedMode && row.item.details_json?.created_by_ref" class="muted">
             创建来源：{{ row.item.details_json.created_by_ref }} | {{ row.item.details_json.created_reason || "-" }}
           </p>
 
           <p class="muted">可执行动作：{{ row.actionSummary }}</p>
 
           <p v-if="row.item.default_action && row.item.default_action !== 'inspect'" class="muted">
-            建议下一步：{{ row.defaultActionLabel }} ({{ row.item.default_action }})
+            建议下一步：{{ row.defaultActionLabel }}<span v-if="isAdvancedMode"> ({{ row.item.default_action }})</span>
           </p>
 
           <p v-if="row.lastAction" class="muted">
@@ -318,7 +345,7 @@ function formattedDetails(item) {
               :data-testid="`human-review-toggle-details-${row.eventId}`"
               @click="toggleDetails(row.eventId)"
             >
-              {{ expandedDetails[row.eventId] ? "收起详情" : "展开详情" }}
+              {{ expandedDetails[row.eventId] ? (isAdvancedMode ? "收起详情" : "收起依据") : (isAdvancedMode ? "展开详情" : "查看依据") }}
             </button>
 
             <button
@@ -344,7 +371,9 @@ function formattedDetails(item) {
                   <span>{{ entry.entry.action_at }} | {{ entry.actor }} | {{ entry.statusLabel }}</span>
                 </p>
 
-                <p v-if="entry.linkedTargetRef" class="muted history-replay">关联目标：{{ entry.linkedTargetRef }}</p>
+                <p v-if="entry.linkedTargetRef" class="muted history-replay">
+                  {{ isAdvancedMode ? "target_ref" : "关联目标" }}：{{ isAdvancedMode ? entry.linkedTargetRef : entry.linkedTargetLabel }}
+                </p>
                 <p v-if="entry.resolutionReason" class="muted history-replay">处理结果：{{ entry.resolutionReason }}</p>
                 <p v-if="entry.replayResult" class="muted history-replay">回放结果：{{ entry.replaySummary }}</p>
 

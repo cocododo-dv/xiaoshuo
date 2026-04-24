@@ -6,6 +6,7 @@ import {
   approveReview,
   fetchReferenceBook,
   fetchReferenceBooks,
+  fetchReferenceLearningTree,
   fetchReferenceSegmentExcerpt,
   importReferenceBookPath,
   importReferenceBookUpload,
@@ -61,6 +62,8 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     books: [],
     selectedBookId: "",
     detail: null,
+    learningTree: null,
+    learningTreeLoading: false,
     currentRun: null,
     currentRound: null,
     loading: false,
@@ -144,6 +147,7 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
       if (!bookId) {
         this.selectedBookId = "";
         this.detail = null;
+        this.learningTree = null;
         this.currentRun = null;
         this.currentRound = null;
         this.segmentExcerpts = {};
@@ -153,6 +157,9 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
       this.actionId = `select:${bookId}`;
       this.error = "";
       try {
+        if (bookId !== this.selectedBookId) {
+          this.learningTree = null;
+        }
         const detail = await fetchReferenceBook(bookId);
         this.selectedBookId = bookId;
         this.detail = snapshotPayload(detail);
@@ -166,6 +173,24 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
         throw error;
       } finally {
         this.actionId = "";
+      }
+    },
+    async loadLearningTree(bookId = this.selectedBookId) {
+      if (!bookId) {
+        this.learningTree = null;
+        return null;
+      }
+      this.learningTreeLoading = true;
+      this.error = "";
+      try {
+        const tree = await fetchReferenceLearningTree(bookId);
+        this.learningTree = snapshotPayload(tree);
+        return this.learningTree;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.learningTreeLoading = false;
       }
     },
     async importPath(payload = this.pathDraft) {
