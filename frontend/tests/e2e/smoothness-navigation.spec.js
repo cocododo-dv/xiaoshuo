@@ -122,10 +122,16 @@ test("keeps guided navigation compact and advanced mode usable on mobile", async
 
   await page.goto("/");
   await expect(page.getByTestId("workflow-nav")).toBeVisible();
+  await expect(page.getByTestId("workflow-nav-mobile-select")).toBeVisible();
+  await expect(page.getByTestId("workflow-nav-desktop-list")).toBeHidden();
   await expect(page.getByTestId("nav-workbench-route")).toHaveCount(0);
 
   await page.getByTestId("ui-mode-advanced").click();
-  await expect(page.getByTestId("nav-workbench-route")).toBeVisible();
+  await expect(page.getByTestId("workflow-nav-mobile-select")).toBeVisible();
+  await expect(page.getByTestId("nav-workbench-route")).toBeHidden();
+
+  await page.getByTestId("workflow-nav-mobile-select").selectOption("review");
+  await expect(page.getByTestId("review-inbox-view")).toBeVisible();
 
   const metrics = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,

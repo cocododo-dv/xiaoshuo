@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { createApp, nextTick } from "vue";
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 
 import { useShellRouter } from "../src/router";
 
@@ -143,6 +143,37 @@ describe("guided and advanced UI modes", () => {
 
       expect(wrapper.el.textContent).toContain("场景工作台");
       expect(wrapper.el.querySelector('[data-testid="nav-workbench-route"]')?.textContent).toContain("view: workbench");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("offers a compact mobile workflow selector without changing desktop nav events", async () => {
+    const { default: WorkflowNav } = await import("../src/components/WorkflowNav.vue");
+    const router = useShellRouter();
+    const onNavigate = vi.fn();
+
+    router.reset();
+
+    const wrapper = mountComponent(WorkflowNav, {
+      views: router.views,
+      groups: router.workflowGroups,
+      activeView: router.activeView.value,
+      onNavigate,
+    });
+
+    try {
+      const selector = wrapper.el.querySelector('[data-testid="workflow-nav-mobile-select"]');
+
+      expect(selector).not.toBeNull();
+      expect(selector.value).toBe("workbench");
+      expect([...selector.options].map((option) => option.value)).toEqual(router.views.map((view) => view.id));
+
+      selector.value = "review";
+      selector.dispatchEvent(new Event("change"));
+
+      expect(onNavigate).toHaveBeenCalledWith("review");
+      expect(wrapper.el.querySelector('[data-testid="workflow-nav-desktop-list"]')).not.toBeNull();
     } finally {
       wrapper.unmount();
     }

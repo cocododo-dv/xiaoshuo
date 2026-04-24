@@ -199,6 +199,22 @@ describe("user-facing Chinese readability guard", () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it("keeps the console design system readable across light panels, dark rail, and touch targets", () => {
+    const source = readFileSync(path.join(SOURCE_ROOT, "src/styles/app.css"), "utf8");
+
+    expect(source).toContain("--surface-text:");
+    expect(source).toContain("--surface-muted:");
+    expect(source).toContain("--rail-text:");
+    expect(source).toContain("--rail-muted:");
+    expect(source).toContain("--button-secondary-bg:");
+    expect(source).toContain("min-height: 2.75rem;");
+    expect(source).toContain(".stage .ghost");
+    expect(source).toContain(".rail .ghost");
+    expect(source).toContain(".rail .ui-mode-option.active");
+    expect(source).toContain(".workflow-nav-mobile");
+    expect(source).toContain(".mobile-nav-select");
+  });
 });
 
 describe("readable index console", () => {
