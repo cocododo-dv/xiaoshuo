@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
-from novel_system.db.models import HumanReviewEvent, ReviewItem, VectorAliasRegistry, VerifyJob, VersionRegistry
+from novel_system.db.models import AuthorPreferenceProfile, HumanReviewEvent, ReviewItem, VectorAliasRegistry, VerifyJob, VersionRegistry
 from novel_system.services.errors import DomainError
 from novel_system.services.human_review_manager import HumanReviewManager
 from novel_system.services.human_review_support import (
@@ -157,6 +157,8 @@ def _approve_review_with_style_profile_gate(session: Session, review_id: str, pa
     item = session.get(ReviewItem, review_id)
     if item is None:
         return ReviewMaterializationService(session).materialize_review(review_id)
+    if item.item_type == "author_preference_profile":
+        return _approve_author_preference_profile(session, item)
 
     risk = _high_risk_style_profile_approval(session, item)
     if risk is None:
@@ -180,6 +182,44 @@ def _approve_review_with_style_profile_gate(session: Session, review_id: str, pa
             "severity": "high",
             "required": True,
         },
+    }
+
+
+def _approve_author_preference_profile(session: Session, item: ReviewItem) -> dict[str, Any]:
+    payload = item.candidate_payload_json or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    profile_id = payload.get("profile_id") if isinstance(payload.get("profile_id"), str) else "author_pref_global_global"
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    source_patch_ids = payload.get("source_patch_ids") if isinstance(payload.get("source_patch_ids"), list) else []
+    profile = session.get(AuthorPreferenceProfile, profile_id)
+    if profile is None:
+        profile = AuthorPreferenceProfile(
+            profile_id=profile_id,
+            scope_type=str(payload.get("scope_type") or "global"),
+            scope_ref_id=str(payload.get("scope_ref_id") or "global"),
+            summary_json=summary,
+            source_patch_ids_json=[str(value) for value in source_patch_ids],
+        )
+        session.add(profile)
+    else:
+        profile.scope_type = str(payload.get("scope_type") or profile.scope_type or "global")
+        profile.scope_ref_id = str(payload.get("scope_ref_id") or profile.scope_ref_id or "global")
+        profile.summary_json = summary
+        profile.source_patch_ids_json = [str(value) for value in source_patch_ids]
+    profile.status = "approved"
+    profile.runtime_eligible = 1
+    item.status = "approved"
+    item.materialize_status = "succeeded"
+    item.approved_item_row_id = profile.profile_id
+    item.approved_item_id = profile.profile_id
+    session.flush()
+    return {
+        "review_id": item.review_id,
+        "materialize_status": item.materialize_status,
+        "approved_item_row_id": profile.profile_id,
+        "approved_item_id": profile.profile_id,
+        "released": True,
     }
 
 
@@ -310,7 +350,7 @@ def _review_has_released_materialized_row(session: Session, item: ReviewItem) ->
         return False
     try:
         descriptor = descriptor_for_item_type(item.item_type)
-    except DomainError:
+    except (DomainError, KeyError):
         return True
     approved_row = session.get(descriptor.model_cls, item.approved_item_row_id)
     if approved_row is None:

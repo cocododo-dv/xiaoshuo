@@ -322,9 +322,12 @@ class PassagePatchCandidate(Base):
     scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
     source_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     target_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_draft_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    generation_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
     source_excerpt: Mapped[str] = mapped_column(Text)
     issue_dimension: Mapped[str] = mapped_column(String)
     replacement_options_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     manual_only: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String, default="candidate")
     author_decision: Mapped[str] = mapped_column(String, default="pending")
@@ -354,6 +357,49 @@ class AuthorPreferenceProfile(Base):
     created_by: Mapped[str] = mapped_column(String, default="writer_deep_review")
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class AuthorDraft(Base):
+    __tablename__ = "author_drafts"
+    __table_args__ = (
+        CheckConstraint("object_type IN ('scene','chapter')", name="ck_author_drafts_object_type"),
+        CheckConstraint("status IN ('current','superseded','archived')", name="ck_author_drafts_status"),
+    )
+
+    draft_id: Mapped[str] = mapped_column(String, primary_key=True)
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    source_text_ref: Mapped[str] = mapped_column(String)
+    content: Mapped[str] = mapped_column(Text)
+    revision_no: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="current")
+    created_by: Mapped[str] = mapped_column(String, default="author_draft")
+    updated_by: Mapped[str] = mapped_column(String, default="author_draft")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class AuthorDraftEvent(Base):
+    __tablename__ = "author_draft_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('created','edited','candidate_inserted','candidate_saved','candidate_rejected')",
+            name="ck_author_draft_events_type",
+        ),
+    )
+
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String)
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    event_type: Mapped[str] = mapped_column(String)
+    patch_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    revision_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    option_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String, default="author_draft")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
 class FinalScene(Base):
@@ -477,6 +523,7 @@ class ReviewItem(Base):
             "WHEN item_type = 'scene_memory' THEN 'scene_memories' "
             "WHEN item_type = 'scene_summary' THEN 'scene_memories' "
             "WHEN item_type = 'chapter_summary' THEN 'chapter_memories' "
+            "WHEN item_type = 'author_preference_profile' THEN 'author_preference_profiles' "
             "ELSE 'review_items' END",
             persisted=True,
         ),

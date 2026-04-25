@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from statistics import mean
 from typing import Any
@@ -8,16 +10,22 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
+    AuthorDraft,
     AuthorPreferenceProfile,
     ChapterGoal,
     ChapterMemory,
     FinalScene,
     PassagePatchCandidate,
+    ReviewItem,
     SceneCard,
     SceneRunState,
     WriterEvaluation,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.hash_engine import canonical_json
+from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_task_runner import LLMNodeRunner
+from novel_system.services.prompt_builder import PromptBuilder
 
 
 LITERARY_REVISION_RUBRIC_ID = "literary_revision_v1"
@@ -37,8 +45,10 @@ DEEP_REVIEW_LENSES: tuple[str, ...] = ("story", "character", "prose", "reader", 
 
 
 class WriterDeepReviewService:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, llm_client: Any | None = None, llm_runner: LLMNodeRunner | None = None) -> None:
         self.session = session
+        self.prompt_builder = PromptBuilder()
+        self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
 
     def scene_summary(self, scene_id: str) -> dict[str, Any]:
         self._require_scene(scene_id)
@@ -79,7 +89,7 @@ class WriterDeepReviewService:
         object_id = _required_text(payload, "object_id")
         if object_type not in {"scene", "chapter"}:
             raise DomainError("PASSAGE_PATCH_INVALID", "object_type must be scene or chapter", status_code=400)
-        replacement_options = _replacement_options(source_excerpt, issue_dimension)
+        patch_payload = self._run_passage_patch(payload, source_excerpt=source_excerpt, issue_dimension=issue_dimension)
         row = PassagePatchCandidate(
             patch_id=f"passage_patch_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,
@@ -88,9 +98,12 @@ class WriterDeepReviewService:
             scene_id=_optional_text(payload, "scene_id"),
             source_text_ref=_optional_text(payload, "source_text_ref") or _optional_text(payload, "target_text_ref"),
             target_text_ref=_optional_text(payload, "target_text_ref"),
+            source_draft_id=_optional_text(payload, "source_draft_id"),
+            generation_llm_call_id=patch_payload.get("generation_llm_call_id"),
             source_excerpt=source_excerpt,
             issue_dimension=issue_dimension,
-            replacement_options_json=replacement_options,
+            replacement_options_json=patch_payload["replacement_options"],
+            rationale=patch_payload.get("rationale"),
             manual_only=1,
             status="candidate",
             author_decision="pending",
@@ -178,9 +191,12 @@ class WriterDeepReviewService:
             "scene_id": row.scene_id,
             "source_text_ref": row.source_text_ref,
             "target_text_ref": row.target_text_ref,
+            "source_draft_id": row.source_draft_id,
+            "generation_llm_call_id": row.generation_llm_call_id,
             "source_excerpt": row.source_excerpt,
             "issue_dimension": row.issue_dimension,
             "replacement_options": row.replacement_options_json or [],
+            "rationale": row.rationale,
             "manual_only": bool(row.manual_only),
             "status": row.status,
             "author_decision": row.author_decision,
@@ -337,6 +353,71 @@ class WriterDeepReviewService:
             "patch_candidates": [self.serialize_patch_candidate(row) for row in patch_rows],
         }
 
+    def _run_passage_patch(
+        self,
+        payload: dict[str, Any],
+        *,
+        source_excerpt: str,
+        issue_dimension: str,
+    ) -> dict[str, Any]:
+        target_text_ref = _optional_text(payload, "target_text_ref") or _optional_text(payload, "source_text_ref") or ""
+        source_draft = self._source_draft(_optional_text(payload, "source_draft_id"))
+        preference = self._approved_runtime_preference_profile()
+        snapshot = _passage_patch_snapshot(
+            payload=payload,
+            source_excerpt=source_excerpt,
+            issue_dimension=issue_dimension,
+            target_text_ref=target_text_ref,
+            source_draft=source_draft,
+            preference=preference,
+        )
+        prompt = self.prompt_builder.build(snapshot, "writer_passage_patch")
+        node_result = self._llm_runner.run(
+            scene_id=_optional_text(payload, "scene_id") or _required_text(payload, "object_id"),
+            chapter_id=_optional_text(payload, "chapter_id") or _required_text(payload, "object_id"),
+            bundle_id=snapshot["source_version_refs"]["target_text_ref"] or "writer_passage_patch",
+            bundle_hash=hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
+            node_id="writer_passage_patch",
+            step="writer_passage_patch",
+            prompt=prompt,
+            user_prompt=_passage_patch_user_prompt(
+                prompt["user_prompt"],
+                source_excerpt=source_excerpt,
+                issue_dimension=issue_dimension,
+                target_text_ref=target_text_ref,
+                source_draft=source_draft,
+                preference=preference,
+            ),
+            offline_client_factory=lambda: OfflinePassagePatchClient(
+                source_excerpt=source_excerpt,
+                issue_dimension=issue_dimension,
+                target_text_ref=target_text_ref,
+            ),
+        )
+        normalized = _normalize_patch_output(
+            node_result.response.structured_output,
+            source_excerpt=source_excerpt,
+            issue_dimension=issue_dimension,
+            target_text_ref=target_text_ref,
+        )
+        normalized["generation_llm_call_id"] = node_result.llm_call_id
+        return normalized
+
+    def _source_draft(self, source_draft_id: str | None) -> AuthorDraft | None:
+        if not source_draft_id:
+            return None
+        return self.session.get(AuthorDraft, source_draft_id)
+
+    def _approved_runtime_preference_profile(self) -> AuthorPreferenceProfile | None:
+        return self.session.execute(
+            select(AuthorPreferenceProfile)
+            .where(
+                AuthorPreferenceProfile.status == "approved",
+                AuthorPreferenceProfile.runtime_eligible == 1,
+            )
+            .order_by(AuthorPreferenceProfile.updated_at.desc(), AuthorPreferenceProfile.profile_id.desc())
+        ).scalars().first()
+
     def _scene_source(self, scene: SceneCard) -> dict[str, Any]:
         state = self.session.get(SceneRunState, scene.scene_id)
         final_row = self.session.get(FinalScene, state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
@@ -429,7 +510,225 @@ class WriterDeepReviewService:
             profile.summary_json = summary
             profile.source_patch_ids_json = [row.patch_id for row in decided]
             profile.created_by = actor_ref or profile.created_by
+        self._upsert_author_preference_review(profile, actor_ref=actor_ref)
         return profile
+
+    def _upsert_author_preference_review(self, profile: AuthorPreferenceProfile, *, actor_ref: str) -> ReviewItem:
+        review_id = f"review_{profile.profile_id}"
+        summary = profile.summary_json or _empty_preference_summary()
+        source_patch_ids = profile.source_patch_ids_json or []
+        candidate_payload = {
+            "profile_id": profile.profile_id,
+            "scope_type": profile.scope_type,
+            "scope_ref_id": profile.scope_ref_id,
+            "summary": summary,
+            "source_patch_ids": source_patch_ids,
+        }
+        review = self.session.get(ReviewItem, review_id)
+        if review is None:
+            review = ReviewItem(
+                review_id=review_id,
+                item_type="author_preference_profile",
+                status="pending",
+                candidate_text=json.dumps(summary, ensure_ascii=False, sort_keys=True),
+                candidate_payload_json=candidate_payload,
+                active_on_approve=1,
+                materialize_status="pending",
+            )
+            self.session.add(review)
+            return review
+        review.item_type = "author_preference_profile"
+        review.status = "pending"
+        review.candidate_text = json.dumps(summary, ensure_ascii=False, sort_keys=True)
+        review.candidate_payload_json = candidate_payload
+        review.active_on_approve = 1
+        review.materialize_status = "pending"
+        review.approved_item_row_id = None
+        review.approved_item_id = None
+        return review
+
+
+class OfflinePassagePatchClient:
+    def __init__(self, *, source_excerpt: str, issue_dimension: str, target_text_ref: str) -> None:
+        self.source_excerpt = source_excerpt
+        self.issue_dimension = issue_dimension
+        self.target_text_ref = target_text_ref
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        options = _replacement_options(self.source_excerpt, self.issue_dimension)
+        structured_output = {
+            "patches": [
+                {
+                    "target_text_ref": self.target_text_ref,
+                    "source_excerpt": self.source_excerpt,
+                    "replacement_text": option["replacement_text"],
+                    "patch_type": "replace_excerpt",
+                    "changed_dimensions": option["changed_dimensions"],
+                    "why_it_helps": option["why_it_helps"],
+                    "tone": option["tone"],
+                    "label": option["label"],
+                }
+                for option in options
+            ],
+            "rationale": "offline deterministic passage patch",
+            "manual_only": True,
+        }
+        return LLMResponse(
+            request_id=f"offline_writer_passage_patch_{uuid.uuid4().hex[:8]}",
+            provider="offline_deterministic",
+            model=request.model,
+            text=json.dumps(structured_output, ensure_ascii=False),
+            structured_output=structured_output,
+            response_format=request.response_format,
+            raw_response={"id": "offline_writer_passage_patch"},
+            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            finish_reason="offline_fallback",
+        )
+
+
+def _passage_patch_snapshot(
+    *,
+    payload: dict[str, Any],
+    source_excerpt: str,
+    issue_dimension: str,
+    target_text_ref: str,
+    source_draft: AuthorDraft | None,
+    preference: AuthorPreferenceProfile | None,
+) -> dict[str, Any]:
+    preference_summary = preference.summary_json if preference is not None else {}
+    inline_digests = {
+        "scene_summary": json.dumps(
+            {
+                "object_type": payload.get("object_type"),
+                "object_id": payload.get("object_id"),
+                "target_text_ref": target_text_ref,
+                "source_excerpt": source_excerpt,
+                "issue_dimension": issue_dimension,
+                "source_draft_id": source_draft.draft_id if source_draft is not None else None,
+                "source_draft_context": _compact_text(source_draft.content if source_draft is not None else source_excerpt, 1200),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    }
+    if preference is not None:
+        inline_digests["style_profile"] = json.dumps(
+            {
+                "profile_id": preference.profile_id,
+                "kind": "approved_author_preference_profile",
+                "summary": preference_summary,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    return {
+        "contract_version": "WRITER_PASSAGE_PATCH_SOURCE_v1",
+        "stage_allowlist_name": "writer_passage_patch",
+        "scene_id": _optional_text(payload, "scene_id") or "",
+        "chapter_id": _optional_text(payload, "chapter_id") or "",
+        "source_version_refs": {
+            "target_text_ref": target_text_ref,
+            "source_draft_id": source_draft.draft_id if source_draft is not None else None,
+            "author_preference_profile_id": preference.profile_id if preference is not None else None,
+        },
+        "resolved_ref_ids": {},
+        "ordered_injections": [
+            {"slot": "passage_patch_target", "ref_id": target_text_ref, "digest_key": "scene_summary"},
+            {
+                "slot": "author_preference_profile",
+                "ref_id": preference.profile_id if preference is not None else "",
+                "digest_key": "style_profile",
+            },
+        ],
+        "inline_digests": inline_digests,
+    }
+
+
+def _passage_patch_user_prompt(
+    base_prompt: str,
+    *,
+    source_excerpt: str,
+    issue_dimension: str,
+    target_text_ref: str,
+    source_draft: AuthorDraft | None,
+    preference: AuthorPreferenceProfile | None,
+) -> str:
+    preference_summary = preference.summary_json if preference is not None else {}
+    return "\n".join(
+        [
+            base_prompt,
+            "",
+            "## Passage Patch Target",
+            f"Target Text Ref: {target_text_ref}",
+            f"Issue Dimension: {issue_dimension}",
+            "Source Excerpt:",
+            source_excerpt,
+            "",
+            "## Current Author Draft Context",
+            _compact_text(source_draft.content if source_draft is not None else "", 1400),
+            "",
+            "## Approved Author Preference Profile",
+            json.dumps(preference_summary, ensure_ascii=False, sort_keys=True) if preference is not None else "{}",
+        ]
+    )
+
+
+def _normalize_patch_output(
+    payload: Any,
+    *,
+    source_excerpt: str,
+    issue_dimension: str,
+    target_text_ref: str,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "replacement_options": _replacement_options(source_excerpt, issue_dimension),
+            "rationale": "fallback because patch response was not an object",
+        }
+    patches = payload.get("patches")
+    if not isinstance(patches, list) or not patches:
+        return {
+            "replacement_options": _replacement_options(source_excerpt, issue_dimension),
+            "rationale": str(payload.get("rationale") or "fallback because patch list was empty"),
+        }
+    options: list[dict[str, Any]] = []
+    for index, patch in enumerate(patches[:3], start=1):
+        if not isinstance(patch, dict):
+            continue
+        replacement_text = patch.get("replacement_text")
+        if not isinstance(replacement_text, str) or not replacement_text.strip():
+            continue
+        changed_dimensions = patch.get("changed_dimensions") if isinstance(patch.get("changed_dimensions"), list) else []
+        dimensions = [str(item) for item in changed_dimensions if isinstance(item, str) and item.strip()]
+        tone = str(patch.get("tone") or (dimensions[0] if dimensions else issue_dimension))
+        options.append(
+            {
+                "option_id": f"option_llm_{index}",
+                "tone": tone,
+                "label": str(patch.get("label") or f"版本 {index}"),
+                "replacement_text": replacement_text.strip(),
+                "changed_dimensions": dimensions or [issue_dimension],
+                "why_it_helps": str(patch.get("why_it_helps") or patch.get("reason") or ""),
+                "target_text_ref": str(patch.get("target_text_ref") or target_text_ref),
+                "source_excerpt": str(patch.get("source_excerpt") or source_excerpt),
+                "patch_type": str(patch.get("patch_type") or "replace_excerpt"),
+            }
+        )
+    if not options:
+        options = _replacement_options(source_excerpt, issue_dimension)
+    return {
+        "replacement_options": options,
+        "rationale": str(payload.get("rationale") or ""),
+    }
+
+
+def _compact_text(value: str, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    head = max(0, limit // 2)
+    tail = max(0, limit - head)
+    return f"{text[:head]}\n...\n{text[-tail:]}"
 
 
 def _diagnose_by_lens(content: str) -> dict[str, dict[str, Any]]:

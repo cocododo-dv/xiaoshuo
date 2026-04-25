@@ -27,6 +27,10 @@ describe("writer deep revision desk", () => {
   it("exposes deep review, passage patch, and author preference API helpers", () => {
     const apiSource = readSource("src/lib/api.js");
 
+    expect(apiSource).toContain("fetchCurrentAuthorDraft");
+    expect(apiSource).toContain("ensureAuthorDraft");
+    expect(apiSource).toContain("saveAuthorDraft");
+    expect(apiSource).toContain("recordAuthorDraftCandidateEvent");
     expect(apiSource).toContain("fetchSceneDeepReview");
     expect(apiSource).toContain("runSceneDeepReview");
     expect(apiSource).toContain("fetchChapterDeepReview");
@@ -37,6 +41,7 @@ describe("writer deep revision desk", () => {
     expect(apiSource).toContain("fetchAuthorPreferenceProfile");
     expect(apiSource).toContain("/deep-review");
     expect(apiSource).toContain("/passages/patch-candidates");
+    expect(apiSource).toContain("/author-drafts");
     expect(apiSource).toContain("/author-preference-profile");
   });
 
@@ -46,6 +51,14 @@ describe("writer deep revision desk", () => {
     const source = readSource("src/stores/writerDeepDesk.js");
 
     expect(source).toContain('defineStore("writerDeepDesk"');
+    expect(source).toContain('draftMode: "chapter"');
+    expect(source).toContain("authorDraft");
+    expect(source).toContain("draftContent");
+    expect(source).toContain("draftDirty");
+    expect(source).toContain("ensureAuthorDraft");
+    expect(source).toContain("saveAuthorDraft");
+    expect(source).toContain("recordAuthorDraftCandidateEvent");
+    expect(source).toContain("insertCandidateOption");
     expect(source).toContain("runChapterDeepReview");
     expect(source).toContain("createPassagePatchCandidate");
     expect(source).toContain("acceptPassagePatchCandidate");
@@ -60,11 +73,19 @@ describe("writer deep revision desk", () => {
 
     expect(source).toContain('data-testid="writer-deep-desk"');
     expect(source).toContain('data-testid="deep-desk-reader"');
+    expect(source).toContain('data-testid="draft-mode-chapter"');
+    expect(source).toContain('data-testid="draft-mode-scene"');
+    expect(source).toContain('data-testid="author-draft-editor"');
+    expect(source).toContain('data-testid="author-draft-save"');
     expect(source).toContain('data-testid="deep-review-run"');
     expect(source).toContain('data-testid="patch-candidate-create"');
     expect(source).toContain('data-testid="deep-review-findings"');
     expect(source).toContain('data-testid="passage-patch-candidates"');
     expect(source).toContain('data-testid="author-preference-profile"');
+    expect(source).toContain("作者稿");
+    expect(source).toContain("运行终稿");
+    expect(source).toContain("最终聚合稿");
+    expect(source).toContain("放入稿件");
     expect(source).toContain("candidate.status !== 'candidate'");
   });
 });

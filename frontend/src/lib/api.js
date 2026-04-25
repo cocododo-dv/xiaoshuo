@@ -177,6 +177,22 @@ export async function apiPost(path, body = {}) {
   }
 }
 
+export async function apiPatch(path, body = {}) {
+  try {
+    const response = await fetch(buildUrl(path), {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Operator-Ref": getOperatorRef(),
+      },
+      body: JSON.stringify(body),
+    });
+    return parseEnvelope(response);
+  } catch (error) {
+    throw normalizeRequestError(error);
+  }
+}
+
 async function apiAdminPost(path, body = {}, adminToken = "") {
   try {
     const headers = {
@@ -378,6 +394,26 @@ export function acceptPassagePatchCandidate(patchId, payload = {}) {
 
 export function rejectPassagePatchCandidate(patchId, payload = {}) {
   return apiPost(`/api/v1/passage-patch-candidates/${encodeURIComponent(patchId)}/reject`, payload);
+}
+
+export function fetchCurrentAuthorDraft(objectType, objectId) {
+  return apiGet(
+    `/api/v1/author-drafts/${encodeURIComponent(objectType)}/${encodeURIComponent(objectId)}/current`,
+  );
+}
+
+export function ensureAuthorDraft(objectType, objectId) {
+  return apiPost(
+    `/api/v1/author-drafts/${encodeURIComponent(objectType)}/${encodeURIComponent(objectId)}/ensure`,
+  );
+}
+
+export function saveAuthorDraft(draftId, payload) {
+  return apiPatch(`/api/v1/author-drafts/${encodeURIComponent(draftId)}`, payload);
+}
+
+export function recordAuthorDraftCandidateEvent(draftId, payload) {
+  return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/candidate-events`, payload);
 }
 
 export function fetchAuthorPreferenceProfile() {
