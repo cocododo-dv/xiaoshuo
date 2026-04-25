@@ -695,6 +695,16 @@ onActivated(() => {
             </button>
           </div>
           <FlowActionReceipt :receipt="receipt(CHAPTER_SCOPE)" />
+          <div class="card-actions">
+            <button
+              class="ghost"
+              data-testid="open-deep-desk-button"
+              :disabled="!manuscripts.selectedChapterId"
+              @click="navigate('deepdesk')"
+            >
+              作家深改台
+            </button>
+          </div>
 
           <div class="manuscript-scene-area">
             <div class="receipt-head">

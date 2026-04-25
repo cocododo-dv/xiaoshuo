@@ -352,6 +352,38 @@ export function runChapterWriterReview(chapterId) {
   return apiPost(`/api/v1/chapters/${encodeURIComponent(chapterId)}/writer-review/run`);
 }
 
+export function fetchSceneDeepReview(sceneId) {
+  return apiGet(`/api/v1/scenes/${encodeURIComponent(sceneId)}/deep-review`);
+}
+
+export function runSceneDeepReview(sceneId) {
+  return apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/deep-review`);
+}
+
+export function fetchChapterDeepReview(chapterId) {
+  return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/deep-review`);
+}
+
+export function runChapterDeepReview(chapterId) {
+  return apiPost(`/api/v1/chapters/${encodeURIComponent(chapterId)}/deep-review`);
+}
+
+export function createPassagePatchCandidate(payload) {
+  return apiPost("/api/v1/passages/patch-candidates", payload);
+}
+
+export function acceptPassagePatchCandidate(patchId, payload = {}) {
+  return apiPost(`/api/v1/passage-patch-candidates/${encodeURIComponent(patchId)}/accept`, payload);
+}
+
+export function rejectPassagePatchCandidate(patchId, payload = {}) {
+  return apiPost(`/api/v1/passage-patch-candidates/${encodeURIComponent(patchId)}/reject`, payload);
+}
+
+export function fetchAuthorPreferenceProfile() {
+  return apiGet("/api/v1/author-preference-profile");
+}
+
 export function acceptRevisionCandidate(revisionId, payload = {}) {
   return apiPost(`/api/v1/revision-candidates/${encodeURIComponent(revisionId)}/accept`, payload);
 }

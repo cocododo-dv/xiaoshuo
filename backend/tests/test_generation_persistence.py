@@ -214,11 +214,13 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-    assert version_row == ("20260425_0013",)
+    assert version_row == ("20260425_0014",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
     assert "scene_blueprints" in table_names
+    assert "passage_patch_candidates" in table_names
+    assert "author_preference_profiles" in table_names
     assert "system_config_snapshots" in table_names
     assert "system_secrets" in table_names
     assert "generation_llm_call_id" in draft_columns
@@ -312,11 +314,13 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260425_0013",)
+    assert version_row == ("20260425_0014",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
     assert "scene_blueprints" in table_names
+    assert "passage_patch_candidates" in table_names
+    assert "author_preference_profiles" in table_names
     assert "system_config_snapshots" in table_names
     assert "system_secrets" in table_names
     assert {"snapshot_id", "category", "version", "yaml_raw", "active_flag"} <= config_columns.keys()

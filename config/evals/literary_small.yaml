@@ -2,8 +2,9 @@ suite_id: literary_small_v1
 description: >
   Small original-fiction literary quality suite for checking whether generation
   can satisfy concrete motifs, abstract style cues, length bands, and banned
-  moves. The suite avoids named-author imitation and focuses on transferable
-  prose features.
+  moves. The suite also checks deep-revision signals: character contradiction,
+  dialogue edge, image necessity, and ending drive. It avoids named-author
+  imitation and focuses on transferable prose features.
 pass_threshold: 0.72
 cases:
   - case_id: reunion_pressure_gate
@@ -15,10 +16,18 @@ cases:
     baseline_text: >
       The gate held its old iron breath. She kept the letter flat under her
       sleeve until his gesture stopped halfway to the latch. Tension gathered
-      in the pause. Neither of them explained the years between them; the paper
-      did that, edge by edge, when she finally let it cross into his hand.
+      in the pause.
+
+      "You kept it," he said.
+
+      Neither of them explained the years between them; the paper did that,
+      edge by edge, when she finally let it cross into his hand.
     required_terms: ["gate", "letter"]
     style_cues: ["gesture", "tension", "pause"]
+    character_contradiction_cues: ["kept the letter", "finally let it cross"]
+    dialogue_edge_cues: ["You kept it"]
+    image_necessity_cues: ["paper did that", "cross into his hand"]
+    ending_drive_cues: ["cross into his hand"]
     banned_terms: ["woke up", "explained everything"]
     min_chars: 120
     max_chars: 700
@@ -32,13 +41,19 @@ cases:
     baseline_text: >
       Dust lifted when the archive drawer opened. Her thumb found the torn page
       before her eyes accepted it.
-      
+
       Routine left first. Then suspicion.
-      
+
+      "Not missing," she said. "Chosen."
+
       She held the folder against the lamp, feeling the paper fibers catch and
       drag. Someone had not stolen a secret. Someone had made a door.
     required_terms: ["archive", "page"]
     style_cues: ["dust", "suspicion", "paper"]
+    character_contradiction_cues: ["Routine left first", "suspicion"]
+    dialogue_edge_cues: ["Chosen"]
+    image_necessity_cues: ["torn page", "made a door"]
+    ending_drive_cues: ["made a door"]
     banned_terms: ["dream", "randomly"]
     min_chars: 120
     max_chars: 700
@@ -51,13 +66,60 @@ cases:
       turn toward urgency.
     baseline_text: >
       Fog pressed the dock into pieces. The boatman would not look at the water.
-      
+
       "Late," he said.
-      
+
       Urgency went through her before fear did. Below the pier, a hand rose out
       of the black tide with her brother's ring shining on one finger.
     required_terms: ["dock", "ring"]
     style_cues: ["urgency", "fog", "hand"]
+    character_contradiction_cues: ["would not look", "before fear did"]
+    dialogue_edge_cues: ["Late"]
+    image_necessity_cues: ["ring shining", "one finger"]
+    ending_drive_cues: ["hand rose out", "ring shining"]
     banned_terms: ["to be continued", "suddenly everything"]
     min_chars: 100
     max_chars: 650
+
+  - case_id: chinese_archive_choice
+    title: 中文档案室选择压力
+    prompt: >
+      写一个中文原创短场景：修复师在档案室听到录音，必须决定是否公开证据。
+      场景要有反问、沉默和动作，不要解释完整前史。
+    baseline_text: >
+      林岚把录音倒回第三遍，证据袋的封口在她指腹下发出很轻的一响。
+      她想公开，却把证据藏进袖口。
+
+      许望站在门边问：“那你为什么先关门？”
+
+      她没有回答，只把灯压暗。录音里停了两秒，第二段心跳声才从杂音里浮出来。
+    required_terms: ["录音", "证据"]
+    style_cues: ["反问", "沉默", "动作"]
+    character_contradiction_cues: ["想公开", "藏进袖口"]
+    dialogue_edge_cues: ["那你为什么先关门"]
+    image_necessity_cues: ["证据袋", "封口"]
+    ending_drive_cues: ["第二段心跳声"]
+    banned_terms: ["忽然意识到", "解释了一切"]
+    min_chars: 90
+    max_chars: 700
+
+  - case_id: chinese_family_hook
+    title: 中文家门口关系钩子
+    prompt: >
+      写一个中文原创短场景：多年不见的姐弟在旧屋门口交出钥匙。
+      对白要克制但有刺，物件必须改变关系，结尾要推动下一章。
+    baseline_text: >
+      钥匙在姐姐掌心硌出一枚月牙。她说自己只是来还东西，却没有松手。
+
+      弟弟看着门缝里的黑暗：“你怕我进去，还是怕我不进去？”
+
+      她笑了一下，把钥匙放进他手里。门内随即响起母亲的咳嗽声，像有人一直醒着。
+    required_terms: ["钥匙", "门缝"]
+    style_cues: ["克制", "反问", "钩子"]
+    character_contradiction_cues: ["只是来还东西", "没有松手"]
+    dialogue_edge_cues: ["你怕我进去"]
+    image_necessity_cues: ["钥匙放进他手里"]
+    ending_drive_cues: ["母亲的咳嗽声"]
+    banned_terms: ["她很难过", "气氛十分尴尬"]
+    min_chars: 90
+    max_chars: 700

@@ -86,6 +86,55 @@ def test_score_literary_case_rewards_required_terms_style_cues_and_length() -> N
     assert "contains banned term: woke up" in weak_score.issues
 
 
+def test_score_literary_case_checks_deep_revision_signals() -> None:
+    suite = load_literary_eval_suite(
+        {
+            "suite_id": "inline",
+            "cases": [
+                {
+                    "case_id": "confession_key",
+                    "title": "Confession key",
+                    "prompt": "Write a compact confrontation.",
+                    "required_terms": ["key"],
+                    "style_cues": ["pressure"],
+                    "banned_terms": ["explained everything"],
+                    "character_contradiction_cues": ["confess", "hide"],
+                    "dialogue_edge_cues": ["No."],
+                    "image_necessity_cues": ["key changed hands"],
+                    "ending_drive_cues": ["door opened"],
+                    "min_chars": 80,
+                    "max_chars": 420,
+                }
+            ],
+        }
+    )
+
+    strong = score_literary_case(
+        suite.cases[0],
+        (
+            "She came to confess and still tried to hide the key. Pressure narrowed the room. "
+            "\"No.\" The key changed hands before either of them named the betrayal. "
+            "Behind them, the locked door opened."
+        ),
+    )
+    weak = score_literary_case(
+        suite.cases[0],
+        "She held a key and explained everything in a tidy paragraph about how she felt.",
+    )
+
+    assert strong.dimensions["character_contradiction"] == 1.0
+    assert strong.dimensions["dialogue_edge"] == 1.0
+    assert strong.dimensions["image_necessity"] == 1.0
+    assert strong.dimensions["ending_drive"] == 1.0
+    assert strong.passed is True
+    assert weak.dimensions["character_contradiction"] == 0.0
+    assert weak.dimensions["dialogue_edge"] == 0.0
+    assert weak.dimensions["image_necessity"] == 0.0
+    assert weak.dimensions["ending_drive"] == 0.0
+    assert "missing character contradiction cue: confess" in weak.issues
+    assert "missing ending drive cue: door opened" in weak.issues
+
+
 def test_literary_eval_runner_uses_generator_and_returns_summary(tmp_path: Path) -> None:
     suite = load_literary_eval_suite(
         {
@@ -225,7 +274,12 @@ def test_repo_literary_small_suite_baselines_are_valid() -> None:
     result = LiteraryEvalRunner(suite, generator=BaselineLiteraryCaseGenerator()).run()
 
     assert suite.suite_id == "literary_small_v1"
-    assert len(suite.cases) >= 3
+    assert len(suite.cases) >= 5
+    assert all(case.character_contradiction_cues for case in suite.cases)
+    assert all(case.dialogue_edge_cues for case in suite.cases)
+    assert all(case.image_necessity_cues for case in suite.cases)
+    assert all(case.ending_drive_cues for case in suite.cases)
+    assert any(any("\u4e00" <= char <= "\u9fff" for char in case.prompt) for case in suite.cases)
     assert result["summary"]["case_count"] == len(suite.cases)
     assert result["summary"]["failed_count"] == 0
 
@@ -284,7 +338,7 @@ def test_literary_eval_run_api_writes_latest_baseline_report(
     report = run_response.json()["data"]["report"]
     assert report["mode"] == "baseline"
     assert report["suite_id"] == "literary_small_v1"
-    assert report["summary"]["case_count"] == 3
+    assert report["summary"]["case_count"] >= 5
     assert report["summary"]["failed_count"] == 0
     assert report_path.exists()
 
@@ -292,7 +346,7 @@ def test_literary_eval_run_api_writes_latest_baseline_report(
 
     assert latest_response.status_code == 200
     assert latest_response.json()["data"]["report"]["suite_id"] == "literary_small_v1"
-    assert latest_response.json()["data"]["report"]["summary"]["passed_count"] == 3
+    assert latest_response.json()["data"]["report"]["summary"]["passed_count"] == report["summary"]["case_count"]
 
 
 def test_literary_eval_run_api_allows_live_local_provider_without_api_key(

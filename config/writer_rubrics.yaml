@@ -23,3 +23,33 @@ rubrics:
         - revision_brief
         - requires_human_review
       missing_field_policy: "block_human_review"
+
+  literary_revision_v1:
+    title: "作家深改"
+    locale: zh
+    score_scale:
+      min: 0
+      max: 1
+    dimensions:
+      character_contradiction: "人物表面目标与内在逃避是否形成冲突。"
+      choice_pressure: "场景是否逼迫人物做不可回避且有代价的选择。"
+      relationship_tension: "对白和动作是否改变人物关系，而不是只传递信息。"
+      dialogue_subtext: "人物是否在说一件事、做另一件事、隐藏第三件事。"
+      information_rhythm: "线索是否通过行动释放，而不是解释性说明。"
+      voice_distinction: "语言是否有作者自己的观察方式和辨识度。"
+      image_necessity: "物件和环境是否推动人物、主题或情节，而不是装饰。"
+      repetitive_expression: "是否反复使用同类动作、冷色氛围、停顿句或泛化比喻。"
+      ending_drive: "最后一段是否制造下一个阅读动作。"
+      theme_pressure: "这一场是否触碰作品真正关心的道德困境或主题压力。"
+    issue_classes:
+      blocking: "场景不成立，建议重构。"
+      revision: "场景成立但需要局部深改。"
+      taste: "审美偏好，由作者决定是否接受。"
+    output_contract:
+      required:
+        - overall_score
+        - scores
+        - findings
+        - revision_brief
+        - requires_human_review
+      missing_field_policy: "block_human_review"

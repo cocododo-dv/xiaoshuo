@@ -302,6 +302,60 @@ class RevisionCandidate(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
+class PassagePatchCandidate(Base):
+    __tablename__ = "passage_patch_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('candidate','accepted','rejected','superseded')",
+            name="ck_passage_patch_candidates_status",
+        ),
+        CheckConstraint(
+            "author_decision IN ('pending','accepted','rejected','regenerate')",
+            name="ck_passage_patch_candidates_author_decision",
+        ),
+    )
+
+    patch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_excerpt: Mapped[str] = mapped_column(Text)
+    issue_dimension: Mapped[str] = mapped_column(String)
+    replacement_options_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    manual_only: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="candidate")
+    author_decision: Mapped[str] = mapped_column(String, default="pending")
+    selected_option_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    author_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="writer_deep_review")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class AuthorPreferenceProfile(Base):
+    __tablename__ = "author_preference_profiles"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft','approved','rejected','superseded')",
+            name="ck_author_preference_profiles_status",
+        ),
+    )
+
+    profile_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scope_type: Mapped[str] = mapped_column(String, default="global")
+    scope_ref_id: Mapped[str] = mapped_column(String, default="global")
+    status: Mapped[str] = mapped_column(String, default="draft")
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_patch_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String, default="writer_deep_review")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class FinalScene(Base):
     __tablename__ = "final_scenes"
 

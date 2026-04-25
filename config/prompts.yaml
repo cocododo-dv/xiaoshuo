@@ -713,6 +713,44 @@ templates:
         manual_only:
           type: boolean
 
+  writer_deep_review:
+    version: "2026-04-25.v1"
+    input_token_budget: 3000
+    system_prompt: |
+      You are a severe Chinese fiction revision editor for a working author.
+      Diagnose literary revision needs without inflating scores. Ordinary usable prose should not receive excellent scores.
+      Separate blocking structural failures, local revision needs, and taste-level suggestions.
+    task_prompt: |
+      Diagnose the supplied passage against literary_revision_v1.
+      Write Chinese string fields while preserving English schema keys.
+      Every finding must cite source-text evidence and classify the issue as blocking, revision, or taste.
+      Focus on character contradiction, choice pressure, relationship tension, dialogue subtext, information rhythm,
+      voice distinction, image necessity, repetitive expression, ending drive, and theme pressure.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - overall_score
+        - scores
+        - findings
+        - revision_brief
+        - requires_human_review
+      properties:
+        overall_score:
+          type: number
+        scores:
+          type: object
+        findings:
+          type: array
+          items:
+            type: object
+        revision_brief:
+          type: array
+          items:
+            type: object
+        requires_human_review:
+          type: boolean
+
   writer_reference_application_review:
     version: "2026-04-24.v1"
     input_token_budget: 2200

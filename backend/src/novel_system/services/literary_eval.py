@@ -13,10 +13,14 @@ from novel_system.services.llm_client import LLMRequest
 
 DEFAULT_PASS_THRESHOLD = 0.72
 DIMENSION_WEIGHTS = {
-    "required_terms": 0.35,
-    "style_cues": 0.25,
-    "banned_terms": 0.25,
-    "length": 0.15,
+    "required_terms": 0.24,
+    "style_cues": 0.16,
+    "banned_terms": 0.18,
+    "length": 0.10,
+    "character_contradiction": 0.10,
+    "dialogue_edge": 0.08,
+    "image_necessity": 0.07,
+    "ending_drive": 0.07,
 }
 
 
@@ -28,6 +32,10 @@ class LiteraryEvalCase:
     required_terms: tuple[str, ...]
     style_cues: tuple[str, ...]
     banned_terms: tuple[str, ...]
+    character_contradiction_cues: tuple[str, ...]
+    dialogue_edge_cues: tuple[str, ...]
+    image_necessity_cues: tuple[str, ...]
+    ending_drive_cues: tuple[str, ...]
     min_chars: int
     max_chars: int
     pass_threshold: float
@@ -75,6 +83,10 @@ def score_literary_case(case: LiteraryEvalCase, generated_text: str) -> Literary
         "style_cues": _term_hit_score(text, case.style_cues),
         "banned_terms": _banned_term_score(text, case.banned_terms),
         "length": _length_score(text, min_chars=case.min_chars, max_chars=case.max_chars),
+        "character_contradiction": _term_hit_score(text, case.character_contradiction_cues),
+        "dialogue_edge": _term_hit_score(text, case.dialogue_edge_cues),
+        "image_necessity": _term_hit_score(text, case.image_necessity_cues),
+        "ending_drive": _term_hit_score(text, case.ending_drive_cues),
     }
     score = round(sum(dimensions[key] * weight for key, weight in DIMENSION_WEIGHTS.items()), 4)
     issues = _score_issues(case, text, dimensions)
@@ -249,6 +261,10 @@ def _load_case(payload: Any, *, suite_threshold: float) -> LiteraryEvalCase:
         required_terms=_text_tuple(case_payload.get("required_terms")),
         style_cues=_text_tuple(case_payload.get("style_cues")),
         banned_terms=_text_tuple(case_payload.get("banned_terms")),
+        character_contradiction_cues=_text_tuple(case_payload.get("character_contradiction_cues")),
+        dialogue_edge_cues=_text_tuple(case_payload.get("dialogue_edge_cues")),
+        image_necessity_cues=_text_tuple(case_payload.get("image_necessity_cues")),
+        ending_drive_cues=_text_tuple(case_payload.get("ending_drive_cues")),
         min_chars=min_chars,
         max_chars=max_chars,
         pass_threshold=_optional_float(case_payload, "pass_threshold", suite_threshold),
@@ -345,6 +361,18 @@ def _score_issues(
     for cue in case.style_cues:
         if cue.lower() not in lowered:
             issues.append(f"missing style cue: {cue}")
+    for cue in case.character_contradiction_cues:
+        if cue.lower() not in lowered:
+            issues.append(f"missing character contradiction cue: {cue}")
+    for cue in case.dialogue_edge_cues:
+        if cue.lower() not in lowered:
+            issues.append(f"missing dialogue edge cue: {cue}")
+    for cue in case.image_necessity_cues:
+        if cue.lower() not in lowered:
+            issues.append(f"missing image necessity cue: {cue}")
+    for cue in case.ending_drive_cues:
+        if cue.lower() not in lowered:
+            issues.append(f"missing ending drive cue: {cue}")
     for term in case.banned_terms:
         if term.lower() in lowered:
             issues.append(f"contains banned term: {term}")
@@ -381,6 +409,10 @@ def _case_user_prompt(case: LiteraryEvalCase) -> str:
             "## Evaluation Constraints",
             f"required terms: {_joined_terms(case.required_terms)}",
             f"style cues: {_joined_terms(case.style_cues)}",
+            f"character contradiction cues: {_joined_terms(case.character_contradiction_cues)}",
+            f"dialogue edge cues: {_joined_terms(case.dialogue_edge_cues)}",
+            f"image necessity cues: {_joined_terms(case.image_necessity_cues)}",
+            f"ending drive cues: {_joined_terms(case.ending_drive_cues)}",
             f"banned terms: {_joined_terms(case.banned_terms)}",
             f"length band: {case.min_chars}-{case.max_chars} characters",
             "",

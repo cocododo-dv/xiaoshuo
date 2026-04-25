@@ -41,6 +41,7 @@ describe("workflow-driven shell metadata", () => {
       "workbench",
       "review",
       "manuscripts",
+      "deepdesk",
       "longform",
       "trash",
       "index",
@@ -209,10 +210,11 @@ describe("writer and advanced UI modes", () => {
 });
 
 describe("workflow page adoption", () => {
-  it("uses the shared workflow page header on all eleven console pages", () => {
+  it("uses the shared workflow page header on all twelve console pages", () => {
     const pages = [
       "AuthorWorkspaceView.vue",
       "ChapterManuscriptView.vue",
+      "WriterDeepDeskView.vue",
       "LongformControlView.vue",
       "AuthorTrashView.vue",
       "SceneWorkbenchView.vue",

@@ -9,6 +9,7 @@ import { useShellRouter } from "./router";
 const VIEW_COMPONENTS = {
   author: defineAsyncComponent(() => import("./views/AuthorWorkspaceView.vue")),
   manuscripts: defineAsyncComponent(() => import("./views/ChapterManuscriptView.vue")),
+  deepdesk: defineAsyncComponent(() => import("./views/WriterDeepDeskView.vue")),
   longform: defineAsyncComponent(() => import("./views/LongformControlView.vue")),
   trash: defineAsyncComponent(() => import("./views/AuthorTrashView.vue")),
   workbench: defineAsyncComponent(() => import("./views/SceneWorkbenchView.vue")),
@@ -32,6 +33,7 @@ const activeViewComponent = computed(() => VIEW_COMPONENTS[activeView.value] || 
 // Legacy route markers kept as source anchors for shell registration tests:
 // activeView === 'author'
 // activeView === 'manuscripts'
+// activeView === 'deepdesk'
 // activeView === 'longform'
 // activeView === 'trash'
 // activeView === 'interop'
