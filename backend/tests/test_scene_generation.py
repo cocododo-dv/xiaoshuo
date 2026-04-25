@@ -10,6 +10,7 @@ from novel_system.db.models import (
     FinalScene,
     LlmCall,
     RelationProfile,
+    SceneBlueprint,
     SceneBundle,
     SceneCard,
     SceneDraft,
@@ -122,6 +123,31 @@ def _seed_scene(session) -> None:
             version=1,
             content="they mistrust each other but still care",
             active_flag=1,
+        )
+    )
+    session.commit()
+
+
+def _seed_scene_blueprint(session) -> None:
+    session.add(
+        SceneBlueprint(
+            row_id="scene_blueprint_CH100_SC01_seed",
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            source_bundle_id="seed_source_CH100_SC01",
+            source_bundle_hash="seed_hash_CH100_SC01",
+            blueprint_json={
+                "character_current_desire": "CHAR_A wants the truth before CHAR_B can leave.",
+                "concrete_obstacle": "CHAR_B controls the red envelope and refuses a straight answer.",
+                "choice_under_pressure": "CHAR_A must choose whether to trust CHAR_B or expose the clue.",
+                "information_release": "The envelope proves someone watched the reunion.",
+                "power_shift": "CHAR_B begins with leverage; CHAR_A takes it back by naming the watcher.",
+                "emotional_turn": "Suspicion hardens into reluctant alliance.",
+                "irreversible_consequence": "Both characters know the secret is no longer private.",
+                "ending_reader_question": "Who sent the red envelope?",
+                "image_promise": "The red envelope returns with a changed meaning.",
+            },
+            status="accepted",
         )
     )
     session.commit()
@@ -369,6 +395,7 @@ def test_generate_neutral_draft_records_failed_attempt_and_bumps_counter(session
 
 def test_run_scene_records_neutral_prompt_builder_failure_and_clears_stale_state(session, monkeypatch) -> None:
     _seed_scene(session)
+    _seed_scene_blueprint(session)
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_BASE_URL", raising=False)
@@ -403,6 +430,7 @@ def test_run_scene_records_neutral_prompt_builder_failure_and_clears_stale_state
 
 def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
     _seed_scene(session)
+    _seed_scene_blueprint(session)
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_BASE_URL", raising=False)

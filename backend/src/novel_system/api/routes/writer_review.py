@@ -24,6 +24,11 @@ def run_scene_writer_review(scene_id: str, request: Request, session: Session = 
     return ok(payload, req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v1/scenes/{scene_id}/writer-review")
+def run_scene_writer_review_alias(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    return run_scene_writer_review(scene_id, request, session)
+
+
 @router.get("/api/v1/chapters/{chapter_id}/writer-review")
 def get_chapter_writer_review(chapter_id: str, request: Request, session: Session = Depends(get_session)):
     payload = WriterReviewService(session).chapter_review(chapter_id)
@@ -36,6 +41,11 @@ def run_chapter_writer_review(chapter_id: str, request: Request, session: Sessio
     payload = WriterReviewService(session).run_chapter_review(chapter_id, actor_ref=actor_ref)
     session.commit()
     return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/chapters/{chapter_id}/writer-review")
+def run_chapter_writer_review_alias(chapter_id: str, request: Request, session: Session = Depends(get_session)):
+    return run_chapter_writer_review(chapter_id, request, session)
 
 
 @router.post("/api/v1/revision-candidates/{revision_id}/accept")

@@ -234,6 +234,22 @@ def test_writer_chapter_revision_schema_returns_plan_and_selected_passages() -> 
     assert "Required top-level JSON keys: revision_plan, selected_rewrite_passages, diff_summary" in payload["user_prompt"]
 
 
+def test_writer_passage_patch_schema_is_manual_only_and_targeted() -> None:
+    payload = PromptBuilder().build(_bundle_snapshot(), "writer_passage_patch")
+
+    assert payload["structured_schema"]["required"] == ["patches", "rationale", "manual_only"]
+    patch_schema = payload["structured_schema"]["properties"]["patches"]["items"]
+    assert patch_schema["required"] == [
+        "target_text_ref",
+        "source_excerpt",
+        "replacement_text",
+        "patch_type",
+        "changed_dimensions",
+        "why_it_helps",
+    ]
+    assert "Required top-level JSON keys: patches, rationale, manual_only" in payload["user_prompt"]
+
+
 def test_hard_qc_uses_runtime_minimum_budget_for_default_runs(tmp_path) -> None:
     prompt_path = tmp_path / "prompts.yaml"
     prompt_path.write_text(

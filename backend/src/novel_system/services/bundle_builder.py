@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
-from novel_system.db.models import ChapterGoal, SceneBundle, SceneCard, SceneMemory, SceneRunState
+from novel_system.db.models import ChapterGoal, SceneBlueprint, SceneBundle, SceneCard, SceneMemory, SceneRunState
 from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
@@ -15,7 +15,7 @@ from novel_system.services.resolver import Resolver
 from novel_system.services.character_continuity import CHARACTER_CONTRACT_VERSION, build_character_contract_digest
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
-from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
+from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief, writer_brief_has_content
 
 
 class BundleBuilder:
@@ -69,7 +69,7 @@ class BundleBuilder:
             "scene_card": scene_card_digest(scene),
         }
         chapter_writer_brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
-        if any(chapter_writer_brief.values()):
+        if writer_brief_has_content(chapter_writer_brief):
             source_version_refs["chapter_writer_brief"] = chapter.chapter_id
             ordered_injections.append(
                 {
@@ -84,7 +84,7 @@ class BundleBuilder:
                 sort_keys=True,
             )
         scene_writer_brief = normalize_scene_writer_brief(scene.writer_brief_json)
-        if any(scene_writer_brief.values()):
+        if writer_brief_has_content(scene_writer_brief):
             source_version_refs["scene_writer_brief"] = scene.scene_id
             ordered_injections.append(
                 {
@@ -95,6 +95,26 @@ class BundleBuilder:
             )
             inline_digests["scene_writer_brief"] = json.dumps(
                 scene_writer_brief,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
+        scene_blueprint = self.session.execute(
+            select(SceneBlueprint)
+            .where(SceneBlueprint.scene_id == scene.scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
+            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
+        ).scalars().first()
+        if scene_blueprint is not None:
+            source_version_refs["scene_blueprint_row_id"] = scene_blueprint.row_id
+            ordered_injections.append(
+                {
+                    "slot": "scene_blueprint",
+                    "ref_id": scene_blueprint.row_id,
+                    "digest_key": "scene_blueprint",
+                }
+            )
+            inline_digests["scene_blueprint"] = json.dumps(
+                scene_blueprint.blueprint_json or {},
                 ensure_ascii=False,
                 sort_keys=True,
             )

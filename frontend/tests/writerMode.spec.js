@@ -45,15 +45,23 @@ describe("writer mode", () => {
     expect(source).toContain("chapterWriterBriefFields");
     expect(source).toContain("sceneWriterBriefFields");
     expect(source).toContain("writer_brief_json");
+    expect(source).toContain("schema_version");
+    expect(source).toContain("writer_brief_v2");
     expect(source).toContain("core_promise");
     expect(source).toContain("character_desire");
+    expect(source).toContain("chapter_promise");
+    expect(source).toContain("choice_under_pressure");
+    expect(source).toContain("reader_aftertaste");
   });
 
-  it("keeps engineering evidence behind advanced mode in the scene workbench and adds writer review", () => {
+  it("keeps engineering evidence behind advanced mode in the scene workbench and adds blueprint-backed writer review", () => {
     const source = readSource("src/views/SceneWorkbenchView.vue");
 
     expect(source).toContain("WriterReviewCard");
     expect(source).toContain("writerReviewSummary");
+    expect(source).toContain("literaryBlueprint");
+    expect(source).toContain("scene-blueprint-run");
+    expect(source).toContain("@click=\"generateBlueprint\"");
     expect(source).toContain('v-if="isAdvancedMode"');
     expect(source).toContain("@run=\"runWriterReview\"");
   });
@@ -62,6 +70,8 @@ describe("writer mode", () => {
     const source = readSource("src/lib/api.js");
 
     expect(source).toContain("runSceneWriterReview");
+    expect(source).toContain("runSceneLiteraryBlueprint");
+    expect(source).toContain("/literary-blueprint");
     expect(source).toContain("/writer-review/run");
     expect(source).toContain("acceptRevisionCandidate");
     expect(source).toContain("rejectRevisionCandidate");
@@ -76,5 +86,10 @@ describe("writer mode", () => {
     expect(source).toContain("candidate_kind");
     expect(source).toContain("changed_dimensions");
     expect(source).toContain("rewrite_strategy");
+    expect(source).toContain("lensEvaluations");
+    expect(source).toContain("writer-review-lenses");
+    expect(source).toContain("writer-revision-patches");
+    expect(source).toContain("apply_mode");
+    expect(source).toContain("patches_json");
   });
 });

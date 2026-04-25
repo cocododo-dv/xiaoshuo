@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     RevisionCandidate,
+    SceneBlueprint,
     SceneBundle,
     SceneCard,
     SceneDraft,
@@ -27,6 +29,7 @@ from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNode
 from novel_system.services.prompt_builder import PromptBuilder
 
 WRITER_RUBRIC_ID = "drama_effectiveness_v1"
+WRITER_BRIEF_SCHEMA_VERSION = "writer_brief_v2"
 
 CHAPTER_WRITER_BRIEF_FIELDS: tuple[tuple[str, str], ...] = (
     ("core_promise", "核心承诺"),
@@ -34,6 +37,12 @@ CHAPTER_WRITER_BRIEF_FIELDS: tuple[tuple[str, str], ...] = (
     ("character_shift", "人物变化"),
     ("chapter_question", "章节问题"),
     ("ending_aftertaste", "结尾余味"),
+    ("chapter_promise", "chapter promise"),
+    ("escalation_path", "escalation path"),
+    ("relationship_delta", "relationship delta"),
+    ("reveal_or_reversal", "reveal or reversal"),
+    ("payoff_target", "payoff target"),
+    ("ending_question", "ending question"),
 )
 
 SCENE_WRITER_BRIEF_FIELDS: tuple[tuple[str, str], ...] = (
@@ -44,6 +53,12 @@ SCENE_WRITER_BRIEF_FIELDS: tuple[tuple[str, str], ...] = (
     ("subtext", "潜台词"),
     ("irreversible_change", "不可逆变化"),
     ("reader_question", "读者问题"),
+    ("choice_under_pressure", "choice under pressure"),
+    ("power_shift", "power shift"),
+    ("new_information", "new information"),
+    ("emotional_turn", "emotional turn"),
+    ("image_anchor", "image anchor"),
+    ("reader_aftertaste", "reader aftertaste"),
 )
 
 WRITER_RUBRIC_DIMENSIONS: tuple[str, ...] = (
@@ -71,12 +86,53 @@ PROFESSIONAL_WRITER_DIMENSIONS: tuple[str, ...] = (
 ALL_WRITER_REVIEW_DIMENSIONS: tuple[str, ...] = WRITER_RUBRIC_DIMENSIONS + PROFESSIONAL_WRITER_DIMENSIONS
 
 
+@dataclass(frozen=True, slots=True)
+class WriterReviewLens:
+    lens: str
+    label: str
+    scene_node_id: str
+    chapter_node_id: str
+    focus_dimensions: tuple[str, ...]
+
+
+WRITER_REVIEW_LENSES: tuple[WriterReviewLens, ...] = (
+    WriterReviewLens(
+        lens="story",
+        label="Story Editor",
+        scene_node_id="writer_scene_story_diagnosis",
+        chapter_node_id="writer_chapter_story_diagnosis",
+        focus_dimensions=("scene_necessity", "information_rhythm", "turn", "continuity", "ending_drive"),
+    ),
+    WriterReviewLens(
+        lens="character",
+        label="Character Editor",
+        scene_node_id="writer_scene_character_diagnosis",
+        chapter_node_id="writer_chapter_character_diagnosis",
+        focus_dimensions=("character_agency", "desire", "obstacle", "power_shift", "subtext"),
+    ),
+    WriterReviewLens(
+        lens="prose",
+        label="Prose Editor",
+        scene_node_id="writer_scene_prose_diagnosis",
+        chapter_node_id="writer_chapter_prose_diagnosis",
+        focus_dimensions=("dialogue_edge", "imagery_freshness", "expression_repetition", "subtext"),
+    ),
+    WriterReviewLens(
+        lens="reader",
+        label="Reader Editor",
+        scene_node_id="writer_scene_reader_diagnosis",
+        chapter_node_id="writer_chapter_reader_diagnosis",
+        focus_dimensions=("reader_hook", "stakes", "ending_drive", "information_rhythm"),
+    ),
+)
+
+
 def empty_chapter_writer_brief() -> dict[str, str]:
-    return {key: "" for key, _label in CHAPTER_WRITER_BRIEF_FIELDS}
+    return {"schema_version": WRITER_BRIEF_SCHEMA_VERSION, **{key: "" for key, _label in CHAPTER_WRITER_BRIEF_FIELDS}}
 
 
 def empty_scene_writer_brief() -> dict[str, str]:
-    return {key: "" for key, _label in SCENE_WRITER_BRIEF_FIELDS}
+    return {"schema_version": WRITER_BRIEF_SCHEMA_VERSION, **{key: "" for key, _label in SCENE_WRITER_BRIEF_FIELDS}}
 
 
 def normalize_chapter_writer_brief(value: Any) -> dict[str, str]:
@@ -90,7 +146,7 @@ def normalize_scene_writer_brief(value: Any) -> dict[str, str]:
 class OfflineWriterReviewClient:
     def generate(self, request: LLMRequest) -> LLMResponse:
         node_id = request.node_id or "writer_review"
-        if node_id in {"writer_scene_diagnosis", "writer_chapter_diagnosis"}:
+        if node_id in {"writer_scene_diagnosis", "writer_chapter_diagnosis"} or node_id.endswith("_diagnosis"):
             structured_output = _offline_diagnosis_payload(node_id)
         elif node_id == "writer_scene_revision":
             structured_output = {
@@ -153,8 +209,11 @@ class WriterReviewService:
         source = self._scene_source(scene)
         brief = normalize_scene_writer_brief(scene.writer_brief_json)
         chapter_brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
+        blueprint = self._latest_scene_blueprint(scene.scene_id)
+        if blueprint is not None:
+            source["source_blueprint_row_id"] = blueprint.row_id
         bundle = self._scene_review_bundle(scene)
-        diagnosis = self._run_writer_diagnosis(
+        diagnosis = self._run_multi_lens_diagnosis(
             object_type="scene",
             object_id=scene.scene_id,
             chapter_id=scene.chapter_id,
@@ -164,10 +223,10 @@ class WriterReviewService:
             writer_context={
                 "scene_writer_brief": brief,
                 "chapter_writer_brief": chapter_brief,
+                "scene_blueprint": blueprint.blueprint_json if blueprint is not None else None,
                 "scene_goal": scene.scene_goal,
                 "chapter_goal": chapter.chapter_goal,
             },
-            node_id="writer_scene_diagnosis",
             template_name="writer_scene_diagnosis",
         )
         if diagnosis["blocked"]:
@@ -179,6 +238,7 @@ class WriterReviewService:
                 source=source,
                 payload=diagnosis["payload"],
                 llm_call_id=diagnosis["llm_call_id"],
+                source_blueprint_row_id=source.get("source_blueprint_row_id"),
             )
             self._supersede_open_candidates("scene", scene.scene_id)
             self.session.flush()
@@ -188,18 +248,14 @@ class WriterReviewService:
                 "candidates": [],
             }
         payload = diagnosis["payload"]
-        evaluation = self._create_evaluation(
+        evaluation = self._create_lens_evaluations(
             object_type="scene",
             object_id=scene.scene_id,
             chapter_id=scene.chapter_id,
             scene_id=scene.scene_id,
             source=source,
-            scores=payload["scores"],
-            findings=payload["findings"],
-            revision_brief=payload["revision_brief"],
-            overall_score=payload["overall_score"],
-            requires_human_review=payload["requires_human_review"],
-            evaluator_llm_call_id=diagnosis["llm_call_id"],
+            aggregate_payload=payload,
+            lens_results=diagnosis["lens_results"],
         )
         self._supersede_open_candidates("scene", scene.scene_id)
         revision_payload = self._run_scene_revision(
@@ -216,6 +272,7 @@ class WriterReviewService:
             proposed_text=revision_payload["proposed_text"],
             actor_ref=actor_ref,
             diff_summary=revision_payload["diff_summary"],
+            patches=revision_payload.get("patches"),
         )
         self.session.flush()
         return {
@@ -229,7 +286,7 @@ class WriterReviewService:
         source = self._chapter_source(chapter)
         brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
         bundle = self._chapter_review_bundle(chapter, source, brief)
-        diagnosis = self._run_writer_diagnosis(
+        diagnosis = self._run_multi_lens_diagnosis(
             object_type="chapter",
             object_id=chapter.chapter_id,
             chapter_id=chapter.chapter_id,
@@ -243,7 +300,6 @@ class WriterReviewService:
                 "emotional_target": chapter.emotional_target,
                 "ending_effect": chapter.ending_effect,
             },
-            node_id="writer_chapter_diagnosis",
             template_name="writer_chapter_diagnosis",
         )
         if diagnosis["blocked"]:
@@ -264,18 +320,14 @@ class WriterReviewService:
                 "candidates": [],
             }
         payload = diagnosis["payload"]
-        evaluation = self._create_evaluation(
+        evaluation = self._create_lens_evaluations(
             object_type="chapter",
             object_id=chapter.chapter_id,
             chapter_id=chapter.chapter_id,
             scene_id=None,
             source=source,
-            scores=payload["scores"],
-            findings=payload["findings"],
-            revision_brief=payload["revision_brief"],
-            overall_score=payload["overall_score"],
-            requires_human_review=payload["requires_human_review"],
-            evaluator_llm_call_id=diagnosis["llm_call_id"],
+            aggregate_payload=payload,
+            lens_results=diagnosis["lens_results"],
         )
         self._supersede_open_candidates("chapter", chapter.chapter_id)
         revision_payload = self._run_chapter_revision(
@@ -292,6 +344,7 @@ class WriterReviewService:
             proposed_text=revision_payload["proposed_text"],
             actor_ref=actor_ref,
             diff_summary=revision_payload["diff_summary"],
+            patches=revision_payload.get("patches"),
         )
         self.session.flush()
         return {
@@ -334,6 +387,10 @@ class WriterReviewService:
             "source_text_ref": evaluation.source_text_ref,
             "source_bundle_id": evaluation.source_bundle_id,
             "evaluator_llm_call_id": evaluation.evaluator_llm_call_id,
+            "lens": evaluation.lens or "aggregate",
+            "parent_evaluation_id": evaluation.parent_evaluation_id,
+            "evidence_spans": evaluation.evidence_spans_json or [],
+            "source_blueprint_row_id": evaluation.source_blueprint_row_id,
             "overall_score": evaluation.overall_score,
             "scores": evaluation.scores_json or {},
             "findings": evaluation.findings_json or [],
@@ -357,6 +414,9 @@ class WriterReviewService:
             "proposed_text": revision.proposed_text,
             "instruction": revision.instruction_json or [],
             "diff_summary": revision.diff_summary_json or {},
+            "patches": revision.patches_json or [],
+            "apply_mode": revision.apply_mode or "manual_only",
+            "target_text_ref": revision.target_text_ref or revision.source_text_ref,
             "status": revision.status,
             "author_decision_note": revision.author_decision_note,
             "created_by": revision.created_by,
@@ -367,7 +427,11 @@ class WriterReviewService:
     def _review_payload(self, object_type: str, object_id: str) -> dict[str, Any]:
         latest = self.session.execute(
             select(WriterEvaluation)
-            .where(WriterEvaluation.object_type == object_type, WriterEvaluation.object_id == object_id)
+            .where(
+                WriterEvaluation.object_type == object_type,
+                WriterEvaluation.object_id == object_id,
+                WriterEvaluation.parent_evaluation_id.is_(None),
+            )
             .order_by(WriterEvaluation.created_at.desc(), WriterEvaluation.evaluation_id.desc())
         ).scalars().first()
         candidates = self.session.execute(
@@ -376,6 +440,14 @@ class WriterReviewService:
             .order_by(RevisionCandidate.created_at.desc(), RevisionCandidate.revision_id.desc())
         ).scalars().all()
         serialized_latest = self.serialize_evaluation(latest)
+        lens_evaluations: list[dict[str, Any]] = []
+        if latest is not None:
+            lens_rows = self.session.execute(
+                select(WriterEvaluation)
+                .where(WriterEvaluation.parent_evaluation_id == latest.evaluation_id)
+                .order_by(WriterEvaluation.lens.asc(), WriterEvaluation.evaluation_id.asc())
+            ).scalars().all()
+            lens_evaluations = [item for item in (self.serialize_evaluation(row) for row in lens_rows) if item]
         return {
             "status": "reviewed" if latest else "not_run",
             "object_type": object_type,
@@ -384,6 +456,7 @@ class WriterReviewService:
             "latest_evaluation": serialized_latest,
             "latest_score": serialized_latest["overall_score"] if serialized_latest else None,
             "requires_human_review": bool(serialized_latest["requires_human_review"]) if serialized_latest else False,
+            "lens_evaluations": lens_evaluations,
             "candidate_count": len(candidates),
             "candidates": [self.serialize_revision(candidate) for candidate in candidates],
         }
@@ -402,6 +475,11 @@ class WriterReviewService:
         overall_score: float | None = None,
         requires_human_review: bool | None = None,
         evaluator_llm_call_id: str | None = None,
+        lens: str | None = None,
+        parent_evaluation_id: str | None = None,
+        evidence_spans: list[dict[str, Any]] | None = None,
+        source_blueprint_row_id: str | None = None,
+        evaluation_id: str | None = None,
     ) -> WriterEvaluation:
         low_score = any(score < 0.55 for score in scores.values())
         resolved_score = overall_score
@@ -411,7 +489,7 @@ class WriterReviewService:
         if requires_human_review is not None:
             resolved_human_review = bool(requires_human_review)
         evaluation = WriterEvaluation(
-            evaluation_id=f"writer_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
+            evaluation_id=evaluation_id or f"writer_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,
             object_id=object_id,
             chapter_id=chapter_id,
@@ -420,6 +498,10 @@ class WriterReviewService:
             source_text_ref=source.get("source_text_ref"),
             source_bundle_id=source.get("source_bundle_id"),
             evaluator_llm_call_id=evaluator_llm_call_id,
+            lens=lens or "aggregate",
+            parent_evaluation_id=parent_evaluation_id,
+            evidence_spans_json=evidence_spans if evidence_spans is not None else _evidence_spans_from_findings(findings),
+            source_blueprint_row_id=source_blueprint_row_id,
             overall_score=resolved_score,
             scores_json=scores,
             findings_json=findings,
@@ -439,6 +521,7 @@ class WriterReviewService:
         proposed_text: str,
         actor_ref: str,
         diff_summary: dict[str, Any] | None = None,
+        patches: list[dict[str, Any]] | None = None,
     ) -> RevisionCandidate:
         summary = diff_summary or {
             "summary": "保留原文作为候选，不覆盖终稿；作者采纳后仍需人工合并。",
@@ -457,6 +540,14 @@ class WriterReviewService:
             proposed_text=proposed_text,
             instruction_json=evaluation.revision_brief_json or [],
             diff_summary_json=summary,
+            patches_json=patches if patches is not None else _default_candidate_patches(
+                revision_type=revision_type,
+                source=source,
+                proposed_text=proposed_text,
+                diff_summary=summary,
+            ),
+            apply_mode="manual_only",
+            target_text_ref=source.get("source_text_ref"),
             status="candidate",
             created_by=actor_ref or "writer_engine",
         )
@@ -524,6 +615,121 @@ class WriterReviewService:
             "bundle_snapshot_hash": snapshot_hash,
             "snapshot": snapshot,
         }
+
+    def _run_multi_lens_diagnosis(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        chapter_id: str,
+        scene_id: str | None,
+        bundle: dict[str, Any],
+        source: dict[str, Any],
+        writer_context: dict[str, Any],
+        template_name: str,
+    ) -> dict[str, Any]:
+        lens_results: list[dict[str, Any]] = []
+        for lens in WRITER_REVIEW_LENSES:
+            node_id = lens.scene_node_id if object_type == "scene" else lens.chapter_node_id
+            result = self._run_writer_diagnosis(
+                object_type=object_type,
+                object_id=object_id,
+                chapter_id=chapter_id,
+                scene_id=scene_id,
+                bundle=bundle,
+                source=source,
+                writer_context={
+                    **writer_context,
+                    "active_lens": {
+                        "lens": lens.lens,
+                        "label": lens.label,
+                        "focus_dimensions": list(lens.focus_dimensions),
+                    },
+                },
+                node_id=node_id,
+                template_name=template_name,
+            )
+            if result["blocked"]:
+                payload = result["payload"]
+                for finding in payload.get("findings") or []:
+                    finding["lens"] = lens.lens
+                return {
+                    "blocked": True,
+                    "payload": {
+                        **payload,
+                        "overall_score": None,
+                        "scores": {},
+                        "requires_human_review": True,
+                    },
+                    "llm_call_id": result["llm_call_id"],
+                    "lens_results": [],
+                }
+            payload = dict(result["payload"])
+            payload["findings"] = [_finding_with_lens(finding, lens.lens) for finding in payload.get("findings") or []]
+            payload["revision_brief"] = [
+                {**brief, "lens": lens.lens} for brief in payload.get("revision_brief") or []
+            ]
+            lens_results.append(
+                {
+                    "lens": lens,
+                    "payload": payload,
+                    "llm_call_id": result["llm_call_id"],
+                }
+            )
+        return {
+            "blocked": False,
+            "payload": _aggregate_lens_payloads(lens_results),
+            "llm_call_id": None,
+            "lens_results": lens_results,
+        }
+
+    def _create_lens_evaluations(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        chapter_id: str,
+        scene_id: str | None,
+        source: dict[str, Any],
+        aggregate_payload: dict[str, Any],
+        lens_results: list[dict[str, Any]],
+    ) -> WriterEvaluation:
+        aggregate_id = f"writer_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}"
+        for result in lens_results:
+            lens: WriterReviewLens = result["lens"]
+            payload = result["payload"]
+            self._create_evaluation(
+                object_type=object_type,
+                object_id=object_id,
+                chapter_id=chapter_id,
+                scene_id=scene_id,
+                source=source,
+                scores=payload["scores"],
+                findings=payload["findings"],
+                revision_brief=payload["revision_brief"],
+                overall_score=payload["overall_score"],
+                requires_human_review=payload["requires_human_review"],
+                evaluator_llm_call_id=result["llm_call_id"],
+                lens=lens.lens,
+                parent_evaluation_id=aggregate_id,
+                source_blueprint_row_id=source.get("source_blueprint_row_id"),
+            )
+        return self._create_evaluation(
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=chapter_id,
+            scene_id=scene_id,
+            source=source,
+            scores=aggregate_payload["scores"],
+            findings=aggregate_payload["findings"],
+            revision_brief=aggregate_payload["revision_brief"],
+            overall_score=aggregate_payload["overall_score"],
+            requires_human_review=aggregate_payload["requires_human_review"],
+            evaluator_llm_call_id=aggregate_payload.get("evaluator_llm_call_id"),
+            lens="aggregate",
+            source_blueprint_row_id=source.get("source_blueprint_row_id"),
+            evaluation_id=aggregate_id,
+        )
 
     def _run_writer_diagnosis(
         self,
@@ -656,6 +862,7 @@ class WriterReviewService:
         source: dict[str, Any],
         payload: dict[str, Any],
         llm_call_id: str | None,
+        source_blueprint_row_id: str | None = None,
     ) -> WriterEvaluation:
         return self._create_evaluation(
             object_type=object_type,
@@ -669,6 +876,8 @@ class WriterReviewService:
             overall_score=payload.get("overall_score"),
             requires_human_review=bool(payload.get("requires_human_review", True)),
             evaluator_llm_call_id=llm_call_id,
+            lens="aggregate",
+            source_blueprint_row_id=source_blueprint_row_id,
         )
 
     def _scene_source(self, scene: SceneCard) -> dict[str, Any]:
@@ -752,6 +961,13 @@ class WriterReviewService:
             "source_text_ref": f"chapter_assembled:{chapter.chapter_id}",
             "source_bundle_id": None,
         }
+
+    def _latest_scene_blueprint(self, scene_id: str) -> SceneBlueprint | None:
+        return self.session.execute(
+            select(SceneBlueprint)
+            .where(SceneBlueprint.scene_id == scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
+            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
+        ).scalars().first()
 
     @staticmethod
     def _score_scene(
@@ -899,10 +1115,117 @@ class WriterReviewPayloadError(ValueError):
     pass
 
 
+def writer_brief_has_content(brief: dict[str, Any]) -> bool:
+    return any(str(value or "").strip() for key, value in brief.items() if key != "schema_version")
+
+
+def _finding_with_lens(finding: dict[str, Any], lens: str) -> dict[str, Any]:
+    return {**finding, "lens": finding.get("lens") or lens}
+
+
+def _aggregate_lens_payloads(lens_results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not lens_results:
+        return _blocked_writer_diagnosis_payload("no writer review lenses returned a diagnosis")
+    score_values: dict[str, list[float]] = {dimension: [] for dimension in ALL_WRITER_REVIEW_DIMENSIONS}
+    findings: list[dict[str, Any]] = []
+    revision_brief: list[dict[str, Any]] = []
+    requires_human_review = False
+    for result in lens_results:
+        payload = result["payload"]
+        requires_human_review = requires_human_review or bool(payload.get("requires_human_review"))
+        for dimension, score in (payload.get("scores") or {}).items():
+            if dimension in score_values:
+                score_values[dimension].append(float(score))
+        findings.extend(payload.get("findings") or [])
+        revision_brief.extend(payload.get("revision_brief") or [])
+
+    scores: dict[str, float] = {}
+    for dimension, values in score_values.items():
+        if values:
+            scores[dimension] = round(sum(values) / len(values), 2)
+
+    conflict_findings = _lens_conflict_findings(score_values)
+    if conflict_findings:
+        requires_human_review = True
+        findings = conflict_findings + findings
+    if any(score < 0.55 for score in scores.values()):
+        requires_human_review = True
+
+    overall_score = round(sum(scores.values()) / len(scores), 2) if scores else None
+    severity_order = {"blocker": 0, "major": 1, "minor": 2, "suggestion": 3, "info": 4}
+    findings = sorted(
+        findings,
+        key=lambda item: (
+            severity_order.get(str(item.get("severity") or "").lower(), 5),
+            str(item.get("dimension") or ""),
+        ),
+    )
+    return {
+        "overall_score": overall_score,
+        "scores": scores,
+        "findings": findings[:12],
+        "revision_brief": revision_brief[:10],
+        "requires_human_review": requires_human_review,
+    }
+
+
+def _lens_conflict_findings(score_values: dict[str, list[float]]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for dimension, values in score_values.items():
+        if len(values) < 2:
+            continue
+        spread = max(values) - min(values)
+        if spread < 0.35:
+            continue
+        findings.append(
+            {
+                "dimension": dimension,
+                "severity": "major",
+                "issue": f"Writer review lenses disagree on {dimension}.",
+                "recommendation": "Flag for human review before treating this as a final literary judgment.",
+                "evidence_excerpt": "",
+                "evidence_location": "multi-lens score spread",
+                "why_it_matters": "Conflicting editorial lenses can mislead revision priorities if collapsed into one confident verdict.",
+                "lens": "aggregate",
+            }
+        )
+    return findings
+
+
+def _evidence_spans_from_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    spans: list[dict[str, Any]] = []
+    for finding in findings:
+        evidence_spans = finding.get("evidence_spans")
+        if isinstance(evidence_spans, list):
+            for span in evidence_spans:
+                if isinstance(span, dict):
+                    spans.append({**span, "dimension": finding.get("dimension"), "lens": finding.get("lens")})
+    return spans
+
+
+def _default_candidate_patches(
+    *,
+    revision_type: str,
+    source: dict[str, Any],
+    proposed_text: str,
+    diff_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    patch_type = "full_scene_rewrite" if revision_type == "scene_revision" else "revision_plan"
+    return [
+        {
+            "patch_type": patch_type,
+            "target_text_ref": source.get("source_text_ref"),
+            "replacement_text": proposed_text,
+            "changed_dimensions": diff_summary.get("changed_dimensions") or [],
+            "manual_only": True,
+        }
+    ]
+
+
 def _offline_diagnosis_payload(node_id: str) -> dict[str, Any]:
     scores = {dimension: 0.5 for dimension in ALL_WRITER_REVIEW_DIMENSIONS}
     scores.update({"continuity": 0.62, "scene_necessity": 0.58, "reader_hook": 0.56})
-    target_label = "章节" if node_id == "writer_chapter_diagnosis" else "场景"
+    target_label = "章节" if "_chapter_" in node_id or node_id == "writer_chapter_diagnosis" else "场景"
     return {
         "overall_score": 0.54,
         "scores": scores,
@@ -997,7 +1320,15 @@ def _validate_finding(item: Any, index: int) -> dict[str, Any]:
         "evidence_location",
         "why_it_matters",
     )
-    return {key: _required_string(item.get(key), f"findings[{index}].{key}") for key in required}
+    finding = {key: _required_string(item.get(key), f"findings[{index}].{key}") for key in required}
+    if isinstance(item.get("lens"), str) and item["lens"].strip():
+        finding["lens"] = item["lens"].strip()
+    if isinstance(item.get("confidence"), (int, float)) and not isinstance(item.get("confidence"), bool):
+        finding["confidence"] = float(item["confidence"])
+    evidence_spans = item.get("evidence_spans")
+    if isinstance(evidence_spans, list):
+        finding["evidence_spans"] = [span for span in evidence_spans if isinstance(span, dict)]
+    return finding
 
 
 def _validate_revision_brief(item: Any, index: int) -> dict[str, Any]:
@@ -1027,6 +1358,15 @@ def _validate_scene_revision_payload(payload: Any, *, source: dict[str, Any], ev
             "candidate_kind": "full_scene_rewrite",
             "evaluation_id": evaluation.evaluation_id,
         },
+        "patches": [
+            {
+                "patch_type": "full_scene_rewrite",
+                "target_text_ref": source.get("source_text_ref"),
+                "replacement_text": revised_text,
+                "changed_dimensions": changed_dimensions,
+                "manual_only": True,
+            }
+        ],
     }
 
 
@@ -1048,6 +1388,17 @@ def _validate_chapter_revision_payload(payload: Any, *, source: dict[str, Any], 
             "candidate_kind": "revision_plan",
             "evaluation_id": evaluation.evaluation_id,
         },
+        "patches": [
+            {
+                "patch_type": "passage_rewrite",
+                "target_text_ref": source.get("source_text_ref"),
+                "source_excerpt": item["source_excerpt"],
+                "replacement_text": item["revised_text"],
+                "reason": item["reason"],
+                "manual_only": True,
+            }
+            for item in passages
+        ],
     }
 
 
@@ -1192,7 +1543,7 @@ def _normalize_writer_brief(value: Any, fields: tuple[tuple[str, str], ...], obj
             f"{object_type} writer_brief_json must be an object",
             status_code=400,
         )
-    normalized: dict[str, str] = {}
+    normalized: dict[str, str] = {"schema_version": WRITER_BRIEF_SCHEMA_VERSION}
     for key, _label in fields:
         raw = value.get(key, "")
         if raw is None:

@@ -77,6 +77,58 @@ function dashboardPayload(overrides = {}) {
         power_shift_finding_count: 1,
       },
     ],
+    promise_payoff: [
+      {
+        chapter_id: "LFC100",
+        chapter_promise: "Find out why the witness lied",
+        ending_question: "Who warned CHAR_B?",
+        payoff_target: "The lie points to the archive key",
+        reveal_or_reversal: "The witness is protecting CHAR_A",
+        risk_flags: ["hook_open"],
+      },
+    ],
+    character_arc_timeline: [
+      {
+        character_id: "CHAR_A",
+        desire_changes: ["wants safety", "chooses the investigation"],
+        low_agency_points: [{ chapter_id: "LFC100", scene_id: "LFC100_SC01" }],
+        relationship_turns: [{ chapter_id: "LFC100", relation: "CHAR_A/CHAR_B" }],
+      },
+    ],
+    relation_tension_matrix: [
+      {
+        pair_key: "CHAR_A/CHAR_B",
+        tension_sources: ["shared secret", "unequal power"],
+        secret_count: 1,
+        misunderstanding_count: 1,
+        unresolved_pressure_count: 1,
+      },
+    ],
+    motif_tracking: [
+      {
+        motif: "blue umbrella",
+        chapters: ["LFC100"],
+        repeat_risk: true,
+        transformation_note: "needs a changed meaning on the next use",
+      },
+    ],
+    information_release_curve: [
+      {
+        chapter_id: "LFC100",
+        explanation_count: 2,
+        action_count: 1,
+        turn_count: 1,
+        balance_note: "exposition slightly ahead of action",
+      },
+    ],
+    reader_hook_debts: [
+      {
+        hook_id: "hook_LFC100",
+        chapter_id: "LFC100",
+        question: "Who warned CHAR_B?",
+        debt_state: "open",
+      },
+    ],
     foreshadow_debts: [
       {
         row_id: "foreshadow_row_LFC100",
@@ -160,6 +212,9 @@ describe("longform control api and store", () => {
 
     expect(store.dashboard.summary.chapter_count).toBe(1);
     expect(store.chapters[0].chapter_id).toBe("LFC100");
+    expect(store.promisePayoff[0].chapter_promise).toContain("witness");
+    expect(store.relationTensionMatrix[0].pair_key).toBe("CHAR_A/CHAR_B");
+    expect(store.readerHookDebts[0].question).toContain("CHAR_B");
     expect(store.hasAlerts).toBe(true);
   });
 });
@@ -194,11 +249,16 @@ describe("longform control view", () => {
       expect(container.querySelector('[data-testid="longform-control-view"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-rhythm-map"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-character-arcs"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="longform-promise-payoff"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="longform-literary-signals"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-foreshadow-debts"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-continuity-alerts"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-revision-pressure"]')).not.toBeNull();
       expect(container.textContent).toContain("LFC100");
       expect(container.textContent).toContain("CHAR_A");
+      expect(container.textContent).toContain("Find out why the witness lied");
+      expect(container.textContent).toContain("blue umbrella");
+      expect(container.textContent).toContain("shared secret");
       expect(container.textContent).toContain("CHAR_B knows the missing name");
       expect(container.textContent).toContain("power_shift");
     } finally {

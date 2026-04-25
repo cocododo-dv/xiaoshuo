@@ -745,6 +745,21 @@ function profileWriterReviewList(profile, key) {
   return (profileWriterReview(profile)[key] || []).filter(Boolean).slice(0, 4);
 }
 
+function profileLiteraryProfile(profile) {
+  const displayJson = displayProfileJson(profile);
+  return displayJson.literary_profile || profile?.profile_json?.literary_profile || profile?.literary_profile || {};
+}
+
+function profileLiteraryList(profile, key) {
+  const items = profileLiteraryProfile(profile)[key] || [];
+  return Array.isArray(items) ? items.filter(Boolean).slice(0, 4) : [];
+}
+
+function applicationGuidanceList(key) {
+  const items = referenceLearning.lastApplicationGuidance?.[key] || [];
+  return Array.isArray(items) ? items.filter(Boolean).slice(0, 5) : [];
+}
+
 function nextDecisionStep() {
   if (referenceLearning.pendingDecisionCount === 0) {
     return "下一步：本轮候选已经清零，点击「继续分析」进入下一轮或生成画像。";
@@ -1374,6 +1389,30 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
+          <div
+            v-if="referenceLearning.lastApplicationGuidance"
+            class="reference-application-status"
+            data-testid="reference-application-guidance"
+          >
+            <strong>本次应用安全说明</strong>
+            <span>
+              {{ referenceLearning.lastApplicationGuidance.scope }} /
+              {{ referenceLearning.lastApplicationGuidance.scope_ref_id }} ·
+              {{ referenceLearning.lastApplicationGuidance.safety_reason || "reviewed abstract techniques only" }}
+            </span>
+            <ul>
+              <li v-for="item in applicationGuidanceList('applicable_techniques')" :key="`apply-${item}`">
+                可用：{{ item }}
+              </li>
+              <li v-for="item in applicationGuidanceList('inapplicable_techniques')" :key="`skip-${item}`">
+                不用：{{ item }}
+              </li>
+              <li v-for="item in applicationGuidanceList('banned_replication_rules')" :key="`ban-rule-${item}`">
+                禁复刻：{{ item }}
+              </li>
+            </ul>
+          </div>
+
           <div v-if="visibleProfiles.length" class="reference-profile-list">
             <article
               v-for="profile in visibleProfiles"
@@ -1448,6 +1487,26 @@ onBeforeUnmount(() => {
                     <ul>
                       <li v-for="item in profileWriterReviewList(profile, 'suitable_scenes')" :key="`scene-${item}`">
                         {{ item }}
+                      </li>
+                    </ul>
+                  </section>
+                  <section>
+                    <strong>参考画像 2.0</strong>
+                    <ul>
+                      <li v-for="item in profileLiteraryList(profile, 'scene_shapes')" :key="`shape-${item}`">
+                        场景形状：{{ item }}
+                      </li>
+                      <li v-for="item in profileLiteraryList(profile, 'dialogue_strategies')" :key="`dialogue-${item}`">
+                        对白策略：{{ item }}
+                      </li>
+                      <li v-for="item in profileLiteraryList(profile, 'emotional_curves')" :key="`emotion-${item}`">
+                        情绪曲线：{{ item }}
+                      </li>
+                      <li v-for="item in profileLiteraryList(profile, 'image_usage')" :key="`image-${item}`">
+                        意象使用：{{ item }}
+                      </li>
+                      <li v-for="item in profileLiteraryList(profile, 'banned_replication_rules')" :key="`literal-ban-${item}`">
+                        禁复刻：{{ item }}
                       </li>
                     </ul>
                   </section>

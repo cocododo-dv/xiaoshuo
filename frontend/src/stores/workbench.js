@@ -11,6 +11,7 @@ import {
   runChapterBackfill as postChapterBackfill,
   runChapterFinalAggregate as postChapterFinalAggregate,
   runFullScene,
+  runSceneLiteraryBlueprint,
   runSceneWriterReview,
   setChapterManualHold as postChapterManualHold,
   startSceneRunJob,
@@ -345,6 +346,21 @@ export const useWorkbenchStore = defineStore("workbench", {
         await this.load(sceneId);
         this.markFresh();
         return `作家诊断已完成：${result.latest_score ?? result.evaluation?.overall_score ?? "-"}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async generateBlueprint(sceneId = this.sceneId) {
+      this.actionId = "scene-blueprint";
+      this.error = "";
+      try {
+        const result = await runSceneLiteraryBlueprint(sceneId);
+        await this.load(sceneId);
+        this.markFresh();
+        return `Scene blueprint ready: ${result.row_id || sceneId}`;
       } catch (error) {
         this.error = error.message;
         throw error;

@@ -402,6 +402,50 @@ templates:
           items:
             type: string
 
+  scene_blueprint:
+    version: "2026-04-25.v1"
+    input_token_budget: 2200
+    system_prompt: |
+      You are a fiction planning editor.
+      Before prose generation, produce a compact literary blueprint explaining why this scene is worth reading.
+      Stay original, concrete, and tied to the supplied chapter and scene intent.
+    task_prompt: |
+      Build the scene literary blueprint from the supplied chapter goal, scene card, and writer brief.
+      Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
+      Focus on readable pressure: desire, obstacle, forced choice, information release, power shift, emotional turn, irreversible consequence, ending reader question, and image promise.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - character_current_desire
+        - concrete_obstacle
+        - choice_under_pressure
+        - information_release
+        - power_shift
+        - emotional_turn
+        - irreversible_consequence
+        - ending_reader_question
+        - image_promise
+      properties:
+        character_current_desire:
+          type: string
+        concrete_obstacle:
+          type: string
+        choice_under_pressure:
+          type: string
+        information_release:
+          type: string
+        power_shift:
+          type: string
+        emotional_turn:
+          type: string
+        irreversible_consequence:
+          type: string
+        ending_reader_question:
+          type: string
+        image_promise:
+          type: string
+
   writer_scene_diagnosis:
     version: "2026-04-24.v1"
     input_token_budget: 2200
@@ -618,6 +662,56 @@ templates:
             type: string
         rewrite_strategy:
           type: string
+
+  writer_passage_patch:
+    version: "2026-04-25.v1"
+    input_token_budget: 2400
+    system_prompt: |
+      You are preparing a local passage patch for a fiction author.
+      The patch is a candidate only: do not claim it has been applied, and do not rewrite unrelated text.
+    task_prompt: |
+      Given the source passage, selected issue, evidence, and target dimensions, produce replacement options.
+      Write in the source language. Preserve continuity, names, facts, and author intent.
+      Return concise patch records that the author can manually accept or reject.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - patches
+        - rationale
+        - manual_only
+      properties:
+        patches:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - target_text_ref
+              - source_excerpt
+              - replacement_text
+              - patch_type
+              - changed_dimensions
+              - why_it_helps
+            properties:
+              target_text_ref:
+                type: string
+              source_excerpt:
+                type: string
+              replacement_text:
+                type: string
+              patch_type:
+                type: string
+              changed_dimensions:
+                type: array
+                items:
+                  type: string
+              why_it_helps:
+                type: string
+        rationale:
+          type: string
+        manual_only:
+          type: boolean
 
   writer_reference_application_review:
     version: "2026-04-24.v1"

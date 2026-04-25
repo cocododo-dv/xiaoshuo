@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SceneCard
+from novel_system.db.models import SceneBlueprint, SceneCard
 from novel_system.services.resolver import Resolver
+from novel_system.services.writer_review import normalize_scene_writer_brief
 
 
 class SceneRunPreflightService:
@@ -233,6 +235,35 @@ class SceneRunPreflightService:
                     "title": "场景节拍为空",
                     "detail": "建议先补齐场景 beats，让运行结果更容易贴合预期推进。",
                     "technical_hint": "scene_card.beats_json is empty",
+                }
+            )
+        latest_blueprint = self.session.execute(
+            select(SceneBlueprint)
+            .where(SceneBlueprint.scene_id == scene.scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
+            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
+        ).scalars().first()
+        if latest_blueprint is None:
+            items.append(
+                {
+                    "code": "SCENE_BLUEPRINT_MISSING",
+                    "title": "Scene literary blueprint is missing",
+                    "detail": "The run can auto-generate it, but the author should review the scene intent before drafting.",
+                    "technical_hint": "POST /api/v1/scenes/{scene_id}/literary-blueprint",
+                }
+            )
+        brief = normalize_scene_writer_brief(scene.writer_brief_json)
+        missing_intent = [
+            key
+            for key in ("choice_under_pressure", "power_shift", "new_information", "emotional_turn", "image_anchor", "reader_aftertaste")
+            if not brief.get(key)
+        ]
+        if missing_intent:
+            items.append(
+                {
+                    "code": "SCENE_LITERARY_INTENT_INCOMPLETE",
+                    "title": "Scene literary intent is incomplete",
+                    "detail": "Consider filling the v2 writer brief fields before generation: " + ", ".join(missing_intent),
+                    "technical_hint": "scene_card.writer_brief_json",
                 }
             )
 

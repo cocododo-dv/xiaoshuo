@@ -110,6 +110,13 @@ function referenceDetail(status = "waiting_review") {
                   banned_moves: ["Do not copy protected expression."],
                 },
                 narrative_patterns: ["Use chapter hook escalation and delayed explanation."],
+                literary_profile: {
+                  scene_shapes: ["调查场景：问题推动下一次选择"],
+                  dialogue_strategies: ["错位回答保留潜台词"],
+                  emotional_curves: ["从怀疑到确认"],
+                  image_usage: ["物象复现时改变含义"],
+                  banned_replication_rules: ["专名、设定、标志桥段不得进入生成"],
+                },
               },
             },
           ]
@@ -407,6 +414,15 @@ describe("reference learning store", () => {
         return ok({
           applied: false,
           reviews: [{ review_id: "review_apply_ref", item_type: "narrative_pattern", status: "pending" }],
+          application_guidance: {
+            scope: "chapter",
+            scope_ref_id: "CH001",
+            applicable_techniques: ["scene_shape: 调查场景：问题推动下一次选择"],
+            inapplicable_techniques: ["source-specific names and signature scenes are not applicable"],
+            safe_to_apply: true,
+            safety_reason: "applies reviewed abstract techniques only",
+            banned_replication_rules: ["专名、设定、标志桥段不得进入生成"],
+          },
           application_status: {
             total: 1,
             pending: 1,
@@ -461,6 +477,7 @@ describe("reference learning store", () => {
     store.detail = referenceDetail("completed");
     await store.applyProfile("refprofile_alpha", { scope: "chapter", scope_ref_id: "CH001" });
     expect(store.lastActionMessage).toContain("已创建 1 个应用审核项");
+    expect(store.lastApplicationGuidance.applicable_techniques[0]).toContain("scene_shape");
     expect(store.detail.profiles[0].application_status.pending).toBe(1);
     expect(store.detail.profiles[0].application_status.review_ids).toEqual(["review_apply_ref"]);
 
@@ -510,6 +527,9 @@ describe("reference learning store", () => {
     expect(source).toContain("rejectLabel");
     expect(source).toContain("reference-flow");
     expect(source).toContain("reference-secondary");
+    expect(source).toContain("reference-application-guidance");
+    expect(source).toContain("profileLiteraryList");
+    expect(source).toContain("banned_replication_rules");
   });
 
   it("renders reference finding source labels and safety status in Chinese", async () => {
@@ -586,6 +606,9 @@ describe("reference learning store", () => {
       expect(text).toContain("模型来源");
       expect(text).toContain("本地启发式提取");
       expect(text).toContain("已创建 2 个应用审核项，等待审核收件箱批准");
+      expect(text).toContain("参考画像 2.0");
+      expect(text).toContain("调查场景");
+      expect(text).toContain("专名、设定、标志桥段不得进入生成");
       expect(text).not.toContain("100%覆盖度");
     } finally {
       mounted.unmount();

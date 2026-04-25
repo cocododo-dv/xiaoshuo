@@ -405,7 +405,14 @@ class ReferenceLearningService:
             raise DomainError("REFERENCE_PROFILE_SCOPE_INVALID", "scope must be global, chapter, or scene", status_code=400)
         resolved_scope_ref = "global" if scope == "global" else _required_text(scope_ref_id, field="scope_ref_id")
         profile_payload = dict(profile.profile_json or {})
-        review_specs = self._profile_review_specs(profile, profile_payload, scope=scope, scope_ref_id=resolved_scope_ref)
+        application_guidance = _reference_application_guidance(profile_payload, scope=scope, scope_ref_id=resolved_scope_ref)
+        review_specs = self._profile_review_specs(
+            profile,
+            profile_payload,
+            scope=scope,
+            scope_ref_id=resolved_scope_ref,
+            application_guidance=application_guidance,
+        )
         reviews: list[ReviewItem] = []
         for spec in review_specs:
             review = self._upsert_review(**spec)
@@ -415,6 +422,7 @@ class ReferenceLearningService:
             "profile_id": profile.profile_id,
             "book_id": book_id,
             "applied": False,
+            "application_guidance": application_guidance,
             "application_status": self._application_status_for_reviews(reviews),
             "reviews": [self.serialize_review(review) for review in reviews],
         }
@@ -588,6 +596,7 @@ class ReferenceLearningService:
         *,
         scope: str,
         scope_ref_id: str,
+        application_guidance: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         style_profile = profile_payload.get("style_profile") if isinstance(profile_payload.get("style_profile"), dict) else {}
         style_text = StyleProfileService.render_profile_yaml(style_profile)
@@ -595,6 +604,7 @@ class ReferenceLearningService:
         narrative_text = "\n".join(str(item) for item in narrative_patterns if str(item).strip()) if isinstance(narrative_patterns, list) else ""
         narrative_text = narrative_text or "Use chapter hook escalation, delayed explanation, and consequence-first scene turns."
         prefix = _safe_key(profile.profile_id)
+        application_guidance = application_guidance or _reference_application_guidance(profile_payload, scope=scope, scope_ref_id=scope_ref_id)
         return [
             {
                 "review_id": f"review_apply_{prefix}_style_{scope}_{_safe_key(scope_ref_id)}",
@@ -608,6 +618,7 @@ class ReferenceLearningService:
                     "source": "reference_profile_apply",
                     "reference_profile_id": profile.profile_id,
                     "style_profile": style_profile,
+                    "application_guidance": application_guidance,
                 },
                 "active_on_approve": 0,
             },
@@ -622,6 +633,7 @@ class ReferenceLearningService:
                     "scope_ref_id": scope_ref_id,
                     "source": "reference_profile_apply",
                     "reference_profile_id": profile.profile_id,
+                    "application_guidance": application_guidance,
                 },
                 "active_on_approve": 0,
             },
@@ -1616,6 +1628,22 @@ def _enrich_reference_profile_payload(
     stripped_count: int = 0,
 ) -> dict[str, Any]:
     enriched = dict(profile_json or {})
+    literary_profile = enriched.get("literary_profile") if isinstance(enriched.get("literary_profile"), dict) else {}
+    literary_profile = {
+        "scene_shapes": _string_list(literary_profile.get("scene_shapes"))
+        or _string_list(enriched.get("narrative_patterns"))
+        or ["encounter, investigation, reveal, betrayal, chase, or forced choice as abstract scene shapes"],
+        "dialogue_strategies": _string_list(literary_profile.get("dialogue_strategies"))
+        or ["short pressure beats, misdirection, withheld answer, counter-question, or meaningful silence"],
+        "emotional_curves": _string_list(literary_profile.get("emotional_curves"))
+        or ["move from ordinary to abnormal, suspicion to confirmation, or retreat to choice"],
+        "image_usage": _string_list(literary_profile.get("image_usage"))
+        or ["let a concrete object return with changed meaning instead of repeating decoration"],
+        "banned_replication_rules": _string_list(literary_profile.get("banned_replication_rules"))
+        or _string_list(enriched.get("banned_replication_rules"))
+        or ["do not reuse source names, settings, signature plot bridges, protected scenes, or recognizable sentence shapes"],
+    }
+    enriched["literary_profile"] = literary_profile
     locale = enriched.get("locale") if isinstance(enriched.get("locale"), str) else _detect_locale(
         "\n".join([locale_hint_text, *(_profile_strings(enriched))])
     )
@@ -1653,6 +1681,42 @@ def _enrich_reference_profile_payload(
         }
     )
     return enriched
+
+
+def _reference_application_guidance(profile_json: dict[str, Any], *, scope: str, scope_ref_id: str) -> dict[str, Any]:
+    profile_payload = dict(profile_json or {})
+    literary_profile = profile_payload.get("literary_profile") if isinstance(profile_payload.get("literary_profile"), dict) else {}
+    scene_shapes = _string_list(literary_profile.get("scene_shapes"))
+    dialogue_strategies = _string_list(literary_profile.get("dialogue_strategies"))
+    emotional_curves = _string_list(literary_profile.get("emotional_curves"))
+    image_usage = _string_list(literary_profile.get("image_usage"))
+    banned_rules = (
+        _string_list(literary_profile.get("banned_replication_rules"))
+        or _string_list(profile_payload.get("banned_replication_rules"))
+        or ["strip source names, settings, signature plot bridges, protected scenes, and recognizable sentence shapes"]
+    )
+    applicable: list[str] = []
+    for label, values in (
+        ("scene_shape", scene_shapes),
+        ("dialogue_strategy", dialogue_strategies),
+        ("emotional_curve", emotional_curves),
+        ("image_usage", image_usage),
+    ):
+        if values:
+            applicable.append(f"{label}: {values[0]}")
+    if not applicable:
+        applicable.append("use only abstract craft guidance that has passed review")
+    return {
+        "scope": scope,
+        "scope_ref_id": scope_ref_id,
+        "applicable_techniques": applicable[:6],
+        "inapplicable_techniques": [
+            "source-specific names, settings, bridge events, signature scenes, and recognizable syntax are not applicable",
+        ],
+        "safe_to_apply": not _blocked_profile_markers(json.dumps(profile_payload, ensure_ascii=False, sort_keys=True)),
+        "safety_reason": "applies reviewed abstract techniques only; source-identifying material remains blocked",
+        "banned_replication_rules": banned_rules[:8],
+    }
 
 
 def _detect_locale(text: str) -> str:

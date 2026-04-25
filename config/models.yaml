@@ -65,6 +65,36 @@ task_routing:
     temperature: 0.2
     max_output_tokens: 2200
     response_format: json_object
+  scene_blueprint:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.25
+    max_output_tokens: 1800
+    response_format: json_object
+  writer_scene_story_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 2200
+    response_format: json_object
+  writer_scene_character_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 2200
+    response_format: json_object
+  writer_scene_prose_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 2200
+    response_format: json_object
+  writer_scene_reader_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 2200
+    response_format: json_object
   writer_scene_revision:
     provider: openai_compatible
     model: gpt-5
@@ -77,11 +107,41 @@ task_routing:
     temperature: 0.2
     max_output_tokens: 3200
     response_format: json_object
+  writer_chapter_story_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 3200
+    response_format: json_object
+  writer_chapter_character_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 3200
+    response_format: json_object
+  writer_chapter_prose_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 3200
+    response_format: json_object
+  writer_chapter_reader_diagnosis:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.2
+    max_output_tokens: 3200
+    response_format: json_object
   writer_chapter_revision:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.45
     max_output_tokens: 4200
+    response_format: json_object
+  writer_passage_patch:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.45
+    max_output_tokens: 2600
     response_format: json_object
   writer_reference_application_review:
     provider: openai_compatible

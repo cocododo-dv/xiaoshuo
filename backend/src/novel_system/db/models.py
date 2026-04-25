@@ -169,6 +169,26 @@ class SceneBundle(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class SceneBlueprint(Base):
+    __tablename__ = "scene_blueprints"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft','accepted','superseded')",
+            name="ck_scene_blueprints_status",
+        ),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scene_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(String)
+    source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_bundle_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    blueprint_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
 class LlmCall(Base):
     __tablename__ = "llm_calls"
 
@@ -239,6 +259,10 @@ class WriterEvaluation(Base):
     source_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
     evaluator_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    lens: Mapped[str | None] = mapped_column(String, nullable=True)
+    parent_evaluation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    evidence_spans_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    source_blueprint_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     scores_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     findings_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
@@ -268,6 +292,9 @@ class RevisionCandidate(Base):
     proposed_text: Mapped[str] = mapped_column(Text)
     instruction_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     diff_summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    patches_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True, default=list)
+    apply_mode: Mapped[str] = mapped_column(String, default="manual_only")
+    target_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="candidate")
     author_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String, default="writer_engine")

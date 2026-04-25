@@ -79,6 +79,7 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     },
     segmentExcerpts: {},
     segmentExcerptLoading: {},
+    lastApplicationGuidance: null,
     loaded: false,
     stale: false,
   }),
@@ -152,6 +153,7 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
         this.currentRound = null;
         this.segmentExcerpts = {};
         this.segmentExcerptLoading = {};
+        this.lastApplicationGuidance = null;
         return null;
       }
       this.actionId = `select:${bookId}`;
@@ -167,6 +169,7 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
         this.currentRound = snapshotPayload(detail.latest_round || this.currentRound || null);
         this.segmentExcerpts = {};
         this.segmentExcerptLoading = {};
+        this.lastApplicationGuidance = null;
         return this.detail;
       } catch (error) {
         this.error = error.message;
@@ -369,6 +372,7 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
       }
       this.actionId = `apply:${profileId}`;
       this.error = "";
+      this.lastApplicationGuidance = null;
       try {
         const result = await applyReferenceProfileRequest(bookId, profileId, {
           scope: payload.scope || "global",
@@ -384,6 +388,7 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
           scope: payload.scope || "global",
           scope_ref_id: payload.scope === "global" ? "global" : payload.scope_ref_id,
         });
+        this.lastApplicationGuidance = snapshotPayload(result.application_guidance || null);
         this.lastActionMessage = `已创建 ${reviewIds.length || 1} 个应用审核项，请到审核收件箱确认。`;
         return result;
       } catch (error) {

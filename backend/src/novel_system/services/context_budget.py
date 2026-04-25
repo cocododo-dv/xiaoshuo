@@ -28,6 +28,7 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("scene_card", "Scene Card", ("scene_card",)),
     ("chapter_writer_brief", "Chapter Writer Brief", ("chapter_writer_brief",)),
     ("scene_writer_brief", "Scene Writer Brief", ("scene_writer_brief",)),
+    ("scene_blueprint", "Scene Literary Blueprint", ("scene_blueprint",)),
     ("character_contract", "Character Continuity Contract", ("character_contract",)),
     ("pov_voice", "POV Voice", ("voice_card",)),
     ("style_profile", "Style Feature Contract", ("style_profile", "style_feature_contract")),

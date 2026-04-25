@@ -25,6 +25,7 @@ const emit = defineEmits(["run", "accept", "reject"]);
 
 const evaluation = computed(() => props.summary?.latest_evaluation || props.summary?.evaluation || null);
 const candidates = computed(() => props.summary?.candidates || []);
+const lensEvaluations = computed(() => props.summary?.lens_evaluations || []);
 const findings = computed(() => evaluation.value?.findings || []);
 const revisionBrief = computed(() => evaluation.value?.revision_brief || []);
 const scores = computed(() => evaluation.value?.scores || {});
@@ -86,6 +87,10 @@ function formatChangedDimensions(candidate) {
     .filter(Boolean)
     .join(" / ");
 }
+
+function candidatePatches(candidate) {
+  return candidate.patches || candidate.patches_json || [];
+}
 </script>
 
 <template>
@@ -136,6 +141,17 @@ function formatChangedDimensions(candidate) {
         </ul>
       </section>
 
+      <section v-if="lensEvaluations.length" class="writer-review-section" data-testid="writer-review-lenses">
+        <h4>Multi-lens review</h4>
+        <ul>
+          <li v-for="lens in lensEvaluations" :key="lens.evaluation_id">
+            <strong>{{ lens.lens }}</strong>
+            <span>{{ Math.round(Number(lens.overall_score || 0) * 100) }}</span>
+            <small v-if="lens.requires_human_review">human review</small>
+          </li>
+        </ul>
+      </section>
+
       <section v-if="revisionBrief.length" class="writer-review-section">
         <h4>可执行修订 brief</h4>
         <ul>
@@ -161,8 +177,20 @@ function formatChangedDimensions(candidate) {
           <span v-if="candidate.diff_summary?.rewrite_strategy" class="badge">
             {{ candidate.diff_summary.rewrite_strategy }}
           </span>
+          <span v-if="candidate.apply_mode" class="badge ghost">
+            {{ candidate.apply_mode }}
+          </span>
           <span v-if="formatChangedDimensions(candidate)" class="muted">
             {{ formatChangedDimensions(candidate) }}
+          </span>
+        </div>
+        <div v-if="candidatePatches(candidate).length" class="writer-candidate-meta" data-testid="writer-revision-patches">
+          <span
+            v-for="patch in candidatePatches(candidate)"
+            :key="`${candidate.revision_id}-${patch.patch_type}-${patch.target_text_ref}`"
+            class="badge ghost"
+          >
+            {{ patch.patch_type }} / {{ patch.target_text_ref || candidate.target_text_ref || "-" }}
           </span>
         </div>
         <pre>{{ candidate.proposed_text }}</pre>

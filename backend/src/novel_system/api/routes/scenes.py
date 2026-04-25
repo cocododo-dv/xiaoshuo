@@ -27,6 +27,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
+from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
@@ -159,6 +160,25 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
+@router.post("/api/v1/scenes/{scene_id}/literary-blueprint")
+def generate_scene_literary_blueprint(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/literary-blueprint",
+        payload={"scene_id": scene_id},
+        action=lambda: SceneBlueprintService(session).serialize(
+            SceneBlueprintService(session).generate(scene_id, actor_ref=actor_ref)
+        ),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
 @router.post("/api/v1/scenes/{scene_id}/run/jobs")
 def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
@@ -262,6 +282,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     attempts = session.execute(
         select(AttemptTracker).where(AttemptTracker.scene_id == scene_id).order_by(AttemptTracker.attempt_id.asc())
     ).scalars().all()
+    blueprint_service = SceneBlueprintService(session)
     response = ok(
         {
             "chapter_goal": {
@@ -295,6 +316,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
             "style_draft": {"row_id": style.row_id, "content": style.content} if style else None,
             "final_scene": {"row_id": final.row_id, "content": final.content} if final else None,
             "source_safety_scan": source_safety_scan,
+            "literary_blueprint": blueprint_service.latest_payload(scene_id),
             "scene_memory": {"row_id": memory.row_id, "content": memory.content} if memory else None,
             "generation_summary": _serialize_generation_summary(session, scene_id, state),
             "hard_qc_summary": _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "hard_qc")),

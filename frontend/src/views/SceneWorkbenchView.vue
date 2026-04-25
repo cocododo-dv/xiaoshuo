@@ -58,6 +58,8 @@ const softQcSummary = computed(() => workbench.data?.soft_qc_summary || null);
 const rewriteCounters = computed(() => workbench.data?.rewrite_counters || null);
 const humanReviewSummary = computed(() => workbench.data?.human_review_summary || null);
 const writerReviewSummary = computed(() => workbench.data?.writer_review_summary || null);
+const literaryBlueprint = computed(() => workbench.data?.literary_blueprint || null);
+const blueprintItems = computed(() => Object.entries(literaryBlueprint.value?.blueprint_json || {}));
 const sourceSafetyScan = computed(() => workbench.data?.source_safety_scan || {
   safe: true,
   blocked_terms: [],
@@ -340,6 +342,22 @@ async function runWriterReview() {
   });
 }
 
+async function generateBlueprint() {
+  const sceneId = resolveSceneId();
+  if (!sceneId) {
+    emit("notice", "Please choose a scene before generating a literary blueprint.");
+    return;
+  }
+  await runFlowAction({
+    scopeKey: WORKBENCH_MAIN_SCOPE,
+    actionLabel: "Generate literary blueprint",
+    runningMessage: "Building the scene intent blueprint...",
+    successMessage: (message) => message || "Literary blueprint is ready.",
+    nextStep: () => "Next: review the blueprint, then run the scene or writer diagnosis.",
+    action: () => workbench.generateBlueprint(sceneId),
+  });
+}
+
 async function acceptWriterRevision(revisionId) {
   await runFlowAction({
     scopeKey: WORKBENCH_MAIN_SCOPE,
@@ -550,6 +568,36 @@ onDeactivated(() => {
             <strong>{{ formatStatus(workbench.data.scene_run_state.scene_status) }}</strong>
           </div>
         </div>
+
+        <article class="paper scene-blueprint-card" data-testid="scene-literary-blueprint-card">
+          <div class="receipt-head">
+            <div>
+              <h3>文学蓝图</h3>
+              <p class="muted receipt-copy">本次生成或改稿依据的场景意图：选择、阻碍、信息释放、权力变化和结尾问题。</p>
+            </div>
+            <span class="badge">{{ literaryBlueprint?.status || "missing" }}</span>
+          </div>
+          <div class="card-actions">
+            <button
+              type="button"
+              :disabled="workbench.actionId === 'scene-blueprint'"
+              data-testid="scene-blueprint-run"
+              @click="generateBlueprint"
+            >
+              {{ workbench.actionId === "scene-blueprint" ? "生成中..." : "生成文学蓝图" }}
+            </button>
+          </div>
+          <div v-if="blueprintItems.length" class="writer-score-grid">
+            <div v-for="[key, value] in blueprintItems" :key="key" class="writer-score-item">
+              <span>{{ key }}</span>
+              <strong>{{ value }}</strong>
+            </div>
+          </div>
+          <p v-else class="muted">还没有蓝图；完整运行会自动生成，但建议先在这里审一眼创作意图。</p>
+          <p v-if="literaryBlueprint?.row_id" class="muted">
+            {{ literaryBlueprint.row_id }} / {{ literaryBlueprint.source_bundle_hash || "-" }}
+          </p>
+        </article>
 
         <WriterReviewCard
           :summary="writerReviewSummary"

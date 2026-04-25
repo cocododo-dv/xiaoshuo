@@ -340,6 +340,10 @@ export function runSceneWriterReview(sceneId) {
   return apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/writer-review/run`);
 }
 
+export function runSceneLiteraryBlueprint(sceneId) {
+  return apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/literary-blueprint`);
+}
+
 export function fetchChapterWriterReview(chapterId) {
   return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/writer-review`);
 }

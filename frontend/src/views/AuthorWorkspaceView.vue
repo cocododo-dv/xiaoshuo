@@ -27,6 +27,12 @@ const chapterWriterBriefFields = [
   { key: "character_shift", label: "人物变化" },
   { key: "chapter_question", label: "章节问题" },
   { key: "ending_aftertaste", label: "结尾余味" },
+  { key: "chapter_promise", label: "章节承诺" },
+  { key: "escalation_path", label: "升级路径" },
+  { key: "relationship_delta", label: "关系变化" },
+  { key: "reveal_or_reversal", label: "揭示/反转" },
+  { key: "payoff_target", label: "兑现目标" },
+  { key: "ending_question", label: "结尾问题" },
 ];
 
 const sceneWriterBriefFields = [
@@ -37,10 +43,19 @@ const sceneWriterBriefFields = [
   { key: "subtext", label: "潜台词" },
   { key: "irreversible_change", label: "不可逆变化" },
   { key: "reader_question", label: "读者问题" },
+  { key: "choice_under_pressure", label: "压力选择" },
+  { key: "power_shift", label: "权力变化" },
+  { key: "new_information", label: "新信息" },
+  { key: "emotional_turn", label: "情绪转折" },
+  { key: "image_anchor", label: "意象锚点" },
+  { key: "reader_aftertaste", label: "读者余味" },
 ];
 
 function createEmptyWriterBrief(fields) {
-  return Object.fromEntries(fields.map((field) => [field.key, ""]));
+  return {
+    schema_version: "writer_brief_v2",
+    ...Object.fromEntries(fields.map((field) => [field.key, ""])),
+  };
 }
 
 function createEmptyChapterForm() {

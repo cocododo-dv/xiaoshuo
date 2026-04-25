@@ -560,10 +560,13 @@ def test_llm_settings_and_model_routing_config_load_from_env_and_repo_config(
 
     extraction = config.task_routing["extraction"]
     stylize = config.task_routing["stylize"]
+    writer_patch = config.task_routing["writer_passage_patch"]
     assert extraction.provider == "openai_compatible"
     assert extraction.response_format == "json_object"
     assert extraction.max_output_tokens > 0
     assert stylize.temperature >= extraction.temperature
+    assert writer_patch.response_format == "json_object"
+    assert writer_patch.max_output_tokens > 0
 
 
 def test_llm_settings_raise_clear_error_for_invalid_timeout_env(

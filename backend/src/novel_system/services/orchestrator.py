@@ -10,6 +10,7 @@ from novel_system.services.archiver import Archiver
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_task_runner import LLMNodeRunner
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import SceneGenerationService, versioned_scene_artifact_id
 from novel_system.services.version_manager import VersionManager
 
@@ -38,6 +39,7 @@ class Orchestrator:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         self._prepare_state_for_run(state)
+        SceneBlueprintService(self.session).ensure_for_scene(scene_id)
         bundle = self.bundle_builder.build(scene_id, "P2")
 
         neutral_generation = self.scene_generation_service.generate_neutral_draft(scene_id, bundle)

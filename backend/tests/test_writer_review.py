@@ -15,7 +15,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_client import LLMResponse
-from novel_system.services.writer_review import WriterReviewService
+from novel_system.services.writer_review import WRITER_REVIEW_LENSES, WriterReviewService
 
 
 CHAPTER_ID = "CH_WRITER_01"
@@ -92,7 +92,7 @@ class ScriptedWriterReviewClient:
     def generate(self, request):
         self.requests.append(request)
         node_id = request.node_id
-        if node_id in {"writer_scene_diagnosis", "writer_chapter_diagnosis"}:
+        if node_id in {"writer_scene_diagnosis", "writer_chapter_diagnosis"} or node_id.endswith("_diagnosis"):
             payload = self._diagnosis_payload(node_id)
         elif node_id == "writer_scene_revision":
             payload = {
@@ -260,7 +260,7 @@ def test_scene_writer_review_creates_evaluation_and_candidate_without_overwritin
     session.expire_all()
     assert session.get(FinalScene, FINAL_ROW_ID).content == original_final
     assert session.get(RevisionCandidate, candidate_id).status == "accepted"
-    assert session.query(WriterEvaluation).filter_by(scene_id=SCENE_ID).count() == 1
+    assert session.query(WriterEvaluation).filter_by(scene_id=SCENE_ID).count() == 5
 
     review_response = client.get(f"/api/v1/scenes/{SCENE_ID}/writer-review")
     assert review_response.status_code == 200
@@ -279,11 +279,13 @@ def test_scene_writer_review_uses_llm_diagnosis_evidence_and_real_rewrite_candid
     finding = evaluation["findings"][0]
     candidate = payload["candidates"][0]
 
-    assert [request.node_id for request in fake_client.requests] == ["writer_scene_diagnosis", "writer_scene_revision"]
-    assert evaluation["evaluator_llm_call_id"]
-    persisted_call = session.get(LlmCall, evaluation["evaluator_llm_call_id"])
-    assert persisted_call is not None
-    assert persisted_call.node_id == "writer_scene_diagnosis"
+    assert [request.node_id for request in fake_client.requests] == [
+        *[lens.scene_node_id for lens in WRITER_REVIEW_LENSES],
+        "writer_scene_revision",
+    ]
+    assert evaluation["evaluator_llm_call_id"] is None
+    assert evaluation["lens"] == "aggregate"
+    assert {item["lens"] for item in payload["lens_evaluations"]} == {"story", "character", "prose", "reader"}
     assert evaluation["scores"]["dialogue_edge"] == 0.52
     assert finding["evidence_excerpt"] == "他先笑，随后说窗外雨声太大。"
     assert finding["evidence_location"] == "source paragraph 1"
@@ -321,10 +323,13 @@ def test_chapter_writer_review_prefers_final_aggregate_and_creates_revision_plan
     evaluation = payload["evaluation"]
     candidate = payload["candidates"][0]
 
-    assert [request.node_id for request in fake_client.requests] == ["writer_chapter_diagnosis", "writer_chapter_revision"]
+    assert [request.node_id for request in fake_client.requests] == [
+        *[lens.chapter_node_id for lens in WRITER_REVIEW_LENSES],
+        "writer_chapter_revision",
+    ]
     assert evaluation["source_text_ref"] == "chapter_memory:chapter_memory_writer_final"
-    assert evaluation["evaluator_llm_call_id"]
-    assert session.get(LlmCall, evaluation["evaluator_llm_call_id"]).node_id == "writer_chapter_diagnosis"
+    assert evaluation["lens"] == "aggregate"
+    assert evaluation["evaluator_llm_call_id"] is None
     assert candidate["revision_type"] == "chapter_revision"
     assert "【章节修订计划】" in candidate["proposed_text"]
     assert "【局部改写】" in candidate["proposed_text"]
@@ -340,7 +345,7 @@ def test_writer_review_malformed_llm_payload_blocks_without_fabricating_scores(s
 
     evaluation = payload["evaluation"]
 
-    assert [request.node_id for request in fake_client.requests] == ["writer_scene_diagnosis"]
+    assert [request.node_id for request in fake_client.requests] == ["writer_scene_story_diagnosis"]
     assert evaluation["requires_human_review"] is True
     assert evaluation["overall_score"] is None
     assert evaluation["scores"] == {}

@@ -5,14 +5,22 @@ from sqlalchemy import select
 from novel_system.db.models import ChapterState, SceneCard, SceneRunState
 
 EMPTY_CHAPTER_WRITER_BRIEF = {
+    "schema_version": "writer_brief_v2",
     "core_promise": "",
     "plot_movement": "",
     "character_shift": "",
     "chapter_question": "",
     "ending_aftertaste": "",
+    "chapter_promise": "",
+    "escalation_path": "",
+    "relationship_delta": "",
+    "reveal_or_reversal": "",
+    "payoff_target": "",
+    "ending_question": "",
 }
 
 EMPTY_SCENE_WRITER_BRIEF = {
+    "schema_version": "writer_brief_v2",
     "character_desire": "",
     "obstacle": "",
     "stakes": "",
@@ -20,6 +28,12 @@ EMPTY_SCENE_WRITER_BRIEF = {
     "subtext": "",
     "irreversible_change": "",
     "reader_question": "",
+    "choice_under_pressure": "",
+    "power_shift": "",
+    "new_information": "",
+    "emotional_turn": "",
+    "image_anchor": "",
+    "reader_aftertaste": "",
 }
 
 

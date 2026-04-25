@@ -22,6 +22,7 @@ from novel_system.db.models import (
     VoiceProfile,
     WriterEvaluation,
 )
+from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 
 class LongformControlService:
@@ -62,6 +63,12 @@ class LongformControlService:
         ]
         character_arcs = self._character_arcs(chapter_ids, scenes, evaluations)
         foreshadow_debts = self._foreshadow_debts(chapter_ids)
+        promise_payoff = self._promise_payoff(chapters, foreshadow_debts)
+        character_arc_timeline = self._character_arc_timeline(chapter_ids, scenes, evaluations)
+        relation_tension_matrix = self._relation_tension_matrix(chapter_ids, scenes)
+        motif_tracking = self._motif_tracking(chapter_ids, scenes)
+        information_release_curve = self._information_release_curve(chapter_ids, scenes, evaluations)
+        reader_hook_debts = self._reader_hook_debts(chapters, scenes, foreshadow_debts, evaluations)
         revision_pressure = [
             self._revision_pressure_row(row, evaluations.get(row["chapter_id"], []), candidates.get(row["chapter_id"], []))
             for row in chapter_rows
@@ -76,6 +83,12 @@ class LongformControlService:
             "chapters": chapter_rows,
             "rhythm_map": rhythm_map,
             "character_arcs": character_arcs,
+            "promise_payoff": promise_payoff,
+            "character_arc_timeline": character_arc_timeline,
+            "relation_tension_matrix": relation_tension_matrix,
+            "motif_tracking": motif_tracking,
+            "information_release_curve": information_release_curve,
+            "reader_hook_debts": reader_hook_debts,
             "foreshadow_debts": foreshadow_debts,
             "continuity_alerts": continuity_alerts,
             "revision_pressure": revision_pressure,
@@ -345,6 +358,206 @@ class LongformControlService:
             }
             for row in rows
         ]
+
+    def _promise_payoff(self, chapters: list[ChapterGoal], foreshadow_debts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        debts_by_chapter: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for debt in foreshadow_debts:
+            debts_by_chapter[debt["chapter_id"]].append(debt)
+        rows: list[dict[str, Any]] = []
+        for chapter in chapters:
+            brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
+            chapter_promise = brief.get("chapter_promise") or brief.get("core_promise") or chapter.chapter_goal or ""
+            ending_question = brief.get("ending_question") or brief.get("chapter_question") or chapter.ending_effect or ""
+            open_debts = [item for item in debts_by_chapter.get(chapter.chapter_id, []) if item["debt_state"] == "open"]
+            rows.append(
+                {
+                    "chapter_id": chapter.chapter_id,
+                    "chapter_promise": chapter_promise,
+                    "ending_question": ending_question,
+                    "payoff_target": brief.get("payoff_target") or "",
+                    "open_hook_count": len(open_debts),
+                    "status": "debt_open" if open_debts or ending_question else "no_visible_debt",
+                    "target_ref": f"chapter:{chapter.chapter_id}",
+                }
+            )
+        return rows
+
+    def _character_arc_timeline(
+        self,
+        chapter_ids: list[str],
+        scenes: dict[str, list[SceneCard]],
+        evaluations: dict[str, list[WriterEvaluation]],
+    ) -> list[dict[str, Any]]:
+        low_agency_by_scene: dict[str, bool] = {}
+        for rows in evaluations.values():
+            for evaluation in rows:
+                if not evaluation.scene_id:
+                    continue
+                scores = evaluation.scores_json or {}
+                low_agency_by_scene[evaluation.scene_id] = float(scores.get("character_agency") or 1) < 0.55
+        timeline: list[dict[str, Any]] = []
+        for chapter_id in chapter_ids:
+            for scene in scenes.get(chapter_id, []):
+                brief = normalize_scene_writer_brief(scene.writer_brief_json)
+                character_ids = [scene.pov_character_id, *(scene.onstage_chars_json or [])]
+                for character_id in sorted({item for item in character_ids if item}):
+                    timeline.append(
+                        {
+                            "chapter_id": chapter_id,
+                            "scene_id": scene.scene_id,
+                            "scene_seq": scene.scene_seq,
+                            "character_id": character_id,
+                            "desire": brief.get("character_desire") or "",
+                            "choice_under_pressure": brief.get("choice_under_pressure") or "",
+                            "power_shift": brief.get("power_shift") or "",
+                            "low_agency": bool(low_agency_by_scene.get(scene.scene_id)),
+                            "target_ref": f"scene_card:{scene.scene_id}",
+                        }
+                    )
+        return timeline
+
+    def _relation_tension_matrix(
+        self,
+        chapter_ids: list[str],
+        scenes: dict[str, list[SceneCard]],
+    ) -> list[dict[str, Any]]:
+        profiles = self.session.execute(select(RelationProfile).where(RelationProfile.active_flag == 1)).scalars().all()
+        all_scenes = [scene for chapter_id in chapter_ids for scene in scenes.get(chapter_id, [])]
+        rows: list[dict[str, Any]] = []
+        for profile in profiles:
+            pair = [profile.left_character_id, profile.right_character_id]
+            scene_ids: list[str] = []
+            pressure_notes: list[str] = []
+            for scene in all_scenes:
+                onstage = set(scene.onstage_chars_json or [])
+                if scene.pov_character_id:
+                    onstage.add(scene.pov_character_id)
+                if not set(pair).issubset(onstage):
+                    continue
+                scene_ids.append(scene.scene_id)
+                brief = normalize_scene_writer_brief(scene.writer_brief_json)
+                for key in ("secret_or_misunderstanding", "power_shift", "reader_aftertaste"):
+                    if brief.get(key):
+                        pressure_notes.append(brief[key])
+            rows.append(
+                {
+                    "pair": pair,
+                    "relation_profile_id": profile.relation_profile_id,
+                    "scene_ids": scene_ids,
+                    "tension_note": profile.content,
+                    "unexploded_points": pressure_notes[:5],
+                    "target_ref": f"relation_profile:{profile.relation_profile_id}",
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _motif_tracking(chapter_ids: list[str], scenes: dict[str, list[SceneCard]]) -> list[dict[str, Any]]:
+        anchors: list[tuple[str, SceneCard, str]] = []
+        for chapter_id in chapter_ids:
+            for scene in scenes.get(chapter_id, []):
+                brief = normalize_scene_writer_brief(scene.writer_brief_json)
+                image_anchor = brief.get("image_anchor") or ""
+                if image_anchor:
+                    anchors.append((chapter_id, scene, image_anchor))
+        counts: dict[str, int] = defaultdict(int)
+        for _chapter_id, _scene, image_anchor in anchors:
+            counts[image_anchor] += 1
+        return [
+            {
+                "chapter_id": chapter_id,
+                "scene_id": scene.scene_id,
+                "image_anchor": image_anchor,
+                "repeat_count": counts[image_anchor],
+                "risk": "repeating" if counts[image_anchor] > 1 else "fresh",
+                "target_ref": f"scene_card:{scene.scene_id}",
+            }
+            for chapter_id, scene, image_anchor in anchors
+        ]
+
+    def _information_release_curve(
+        self,
+        chapter_ids: list[str],
+        scenes: dict[str, list[SceneCard]],
+        evaluations: dict[str, list[WriterEvaluation]],
+    ) -> list[dict[str, Any]]:
+        low_info_by_scene: dict[str, bool] = {}
+        for rows in evaluations.values():
+            for evaluation in rows:
+                if not evaluation.scene_id:
+                    continue
+                low_info_by_scene[evaluation.scene_id] = float((evaluation.scores_json or {}).get("information_rhythm") or 1) < 0.55
+        curve: list[dict[str, Any]] = []
+        for chapter_id in chapter_ids:
+            for scene in scenes.get(chapter_id, []):
+                brief = normalize_scene_writer_brief(scene.writer_brief_json)
+                new_information = brief.get("new_information") or ""
+                curve.append(
+                    {
+                        "chapter_id": chapter_id,
+                        "scene_id": scene.scene_id,
+                        "scene_seq": scene.scene_seq,
+                        "release_type": "reveal" if new_information else "action",
+                        "new_information": new_information,
+                        "low_information_rhythm": bool(low_info_by_scene.get(scene.scene_id)),
+                        "target_ref": f"scene_card:{scene.scene_id}",
+                    }
+                )
+        return curve
+
+    def _reader_hook_debts(
+        self,
+        chapters: list[ChapterGoal],
+        scenes: dict[str, list[SceneCard]],
+        foreshadow_debts: list[dict[str, Any]],
+        evaluations: dict[str, list[WriterEvaluation]],
+    ) -> list[dict[str, Any]]:
+        debts = [
+            {
+                "chapter_id": debt["chapter_id"],
+                "scene_id": debt["scene_id"],
+                "hook_text": debt["text"],
+                "debt_state": debt["debt_state"],
+                "source": "foreshadow",
+                "target_ref": f"scene_card:{debt['scene_id']}" if debt["scene_id"] else f"chapter:{debt['chapter_id']}",
+            }
+            for debt in foreshadow_debts
+        ]
+        low_hook_scenes = {
+            evaluation.scene_id
+            for rows in evaluations.values()
+            for evaluation in rows
+            if evaluation.scene_id and float((evaluation.scores_json or {}).get("reader_hook") or 1) < 0.55
+        }
+        for chapter in chapters:
+            chapter_scenes = scenes.get(chapter.chapter_id, [])
+            brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
+            ending_question = brief.get("ending_question") or brief.get("chapter_question") or ""
+            if ending_question:
+                debts.append(
+                    {
+                        "chapter_id": chapter.chapter_id,
+                        "scene_id": chapter_scenes[-1].scene_id if chapter_scenes else None,
+                        "hook_text": ending_question,
+                        "debt_state": "open",
+                        "source": "chapter_brief",
+                        "target_ref": f"chapter:{chapter.chapter_id}",
+                    }
+                )
+            for scene in chapter_scenes:
+                if scene.scene_id not in low_hook_scenes:
+                    continue
+                debts.append(
+                    {
+                        "chapter_id": chapter.chapter_id,
+                        "scene_id": scene.scene_id,
+                        "hook_text": scene.hook or scene.scene_goal or "",
+                        "debt_state": "weak",
+                        "source": "writer_review",
+                        "target_ref": f"scene_card:{scene.scene_id}",
+                    }
+                )
+        return debts
 
     @staticmethod
     def _revision_pressure_row(
