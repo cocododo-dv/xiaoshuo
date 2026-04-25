@@ -7,7 +7,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
-from novel_system.db.models import ChapterGoal, SceneBlueprint, SceneBundle, SceneCard, SceneMemory, SceneRunState
+from novel_system.db.models import (
+    AuthorPreferenceProfile,
+    ChapterGoal,
+    LongformStructureGuidance,
+    SceneBlueprint,
+    SceneBundle,
+    SceneCard,
+    SceneMemory,
+    SceneRunState,
+)
 from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
@@ -256,6 +265,56 @@ class BundleBuilder:
             )
             inline_digests["style_profile"] = StyleProfileService.render_profile_digest(style_profile)
 
+        author_preference_profile = self._approved_runtime_author_preference_profile()
+        if author_preference_profile is not None:
+            source_version_refs["author_preference_profile_id"] = author_preference_profile.profile_id
+            source_version_refs["author_preference_profile_updated_at"] = author_preference_profile.updated_at
+            ordered_injections.append(
+                {
+                    "slot": "author_preference_profile",
+                    "ref_id": author_preference_profile.profile_id,
+                    "digest_key": "author_preference_profile",
+                }
+            )
+            inline_digests["author_preference_profile"] = json.dumps(
+                {
+                    "profile_id": author_preference_profile.profile_id,
+                    "kind": "approved_author_preference_profile",
+                    "summary": author_preference_profile.summary_json or {},
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
+        longform_guidance = self._approved_runtime_longform_guidance(scene)
+        if longform_guidance:
+            guidance_ids = [row.guidance_id for row in longform_guidance]
+            source_version_refs["longform_structure_guidance_ids"] = guidance_ids
+            source_version_refs["longform_structure_guidance_updated_at"] = [
+                row.updated_at for row in longform_guidance
+            ]
+            ordered_injections.append(
+                {
+                    "slot": "longform_structure_guidance",
+                    "ref_id": guidance_ids[0],
+                    "digest_key": "longform_structure_guidance",
+                }
+            )
+            inline_digests["longform_structure_guidance"] = json.dumps(
+                [
+                    {
+                        "guidance_id": row.guidance_id,
+                        "scope_type": row.scope_type,
+                        "scope_ref_id": row.scope_ref_id,
+                        "content": row.content,
+                        "source_review_id": row.source_review_id,
+                    }
+                    for row in longform_guidance
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
         world_rules = self.resolver.resolve_active_world_rules(self.session, scene)
         if world_rules:
             ordered_injections.append(
@@ -321,3 +380,33 @@ class BundleBuilder:
         self.session.flush()
 
         return {"bundle_id": bundle_id, "bundle_snapshot_hash": bundle_hash, "snapshot": snapshot}
+
+    def _approved_runtime_author_preference_profile(self) -> AuthorPreferenceProfile | None:
+        return self.session.execute(
+            select(AuthorPreferenceProfile)
+            .where(
+                AuthorPreferenceProfile.scope_type == "global",
+                AuthorPreferenceProfile.scope_ref_id == "global",
+                AuthorPreferenceProfile.status == "approved",
+                AuthorPreferenceProfile.runtime_eligible == 1,
+            )
+            .order_by(AuthorPreferenceProfile.updated_at.desc(), AuthorPreferenceProfile.profile_id.desc())
+        ).scalars().first()
+
+    def _approved_runtime_longform_guidance(self, scene: SceneCard) -> list[LongformStructureGuidance]:
+        scope_pairs = {
+            ("global", "global"),
+            ("chapter", scene.chapter_id),
+            ("scene", scene.scene_id),
+        }
+        character_ids = {item for item in [scene.pov_character_id, *(scene.onstage_chars_json or [])] if item}
+        scope_pairs.update(("character", character_id) for character_id in character_ids)
+        rows = self.session.execute(
+            select(LongformStructureGuidance)
+            .where(
+                LongformStructureGuidance.status == "approved",
+                LongformStructureGuidance.runtime_eligible == 1,
+            )
+            .order_by(LongformStructureGuidance.created_at.asc(), LongformStructureGuidance.guidance_id.asc())
+        ).scalars().all()
+        return [row for row in rows if (row.scope_type, row.scope_ref_id) in scope_pairs]

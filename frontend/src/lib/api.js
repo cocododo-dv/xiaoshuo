@@ -277,6 +277,14 @@ export function runLiteraryEval(payload = { mode: "baseline" }) {
   return apiPost("/api/v1/literary-eval/run", payload);
 }
 
+export function fetchLiteraryQualityOverview(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/literary-quality/overview", filters, {
+      textLayer: "text_layer",
+    }),
+  );
+}
+
 export function fetchStyleProfileContract() {
   return apiGet("/api/v1/style-profile/contract");
 }
@@ -442,6 +450,44 @@ export function fetchChapterManuscriptDetail(chapterId) {
 
 export function fetchLongformControl() {
   return apiGet("/api/v1/longform-control");
+}
+
+export function fetchLongformEditorOverview() {
+  return apiGet("/api/v1/longform-editor/overview");
+}
+
+export function runLongformEditorDiagnose() {
+  return apiPost("/api/v1/longform-editor/diagnose");
+}
+
+export function fetchLongformEditorCards(filters = {}) {
+  return apiGet(
+    buildQueryPath("/api/v1/longform-editor/cards", filters, {
+      cardType: "card_type",
+      chapterId: "chapter_id",
+      sceneId: "scene_id",
+    }),
+  );
+}
+
+export function actOnLongformEditorCard(cardId, payload) {
+  return apiPost(`/api/v1/longform-editor/cards/${encodeURIComponent(cardId)}/actions`, payload);
+}
+
+export function publishLongformGuidance(cardId, payload) {
+  return apiPost(`/api/v1/longform-editor/cards/${encodeURIComponent(cardId)}/publish-guidance`, payload);
+}
+
+export function fetchReferenceSafetyOverview() {
+  return apiGet("/api/v1/reference-safety/overview");
+}
+
+export function extractReferenceSafetyProfile(bookId) {
+  return apiPost(`/api/v1/reference-books/${encodeURIComponent(bookId)}/safety-profile/extract`);
+}
+
+export function scanSourceSafety(payload) {
+  return apiPost("/api/v1/source-safety/scan", payload);
 }
 
 export function fetchAuthorWorkspace(chapterId) {

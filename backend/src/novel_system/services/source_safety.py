@@ -39,16 +39,23 @@ def scan_source_safety(
     texts: str | Iterable[str | None],
     *,
     source_profile_ids: Iterable[Any] | None = None,
+    reference_safety_profiles: Iterable[dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     content = _coerce_text(texts)
     blocked_terms = [term for term in PROTECTED_SOURCE_TERMS if term and term in content]
     refs = _unique_strings(source_profile_ids or [])
-    return {
-        "safe": not blocked_terms,
+    safety_profiles = list(reference_safety_profiles or [])
+    risks = _reference_safety_risks(content, safety_profiles)
+    payload = {
+        "safe": not blocked_terms and not risks,
         "blocked_terms": blocked_terms,
         "source_profile_ids": refs,
         "checked_at": now_iso(),
     }
+    if safety_profiles or risks:
+        payload["risks"] = risks
+        payload["risk_count"] = len(risks)
+    return payload
 
 
 def source_profile_ids_from_snapshot(snapshot: dict[str, Any] | None) -> list[str]:
@@ -107,3 +114,52 @@ def _unique_strings(values: Iterable[Any]) -> list[str]:
         seen.add(text)
         result.append(text)
     return result
+
+
+def _reference_safety_risks(content: str, profiles: Iterable[dict[str, Any] | None]) -> list[dict[str, Any]]:
+    risks: list[dict[str, Any]] = []
+    lowered = content.lower()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        profile_id = str(profile.get("profile_id") or "").strip()
+        for term in _unique_strings(profile.get("protected_terms") or []):
+            if term.lower() in lowered:
+                risks.append(
+                    {
+                        "risk_type": "exact_term",
+                        "profile_id": profile_id,
+                        "matched": term,
+                        "severity": "high",
+                        "recommendation": "Replace the protected term with an original name, object, or setting.",
+                    }
+                )
+        for phrase in _unique_strings(profile.get("distinctive_phrases") or []):
+            if phrase.lower() in lowered and not any(risk.get("matched") == phrase for risk in risks):
+                risks.append(
+                    {
+                        "risk_type": "distinctive_phrase",
+                        "profile_id": profile_id,
+                        "matched": phrase,
+                        "severity": "medium",
+                        "recommendation": "Keep the craft function but change the phrase, object field, and scene context.",
+                    }
+                )
+        for bridge in profile.get("scene_bridges") or []:
+            if not isinstance(bridge, dict):
+                continue
+            tokens = _unique_strings(bridge.get("tokens") or [])
+            matched = [token for token in tokens if token.lower() in lowered]
+            if len(matched) >= 2:
+                risks.append(
+                    {
+                        "risk_type": "fuzzy_bridge",
+                        "profile_id": profile_id,
+                        "bridge_id": bridge.get("bridge_id"),
+                        "matched": matched[:6],
+                        "severity": "high" if len(matched) >= 3 else "medium",
+                        "evidence_preview": bridge.get("evidence_preview") or "",
+                        "recommendation": "Break the recognizable bridge: change at least two of entity, object, setting, action, and payoff.",
+                    }
+                )
+    return risks

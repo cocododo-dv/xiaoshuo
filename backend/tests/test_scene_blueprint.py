@@ -61,8 +61,19 @@ def test_literary_blueprint_endpoint_persists_latest_and_supersedes_previous(cli
 
     assert first_payload["scene_id"] == SCENE_ID
     assert first_payload["status"] == "accepted"
-    assert first_payload["blueprint_json"]["choice_under_pressure"]
-    assert first_payload["blueprint_json"]["ending_reader_question"]
+    assert set(first_payload["blueprint_json"]) == {
+        "visible_desire",
+        "forced_choice",
+        "price_paid",
+        "information_release",
+        "relationship_turn",
+        "image_anchor",
+        "ending_action",
+        "next_scene_pull",
+        "anti_summary_rule",
+    }
+    assert first_payload["blueprint_json"]["forced_choice"]
+    assert first_payload["blueprint_json"]["ending_action"]
 
     second = client.post(
         f"/api/v1/scenes/{SCENE_ID}/literary-blueprint",
@@ -85,10 +96,37 @@ def test_workbench_and_bundle_show_the_blueprint_used_for_generation(client, ses
 
     workbench = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]
     assert workbench["literary_blueprint"]["row_id"] == blueprint["row_id"]
-    assert workbench["literary_blueprint"]["blueprint_json"]["image_promise"] == "the still teacup"
+    assert workbench["literary_blueprint"]["blueprint_json"]["image_anchor"] == "the still teacup"
 
     bundle = BundleBuilder(session).build(SCENE_ID)
     snapshot = bundle["snapshot"]
     assert snapshot["source_version_refs"]["scene_blueprint_row_id"] == blueprint["row_id"]
     assert "scene_blueprint" in snapshot["inline_digests"]
+    assert "forced_choice" in snapshot["inline_digests"]["scene_blueprint"]
+
+
+def test_legacy_v1_blueprint_rows_still_surface_in_workbench_and_bundle(client, session) -> None:
+    _seed_scene(session)
+    legacy = SceneBlueprint(
+        row_id="scene_blueprint_legacy_v1",
+        scene_id=SCENE_ID,
+        chapter_id=CHAPTER_ID,
+        source_bundle_id="legacy_bundle",
+        source_bundle_hash="legacy_hash",
+        blueprint_json={
+            "choice_under_pressure": "trust the friend or investigate alone",
+            "ending_reader_question": "why the name was hidden",
+            "image_promise": "the still teacup",
+        },
+        status="accepted",
+    )
+    session.add(legacy)
+    session.commit()
+
+    workbench = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]
+    assert workbench["literary_blueprint"]["row_id"] == legacy.row_id
+    assert workbench["literary_blueprint"]["blueprint_json"]["choice_under_pressure"] == "trust the friend or investigate alone"
+
+    snapshot = BundleBuilder(session).build(SCENE_ID)["snapshot"]
+    assert snapshot["source_version_refs"]["scene_blueprint_row_id"] == legacy.row_id
     assert "choice_under_pressure" in snapshot["inline_digests"]["scene_blueprint"]

@@ -29,6 +29,11 @@ cases:
     required_terms: ["red envelope", "clocktower"]
     style_cues: ["short sentences", "pressure"]
     banned_terms: ["woke up"]
+    model_voice_banned_terms: ["somehow meaningful"]
+    expository_dialogue_banned_terms: ["as you know"]
+    choice_pressure_cues: ["choose", "cannot both"]
+    summary_ending_banned_terms: ["everything changed forever"]
+    image_variety_cues: ["envelope", "clocktower"]
     min_chars: 60
     max_chars: 320
 """.strip(),
@@ -43,6 +48,8 @@ cases:
     assert suite.cases[0].required_terms == ("red envelope", "clocktower")
     assert suite.cases[0].style_cues == ("short sentences", "pressure")
     assert suite.cases[0].banned_terms == ("woke up",)
+    assert suite.cases[0].choice_pressure_cues == ("choose", "cannot both")
+    assert suite.cases[0].model_voice_banned_terms == ("somehow meaningful",)
 
 
 def test_score_literary_case_rewards_required_terms_style_cues_and_length() -> None:
@@ -57,6 +64,11 @@ def test_score_literary_case_rewards_required_terms_style_cues_and_length() -> N
                     "required_terms": ["red envelope", "clocktower"],
                     "style_cues": ["short sentences", "pressure"],
                     "banned_terms": ["woke up"],
+                    "model_voice_banned_terms": ["somehow meaningful"],
+                    "expository_dialogue_banned_terms": ["as you know"],
+                    "choice_pressure_cues": ["choose", "cannot both"],
+                    "summary_ending_banned_terms": ["everything changed forever"],
+                    "image_variety_cues": ["fog", "red envelope", "clocktower"],
                     "min_chars": 60,
                     "max_chars": 320,
                 }
@@ -68,22 +80,33 @@ def test_score_literary_case_rewards_required_terms_style_cues_and_length() -> N
         suite.cases[0],
         (
             "The clocktower kept its teeth in the fog. She held out the red envelope. "
-            "Short sentences cut the air; pressure gathered between them."
+            "Short sentences cut the air; pressure gathered between them. "
+            "She had to choose and cannot both keep the letter and save the boy."
         ),
     )
     weak_score = score_literary_case(
         suite.cases[0],
-        "He woke up far away and explained everything in a plain summary.",
+        "He woke up far away and, as you know, explained everything in a plain summary. "
+        "It was somehow meaningful. In the end, everything changed forever.",
     )
 
     assert score.score > 0.9
     assert score.passed is True
     assert score.dimensions["required_terms"] == 1.0
     assert score.dimensions["banned_terms"] == 1.0
+    assert score.dimensions["model_voice"] == 1.0
+    assert score.dimensions["expository_dialogue"] == 1.0
+    assert score.dimensions["choice_pressure"] == 1.0
+    assert score.dimensions["summary_ending"] == 1.0
+    assert score.dimensions["image_homogeneity"] == 1.0
     assert weak_score.score < 0.5
     assert weak_score.passed is False
     assert "missing required term: red envelope" in weak_score.issues
     assert "contains banned term: woke up" in weak_score.issues
+    assert "contains model voice term: somehow meaningful" in weak_score.issues
+    assert "contains expository dialogue term: as you know" in weak_score.issues
+    assert "missing choice pressure cue: choose" in weak_score.issues
+    assert "contains summary ending term: everything changed forever" in weak_score.issues
 
 
 def test_score_literary_case_checks_deep_revision_signals() -> None:
@@ -102,6 +125,11 @@ def test_score_literary_case_checks_deep_revision_signals() -> None:
                     "dialogue_edge_cues": ["No."],
                     "image_necessity_cues": ["key changed hands"],
                     "ending_drive_cues": ["door opened"],
+                    "model_voice_banned_terms": ["somehow meaningful"],
+                    "expository_dialogue_banned_terms": ["as you know"],
+                    "choice_pressure_cues": ["choose", "cannot both"],
+                    "summary_ending_banned_terms": ["everything changed forever"],
+                    "image_variety_cues": ["key", "door", "room"],
                     "min_chars": 80,
                     "max_chars": 420,
                 }
@@ -114,23 +142,30 @@ def test_score_literary_case_checks_deep_revision_signals() -> None:
         (
             "She came to confess and still tried to hide the key. Pressure narrowed the room. "
             "\"No.\" The key changed hands before either of them named the betrayal. "
+            "She had to choose and cannot both keep him safe and keep the lie. "
             "Behind them, the locked door opened."
         ),
     )
     weak = score_literary_case(
         suite.cases[0],
-        "She held a key and explained everything in a tidy paragraph about how she felt.",
+        "She held a key and, as you know, explained everything in a tidy paragraph about how she felt. "
+        "It was somehow meaningful. In the end, everything changed forever.",
     )
 
     assert strong.dimensions["character_contradiction"] == 1.0
     assert strong.dimensions["dialogue_edge"] == 1.0
     assert strong.dimensions["image_necessity"] == 1.0
     assert strong.dimensions["ending_drive"] == 1.0
+    assert strong.dimensions["choice_pressure"] == 1.0
+    assert strong.dimensions["image_homogeneity"] == 1.0
     assert strong.passed is True
     assert weak.dimensions["character_contradiction"] == 0.0
     assert weak.dimensions["dialogue_edge"] == 0.0
     assert weak.dimensions["image_necessity"] == 0.0
     assert weak.dimensions["ending_drive"] == 0.0
+    assert weak.dimensions["model_voice"] == 0.0
+    assert weak.dimensions["expository_dialogue"] == 0.0
+    assert weak.dimensions["summary_ending"] == 0.0
     assert "missing character contradiction cue: confess" in weak.issues
     assert "missing ending drive cue: door opened" in weak.issues
 
@@ -279,6 +314,11 @@ def test_repo_literary_small_suite_baselines_are_valid() -> None:
     assert all(case.dialogue_edge_cues for case in suite.cases)
     assert all(case.image_necessity_cues for case in suite.cases)
     assert all(case.ending_drive_cues for case in suite.cases)
+    assert all(case.model_voice_banned_terms for case in suite.cases)
+    assert all(case.expository_dialogue_banned_terms for case in suite.cases)
+    assert all(case.choice_pressure_cues for case in suite.cases)
+    assert all(case.summary_ending_banned_terms for case in suite.cases)
+    assert all(case.image_variety_cues for case in suite.cases)
     assert any(any("\u4e00" <= char <= "\u9fff" for char in case.prompt) for case in suite.cases)
     assert result["summary"]["case_count"] == len(suite.cases)
     assert result["summary"]["failed_count"] == 0

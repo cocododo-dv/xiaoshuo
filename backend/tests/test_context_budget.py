@@ -132,6 +132,26 @@ def test_apply_context_budget_omits_raw_style_rules_when_profile_contract_exists
     assert "duplicated raw style rule" not in result["user_prompt"]
 
 
+def test_collect_prompt_sections_includes_author_preference_profile() -> None:
+    snapshot = _bundle_snapshot()
+    snapshot["inline_digests"]["author_preference_profile"] = (
+        "Author prefers sharper rhetorical questions and rejects explanatory dialogue."
+    )
+
+    result = apply_context_budget(
+        system_prompt="System prompt.",
+        task_prompt="Task prompt.",
+        bundle_snapshot=snapshot,
+        sections=collect_prompt_sections(snapshot),
+        max_input_tokens=900,
+    )
+    budget = result["budget"]
+
+    assert budget["section_status"]["author_preference_profile"]["status"] == "included"
+    assert "## Author Preference Profile" in result["user_prompt"]
+    assert "sharper rhetorical questions" in result["user_prompt"]
+
+
 def test_prompt_builder_surfaces_continuity_warning_into_token_budget() -> None:
     payload = PromptBuilder().build(_bundle_snapshot(), "neutral_draft", max_input_tokens=120)
 

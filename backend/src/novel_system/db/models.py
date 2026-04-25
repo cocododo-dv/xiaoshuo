@@ -402,6 +402,85 @@ class AuthorDraftEvent(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class LongformDiagnosticCard(Base):
+    __tablename__ = "longform_diagnostic_cards"
+    __table_args__ = (
+        CheckConstraint(
+            "card_type IN ("
+            "'character_arc_gap',"
+            "'foreshadow_debt',"
+            "'promise_without_payoff',"
+            "'information_congestion',"
+            "'theme_pressure_light',"
+            "'relationship_turn_stall',"
+            "'ending_drive_drop',"
+            "'reference_leakage_risk'"
+            ")",
+            name="ck_longform_diagnostic_cards_type",
+        ),
+        CheckConstraint(
+            "severity IN ('info','minor','major','critical')",
+            name="ck_longform_diagnostic_cards_severity",
+        ),
+        CheckConstraint(
+            "status IN ('open','resolved','dismissed','published_guidance')",
+            name="ck_longform_diagnostic_cards_status",
+        ),
+        CheckConstraint(
+            "object_type IN ('book','chapter','scene','character','relation','foreshadow','reference')",
+            name="ck_longform_diagnostic_cards_object_type",
+        ),
+    )
+
+    card_id: Mapped[str] = mapped_column(String, primary_key=True)
+    card_type: Mapped[str] = mapped_column(String)
+    severity: Mapped[str] = mapped_column(String, default="major")
+    status: Mapped[str] = mapped_column(String, default="open")
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    character_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_refs_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    evidence_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    recommendation_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_snapshot_hash: Mapped[str] = mapped_column(String)
+    review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    guidance_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="longform_editor")
+    updated_by: Mapped[str] = mapped_column(String, default="longform_editor")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class LongformStructureGuidance(Base):
+    __tablename__ = "longform_structure_guidance"
+    __table_args__ = (
+        CheckConstraint(
+            "scope_type IN ('global','chapter','scene','character')",
+            name="ck_longform_structure_guidance_scope_type",
+        ),
+        CheckConstraint(
+            "status IN ('draft','approved','rejected','superseded')",
+            name="ck_longform_structure_guidance_status",
+        ),
+    )
+
+    guidance_id: Mapped[str] = mapped_column(String, primary_key=True)
+    card_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scope_type: Mapped[str] = mapped_column(String, default="global")
+    scope_ref_id: Mapped[str] = mapped_column(String, default="global")
+    content: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
+    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    evidence_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    recommendation_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String, default="longform_editor")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class FinalScene(Base):
     __tablename__ = "final_scenes"
 
@@ -524,6 +603,7 @@ class ReviewItem(Base):
             "WHEN item_type = 'scene_summary' THEN 'scene_memories' "
             "WHEN item_type = 'chapter_summary' THEN 'chapter_memories' "
             "WHEN item_type = 'author_preference_profile' THEN 'author_preference_profiles' "
+            "WHEN item_type = 'longform_structure_guidance' THEN 'longform_structure_guidance' "
             "ELSE 'review_items' END",
             persisted=True,
         ),

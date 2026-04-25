@@ -13,14 +13,19 @@ from novel_system.services.llm_client import LLMRequest
 
 DEFAULT_PASS_THRESHOLD = 0.72
 DIMENSION_WEIGHTS = {
-    "required_terms": 0.24,
-    "style_cues": 0.16,
-    "banned_terms": 0.18,
-    "length": 0.10,
-    "character_contradiction": 0.10,
-    "dialogue_edge": 0.08,
+    "required_terms": 0.16,
+    "style_cues": 0.10,
+    "banned_terms": 0.10,
+    "length": 0.08,
+    "character_contradiction": 0.09,
+    "dialogue_edge": 0.07,
     "image_necessity": 0.07,
-    "ending_drive": 0.07,
+    "ending_drive": 0.08,
+    "model_voice": 0.10,
+    "expository_dialogue": 0.06,
+    "choice_pressure": 0.05,
+    "summary_ending": 0.03,
+    "image_homogeneity": 0.01,
 }
 
 
@@ -36,6 +41,11 @@ class LiteraryEvalCase:
     dialogue_edge_cues: tuple[str, ...]
     image_necessity_cues: tuple[str, ...]
     ending_drive_cues: tuple[str, ...]
+    model_voice_banned_terms: tuple[str, ...]
+    expository_dialogue_banned_terms: tuple[str, ...]
+    choice_pressure_cues: tuple[str, ...]
+    summary_ending_banned_terms: tuple[str, ...]
+    image_variety_cues: tuple[str, ...]
     min_chars: int
     max_chars: int
     pass_threshold: float
@@ -87,6 +97,11 @@ def score_literary_case(case: LiteraryEvalCase, generated_text: str) -> Literary
         "dialogue_edge": _term_hit_score(text, case.dialogue_edge_cues),
         "image_necessity": _term_hit_score(text, case.image_necessity_cues),
         "ending_drive": _term_hit_score(text, case.ending_drive_cues),
+        "model_voice": _banned_term_score(text, case.model_voice_banned_terms),
+        "expository_dialogue": _banned_term_score(text, case.expository_dialogue_banned_terms),
+        "choice_pressure": _term_hit_score(text, case.choice_pressure_cues),
+        "summary_ending": _banned_term_score(text, case.summary_ending_banned_terms),
+        "image_homogeneity": _term_hit_score(text, case.image_variety_cues),
     }
     score = round(sum(dimensions[key] * weight for key, weight in DIMENSION_WEIGHTS.items()), 4)
     issues = _score_issues(case, text, dimensions)
@@ -265,6 +280,11 @@ def _load_case(payload: Any, *, suite_threshold: float) -> LiteraryEvalCase:
         dialogue_edge_cues=_text_tuple(case_payload.get("dialogue_edge_cues")),
         image_necessity_cues=_text_tuple(case_payload.get("image_necessity_cues")),
         ending_drive_cues=_text_tuple(case_payload.get("ending_drive_cues")),
+        model_voice_banned_terms=_text_tuple(case_payload.get("model_voice_banned_terms")),
+        expository_dialogue_banned_terms=_text_tuple(case_payload.get("expository_dialogue_banned_terms")),
+        choice_pressure_cues=_text_tuple(case_payload.get("choice_pressure_cues")),
+        summary_ending_banned_terms=_text_tuple(case_payload.get("summary_ending_banned_terms")),
+        image_variety_cues=_text_tuple(case_payload.get("image_variety_cues")),
         min_chars=min_chars,
         max_chars=max_chars,
         pass_threshold=_optional_float(case_payload, "pass_threshold", suite_threshold),
@@ -373,9 +393,24 @@ def _score_issues(
     for cue in case.ending_drive_cues:
         if cue.lower() not in lowered:
             issues.append(f"missing ending drive cue: {cue}")
+    for cue in case.choice_pressure_cues:
+        if cue.lower() not in lowered:
+            issues.append(f"missing choice pressure cue: {cue}")
+    for cue in case.image_variety_cues:
+        if cue.lower() not in lowered:
+            issues.append(f"missing image variety cue: {cue}")
     for term in case.banned_terms:
         if term.lower() in lowered:
             issues.append(f"contains banned term: {term}")
+    for term in case.model_voice_banned_terms:
+        if term.lower() in lowered:
+            issues.append(f"contains model voice term: {term}")
+    for term in case.expository_dialogue_banned_terms:
+        if term.lower() in lowered:
+            issues.append(f"contains expository dialogue term: {term}")
+    for term in case.summary_ending_banned_terms:
+        if term.lower() in lowered:
+            issues.append(f"contains summary ending term: {term}")
     if dimensions["length"] < 1.0:
         issues.append(f"outside length band: {len(text)} chars not in {case.min_chars}-{case.max_chars}")
     return issues
@@ -413,7 +448,12 @@ def _case_user_prompt(case: LiteraryEvalCase) -> str:
             f"dialogue edge cues: {_joined_terms(case.dialogue_edge_cues)}",
             f"image necessity cues: {_joined_terms(case.image_necessity_cues)}",
             f"ending drive cues: {_joined_terms(case.ending_drive_cues)}",
+            f"choice pressure cues: {_joined_terms(case.choice_pressure_cues)}",
+            f"image variety cues: {_joined_terms(case.image_variety_cues)}",
             f"banned terms: {_joined_terms(case.banned_terms)}",
+            f"model voice banned terms: {_joined_terms(case.model_voice_banned_terms)}",
+            f"expository dialogue banned terms: {_joined_terms(case.expository_dialogue_banned_terms)}",
+            f"summary ending banned terms: {_joined_terms(case.summary_ending_banned_terms)}",
             f"length band: {case.min_chars}-{case.max_chars} characters",
             "",
             "Return JSON exactly like: {\"scene_text\": \"...\"}",

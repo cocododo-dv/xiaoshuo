@@ -19,15 +19,15 @@ from novel_system.services.writer_review import normalize_chapter_writer_brief, 
 
 
 SCENE_BLUEPRINT_FIELDS: tuple[str, ...] = (
-    "character_current_desire",
-    "concrete_obstacle",
-    "choice_under_pressure",
+    "visible_desire",
+    "forced_choice",
+    "price_paid",
     "information_release",
-    "power_shift",
-    "emotional_turn",
-    "irreversible_consequence",
-    "ending_reader_question",
-    "image_promise",
+    "relationship_turn",
+    "image_anchor",
+    "ending_action",
+    "next_scene_pull",
+    "anti_summary_rule",
 )
 
 
@@ -208,7 +208,7 @@ def _blueprint_user_prompt(base_prompt: str, *, scene: SceneCard, chapter: Chapt
             f"Source Bundle Hash: {source.get('source_bundle_hash') or ''}",
             "",
             "## Required Function",
-            "Explain why this scene is worth reading before prose is generated.",
+            "Produce a scene readability proposal v2: desire, forced choice, paid price, information release, relationship turn, image anchor, ending action, next-scene pull, and one anti-summary rule.",
         ]
     )
 
@@ -228,15 +228,15 @@ def _validate_blueprint_payload(payload: Any) -> dict[str, str]:
 
 def _fallback_blueprint_value(field: str) -> str:
     return {
-        "character_current_desire": "make the immediate desire visible",
-        "concrete_obstacle": "put a concrete resistance inside the scene",
-        "choice_under_pressure": "force a decision that cannot be postponed",
+        "visible_desire": "make the immediate desire visible in action",
+        "forced_choice": "force a decision that cannot be postponed",
+        "price_paid": "make the character pay a concrete cost for the choice",
         "information_release": "release one useful fact without explaining everything",
-        "power_shift": "let the relationship balance change on the page",
-        "emotional_turn": "turn the feeling state before the scene ends",
-        "irreversible_consequence": "leave a consequence that changes the next scene",
-        "ending_reader_question": "what changes because of this choice",
-        "image_promise": "a concrete object should return with changed meaning",
+        "relationship_turn": "let the relationship balance change on the page",
+        "image_anchor": "attach pressure to one concrete object or sensory detail",
+        "ending_action": "end on a visible action instead of a summary sentence",
+        "next_scene_pull": "leave a consequence that changes the next scene",
+        "anti_summary_rule": "do not explain the scene's meaning after the final action",
     }[field]
 
 
@@ -245,15 +245,15 @@ def _offline_blueprint_payload(text: str) -> dict[str, str]:
     hook = _extract_jsonish_string(text, "hook") or _extract_jsonish_string(text, "reader_aftertaste")
     image_anchor = _extract_jsonish_string(text, "image_anchor") or hook or "a concrete object"
     return {
-        "character_current_desire": _extract_jsonish_string(text, "character_desire") or "get something specific now",
-        "concrete_obstacle": _extract_jsonish_string(text, "obstacle") or "someone or something blocks the direct route",
-        "choice_under_pressure": _extract_jsonish_string(text, "choice_under_pressure") or scene_goal,
+        "visible_desire": _extract_jsonish_string(text, "character_desire") or "get something specific now",
+        "forced_choice": _extract_jsonish_string(text, "choice_under_pressure") or scene_goal,
+        "price_paid": _extract_jsonish_string(text, "irreversible_change") or _extract_jsonish_string(text, "exit_change") or "the choice costs safety, trust, or leverage",
         "information_release": _extract_jsonish_string(text, "new_information") or hook or "one fact changes the reader's understanding",
-        "power_shift": _extract_jsonish_string(text, "power_shift") or "the leverage changes hands",
-        "emotional_turn": _extract_jsonish_string(text, "emotional_turn") or "the emotional temperature changes",
-        "irreversible_consequence": _extract_jsonish_string(text, "irreversible_change") or _extract_jsonish_string(text, "exit_change") or scene_goal,
-        "ending_reader_question": _extract_jsonish_string(text, "reader_question") or _extract_jsonish_string(text, "ending_question") or hook or "what is being hidden",
-        "image_promise": image_anchor,
+        "relationship_turn": _extract_jsonish_string(text, "power_shift") or _extract_jsonish_string(text, "emotional_turn") or "the leverage changes hands",
+        "image_anchor": image_anchor,
+        "ending_action": _extract_jsonish_string(text, "exit_change") or hook or "someone acts before the scene can explain itself",
+        "next_scene_pull": _extract_jsonish_string(text, "reader_question") or _extract_jsonish_string(text, "ending_question") or hook or "what is being hidden",
+        "anti_summary_rule": "end on the action or image; do not add a summarizing explanation after it",
     }
 
 

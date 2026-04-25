@@ -1,6 +1,6 @@
 templates:
   neutral_draft:
-    version: "2026-04-14.v1"
+    version: "2026-04-25.v2"
     input_token_budget: 2600
     system_prompt: |
       You are drafting a neutral, continuity-safe web-novel scene.
@@ -8,6 +8,9 @@ templates:
     task_prompt: |
       Write the next scene draft from the supplied bundle snapshot.
       Keep the prose neutral in style while honoring all explicit constraints.
+      Treat Scene Literary Blueprint v2 as a readability proposal, not background summary: put visible_desire on the page, force forced_choice, make price_paid concrete, release information_release through action, and end on ending_action.
+      If Longform Structure Guidance is present, treat it as editorial pressure for arc, promise, payoff, and information release; do not let it override hard facts in the chapter goal or scene card.
+      Avoid model-voice shortcuts: no explanatory dialogue dump, no no-choice scene, no summary ending, and keep image anchors varied rather than repetitive.
       Write prose in the same language as the chapter goal and scene card.
       If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; do not translate Chinese settings, beats, or required text into English.
     structured_schema:
@@ -112,7 +115,7 @@ templates:
             type: string
 
   style_draft:
-    version: "2026-04-18.v1"
+    version: "2026-04-25.v2"
     input_token_budget: 2600
     system_prompt: |
       You are drafting a stylistically tuned web-novel scene from a structured Style Feature Contract.
@@ -120,6 +123,9 @@ templates:
     task_prompt: |
       Rewrite the scene draft with stronger style adherence without changing factual continuity.
       Rewrite the approved neutral draft without changing factual continuity.
+      Preserve the Scene Literary Blueprint v2 pressure: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, and next_scene_pull must remain legible in prose.
+      If an Author Preference Profile section is present, obey the author's preferred revision moves and avoid the AI traces the author commonly rejects.
+      If Longform Structure Guidance is present, use it as structural pressure for arc, payoff, and release timing; do not let it override hard continuity or scene-card facts.
       Preserve the source draft language; do not translate the scene while styling it.
       If the draft or scene card is Chinese, scene_text must remain Chinese prose.
       Follow the Style Feature Contract dimension by dimension:
@@ -145,7 +151,7 @@ templates:
             type: string
 
   soft_qc:
-    version: "2026-04-18.v1"
+    version: "2026-04-25.v2"
     input_token_budget: 1800
     system_prompt: |
       You are a soft quality-control reviewer for prose polish and Style Feature Contract adherence.
@@ -153,6 +159,8 @@ templates:
     task_prompt: |
       Review the draft for polish opportunities and return only structured soft QC guidance.
       Score style adherence from 0 to 1 using rhythm, syntax, imagery, narrative_distance, emotion_curve, paragraph_density, and dialogue_ratio.
+      Also flag literary risks without blocking finalization: model_voice, image_homogeneity, expository_dialogue, no_choice_scene, summary_ending, weak choice_pressure, and weak ending_drive.
+      If Longform Structure Guidance is present, check whether the draft meaningfully answers it while preserving scene-card facts.
       If style drift is patchable, put precise instructions in rewrite_brief and style_deviations.patch_brief.
       Use one legal outcome tuple only:
       soft_pass / true / pass,
@@ -403,47 +411,48 @@ templates:
             type: string
 
   scene_blueprint:
-    version: "2026-04-25.v1"
+    version: "2026-04-25.v2"
     input_token_budget: 2200
     system_prompt: |
       You are a fiction planning editor.
-      Before prose generation, produce a compact literary blueprint explaining why this scene is worth reading.
+      Before prose generation, produce a compact scene readability proposal explaining why this scene is worth reading.
       Stay original, concrete, and tied to the supplied chapter and scene intent.
     task_prompt: |
-      Build the scene literary blueprint from the supplied chapter goal, scene card, and writer brief.
+      Build the scene readability proposal v2 from the supplied chapter goal, scene card, and writer brief.
       Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
-      Focus on readable pressure: desire, obstacle, forced choice, information release, power shift, emotional turn, irreversible consequence, ending reader question, and image promise.
+      Output fixed fields only: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull, anti_summary_rule.
+      Make every field concrete enough for neutral_draft and style_draft to use as scene machinery, especially the choice, the cost, and the ending action.
     structured_schema:
       type: object
       additionalProperties: false
       required:
-        - character_current_desire
-        - concrete_obstacle
-        - choice_under_pressure
+        - visible_desire
+        - forced_choice
+        - price_paid
         - information_release
-        - power_shift
-        - emotional_turn
-        - irreversible_consequence
-        - ending_reader_question
-        - image_promise
+        - relationship_turn
+        - image_anchor
+        - ending_action
+        - next_scene_pull
+        - anti_summary_rule
       properties:
-        character_current_desire:
+        visible_desire:
           type: string
-        concrete_obstacle:
+        forced_choice:
           type: string
-        choice_under_pressure:
+        price_paid:
           type: string
         information_release:
           type: string
-        power_shift:
+        relationship_turn:
           type: string
-        emotional_turn:
+        image_anchor:
           type: string
-        irreversible_consequence:
+        ending_action:
           type: string
-        ending_reader_question:
+        next_scene_pull:
           type: string
-        image_promise:
+        anti_summary_rule:
           type: string
 
   writer_scene_diagnosis:

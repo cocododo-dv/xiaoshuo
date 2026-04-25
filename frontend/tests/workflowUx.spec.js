@@ -40,6 +40,7 @@ describe("workflow-driven shell metadata", () => {
       "author",
       "workbench",
       "review",
+      "quality",
       "manuscripts",
       "deepdesk",
       "longform",

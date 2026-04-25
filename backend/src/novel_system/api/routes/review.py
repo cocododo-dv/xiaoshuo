@@ -8,7 +8,16 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
-from novel_system.db.models import AuthorPreferenceProfile, HumanReviewEvent, ReviewItem, VectorAliasRegistry, VerifyJob, VersionRegistry
+from novel_system.db.models import (
+    AuthorPreferenceProfile,
+    HumanReviewEvent,
+    LongformDiagnosticCard,
+    LongformStructureGuidance,
+    ReviewItem,
+    VectorAliasRegistry,
+    VerifyJob,
+    VersionRegistry,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.human_review_manager import HumanReviewManager
 from novel_system.services.human_review_support import (
@@ -159,6 +168,8 @@ def _approve_review_with_style_profile_gate(session: Session, review_id: str, pa
         return ReviewMaterializationService(session).materialize_review(review_id)
     if item.item_type == "author_preference_profile":
         return _approve_author_preference_profile(session, item)
+    if item.item_type == "longform_structure_guidance":
+        return _approve_longform_structure_guidance(session, item)
 
     risk = _high_risk_style_profile_approval(session, item)
     if risk is None:
@@ -219,6 +230,61 @@ def _approve_author_preference_profile(session: Session, item: ReviewItem) -> di
         "materialize_status": item.materialize_status,
         "approved_item_row_id": profile.profile_id,
         "approved_item_id": profile.profile_id,
+        "released": True,
+    }
+
+
+def _approve_longform_structure_guidance(session: Session, item: ReviewItem) -> dict[str, Any]:
+    payload = item.candidate_payload_json or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    content = payload.get("content") if isinstance(payload.get("content"), str) else item.candidate_text
+    if not isinstance(content, str) or not content.strip():
+        raise DomainError("LONGFORM_GUIDANCE_INVALID", "longform structure guidance requires content", status_code=400)
+    guidance_id = payload.get("guidance_id") if isinstance(payload.get("guidance_id"), str) else f"lfguidance_{item.review_id}"
+    scope_type = payload.get("scope_type") if payload.get("scope_type") in {"global", "chapter", "scene", "character"} else "global"
+    scope_ref_id = payload.get("scope_ref_id") if isinstance(payload.get("scope_ref_id"), str) and payload.get("scope_ref_id") else "global"
+    guidance = session.get(LongformStructureGuidance, guidance_id)
+    if guidance is None:
+        guidance = LongformStructureGuidance(
+            guidance_id=guidance_id,
+            card_id=payload.get("card_id") if isinstance(payload.get("card_id"), str) else None,
+            scope_type=scope_type,
+            scope_ref_id=scope_ref_id,
+            content=content.strip(),
+            source_review_id=item.review_id,
+            evidence_json=payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {},
+            recommendation_json=payload.get("recommendation") if isinstance(payload.get("recommendation"), dict) else {},
+        )
+        session.add(guidance)
+    else:
+        guidance.card_id = payload.get("card_id") if isinstance(payload.get("card_id"), str) else guidance.card_id
+        guidance.scope_type = scope_type
+        guidance.scope_ref_id = scope_ref_id
+        guidance.content = content.strip()
+        guidance.source_review_id = item.review_id
+        guidance.evidence_json = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        guidance.recommendation_json = payload.get("recommendation") if isinstance(payload.get("recommendation"), dict) else {}
+    guidance.status = "approved"
+    guidance.runtime_eligible = 1
+
+    card_id = payload.get("card_id")
+    card = session.get(LongformDiagnosticCard, card_id) if isinstance(card_id, str) else None
+    if card is not None:
+        card.status = "published_guidance"
+        card.review_id = item.review_id
+        card.guidance_id = guidance.guidance_id
+
+    item.status = "approved"
+    item.materialize_status = "succeeded"
+    item.approved_item_row_id = guidance.guidance_id
+    item.approved_item_id = guidance.guidance_id
+    session.flush()
+    return {
+        "review_id": item.review_id,
+        "materialize_status": item.materialize_status,
+        "approved_item_row_id": guidance.guidance_id,
+        "approved_item_id": guidance.guidance_id,
         "released": True,
     }
 

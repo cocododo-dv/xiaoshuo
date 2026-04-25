@@ -16,8 +16,11 @@ from novel_system.api.routes import (
     interop,
     knowledge,
     literary_eval,
+    literary_quality,
     longform_control,
+    longform_editor,
     reference_books,
+    reference_safety,
     review,
     scenes,
     style_profile,
@@ -96,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(author_drafts.router)
     app.include_router(chapter_manuscripts.router)
     app.include_router(longform_control.router)
+    app.include_router(longform_editor.router)
     app.include_router(scenes.router)
     app.include_router(writer_review.router)
     app.include_router(writer_deep_review.router)
@@ -103,9 +107,11 @@ def create_app() -> FastAPI:
     app.include_router(domain.router)
     app.include_router(knowledge.router)
     app.include_router(reference_books.router)
+    app.include_router(reference_safety.router)
     app.include_router(indexing.router)
     app.include_router(interop.router)
     app.include_router(system_config.router)
     app.include_router(literary_eval.router)
+    app.include_router(literary_quality.router)
     app.include_router(style_profile.router)
     return app

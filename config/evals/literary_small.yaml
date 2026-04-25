@@ -28,6 +28,11 @@ cases:
     dialogue_edge_cues: ["You kept it"]
     image_necessity_cues: ["paper did that", "cross into his hand"]
     ending_drive_cues: ["cross into his hand"]
+    model_voice_banned_terms: ["somehow meaningful"]
+    expository_dialogue_banned_terms: ["as you know"]
+    choice_pressure_cues: ["finally let it cross"]
+    summary_ending_banned_terms: ["everything changed forever"]
+    image_variety_cues: ["gate", "letter", "paper"]
     banned_terms: ["woke up", "explained everything"]
     min_chars: 120
     max_chars: 700
@@ -54,6 +59,11 @@ cases:
     dialogue_edge_cues: ["Chosen"]
     image_necessity_cues: ["torn page", "made a door"]
     ending_drive_cues: ["made a door"]
+    model_voice_banned_terms: ["somehow meaningful"]
+    expository_dialogue_banned_terms: ["as you know"]
+    choice_pressure_cues: ["Chosen"]
+    summary_ending_banned_terms: ["everything changed forever"]
+    image_variety_cues: ["archive", "page", "paper"]
     banned_terms: ["dream", "randomly"]
     min_chars: 120
     max_chars: 700
@@ -77,6 +87,11 @@ cases:
     dialogue_edge_cues: ["Late"]
     image_necessity_cues: ["ring shining", "one finger"]
     ending_drive_cues: ["hand rose out", "ring shining"]
+    model_voice_banned_terms: ["somehow meaningful"]
+    expository_dialogue_banned_terms: ["as you know"]
+    choice_pressure_cues: ["Urgency"]
+    summary_ending_banned_terms: ["everything changed forever"]
+    image_variety_cues: ["dock", "ring", "hand"]
     banned_terms: ["to be continued", "suddenly everything"]
     min_chars: 100
     max_chars: 650
@@ -99,6 +114,11 @@ cases:
     dialogue_edge_cues: ["那你为什么先关门"]
     image_necessity_cues: ["证据袋", "封口"]
     ending_drive_cues: ["第二段心跳声"]
+    model_voice_banned_terms: ["某种意义上"]
+    expository_dialogue_banned_terms: ["你知道"]
+    choice_pressure_cues: ["想公开"]
+    summary_ending_banned_terms: ["一切都变了"]
+    image_variety_cues: ["录音", "证据", "封口"]
     banned_terms: ["忽然意识到", "解释了一切"]
     min_chars: 90
     max_chars: 700
@@ -120,6 +140,11 @@ cases:
     dialogue_edge_cues: ["你怕我进去"]
     image_necessity_cues: ["钥匙放进他手里"]
     ending_drive_cues: ["母亲的咳嗽声"]
+    model_voice_banned_terms: ["某种意义上"]
+    expository_dialogue_banned_terms: ["你知道"]
+    choice_pressure_cues: ["没有松手"]
+    summary_ending_banned_terms: ["一切都变了"]
+    image_variety_cues: ["钥匙", "门缝"]
     banned_terms: ["她很难过", "气氛十分尴尬"]
     min_chars: 90
     max_chars: 700

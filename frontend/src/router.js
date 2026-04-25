@@ -89,6 +89,18 @@ const views = [
     cacheMode: "light",
   },
   {
+    id: "quality",
+    label: "5 文学质检",
+    stepLabel: "文学质检",
+    legacyLabel: "文学质量引擎",
+    description: "巡检作者稿优先的章节/场景文本，并运行文学基准评测；只提示风险，不阻断发布。",
+    group: "运行与审核",
+    groupId: "runtime",
+    icon: "ClipboardCheck",
+    nextViews: ["deepdesk", "review", "workbench"],
+    cacheMode: "light",
+  },
+  {
     id: "manuscripts",
     label: "5 查看成稿",
     stepLabel: "查看成稿",

@@ -14,6 +14,7 @@ const VIEW_COMPONENTS = {
   trash: defineAsyncComponent(() => import("./views/AuthorTrashView.vue")),
   workbench: defineAsyncComponent(() => import("./views/SceneWorkbenchView.vue")),
   review: defineAsyncComponent(() => import("./views/ReviewInboxView.vue")),
+  quality: defineAsyncComponent(() => import("./views/LiteraryQualityView.vue")),
   index: defineAsyncComponent(() => import("./views/IndexConsoleView.vue")),
   knowledge: defineAsyncComponent(() => import("./views/KnowledgeConsoleView.vue")),
   reference: defineAsyncComponent(() => import("./views/ReferenceLearningView.vue")),
@@ -34,6 +35,7 @@ const activeViewComponent = computed(() => VIEW_COMPONENTS[activeView.value] || 
 // activeView === 'author'
 // activeView === 'manuscripts'
 // activeView === 'deepdesk'
+// activeView === 'quality'
 // activeView === 'longform'
 // activeView === 'trash'
 // activeView === 'interop'
