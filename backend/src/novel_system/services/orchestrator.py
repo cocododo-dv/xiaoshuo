@@ -9,6 +9,7 @@ from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_task_runner import LLMNodeRunner
+from novel_system.services.near_final import NearFinalAcceptanceService, NearFinalPlanningService
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import SceneGenerationService, versioned_scene_artifact_id
@@ -23,6 +24,8 @@ class Orchestrator:
         scene_generation_service: SceneGenerationService | None = None,
         hard_qc_engine: HardQcEngine | None = None,
         soft_qc_engine: SoftQcEngine | None = None,
+        planning_service: NearFinalPlanningService | None = None,
+        near_final_service: NearFinalAcceptanceService | None = None,
     ) -> None:
         self.session = session
         self.bundle_builder = BundleBuilder(session)
@@ -33,13 +36,17 @@ class Orchestrator:
         self.scene_generation_service = scene_generation_service or SceneGenerationService(session, llm_runner=llm_runner)
         self.hard_qc_engine = hard_qc_engine or HardQcEngine(session, llm_runner=llm_runner)
         self.soft_qc_engine = soft_qc_engine or SoftQcEngine(session, llm_runner=llm_runner)
+        self.scene_blueprint_service = SceneBlueprintService(session, llm_runner=llm_runner)
+        self.planning_service = planning_service or NearFinalPlanningService(session, llm_runner=llm_runner)
+        self.near_final_service = near_final_service or NearFinalAcceptanceService(session, llm_runner=llm_runner)
 
     def run_scene(self, scene_id: str, from_step: str = "bundle", resume: bool = False) -> dict:
         self.version_manager.recover_stuck_jobs()
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         self._prepare_state_for_run(state)
-        SceneBlueprintService(self.session).ensure_for_scene(scene_id)
+        self.scene_blueprint_service.ensure_for_scene(scene_id)
+        planning = self.planning_service.ensure_scene_planning(scene_id)
         bundle = self.bundle_builder.build(scene_id, "P2")
 
         neutral_generation = self.scene_generation_service.generate_neutral_draft(scene_id, bundle)
@@ -119,6 +126,54 @@ class Orchestrator:
                     "stop_reason": hard_qc.stop_reason,
                 },
                 "soft_qc": self._soft_qc_result_payload(soft_qc),
+                "planning": planning,
+            }
+
+        rewrite_count = 0
+        near_final = self.near_final_service.evaluate_scene(
+            scene_id,
+            bundle=bundle,
+            source_draft_row_id=final_generation.row_id,
+            source_content=final_generation.content,
+        )
+        if not near_final["pass_flag"] and near_final.get("should_rewrite"):
+            rewrite_count = 1
+            final_generation = self.scene_generation_service.generate_near_final_rewrite(
+                scene_id,
+                bundle,
+                source_draft_row_id=final_generation.row_id,
+                source_content=final_generation.content,
+                revision_brief=self._near_final_rewrite_brief(near_final),
+                source_evaluation_id=str(near_final.get("evaluation_id") or ""),
+            )
+            near_final = self.near_final_service.evaluate_scene(
+                scene_id,
+                bundle=bundle,
+                source_draft_row_id=final_generation.row_id,
+                source_content=final_generation.content,
+            )
+        near_final_payload = self._near_final_result_payload(near_final, rewrite_count=rewrite_count)
+        if not near_final["pass_flag"]:
+            state.scene_status = "human_review_required" if near_final.get("requires_human_review") else "near_final_revision_required"
+            self.session.flush()
+            return {
+                "scene_status": state.scene_status,
+                "current_bundle_id": bundle["bundle_id"],
+                "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                "current_final_scene_row_id": state.current_final_scene_row_id,
+                "current_qc_report_id": state.current_qc_report_id,
+                "current_human_review_event_id": state.current_human_review_event_id,
+                "hard_qc": {
+                    "branch": hard_qc.branch,
+                    "qc_report_id": hard_qc.qc_report_id,
+                    "human_review_event_id": hard_qc.human_review_event_id,
+                    "resolution_code": hard_qc.resolution_code,
+                    "next_action": hard_qc.next_action,
+                    "stop_reason": hard_qc.stop_reason,
+                },
+                "soft_qc": self._soft_qc_result_payload(soft_qc),
+                "planning": planning,
+                "near_final": near_final_payload,
             }
 
         final_row_id = versioned_scene_artifact_id("final_scene", scene_id, bundle)
@@ -129,7 +184,7 @@ class Orchestrator:
                 scene_id=scene_id,
                 chapter_id=scene.chapter_id,
                 content=final_generation.content,
-                status="approved",
+                status="near_final_ready",
                 source_bundle_id=bundle["bundle_id"],
                 source_bundle_hash=bundle["bundle_snapshot_hash"],
                 generation_llm_call_id=final_generation.llm_call_id,
@@ -160,8 +215,10 @@ class Orchestrator:
             carry_notes_json=carry_notes_json,
         )
 
+        chapter_near_final = None
         if scene.is_chapter_last == 1:
             self.aggregator.run_final_aggregate(scene.chapter_id)
+            chapter_near_final = self.near_final_service.evaluate_chapter(scene.chapter_id)
 
         return {
             "scene_status": archive_result["scene_status"],
@@ -179,6 +236,9 @@ class Orchestrator:
                 "stop_reason": hard_qc.stop_reason,
             },
             "soft_qc": self._soft_qc_result_payload(soft_qc),
+            "planning": planning,
+            "near_final": near_final_payload,
+            "chapter_near_final": chapter_near_final,
         }
 
     @staticmethod
@@ -236,6 +296,38 @@ class Orchestrator:
                     }
                 )
         return carry_notes
+
+    @staticmethod
+    def _near_final_rewrite_brief(near_final: dict[str, Any]) -> list[str]:
+        rewrite_brief: list[str] = []
+        for entry in near_final.get("revision_brief") or []:
+            if isinstance(entry, dict):
+                action = entry.get("action") or entry.get("instruction") or entry.get("recommendation")
+                if isinstance(action, str) and action.strip():
+                    rewrite_brief.append(action.strip())
+            elif isinstance(entry, str) and entry.strip():
+                rewrite_brief.append(entry.strip())
+        if not rewrite_brief:
+            rewrite_brief.append(
+                "Rewrite the full scene so forced choice, paid cost, relationship turn, and ending action are visible."
+            )
+        return rewrite_brief
+
+    @staticmethod
+    def _near_final_result_payload(near_final: dict[str, Any], *, rewrite_count: int) -> dict[str, Any]:
+        return {
+            "near_final_status": near_final.get("near_final_status"),
+            "pass_flag": bool(near_final.get("pass_flag")),
+            "overall_score": near_final.get("overall_score"),
+            "failure_class": near_final.get("failure_class"),
+            "requires_human_review": bool(near_final.get("requires_human_review")),
+            "evaluation_id": near_final.get("evaluation_id"),
+            "revision_candidate_id": near_final.get("revision_candidate_id"),
+            "should_rewrite": bool(near_final.get("should_rewrite")),
+            "rewrite_count": rewrite_count,
+            "findings": near_final.get("findings") or [],
+            "revision_brief": near_final.get("revision_brief") or [],
+        }
 
     @staticmethod
     def _soft_qc_result_payload(soft_qc) -> dict[str, str | None]:

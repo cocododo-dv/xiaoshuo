@@ -564,6 +564,55 @@ describe("scene workbench generation view", () => {
     }
   });
 
+  it("renders near-final status and failure reason in generation evidence", async () => {
+    const sceneId = "CH006_SC01";
+    const mounted = await mountWorkbenchView(
+      sceneId,
+      createSceneFetchMock({
+        sceneId,
+        initialPayload: createWorkbenchPayload({
+          sceneId,
+          chapterId: "CH006",
+          sceneStatus: "near_final_revision_required",
+          generationSummary: {
+            step: "literary_rewrite",
+            raw_step: "scene_literary_rewrite",
+            provider: "openai",
+            model: "gpt-5",
+            prompt_hash: "prompt_hash_near_final",
+            prompt_tokens: 180,
+            completion_tokens: 420,
+            total_tokens: 600,
+            latency_ms: 901,
+            finish_reason: "stop",
+            error_code: null,
+            near_final_summary: {
+              near_final_status: "revision_required",
+              pipeline_stage: "Acceptance Review",
+              failure_reason: "character",
+              failure_class: "character_flatness",
+              overall_score: 0.58,
+              requires_human_review: false,
+            },
+          },
+        }),
+      }),
+    );
+
+    try {
+      const statusCard = mounted.container.querySelector('[data-testid="scene-near-final-status-card"]');
+
+      expect(statusCard).not.toBeNull();
+      expect(statusCard.textContent).toContain("准定稿验收");
+      expect(statusCard.textContent).toContain("需重写");
+      expect(statusCard.textContent).toContain("Acceptance Review");
+      expect(statusCard.textContent).toContain("58%");
+      expect(statusCard.textContent).toContain("人物");
+    } finally {
+      mounted.unmount();
+    }
+  });
+
   it("labels clean, waived, and deterministic blocked archive states", async () => {
     const cleanSceneId = "CH003_SC01";
     const cleanMounted = await mountWorkbenchView(

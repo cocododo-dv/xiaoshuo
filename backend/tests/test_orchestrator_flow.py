@@ -138,6 +138,7 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
         "error_code": None,
         "created_at": workbench_data["generation_summary"]["created_at"],
     }
+    assert workbench_data["near_final_summary"]["near_final_status"] == "near_final_ready"
     assert workbench_data["hard_qc_summary"] == {
         "qc_report_id": workbench_data["hard_qc_summary"]["qc_report_id"],
         "qc_type": "hard_qc",

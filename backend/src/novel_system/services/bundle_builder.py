@@ -10,6 +10,7 @@ from novel_system.contracts.bundle import BundleSnapshotHashProjection
 from novel_system.db.models import (
     AuthorPreferenceProfile,
     ChapterGoal,
+    GenerationPlanningArtifact,
     LongformStructureGuidance,
     SceneBlueprint,
     SceneBundle,
@@ -124,6 +125,46 @@ class BundleBuilder:
             )
             inline_digests["scene_blueprint"] = json.dumps(
                 scene_blueprint.blueprint_json or {},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
+        character_pressure = self._latest_planning_artifact(
+            artifact_type="character_pressure_blueprint",
+            object_type="scene",
+            object_id=scene.scene_id,
+        )
+        if character_pressure is not None:
+            source_version_refs["character_pressure_artifact_row_id"] = character_pressure.row_id
+            ordered_injections.append(
+                {
+                    "slot": "character_pressure",
+                    "ref_id": character_pressure.row_id,
+                    "digest_key": "character_pressure",
+                }
+            )
+            inline_digests["character_pressure"] = json.dumps(
+                character_pressure.payload_json or {},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
+        chapter_architecture = self._latest_planning_artifact(
+            artifact_type="chapter_story_architecture",
+            object_type="chapter",
+            object_id=scene.chapter_id,
+        )
+        if chapter_architecture is not None:
+            source_version_refs["chapter_story_architecture_artifact_row_id"] = chapter_architecture.row_id
+            ordered_injections.append(
+                {
+                    "slot": "chapter_story_architecture",
+                    "ref_id": chapter_architecture.row_id,
+                    "digest_key": "chapter_story_architecture",
+                }
+            )
+            inline_digests["chapter_story_architecture"] = json.dumps(
+                chapter_architecture.payload_json or {},
                 ensure_ascii=False,
                 sort_keys=True,
             )
@@ -380,6 +421,24 @@ class BundleBuilder:
         self.session.flush()
 
         return {"bundle_id": bundle_id, "bundle_snapshot_hash": bundle_hash, "snapshot": snapshot}
+
+    def _latest_planning_artifact(
+        self,
+        *,
+        artifact_type: str,
+        object_type: str,
+        object_id: str,
+    ) -> GenerationPlanningArtifact | None:
+        return self.session.execute(
+            select(GenerationPlanningArtifact)
+            .where(
+                GenerationPlanningArtifact.artifact_type == artifact_type,
+                GenerationPlanningArtifact.object_type == object_type,
+                GenerationPlanningArtifact.object_id == object_id,
+                GenerationPlanningArtifact.status == "active",
+            )
+            .order_by(GenerationPlanningArtifact.created_at.desc(), GenerationPlanningArtifact.row_id.desc())
+        ).scalars().first()
 
     def _approved_runtime_author_preference_profile(self) -> AuthorPreferenceProfile | None:
         return self.session.execute(

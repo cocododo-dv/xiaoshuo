@@ -189,6 +189,33 @@ class SceneBlueprint(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class GenerationPlanningArtifact(Base):
+    __tablename__ = "generation_planning_artifacts"
+    __table_args__ = (
+        CheckConstraint(
+            "artifact_type IN ('character_pressure_blueprint','chapter_story_architecture')",
+            name="ck_generation_planning_artifacts_type",
+        ),
+        CheckConstraint("object_type IN ('scene','chapter')", name="ck_generation_planning_artifacts_object_type"),
+        CheckConstraint("status IN ('active','superseded')", name="ck_generation_planning_artifacts_status"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    artifact_type: Mapped[str] = mapped_column(String)
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_bundle_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="active")
+    created_by: Mapped[str] = mapped_column(String, default="near_final_planning")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class LlmCall(Base):
     __tablename__ = "llm_calls"
 

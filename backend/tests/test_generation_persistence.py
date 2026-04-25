@@ -197,6 +197,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
         config_columns = _pragma_columns_by_name(connection, "system_config_snapshots")
         secret_columns = _pragma_columns_by_name(connection, "system_secrets")
         author_structure_columns = _pragma_columns_by_name(connection, "author_structure_candidates")
+        planning_columns = _pragma_columns_by_name(connection, "generation_planning_artifacts")
         historical_draft = connection.execute(
             """
             SELECT row_id, scene_id, chapter_id, stage, generation_llm_call_id
@@ -215,7 +216,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-    assert version_row == ("20260425_0017",)
+    assert version_row == ("20260425_0018",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -225,6 +226,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert "author_drafts" in table_names
     assert "author_draft_events" in table_names
     assert "author_structure_candidates" in table_names
+    assert "generation_planning_artifacts" in table_names
     assert "longform_diagnostic_cards" in table_names
     assert "longform_structure_guidance" in table_names
     assert "system_config_snapshots" in table_names
@@ -245,6 +247,14 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
         "status",
         "author_decision",
     } <= author_structure_columns.keys()
+    assert {
+        "row_id",
+        "artifact_type",
+        "object_type",
+        "object_id",
+        "payload_json",
+        "status",
+    } <= planning_columns.keys()
     assert job_columns["status"][3] == 1
     assert job_columns["job_type"][3] == 1
     assert historical_draft == ("draft_hist_CH001_SC01", "CH001_SC01", "CH001", "neutral_draft", None)
@@ -312,6 +322,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
         config_columns = _pragma_columns_by_name(connection, "system_config_snapshots")
         secret_columns = _pragma_columns_by_name(connection, "system_secrets")
         author_structure_columns = _pragma_columns_by_name(connection, "author_structure_candidates")
+        planning_columns = _pragma_columns_by_name(connection, "generation_planning_artifacts")
         scene_draft = connection.execute(
             """
             SELECT row_id, generation_llm_call_id
@@ -330,7 +341,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260425_0017",)
+    assert version_row == ("20260425_0018",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -340,6 +351,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     assert "author_drafts" in table_names
     assert "author_draft_events" in table_names
     assert "author_structure_candidates" in table_names
+    assert "generation_planning_artifacts" in table_names
     assert "longform_diagnostic_cards" in table_names
     assert "longform_structure_guidance" in table_names
     assert "system_config_snapshots" in table_names
@@ -355,6 +367,14 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
         "status",
         "author_decision",
     } <= author_structure_columns.keys()
+    assert {
+        "row_id",
+        "artifact_type",
+        "object_type",
+        "object_id",
+        "payload_json",
+        "status",
+    } <= planning_columns.keys()
     assert llm_call == ("llm_call_existing", "seed-provider", "seed-model", "style_draft", 42)
     assert qc_report == ("qc_report_existing", "draft_existing", "bundle_existing", "pass")
     assert chapter_job == ("chapter_job_existing", "CH001", "queued", "chapter_qc")

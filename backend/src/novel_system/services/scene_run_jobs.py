@@ -16,12 +16,15 @@ from novel_system.services.orchestrator import Orchestrator
 
 JOB_TYPE_SCENE_FULL = "scene_run_full"
 SCENE_RUN_STAGE_ORDER = [
+    "planning_running",
     "bundle_built",
     "neutral_running",
     "hard_qc_running",
-    "rewrite_running",
     "style_running",
     "soft_qc_running",
+    "rewrite_running",
+    "acceptance_review_running",
+    "near_final",
     "archived",
 ]
 
@@ -175,6 +178,8 @@ def _run_scene_job_worker(job_id: str) -> None:
             service.mark_finished(job, status="completed", current_step="archived", result=result)
         elif scene_status == "human_review_required":
             service.mark_finished(job, status="blocked", current_step="blocked", result=result)
+        elif scene_status == "near_final_revision_required":
+            service.mark_finished(job, status="blocked", current_step="acceptance_review_running", result=result if isinstance(result, dict) else {})
         else:
             service.mark_finished(job, status="blocked", current_step="rewrite_running", result=result if isinstance(result, dict) else {})
         session.commit()

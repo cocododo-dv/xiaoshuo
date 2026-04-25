@@ -52,7 +52,16 @@ const missingDependencies = computed(() => runPreflight.value.missing_dependenci
 const createActions = computed(() => runPreflight.value.create_actions || []);
 const constraintConflicts = computed(() => runPreflight.value.constraint_conflicts || []);
 const runJob = computed(() => workbench.runJob || null);
-const generationSummary = computed(() => workbench.data?.generation_summary || null);
+const generationSummary = computed(() => {
+  const summary = workbench.data?.generation_summary || null;
+  if (!summary || !workbench.data?.near_final_summary) {
+    return summary;
+  }
+  return {
+    ...summary,
+    near_final_summary: workbench.data.near_final_summary,
+  };
+});
 const hardQcSummary = computed(() => workbench.data?.hard_qc_summary || null);
 const softQcSummary = computed(() => workbench.data?.soft_qc_summary || null);
 const rewriteCounters = computed(() => workbench.data?.rewrite_counters || null);

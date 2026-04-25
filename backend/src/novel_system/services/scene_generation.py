@@ -100,10 +100,11 @@ class OfflineStyleClient:
             notes_key = "patch_notes"
         else:
             scene_text = (
-                f"Offline style draft for {scene_id}. The prose keeps the approved facts while shifting "
-                "into a more vivid, stylized cadence."
+                f"Offline style draft for {scene_id}. The protagonist must choose between immediate disclosure "
+                "and protecting someone at risk, pays a concrete cost by handing over leverage, and turns toward "
+                "the next visible danger."
             )
-            notes_key = "style_notes"
+            notes_key = "rewrite_notes" if request.node_id == "scene_literary_rewrite" else "style_notes"
         structured_output = {
             "scene_text": scene_text,
             notes_key: ["offline deterministic fallback"],
@@ -291,6 +292,43 @@ class SceneGenerationService:
         state.soft_patch_count += 1
         return result
 
+    def generate_near_final_rewrite(
+        self,
+        scene_id: str,
+        bundle: dict[str, Any],
+        *,
+        source_draft_row_id: str,
+        source_content: str,
+        revision_brief: list[str],
+        source_evaluation_id: str,
+    ) -> StyleGenerationResult:
+        scene = self.session.get(SceneCard, scene_id)
+        state = self.session.get(SceneRunState, scene_id)
+        return self._run_style_generation(
+            scene=scene,
+            state=state,
+            bundle=bundle,
+            row_id=versioned_scene_artifact_id("draft_near_final_rewrite", scene_id, bundle),
+            stage="near_final_rewrite",
+            llm_step="scene_literary_rewrite",
+            neutral_content=source_content,
+            source_label="Near-Final Draft Under Review",
+            source_row_id=source_draft_row_id,
+            extra_instruction=(
+                "Rewrite the full scene under the same facts. Treat the brief below as a literary rewrite brief, "
+                "not a local patch request."
+            ),
+            patch_brief=revision_brief,
+            source_draft_row_id=source_draft_row_id,
+            source_draft_content=source_content,
+            client_kind="style",
+            attempt_details_extra={
+                "source_evaluation_id": source_evaluation_id,
+                "source_style_draft_row_id": source_draft_row_id,
+                "rewrite_brief": revision_brief,
+            },
+        )
+
     def _run_style_generation(
         self,
         *,
@@ -315,7 +353,8 @@ class SceneGenerationService:
         prompt: dict[str, Any] | None = None
 
         try:
-            prompt = self._prompt_builder().build(bundle["snapshot"], "style_draft")
+            template_name = "scene_literary_rewrite" if llm_step == "scene_literary_rewrite" else "style_draft"
+            prompt = self._prompt_builder().build(bundle["snapshot"], template_name)
         except Exception as exc:
             self._persist_generation_failure(
                 scene=scene,
@@ -340,7 +379,7 @@ class SceneGenerationService:
             extra_instruction=extra_instruction,
             patch_brief=patch_brief,
         )
-        node_id = "style_patch" if patch_brief else "style_draft"
+        node_id = "style_patch" if llm_step == "soft_patch" else llm_step
         try:
             node_result = self._llm_runner.run(
                 scene_id=scene.scene_id,

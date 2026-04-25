@@ -49,12 +49,15 @@ def test_scene_run_job_api_creates_pollable_nonblocking_job(client) -> None:
     assert job["current_step"] == "queued"
     assert job["elapsed_ms"] >= 0
     assert job["stage_order"] == [
+        "planning_running",
         "bundle_built",
         "neutral_running",
         "hard_qc_running",
-        "rewrite_running",
         "style_running",
         "soft_qc_running",
+        "rewrite_running",
+        "acceptance_review_running",
+        "near_final",
         "archived",
     ]
 

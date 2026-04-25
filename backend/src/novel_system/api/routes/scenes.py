@@ -15,17 +15,20 @@ from novel_system.db.models import (
     HumanReviewEvent,
     LlmCall,
     QcReport,
+    RevisionCandidate,
     SceneBundle,
     SceneCard,
     SceneDraft,
     SceneMemory,
     SceneRunState,
+    WriterEvaluation,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.near_final import NEAR_FINAL_REWRITE_TYPE, NEAR_FINAL_RUBRIC_ID
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
@@ -319,6 +322,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
             "literary_blueprint": blueprint_service.latest_payload(scene_id),
             "scene_memory": {"row_id": memory.row_id, "content": memory.content} if memory else None,
             "generation_summary": _serialize_generation_summary(session, scene_id, state),
+            "near_final_summary": _serialize_near_final_summary(session, scene_id),
             "hard_qc_summary": _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "hard_qc")),
             "soft_qc_summary": _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "soft_qc")),
             "rewrite_counters": {
@@ -385,10 +389,87 @@ def _resolve_generation_llm_call(session: Session, scene_id: str, state: SceneRu
 
 def _display_generation_step(raw_step: str | None) -> str | None:
     return {
+        "scene_literary_rewrite": "literary_rewrite",
         "soft_patch": "style_patch",
         "style_draft": "style_draft",
         "neutral_draft": "neutral_draft",
     }.get(raw_step, raw_step)
+
+
+def _serialize_near_final_summary(session: Session, scene_id: str) -> dict | None:
+    latest_attempt = session.execute(
+        select(AttemptTracker)
+        .where(AttemptTracker.scene_id == scene_id, AttemptTracker.step == "near_final_acceptance_review")
+        .order_by(AttemptTracker.attempt_id.desc())
+    ).scalars().first()
+    latest_evaluation = session.execute(
+        select(WriterEvaluation)
+        .where(
+            WriterEvaluation.object_type == "scene",
+            WriterEvaluation.object_id == scene_id,
+            WriterEvaluation.rubric_id == NEAR_FINAL_RUBRIC_ID,
+        )
+        .order_by(WriterEvaluation.created_at.desc(), WriterEvaluation.evaluation_id.desc())
+    ).scalars().first()
+    if latest_attempt is None and latest_evaluation is None:
+        return None
+    details = dict(latest_attempt.details_json or {}) if latest_attempt is not None else {}
+    revision_candidate = None
+    candidate_id = details.get("revision_candidate_id")
+    if isinstance(candidate_id, str) and candidate_id.strip():
+        revision_candidate = session.get(RevisionCandidate, candidate_id)
+    if revision_candidate is None:
+        revision_candidate = session.execute(
+            select(RevisionCandidate)
+            .where(
+                RevisionCandidate.object_type == "scene",
+                RevisionCandidate.object_id == scene_id,
+                RevisionCandidate.revision_type == NEAR_FINAL_REWRITE_TYPE,
+            )
+            .order_by(RevisionCandidate.created_at.desc(), RevisionCandidate.revision_id.desc())
+        ).scalars().first()
+    near_final_status = latest_attempt.status if latest_attempt is not None else None
+    if near_final_status is None and latest_evaluation is not None:
+        near_final_status = "human_review_required" if latest_evaluation.requires_human_review else "revision_required"
+    failure_class = details.get("failure_class")
+    return {
+        "rubric_id": NEAR_FINAL_RUBRIC_ID,
+        "near_final_status": near_final_status,
+        "pipeline_stage": _near_final_pipeline_stage(near_final_status),
+        "failure_class": failure_class,
+        "failure_reason": _near_final_failure_label(failure_class),
+        "evaluation_id": latest_evaluation.evaluation_id if latest_evaluation is not None else details.get("evaluation_id"),
+        "revision_candidate_id": revision_candidate.revision_id if revision_candidate is not None else None,
+        "revision_candidate_status": revision_candidate.status if revision_candidate is not None else None,
+        "overall_score": latest_evaluation.overall_score if latest_evaluation is not None else None,
+        "requires_human_review": bool(latest_evaluation.requires_human_review) if latest_evaluation is not None else False,
+        "findings": latest_evaluation.findings_json if latest_evaluation is not None else [],
+        "revision_brief": latest_evaluation.revision_brief_json if latest_evaluation is not None else [],
+        "stage_order": ["Planning", "Drafting", "Rewriting", "Acceptance Review", "Near-final"],
+        "created_at": latest_evaluation.created_at if latest_evaluation is not None else latest_attempt.created_at,
+    }
+
+
+def _near_final_pipeline_stage(status: str | None) -> str:
+    return {
+        "near_final_ready": "Near-final",
+        "revision_required": "Acceptance Review",
+        "human_review_required": "Acceptance Review",
+    }.get(status or "", "Planning")
+
+
+def _near_final_failure_label(failure_class: Any) -> str | None:
+    if not isinstance(failure_class, str) or not failure_class:
+        return None
+    return {
+        "fact_blocker": "fact",
+        "scene_structure_failure": "structure",
+        "character_flatness": "character",
+        "prose_model_voice": "prose",
+        "ending_weakness": "prose",
+        "chapter_payoff_gap": "chapter",
+        "reference_safety": "safety",
+    }.get(failure_class, failure_class)
 
 
 def _latest_qc_report(session: Session, scene_id: str, state: SceneRunState, qc_type: str) -> QcReport | None:

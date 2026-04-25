@@ -19,6 +19,25 @@ function formatPercent(value) {
   }
   return `${Math.round(value * 100)}%`;
 }
+
+function nearFinalLabel(status) {
+  return {
+    near_final_ready: "准定稿",
+    revision_required: "需重写",
+    human_review_required: "人工复核",
+  }[status] || "未验收";
+}
+
+function formatFailureReason(value) {
+  return {
+    fact: "事实",
+    structure: "结构",
+    character: "人物",
+    prose: "语言",
+    chapter: "章节",
+    safety: "安全",
+  }[value] || value || "-";
+}
 </script>
 
 <template>
@@ -46,6 +65,19 @@ function formatPercent(value) {
         </div>
         <p v-if="summary.style_score_summary.style_deviations?.length" class="muted">
           {{ summary.style_score_summary.style_deviations.map((item) => item.dimension).join(", ") }}
+        </p>
+      </div>
+      <div v-if="summary.near_final_summary" class="style-score-block" data-testid="scene-near-final-status-card">
+        <div class="receipt-head">
+          <strong>准定稿验收</strong>
+          <span class="badge">{{ nearFinalLabel(summary.near_final_summary.near_final_status) }}</span>
+        </div>
+        <p><strong>阶段</strong><br />{{ formatValue(summary.near_final_summary.pipeline_stage) }}</p>
+        <p v-if="summary.near_final_summary.overall_score !== null && summary.near_final_summary.overall_score !== undefined">
+          <strong>验收分</strong><br />{{ formatPercent(summary.near_final_summary.overall_score) }}
+        </p>
+        <p v-if="summary.near_final_summary.failure_reason" class="muted">
+          未通过原因：{{ formatFailureReason(summary.near_final_summary.failure_reason) }}
         </p>
       </div>
       <p v-if="summary.error_code"><strong>Error Code</strong><br />{{ summary.error_code }}</p>

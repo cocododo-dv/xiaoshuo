@@ -10,6 +10,8 @@ templates:
       Keep the prose neutral in style while honoring all explicit constraints.
       Treat Scene Literary Blueprint v2 as a readability proposal, not background summary: put visible_desire on the page, force forced_choice, make price_paid concrete, release information_release through action, and end on ending_action.
       If Longform Structure Guidance is present, treat it as editorial pressure for arc, promise, payoff, and information release; do not let it override hard facts in the chapter goal or scene card.
+      If Character Pressure Blueprint is present, make the character's hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask visible through action or omission.
+      If Chapter Story Architecture is present, obey its promise, escalation path, reveal plan, payoff target, character shift, and ending question.
       Avoid model-voice shortcuts: no explanatory dialogue dump, no no-choice scene, no summary ending, and keep image anchors varied rather than repetitive.
       Write prose in the same language as the chapter goal and scene card.
       If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; do not translate Chinese settings, beats, or required text into English.
@@ -126,6 +128,8 @@ templates:
       Preserve the Scene Literary Blueprint v2 pressure: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, and next_scene_pull must remain legible in prose.
       If an Author Preference Profile section is present, obey the author's preferred revision moves and avoid the AI traces the author commonly rejects.
       If Longform Structure Guidance is present, use it as structural pressure for arc, payoff, and release timing; do not let it override hard continuity or scene-card facts.
+      If Character Pressure Blueprint is present, preserve its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as scene pressure rather than explanation.
+      If Chapter Story Architecture is present, make the rewritten scene serve the chapter promise, reveal plan, payoff target, character shift, and ending question.
       Preserve the source draft language; do not translate the scene while styling it.
       If the draft or scene card is Chinese, scene_text must remain Chinese prose.
       Follow the Style Feature Contract dimension by dimension:
@@ -454,6 +458,206 @@ templates:
           type: string
         anti_summary_rule:
           type: string
+
+  chapter_story_architecture:
+    version: "2026-04-25.v1"
+    input_token_budget: 2400
+    system_prompt: |
+      You are a senior long-form fiction architect.
+      Before scene drafting, define the chapter-level promise, escalation, reveal/payoff plan, character shift, and ending question.
+      Stay concrete and preserve the supplied chapter and scene facts.
+    task_prompt: |
+      Build a compact chapter story architecture from the supplied chapter goal, chapter writer brief, scene cards, and longform guidance.
+      Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
+      The architecture must help later scene prompts avoid isolated good scenes that fail chapter payoff.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - chapter_promise
+        - escalation_path
+        - reveal_plan
+        - payoff_target
+        - character_shift
+        - ending_question
+      properties:
+        chapter_promise:
+          type: string
+        escalation_path:
+          type: array
+          items:
+            type: string
+        reveal_plan:
+          type: array
+          items:
+            type: string
+        payoff_target:
+          type: string
+        character_shift:
+          type: string
+        ending_question:
+          type: string
+
+  character_pressure_blueprint:
+    version: "2026-04-25.v1"
+    input_token_budget: 2400
+    system_prompt: |
+      You are a severe character dramaturg.
+      Before prose generation, identify the character pressure that must become visible on the page without explanatory summary.
+    task_prompt: |
+      Build one character pressure blueprint for the scene's point-of-view or primary decision-maker.
+      Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
+      Every field must be usable by drafting and near-final review: surface_goal, hidden_fear, wrong_belief, shame_point, avoidance_strategy, relationship_debt, and current_mask.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - surface_goal
+        - hidden_fear
+        - wrong_belief
+        - shame_point
+        - avoidance_strategy
+        - relationship_debt
+        - current_mask
+      properties:
+        surface_goal:
+          type: string
+        hidden_fear:
+          type: string
+        wrong_belief:
+          type: string
+        shame_point:
+          type: string
+        avoidance_strategy:
+          type: string
+        relationship_debt:
+          type: string
+        current_mask:
+          type: string
+
+  scene_literary_rewrite:
+    version: "2026-04-25.v1"
+    input_token_budget: 3000
+    system_prompt: |
+      You are rewriting a fiction scene toward near-final quality for a working author.
+      Preserve all hard facts, names, continuity constraints, and source language.
+    task_prompt: |
+      Rewrite the supplied scene as a complete revised scene, not advice.
+      Prioritize character pressure, dialogue edge, information rhythm, prose freshness, image necessity, and ending drive.
+      If Character Pressure Blueprint is present, make hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask visible through action, silence, and subtext.
+      If Chapter Story Architecture is present, serve the chapter promise, reveal plan, payoff target, character shift, and ending question.
+      Avoid model-voice shortcuts, explanatory dialogue dumps, no-choice scenes, summary endings, and repeated generic gestures.
+      Return Chinese prose when the source scene is Chinese.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - scene_text
+      properties:
+        scene_text:
+          type: string
+        rewrite_notes:
+          type: array
+          items:
+            type: string
+
+  near_final_acceptance_review:
+    version: "2026-04-25.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are a near-final acceptance editor for long-form Chinese fiction.
+      Decide whether a scene is close enough for author line-editing; do not mark weak drafts as ready.
+    task_prompt: |
+      Review the supplied scene for near_final_acceptance_v1.
+      Write Chinese string fields while preserving English schema keys.
+      A ready scene must have story necessity, character pressure, dialogue edge, information release, prose freshness, ending drive, continuity, and reference safety.
+      Use failure_class only from: fact_blocker, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, chapter_payoff_gap, reference_safety.
+      If the scene is ready, near_final_status must be near_final_ready and pass_flag true. Otherwise near_final_status must be revision_required and pass_flag false.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - near_final_status
+        - pass_flag
+        - overall_score
+        - scores
+        - findings
+        - revision_brief
+        - failure_class
+        - requires_human_review
+      properties:
+        near_final_status:
+          type: string
+          enum:
+            - near_final_ready
+            - revision_required
+            - human_review_required
+        pass_flag:
+          type: boolean
+        overall_score:
+          type: number
+        scores:
+          type: object
+        findings:
+          type: array
+          items:
+            type: object
+        revision_brief:
+          type: array
+          items:
+            type: object
+        failure_class:
+          type: string
+        requires_human_review:
+          type: boolean
+
+  chapter_near_final_review:
+    version: "2026-04-25.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are a near-final acceptance editor for chapter-level long-form fiction.
+      A chapter can fail even when individual scenes are readable if promise, escalation, payoff, or ending drive are weak.
+    task_prompt: |
+      Review the supplied chapter aggregate for chapter-level near-final readiness.
+      Write Chinese string fields while preserving English schema keys.
+      Use failure_class only from: chapter_payoff_gap, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, fact_blocker, reference_safety.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - near_final_status
+        - pass_flag
+        - overall_score
+        - scores
+        - findings
+        - revision_brief
+        - failure_class
+        - requires_human_review
+      properties:
+        near_final_status:
+          type: string
+          enum:
+            - near_final_ready
+            - revision_required
+            - human_review_required
+        pass_flag:
+          type: boolean
+        overall_score:
+          type: number
+        scores:
+          type: object
+        findings:
+          type: array
+          items:
+            type: object
+        revision_brief:
+          type: array
+          items:
+            type: object
+        failure_class:
+          type: string
+        requires_human_review:
+          type: boolean
 
   writer_scene_diagnosis:
     version: "2026-04-24.v1"
