@@ -6,6 +6,12 @@ For day-to-day operation, start with the new operator-facing manual:
 
 - [docs/operator-manual.md](docs/operator-manual.md)
 
+Writer mode quick entry:
+
+- Start in the shell's `作家` UI mode, then follow [作家模式闭环](docs/operator-manual.md#作家模式闭环).
+- The short path is: `2 编排章节` fill chapter/scene drama cards -> `3 运行场景` run the scene and `运行戏剧诊断` -> `5 查看成稿` run chapter diagnosis and handle the revision candidate ledger.
+- Accepting a writer revision candidate records the author's decision only; it does not overwrite the final scene or chapter manuscript.
+
 This repository currently uses a split verification strategy for the vector layer:
 
 - Windows native Python is supported for non-Chroma unit and contract tests.
@@ -269,4 +275,4 @@ npm install
 npm run dev
 ```
 
-The shell currently exposes `Author Workspace`, `Author Trash`, `Scene Workbench`, `Review Inbox`, `Index Console`, `Knowledge Console`, and `Interop Center`. `Interop Center` is the worksheet workstation for strict YAML preview/import/export/replay flows and cross-view provenance inspection, while `Author Workspace` / `Author Trash` cover the author-side source-of-truth and recycle lifecycle.
+The shell currently exposes `Author Workspace`, `Chapter Manuscript Center`, `Longform Control`, `Author Trash`, `Scene Workbench`, `Review Inbox`, `Index Console`, `Knowledge Console`, `Reference Learning`, and `Interop Center`. Writer mode is the default author-friendly UI layer; advanced mode reveals technical IDs, hashes, payloads, and evidence. `Interop Center` is the worksheet workstation for strict YAML preview/import/export/replay flows and cross-view provenance inspection, while `Author Workspace` / `Author Trash` cover the author-side source-of-truth and recycle lifecycle.
