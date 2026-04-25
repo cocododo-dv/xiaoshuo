@@ -47,6 +47,7 @@ LLM_NODE_STATUSES = {
     "hard_qc": "active",
     "soft_qc": "active",
     "literary_eval_live": "active",
+    "author_structure_extract": "active",
     "style_profile_extract": "reserved",
     "chapter_summary": "reserved",
     "continuity_compression": "reserved",

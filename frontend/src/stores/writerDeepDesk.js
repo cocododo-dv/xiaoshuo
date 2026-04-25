@@ -1,9 +1,13 @@
 import { defineStore } from "pinia";
 
 import {
+  applyAuthorDraftPatchOption,
+  applyAuthorStructureCandidate,
   acceptPassagePatchCandidate,
   createPassagePatchCandidate,
-  ensureAuthorDraft as ensureAuthorDraftApi,
+  deriveAuthorDraftFromGeneration,
+  ensureBlankAuthorDraft as ensureBlankAuthorDraftApi,
+  extractAuthorDraftStructure,
   fetchAuthorPreferenceProfile,
   fetchChapterDeepReview,
   fetchChapterManuscriptDetail,
@@ -11,7 +15,9 @@ import {
   fetchCurrentAuthorDraft,
   fetchSceneDeepReview,
   recordAuthorDraftCandidateEvent as recordAuthorDraftCandidateEventApi,
+  rejectAuthorStructureCandidate,
   rejectPassagePatchCandidate,
+  runFullScene,
   runChapterDeepReview as runChapterDeepReviewApi,
   runSceneDeepReview,
   saveAuthorDraft as saveAuthorDraftApi,
@@ -53,6 +59,17 @@ function replaceOrAppend(content, excerpt, replacement) {
   return trimmed ? `${trimmed}\n\n${next}` : next;
 }
 
+async function markStructureDependentsStale() {
+  const [{ useAuthorWorkspaceStore }, { useLongformControlStore }, { useLongformEditorStore }] = await Promise.all([
+    import("./authorWorkspace.js"),
+    import("./longformControl.js"),
+    import("./longformEditor.js"),
+  ]);
+  useAuthorWorkspaceStore().markStale();
+  useLongformControlStore().markStale();
+  useLongformEditorStore().markStale();
+}
+
 export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
   state: () => ({
     chapters: [],
@@ -63,10 +80,13 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     preferenceProfile: null,
     draftMode: "chapter",
     authorDraft: null,
+    deskMode: "write_first",
+    deskContext: {},
     draftContent: "",
     draftSavedContent: "",
     selectedExcerpt: "",
     patchCandidates: [],
+    structureCandidates: [],
     pendingCandidateDecisions: [],
     loaded: false,
     stale: false,
@@ -87,6 +107,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     draftDirty: (state) => String(state.draftContent || "") !== String(state.draftSavedContent || ""),
     draftRevisionNo: (state) => state.authorDraft?.revision_no || 0,
     draftSourceRef: (state) => state.authorDraft?.source_text_ref || "",
+    sourceLayer: (state) => state.deskContext?.source_layer || "",
     currentText: (state) => state.detail?.aggregate?.content || state.detail?.assembled?.content || "",
     currentSourceRef: (state) => {
       if (state.detail?.aggregate?.row_id) {
@@ -110,6 +131,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     candidateRows(state) {
       return mergeCandidates(state.deepReview?.patch_candidates || [], state.patchCandidates);
     },
+    structureCandidateRows: (state) => snapshotPayloadList(state.structureCandidates || []),
     excerptForPatch() {
       return this.selectedExcerpt.trim() || preferredExcerpt(this.draftContent);
     },
@@ -121,9 +143,25 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     },
     clearAuthorDraft() {
       this.authorDraft = null;
+      this.deskContext = {};
       this.draftContent = "";
       this.draftSavedContent = "";
       this.pendingCandidateDecisions = [];
+      this.structureCandidates = [];
+    },
+    clearStructureCandidates() {
+      this.structureCandidates = [];
+    },
+    upsertStructureCandidate(candidate) {
+      const row = snapshotPayload(candidate || null);
+      if (!row?.candidate_id) {
+        return null;
+      }
+      this.structureCandidates = snapshotPayloadList([
+        row,
+        ...this.structureCandidates.filter((item) => item.candidate_id !== row.candidate_id),
+      ]);
+      return row;
     },
     syncSelectedScene() {
       const scenes = this.availableScenes;
@@ -147,6 +185,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         this.detail = null;
         this.deepReview = null;
         this.patchCandidates = [];
+        this.clearStructureCandidates();
         this.clearAuthorDraft();
         return;
       }
@@ -188,13 +227,25 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         return null;
       }
       const payload = ensure
-        ? await ensureAuthorDraftApi(this.draftObjectType, this.draftObjectId)
+        ? await ensureBlankAuthorDraftApi(this.draftObjectType, this.draftObjectId)
         : await fetchCurrentAuthorDraft(this.draftObjectType, this.draftObjectId);
       const draft = snapshotPayload(payload.draft || null);
       this.authorDraft = draft;
+      this.deskContext = snapshotPayload({
+        draft_mode: payload.draft_mode,
+        desk_mode: payload.desk_mode,
+        source_layer: payload.source_layer,
+        runtime_final_ref: payload.runtime_final_ref,
+        aggregate_ref: payload.aggregate_ref,
+        author_preference_summary: payload.author_preference_summary || {},
+      });
       this.draftContent = draft?.content || "";
       this.draftSavedContent = this.draftContent;
       this.pendingCandidateDecisions = [];
+      this.structureCandidates = snapshotPayloadList(payload.open_structure_candidates || []);
+      if (payload.open_patch_candidates?.length) {
+        this.patchCandidates = mergeCandidates(snapshotPayloadList(payload.open_patch_candidates), this.patchCandidates);
+      }
       if (!this.selectedExcerpt.trim()) {
         this.selectedExcerpt = preferredExcerpt(this.draftContent);
       }
@@ -239,6 +290,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.error = "";
       try {
         this.selectedExcerpt = "";
+        this.clearStructureCandidates();
         await this.loadDetail(chapterId);
         await this.loadAuthorDraft({ ensure: true });
         await this.loadDeepReview();
@@ -259,6 +311,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.draftMode = nextMode;
       this.error = "";
       this.selectedExcerpt = "";
+      this.clearStructureCandidates();
       this.syncSelectedScene();
       try {
         await this.loadAuthorDraft({ ensure: true });
@@ -268,6 +321,9 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         throw error;
       }
     },
+    setDeskMode(mode) {
+      this.deskMode = mode === "ai_draft" ? "ai_draft" : "write_first";
+    },
     async selectSceneDraft(sceneId) {
       if (!sceneId || this.selectedSceneId === sceneId) {
         return;
@@ -276,12 +332,60 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.selectedSceneId = sceneId;
       this.error = "";
       this.selectedExcerpt = "";
+      this.clearStructureCandidates();
       try {
         await this.loadAuthorDraft({ ensure: true });
         await this.loadDeepReview();
       } catch (error) {
         this.error = error.message;
         throw error;
+      }
+    },
+    async runAiDraftToAuthorDraft() {
+      if (!this.selectedSceneId) {
+        return "";
+      }
+      this.actionId = "ai-draft";
+      this.error = "";
+      try {
+        this.setDeskMode("ai_draft");
+        if (this.draftMode !== "scene") {
+          this.draftMode = "scene";
+        }
+        let draft = this.authorDraft;
+        if (!draft?.draft_id || draft.object_type !== "scene" || draft.object_id !== this.selectedSceneId) {
+          const payload = await ensureBlankAuthorDraftApi("scene", this.selectedSceneId);
+          draft = snapshotPayload(payload.draft || null);
+          this.authorDraft = draft;
+          this.draftContent = draft?.content || "";
+          this.draftSavedContent = this.draftContent;
+        }
+        await runFullScene(this.selectedSceneId);
+        if (this.selectedChapterId) {
+          await this.loadDetail(this.selectedChapterId);
+        }
+        const result = await deriveAuthorDraftFromGeneration(draft.draft_id);
+        this.authorDraft = snapshotPayload(result.draft || null);
+        this.deskContext = snapshotPayload({
+          draft_mode: result.draft_mode,
+          desk_mode: result.desk_mode,
+          source_layer: result.source_layer,
+          runtime_final_ref: result.runtime_final_ref,
+          aggregate_ref: result.aggregate_ref,
+          author_preference_summary: result.author_preference_summary || {},
+        });
+        this.draftContent = this.authorDraft?.content || "";
+        this.draftSavedContent = this.draftContent;
+        this.structureCandidates = snapshotPayloadList(result.open_structure_candidates || []);
+        this.patchCandidates = mergeCandidates(snapshotPayloadList(result.open_patch_candidates || []), this.patchCandidates);
+        await this.loadDeepReview();
+        await this.loadPreference();
+        return `AI 起草已转入作者稿：${this.authorDraft?.draft_id || "-"}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
       }
     },
     setDraftContent(value) {
@@ -354,6 +458,80 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         this.actionId = "";
       }
     },
+    async extractAuthorStructure() {
+      let draft = this.authorDraft || (await this.ensureAuthorDraft());
+      if (!draft?.draft_id) {
+        return "";
+      }
+      if (this.draftDirty) {
+        await this.saveAuthorDraft({ note: "saved before structure extraction" });
+        draft = this.authorDraft;
+      }
+      this.actionId = "structure-extract";
+      this.error = "";
+      try {
+        const result = await extractAuthorDraftStructure(draft.draft_id, {
+          object_type: this.draftObjectType,
+          object_id: this.draftObjectId,
+        });
+        const candidate = this.upsertStructureCandidate(result.candidate);
+        return `结构候选已生成：${candidate?.candidate_id || "-"}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async applyStructureCandidate(candidate, payload = {}) {
+      const candidateId = typeof candidate === "string" ? candidate : candidate?.candidate_id;
+      if (!candidateId) {
+        return "";
+      }
+      this.actionId = `structure-apply:${candidateId}`;
+      this.error = "";
+      try {
+        const result = await applyAuthorStructureCandidate(candidateId, {
+          note: payload.note || "applied from writer deep desk",
+          ...payload,
+        });
+        const row = this.upsertStructureCandidate(result.candidate);
+        if (this.selectedChapterId) {
+          await this.loadDetail(this.selectedChapterId);
+        }
+        await markStructureDependentsStale();
+        await this.loadDeepReview();
+        await this.loadPreference();
+        return `结构候选已应用：${row?.candidate_id || candidateId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async rejectStructureCandidate(candidate, payload = {}) {
+      const candidateId = typeof candidate === "string" ? candidate : candidate?.candidate_id;
+      if (!candidateId) {
+        return "";
+      }
+      this.actionId = `structure-reject:${candidateId}`;
+      this.error = "";
+      try {
+        const result = await rejectAuthorStructureCandidate(candidateId, {
+          note: payload.note || "rejected from writer deep desk",
+          ...payload,
+        });
+        const row = this.upsertStructureCandidate(result.candidate);
+        await this.loadPreference();
+        return `结构候选已拒绝：${row?.candidate_id || candidateId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
     async recordAuthorDraftCandidateEvent(payload = {}) {
       if (!this.authorDraft?.draft_id) {
         return null;
@@ -372,8 +550,29 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.actionId = `patch-insert:${candidate.patch_id}`;
       this.error = "";
       try {
+        const draft = this.authorDraft || (await this.ensureAuthorDraft());
+        if (!draft?.draft_id) {
+          return "";
+        }
         const sourceExcerpt = this.selectedExcerpt.trim() || candidate.source_excerpt || "";
-        this.draftContent = replaceOrAppend(this.draftContent, sourceExcerpt, replacement);
+        const previousSavedContent = this.draftSavedContent;
+        const result = await applyAuthorDraftPatchOption(draft.draft_id, {
+          patch_id: candidate.patch_id,
+          option_id: selected?.option_id || "",
+          source_excerpt: sourceExcerpt,
+          note: "inserted into author draft editor",
+        });
+        this.authorDraft = snapshotPayload(result.draft || null);
+        this.draftContent = this.authorDraft?.content || replaceOrAppend(this.draftContent, sourceExcerpt, replacement);
+        this.draftSavedContent = previousSavedContent;
+        this.deskContext = snapshotPayload({
+          draft_mode: result.draft_mode,
+          desk_mode: result.desk_mode,
+          source_layer: result.source_layer,
+          runtime_final_ref: result.runtime_final_ref,
+          aggregate_ref: result.aggregate_ref,
+          author_preference_summary: result.author_preference_summary || {},
+        });
         const decision = {
           patch_id: candidate.patch_id,
           option_id: selected?.option_id || "",
@@ -383,16 +582,6 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
           decision,
           ...this.pendingCandidateDecisions.filter((item) => item.patch_id !== decision.patch_id),
         ]);
-        await this.recordAuthorDraftCandidateEvent({
-          event_type: "candidate_inserted",
-          patch_id: decision.patch_id,
-          option_id: decision.option_id,
-          note: "inserted into author draft editor",
-          payload_json: {
-            label: decision.label,
-            source_excerpt: sourceExcerpt,
-          },
-        });
         return "已放入作者稿编辑器，保存作者稿后才会记录采纳。";
       } catch (error) {
         this.error = error.message;

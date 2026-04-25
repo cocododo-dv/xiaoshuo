@@ -42,6 +42,13 @@ LITERARY_REVISION_DIMENSIONS: tuple[str, ...] = (
     "theme_pressure",
 )
 DEEP_REVIEW_LENSES: tuple[str, ...] = ("story", "character", "prose", "reader", "theme")
+SCENE_FORMS: tuple[str, ...] = (
+    "plot_scene",
+    "atmosphere_scene",
+    "relationship_scene",
+    "revelation_scene",
+    "transition_scene",
+)
 
 
 class WriterDeepReviewService:
@@ -175,6 +182,7 @@ class WriterDeepReviewService:
             "overall_score": row.overall_score,
             "scores": row.scores_json or {},
             "findings": row.findings_json or [],
+            "scene_form": _scene_form_from_findings(row.findings_json or [], row.object_type),
             "revision_brief": row.revision_brief_json or [],
             "requires_human_review": bool(row.requires_human_review),
             "status": row.status,
@@ -419,6 +427,13 @@ class WriterDeepReviewService:
         ).scalars().first()
 
     def _scene_source(self, scene: SceneCard) -> dict[str, Any]:
+        author_draft = self._current_author_draft("scene", scene.scene_id)
+        if author_draft is not None:
+            return {
+                "content": author_draft.content or "",
+                "source_text_ref": f"author_draft:{author_draft.draft_id}",
+                "source_bundle_id": None,
+            }
         state = self.session.get(SceneRunState, scene.scene_id)
         final_row = self.session.get(FinalScene, state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
         if final_row is None:
@@ -434,6 +449,13 @@ class WriterDeepReviewService:
         }
 
     def _chapter_source(self, chapter: ChapterGoal) -> dict[str, Any]:
+        author_draft = self._current_author_draft("chapter", chapter.chapter_id)
+        if author_draft is not None:
+            return {
+                "content": author_draft.content or "",
+                "source_text_ref": f"author_draft:{author_draft.draft_id}",
+                "source_bundle_id": None,
+            }
         final_memory = self.session.execute(
             select(ChapterMemory)
             .where(ChapterMemory.chapter_id == chapter.chapter_id, ChapterMemory.aggregate_stage == "final")
@@ -458,6 +480,17 @@ class WriterDeepReviewService:
             "source_text_ref": f"chapter_assembled:{chapter.chapter_id}",
             "source_bundle_id": None,
         }
+
+    def _current_author_draft(self, object_type: str, object_id: str) -> AuthorDraft | None:
+        return self.session.execute(
+            select(AuthorDraft)
+            .where(
+                AuthorDraft.object_type == object_type,
+                AuthorDraft.object_id == object_id,
+                AuthorDraft.status == "current",
+            )
+            .order_by(AuthorDraft.updated_at.desc(), AuthorDraft.draft_id.desc())
+        ).scalars().first()
 
     def _require_scene(self, scene_id: str) -> SceneCard:
         scene = self.session.get(SceneCard, scene_id)
@@ -731,9 +764,55 @@ def _compact_text(value: str, limit: int) -> str:
     return f"{text[:head]}\n...\n{text[-tail:]}"
 
 
+def _infer_scene_form(text: str) -> str:
+    value = str(text or "")
+    if _contains_any(value, ("选择", "决定", "必须", "代价", "公开", "保护", "不能", "閫夋嫨", "鍐冲畾", "蹇呴』", "浠ｄ环", "鍏紑", "淇濇姢", "涓嶈兘")):
+        return "plot_scene"
+    if _contains_any(value, ("真相", "证据", "秘密", "录音", "发现", "揭示", "鐪熺浉", "璇佹嵁", "绉樺瘑", "褰曢煶", "鍙戠幇")):
+        return "revelation_scene"
+    if _contains_any(value, ("关系", "信任", "背叛", "靠近", "疏远", "沉默", "对视", "鍏崇郴", "淇′换", "鑳屽彌", "闈犺繎", "鐤忚繙", "娌夐粯")):
+        return "relationship_scene"
+    if _contains_any(value, ("离开", "抵达", "回到", "之后", "翌日", "穿过", "转入", "绂诲紑", "鎶佃揪", "鍥炲埌", "涔嬪悗", "绌胯繃", "杞叆")):
+        return "transition_scene"
+    if _contains_any(value, ("雨", "雾", "风", "灯", "霜", "影", "气味", "闆", "闆炬", "椋", "鐏", "闇", "褰", "姘斿懗")):
+        return "atmosphere_scene"
+    return "plot_scene"
+
+
+def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
+    return any(token and token in text for token in tokens)
+
+
+def _scene_form_from_findings(findings: list[dict[str, Any]], object_type: str | None = None) -> str | None:
+    if object_type != "scene":
+        return None
+    for finding in findings:
+        scene_form = str(finding.get("scene_form") or "")
+        if scene_form in SCENE_FORMS:
+            return scene_form
+    return "plot_scene"
+
+
+def _scene_form_note(scene_form: str) -> str:
+    labels = {
+        "plot_scene": "场景形态判断：情节场。已有选择、阻碍或代价信号，不必再为了钩子额外加压。",
+        "atmosphere_scene": "场景形态判断：氛围场。它可以优先建立气息、视角和读者身体感，不必强行制造重大选择。",
+        "relationship_scene": "场景形态判断：关系场。核心价值在关系微转，而不是外部事件大小。",
+        "revelation_scene": "场景形态判断：认知/揭示场。重点是信息释放的节奏和后果。",
+        "transition_scene": "场景形态判断：过渡场。它可以服务位置、时间或状态切换，但仍应有清晰的读者方向。",
+    }
+    return labels.get(scene_form, labels["plot_scene"])
+
+
+def _scene_form_evidence(text: str) -> str:
+    excerpt = str(text or "").strip()
+    return excerpt[:80]
+
+
 def _diagnose_by_lens(content: str) -> dict[str, dict[str, Any]]:
     findings: dict[str, list[dict[str, Any]]] = {lens: [] for lens in DEEP_REVIEW_LENSES}
     text = content or ""
+    scene_form = _infer_scene_form(text)
     if len(text.strip()) < 80:
         findings["story"].append(
             _finding(
@@ -831,9 +910,24 @@ def _diagnose_by_lens(content: str) -> dict[str, dict[str, Any]]:
                 why="人物有不体面的一瞬间，主题才会有重量。",
             )
         )
+    if text.strip():
+        findings["story"].append(
+            _finding(
+                lens="story",
+                dimension="scene_form",
+                classification="ignore_ok",
+                issue=_scene_form_note(scene_form),
+                recommendation="按这个场景形态检查它是否完成对应功能，不必把每一场都强行加成大钩子或 forced choice。",
+                evidence=_scene_form_evidence(text),
+                why="场景可以承担氛围、认知、关系微转、信息释放或过渡功能；判断形态能避免把所有文本压成同一种商业场。",
+                scene_form=scene_form,
+            )
+        )
     payloads: dict[str, dict[str, Any]] = {}
     for lens in DEEP_REVIEW_LENSES:
         lens_findings = findings[lens]
+        for finding in lens_findings:
+            finding.setdefault("scene_form", scene_form)
         payloads[lens] = {
             "findings": lens_findings,
             "scores": _scores_for_findings(lens_findings),
@@ -841,7 +935,17 @@ def _diagnose_by_lens(content: str) -> dict[str, dict[str, Any]]:
     return payloads
 
 
-def _finding(*, lens: str, dimension: str, classification: str, issue: str, recommendation: str, evidence: str, why: str) -> dict[str, Any]:
+def _finding(
+    *,
+    lens: str,
+    dimension: str,
+    classification: str,
+    issue: str,
+    recommendation: str,
+    evidence: str,
+    why: str,
+    scene_form: str | None = None,
+) -> dict[str, Any]:
     return {
         "lens": lens,
         "dimension": dimension,
@@ -852,6 +956,7 @@ def _finding(*, lens: str, dimension: str, classification: str, issue: str, reco
         "evidence_excerpt": evidence,
         "evidence_location": "source text",
         "why_it_matters": why,
+        "scene_form": scene_form or "plot_scene",
     }
 
 
@@ -872,10 +977,11 @@ def _scores_for_findings(findings: list[dict[str, Any]]) -> dict[str, float]:
 
 def _cap_scores_for_findings(scores: dict[str, float], findings: list[dict[str, Any]]) -> dict[str, float]:
     capped = dict(scores)
-    if findings:
+    actionable_findings = [finding for finding in findings if finding.get("severity") != "ignore_ok"]
+    if actionable_findings:
         for dimension in capped:
             capped[dimension] = min(capped[dimension], 0.85)
-    for finding in findings:
+    for finding in actionable_findings:
         dimension = finding.get("dimension")
         if dimension in capped and finding.get("severity") == "blocking":
             capped[dimension] = min(capped[dimension], 0.42)
@@ -887,7 +993,9 @@ def _cap_scores_for_findings(scores: dict[str, float], findings: list[dict[str, 
 def _revision_brief_from_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     brief: list[dict[str, Any]] = []
     for finding in findings:
-        if finding.get("severity") == "taste":
+        if finding.get("severity") == "ignore_ok":
+            priority = "optional"
+        elif finding.get("severity") == "taste":
             priority = "low"
         elif finding.get("severity") == "blocking":
             priority = "high"

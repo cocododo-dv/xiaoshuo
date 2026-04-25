@@ -20,6 +20,8 @@ const REVIEW_SCOPE = "deepdesk:review";
 const PATCH_SCOPE = "deepdesk:patch";
 const DECISION_SCOPE = "deepdesk:decision";
 const DRAFT_SCOPE = "deepdesk:draft";
+const STRUCTURE_SCOPE = "deepdesk:structure";
+const AI_DRAFT_SCOPE = "deepdesk:ai-draft";
 
 const issueDimension = ref("");
 
@@ -28,6 +30,7 @@ const scenes = computed(() => desk.availableScenes || []);
 const findings = computed(() => desk.findings || []);
 const lensEvaluations = computed(() => desk.lensEvaluations || []);
 const candidates = computed(() => desk.candidateRows || []);
+const structureCandidates = computed(() => desk.structureCandidateRows || []);
 const preference = computed(() => desk.preferenceProfile || null);
 const profileSummary = computed(() => preference.value?.summary || {});
 const selectedExcerpt = computed({
@@ -76,6 +79,7 @@ function severityLabel(value) {
     blocking: "阻断",
     revision: "修订",
     taste: "审美",
+    ignore_ok: "可忽略",
   }[value] || value || "未分级";
 }
 
@@ -101,11 +105,64 @@ function statusLabel(value) {
     draft: "草稿",
     approved: "已审核",
     current: "当前",
+    superseded: "已替换",
   }[value] || value || "-";
 }
 
 function scoreLabel(value) {
   return value === null || value === undefined ? "-" : `${Math.round(Number(value) * 100)} 分`;
+}
+
+function structureBrief(candidate) {
+  return candidate?.candidate_brief || candidate?.candidate_brief_json || {};
+}
+
+function uncertaintyNotes(candidate) {
+  const notes = candidate?.uncertainty_notes || candidate?.uncertainty_notes_json || [];
+  return Array.isArray(notes) ? notes.filter(Boolean) : [];
+}
+
+function structureFieldRows(candidate) {
+  const brief = structureBrief(candidate);
+  const fields =
+    candidate?.object_type === "chapter"
+      ? [
+          ["core_promise", "核心承诺"],
+          ["plot_movement", "主线推进"],
+          ["character_shift", "人物变化"],
+          ["chapter_question", "章节问题"],
+          ["ending_aftertaste", "结尾余味"],
+          ["escalation_path", "升级路径"],
+          ["reveal_or_reversal", "揭示/反转"],
+          ["ending_question", "结尾问题"],
+        ]
+      : [
+          ["character_desire", "欲望"],
+          ["obstacle", "阻碍"],
+          ["stakes", "代价"],
+          ["emotional_turn", "转折"],
+          ["new_information", "信息释放"],
+          ["irreversible_change", "结尾动作"],
+          ["reader_question", "读者问题"],
+          ["choice_under_pressure", "选择压力"],
+        ];
+  return fields.map(([key, label]) => ({
+    key,
+    label,
+    value: brief[key] || "未确定",
+  }));
+}
+
+function candidateNote(candidate) {
+  const lines = structureFieldRows(candidate).map((field) => `${field.label}: ${field.value}`);
+  const notes = uncertaintyNotes(candidate);
+  if (notes.length) {
+    lines.push(`不确定项: ${notes.join(" / ")}`);
+  }
+  if (candidate?.rationale) {
+    lines.push(`判断依据: ${candidate.rationale}`);
+  }
+  return lines.join("\n");
 }
 
 async function ensureLoaded(force = false) {
@@ -132,6 +189,21 @@ async function selectDraftMode(mode) {
   }
 }
 
+function selectDeskMode(mode) {
+  desk.setDeskMode(mode);
+}
+
+async function runAiDraftToAuthorDraft() {
+  await runFlowAction({
+    scopeKey: AI_DRAFT_SCOPE,
+    actionLabel: "AI 起草",
+    runningMessage: "正在运行当前场景，并把运行终稿转成可改的作者稿。",
+    successMessage: (message) => message,
+    nextStep: "现在可以在作者稿里人工改写；运行终稿和聚合稿保持独立。",
+    action: () => desk.runAiDraftToAuthorDraft(),
+  });
+}
+
 async function selectScene(event) {
   try {
     await desk.selectSceneDraft(event.target.value);
@@ -155,6 +227,28 @@ async function saveDraft() {
   });
 }
 
+async function ensureBlankDraft() {
+  await runFlowAction({
+    scopeKey: DRAFT_SCOPE,
+    actionLabel: "创建空白作者稿",
+    runningMessage: "正在准备一份独立作者稿；没有运行终稿时也可以直接开始写。",
+    successMessage: () => "空白作者稿已准备好。",
+    nextStep: "现在可以在正文编辑器里自由写作，后续再反向提取结构候选。",
+    action: () => desk.ensureAuthorDraft(),
+  });
+}
+
+async function extractAuthorStructure() {
+  await runFlowAction({
+    scopeKey: STRUCTURE_SCOPE,
+    actionLabel: "反向提取戏剧卡",
+    runningMessage: "正在从当前作者稿反向理解欲望、阻碍、代价、转折和读者问题。",
+    successMessage: (message) => message,
+    nextStep: "结构候选只进入候选栏；点击应用后才会更新章节或场景的 writer brief。",
+    action: () => desk.extractAuthorStructure(),
+  });
+}
+
 async function runDeepReview() {
   await runFlowAction({
     scopeKey: REVIEW_SCOPE,
@@ -164,6 +258,37 @@ async function runDeepReview() {
     nextStep: "查看阻断、修订和审美问题，再挑一段生成局部候选。",
     action: () => desk.runCurrentDeepReview(),
   });
+}
+
+async function applyStructureCandidate(candidate) {
+  await runFlowAction({
+    scopeKey: STRUCTURE_SCOPE,
+    actionLabel: "应用结构候选",
+    runningMessage: "正在把结构候选写入对应戏剧卡的 writer brief，正文和运行终稿保持不变。",
+    successMessage: (message) => message,
+    nextStep: "作者工作台和长篇控制相关视图会在重新进入或刷新后读取新的戏剧卡候选内容。",
+    action: () => desk.applyStructureCandidate(candidate),
+  });
+}
+
+async function rejectStructureCandidate(candidate) {
+  await runFlowAction({
+    scopeKey: STRUCTURE_SCOPE,
+    actionLabel: "拒绝结构候选",
+    runningMessage: "正在记录这条结构候选的拒绝决定。",
+    successMessage: (message) => message,
+    nextStep: "被拒绝的候选不会进入章节或场景卡，也不会影响后续生成链路。",
+    action: () => desk.rejectStructureCandidate(candidate),
+  });
+}
+
+async function copyStructureCandidateNote(candidate) {
+  const note = candidateNote(candidate);
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(note);
+  }
+  selectedExcerpt.value = note;
+  emit("notice", "结构候选已复制为备注。");
 }
 
 async function createPatchCandidate() {
@@ -223,9 +348,9 @@ onActivated(() => {
   <section class="panel-grid writer-deep-desk" data-testid="writer-deep-desk">
     <WorkflowPageHeader view-id="deepdesk" />
     <PanelShell
-      eyebrow="作家改稿台"
-      title="诊断归诊断，改稿归作者"
-      description="作者稿是独立创作层：AI 可以诊断、生成候选、记录偏好，但不会自动覆盖 FinalScene 或 ChapterMemory。"
+      eyebrow="写作与深改台"
+      title="先写正文，再让系统理解结构"
+      description="作者稿是第一入口：AI 可以反向提取戏剧卡、诊断、生成候选、记录偏好，但不会自动覆盖 FinalScene 或 ChapterMemory。"
     >
       <template #actions>
         <div class="field-inline deep-desk-actions">
@@ -236,7 +361,7 @@ onActivated(() => {
         </div>
       </template>
 
-      <div v-if="desk.loading" class="empty">正在载入深改台...</div>
+      <div v-if="desk.loading" class="empty">正在载入写作与深改台...</div>
       <div v-else-if="desk.error" class="empty">{{ desk.error }}</div>
       <div v-else class="deep-desk-shell">
         <aside class="paper deep-desk-index">
@@ -267,7 +392,7 @@ onActivated(() => {
             <div class="receipt-head compact">
               <div>
                 <h4>场景稿</h4>
-                <p class="muted receipt-copy">场景稿从当前 FinalScene 创建。</p>
+                <p class="muted receipt-copy">场景稿可从场景卡 / 章节目标生成空白骨架。</p>
               </div>
               <span class="badge">{{ scenes.length }} 场</span>
             </div>
@@ -312,6 +437,37 @@ onActivated(() => {
             </div>
           </div>
 
+          <div class="desk-mode-strip" aria-label="作家书桌模式">
+            <div class="desk-mode-buttons" role="group" aria-label="起草模式">
+              <button
+                type="button"
+                data-testid="desk-mode-write-first"
+                :class="{ active: desk.deskMode === 'write_first' }"
+                @click="selectDeskMode('write_first')"
+              >
+                我先写
+              </button>
+              <button
+                type="button"
+                data-testid="desk-mode-ai-draft"
+                :class="{ active: desk.deskMode === 'ai_draft' }"
+                @click="selectDeskMode('ai_draft')"
+              >
+                AI 起草
+              </button>
+            </div>
+            <button
+              class="ghost"
+              type="button"
+              data-testid="ai-draft-to-author-draft"
+              :disabled="!desk.selectedSceneId || desk.actionId === 'ai-draft'"
+              @click="runAiDraftToAuthorDraft"
+            >
+              {{ desk.actionId === "ai-draft" ? "起草中..." : "运行并转为作者稿" }}
+            </button>
+          </div>
+          <FlowActionReceipt :receipt="receipt(AI_DRAFT_SCOPE)" />
+
           <div class="draft-layer-strip">
             <article>
               <strong>作者稿</strong>
@@ -335,13 +491,21 @@ onActivated(() => {
             class="control-input author-draft-editor"
             data-testid="author-draft-editor"
             spellcheck="false"
-            placeholder="这里会载入作者稿。若还没有作者稿，系统会从运行终稿创建一份独立副本。"
+            placeholder="这里是作者稿。可以从空白开始写；场景稿会带一个最小骨架，运行终稿只作为对照层。"
           />
           <div class="draft-save-row">
             <span class="badge" :class="{ active: desk.draftDirty }">
               {{ desk.draftDirty ? "未保存" : "已保存" }}
             </span>
             <span class="muted">{{ draftContent.length }} 字</span>
+            <button
+              class="ghost"
+              data-testid="author-draft-ensure-blank"
+              :disabled="!desk.draftObjectId || !!desk.authorDraft"
+              @click="ensureBlankDraft"
+            >
+              创建空白作者稿
+            </button>
             <button
               data-testid="author-draft-save"
               :disabled="!desk.authorDraft || !desk.draftDirty || desk.actionId === 'draft-save'"
@@ -351,6 +515,71 @@ onActivated(() => {
             </button>
           </div>
           <FlowActionReceipt :receipt="receipt(DRAFT_SCOPE)" />
+
+          <section class="deep-structure" data-testid="author-structure-candidates">
+            <div class="receipt-head compact">
+              <div>
+                <h4>反向提取戏剧卡</h4>
+                <p class="muted receipt-copy">从当前作者稿生成结构候选；应用后只更新戏剧卡，不改正文、不改运行终稿。</p>
+              </div>
+              <span class="badge">{{ structureCandidates.length }} 条</span>
+            </div>
+            <div class="field-inline deep-structure-controls">
+              <button
+                data-testid="structure-extract-run"
+                :disabled="!desk.authorDraft || !draftContent.trim() || desk.actionId === 'structure-extract'"
+                @click="extractAuthorStructure"
+              >
+                {{ desk.actionId === "structure-extract" ? "提取中..." : "反向提取戏剧卡" }}
+              </button>
+              <span class="muted">AI 理解只进入候选审核，不自动成为权威设定。</span>
+            </div>
+            <FlowActionReceipt :receipt="receipt(STRUCTURE_SCOPE)" />
+            <div v-if="!structureCandidates.length" class="empty">还没有结构候选。写一段作者稿后，可以先让系统反向理解它。</div>
+            <article
+              v-for="candidate in structureCandidates"
+              :key="candidate.candidate_id"
+              class="deep-structure-row"
+            >
+              <div class="receipt-head compact">
+                <div>
+                  <strong>结构候选</strong>
+                  <p class="muted">{{ candidate.source_text_ref }}</p>
+                </div>
+                <span class="badge">{{ statusLabel(candidate.status) }}</span>
+              </div>
+              <dl class="structure-field-grid">
+                <template v-for="field in structureFieldRows(candidate)" :key="field.key">
+                  <dt>{{ field.label }}</dt>
+                  <dd>{{ field.value }}</dd>
+                </template>
+              </dl>
+              <p v-if="candidate.rationale" class="muted">{{ candidate.rationale }}</p>
+              <ul v-if="uncertaintyNotes(candidate).length" class="uncertainty-list">
+                <li v-for="note in uncertaintyNotes(candidate)" :key="note">{{ note }}</li>
+              </ul>
+              <div class="card-actions">
+                <button
+                  type="button"
+                  data-testid="author-structure-apply"
+                  :disabled="desk.actionId.startsWith('structure-') || candidate.status !== 'candidate'"
+                  @click="applyStructureCandidate(candidate)"
+                >
+                  应用到戏剧卡
+                </button>
+                <button
+                  type="button"
+                  class="ghost"
+                  data-testid="author-structure-reject"
+                  :disabled="desk.actionId.startsWith('structure-') || candidate.status !== 'candidate'"
+                  @click="rejectStructureCandidate(candidate)"
+                >
+                  拒绝候选
+                </button>
+                <button type="button" class="ghost" @click="copyStructureCandidateNote(candidate)">复制为备注</button>
+              </div>
+            </article>
+          </section>
 
           <section class="deep-selection">
             <div class="receipt-head compact">
@@ -415,6 +644,7 @@ onActivated(() => {
               </div>
               <p>{{ finding.issue }}</p>
               <p class="muted">{{ finding.recommendation }}</p>
+              <p v-if="finding.why_it_matters" class="muted">影响读者：{{ finding.why_it_matters }}</p>
               <blockquote v-if="finding.evidence_excerpt">{{ finding.evidence_excerpt }}</blockquote>
             </article>
           </section>
@@ -523,6 +753,7 @@ onActivated(() => {
 .deep-desk-reader,
 .deep-desk-rail,
 .deep-candidates,
+.deep-structure,
 .deep-preference {
   display: grid;
   gap: 1rem;
@@ -574,6 +805,40 @@ onActivated(() => {
 .draft-mode-tabs button.active {
   background: rgba(36, 71, 86, 0.12);
   border-color: rgba(36, 71, 86, 0.18);
+  color: var(--ink);
+}
+
+.desk-mode-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem;
+  border: 1px solid rgba(37, 51, 66, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.desk-mode-buttons {
+  display: inline-flex;
+  gap: 0.35rem;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.desk-mode-buttons button {
+  min-width: 5.25rem;
+  padding: 0.45rem 0.8rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.desk-mode-buttons button.active {
+  background: rgba(132, 45, 29, 0.12);
+  border-color: rgba(132, 45, 29, 0.22);
   color: var(--ink);
 }
 
@@ -646,6 +911,7 @@ onActivated(() => {
 .deep-review-findings,
 .deep-lenses,
 .deep-option-grid,
+.structure-field-grid,
 .deep-preference-grid {
   display: grid;
   gap: 0.8rem;
@@ -654,6 +920,7 @@ onActivated(() => {
 .deep-finding,
 .deep-option,
 .deep-candidate-row,
+.deep-structure-row,
 .deep-preference-grid > article {
   display: grid;
   gap: 0.65rem;
@@ -666,8 +933,43 @@ onActivated(() => {
 .deep-finding p,
 .deep-option p,
 .deep-candidate-row p,
+.deep-structure-row p,
 .deep-preference p {
   margin: 0;
+}
+
+.deep-structure {
+  padding-top: 0.4rem;
+  border-top: 1px dashed var(--line);
+}
+
+.deep-structure-controls {
+  align-items: center;
+}
+
+.structure-field-grid {
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 0.45rem 0.8rem;
+  margin: 0;
+}
+
+.structure-field-grid dt {
+  color: var(--muted);
+}
+
+.structure-field-grid dd {
+  margin: 0;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.uncertainty-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 .deep-finding blockquote {
@@ -690,6 +992,11 @@ onActivated(() => {
 
 .severity-taste {
   box-shadow: inset 4px 0 0 rgba(107, 92, 54, 0.2);
+}
+
+.severity-ignore_ok {
+  box-shadow: inset 4px 0 0 rgba(82, 104, 91, 0.18);
+  background: rgba(82, 104, 91, 0.06);
 }
 
 .deep-lens-row {

@@ -1,6 +1,19 @@
 from __future__ import annotations
 
-from novel_system.db.models import AuthorDraft, AuthorDraftEvent, ChapterMemory, ChapterState, FinalScene, SceneRunState
+from novel_system.db.models import (
+    AuthorDraft,
+    AuthorDraftEvent,
+    AuthorPreferenceProfile,
+    AuthorStructureCandidate,
+    ChapterGoal,
+    ChapterMemory,
+    ChapterState,
+    FinalScene,
+    LlmCall,
+    PassagePatchCandidate,
+    SceneCard,
+    SceneRunState,
+)
 
 
 def _create_chapter(client, chapter_id: str, *, planned_scene_count: int = 2) -> None:
@@ -179,3 +192,166 @@ def test_candidate_event_records_without_mutating_author_draft_content(client, s
     assert event["patch_id"] == "patch_AD400"
     current = client.get("/api/v1/author-drafts/scene/AD400_SC01/current").json()["data"]["draft"]
     assert current["content"] == "原始作者稿。"
+
+
+def test_ensure_blank_creates_author_drafts_without_runtime_final_scene(client, session) -> None:
+    _create_chapter(client, "AD500", planned_scene_count=1)
+    _create_scene(client, "AD500_SC01", chapter_id="AD500", scene_seq=1, is_chapter_last=1)
+
+    chapter_response = client.post("/api/v1/author-drafts/chapter/AD500/ensure-blank")
+    scene_response = client.post("/api/v1/author-drafts/scene/AD500_SC01/ensure-blank")
+
+    assert chapter_response.status_code == 200
+    assert scene_response.status_code == 200
+    chapter_draft = chapter_response.json()["data"]["draft"]
+    scene_draft = scene_response.json()["data"]["draft"]
+    assert chapter_draft["source_text_ref"] == "author_blank:chapter:AD500"
+    assert chapter_draft["content"] == ""
+    assert scene_draft["source_text_ref"] == "scene_card:AD500_SC01:blank"
+    assert "场景目标 AD500_SC01" in scene_draft["content"]
+    assert session.query(FinalScene).count() == 0
+
+
+def test_derive_from_generation_copies_runtime_final_into_existing_author_draft_only(client, session) -> None:
+    _create_chapter(client, "AD550", planned_scene_count=1)
+    _create_scene(client, "AD550_SC01", chapter_id="AD550", scene_seq=1, is_chapter_last=1)
+    final_row_id = _finalize_scene(session, "AD550_SC01", "AD550", "AI 起草后的运行终稿。")
+    draft = client.post("/api/v1/author-drafts/scene/AD550_SC01/ensure-blank").json()["data"]["draft"]
+
+    response = client.post(f"/api/v1/author-drafts/{draft['draft_id']}/derive-from-generation")
+
+    assert response.status_code == 200
+    derived = response.json()["data"]["draft"]
+    assert derived["draft_id"] == draft["draft_id"]
+    assert derived["content"] == "AI 起草后的运行终稿。"
+    assert derived["source_text_ref"] == f"final_scene:{final_row_id}"
+    assert derived["revision_no"] == draft["revision_no"] + 1
+    session.expire_all()
+    assert session.get(FinalScene, final_row_id).content == "AI 起草后的运行终稿。"
+    events = session.query(AuthorDraftEvent).filter_by(draft_id=draft["draft_id"]).all()
+    assert [event.event_type for event in events] == ["created", "edited"]
+    assert events[-1].payload_json["source_layer"] == "ai_draft"
+    assert events[-1].payload_json["source_text_ref"] == f"final_scene:{final_row_id}"
+
+
+def test_apply_patch_option_updates_author_draft_without_accepting_candidate_or_runtime(client, session) -> None:
+    _create_chapter(client, "AD560", planned_scene_count=1)
+    _create_scene(client, "AD560_SC01", chapter_id="AD560", scene_seq=1, is_chapter_last=1)
+    final_row_id = _finalize_scene(session, "AD560_SC01", "AD560", "运行终稿保持不变。")
+    draft = client.post("/api/v1/author-drafts/scene/AD560_SC01/ensure").json()["data"]["draft"]
+    save_response = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": "她解释了全部前史。门外无人说话。", "base_revision_no": draft["revision_no"]},
+    )
+    draft = save_response.json()["data"]["draft"]
+    session.add(
+        PassagePatchCandidate(
+            patch_id="patch_AD560",
+            object_type="scene",
+            object_id="AD560_SC01",
+            chapter_id="AD560",
+            scene_id="AD560_SC01",
+            source_text_ref=f"author_draft:{draft['draft_id']}",
+            target_text_ref=f"author_draft:{draft['draft_id']}",
+            source_draft_id=draft["draft_id"],
+            source_excerpt="她解释了全部前史。",
+            issue_dimension="dialogue_subtext",
+            replacement_options_json=[
+                {
+                    "option_id": "option_subtext",
+                    "replacement_text": "她没有解释，只把证据袋推到桌沿。",
+                    "label": "更含蓄",
+                    "tone": "subtext",
+                }
+            ],
+        )
+    )
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/apply-patch-option",
+        json={"patch_id": "patch_AD560", "option_id": "option_subtext"},
+    )
+
+    assert response.status_code == 200
+    updated = response.json()["data"]["draft"]
+    assert updated["content"] == "她没有解释，只把证据袋推到桌沿。门外无人说话。"
+    assert updated["revision_no"] == draft["revision_no"] + 1
+    session.expire_all()
+    patch = session.get(PassagePatchCandidate, "patch_AD560")
+    assert patch.status == "candidate"
+    assert patch.author_decision == "pending"
+    assert session.get(FinalScene, final_row_id).content == "运行终稿保持不变。"
+    event = session.query(AuthorDraftEvent).filter_by(draft_id=draft["draft_id"], event_type="candidate_inserted").one()
+    assert event.patch_id == "patch_AD560"
+    assert event.option_id == "option_subtext"
+    assert event.payload_json["applied_to"] == "author_draft"
+    assert session.query(AuthorPreferenceProfile).count() == 0
+
+
+def test_structure_extract_creates_candidate_and_apply_updates_scene_brief_only(client, session) -> None:
+    _create_chapter(client, "AD600", planned_scene_count=1)
+    _create_scene(client, "AD600_SC01", chapter_id="AD600", scene_seq=1, is_chapter_last=1)
+    draft = client.post("/api/v1/author-drafts/scene/AD600_SC01/ensure-blank").json()["data"]["draft"]
+    save_response = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={
+            "content": "林岑把录音带塞进袖口。许望问她是否公开，她只关上船坞的门。",
+            "base_revision_no": draft["revision_no"],
+        },
+    )
+    assert save_response.status_code == 200
+    draft = save_response.json()["data"]["draft"]
+
+    extract_response = client.post(f"/api/v1/author-drafts/{draft['draft_id']}/structure-extract")
+
+    assert extract_response.status_code == 200
+    candidate = extract_response.json()["data"]["candidate"]
+    assert candidate["object_type"] == "scene"
+    assert candidate["object_id"] == "AD600_SC01"
+    assert candidate["status"] == "candidate"
+    assert candidate["author_decision"] == "pending"
+    assert candidate["candidate_brief"]["character_desire"]
+    assert candidate["candidate_brief"]["reader_question"]
+    assert candidate["extraction_llm_call_id"]
+
+    session.expire_all()
+    scene = session.get(SceneCard, "AD600_SC01")
+    assert not scene.writer_brief_json or not scene.writer_brief_json.get("character_desire")
+    assert session.get(LlmCall, candidate["extraction_llm_call_id"]).node_id == "author_structure_extract"
+
+    apply_response = client.post(f"/api/v1/author-structure-candidates/{candidate['candidate_id']}/apply")
+
+    assert apply_response.status_code == 200
+    applied = apply_response.json()["data"]["candidate"]
+    assert applied["status"] == "accepted"
+    session.expire_all()
+    scene = session.get(SceneCard, "AD600_SC01")
+    assert scene.writer_brief_json["character_desire"] == candidate["candidate_brief"]["character_desire"]
+    assert scene.writer_brief_json["reader_question"] == candidate["candidate_brief"]["reader_question"]
+    assert session.query(FinalScene).count() == 0
+    assert session.get(AuthorStructureCandidate, candidate["candidate_id"]).author_decision == "accepted"
+
+
+def test_structure_candidate_reject_keeps_author_cards_unchanged(client, session) -> None:
+    _create_chapter(client, "AD700", planned_scene_count=1)
+    _create_scene(client, "AD700_SC01", chapter_id="AD700", scene_seq=1, is_chapter_last=1)
+    draft = client.post("/api/v1/author-drafts/chapter/AD700/ensure-blank").json()["data"]["draft"]
+    client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": "这一章只写了一个模糊开头。", "base_revision_no": draft["revision_no"]},
+    )
+    candidate = client.post(f"/api/v1/author-drafts/{draft['draft_id']}/structure-extract").json()["data"]["candidate"]
+
+    reject_response = client.post(
+        f"/api/v1/author-structure-candidates/{candidate['candidate_id']}/reject",
+        json={"note": "作者暂时不想让系统解释这一章。"},
+    )
+
+    assert reject_response.status_code == 200
+    rejected = reject_response.json()["data"]["candidate"]
+    assert rejected["status"] == "rejected"
+    assert rejected["author_decision_note"] == "作者暂时不想让系统解释这一章。"
+    session.expire_all()
+    chapter = session.get(ChapterGoal, "AD700")
+    assert not chapter.writer_brief_json or not chapter.writer_brief_json.get("core_promise")

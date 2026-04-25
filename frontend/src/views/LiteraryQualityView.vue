@@ -22,6 +22,7 @@ const benchmarkCases = computed(() => quality.benchmarkCases || []);
 const DIMENSION_LABELS = {
   model_voice: "模型腔",
   image_homogeneity: "意象同质",
+  repetitive_action: "重复动作",
   expository_dialogue: "解释性对白",
   no_choice_scene: "无选择场景",
   summary_ending: "总结式结尾",

@@ -29,12 +29,12 @@ function mountComponent(component, props = {}) {
 }
 
 describe("workflow-driven shell metadata", () => {
-  it("keeps the scene workbench as the default entry while exposing step navigation metadata", () => {
+  it("keeps the writer deep desk as the default entry while exposing step navigation metadata", () => {
     const router = useShellRouter();
 
     router.reset();
 
-    expect(router.activeView.value).toBe("workbench");
+    expect(router.activeView.value).toBe("deepdesk");
     expect(router.views.map((view) => view.id)).toEqual([
       "config",
       "author",
@@ -169,7 +169,7 @@ describe("writer and advanced UI modes", () => {
       const selector = wrapper.el.querySelector('[data-testid="workflow-nav-mobile-select"]');
 
       expect(selector).not.toBeNull();
-      expect(selector.value).toBe("workbench");
+      expect(selector.value).toBe("deepdesk");
       expect([...selector.options].map((option) => option.value)).toEqual(router.views.map((view) => view.id));
 
       selector.value = "review";

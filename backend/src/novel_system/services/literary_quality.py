@@ -157,6 +157,27 @@ ENDING_ACTION_TERMS = (
     "握",
 )
 
+REPETITIVE_ACTION_TERMS = (
+    "turned",
+    "looked",
+    "nodded",
+    "smiled",
+    "sighed",
+    "stepped",
+    "held",
+    "opened",
+    "closed",
+    "转身",
+    "看",
+    "点头",
+    "笑",
+    "叹气",
+    "走",
+    "握",
+    "打开",
+    "关上",
+)
+
 IMAGE_TERMS = (
     "moon",
     "fog",
@@ -370,6 +391,7 @@ def analyze_literary_quality(text: str) -> tuple[dict[str, dict[str, Any]], list
         recommendation="Replace abstract realization with a concrete choice, gesture, or sensory consequence.",
     )
     _add_image_signal(signals, findings, normalized)
+    _add_repetitive_action_signal(signals, findings, normalized)
     _add_expository_dialogue_signal(signals, findings, normalized)
     _add_absence_signal(
         signals,
@@ -484,6 +506,35 @@ def _add_image_signal(
         )
         return
     signals["image_homogeneity"] = {"risk": False, "score": 1.0, "evidence": ""}
+
+
+def _add_repetitive_action_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    counts = Counter()
+    lowered = text.lower()
+    for term in REPETITIVE_ACTION_TERMS:
+        if re.fullmatch(r"[a-z]+", term):
+            counts[term] = len(re.findall(rf"\b{re.escape(term)}\b", lowered))
+        else:
+            counts[term] = lowered.count(term.lower())
+    term, count = max(counts.items(), key=lambda item: item[1]) if counts else ("", 0)
+    if count < 4:
+        signals["repetitive_action"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = _excerpt(text, term)
+    signals["repetitive_action"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "repetitive_action",
+            "revision",
+            f"The same action beat repeats too often: {term}.",
+            evidence,
+            "Keep the strongest beat, then replace the others with a choice, object movement, silence, or changed blocking.",
+        )
+    )
 
 
 def _add_summary_ending_signal(

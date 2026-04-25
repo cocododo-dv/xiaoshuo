@@ -416,12 +416,38 @@ export function ensureAuthorDraft(objectType, objectId) {
   );
 }
 
+export function ensureBlankAuthorDraft(objectType, objectId) {
+  return apiPost(
+    `/api/v1/author-drafts/${encodeURIComponent(objectType)}/${encodeURIComponent(objectId)}/ensure-blank`,
+  );
+}
+
+export function deriveAuthorDraftFromGeneration(draftId) {
+  return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/derive-from-generation`);
+}
+
 export function saveAuthorDraft(draftId, payload) {
   return apiPatch(`/api/v1/author-drafts/${encodeURIComponent(draftId)}`, payload);
 }
 
+export function applyAuthorDraftPatchOption(draftId, payload) {
+  return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/apply-patch-option`, payload);
+}
+
 export function recordAuthorDraftCandidateEvent(draftId, payload) {
   return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/candidate-events`, payload);
+}
+
+export function extractAuthorDraftStructure(draftId, payload = {}) {
+  return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/structure-extract`, payload);
+}
+
+export function applyAuthorStructureCandidate(candidateId, payload = {}) {
+  return apiPost(`/api/v1/author-structure-candidates/${encodeURIComponent(candidateId)}/apply`, payload);
+}
+
+export function rejectAuthorStructureCandidate(candidateId, payload = {}) {
+  return apiPost(`/api/v1/author-structure-candidates/${encodeURIComponent(candidateId)}/reject`, payload);
 }
 
 export function fetchAuthorPreferenceProfile() {

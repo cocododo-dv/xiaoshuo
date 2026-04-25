@@ -402,6 +402,39 @@ class AuthorDraftEvent(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class AuthorStructureCandidate(Base):
+    __tablename__ = "author_structure_candidates"
+    __table_args__ = (
+        CheckConstraint("object_type IN ('scene','chapter')", name="ck_author_structure_candidates_object_type"),
+        CheckConstraint(
+            "status IN ('candidate','accepted','rejected','superseded')",
+            name="ck_author_structure_candidates_status",
+        ),
+        CheckConstraint(
+            "author_decision IN ('pending','accepted','rejected')",
+            name="ck_author_structure_candidates_author_decision",
+        ),
+    )
+
+    candidate_id: Mapped[str] = mapped_column(String, primary_key=True)
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_draft_id: Mapped[str] = mapped_column(String)
+    source_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    extraction_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    candidate_brief_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    uncertainty_notes_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="candidate")
+    author_decision: Mapped[str] = mapped_column(String, default="pending")
+    author_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="author_structure_extract")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class LongformDiagnosticCard(Base):
     __tablename__ = "longform_diagnostic_cards"
     __table_args__ = (

@@ -24,6 +24,14 @@ def ensure_author_draft(object_type: str, object_id: str, request: Request, sess
     return ok(payload, req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v1/author-drafts/{object_type}/{object_id}/ensure-blank")
+def ensure_blank_author_draft(object_type: str, object_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    payload = AuthorDraftService(session).ensure_blank(object_type, object_id, actor_ref=actor_ref)
+    session.commit()
+    return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
 @router.patch("/api/v1/author-drafts/{draft_id}")
 def save_author_draft(draft_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
@@ -32,9 +40,59 @@ def save_author_draft(draft_id: str, payload: dict, request: Request, session: S
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v1/author-drafts/{draft_id}/derive-from-generation")
+def derive_author_draft_from_generation(draft_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).derive_from_generation(draft_id, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-drafts/{draft_id}/apply-patch-option")
+def apply_author_draft_patch_option(draft_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).apply_patch_option(draft_id, payload, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v1/author-drafts/{draft_id}/candidate-events")
 def record_author_draft_candidate_event(draft_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result = AuthorDraftService(session).record_candidate_event(draft_id, payload, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-drafts/{draft_id}/structure-extract")
+def extract_author_draft_structure(draft_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).extract_structure(draft_id, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-structure-candidates/{candidate_id}/apply")
+def apply_author_structure_candidate(
+    candidate_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).apply_structure_candidate(candidate_id, payload or {}, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-structure-candidates/{candidate_id}/reject")
+def reject_author_structure_candidate(
+    candidate_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).reject_structure_candidate(candidate_id, payload or {}, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))

@@ -1,7 +1,7 @@
 import { ref } from "vue";
 
-const activeView = ref("workbench");
-const visitedViews = ref(["workbench"]);
+const activeView = ref("deepdesk");
+const visitedViews = ref(["deepdesk"]);
 const focusTarget = ref({
   target_type: null,
   target_id: null,
@@ -61,7 +61,7 @@ const views = [
     group: "创作输入",
     groupId: "authoring",
     icon: "PenLine",
-    nextViews: ["workbench", "trash"],
+    nextViews: ["deepdesk", "workbench", "trash"],
     cacheMode: "light",
   },
   {
@@ -114,14 +114,14 @@ const views = [
   },
   {
     id: "deepdesk",
-    label: "6 深改文本",
-    stepLabel: "深改文本",
-    legacyLabel: "作家深改台",
-    description: "沉浸阅读章节正文，运行深改诊断，生成局部候选并记录作者决定。",
+    label: "6 写作深改",
+    stepLabel: "写作深改",
+    legacyLabel: "写作与深改台",
+    description: "先写作者稿，再反向提取戏剧卡、运行深改诊断、生成局部候选并记录作者决定。",
     group: "运行与审核",
     groupId: "runtime",
     icon: "BookOpenCheck",
-    nextViews: ["manuscripts", "author", "workbench"],
+    nextViews: ["author", "manuscripts", "longform", "workbench"],
     cacheMode: "light",
   },
   {
@@ -293,8 +293,8 @@ export function useShellRouter() {
   }
 
   function reset() {
-    activeView.value = "workbench";
-    visitedViews.value = ["workbench"];
+    activeView.value = "deepdesk";
+    visitedViews.value = ["deepdesk"];
     clearFocus();
   }
 

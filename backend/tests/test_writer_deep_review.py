@@ -96,7 +96,22 @@ def test_scene_deep_review_creates_strict_literary_evaluation_and_theme_lens(cli
     assert payload["rubric_id"] == LITERARY_REVISION_RUBRIC_ID
     assert evaluation["rubric_id"] == LITERARY_REVISION_RUBRIC_ID
     assert evaluation["overall_score"] <= 0.85
-    assert {"blocking", "revision", "taste"}.issubset({item["severity"] for item in evaluation["findings"]})
+    severities = {item["severity"] for item in evaluation["findings"]}
+    assert {"blocking", "revision", "taste", "ignore_ok"}.issubset(severities)
+    assert evaluation["scene_form"] in {
+        "plot_scene",
+        "atmosphere_scene",
+        "relationship_scene",
+        "revelation_scene",
+        "transition_scene",
+    }
+    assert all(
+        item.get("evidence_excerpt") is not None
+        and item.get("why_it_matters")
+        and item.get("recommendation")
+        and item.get("scene_form")
+        for item in evaluation["findings"]
+    )
     assert "theme" in {item["lens"] for item in payload["lens_evaluations"]}
     assert any(item["dimension"] == "repetitive_expression" for item in evaluation["findings"])
     assert any(item["classification"] == "revision" for item in evaluation["revision_brief"])
@@ -109,6 +124,26 @@ def test_scene_deep_review_creates_strict_literary_evaluation_and_theme_lens(cli
         parent_evaluation_id=None,
     ).all()
     assert len(aggregate_rows) == 1
+
+
+def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(client: TestClient, session) -> None:
+    _seed_finished_scene(session)
+    draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
+    AuthorDraftService(session).save(
+        draft["draft_id"],
+        {
+            "content": "林岑把证据袋压进袖口，没有解释，只问许望：你要我现在开门吗？",
+            "base_revision_no": draft["revision_no"],
+        },
+        actor_ref="writer",
+    )
+    session.commit()
+
+    response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+
+    assert response.status_code == 200
+    evaluation = response.json()["data"]["latest_evaluation"]
+    assert evaluation["source_text_ref"] == f"author_draft:{draft['draft_id']}"
 
 
 def test_passage_patch_candidate_accepts_without_overwriting_final_and_records_preference(client: TestClient, session) -> None:

@@ -81,6 +81,7 @@ def test_literary_quality_overview_prefers_author_drafts_and_does_not_mutate_run
             '"Because you know the truth, I explain everything now," he said. '
             "She suddenly realized the moon was somehow meaningful. "
             "The moon watched the moonlit room; moon, moon. "
+            "He turned, turned, turned, then turned again. "
             "In the end, everything changed forever."
         ),
         revision_no=3,
@@ -115,6 +116,7 @@ def test_literary_quality_overview_prefers_author_drafts_and_does_not_mutate_run
     assert scene_item["score"] < 0.75
     assert scene_item["signals"]["model_voice"]["risk"] is True
     assert scene_item["signals"]["image_homogeneity"]["risk"] is True
+    assert scene_item["signals"]["repetitive_action"]["risk"] is True
     assert scene_item["signals"]["expository_dialogue"]["risk"] is True
     assert scene_item["signals"]["no_choice_scene"]["risk"] is True
     assert scene_item["signals"]["summary_ending"]["risk"] is True

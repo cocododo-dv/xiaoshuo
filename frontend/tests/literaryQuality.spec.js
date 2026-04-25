@@ -58,6 +58,7 @@ describe("literary quality engine console", () => {
     expect(source).toContain('data-testid="quality-eval-report"');
     expect(source).toContain("model_voice");
     expect(source).toContain("image_homogeneity");
+    expect(source).toContain("repetitive_action");
     expect(source).toContain("expository_dialogue");
     expect(source).toContain('navigate("deepdesk")');
     expect(source).toContain("runBaselineEval");

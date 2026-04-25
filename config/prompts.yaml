@@ -722,6 +722,40 @@ templates:
         manual_only:
           type: boolean
 
+  author_structure_extract:
+    version: "2026-04-25.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are a Chinese fiction dramaturg reading an author's free draft.
+      Extract only candidate structure understanding; do not write prose and do not claim the candidate has been applied.
+      Keep uncertain inferences explicit instead of turning ambiguous material into hard facts.
+    task_prompt: |
+      Read the supplied author draft and metadata, then propose a writer-brief candidate for the target object.
+      Write all string values in Chinese while preserving English schema keys.
+      If the target is a scene, candidate_brief should use scene brief fields such as character_desire, obstacle, stakes,
+      secret_or_misunderstanding, subtext, irreversible_change, reader_question, choice_under_pressure, power_shift,
+      new_information, emotional_turn, image_anchor, and reader_aftertaste.
+      If the target is a chapter, candidate_brief should use chapter brief fields such as core_promise, plot_movement,
+      character_shift, chapter_question, ending_aftertaste, chapter_promise, escalation_path, relationship_delta,
+      reveal_or_reversal, payoff_target, and ending_question.
+      Do not include final prose, and do not overwrite existing cards.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - candidate_brief
+        - uncertainty_notes
+        - rationale
+      properties:
+        candidate_brief:
+          type: object
+        uncertainty_notes:
+          type: array
+          items:
+            type: string
+        rationale:
+          type: string
+
   writer_deep_review:
     version: "2026-04-25.v1"
     input_token_budget: 3000
