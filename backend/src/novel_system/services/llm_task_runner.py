@@ -116,6 +116,7 @@ class LLMNodeRunner:
             request_summary = self._request_summary(
                 prompt=prompt,
                 request=request,
+                task_config=task_config,
                 final_budget=final_budget,
                 bundle_id=bundle_id,
                 bundle_hash=bundle_hash,
@@ -261,6 +262,7 @@ class LLMNodeRunner:
         *,
         prompt: dict[str, Any],
         request: LLMRequest,
+        task_config: Any,
         final_budget: dict[str, Any],
         bundle_id: str,
         bundle_hash: str,
@@ -277,6 +279,7 @@ class LLMNodeRunner:
             "provider": request.provider,
             "provider_id": request.provider_id,
             "account_id": request.account_id,
+            "model_profile": getattr(task_config, "model_profile", None),
             "reasoning_level": request.reasoning_level,
             "credential_mode": request.credential_mode,
             "token_budget": final_budget["budget"],

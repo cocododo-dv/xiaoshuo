@@ -18,15 +18,20 @@ import {
   fetchChapterManuscriptDetail,
   fetchChapterManuscripts,
   fetchCurrentAuthorDraft,
+  fetchSceneQualityState,
   generateAuthorDraftProposal,
   generateAuthorDraftProposalSet,
+  generateSceneQualityContract as generateSceneQualityContractApi,
   fetchSceneDeepReview,
+  promoteAutoRewriteRun as promoteAutoRewriteRunApi,
   recordAuthorDraftCandidateEvent as recordAuthorDraftCandidateEventApi,
   rejectAuthorDraftProposal,
   rejectAuthorStructureCandidate,
   rejectPassagePatchCandidate,
+  rollbackAutoRewriteRun as rollbackAutoRewriteRunApi,
   runFullScene,
   runChapterDeepReview as runChapterDeepReviewApi,
+  runSceneAutoRewrite as runSceneAutoRewriteApi,
   runSceneDeepReview,
   saveAuthorDraft as saveAuthorDraftApi,
 } from "../lib/api";
@@ -85,6 +90,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     selectedSceneId: "",
     detail: null,
     deepReview: null,
+    qualityState: null,
+    autoRewriteRun: null,
     preferenceProfile: null,
     authorDeskSnapshot: null,
     draftEvents: [],
@@ -137,6 +144,9 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     },
     finalAggregateText: (state) => state.detail?.aggregate?.content || "",
     latestEvaluation: (state) => state.deepReview?.latest_evaluation || null,
+    qualityContract: (state) => snapshotPayload(state.qualityState?.contract || null),
+    qualityPromotionEligible: (state) => Boolean(state.qualityState?.promotion?.eligible),
+    qualityPromotionBlockers: (state) => snapshotPayloadList(state.qualityState?.promotion?.blockers || []),
     findings() {
       return this.latestEvaluation?.findings || [];
     },
@@ -181,6 +191,10 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.inlineQualityResult = null;
       this.authorDeskSnapshot = null;
       this.draftEvents = [];
+    },
+    clearSceneQuality() {
+      this.qualityState = null;
+      this.autoRewriteRun = null;
     },
     clearStructureCandidates() {
       this.structureCandidates = [];
@@ -261,6 +275,16 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.deepReview = snapshotPayload(payload);
       this.patchCandidates = snapshotPayloadList(payload.patch_candidates || []);
     },
+    async loadSceneQualityState(sceneId = this.selectedSceneId) {
+      if (!sceneId || this.draftObjectType !== "scene") {
+        this.clearSceneQuality();
+        return null;
+      }
+      const payload = await fetchSceneQualityState(sceneId);
+      this.qualityState = snapshotPayload(payload || null);
+      this.autoRewriteRun = snapshotPayload(payload?.latest_run || null);
+      return this.qualityState;
+    },
     async loadPreference() {
       const payload = await fetchAuthorPreferenceProfile();
       this.preferenceProfile = snapshotPayload(payload.profile || null);
@@ -337,6 +361,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         await this.loadAuthorDeskSnapshot();
         await this.loadDraftEvents();
         await this.loadDeepReview();
+        await this.loadSceneQualityState();
       }
       await this.loadPreference();
     },
@@ -370,6 +395,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         await this.loadAuthorDeskSnapshot();
         await this.loadDraftEvents();
         await this.loadDeepReview();
+        await this.loadSceneQualityState();
         await this.loadPreference();
         this.markFresh();
       } catch (error) {
@@ -394,6 +420,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         await this.loadAuthorDeskSnapshot();
         await this.loadDraftEvents();
         await this.loadDeepReview();
+        await this.loadSceneQualityState();
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -426,6 +453,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         await this.loadAuthorDeskSnapshot();
         await this.loadDraftEvents();
         await this.loadDeepReview();
+        await this.loadSceneQualityState(sceneId);
       } catch (error) {
         this.error = error.message;
         throw error;
@@ -662,7 +690,113 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         this.deepReview = snapshotPayload(result);
         this.patchCandidates = snapshotPayloadList(result.patch_candidates || []);
         await this.loadAuthorDeskSnapshot();
+        await this.loadSceneQualityState(sceneId);
         return `场景深改诊断完成：${result.latest_score ?? "-"}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async generateSceneQualityContract(sceneId = this.selectedSceneId) {
+      if (!sceneId) {
+        return "";
+      }
+      this.actionId = "quality-contract";
+      this.error = "";
+      try {
+        const result = await generateSceneQualityContractApi(sceneId);
+        const contract = snapshotPayload(result.contract || null);
+        this.qualityState = snapshotPayload({
+          ...(this.qualityState || {}),
+          contract,
+        });
+        return `场景质量契约已生成：${contract?.contract_hash || sceneId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async runSceneAutoRewrite(payload = {}, sceneId = this.selectedSceneId) {
+      if (!sceneId) {
+        return "";
+      }
+      this.actionId = "auto-rewrite";
+      this.error = "";
+      try {
+        const result = await runSceneAutoRewriteApi(sceneId, {
+          mode: payload.mode || "auto",
+          ...payload,
+        });
+        this.autoRewriteRun = snapshotPayload(result.run || null);
+        this.qualityState = snapshotPayload(result.quality_state || this.qualityState || null);
+        if (!this.qualityState?.latest_run && this.autoRewriteRun) {
+          this.qualityState = snapshotPayload({
+            ...(this.qualityState || {}),
+            latest_run: this.autoRewriteRun,
+          });
+        }
+        await this.loadAuthorDeskSnapshot();
+        return `auto rewrite run: ${this.autoRewriteRun?.run_id || "-"}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async promoteAutoRewriteRun(runId = this.autoRewriteRun?.run_id) {
+      if (!runId) {
+        return "";
+      }
+      this.actionId = `auto-rewrite-promote:${runId}`;
+      this.error = "";
+      try {
+        const result = await promoteAutoRewriteRunApi(runId);
+        const promotedRun = snapshotPayload(result.run || null);
+        this.autoRewriteRun = promotedRun;
+        if (this.selectedChapterId) {
+          await this.loadDetail(this.selectedChapterId);
+        }
+        await this.loadSceneQualityState(this.selectedSceneId);
+        this.autoRewriteRun = promotedRun;
+        this.qualityState = snapshotPayload({
+          ...(this.qualityState || {}),
+          latest_run: promotedRun,
+        });
+        await this.loadAuthorDeskSnapshot();
+        return `auto rewrite ${this.autoRewriteRun?.status || "promoted"}: ${runId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async rollbackAutoRewriteRun(runId = this.autoRewriteRun?.run_id) {
+      if (!runId) {
+        return "";
+      }
+      this.actionId = `auto-rewrite-rollback:${runId}`;
+      this.error = "";
+      try {
+        const result = await rollbackAutoRewriteRunApi(runId);
+        const rolledBackRun = snapshotPayload(result.run || null);
+        this.autoRewriteRun = rolledBackRun;
+        if (this.selectedChapterId) {
+          await this.loadDetail(this.selectedChapterId);
+        }
+        await this.loadSceneQualityState(this.selectedSceneId);
+        this.autoRewriteRun = rolledBackRun;
+        this.qualityState = snapshotPayload({
+          ...(this.qualityState || {}),
+          latest_run: rolledBackRun,
+        });
+        await this.loadAuthorDeskSnapshot();
+        return `auto rewrite ${this.autoRewriteRun?.status || "rolled_back"}: ${runId}`;
       } catch (error) {
         this.error = error.message;
         throw error;

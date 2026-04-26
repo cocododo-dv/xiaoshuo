@@ -391,6 +391,26 @@ export function runSceneDeepReview(sceneId) {
   return apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/deep-review`);
 }
 
+export function fetchSceneQualityState(sceneId) {
+  return apiGet(`/api/v1/scenes/${encodeURIComponent(sceneId)}/quality-state`);
+}
+
+export function generateSceneQualityContract(sceneId) {
+  return apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/quality-contract`);
+}
+
+export function runSceneAutoRewrite(sceneId, payload = { mode: "auto" }) {
+  return apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/auto-rewrite`, payload);
+}
+
+export function promoteAutoRewriteRun(runId) {
+  return apiPost(`/api/v1/auto-rewrite-runs/${encodeURIComponent(runId)}/promote`);
+}
+
+export function rollbackAutoRewriteRun(runId) {
+  return apiPost(`/api/v1/auto-rewrite-runs/${encodeURIComponent(runId)}/rollback`);
+}
+
 export function fetchChapterDeepReview(chapterId) {
   return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/deep-review`);
 }

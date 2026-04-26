@@ -189,6 +189,28 @@ class SceneBlueprint(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class SceneQualityContract(Base):
+    __tablename__ = "scene_quality_contracts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','superseded')",
+            name="ck_scene_quality_contracts_status",
+        ),
+    )
+
+    contract_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scene_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(String)
+    contract_version: Mapped[str] = mapped_column(String, default="scene_quality_contract_v1")
+    contract_hash: Mapped[str] = mapped_column(String)
+    source_snapshot_hash: Mapped[str] = mapped_column(String)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String, default="active")
+    created_by: Mapped[str] = mapped_column(String, default="scene_quality")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class GenerationPlanningArtifact(Base):
     __tablename__ = "generation_planning_artifacts"
     __table_args__ = (
@@ -290,6 +312,10 @@ class WriterEvaluation(Base):
     parent_evaluation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     evidence_spans_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     source_blueprint_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_class: Mapped[str | None] = mapped_column(String, nullable=True)
+    auto_rewrite_eligible: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    contract_field_refs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    promotion_blockers_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     scores_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     findings_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
@@ -325,6 +351,41 @@ class RevisionCandidate(Base):
     status: Mapped[str] = mapped_column(String, default="candidate")
     author_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String, default="writer_engine")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class AutoRewriteRun(Base):
+    __tablename__ = "auto_rewrite_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('diagnosed','candidate_ready','human_review_required','promoted','rolled_back','blocked')",
+            name="ck_auto_rewrite_runs_status",
+        ),
+        CheckConstraint(
+            "branch IN ('full_scene','local_patch','human_review','diagnose_only')",
+            name="ck_auto_rewrite_runs_branch",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scene_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(String)
+    contract_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    contract_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    mode: Mapped[str] = mapped_column(String, default="auto")
+    branch: Mapped[str] = mapped_column(String)
+    failure_class: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_final_scene_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    candidate_draft_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    promoted_final_scene_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    rollback_target_final_scene_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    gate_results_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    policy_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    promotion_blockers_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String)
+    actor_ref: Mapped[str] = mapped_column(String, default="operator")
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 

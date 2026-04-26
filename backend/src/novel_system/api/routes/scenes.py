@@ -32,6 +32,7 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import NEAR_FINAL_REWRITE_TYPE, NEAR_FINAL_RUBRIC_ID
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.scene_quality import SceneAutoRewriteService, SceneQualityService
 from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
@@ -177,6 +178,86 @@ def generate_scene_literary_blueprint(scene_id: str, request: Request, session: 
         action=lambda: SceneBlueprintService(session).serialize(
             SceneBlueprintService(session).generate(scene_id, actor_ref=actor_ref)
         ),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/scenes/{scene_id}/quality-contract")
+def generate_scene_quality_contract(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/quality-contract",
+        payload={"scene_id": scene_id},
+        action=lambda: SceneQualityService(session).generate_contract(scene_id, actor_ref=actor_ref),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.get("/api/v1/scenes/{scene_id}/quality-state")
+def get_scene_quality_state(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    return ok(
+        SceneQualityService(session).quality_state(scene_id),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.post("/api/v1/scenes/{scene_id}/auto-rewrite")
+def run_scene_auto_rewrite(scene_id: str, request: Request, payload: dict | None = None, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    request_payload = payload or {}
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/auto-rewrite",
+        payload={"scene_id": scene_id, **request_payload},
+        action=lambda: SceneAutoRewriteService(session).run(
+            scene_id,
+            mode=str(request_payload.get("mode") or "auto"),
+            actor_ref=actor_ref,
+        ),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/auto-rewrite-runs/{run_id}/promote")
+def promote_auto_rewrite_run(run_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/auto-rewrite-runs/{run_id}/promote",
+        payload={"run_id": run_id},
+        action=lambda: SceneAutoRewriteService(session).promote(run_id, actor_ref=actor_ref),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/auto-rewrite-runs/{run_id}/rollback")
+def rollback_auto_rewrite_run(run_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/auto-rewrite-runs/{run_id}/rollback",
+        payload={"run_id": run_id},
+        action=lambda: SceneAutoRewriteService(session).rollback(run_id, actor_ref=actor_ref),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -448,13 +529,20 @@ def _serialize_near_final_summary(session: Session, scene_id: str) -> dict | Non
     near_final_status = latest_attempt.status if latest_attempt is not None else None
     if near_final_status is None and latest_evaluation is not None:
         near_final_status = "human_review_required" if latest_evaluation.requires_human_review else "revision_required"
-    failure_class = details.get("failure_class")
+    failure_class = details.get("failure_class") or (latest_evaluation.failure_class if latest_evaluation is not None else None)
     return {
         "rubric_id": NEAR_FINAL_RUBRIC_ID,
         "near_final_status": near_final_status,
         "pipeline_stage": _near_final_pipeline_stage(near_final_status),
         "failure_class": failure_class,
         "failure_reason": _near_final_failure_label(failure_class),
+        "auto_rewrite_eligible": (
+            bool(latest_evaluation.auto_rewrite_eligible)
+            if latest_evaluation is not None and latest_evaluation.auto_rewrite_eligible is not None
+            else None
+        ),
+        "contract_field_refs": latest_evaluation.contract_field_refs_json if latest_evaluation is not None else {},
+        "promotion_blockers": latest_evaluation.promotion_blockers_json if latest_evaluation is not None else [],
         "evaluation_id": latest_evaluation.evaluation_id if latest_evaluation is not None else details.get("evaluation_id"),
         "revision_candidate_id": revision_candidate.revision_id if revision_candidate is not None else None,
         "revision_candidate_status": revision_candidate.status if revision_candidate is not None else None,

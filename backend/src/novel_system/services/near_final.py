@@ -583,6 +583,10 @@ class NearFinalAcceptanceService:
             overall_score=payload.get("overall_score"),
             scores_json=payload.get("scores") or {},
             findings_json=payload.get("findings") or [],
+            failure_class=payload.get("failure_class"),
+            auto_rewrite_eligible=1 if NearFinalAcceptanceService._should_rewrite(payload) else 0,
+            contract_field_refs_json=payload.get("contract_field_refs") or {},
+            promotion_blockers_json=_promotion_blockers_from_acceptance(payload),
             revision_brief_json=payload.get("revision_brief") or [],
             requires_human_review=1 if payload.get("requires_human_review") else 0,
             status="completed",
@@ -776,6 +780,21 @@ def _normalize_chapter_architecture_payload(payload: Any) -> dict[str, Any]:
         "character_shift": _scalar_text(payload.get("character_shift")) or fallback["character_shift"],
         "ending_question": _scalar_text(payload.get("ending_question")) or fallback["ending_question"],
     }
+
+
+def _promotion_blockers_from_acceptance(payload: dict[str, Any]) -> list[str]:
+    blockers = payload.get("promotion_blockers")
+    if isinstance(blockers, list):
+        normalized = [str(item).strip() for item in blockers if str(item).strip()]
+        if normalized:
+            return normalized
+    if payload.get("pass_flag"):
+        return []
+    if payload.get("requires_human_review"):
+        return ["human_review_required"]
+    if str(payload.get("failure_class") or "") not in AUTOMATED_REWRITE_FAILURE_CLASSES:
+        return [str(payload.get("failure_class") or payload.get("near_final_status") or "auto_rewrite_not_eligible")]
+    return []
 
 
 def _normalize_acceptance_payload(payload: Any) -> dict[str, Any]:

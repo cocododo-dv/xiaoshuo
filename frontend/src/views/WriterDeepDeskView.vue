@@ -22,6 +22,7 @@ const DECISION_SCOPE = "deepdesk:decision";
 const DRAFT_SCOPE = "deepdesk:draft";
 const STRUCTURE_SCOPE = "deepdesk:structure";
 const AI_DRAFT_SCOPE = "deepdesk:ai-draft";
+const AUTO_REWRITE_SCOPE = "deepdesk:auto-rewrite";
 
 const issueDimension = ref("");
 
@@ -54,6 +55,24 @@ const judgmentLayerBuckets = computed(() => [
 const draftEvents = computed(() => desk.draftEvents || []);
 const preference = computed(() => desk.preferenceProfile || null);
 const profileSummary = computed(() => preference.value?.summary || {});
+const qualityContract = computed(() => desk.qualityContract || null);
+const qualityContractPayload = computed(() => qualityContract.value?.payload || {});
+const qualityContractRows = computed(() => [
+  { key: "scene_function", label: "场景功能", value: qualityContractPayload.value.scene_function },
+  { key: "pov_or_actor", label: "POV/主行动者", value: qualityContractPayload.value.pov_or_actor },
+  { key: "visible_desire", label: "可见欲望", value: qualityContractPayload.value.visible_desire },
+  { key: "obstacle", label: "阻碍", value: qualityContractPayload.value.obstacle },
+  { key: "forced_choice", label: "强迫选择", value: qualityContractPayload.value.forced_choice },
+  { key: "price_paid", label: "代价", value: qualityContractPayload.value.price_paid },
+  { key: "relationship_turn", label: "关系转向", value: qualityContractPayload.value.relationship_turn },
+  { key: "information_release", label: "信息释放", value: qualityContractPayload.value.information_release },
+  { key: "irreversible_change", label: "不可逆变化", value: qualityContractPayload.value.irreversible_change },
+  { key: "ending_action", label: "结尾动作", value: qualityContractPayload.value.ending_action },
+  { key: "next_scene_pull", label: "下一场牵引", value: qualityContractPayload.value.next_scene_pull },
+]);
+const autoRewriteRun = computed(() => desk.autoRewriteRun || null);
+const qualityPromotion = computed(() => desk.qualityState?.promotion || {});
+const qualityPromotionBlockers = computed(() => desk.qualityPromotionBlockers || []);
 const workProfileMeta = computed(() => {
   const profile = workProfile.value || {};
   const config = profile.profile_json || {};
@@ -138,6 +157,17 @@ function statusLabel(value) {
     current: "当前",
     superseded: "已替换",
   }[value] || value || "-";
+}
+
+function autoRewriteStatusLabel(value) {
+  return {
+    candidate_ready: "候选可审",
+    promoted: "已晋级",
+    rolled_back: "已回滚",
+    human_review_required: "转人工",
+    diagnose_only: "仅诊断",
+    failed: "失败",
+  }[value] || value || "未运行";
 }
 
 function proposalTypeLabel(value) {
@@ -443,6 +473,50 @@ async function runInlineQuality() {
     successMessage: () => "文学质检内联扫描已完成。",
     nextStep: "优先处理模型腔、动作模板复用、意象场复用、假清晰和解释性对白。",
     action: () => desk.analyzeCurrentDraftQuality(),
+  });
+}
+
+async function generateQualityContract() {
+  await runFlowAction({
+    scopeKey: AUTO_REWRITE_SCOPE,
+    actionLabel: "场景质量契约",
+    runningMessage: "正在把当前场景整理成可验收的文学契约。",
+    successMessage: (message) => message,
+    nextStep: "契约会作为自动重写和近终稿验收的同一份判断依据。",
+    action: () => desk.generateSceneQualityContract(),
+  });
+}
+
+async function runAutoRewrite() {
+  await runFlowAction({
+    scopeKey: AUTO_REWRITE_SCOPE,
+    actionLabel: "自动重写",
+    runningMessage: "正在按场景质量契约生成重写候选。",
+    successMessage: (message) => message,
+    nextStep: "先比较候选与当前运行终稿，再决定是否晋级。",
+    action: () => desk.runSceneAutoRewrite({ mode: "auto" }),
+  });
+}
+
+async function promoteAutoRewrite() {
+  await runFlowAction({
+    scopeKey: AUTO_REWRITE_SCOPE,
+    actionLabel: "晋级为运行终稿",
+    runningMessage: "正在把通过验收的重写候选晋级为新的 FinalScene。",
+    successMessage: (message) => message,
+    nextStep: "晋级只影响运行层终稿；旧版本和证据仍可回滚。",
+    action: () => desk.promoteAutoRewriteRun(),
+  });
+}
+
+async function rollbackAutoRewrite() {
+  await runFlowAction({
+    scopeKey: AUTO_REWRITE_SCOPE,
+    actionLabel: "回滚",
+    runningMessage: "正在恢复自动重写晋级前的运行终稿。",
+    successMessage: (message) => message,
+    nextStep: "回滚不会删除自动重写证据，后续仍可审计。",
+    action: () => desk.rollbackAutoRewriteRun(),
   });
 }
 
@@ -971,6 +1045,80 @@ onActivated(() => {
           </button>
           <FlowActionReceipt :receipt="receipt(REVIEW_SCOPE)" />
 
+          <section class="scene-quality-panel" data-testid="scene-quality-contract">
+            <div class="receipt-head compact">
+              <div>
+                <h4>场景质量契约</h4>
+                <p class="muted receipt-copy">欲望、阻碍、选择、代价和结尾动作共用同一份验收口径。</p>
+              </div>
+              <span class="badge">{{ qualityContract?.contract_version || "未生成" }}</span>
+            </div>
+            <button
+              type="button"
+              class="ghost"
+              data-testid="scene-quality-contract-generate"
+              :disabled="desk.draftObjectType !== 'scene' || !desk.selectedSceneId || desk.actionId === 'quality-contract'"
+              @click="generateQualityContract"
+            >
+              刷新契约
+            </button>
+            <dl v-if="qualityContract" class="quality-contract-grid">
+              <template v-for="row in qualityContractRows" :key="row.key">
+                <dt>{{ row.label }}</dt>
+                <dd>{{ row.value || "待补足" }}</dd>
+              </template>
+            </dl>
+            <div v-else class="empty">当前场景还没有质量契约。</div>
+          </section>
+
+          <section class="scene-auto-rewrite-panel" data-testid="scene-auto-rewrite-run">
+            <div class="receipt-head compact">
+              <div>
+                <h4>自动重写</h4>
+                <p class="muted receipt-copy">只生成运行层候选；作者稿不会被覆盖。</p>
+              </div>
+              <span class="badge">{{ autoRewriteStatusLabel(autoRewriteRun?.status) }}</span>
+            </div>
+            <div v-if="autoRewriteRun" class="auto-rewrite-summary">
+              <span>branch: {{ autoRewriteRun.branch || "-" }}</span>
+              <span>failure: {{ autoRewriteRun.failure_class || "-" }}</span>
+              <span>candidate: {{ autoRewriteRun.candidate_draft_row_id || "-" }}</span>
+            </div>
+            <div v-if="qualityPromotionBlockers.length" class="quality-blockers">
+              <strong>阻塞原因</strong>
+              <span v-for="blocker in qualityPromotionBlockers" :key="blocker">{{ blocker }}</span>
+            </div>
+            <div class="card-actions">
+              <button
+                type="button"
+                data-testid="scene-auto-rewrite-run-button"
+                :disabled="desk.draftObjectType !== 'scene' || !desk.selectedSceneId || desk.actionId === 'auto-rewrite'"
+                @click="runAutoRewrite"
+              >
+                自动重写
+              </button>
+              <button
+                type="button"
+                class="ghost"
+                data-testid="scene-auto-rewrite-promote"
+                :disabled="!autoRewriteRun?.run_id || !qualityPromotion?.eligible || desk.actionId.startsWith('auto-rewrite-')"
+                @click="promoteAutoRewrite"
+              >
+                晋级为运行终稿
+              </button>
+              <button
+                type="button"
+                class="ghost"
+                data-testid="scene-auto-rewrite-rollback"
+                :disabled="!autoRewriteRun?.run_id || desk.actionId.startsWith('auto-rewrite-')"
+                @click="rollbackAutoRewrite"
+              >
+                回滚
+              </button>
+            </div>
+            <FlowActionReceipt :receipt="receipt(AUTO_REWRITE_SCOPE)" />
+          </section>
+
           <section class="judgment-layers-panel" data-testid="judgment-layers">
             <div class="receipt-head compact">
               <div>
@@ -1176,6 +1324,8 @@ onActivated(() => {
 .author-radar-strip,
 .draft-proposal-panel,
 .judgment-layers-panel,
+.scene-quality-panel,
+.scene-auto-rewrite-panel,
 .deep-preference {
   display: grid;
   gap: 1rem;
@@ -1350,6 +1500,8 @@ onActivated(() => {
 .draft-proposal-panel,
 .inline-quality-panel,
 .judgment-layers-panel,
+.scene-quality-panel,
+.scene-auto-rewrite-panel,
 .deep-longform-pressure {
   display: grid;
   gap: 0.7rem;
@@ -1470,6 +1622,38 @@ onActivated(() => {
 .structure-field-grid dd {
   margin: 0;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.quality-contract-grid {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: 0.45rem 0.75rem;
+  margin: 0;
+}
+
+.quality-contract-grid dt {
+  color: var(--muted);
+}
+
+.quality-contract-grid dd {
+  margin: 0;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.auto-rewrite-summary,
+.quality-blockers {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.65rem;
+  border: 1px solid rgba(37, 51, 66, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.auto-rewrite-summary span,
+.quality-blockers span {
   overflow-wrap: anywhere;
 }
 

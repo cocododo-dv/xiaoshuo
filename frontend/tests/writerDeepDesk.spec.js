@@ -155,6 +155,33 @@ function deskSnapshotPayload() {
   };
 }
 
+function qualityStatePayload(overrides = {}) {
+  return {
+    scene_id: "DESKFE100_SC01",
+    contract: {
+      contract_id: "scene_quality_contract_DESKFE100_SC01_a1",
+      contract_version: "scene_quality_contract_v1",
+      contract_hash: "hash_quality_contract",
+      payload: {
+        visible_desire: "确认录音是否真实。",
+        forced_choice: "公开证据或先保护幸存者。",
+        price_paid: "暂时背负隐瞒真相的嫌疑。",
+        ending_action: "把证据分成两份。",
+      },
+    },
+    latest_run: overrides.latest_run || {
+      run_id: "auto_rewrite_DESKFE100_SC01_a1",
+      status: "candidate_ready",
+      branch: "full_scene",
+      failure_class: "choice_pressure",
+      candidate_draft_row_id: "draft_auto_rewrite_DESKFE100_SC01_a1",
+      gate_results: { promotable: true },
+      promotion_blockers: [],
+    },
+    promotion: overrides.promotion || { eligible: true, blockers: [] },
+  };
+}
+
 describe("writer deep revision desk", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -209,7 +236,16 @@ describe("writer deep revision desk", () => {
     expect(apiSource).toContain("acceptPassagePatchCandidate");
     expect(apiSource).toContain("rejectPassagePatchCandidate");
     expect(apiSource).toContain("fetchAuthorPreferenceProfile");
+    expect(apiSource).toContain("fetchSceneQualityState");
+    expect(apiSource).toContain("generateSceneQualityContract");
+    expect(apiSource).toContain("runSceneAutoRewrite");
+    expect(apiSource).toContain("promoteAutoRewriteRun");
+    expect(apiSource).toContain("rollbackAutoRewriteRun");
     expect(apiSource).toContain("/deep-review");
+    expect(apiSource).toContain("/quality-state");
+    expect(apiSource).toContain("/quality-contract");
+    expect(apiSource).toContain("/auto-rewrite");
+    expect(apiSource).toContain("/auto-rewrite-runs");
     expect(apiSource).toContain("/passages/patch-candidates");
     expect(apiSource).toContain("/author-drafts");
     expect(apiSource).toContain("/ensure-blank");
@@ -242,6 +278,91 @@ describe("writer deep revision desk", () => {
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-drafts/author_draft_scene_DESKFE100_SC01/proposals/generate-set");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-draft-proposals/proposal_DESKFE100_SC01/apply");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-draft-proposals/proposal_DESKFE100_SC01/reject");
+  });
+
+  it("calls scene quality contract, auto rewrite, promote, and rollback API helpers", async () => {
+    globalThis.fetch = vi.fn(async () => okEnvelope({}));
+
+    await api.fetchSceneQualityState("DESKFE100_SC01");
+    await api.generateSceneQualityContract("DESKFE100_SC01");
+    await api.runSceneAutoRewrite("DESKFE100_SC01", { mode: "auto" });
+    await api.promoteAutoRewriteRun("auto_rewrite_DESKFE100_SC01_a1");
+    await api.rollbackAutoRewriteRun("auto_rewrite_DESKFE100_SC01_a1");
+
+    const urls = globalThis.fetch.mock.calls.map(([url]) => url);
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/scenes/DESKFE100_SC01/quality-state");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/scenes/DESKFE100_SC01/quality-contract");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/scenes/DESKFE100_SC01/auto-rewrite");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/auto-rewrite-runs/auto_rewrite_DESKFE100_SC01_a1/promote");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/auto-rewrite-runs/auto_rewrite_DESKFE100_SC01_a1/rollback");
+  });
+
+  it("hydrates quality state and runs auto rewrite promotion controls in the store", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      const path = String(url);
+      if (path.includes("/chapter-manuscripts/DESKFE100")) {
+        return okEnvelope(chapterDetailPayload());
+      }
+      if (path.includes("/chapter-manuscripts")) {
+        return okEnvelope(chapterListPayload());
+      }
+      if (path.includes("/ensure-blank")) {
+        return okEnvelope(authorDraftPayload());
+      }
+      if (path.includes("/deep-review")) {
+        return okEnvelope({ latest_evaluation: null, lens_evaluations: [], patch_candidates: [] });
+      }
+      if (path.includes("/author-preference-profile")) {
+        return okEnvelope({ profile: { summary: {} } });
+      }
+      if (path.includes("/author-desk/scene/DESKFE100_SC01/snapshot")) {
+        return okEnvelope(deskSnapshotPayload());
+      }
+      if (path.includes("/events")) {
+        return okEnvelope({ events: [] });
+      }
+      if (path.endsWith("/quality-contract")) {
+        return okEnvelope({ contract: qualityStatePayload().contract });
+      }
+      if (path.endsWith("/auto-rewrite")) {
+        return okEnvelope({ run: qualityStatePayload().latest_run, quality_state: qualityStatePayload() });
+      }
+      if (path.endsWith("/promote")) {
+        return okEnvelope({
+          run: { ...qualityStatePayload().latest_run, status: "promoted", promoted_final_scene_row_id: "final_scene_DESKFE100_SC01_auto_1" },
+        });
+      }
+      if (path.endsWith("/rollback")) {
+        return okEnvelope({
+          run: { ...qualityStatePayload().latest_run, status: "rolled_back", promoted_final_scene_row_id: "final_scene_DESKFE100_SC01_auto_1" },
+        });
+      }
+      if (path.includes("/quality-state")) {
+        return okEnvelope(qualityStatePayload());
+      }
+      return okEnvelope({});
+    });
+
+    const { useWriterDeepDeskStore } = await import("../src/stores/writerDeepDesk.js");
+    const store = useWriterDeepDeskStore();
+
+    await store.initialize({ force: true });
+    await store.setDraftMode("scene");
+
+    expect(store.qualityState.contract.contract_version).toBe("scene_quality_contract_v1");
+    expect(store.qualityPromotionEligible).toBe(true);
+
+    const rewriteMessage = await store.runSceneAutoRewrite({ mode: "auto" });
+    expect(rewriteMessage).toContain("auto_rewrite_DESKFE100_SC01_a1");
+    expect(store.autoRewriteRun.branch).toBe("full_scene");
+
+    const promoteMessage = await store.promoteAutoRewriteRun("auto_rewrite_DESKFE100_SC01_a1");
+    expect(promoteMessage).toContain("promoted");
+    expect(store.autoRewriteRun.status).toBe("promoted");
+
+    const rollbackMessage = await store.rollbackAutoRewriteRun("auto_rewrite_DESKFE100_SC01_a1");
+    expect(rollbackMessage).toContain("rolled_back");
+    expect(store.autoRewriteRun.status).toBe("rolled_back");
   });
 
   it("hydrates the writer desk snapshot, timeline, and longform pressure in the store", async () => {
@@ -471,6 +592,12 @@ describe("writer deep revision desk", () => {
     expect(source).toContain("createPassagePatchCandidate");
     expect(source).toContain("acceptPassagePatchCandidate");
     expect(source).toContain("rejectPassagePatchCandidate");
+    expect(source).toContain("qualityState");
+    expect(source).toContain("autoRewriteRun");
+    expect(source).toContain("loadSceneQualityState");
+    expect(source).toContain("runSceneAutoRewrite");
+    expect(source).toContain("promoteAutoRewriteRun");
+    expect(source).toContain("rollbackAutoRewriteRun");
     expect(source).not.toContain("deep: true");
   });
 
@@ -516,6 +643,10 @@ describe("writer deep revision desk", () => {
     expect(source).toContain('data-testid="patch-candidate-create"');
     expect(source).toContain('data-testid="deep-review-findings"');
     expect(source).toContain('data-testid="inline-quality-span-findings"');
+    expect(source).toContain('data-testid="scene-quality-contract"');
+    expect(source).toContain('data-testid="scene-auto-rewrite-run"');
+    expect(source).toContain('data-testid="scene-auto-rewrite-promote"');
+    expect(source).toContain('data-testid="scene-auto-rewrite-rollback"');
     expect(source).toContain('data-testid="passage-patch-candidates"');
     expect(source).toContain('data-testid="author-preference-profile"');
     expect(source).toContain("写作与深改台");
@@ -532,6 +663,10 @@ describe("writer deep revision desk", () => {
     expect(source).toContain("创建空白作者稿");
     expect(source).toContain("反向提取戏剧卡");
     expect(source).toContain("结构候选");
+    expect(source).toContain("场景质量契约");
+    expect(source).toContain("自动重写");
+    expect(source).toContain("晋级为运行终稿");
+    expect(source).toContain("回滚");
     expect(source).toContain("作者稿");
     expect(source).toContain("运行终稿");
     expect(source).toContain("最终聚合稿");

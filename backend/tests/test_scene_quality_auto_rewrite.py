@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+from sqlalchemy import select
+
+from novel_system.db.models import (
+    AuthorDraft,
+    AutoRewriteRun,
+    ChapterGoal,
+    FinalScene,
+    QcReport,
+    SceneCard,
+    SceneQualityContract,
+    SceneRunState,
+)
+from novel_system.services.llm_client import parse_model_routing_config
+
+
+CHAPTER_ID = "QAUTO_CH01"
+SCENE_ID = "QAUTO_CH01_SC01"
+FINAL_ROW_ID = "final_scene_QAUTO_CH01_SC01_v1"
+
+
+def _headers(key: str) -> dict[str, str]:
+    return {"X-Idempotency-Key": key}
+
+
+def _seed_scene(session, *, content: str, forbidden_text: str = "不能改名林岑，也不能删除盐钟残片。") -> None:
+    session.add(
+        ChapterGoal(
+            chapter_id=CHAPTER_ID,
+            planned_scene_count=1,
+            chapter_goal="林岑必须在公开真相和保护幸存者之间做选择。",
+            main_plot_push="让盐钟残片指向失踪案真相。",
+            emotional_target="林岑从旁观修复师变成承担代价的人。",
+            ending_effect="读者意识到她的选择已经无法撤回。",
+            writer_brief_json={
+                "chapter_promise": "真相和保护不能同时满足。",
+                "ending_question": "林岑会把证据交给谁？",
+            },
+        )
+    )
+    session.add(
+        SceneCard(
+            scene_id=SCENE_ID,
+            chapter_id=CHAPTER_ID,
+            scene_seq=1,
+            pov_character_id="林岑",
+            onstage_chars_json=["林岑", "许望"],
+            location="无灯船坞",
+            scene_goal="林岑发现证据，但必须决定是否立刻公开。",
+            beats_json=["找到录音带", "听见幸存者编号", "把证据分成两份"],
+            must_include_text="盐钟残片；幸存者阿砚；许望",
+            forbidden_text=forbidden_text,
+            exit_change="林岑藏起一半证据，准备先转移幸存者。",
+            hook="第二枚盐钟的影子出现在雾墙上。",
+            writer_brief_json={
+                "character_desire": "确认证据是否真实。",
+                "obstacle": "公开会让幸存者暴露。",
+                "choice_under_pressure": "公开真相或先保护幸存者。",
+                "power_shift": "林岑成为证据持有人。",
+                "reader_aftertaste": "她越冷静，越像在越界。",
+            },
+        )
+    )
+    session.add(
+        SceneRunState(
+            scene_id=SCENE_ID,
+            scene_status="archived",
+            current_final_scene_row_id=FINAL_ROW_ID,
+            current_bundle_id="bundle_qauto_v1",
+            current_bundle_hash="hash_qauto_v1",
+        )
+    )
+    session.add(
+        FinalScene(
+            row_id=FINAL_ROW_ID,
+            scene_id=SCENE_ID,
+            chapter_id=CHAPTER_ID,
+            content=content,
+            status="approved",
+            source_bundle_id="bundle_qauto_v1",
+            source_bundle_hash="hash_qauto_v1",
+        )
+    )
+    session.commit()
+
+
+def test_quality_contract_generates_fixed_fields_preserves_chinese_and_hashes_stably(client, session) -> None:
+    _seed_scene(
+        session,
+        content="林岑看见盐钟残片。她突然意识到一切都变得不同了。",
+    )
+
+    first = client.post(f"/api/v1/scenes/{SCENE_ID}/quality-contract", headers=_headers("contract-1"))
+    second = client.post(f"/api/v1/scenes/{SCENE_ID}/quality-contract", headers=_headers("contract-2"))
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_contract = first.json()["data"]["contract"]
+    second_contract = second.json()["data"]["contract"]
+
+    assert first_contract["contract_version"] == "scene_quality_contract_v1"
+    assert first_contract["contract_hash"] == second_contract["contract_hash"]
+    assert set(first_contract["payload"]) == {
+        "scene_function",
+        "pov_or_actor",
+        "visible_desire",
+        "obstacle",
+        "forced_choice",
+        "price_paid",
+        "relationship_turn",
+        "information_release",
+        "irreversible_change",
+        "ending_action",
+        "next_scene_pull",
+        "author_protected_intent",
+        "forbidden_changes",
+    }
+    assert "林岑" in first_contract["payload"]["pov_or_actor"]
+    assert "公开真相或先保护幸存者" in first_contract["payload"]["forced_choice"]
+    assert "不能改名林岑" in first_contract["payload"]["forbidden_changes"]
+
+    rows = session.execute(select(SceneQualityContract).where(SceneQualityContract.scene_id == SCENE_ID)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].contract_hash == first_contract["contract_hash"]
+
+
+def test_auto_rewrite_full_scene_can_promote_and_rollback_without_overwriting_author_draft(client, session) -> None:
+    _seed_scene(
+        session,
+        content="林岑看着盐钟残片。她忽然意识到真相很重要。最后，一切都变得不同了。",
+    )
+    draft = AuthorDraft(
+        draft_id="author_draft_scene_QAUTO_CH01_SC01_current",
+        object_type="scene",
+        object_id=SCENE_ID,
+        source_text_ref=f"final_scene:{FINAL_ROW_ID}",
+        content="作者稿保留自己的句子，不应被自动重写覆盖。",
+        revision_no=1,
+        status="current",
+    )
+    session.add(draft)
+    session.commit()
+
+    rewrite = client.post(f"/api/v1/scenes/{SCENE_ID}/auto-rewrite", headers=_headers("rewrite-full"))
+
+    assert rewrite.status_code == 200
+    run = rewrite.json()["data"]["run"]
+    assert run["branch"] == "full_scene"
+    assert run["status"] == "candidate_ready"
+    assert run["gate_results"]["promotable"] is True
+    assert run["candidate_draft_row_id"]
+
+    promote = client.post(f"/api/v1/auto-rewrite-runs/{run['run_id']}/promote", headers=_headers("promote-full"))
+
+    assert promote.status_code == 200
+    promoted = promote.json()["data"]["run"]
+    assert promoted["status"] == "promoted"
+    assert promoted["promoted_final_scene_row_id"] != FINAL_ROW_ID
+    session.expire_all()
+    assert session.get(SceneRunState, SCENE_ID).current_final_scene_row_id == promoted["promoted_final_scene_row_id"]
+    assert session.get(FinalScene, FINAL_ROW_ID).content.startswith("林岑看着盐钟残片")
+    assert session.get(AuthorDraft, draft.draft_id).content == "作者稿保留自己的句子，不应被自动重写覆盖。"
+
+    rollback = client.post(f"/api/v1/auto-rewrite-runs/{run['run_id']}/rollback", headers=_headers("rollback-full"))
+
+    assert rollback.status_code == 200
+    session.expire_all()
+    rolled_back = rollback.json()["data"]["run"]
+    assert rolled_back["status"] == "rolled_back"
+    assert session.get(SceneRunState, SCENE_ID).current_final_scene_row_id == FINAL_ROW_ID
+    assert session.get(AutoRewriteRun, run["run_id"]).promoted_final_scene_row_id == promoted["promoted_final_scene_row_id"]
+
+
+def test_auto_rewrite_routes_language_only_failure_to_local_patch(client, session) -> None:
+    _seed_scene(
+        session,
+        content=(
+            "林岑必须选择公开证据还是先保护幸存者。她选择先保护幸存者，代价是暂时背负隐瞒真相的嫌疑。"
+            "她低头看着录音，沉默了片刻。许望低头看着录音，沉默了片刻。"
+            "林岑低头看着录音，沉默了片刻。"
+        ),
+    )
+
+    response = client.post(f"/api/v1/scenes/{SCENE_ID}/auto-rewrite", headers=_headers("rewrite-patch"))
+
+    assert response.status_code == 200
+    run = response.json()["data"]["run"]
+    assert run["branch"] == "local_patch"
+    assert run["status"] == "candidate_ready"
+    assert run["gate_results"]["promotable"] is True
+    assert "template_action_reuse" in run["failure_class"]
+
+
+def test_auto_rewrite_blocks_fact_or_reference_risk_before_candidate_generation(client, session) -> None:
+    _seed_scene(
+        session,
+        content="林岑必须选择公开证据还是先保护幸存者。她把录音带递给许望。",
+    )
+    session.add(
+        QcReport(
+            qc_report_id="qc_report_qauto_blocking",
+            scene_id=SCENE_ID,
+            chapter_id=CHAPTER_ID,
+            qc_type="hard_qc",
+            source_draft_row_id="draft_style_qauto",
+            source_bundle_id="bundle_qauto_v1",
+            resolution_code="hard_block_human",
+            pass_flag=0,
+            next_action="human_review_required",
+            issues_json=[{"issue_key": "missing_required_text", "message": "salt clock fragment missing"}],
+            rewrite_brief_json=[],
+        )
+    )
+    session.commit()
+
+    response = client.post(f"/api/v1/scenes/{SCENE_ID}/auto-rewrite", headers=_headers("rewrite-block"))
+
+    assert response.status_code == 200
+    run = response.json()["data"]["run"]
+    assert run["branch"] == "human_review"
+    assert run["status"] == "human_review_required"
+    assert run["candidate_draft_row_id"] is None
+    assert run["gate_results"]["promotable"] is False
+    assert "hard_qc_blocker" in run["promotion_blockers"]
+
+
+def test_quality_state_reports_latest_contract_rewrite_run_and_promotion_blockers(client, session) -> None:
+    _seed_scene(
+        session,
+        content="林岑看着盐钟残片。她忽然意识到真相很重要。最后，一切都变得不同了。",
+    )
+    client.post(f"/api/v1/scenes/{SCENE_ID}/quality-contract", headers=_headers("contract-state"))
+    client.post(
+        f"/api/v1/scenes/{SCENE_ID}/auto-rewrite",
+        json={"mode": "diagnose_only"},
+        headers=_headers("rewrite-diagnose"),
+    )
+
+    response = client.get(f"/api/v1/scenes/{SCENE_ID}/quality-state")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["contract"]["contract_version"] == "scene_quality_contract_v1"
+    assert payload["latest_run"]["status"] == "diagnosed"
+    assert payload["promotion"]["eligible"] is False
+    assert "diagnose_only" in payload["promotion"]["blockers"]
+
+
+def test_model_routing_accepts_dual_track_model_profiles() -> None:
+    routing = parse_model_routing_config(
+        {
+            "model_profiles": {
+                "local_fast": {"label": "快跑", "role": "draft"},
+                "quality_strong": {"label": "精修", "role": "quality_gate"},
+                "dual_track": {"label": "双轨", "role": "hybrid"},
+            },
+            "task_routing": {
+                "scene_quality_contract": {
+                    "provider": "openai_compatible",
+                    "model": "gpt-5",
+                    "temperature": 0.2,
+                    "max_output_tokens": 1800,
+                    "response_format": "json_object",
+                    "model_profile": "quality_strong",
+                },
+                "scene_auto_rewrite": {
+                    "provider": "openai_compatible",
+                    "model": "gpt-5",
+                    "temperature": 0.55,
+                    "max_output_tokens": 5000,
+                    "response_format": "json_object",
+                    "model_profile": "quality_strong",
+                },
+            },
+            "retry_budget": {},
+            "job_runtime": {},
+        }
+    )
+
+    assert routing.model_profiles["quality_strong"]["role"] == "quality_gate"
+    assert routing.task_routing["scene_auto_rewrite"].model_profile == "quality_strong"
