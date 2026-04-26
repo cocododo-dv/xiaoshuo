@@ -301,6 +301,11 @@ def test_literary_quality_analyze_text_returns_quality_spine_without_database_mu
     assert payload["object_id"] == "scratch"
     assert payload["score"] < 0.75
     assert payload["fingerprint"]["action_templates"]
+    assert payload["span_findings"]
+    first_span = payload["span_findings"][0]
+    assert {"dimension", "severity", "start", "end", "evidence", "recommended_action"} <= set(first_span)
+    assert payload["content"][first_span["start"] : first_span["end"]] == first_span["evidence"]
+    assert any(span["dimension"] == "template_action_reuse" for span in payload["span_findings"])
     assert payload["risk_clusters"][0]["count"] >= 1
     assert payload["recommended_next_action"]["action"] == "open_deepdesk_patch"
 

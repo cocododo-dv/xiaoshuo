@@ -49,6 +49,7 @@ export const useLiteraryQualityStore = defineStore("literaryQuality", {
     fingerprints: (state) => state.overview.fingerprints || [],
     crossSceneReuse: (state) => state.overview.cross_scene_reuse || [],
     recommendedNextAction: (state) => state.overview.recommended_next_action || null,
+    spanFindings: (state) => state.analyzeResult?.span_findings || [],
     benchmarkCases: (state) => state.latestReport?.cases || [],
     benchmarkSummary: (state) => state.latestReport?.summary || {},
   },

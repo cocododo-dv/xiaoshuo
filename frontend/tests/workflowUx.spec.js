@@ -74,14 +74,18 @@ describe("workflow-driven shell metadata", () => {
     const router = useShellRouter();
 
     expect(router.workflowGroups.map((group) => group.id)).toEqual([
-      "setup",
-      "authoring",
-      "runtime",
-      "knowledge",
-      "operations",
+      "daily",
+      "production",
+      "advanced",
     ]);
     expect(router.views.every((view) => view.label && view.legacyLabel && view.stepLabel && view.group && view.icon)).toBe(true);
     expect(router.views.every((view) => Array.isArray(view.nextViews))).toBe(true);
+    expect(router.views.filter((view) => view.writerPrimary).map((view) => view.id)).toEqual([
+      "author",
+      "quality",
+      "deepdesk",
+      "longform",
+    ]);
   });
 });
 
@@ -121,7 +125,7 @@ describe("writer and advanced UI modes", () => {
     });
   });
 
-  it("makes guided navigation simpler and advanced navigation visibly technical", async () => {
+  it("makes writer navigation daily-use only and advanced navigation visibly technical", async () => {
     const { useUiMode } = await import("../src/composables/useUiMode.js");
     const { default: WorkflowNav } = await import("../src/components/WorkflowNav.vue");
     const router = useShellRouter();
@@ -137,7 +141,10 @@ describe("writer and advanced UI modes", () => {
     });
 
     try {
-      expect(wrapper.el.textContent).toContain("3 运行场景");
+      expect(wrapper.el.textContent).toContain("写作舱");
+      expect(wrapper.el.textContent).toContain("章节编排");
+      expect(wrapper.el.textContent).toContain("长篇雷达");
+      expect(wrapper.el.textContent).toContain("文学质检");
       expect(wrapper.el.textContent).not.toContain("场景工作台");
       expect(wrapper.el.querySelector('[data-testid="nav-workbench-route"]')).toBeNull();
 
@@ -152,11 +159,14 @@ describe("writer and advanced UI modes", () => {
   });
 
   it("offers a compact mobile workflow selector without changing desktop nav events", async () => {
+    const { useUiMode } = await import("../src/composables/useUiMode.js");
     const { default: WorkflowNav } = await import("../src/components/WorkflowNav.vue");
     const router = useShellRouter();
+    const mode = useUiMode();
     const onNavigate = vi.fn();
 
     router.reset();
+    mode.setUiMode("writer");
 
     const wrapper = mountComponent(WorkflowNav, {
       views: router.views,
@@ -170,12 +180,12 @@ describe("writer and advanced UI modes", () => {
 
       expect(selector).not.toBeNull();
       expect(selector.value).toBe("deepdesk");
-      expect([...selector.options].map((option) => option.value)).toEqual(router.views.map((view) => view.id));
+      expect([...selector.options].map((option) => option.value)).toEqual(["deepdesk", "author", "longform", "quality"]);
 
-      selector.value = "review";
+      selector.value = "quality";
       selector.dispatchEvent(new Event("change"));
 
-      expect(onNavigate).toHaveBeenCalledWith("review");
+      expect(onNavigate).toHaveBeenCalledWith("quality");
       expect(wrapper.el.querySelector('[data-testid="workflow-nav-desktop-list"]')).not.toBeNull();
     } finally {
       wrapper.unmount();

@@ -21,6 +21,8 @@ const fingerprints = computed(() => quality.fingerprints || []);
 const crossSceneReuse = computed(() => quality.crossSceneReuse || []);
 const recommendedNextAction = computed(() => quality.recommendedNextAction || null);
 const analyzeResult = computed(() => quality.analyzeResult || null);
+// Backend field: span_findings.
+const spanFindings = computed(() => quality.spanFindings || []);
 const report = computed(() => quality.latestReport || null);
 const reportSummary = computed(() => quality.benchmarkSummary || {});
 const benchmarkCases = computed(() => quality.benchmarkCases || []);
@@ -299,6 +301,14 @@ onActivated(() => {
             <small v-if="analyzeResult.recommended_next_action?.quality_signal_id">
               {{ analyzeResult.recommended_next_action.quality_signal_id }}
             </small>
+            <div class="quality-span-findings" data-testid="quality-span-findings">
+              <article v-for="span in spanFindings" :key="`${span.dimension}-${span.start}-${span.end}`">
+                <strong>{{ DIMENSION_LABELS[span.dimension] || span.dimension }} / {{ severityLabel(span.severity) }}</strong>
+                <span>{{ span.start }}-{{ span.end }}</span>
+                <blockquote>{{ span.evidence }}</blockquote>
+                <small>{{ span.recommended_action }}</small>
+              </article>
+            </div>
           </article>
         </section>
 
@@ -698,6 +708,19 @@ onActivated(() => {
   border: 1px solid rgba(37, 51, 66, 0.1);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.42);
+}
+
+.quality-span-findings {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.quality-span-findings article {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.6rem;
+  border: 1px dashed rgba(47, 98, 113, 0.22);
+  border-radius: 8px;
 }
 
 .quality-mini-row span,

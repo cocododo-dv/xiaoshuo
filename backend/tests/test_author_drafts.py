@@ -3,6 +3,7 @@ from __future__ import annotations
 from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
+    AuthorDraftProposal,
     AuthorPreferenceProfile,
     AuthorStructureCandidate,
     ChapterGoal,
@@ -153,6 +154,68 @@ def test_author_draft_save_uses_optimistic_locking(client, session) -> None:
     assert stale_save.status_code == 409
     assert stale_save.json()["error"]["code"] == "AUTHOR_DRAFT_CONFLICT"
     assert stale_save.json()["error"]["details"]["current_revision_no"] == 2
+
+
+def test_generate_apply_and_reject_author_draft_proposals_without_overwriting_runtime(client, session) -> None:
+    _create_chapter(client, "AD250", planned_scene_count=1)
+    _create_scene(client, "AD250_SC01", chapter_id="AD250", scene_seq=1, is_chapter_last=1)
+    final_row_id = _finalize_scene(session, "AD250_SC01", "AD250", "运行终稿不能被 AI 提案覆盖。")
+    draft = client.post("/api/v1/author-drafts/scene/AD250_SC01/ensure-blank").json()["data"]["draft"]
+
+    generate_response = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/proposals/generate",
+        json={
+            "proposal_type": "scene_draft",
+            "instruction": "写一个更有选择代价的版本。",
+        },
+    )
+
+    assert generate_response.status_code == 200
+    proposal = generate_response.json()["data"]["proposal"]
+    assert proposal["draft_id"] == draft["draft_id"]
+    assert proposal["object_type"] == "scene"
+    assert proposal["object_id"] == "AD250_SC01"
+    assert proposal["proposal_type"] == "scene_draft"
+    assert proposal["content"]
+    assert proposal["status"] == "candidate"
+    session.expire_all()
+    assert session.get(AuthorDraft, draft["draft_id"]).content == draft["content"]
+    assert session.get(FinalScene, final_row_id).content == "运行终稿不能被 AI 提案覆盖。"
+
+    apply_response = client.post(
+        f"/api/v1/author-draft-proposals/{proposal['proposal_id']}/apply",
+        json={"apply_mode": "replace", "note": "采用整段起草。"},
+    )
+
+    assert apply_response.status_code == 200
+    applied = apply_response.json()["data"]
+    updated_draft = applied["draft"]
+    assert applied["proposal"]["status"] == "accepted"
+    assert updated_draft["content"] == proposal["content"]
+    assert updated_draft["revision_no"] == draft["revision_no"] + 1
+    session.expire_all()
+    assert session.get(FinalScene, final_row_id).content == "运行终稿不能被 AI 提案覆盖。"
+    assert session.query(AuthorDraftProposal).filter_by(draft_id=draft["draft_id"]).count() == 1
+    events = session.query(AuthorDraftEvent).filter_by(draft_id=draft["draft_id"]).order_by(AuthorDraftEvent.created_at.asc()).all()
+    assert [event.event_type for event in events] == ["created", "proposal_applied"]
+    assert events[-1].payload_json["proposal_id"] == proposal["proposal_id"]
+    assert events[-1].payload_json["apply_mode"] == "replace"
+
+    second = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/proposals/generate",
+        json={"proposal_type": "continuation", "instruction": "再给一个续写方向。"},
+    ).json()["data"]["proposal"]
+    reject_response = client.post(
+        f"/api/v1/author-draft-proposals/{second['proposal_id']}/reject",
+        json={"note": "太直白，暂不采用。"},
+    )
+
+    assert reject_response.status_code == 200
+    rejected = reject_response.json()["data"]["proposal"]
+    assert rejected["status"] == "rejected"
+    assert rejected["author_decision_note"] == "太直白，暂不采用。"
+    session.expire_all()
+    assert session.get(AuthorDraft, draft["draft_id"]).content == proposal["content"]
 
 
 def test_chapter_author_draft_falls_back_to_assembled_scene_text_when_no_aggregate_exists(client, session) -> None:

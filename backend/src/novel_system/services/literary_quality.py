@@ -354,6 +354,8 @@ class LiteraryQualityService:
         )
         return {
             **item,
+            "content": content,
+            "span_findings": _span_findings(content, item["findings"]),
             "risk_clusters": _risk_clusters([item]),
             "recommended_next_action": item["recommended_next_action"],
         }
@@ -650,6 +652,64 @@ def _enrich_findings(
             }
         )
     return enriched
+
+
+def _span_findings(content: str, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    spans: list[dict[str, Any]] = []
+    for finding in findings:
+        span = _locate_finding_span(content, str(finding.get("evidence_excerpt") or ""))
+        if span is None:
+            continue
+        start, end, evidence = span
+        spans.append(
+            {
+                "dimension": finding.get("dimension") or "unknown",
+                "severity": finding.get("severity") or "revision",
+                "start": start,
+                "end": end,
+                "evidence": evidence,
+                "issue": finding.get("issue") or "",
+                "recommended_action": finding.get("recommendation") or "",
+                "quality_signal_id": finding.get("quality_signal_id"),
+            }
+        )
+    return spans
+
+
+def _locate_finding_span(content: str, evidence: str) -> tuple[int, int, str] | None:
+    source = str(content or "")
+    if not source:
+        return None
+    for fragment in _evidence_fragments(evidence):
+        index = source.find(fragment)
+        if index >= 0:
+            return index, index + len(fragment), fragment
+    compact_source = _compact_ws(source)
+    if compact_source and compact_source in source:
+        index = source.find(compact_source)
+        return index, index + len(compact_source), compact_source
+    fallback = source.strip()
+    if not fallback:
+        return None
+    index = source.find(fallback)
+    fragment = fallback[: min(len(fallback), 120)]
+    return index, index + len(fragment), fragment
+
+
+def _evidence_fragments(evidence: str) -> list[str]:
+    raw = str(evidence or "").strip()
+    candidates: list[str] = []
+    if raw:
+        candidates.append(raw)
+        candidates.extend(part.strip() for part in raw.split(" / ") if part.strip())
+    fragments: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in fragments:
+            fragments.append(candidate)
+        trimmed = candidate.strip(" .。!?！？,，;；")
+        if trimmed and trimmed not in fragments:
+            fragments.append(trimmed)
+    return sorted(fragments, key=len, reverse=True)
 
 
 def _recommended_next_action(findings: list[dict[str, Any]], signals: dict[str, dict[str, Any]]) -> dict[str, Any]:

@@ -49,9 +49,17 @@ const ICONS = {
 };
 
 const groupMap = computed(() => Object.fromEntries(props.groups.map((group) => [group.id, group])));
+const visibleViews = computed(() => {
+  if (isAdvancedMode.value) {
+    return props.views;
+  }
+  return props.views
+    .filter((view) => view.writerPrimary || view.id === props.activeView)
+    .sort((left, right) => (left.writerOrder || 99) - (right.writerOrder || 99));
+});
 const orderedRows = computed(() =>
-  props.views.map((view, index) => {
-    const previous = props.views[index - 1];
+  visibleViews.value.map((view, index) => {
+    const previous = visibleViews.value[index - 1];
     return {
       view,
       group: groupMap.value[view.groupId] || { label: view.group, description: "" },
@@ -62,6 +70,10 @@ const orderedRows = computed(() =>
 
 function iconFor(view) {
   return ICONS[view.icon] || PlayCircle;
+}
+
+function labelFor(view) {
+  return !isAdvancedMode.value && view.writerLabel ? view.writerLabel : view.label;
 }
 </script>
 
@@ -80,7 +92,7 @@ function iconFor(view) {
           :key="`mobile-${row.view.id}`"
           :value="row.view.id"
         >
-          {{ row.view.label }} / {{ row.group.label }}
+          {{ labelFor(row.view) }} / {{ row.group.label }}
         </option>
       </select>
     </label>
@@ -103,7 +115,7 @@ function iconFor(view) {
             <component :is="iconFor(row.view)" :size="17" />
           </span>
           <span class="workflow-nav-copy">
-            <strong>{{ row.view.label }}</strong>
+            <strong>{{ labelFor(row.view) }}</strong>
             <small v-if="isAdvancedMode">{{ row.view.legacyLabel }}</small>
             <span
               v-if="isAdvancedMode"

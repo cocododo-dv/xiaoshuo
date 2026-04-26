@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
+    AuthorDraftProposal,
     AuthorPreferenceProfile,
     AuthorStructureCandidate,
     ChapterMemory,
@@ -39,6 +40,8 @@ AUTHOR_DRAFT_EVENT_TYPES = {
     "candidate_inserted",
     "candidate_saved",
     "candidate_rejected",
+    "proposal_applied",
+    "proposal_rejected",
 }
 
 DESK_DEFAULT_MODE = "write_first"
@@ -158,6 +161,118 @@ class AuthorDraftService:
         )
         self.session.flush()
         return self._draft_response(draft)
+
+    def proposals(self, draft_id: str) -> dict[str, Any]:
+        draft = self._require_draft(draft_id)
+        rows = self.session.execute(
+            select(AuthorDraftProposal)
+            .where(AuthorDraftProposal.draft_id == draft.draft_id)
+            .order_by(AuthorDraftProposal.created_at.desc(), AuthorDraftProposal.proposal_id.desc())
+        ).scalars().all()
+        return {
+            "draft_id": draft.draft_id,
+            "items": [self.serialize_proposal(row) for row in rows],
+        }
+
+    def generate_proposal(
+        self,
+        draft_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        draft = self._require_draft(draft_id)
+        request_payload = payload or {}
+        proposal_type = _optional_text(request_payload, "proposal_type") or (
+            "scene_draft" if draft.object_type == "scene" else "chapter_draft"
+        )
+        instruction = _optional_text(request_payload, "instruction")
+        target = self._target_payload(draft.object_type, draft.object_id)
+        proposal = AuthorDraftProposal(
+            proposal_id=f"author_draft_proposal_{draft.object_type}_{draft.object_id}_{uuid.uuid4().hex[:10]}",
+            draft_id=draft.draft_id,
+            object_type=draft.object_type,
+            object_id=draft.object_id,
+            proposal_type=proposal_type,
+            content=_proposal_content(draft, target=target, proposal_type=proposal_type, instruction=instruction),
+            rationale=_proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction),
+            source_llm_call_id=None,
+            status="candidate",
+            created_by=actor_ref or "author_draft_proposal",
+        )
+        self.session.add(proposal)
+        self.session.flush()
+        return {"proposal": self.serialize_proposal(proposal)}
+
+    def apply_proposal(
+        self,
+        proposal_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        proposal = self._require_proposal(proposal_id)
+        if proposal.status != "candidate":
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_CLOSED", "author draft proposal is not open", status_code=409)
+        draft = self._require_draft(proposal.draft_id)
+        if draft.object_type != proposal.object_type or draft.object_id != proposal.object_id:
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_TARGET_MISMATCH", "proposal target does not match author draft", status_code=409)
+        request_payload = payload or {}
+        apply_mode = _optional_text(request_payload, "apply_mode") or "replace"
+        if apply_mode not in {"replace", "append", "new_version"}:
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_APPLY_MODE_INVALID", "unsupported proposal apply_mode", status_code=400)
+
+        draft.content = _apply_proposal_content(draft.content or "", proposal.content or "", apply_mode)
+        draft.revision_no += 1
+        draft.updated_by = actor_ref or draft.updated_by
+        proposal.status = "accepted"
+        proposal.author_decision_note = _optional_text(request_payload, "note") or proposal.author_decision_note
+        self._add_event(
+            draft,
+            event_type="proposal_applied",
+            actor_ref=actor_ref,
+            revision_id=proposal.proposal_id,
+            note=proposal.author_decision_note,
+            payload={
+                "proposal_id": proposal.proposal_id,
+                "proposal_type": proposal.proposal_type,
+                "apply_mode": apply_mode,
+                "revision_no": draft.revision_no,
+            },
+        )
+        self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref)
+        self.session.flush()
+        return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
+
+    def reject_proposal(
+        self,
+        proposal_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        proposal = self._require_proposal(proposal_id)
+        if proposal.status != "candidate":
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_CLOSED", "author draft proposal is not open", status_code=409)
+        draft = self._require_draft(proposal.draft_id)
+        note = _optional_text(payload or {}, "note")
+        proposal.status = "rejected"
+        proposal.author_decision_note = note or proposal.author_decision_note
+        self._add_event(
+            draft,
+            event_type="proposal_rejected",
+            actor_ref=actor_ref,
+            revision_id=proposal.proposal_id,
+            note=proposal.author_decision_note,
+            payload={
+                "proposal_id": proposal.proposal_id,
+                "proposal_type": proposal.proposal_type,
+                "revision_no": draft.revision_no,
+            },
+        )
+        self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref)
+        self.session.flush()
+        return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
 
     def apply_patch_option(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -296,6 +411,17 @@ class AuthorDraftService:
                     .order_by(PassagePatchCandidate.created_at.desc(), PassagePatchCandidate.patch_id.desc())
                 ).scalars().all()
             ],
+            "open_draft_proposals": [
+                self.serialize_proposal(row)
+                for row in self.session.execute(
+                    select(AuthorDraftProposal)
+                    .where(
+                        AuthorDraftProposal.draft_id == draft.draft_id,
+                        AuthorDraftProposal.status == "candidate",
+                    )
+                    .order_by(AuthorDraftProposal.created_at.desc(), AuthorDraftProposal.proposal_id.desc())
+                ).scalars().all()
+            ],
             "author_preference_summary": preference.summary_json if preference is not None else {},
         }
 
@@ -432,6 +558,24 @@ class AuthorDraftService:
         }
 
     @staticmethod
+    def serialize_proposal(row: AuthorDraftProposal) -> dict[str, Any]:
+        return {
+            "proposal_id": row.proposal_id,
+            "draft_id": row.draft_id,
+            "object_type": row.object_type,
+            "object_id": row.object_id,
+            "proposal_type": row.proposal_type,
+            "content": row.content,
+            "rationale": row.rationale,
+            "source_llm_call_id": row.source_llm_call_id,
+            "status": row.status,
+            "author_decision_note": row.author_decision_note,
+            "created_by": row.created_by,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
     def serialize_structure_candidate(row: AuthorStructureCandidate) -> dict[str, Any]:
         return {
             "candidate_id": row.candidate_id,
@@ -480,6 +624,50 @@ class AuthorDraftService:
         if draft.status != "current":
             raise DomainError("AUTHOR_DRAFT_NOT_CURRENT", "author draft is not current", status_code=409)
         return draft
+
+    def _require_proposal(self, proposal_id: str) -> AuthorDraftProposal:
+        proposal = self.session.get(AuthorDraftProposal, proposal_id)
+        if proposal is None:
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_NOT_FOUND", "author draft proposal not found", status_code=404)
+        return proposal
+
+    def _refresh_proposal_preference_profile(self, proposal: AuthorDraftProposal, *, actor_ref: str) -> AuthorPreferenceProfile:
+        profile = self.session.get(AuthorPreferenceProfile, "author_pref_global_global_proposals")
+        if profile is None:
+            profile = AuthorPreferenceProfile(
+                profile_id="author_pref_global_global_proposals",
+                scope_type="global",
+                scope_ref_id="global",
+                status="draft",
+                runtime_eligible=0,
+                summary_json={},
+                source_patch_ids_json=[],
+                created_by=actor_ref or "author_draft_proposal",
+            )
+            self.session.add(profile)
+
+        summary = dict(profile.summary_json or {})
+        decisions = [row for row in summary.get("proposal_decisions", []) if isinstance(row, dict)]
+        decisions.append(
+            {
+                "proposal_id": proposal.proposal_id,
+                "proposal_type": proposal.proposal_type,
+                "object_type": proposal.object_type,
+                "object_id": proposal.object_id,
+                "decision": proposal.status,
+                "note": proposal.author_decision_note or "",
+                "content_excerpt": _short_excerpt(proposal.content),
+            }
+        )
+        decisions = decisions[-30:]
+        summary["proposal_decisions"] = decisions
+        summary["accepted_proposal_count"] = sum(1 for row in decisions if row.get("decision") == "accepted")
+        summary["rejected_proposal_count"] = sum(1 for row in decisions if row.get("decision") == "rejected")
+        profile.status = "draft"
+        profile.runtime_eligible = 0
+        profile.summary_json = summary
+        profile.created_by = actor_ref or profile.created_by
+        return profile
 
     def _source_for_target(self, object_type: str, object_id: str) -> dict[str, str]:
         if object_type == "scene":
@@ -657,6 +845,65 @@ def _replace_or_append(content: str, source_excerpt: str, replacement: str) -> s
         return current.replace(needle, replacement, 1)
     trimmed = current.rstrip()
     return f"{trimmed}\n\n{replacement}" if trimmed else replacement
+
+
+def _apply_proposal_content(current: str, proposal_content: str, apply_mode: str) -> str:
+    proposal_text = str(proposal_content or "").strip()
+    if apply_mode == "append":
+        trimmed = str(current or "").rstrip()
+        return f"{trimmed}\n\n{proposal_text}" if trimmed else proposal_text
+    return proposal_text
+
+
+def _proposal_content(
+    draft: AuthorDraft,
+    *,
+    target: dict[str, Any],
+    proposal_type: str,
+    instruction: str | None,
+) -> str:
+    current = str(draft.content or "").strip()
+    scene_card = target.get("scene_card") if isinstance(target.get("scene_card"), dict) else {}
+    beats = scene_card.get("beats") if isinstance(scene_card.get("beats"), list) else []
+    beat_line = " / ".join(str(item).strip() for item in beats if str(item).strip())
+    target_lines = [
+        f"Object: {draft.object_type}:{draft.object_id}",
+        f"Proposal type: {proposal_type}",
+    ]
+    if target.get("chapter_goal"):
+        target_lines.append(f"Chapter goal: {target['chapter_goal']}")
+    if scene_card.get("scene_goal"):
+        target_lines.append(f"Scene goal: {scene_card['scene_goal']}")
+    if beat_line:
+        target_lines.append(f"Beats: {beat_line}")
+    if instruction:
+        target_lines.append(f"Author instruction: {instruction}")
+
+    seed = current or str(scene_card.get("scene_goal") or target.get("chapter_goal") or "The scene needs a costly choice.").strip()
+    if not seed:
+        seed = "The scene needs a costly choice."
+    return "\n".join(
+        [
+            "[AI draft proposal]",
+            *target_lines,
+            "",
+            "Draft:",
+            f"{seed}",
+            "",
+            "Revision direction:",
+            "Make the visible action carry pressure, cost, and a hook for the next beat.",
+        ]
+    ).strip()
+
+
+def _proposal_rationale(*, target: dict[str, Any], proposal_type: str, instruction: str | None) -> str:
+    focus = instruction or target.get("chapter_goal") or "writer-facing drafting target"
+    return f"Generated as a comparable {proposal_type} proposal from the current author draft target: {focus}"
+
+
+def _short_excerpt(text: str, *, limit: int = 160) -> str:
+    compact = " ".join(str(text or "").split())
+    return compact if len(compact) <= limit else f"{compact[:limit].rstrip()}..."
 
 
 def _serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:

@@ -17,7 +17,7 @@ describe("literary quality engine console", () => {
     const appSource = readSource("src/App.vue");
 
     expect(routerSource).toContain('id: "quality"');
-    expect(routerSource).toContain('groupId: "runtime"');
+    expect(routerSource).toContain('groupId: "daily"');
     expect(routerSource).toContain('nextViews: ["deepdesk", "review", "workbench"]');
     expect(appSource).toContain("quality: defineAsyncComponent");
     expect(appSource).toContain("./views/LiteraryQualityView.vue");
@@ -69,6 +69,7 @@ describe("literary quality engine console", () => {
     expect(source).toContain('data-testid="quality-filter-risk-type"');
     expect(source).toContain('data-testid="quality-filter-min-severity"');
     expect(source).toContain('data-testid="quality-ad-hoc-scan"');
+    expect(source).toContain('data-testid="quality-span-findings"');
     expect(source).toContain('data-testid="quality-risk-clusters"');
     expect(source).toContain('data-testid="quality-cross-scene-reuse"');
     expect(source).toContain('data-testid="quality-fingerprint-summary"');
@@ -85,6 +86,8 @@ describe("literary quality engine console", () => {
     expect(source).toContain("valid_ambiguity");
     expect(source).toContain("choice_pressure");
     expect(source).toContain("quality_signal_id");
+    expect(source).toContain("span_findings");
+    expect(source).toContain("spanFindings");
     expect(source).toContain("recommended_next_action");
     expect(source).toContain('navigate("deepdesk")');
     expect(source).toContain("runBaselineEval");

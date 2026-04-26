@@ -412,11 +412,39 @@ class AuthorDraft(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
+class AuthorDraftProposal(Base):
+    __tablename__ = "author_draft_proposals"
+    __table_args__ = (
+        CheckConstraint("object_type IN ('scene','chapter')", name="ck_author_draft_proposals_object_type"),
+        CheckConstraint(
+            "status IN ('candidate','accepted','rejected','superseded')",
+            name="ck_author_draft_proposals_status",
+        ),
+    )
+
+    proposal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String)
+    object_type: Mapped[str] = mapped_column(String)
+    object_id: Mapped[str] = mapped_column(String)
+    proposal_type: Mapped[str] = mapped_column(String, default="scene_draft")
+    content: Mapped[str] = mapped_column(Text)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="candidate")
+    author_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="author_draft_proposal")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class AuthorDraftEvent(Base):
     __tablename__ = "author_draft_events"
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('created','edited','candidate_inserted','candidate_saved','candidate_rejected')",
+            "event_type IN ("
+            "'created','edited','candidate_inserted','candidate_saved','candidate_rejected',"
+            "'proposal_applied','proposal_rejected'"
+            ")",
             name="ck_author_draft_events_type",
         ),
     )

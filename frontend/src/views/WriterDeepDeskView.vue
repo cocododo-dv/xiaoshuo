@@ -31,6 +31,8 @@ const findings = computed(() => desk.findings || []);
 const lensEvaluations = computed(() => desk.lensEvaluations || []);
 const candidates = computed(() => desk.candidateRows || []);
 const structureCandidates = computed(() => desk.structureCandidateRows || []);
+const draftProposals = computed(() => desk.draftProposalRows || []);
+const inlineQualitySpanFindings = computed(() => desk.inlineQualitySpanFindings || []);
 const longformPressure = computed(() => desk.longformPressure || []);
 const draftEvents = computed(() => desk.draftEvents || []);
 const preference = computed(() => desk.preferenceProfile || null);
@@ -173,6 +175,8 @@ function eventTypeLabel(value) {
     candidate_inserted: "候选放入稿件",
     candidate_saved: "候选保存确认",
     candidate_rejected: "拒绝候选",
+    proposal_applied: "应用 AI 草稿提案",
+    proposal_rejected: "拒绝 AI 草稿提案",
     structure_extracted: "结构提取",
   }[value] || value || "稿件事件";
 }
@@ -280,6 +284,49 @@ async function runAiDraftToAuthorDraft() {
   });
 }
 
+async function generateDraftProposal() {
+  await runFlowAction({
+    scopeKey: AI_DRAFT_SCOPE,
+    actionLabel: "AI 草稿提案",
+    runningMessage: "正在生成可比较的 AI 草稿提案；作者稿、运行终稿和章节聚合稿都不会被覆盖。",
+    successMessage: (message) => message,
+    nextStep: "先比较提案，再选择整段替换、追加到当前稿、作为新版本，或拒绝并记录原因。",
+    action: () =>
+      desk.generateDraftProposal({
+        proposal_type: desk.draftObjectType === "scene" ? "scene_draft" : "chapter_draft",
+      }),
+  });
+}
+
+async function applyDraftProposal(proposal, applyMode) {
+  await runFlowAction({
+    scopeKey: AI_DRAFT_SCOPE,
+    actionLabel: "应用 AI 草稿提案",
+    runningMessage: "正在把提案写成作者稿的新版本；运行终稿和章节聚合稿保持不变。",
+    successMessage: (message) => message,
+    nextStep: "继续人工改写并保存作者稿，或运行深改诊断检查新版本的风险。",
+    action: () =>
+      desk.applyDraftProposal(proposal, {
+        apply_mode: applyMode,
+        note: `apply proposal as ${applyMode}`,
+      }),
+  });
+}
+
+async function rejectDraftProposal(proposal) {
+  await runFlowAction({
+    scopeKey: AI_DRAFT_SCOPE,
+    actionLabel: "拒绝 AI 草稿提案",
+    runningMessage: "正在记录拒绝原因；这会沉淀为作者偏好草稿，但不会进入运行提示。",
+    successMessage: (message) => message,
+    nextStep: "可以重新生成提案，或回到作者稿里直接改写。",
+    action: () =>
+      desk.rejectDraftProposal(proposal, {
+        note: "kept current author draft",
+      }),
+  });
+}
+
 async function selectScene(event) {
   try {
     await desk.selectSceneDraft(event.target.value);
@@ -333,6 +380,17 @@ async function runDeepReview() {
     successMessage: (message) => message,
     nextStep: "查看阻断、修订和审美问题，再挑一段生成局部候选。",
     action: () => desk.runCurrentDeepReview(),
+  });
+}
+
+async function runInlineQuality() {
+  await runFlowAction({
+    scopeKey: REVIEW_SCOPE,
+    actionLabel: "文学质检内联扫描",
+    runningMessage: "正在把当前作者稿扫描为可定位的 span findings。",
+    successMessage: () => "文学质检内联扫描已完成。",
+    nextStep: "优先处理模型腔、动作模板复用、意象场复用、假清晰和解释性对白。",
+    action: () => desk.analyzeCurrentDraftQuality(),
   });
 }
 
@@ -566,17 +624,75 @@ onActivated(() => {
                 AI 起草
               </button>
             </div>
-            <button
-              class="ghost"
-              type="button"
-              data-testid="ai-draft-to-author-draft"
-              :disabled="!desk.selectedSceneId || desk.actionId === 'ai-draft'"
-              @click="runAiDraftToAuthorDraft"
-            >
-              {{ desk.actionId === "ai-draft" ? "起草中..." : "运行并转为作者稿" }}
-            </button>
           </div>
           <FlowActionReceipt :receipt="receipt(AI_DRAFT_SCOPE)" />
+
+          <section class="draft-proposal-panel" data-testid="draft-proposals">
+            <div class="receipt-head compact">
+              <div>
+                <h4>AI 草稿提案</h4>
+                <p class="muted receipt-copy">AI 只生成可比较、可采纳、可拒绝的提案；不会直接覆盖作者稿、运行终稿或章节聚合稿。</p>
+              </div>
+              <span class="badge">{{ draftProposals.length }} 条</span>
+            </div>
+            <div class="field-inline draft-proposal-controls">
+              <button
+                type="button"
+                data-testid="draft-proposal-generate"
+                :disabled="!desk.authorDraft || desk.actionId === 'proposal-generate'"
+                @click="generateDraftProposal"
+              >
+                {{ desk.actionId === "proposal-generate" ? "生成中..." : "生成 AI 草稿提案" }}
+              </button>
+              <span class="muted">提案进入右侧账本，只有应用后才成为作者稿新版本。</span>
+            </div>
+            <div v-if="!draftProposals.length" class="empty">还没有 AI 草稿提案。</div>
+            <article v-for="proposal in draftProposals" :key="proposal.proposal_id" class="draft-proposal-row">
+              <div class="receipt-head compact">
+                <div>
+                  <strong>{{ proposal.proposal_type || "draft" }}</strong>
+                  <p class="muted">{{ proposal.rationale || proposal.proposal_id }}</p>
+                </div>
+                <span class="badge">{{ statusLabel(proposal.status) }}</span>
+              </div>
+              <p class="proposal-text">{{ proposal.content }}</p>
+              <div class="card-actions">
+                <button
+                  type="button"
+                  data-testid="draft-proposal-apply-replace"
+                  :disabled="desk.actionId.startsWith('proposal-') || proposal.status !== 'candidate'"
+                  @click="applyDraftProposal(proposal, 'replace')"
+                >
+                  整段替换
+                </button>
+                <button
+                  type="button"
+                  data-testid="draft-proposal-apply-append"
+                  :disabled="desk.actionId.startsWith('proposal-') || proposal.status !== 'candidate'"
+                  @click="applyDraftProposal(proposal, 'append')"
+                >
+                  追加到当前稿
+                </button>
+                <button
+                  type="button"
+                  data-testid="draft-proposal-apply-new-version"
+                  :disabled="desk.actionId.startsWith('proposal-') || proposal.status !== 'candidate'"
+                  @click="applyDraftProposal(proposal, 'new_version')"
+                >
+                  作为新版本
+                </button>
+                <button
+                  type="button"
+                  class="ghost"
+                  data-testid="draft-proposal-reject"
+                  :disabled="desk.actionId.startsWith('proposal-') || proposal.status !== 'candidate'"
+                  @click="rejectDraftProposal(proposal)"
+                >
+                  拒绝提案
+                </button>
+              </div>
+            </article>
+          </section>
 
           <div class="draft-layer-strip">
             <article>
@@ -755,7 +871,39 @@ onActivated(() => {
           >
             运行深改诊断
           </button>
+          <button
+            type="button"
+            class="ghost"
+            data-testid="inline-quality-run"
+            :disabled="!desk.authorDraft || !draftContent.trim() || desk.actionId === 'inline-quality'"
+            @click="runInlineQuality"
+          >
+            {{ desk.actionId === "inline-quality" ? "扫描中..." : "文学质检内联扫描" }}
+          </button>
           <FlowActionReceipt :receipt="receipt(REVIEW_SCOPE)" />
+
+          <section class="inline-quality-panel" data-testid="inline-quality-span-findings">
+            <div class="receipt-head compact">
+              <div>
+                <h4>文学质检内联风险</h4>
+                <p class="muted receipt-copy">span_findings 直接定位在作者稿上，先处理会破坏类型长篇阅读推进的风险。</p>
+              </div>
+              <span class="badge">{{ inlineQualitySpanFindings.length }} 条</span>
+            </div>
+            <div v-if="!inlineQualitySpanFindings.length" class="empty">暂未扫描当前作者稿。</div>
+            <article
+              v-for="span in inlineQualitySpanFindings"
+              :key="`${span.dimension}-${span.start}-${span.end}`"
+              class="deep-finding"
+            >
+              <div class="receipt-head compact">
+                <strong>{{ severityLabel(span.severity) }} / {{ span.dimension }}</strong>
+                <span class="badge">{{ span.start }}-{{ span.end }}</span>
+              </div>
+              <blockquote>{{ span.evidence }}</blockquote>
+              <p class="muted">{{ span.recommended_action }}</p>
+            </article>
+          </section>
 
           <section class="deep-longform-pressure" data-testid="desk-longform-pressure">
             <div class="receipt-head compact">
@@ -916,6 +1064,7 @@ onActivated(() => {
 .deep-desk-rail,
 .deep-candidates,
 .deep-structure,
+.draft-proposal-panel,
 .deep-preference {
   display: grid;
   gap: 1rem;
@@ -1087,6 +1236,8 @@ onActivated(() => {
 }
 
 .draft-event-timeline,
+.draft-proposal-panel,
+.inline-quality-panel,
 .deep-longform-pressure {
   display: grid;
   gap: 0.7rem;
@@ -1133,6 +1284,7 @@ onActivated(() => {
 .deep-option,
 .deep-candidate-row,
 .deep-structure-row,
+.draft-proposal-row,
 .deep-pressure-row,
 .deep-preference-grid > article {
   display: grid;
@@ -1243,6 +1395,14 @@ onActivated(() => {
   line-height: 1.75;
 }
 
+.proposal-text {
+  max-height: 16rem;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.75;
+}
+
 .deep-option button {
   justify-self: start;
 }
@@ -1256,7 +1416,7 @@ onActivated(() => {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1360px) {
   .deep-desk-shell,
   .draft-layer-strip {
     grid-template-columns: 1fr;

@@ -443,6 +443,22 @@ export function deriveAuthorDraftFromGeneration(draftId) {
   return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/derive-from-generation`);
 }
 
+export function fetchAuthorDraftProposals(draftId) {
+  return apiGet(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/proposals`);
+}
+
+export function generateAuthorDraftProposal(draftId, payload = {}) {
+  return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/proposals/generate`, payload);
+}
+
+export function applyAuthorDraftProposal(proposalId, payload = {}) {
+  return apiPost(`/api/v1/author-draft-proposals/${encodeURIComponent(proposalId)}/apply`, payload);
+}
+
+export function rejectAuthorDraftProposal(proposalId, payload = {}) {
+  return apiPost(`/api/v1/author-draft-proposals/${encodeURIComponent(proposalId)}/reject`, payload);
+}
+
 export function saveAuthorDraft(draftId, payload) {
   return apiPatch(`/api/v1/author-drafts/${encodeURIComponent(draftId)}`, payload);
 }

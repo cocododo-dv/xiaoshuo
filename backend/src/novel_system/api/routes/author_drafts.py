@@ -54,6 +54,51 @@ def derive_author_draft_from_generation(draft_id: str, request: Request, session
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.get("/api/v1/author-drafts/{draft_id}/proposals")
+def get_author_draft_proposals(draft_id: str, request: Request, session: Session = Depends(get_session)):
+    result = AuthorDraftService(session).proposals(draft_id)
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-drafts/{draft_id}/proposals/generate")
+def generate_author_draft_proposal(
+    draft_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).generate_proposal(draft_id, payload or {}, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-draft-proposals/{proposal_id}/apply")
+def apply_author_draft_proposal(
+    proposal_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).apply_proposal(proposal_id, payload or {}, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-draft-proposals/{proposal_id}/reject")
+def reject_author_draft_proposal(
+    proposal_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).reject_proposal(proposal_id, payload or {}, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v1/author-drafts/{draft_id}/apply-patch-option")
 def apply_author_draft_patch_option(draft_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"

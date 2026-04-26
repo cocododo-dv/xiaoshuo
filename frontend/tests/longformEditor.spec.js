@@ -113,6 +113,7 @@ describe("longform editor tower API and store", () => {
 
     await store.initialize({ force: true });
     expect(store.cardItems[0].card_type).toBe("character_arc_gap");
+    expect(store.dailyFocusCards[0].card_type).toBe("character_arc_gap");
     expect(store.openCards.length).toBe(1);
 
     await store.runDiagnose();
@@ -149,6 +150,8 @@ describe("longform editor tower view contract", () => {
     expect(viewSource).toContain("useLongformEditorStore");
     expect(viewSource).toContain('data-testid="longform-editor-tabs"');
     expect(viewSource).toContain('data-testid="longform-editor-cards"');
+    expect(viewSource).toContain('data-testid="longform-card-open-deepdesk"');
+    expect(viewSource).toContain("dailyFocusCards");
     expect(viewSource).toContain("结构诊断卡");
     expect(viewSource).toContain("人物弧线");
     expect(viewSource).toContain("伏笔债务");

@@ -64,6 +64,25 @@ export const useLongformEditorStore = defineStore("longformEditor", {
       (state.cards.items || []).filter((card) => card.card_type === "promise_without_payoff"),
     referenceRiskCards: (state) =>
       (state.cards.items || []).filter((card) => card.card_type === "reference_leakage_risk"),
+    dailyFocusCards: (state) => {
+      const priorityTypes = new Set([
+        "character_arc_gap",
+        "foreshadow_debt",
+        "promise_without_payoff",
+        "information_congestion",
+        "relationship_turn_stall",
+      ]);
+      const severityRank = { critical: 0, major: 1, minor: 2, info: 3 };
+      return (state.cards.items || [])
+        .filter((card) => card.status === "open" && priorityTypes.has(card.card_type))
+        .sort((left, right) => {
+          const severityDelta = (severityRank[left.severity] ?? 9) - (severityRank[right.severity] ?? 9);
+          if (severityDelta) {
+            return severityDelta;
+          }
+          return String(left.card_id || "").localeCompare(String(right.card_id || ""));
+        });
+    },
   },
   actions: {
     markFresh() {

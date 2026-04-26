@@ -27,7 +27,7 @@ const motifTracking = computed(() => control.motifTracking);
 const foreshadowDebts = computed(() => control.foreshadowDebts);
 const continuityAlerts = computed(() => control.continuityAlerts);
 const revisionPressure = computed(() => control.revisionPressure);
-const cards = computed(() => editor.cardItems);
+const cards = computed(() => editor.dailyFocusCards);
 
 const tabs = [
   { id: "cards", label: "结构诊断卡" },
@@ -259,13 +259,14 @@ onActivated(() => {
               </div>
               <p>{{ card.evidence?.issue || card.evidence?.text || card.evidence?.chapter_promise || "结构压力需要作者判断。" }}</p>
               <p class="muted">{{ card.recommendation?.summary || "-" }}</p>
+              <p class="muted">明确目标：改 {{ card.chapter_id || "全书" }}{{ card.scene_id ? ` / ${card.scene_id}` : "" }} 的 {{ cardTitle(card) }}</p>
               <textarea
                 v-model="guidanceDraft[card.card_id]"
                 rows="3"
                 :placeholder="card.recommendation?.summary || '写下要进入审核的结构指导'"
               />
               <div class="toolbar compact">
-                <button type="button" @click="openDeepDesk(card)">跳转深改台</button>
+                <button type="button" data-testid="longform-card-open-deepdesk" @click="openDeepDesk(card)">跳转深改台</button>
                 <button type="button" @click="actOnCard(card, 'resolve')">解决</button>
                 <button type="button" @click="actOnCard(card, 'dismiss')">忽略</button>
                 <button type="button" @click="actOnCard(card, 'reopen')">重开</button>
