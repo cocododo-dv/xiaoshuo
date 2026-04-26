@@ -11,6 +11,7 @@ from novel_system.db.models import (
     PassagePatchCandidate,
     SceneCard,
     SceneRunState,
+    WorkProfile,
     WriterEvaluation,
 )
 
@@ -208,3 +209,68 @@ def test_author_desk_snapshot_can_read_chapter_level_author_draft_and_limits_pre
     assert data["author_draft"]["draft_id"] == "author_draft_chapter_DESK100"
     assert data["aggregate_text"]["content"].startswith("最终聚合稿")
     assert len(data["longform_pressure"]) == 3
+
+
+def test_author_desk_snapshot_exposes_work_profile_judgment_layers_and_daily_focus(client, session) -> None:
+    _seed_author_desk_target(session)
+    session.add(
+        WorkProfile(
+            profile_id="work_profile_DESK100",
+            scope_type="chapter",
+            scope_ref_id="DESK100",
+            profile_key="quiet_literary",
+            display_name="文学慢热",
+            description="允许低情节推进，强调余韵和人物内在压力。",
+            profile_json={
+                "ending_drive_policy": "soft",
+                "choice_pressure_policy": "suggest",
+                "diagnosis_tone": "editorial",
+            },
+            created_by="test",
+        )
+    )
+    evaluation = session.get(WriterEvaluation, "writer_deep_eval_DESK100_SC01")
+    evaluation.findings_json = [
+        {
+            "dimension": "continuity",
+            "severity": "blocking",
+            "issue": "人物称谓和前文冲突。",
+            "recommendation": "先修正事实。",
+        },
+        {
+            "dimension": "choice_pressure",
+            "severity": "revision",
+            "issue": "选择代价偏轻。",
+            "recommendation": "补一个可见代价。",
+        },
+        {
+            "dimension": "ending_drive",
+            "severity": "profile_mismatch",
+            "issue": "结尾没有强钩子。",
+            "recommendation": "在文学慢热档案下仅提示，不阻断。",
+        },
+        {
+            "dimension": "image_necessity",
+            "severity": "taste",
+            "issue": "意象略满。",
+            "recommendation": "作者可按口味保留。",
+        },
+    ]
+    session.commit()
+
+    response = client.get("/api/v1/author-desk/scene/DESK100_SC01/snapshot")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["work_profile"]["profile_key"] == "quiet_literary"
+    assert data["work_profile"]["display_name"] == "文学慢热"
+    layers = data["deep_review_summary"]["judgment_layers"]
+    assert [item["dimension"] for item in layers["blocking"]] == ["continuity"]
+    assert [item["dimension"] for item in layers["revision"]] == ["choice_pressure"]
+    assert [item["dimension"] for item in layers["profile_mismatch"]] == ["ending_drive"]
+    assert [item["dimension"] for item in layers["taste"]] == ["image_necessity"]
+    assert data["deep_review_summary"]["non_blocking_count"] == 3
+    assert data["daily_focus"][0]["source"] == "deep_review"
+    assert data["daily_focus"][0]["severity"] == "blocking"
+    assert data["daily_focus"][0]["target_view"] == "deepdesk"
+    assert len(data["daily_focus"]) <= 5

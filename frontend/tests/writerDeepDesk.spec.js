@@ -78,6 +78,7 @@ function draftProposalPayload(overrides = {}) {
     object_type: "scene",
     object_id: "DESKFE100_SC01",
     proposal_type: overrides.proposal_type || "scene_draft",
+    proposal_source: overrides.proposal_source || "single_request",
     content: overrides.content || "AI proposal content.",
     rationale: overrides.rationale || "Make the choice cost visible.",
     status: overrides.status || "candidate",
@@ -96,6 +97,11 @@ function deskSnapshotPayload() {
       scene_id: "DESKFE100_SC01",
     },
     author_draft: authorDraftPayload().draft,
+    work_profile: {
+      profile_key: "quiet_literary",
+      display_name: "文学慢热",
+      profile_json: { ending_drive_policy: "soft" },
+    },
     runtime_text: {
       source_ref: "final_scene:final_scene_DESKFE100_SC01_v1",
       content: "运行终稿。",
@@ -109,6 +115,13 @@ function deskSnapshotPayload() {
     deep_review_summary: {
       overall_score: 0.62,
       top_findings: [{ dimension: "choice_pressure", issue: "代价不够具体。" }],
+      judgment_layers: {
+        blocking: [],
+        revision: [{ dimension: "choice_pressure", issue: "代价不够具体。" }],
+        profile_mismatch: [],
+        taste: [{ dimension: "image_necessity", issue: "意象略满。" }],
+      },
+      non_blocking_count: 2,
     },
     open_candidates: [
       {
@@ -127,6 +140,15 @@ function deskSnapshotPayload() {
         card_type: "character_arc_gap",
         severity: "critical",
         recommendation: { summary: "让人物付出可见代价。" },
+      },
+    ],
+    daily_focus: [
+      {
+        source: "deep_review",
+        severity: "revision",
+        target_view: "deepdesk",
+        dimension: "choice_pressure",
+        title: "代价不够具体。",
       },
     ],
     author_preference_summary: { preferred_moves: ["更含蓄"] },
@@ -169,6 +191,7 @@ describe("writer deep revision desk", () => {
     expect(apiSource).toContain("deriveAuthorDraftFromGeneration");
     expect(apiSource).toContain("fetchAuthorDraftProposals");
     expect(apiSource).toContain("generateAuthorDraftProposal");
+    expect(apiSource).toContain("generateAuthorDraftProposalSet");
     expect(apiSource).toContain("applyAuthorDraftProposal");
     expect(apiSource).toContain("rejectAuthorDraftProposal");
     expect(apiSource).toContain("analyzeLiteraryQualityText");
@@ -192,6 +215,7 @@ describe("writer deep revision desk", () => {
     expect(apiSource).toContain("/ensure-blank");
     expect(apiSource).toContain("/derive-from-generation");
     expect(apiSource).toContain("/proposals/generate");
+    expect(apiSource).toContain("/proposals/generate-set");
     expect(apiSource).toContain("/author-draft-proposals");
     expect(apiSource).toContain("/apply-patch-option");
     expect(apiSource).toContain("/structure-extract");
@@ -206,6 +230,7 @@ describe("writer deep revision desk", () => {
     await api.fetchAuthorDraftEvents("author_draft_scene_DESKFE100_SC01");
     await api.fetchAuthorDraftProposals("author_draft_scene_DESKFE100_SC01");
     await api.generateAuthorDraftProposal("author_draft_scene_DESKFE100_SC01", { proposal_type: "scene_draft" });
+    await api.generateAuthorDraftProposalSet("author_draft_scene_DESKFE100_SC01", { instruction: "three lanes" });
     await api.applyAuthorDraftProposal("proposal_DESKFE100_SC01", { apply_mode: "replace" });
     await api.rejectAuthorDraftProposal("proposal_DESKFE100_SC01", { note: "too direct" });
 
@@ -214,6 +239,7 @@ describe("writer deep revision desk", () => {
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-drafts/author_draft_scene_DESKFE100_SC01/events");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-drafts/author_draft_scene_DESKFE100_SC01/proposals");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-drafts/author_draft_scene_DESKFE100_SC01/proposals/generate");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-drafts/author_draft_scene_DESKFE100_SC01/proposals/generate-set");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-draft-proposals/proposal_DESKFE100_SC01/apply");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-draft-proposals/proposal_DESKFE100_SC01/reject");
   });
@@ -256,6 +282,9 @@ describe("writer deep revision desk", () => {
 
     expect(store.authorDeskSnapshot.target.object_id).toBe("DESKFE100_SC01");
     expect(store.longformPressure[0].card_type).toBe("character_arc_gap");
+    expect(store.workProfile.display_name).toBe("文学慢热");
+    expect(store.dailyFocus[0].dimension).toBe("choice_pressure");
+    expect(store.judgmentLayers.taste[0].dimension).toBe("image_necessity");
     expect(store.snapshotOpenCandidates[0].candidate_category).toBe("dialogue_rewrite");
     expect(store.snapshotOpenCandidates[0].preference_tags).toEqual(["少解释", "对白更短"]);
     expect(store.draftProposalRows[0].proposal_id).toBe("proposal_DESKFE100_SC01");
@@ -337,6 +366,59 @@ describe("writer deep revision desk", () => {
     expect(store.draftProposalRows[0].author_decision_note).toBe("too direct");
   });
 
+  it("generates the three author proposal lanes as separate candidates", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      const path = String(url);
+      if (path.includes("/chapter-manuscripts/DESKFE100")) {
+        return okEnvelope(chapterDetailPayload());
+      }
+      if (path.includes("/chapter-manuscripts")) {
+        return okEnvelope(chapterListPayload());
+      }
+      if (path.includes("/ensure-blank")) {
+        return okEnvelope(authorDraftPayload());
+      }
+      if (path.includes("/proposals/generate-set")) {
+        return okEnvelope({
+          proposals: [
+            draftProposalPayload({ proposal_id: "proposal_structure", proposal_type: "structure_candidate", proposal_source: "author_cockpit_triad" }),
+            draftProposalPayload({ proposal_id: "proposal_passage", proposal_type: "passage_candidate", proposal_source: "author_cockpit_triad" }),
+            draftProposalPayload({ proposal_id: "proposal_language", proposal_type: "language_candidate", proposal_source: "author_cockpit_triad" }),
+          ],
+        });
+      }
+      if (path.includes("/deep-review")) {
+        return okEnvelope({ latest_evaluation: null, lens_evaluations: [], patch_candidates: [] });
+      }
+      if (path.includes("/author-preference-profile")) {
+        return okEnvelope({ profile: { summary: {} } });
+      }
+      if (path.includes("/author-desk/scene/DESKFE100_SC01/snapshot")) {
+        return okEnvelope(deskSnapshotPayload());
+      }
+      if (path.includes("/events")) {
+        return okEnvelope({ events: [] });
+      }
+      return okEnvelope({});
+    });
+
+    const { useWriterDeepDeskStore } = await import("../src/stores/writerDeepDesk.js");
+    const store = useWriterDeepDeskStore();
+
+    await store.initialize({ force: true });
+    await store.setDraftMode("scene");
+    const message = await store.generateDraftProposalSet({ instruction: "three lanes" });
+
+    expect(message).toContain("3");
+    expect(store.draftProposalRows.map((row) => row.proposal_type)).toEqual([
+      "language_candidate",
+      "passage_candidate",
+      "structure_candidate",
+      "scene_draft",
+    ]);
+    expect(store.draftProposalRows[0].proposal_source).toBe("author_cockpit_triad");
+  });
+
   it("adds a focused store without deep watchers for long chapter text", () => {
     const storePath = path.join(SOURCE_ROOT, "src/stores/writerDeepDesk.js");
     expect(existsSync(storePath)).toBe(true);
@@ -349,6 +431,9 @@ describe("writer deep revision desk", () => {
     expect(source).toContain("draftEvents");
     expect(source).toContain("draftProposals");
     expect(source).toContain("draftProposalRows");
+    expect(source).toContain("dailyFocus");
+    expect(source).toContain("workProfile");
+    expect(source).toContain("judgmentLayers");
     expect(source).toContain("inlineQualitySpanFindings");
     expect(source).toContain("span_findings");
     expect(source).toContain("longformPressure");
@@ -370,6 +455,7 @@ describe("writer deep revision desk", () => {
     expect(source).toContain("setDeskMode");
     expect(source).toContain("runAiDraftToAuthorDraft");
     expect(source).toContain("generateDraftProposal");
+    expect(source).toContain("generateDraftProposalSet");
     expect(source).toContain("applyDraftProposal");
     expect(source).toContain("rejectDraftProposal");
     expect(source).toContain("analyzeCurrentDraftQuality");
@@ -407,6 +493,10 @@ describe("writer deep revision desk", () => {
     expect(source).toContain('data-testid="author-draft-events"');
     expect(source).toContain('data-testid="draft-proposals"');
     expect(source).toContain('data-testid="draft-proposal-generate"');
+    expect(source).toContain('data-testid="draft-proposal-generate-set"');
+    expect(source).toContain('data-testid="author-daily-focus"');
+    expect(source).toContain('data-testid="author-work-profile"');
+    expect(source).toContain('data-testid="judgment-layers"');
     expect(source).toContain('data-testid="draft-proposal-apply-replace"');
     expect(source).toContain('data-testid="draft-proposal-apply-append"');
     expect(source).toContain('data-testid="draft-proposal-apply-new-version"');
@@ -434,6 +524,9 @@ describe("writer deep revision desk", () => {
     expect(source).toContain("深改诊断");
     expect(source).toContain("长篇压力");
     expect(source).toContain("AI 草稿提案");
+    expect(source).toContain("三类候选");
+    expect(source).toContain("今日焦点");
+    expect(source).toContain("作品档案");
     expect(source).toContain("追加到当前稿");
     expect(source).toContain("作为新版本");
     expect(source).toContain("创建空白作者稿");

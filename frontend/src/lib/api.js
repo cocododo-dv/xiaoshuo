@@ -451,6 +451,10 @@ export function generateAuthorDraftProposal(draftId, payload = {}) {
   return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/proposals/generate`, payload);
 }
 
+export function generateAuthorDraftProposalSet(draftId, payload = {}) {
+  return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/proposals/generate-set`, payload);
+}
+
 export function applyAuthorDraftProposal(proposalId, payload = {}) {
   return apiPost(`/api/v1/author-draft-proposals/${encodeURIComponent(proposalId)}/apply`, payload);
 }

@@ -26,6 +26,7 @@ from novel_system.api.routes import (
     scenes,
     style_profile,
     system_config,
+    work_profile,
     writer_deep_review,
     writer_review,
 )
@@ -113,6 +114,7 @@ def create_app() -> FastAPI:
     app.include_router(indexing.router)
     app.include_router(interop.router)
     app.include_router(system_config.router)
+    app.include_router(work_profile.router)
     app.include_router(literary_eval.router)
     app.include_router(literary_quality.router)
     app.include_router(style_profile.router)

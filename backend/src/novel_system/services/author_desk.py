@@ -21,6 +21,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.errors import DomainError
+from novel_system.services.work_profile import WorkProfileService
 from novel_system.services.writer_deep_review import WriterDeepReviewService
 
 
@@ -40,14 +41,19 @@ class AuthorDeskService:
 
     def snapshot(self, object_type: str, object_id: str) -> dict[str, Any]:
         target = self._target(object_type, object_id)
+        work_profile = WorkProfileService(self.session).for_chapter(target["chapter_id"])
+        deep_review_summary = self._deep_review_summary(object_type, object_id)
+        longform_pressure = self._longform_pressure(target)
         return {
             "target": target,
+            "work_profile": work_profile,
             "author_draft": self._current_author_draft(object_type, object_id),
             "runtime_text": self._runtime_text(target),
             "aggregate_text": self._aggregate_text(target["chapter_id"]),
-            "deep_review_summary": self._deep_review_summary(object_type, object_id),
+            "deep_review_summary": deep_review_summary,
             "open_candidates": self._open_candidates(object_type, object_id),
-            "longform_pressure": self._longform_pressure(target),
+            "longform_pressure": longform_pressure,
+            "daily_focus": self._daily_focus(deep_review_summary, longform_pressure),
             "author_preference_summary": self._author_preference_summary(),
         }
 
@@ -134,11 +140,14 @@ class AuthorDeskService:
         if row is None:
             return None
         findings = row.findings_json or []
+        layers = _judgment_layers(findings)
         return {
             "evaluation_id": row.evaluation_id,
             "overall_score": row.overall_score,
             "scores": row.scores_json or {},
             "top_findings": findings[:3],
+            "judgment_layers": layers,
+            "non_blocking_count": sum(len(layers[key]) for key in ("revision", "profile_mismatch", "taste")),
             "revision_brief": row.revision_brief_json or [],
             "requires_human_review": bool(row.requires_human_review),
             "status": row.status,
@@ -214,6 +223,39 @@ class AuthorDeskService:
         ).scalars().first()
         return row.summary_json if row is not None else {}
 
+    def _daily_focus(self, deep_review_summary: dict[str, Any] | None, longform_pressure: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        focus: list[dict[str, Any]] = []
+        layers = (deep_review_summary or {}).get("judgment_layers") or {}
+        for layer in ("blocking", "revision", "profile_mismatch"):
+            for finding in layers.get(layer, [])[:2]:
+                focus.append(
+                    {
+                        "source": "deep_review",
+                        "severity": layer,
+                        "target_view": "deepdesk",
+                        "dimension": finding.get("dimension") or "",
+                        "title": finding.get("issue") or finding.get("dimension") or "处理深改问题",
+                        "summary": finding.get("recommendation") or finding.get("why_it_matters") or "",
+                    }
+                )
+                if len(focus) >= 5:
+                    return focus
+        for card in longform_pressure:
+            focus.append(
+                {
+                    "source": "longform",
+                    "severity": card.get("severity") or "major",
+                    "target_view": "longform",
+                    "dimension": card.get("card_type") or "",
+                    "title": (card.get("evidence") or {}).get("issue") or card.get("card_type") or "处理长篇压力",
+                    "summary": (card.get("recommendation") or {}).get("summary") or "",
+                    "card_id": card.get("card_id"),
+                }
+            )
+            if len(focus) >= 5:
+                break
+        return focus
+
     def _final_scene(self, scene_id: str) -> FinalScene | None:
         state = self.session.get(SceneRunState, scene_id)
         if state is not None and state.current_final_scene_row_id:
@@ -270,3 +312,25 @@ class AuthorDeskService:
             "source_refs": row.source_refs_json or [],
             "updated_at": row.updated_at,
         }
+
+
+def _judgment_layers(findings: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    layers: dict[str, list[dict[str, Any]]] = {
+        "blocking": [],
+        "revision": [],
+        "profile_mismatch": [],
+        "taste": [],
+    }
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        severity = str(finding.get("severity") or "").strip().lower()
+        if severity in {"blocking", "critical", "blocker"}:
+            layers["blocking"].append(finding)
+        elif severity == "profile_mismatch":
+            layers["profile_mismatch"].append(finding)
+        elif severity == "taste":
+            layers["taste"].append(finding)
+        else:
+            layers["revision"].append(finding)
+    return layers

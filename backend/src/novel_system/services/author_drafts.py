@@ -45,6 +45,7 @@ AUTHOR_DRAFT_EVENT_TYPES = {
 }
 
 DESK_DEFAULT_MODE = "write_first"
+AUTHOR_PROPOSAL_TRIAD = ("structure_candidate", "passage_candidate", "language_candidate")
 
 
 class AuthorDraftService:
@@ -188,21 +189,41 @@ class AuthorDraftService:
         )
         instruction = _optional_text(request_payload, "instruction")
         target = self._target_payload(draft.object_type, draft.object_id)
-        proposal = AuthorDraftProposal(
-            proposal_id=f"author_draft_proposal_{draft.object_type}_{draft.object_id}_{uuid.uuid4().hex[:10]}",
-            draft_id=draft.draft_id,
-            object_type=draft.object_type,
-            object_id=draft.object_id,
+        proposal = self._create_proposal(
+            draft,
+            target=target,
             proposal_type=proposal_type,
-            content=_proposal_content(draft, target=target, proposal_type=proposal_type, instruction=instruction),
-            rationale=_proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction),
-            source_llm_call_id=None,
-            status="candidate",
-            created_by=actor_ref or "author_draft_proposal",
+            instruction=instruction,
+            proposal_source=_optional_text(request_payload, "proposal_source") or "single_request",
+            actor_ref=actor_ref,
         )
-        self.session.add(proposal)
         self.session.flush()
         return {"proposal": self.serialize_proposal(proposal)}
+
+    def generate_proposal_set(
+        self,
+        draft_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        draft = self._require_draft(draft_id)
+        request_payload = payload or {}
+        instruction = _optional_text(request_payload, "instruction")
+        target = self._target_payload(draft.object_type, draft.object_id)
+        proposals = [
+            self._create_proposal(
+                draft,
+                target=target,
+                proposal_type=proposal_type,
+                instruction=instruction,
+                proposal_source="author_cockpit_triad",
+                actor_ref=actor_ref,
+            )
+            for proposal_type in AUTHOR_PROPOSAL_TRIAD
+        ]
+        self.session.flush()
+        return {"draft_id": draft.draft_id, "proposals": [self.serialize_proposal(row) for row in proposals]}
 
     def apply_proposal(
         self,
@@ -221,6 +242,8 @@ class AuthorDraftService:
         apply_mode = _optional_text(request_payload, "apply_mode") or "replace"
         if apply_mode not in {"replace", "append", "new_version"}:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_APPLY_MODE_INVALID", "unsupported proposal apply_mode", status_code=400)
+        decision_reason = _optional_text(request_payload, "decision_reason")
+        affected_excerpt = _optional_text(request_payload, "affected_excerpt")
 
         draft.content = _apply_proposal_content(draft.content or "", proposal.content or "", apply_mode)
         draft.revision_no += 1
@@ -236,11 +259,14 @@ class AuthorDraftService:
             payload={
                 "proposal_id": proposal.proposal_id,
                 "proposal_type": proposal.proposal_type,
+                "proposal_source": proposal.proposal_source,
                 "apply_mode": apply_mode,
+                "affected_excerpt": affected_excerpt or _short_excerpt(proposal.content),
+                "decision_reason": decision_reason or "",
                 "revision_no": draft.revision_no,
             },
         )
-        self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref)
+        self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref, decision_reason=decision_reason)
         self.session.flush()
         return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
 
@@ -256,6 +282,8 @@ class AuthorDraftService:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_CLOSED", "author draft proposal is not open", status_code=409)
         draft = self._require_draft(proposal.draft_id)
         note = _optional_text(payload or {}, "note")
+        decision_reason = _optional_text(payload or {}, "decision_reason")
+        rejected_ai_trace = _optional_text(payload or {}, "rejected_ai_trace")
         proposal.status = "rejected"
         proposal.author_decision_note = note or proposal.author_decision_note
         self._add_event(
@@ -267,12 +295,46 @@ class AuthorDraftService:
             payload={
                 "proposal_id": proposal.proposal_id,
                 "proposal_type": proposal.proposal_type,
+                "proposal_source": proposal.proposal_source,
+                "decision_reason": decision_reason or "",
+                "rejected_ai_trace": rejected_ai_trace or "",
                 "revision_no": draft.revision_no,
             },
         )
-        self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref)
+        self._refresh_proposal_preference_profile(
+            proposal,
+            actor_ref=actor_ref,
+            decision_reason=decision_reason,
+            rejected_ai_trace=rejected_ai_trace,
+        )
         self.session.flush()
         return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
+
+    def _create_proposal(
+        self,
+        draft: AuthorDraft,
+        *,
+        target: dict[str, Any],
+        proposal_type: str,
+        instruction: str | None,
+        proposal_source: str,
+        actor_ref: str,
+    ) -> AuthorDraftProposal:
+        proposal = AuthorDraftProposal(
+            proposal_id=f"author_draft_proposal_{draft.object_type}_{draft.object_id}_{uuid.uuid4().hex[:10]}",
+            draft_id=draft.draft_id,
+            object_type=draft.object_type,
+            object_id=draft.object_id,
+            proposal_type=proposal_type,
+            proposal_source=proposal_source,
+            content=_proposal_content(draft, target=target, proposal_type=proposal_type, instruction=instruction),
+            rationale=_proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction),
+            source_llm_call_id=None,
+            status="candidate",
+            created_by=actor_ref or "author_draft_proposal",
+        )
+        self.session.add(proposal)
+        return proposal
 
     def apply_patch_option(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -565,6 +627,7 @@ class AuthorDraftService:
             "object_type": row.object_type,
             "object_id": row.object_id,
             "proposal_type": row.proposal_type,
+            "proposal_source": row.proposal_source,
             "content": row.content,
             "rationale": row.rationale,
             "source_llm_call_id": row.source_llm_call_id,
@@ -631,7 +694,14 @@ class AuthorDraftService:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_NOT_FOUND", "author draft proposal not found", status_code=404)
         return proposal
 
-    def _refresh_proposal_preference_profile(self, proposal: AuthorDraftProposal, *, actor_ref: str) -> AuthorPreferenceProfile:
+    def _refresh_proposal_preference_profile(
+        self,
+        proposal: AuthorDraftProposal,
+        *,
+        actor_ref: str,
+        decision_reason: str | None = None,
+        rejected_ai_trace: str | None = None,
+    ) -> AuthorPreferenceProfile:
         profile = self.session.get(AuthorPreferenceProfile, "author_pref_global_global_proposals")
         if profile is None:
             profile = AuthorPreferenceProfile(
@@ -652,10 +722,12 @@ class AuthorDraftService:
             {
                 "proposal_id": proposal.proposal_id,
                 "proposal_type": proposal.proposal_type,
+                "proposal_source": proposal.proposal_source,
                 "object_type": proposal.object_type,
                 "object_id": proposal.object_id,
                 "decision": proposal.status,
                 "note": proposal.author_decision_note or "",
+                "decision_reason": decision_reason or "",
                 "content_excerpt": _short_excerpt(proposal.content),
             }
         )
@@ -663,6 +735,13 @@ class AuthorDraftService:
         summary["proposal_decisions"] = decisions
         summary["accepted_proposal_count"] = sum(1 for row in decisions if row.get("decision") == "accepted")
         summary["rejected_proposal_count"] = sum(1 for row in decisions if row.get("decision") == "rejected")
+        summary["accepted_by_type"] = _decision_counts_by_type(decisions, "accepted")
+        summary["rejected_by_type"] = _decision_counts_by_type(decisions, "rejected")
+        rejected_trace = rejected_ai_trace or _ai_trace_from_decision(proposal.author_decision_note)
+        traces = [str(item) for item in summary.get("rejected_ai_traces", []) if str(item).strip()]
+        if proposal.status == "rejected" and rejected_trace:
+            traces.append(rejected_trace)
+        summary["rejected_ai_traces"] = _unique_tail(traces, limit=20)
         profile.status = "draft"
         profile.runtime_eligible = 0
         profile.summary_json = summary
@@ -882,6 +961,43 @@ def _proposal_content(
     seed = current or str(scene_card.get("scene_goal") or target.get("chapter_goal") or "The scene needs a costly choice.").strip()
     if not seed:
         seed = "The scene needs a costly choice."
+    if proposal_type == "structure_candidate":
+        return "\n".join(
+            [
+                "[结构候选]",
+                *target_lines,
+                "",
+                "建议：",
+                "1. 先明确本段最小戏剧动作：人物想要什么、被什么挡住、愿意付出什么。",
+                "2. 把解释性信息改成一个可见选择，让读者通过动作理解代价。",
+                "3. 结尾保留一个具体未完成动作，而不是总结主题。",
+                "",
+                f"当前材料：{seed}",
+            ]
+        ).strip()
+    if proposal_type == "passage_candidate":
+        return "\n".join(
+            [
+                "[局部段落候选]",
+                *target_lines,
+                "",
+                "候选段落：",
+                f"{seed}",
+                "她没有急着解释，只把手里的东西往桌沿推近半寸；这个动作让对方不得不先回答，而不是继续追问。",
+            ]
+        ).strip()
+    if proposal_type == "language_candidate":
+        return "\n".join(
+            [
+                "[语言候选]",
+                *target_lines,
+                "",
+                "压缩方向：",
+                "删掉直接说明情绪的句子，保留物件、停顿、短对白和一个能改变关系的位置动作。",
+                "",
+                f"待处理材料：{seed}",
+            ]
+        ).strip()
     return "\n".join(
         [
             "[AI draft proposal]",
@@ -898,12 +1014,45 @@ def _proposal_content(
 
 def _proposal_rationale(*, target: dict[str, Any], proposal_type: str, instruction: str | None) -> str:
     focus = instruction or target.get("chapter_goal") or "writer-facing drafting target"
+    if proposal_type == "structure_candidate":
+        return f"结构候选：先处理场景承诺、选择代价和结尾动作。依据：{focus}"
+    if proposal_type == "passage_candidate":
+        return f"局部段落候选：给作者一个可追加或替换的高压片段。依据：{focus}"
+    if proposal_type == "language_candidate":
+        return f"语言候选：压缩模型腔、解释句和重复动作。依据：{focus}"
     return f"Generated as a comparable {proposal_type} proposal from the current author draft target: {focus}"
 
 
 def _short_excerpt(text: str, *, limit: int = 160) -> str:
     compact = " ".join(str(text or "").split())
     return compact if len(compact) <= limit else f"{compact[:limit].rstrip()}..."
+
+
+def _decision_counts_by_type(decisions: list[dict[str, Any]], decision: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in decisions:
+        if row.get("decision") != decision:
+            continue
+        proposal_type = str(row.get("proposal_type") or "unknown")
+        counts[proposal_type] = counts.get(proposal_type, 0) + 1
+    return counts
+
+
+def _ai_trace_from_decision(note: str | None) -> str:
+    value = str(note or "").strip()
+    if not value:
+        return ""
+    trace_markers = ("模型腔", "AI", "ai", "解释", "直白", "套路", "模板")
+    return value if any(marker in value for marker in trace_markers) else ""
+
+
+def _unique_tail(values: list[str], *, limit: int) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return result[-limit:]
 
 
 def _serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:

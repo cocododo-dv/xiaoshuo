@@ -34,9 +34,36 @@ const structureCandidates = computed(() => desk.structureCandidateRows || []);
 const draftProposals = computed(() => desk.draftProposalRows || []);
 const inlineQualitySpanFindings = computed(() => desk.inlineQualitySpanFindings || []);
 const longformPressure = computed(() => desk.longformPressure || []);
+const workProfile = computed(() => desk.workProfile || null);
+const dailyFocus = computed(() => desk.dailyFocus || []);
+const judgmentLayers = computed(
+  () =>
+    desk.judgmentLayers || {
+      blocking: [],
+      revision: [],
+      profile_mismatch: [],
+      taste: [],
+    },
+);
+const judgmentLayerBuckets = computed(() => [
+  { key: "blocking", label: "blocking", items: judgmentLayers.value.blocking || [] },
+  { key: "revision", label: "revision", items: judgmentLayers.value.revision || [] },
+  { key: "profile_mismatch", label: "profile_mismatch", items: judgmentLayers.value.profile_mismatch || [] },
+  { key: "taste", label: "taste", items: judgmentLayers.value.taste || [] },
+]);
 const draftEvents = computed(() => desk.draftEvents || []);
 const preference = computed(() => desk.preferenceProfile || null);
 const profileSummary = computed(() => preference.value?.summary || {});
+const workProfileMeta = computed(() => {
+  const profile = workProfile.value || {};
+  const config = profile.profile_json || {};
+  return [
+    profile.profile_key,
+    config.pacing_preference || config.pacing,
+    config.language_density,
+    config.ending_drive_policy,
+  ].filter(Boolean).join(" / ") || "profile_default";
+});
 const selectedExcerpt = computed({
   get: () => desk.selectedExcerpt,
   set: (value) => desk.setSelectedExcerpt(value),
@@ -111,6 +138,20 @@ function statusLabel(value) {
     current: "当前",
     superseded: "已替换",
   }[value] || value || "-";
+}
+
+function proposalTypeLabel(value) {
+  return {
+    structure_candidate: "structure candidate",
+    passage_candidate: "passage candidate",
+    language_candidate: "language candidate",
+    scene_draft: "scene draft",
+    chapter_draft: "chapter draft",
+  }[value] || value || "draft";
+}
+
+function focusTitle(item) {
+  return item?.title || item?.issue || item?.dimension || item?.card_type || "focus";
 }
 
 function candidateCategoryLabel(value) {
@@ -295,6 +336,17 @@ async function generateDraftProposal() {
       desk.generateDraftProposal({
         proposal_type: desk.draftObjectType === "scene" ? "scene_draft" : "chapter_draft",
       }),
+  });
+}
+
+async function generateDraftProposalSet() {
+  await runFlowAction({
+    scopeKey: AI_DRAFT_SCOPE,
+    actionLabel: "proposal triad",
+    runningMessage: "Generating structure, passage, and language candidates for author choice.",
+    successMessage: (message) => message,
+    nextStep: "Compare the three lanes, then apply, append, make a new version, or reject with a reason.",
+    action: () => desk.generateDraftProposalSet({ instruction: "" }),
   });
 }
 
@@ -627,13 +679,41 @@ onActivated(() => {
           </div>
           <FlowActionReceipt :receipt="receipt(AI_DRAFT_SCOPE)" />
 
+          <section class="author-radar-strip" aria-label="author daily signals">
+            <article class="author-radar-card" data-testid="author-work-profile">
+              <div class="receipt-head compact">
+                <div>
+                  <h4>作品档案</h4>
+                  <p class="muted receipt-copy">{{ workProfileMeta }}</p>
+                </div>
+                <span class="badge">{{ workProfile?.display_name || "default" }}</span>
+              </div>
+            </article>
+            <article class="author-radar-card" data-testid="author-daily-focus">
+              <div class="receipt-head compact">
+                <div>
+                  <h4>今日焦点</h4>
+                  <p class="muted receipt-copy">Top issues for the current author draft.</p>
+                </div>
+                <span class="badge">{{ dailyFocus.length }} items</span>
+              </div>
+              <ol v-if="dailyFocus.length" class="author-focus-list">
+                <li v-for="item in dailyFocus" :key="`${item.source}-${item.dimension}-${focusTitle(item)}`">
+                  <strong>{{ focusTitle(item) }}</strong>
+                  <span class="muted">{{ item.dimension || item.card_type || item.source }}</span>
+                </li>
+              </ol>
+              <div v-else class="empty">No daily focus yet.</div>
+            </article>
+          </section>
+
           <section class="draft-proposal-panel" data-testid="draft-proposals">
             <div class="receipt-head compact">
               <div>
                 <h4>AI 草稿提案</h4>
                 <p class="muted receipt-copy">AI 只生成可比较、可采纳、可拒绝的提案；不会直接覆盖作者稿、运行终稿或章节聚合稿。</p>
               </div>
-              <span class="badge">{{ draftProposals.length }} 条</span>
+              <span class="badge">三类候选 / {{ draftProposals.length }} 条</span>
             </div>
             <div class="field-inline draft-proposal-controls">
               <button
@@ -644,13 +724,22 @@ onActivated(() => {
               >
                 {{ desk.actionId === "proposal-generate" ? "生成中..." : "生成 AI 草稿提案" }}
               </button>
+              <button
+                type="button"
+                class="ghost"
+                data-testid="draft-proposal-generate-set"
+                :disabled="!desk.authorDraft || desk.actionId === 'proposal-generate-set'"
+                @click="generateDraftProposalSet"
+              >
+                {{ desk.actionId === "proposal-generate-set" ? "生成中..." : "生成三类候选" }}
+              </button>
               <span class="muted">提案进入右侧账本，只有应用后才成为作者稿新版本。</span>
             </div>
             <div v-if="!draftProposals.length" class="empty">还没有 AI 草稿提案。</div>
             <article v-for="proposal in draftProposals" :key="proposal.proposal_id" class="draft-proposal-row">
               <div class="receipt-head compact">
                 <div>
-                  <strong>{{ proposal.proposal_type || "draft" }}</strong>
+                  <strong>{{ proposalTypeLabel(proposal.proposal_type) }}</strong>
                   <p class="muted">{{ proposal.rationale || proposal.proposal_id }}</p>
                 </div>
                 <span class="badge">{{ statusLabel(proposal.status) }}</span>
@@ -882,6 +971,26 @@ onActivated(() => {
           </button>
           <FlowActionReceipt :receipt="receipt(REVIEW_SCOPE)" />
 
+          <section class="judgment-layers-panel" data-testid="judgment-layers">
+            <div class="receipt-head compact">
+              <div>
+                <h4>判断分层</h4>
+                <p class="muted receipt-copy">Blocking is separated from revision and taste signals.</p>
+              </div>
+              <span class="badge">{{ desk.snapshotDeepReviewSummary?.non_blocking_count || 0 }} advisory</span>
+            </div>
+            <div class="judgment-layer-grid">
+              <article v-for="bucket in judgmentLayerBuckets" :key="bucket.key" class="judgment-layer-card">
+                <div class="receipt-head compact">
+                  <strong>{{ bucket.label }}</strong>
+                  <span class="badge">{{ bucket.items.length }}</span>
+                </div>
+                <p v-if="bucket.items[0]" class="muted">{{ bucket.items[0].issue || bucket.items[0].dimension }}</p>
+                <p v-else class="muted">clear</p>
+              </article>
+            </div>
+          </section>
+
           <section class="inline-quality-panel" data-testid="inline-quality-span-findings">
             <div class="receipt-head compact">
               <div>
@@ -1064,7 +1173,9 @@ onActivated(() => {
 .deep-desk-rail,
 .deep-candidates,
 .deep-structure,
+.author-radar-strip,
 .draft-proposal-panel,
+.judgment-layers-panel,
 .deep-preference {
   display: grid;
   gap: 1rem;
@@ -1238,11 +1349,43 @@ onActivated(() => {
 .draft-event-timeline,
 .draft-proposal-panel,
 .inline-quality-panel,
+.judgment-layers-panel,
 .deep-longform-pressure {
   display: grid;
   gap: 0.7rem;
   padding-top: 0.4rem;
   border-top: 1px dashed var(--line);
+}
+
+.author-radar-strip {
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  gap: 0.7rem;
+}
+
+.author-radar-card,
+.judgment-layer-card {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid rgba(37, 51, 66, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.author-focus-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.author-focus-list li {
+  line-height: 1.45;
+}
+
+.author-focus-list span {
+  display: block;
 }
 
 .draft-event-list {
@@ -1274,6 +1417,7 @@ onActivated(() => {
 .deep-review-findings,
 .deep-lenses,
 .deep-option-grid,
+.judgment-layer-grid,
 .structure-field-grid,
 .deep-preference-grid {
   display: grid;
@@ -1418,6 +1562,7 @@ onActivated(() => {
 
 @media (max-width: 1360px) {
   .deep-desk-shell,
+  .author-radar-strip,
   .draft-layer-strip {
     grid-template-columns: 1fr;
   }

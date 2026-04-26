@@ -392,6 +392,26 @@ class AuthorPreferenceProfile(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
+class WorkProfile(Base):
+    __tablename__ = "work_profiles"
+    __table_args__ = (
+        CheckConstraint("scope_type IN ('global','chapter')", name="ck_work_profiles_scope_type"),
+        CheckConstraint("status IN ('active','archived')", name="ck_work_profiles_status"),
+    )
+
+    profile_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scope_type: Mapped[str] = mapped_column(String, default="global")
+    scope_ref_id: Mapped[str] = mapped_column(String, default="global")
+    profile_key: Mapped[str] = mapped_column(String, default="strong_plot")
+    display_name: Mapped[str] = mapped_column(String, default="强情节")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    profile_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String, default="active")
+    created_by: Mapped[str] = mapped_column(String, default="author_profile")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class AuthorDraft(Base):
     __tablename__ = "author_drafts"
     __table_args__ = (
@@ -427,6 +447,7 @@ class AuthorDraftProposal(Base):
     object_type: Mapped[str] = mapped_column(String)
     object_id: Mapped[str] = mapped_column(String)
     proposal_type: Mapped[str] = mapped_column(String, default="scene_draft")
+    proposal_source: Mapped[str] = mapped_column(String, default="single_request")
     content: Mapped[str] = mapped_column(Text)
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)

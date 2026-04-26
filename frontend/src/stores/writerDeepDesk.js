@@ -19,6 +19,7 @@ import {
   fetchChapterManuscripts,
   fetchCurrentAuthorDraft,
   generateAuthorDraftProposal,
+  generateAuthorDraftProposalSet,
   fetchSceneDeepReview,
   recordAuthorDraftCandidateEvent as recordAuthorDraftCandidateEventApi,
   rejectAuthorDraftProposal,
@@ -149,6 +150,17 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     longformPressure: (state) => snapshotPayloadList(state.authorDeskSnapshot?.longform_pressure || []),
     snapshotOpenCandidates: (state) => snapshotPayloadList(state.authorDeskSnapshot?.open_candidates || []),
     snapshotDeepReviewSummary: (state) => snapshotPayload(state.authorDeskSnapshot?.deep_review_summary || null),
+    workProfile: (state) => snapshotPayload(state.authorDeskSnapshot?.work_profile || null),
+    dailyFocus: (state) => snapshotPayloadList(state.authorDeskSnapshot?.daily_focus || []),
+    judgmentLayers: (state) =>
+      snapshotPayload(
+        state.authorDeskSnapshot?.deep_review_summary?.judgment_layers || {
+          blocking: [],
+          revision: [],
+          profile_mismatch: [],
+          taste: [],
+        },
+      ),
     excerptForPatch() {
       return this.selectedExcerpt.trim() || preferredExcerpt(this.draftContent);
     },
@@ -484,6 +496,29 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         });
         const proposal = this.upsertDraftProposal(result.proposal);
         return `AI 草稿提案已生成：${proposal?.proposal_id || "-"}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async generateDraftProposalSet(payload = {}) {
+      const draft = this.authorDraft || (await this.ensureAuthorDraft());
+      if (!draft?.draft_id) {
+        return "";
+      }
+      this.actionId = "proposal-generate-set";
+      this.error = "";
+      try {
+        this.setDeskStage("ai");
+        const result = await generateAuthorDraftProposalSet(draft.draft_id, {
+          instruction: payload.instruction || "",
+          ...payload,
+        });
+        const proposals = snapshotPayloadList(result.proposals || []);
+        proposals.forEach((proposal) => this.upsertDraftProposal(proposal));
+        return `三类候选已生成：${proposals.length} 条`;
       } catch (error) {
         this.error = error.message;
         throw error;

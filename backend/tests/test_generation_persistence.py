@@ -25,11 +25,24 @@ EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS = {
     "object_type",
     "object_id",
     "proposal_type",
+    "proposal_source",
     "content",
     "rationale",
     "source_llm_call_id",
     "status",
     "author_decision_note",
+}
+
+EXPECTED_WORK_PROFILE_COLUMNS = {
+    "profile_id",
+    "scope_type",
+    "scope_ref_id",
+    "profile_key",
+    "display_name",
+    "description",
+    "profile_json",
+    "status",
+    "created_by",
 }
 
 
@@ -72,6 +85,7 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
         chapter_job_columns = _pragma_columns_by_name(connection, "chapter_run_jobs")
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
+        work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
     finally:
         connection.close()
 
@@ -79,6 +93,7 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
     assert "author_draft_proposals" in table_names
+    assert "work_profiles" in table_names
     assert {
         "llm_call_id",
         "provider",
@@ -120,6 +135,7 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert {"job_id", "chapter_id", "status", "job_type"} <= chapter_job_columns.keys()
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
+    assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
     assert chapter_job_columns["status"][3] == 1
     assert chapter_job_columns["job_type"][3] == 1
 
@@ -227,6 +243,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
         planning_columns = _pragma_columns_by_name(connection, "generation_planning_artifacts")
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
+        work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
         historical_draft = connection.execute(
             """
             SELECT row_id, scene_id, chapter_id, stage, generation_llm_call_id
@@ -245,7 +262,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-    assert version_row == ("20260426_0021",)
+    assert version_row == ("20260426_0022",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -255,6 +272,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert "author_drafts" in table_names
     assert "author_draft_events" in table_names
     assert "author_draft_proposals" in table_names
+    assert "work_profiles" in table_names
     assert "author_structure_candidates" in table_names
     assert "generation_planning_artifacts" in table_names
     assert "longform_diagnostic_cards" in table_names
@@ -287,6 +305,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     } <= planning_columns.keys()
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
+    assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
     assert job_columns["status"][3] == 1
     assert job_columns["job_type"][3] == 1
     assert historical_draft == ("draft_hist_CH001_SC01", "CH001_SC01", "CH001", "neutral_draft", None)
@@ -357,6 +376,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
         planning_columns = _pragma_columns_by_name(connection, "generation_planning_artifacts")
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
+        work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
         scene_draft = connection.execute(
             """
             SELECT row_id, generation_llm_call_id
@@ -375,7 +395,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260426_0021",)
+    assert version_row == ("20260426_0022",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -385,6 +405,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     assert "author_drafts" in table_names
     assert "author_draft_events" in table_names
     assert "author_draft_proposals" in table_names
+    assert "work_profiles" in table_names
     assert "author_structure_candidates" in table_names
     assert "generation_planning_artifacts" in table_names
     assert "longform_diagnostic_cards" in table_names
@@ -412,6 +433,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     } <= planning_columns.keys()
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
+    assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
     assert llm_call == ("llm_call_existing", "seed-provider", "seed-model", "style_draft", 42)
     assert qc_report == ("qc_report_existing", "draft_existing", "bundle_existing", "pass")
     assert chapter_job == ("chapter_job_existing", "CH001", "queued", "chapter_qc")

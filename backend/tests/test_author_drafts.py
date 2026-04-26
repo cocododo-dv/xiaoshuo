@@ -218,6 +218,69 @@ def test_generate_apply_and_reject_author_draft_proposals_without_overwriting_ru
     assert session.get(AuthorDraft, draft["draft_id"]).content == proposal["content"]
 
 
+def test_generate_triaged_author_draft_proposals_and_records_decision_telemetry(client, session) -> None:
+    _create_chapter(client, "AD275", planned_scene_count=1)
+    _create_scene(client, "AD275_SC01", chapter_id="AD275", scene_seq=1, is_chapter_last=1)
+    final_row_id = _finalize_scene(session, "AD275_SC01", "AD275", "运行终稿保持独立。")
+    draft = client.post("/api/v1/author-drafts/scene/AD275_SC01/ensure-blank").json()["data"]["draft"]
+
+    response = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/proposals/generate-set",
+        json={"instruction": "请分别给结构、局部段落和语言压缩方案。"},
+    )
+
+    assert response.status_code == 200
+    proposals = response.json()["data"]["proposals"]
+    assert [item["proposal_type"] for item in proposals] == [
+        "structure_candidate",
+        "passage_candidate",
+        "language_candidate",
+    ]
+    assert all(item["status"] == "candidate" for item in proposals)
+    assert all(item["proposal_source"] == "author_cockpit_triad" for item in proposals)
+    session.expire_all()
+    assert session.get(AuthorDraft, draft["draft_id"]).content == draft["content"]
+    assert session.get(FinalScene, final_row_id).content == "运行终稿保持独立。"
+
+    apply_response = client.post(
+        f"/api/v1/author-draft-proposals/{proposals[1]['proposal_id']}/apply",
+        json={
+            "apply_mode": "append",
+            "note": "局部段落可用。",
+            "affected_excerpt": "场景目标 AD275_SC01",
+            "decision_reason": "动作比解释更清楚。",
+        },
+    )
+    reject_response = client.post(
+        f"/api/v1/author-draft-proposals/{proposals[2]['proposal_id']}/reject",
+        json={
+            "note": "模型腔太明显。",
+            "decision_reason": "保留作者自己的句法。",
+            "rejected_ai_trace": "过度解释人物意识。",
+        },
+    )
+
+    assert apply_response.status_code == 200
+    assert reject_response.status_code == 200
+    session.expire_all()
+    events = (
+        session.query(AuthorDraftEvent)
+        .filter(AuthorDraftEvent.draft_id == draft["draft_id"], AuthorDraftEvent.event_type.in_(["proposal_applied", "proposal_rejected"]))
+        .order_by(AuthorDraftEvent.created_at.asc(), AuthorDraftEvent.event_id.asc())
+        .all()
+    )
+    assert [event.event_type for event in events] == ["proposal_applied", "proposal_rejected"]
+    assert events[0].payload_json["affected_excerpt"] == "场景目标 AD275_SC01"
+    assert events[0].payload_json["decision_reason"] == "动作比解释更清楚。"
+    assert events[0].payload_json["proposal_source"] == "author_cockpit_triad"
+    assert events[1].payload_json["rejected_ai_trace"] == "过度解释人物意识。"
+    preference = session.get(AuthorPreferenceProfile, "author_pref_global_global_proposals")
+    assert preference.summary_json["accepted_by_type"]["passage_candidate"] == 1
+    assert preference.summary_json["rejected_by_type"]["language_candidate"] == 1
+    assert "过度解释人物意识。" in preference.summary_json["rejected_ai_traces"]
+    assert session.get(FinalScene, final_row_id).content == "运行终稿保持独立。"
+
+
 def test_chapter_author_draft_falls_back_to_assembled_scene_text_when_no_aggregate_exists(client, session) -> None:
     _create_chapter(client, "AD300")
     _create_scene(client, "AD300_SC02", chapter_id="AD300", scene_seq=2, is_chapter_last=1)

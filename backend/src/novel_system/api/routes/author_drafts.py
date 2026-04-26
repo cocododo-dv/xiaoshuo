@@ -73,6 +73,19 @@ def generate_author_draft_proposal(
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v1/author-drafts/{draft_id}/proposals/generate-set")
+def generate_author_draft_proposal_set(
+    draft_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).generate_proposal_set(draft_id, payload or {}, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v1/author-draft-proposals/{proposal_id}/apply")
 def apply_author_draft_proposal(
     proposal_id: str,
