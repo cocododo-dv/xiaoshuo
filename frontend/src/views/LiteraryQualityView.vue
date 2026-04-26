@@ -43,6 +43,11 @@ const RISK_TYPE_OPTIONS = [
   { value: "summary_ending", label: "总结式结尾" },
   { value: "expository_dialogue", label: "解释性对白" },
   { value: "choice_pressure", label: "选择压力" },
+  { value: "painless_scene", label: "人物无痛" },
+  { value: "decorative_imagery", label: "装饰性意象" },
+  { value: "dialogue_as_report", label: "汇报式对白" },
+  { value: "over_explained_motive", label: "动机讲解" },
+  { value: "false_poetic_closure", label: "伪诗性收束" },
 ];
 
 const SEVERITY_OPTIONS = [
@@ -67,6 +72,11 @@ const DIMENSION_LABELS = {
   summary_ending: "总结式结尾",
   choice_pressure: "选择压力",
   ending_drive: "结尾驱动",
+  painless_scene: "人物无痛",
+  decorative_imagery: "装饰性意象",
+  dialogue_as_report: "汇报式对白",
+  over_explained_motive: "动机讲解",
+  false_poetic_closure: "伪诗性收束",
 };
 
 function scoreLabel(value) {

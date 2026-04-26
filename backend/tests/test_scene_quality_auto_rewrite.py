@@ -110,6 +110,7 @@ def test_quality_contract_generates_fixed_fields_preserves_chinese_and_hashes_st
         "price_paid",
         "relationship_turn",
         "information_release",
+        "image_necessity",
         "irreversible_change",
         "ending_action",
         "next_scene_pull",
@@ -118,6 +119,7 @@ def test_quality_contract_generates_fixed_fields_preserves_chinese_and_hashes_st
     }
     assert "林岑" in first_contract["payload"]["pov_or_actor"]
     assert "公开真相或先保护幸存者" in first_contract["payload"]["forced_choice"]
+    assert "盐钟残片" in first_contract["payload"]["image_necessity"]
     assert "不能改名林岑" in first_contract["payload"]["forbidden_changes"]
 
     rows = session.execute(select(SceneQualityContract).where(SceneQualityContract.scene_id == SCENE_ID)).scalars().all()

@@ -195,6 +195,56 @@ def test_literary_quality_detects_template_reuse_and_protects_valid_ambiguity() 
     } <= finding_dimensions
 
 
+def test_literary_quality_detects_professional_writer_risks() -> None:
+    text = (
+        "月光像旧伤疤一样贴在档案柜上，冷意仿佛命运的回声。"
+        "“真相是官方报告被改过，因为他们要保护码头，所以我现在解释给你听。”许望说。"
+        "林岑忽然意识到自己必须公开证据，她知道一切都变得不同了。"
+    )
+
+    signals, findings = analyze_literary_quality(text)
+
+    assert signals["painless_scene"]["risk"] is True
+    assert signals["decorative_imagery"]["risk"] is True
+    assert signals["dialogue_as_report"]["risk"] is True
+    assert signals["over_explained_motive"]["risk"] is True
+    assert signals["false_poetic_closure"]["risk"] is True
+    dimensions = {finding["dimension"] for finding in findings}
+    assert {
+        "painless_scene",
+        "decorative_imagery",
+        "dialogue_as_report",
+        "over_explained_motive",
+        "false_poetic_closure",
+    } <= dimensions
+
+
+def test_literary_quality_overview_can_filter_professional_writer_risk(client, session) -> None:
+    _seed_quality_scene(session, chapter_id="LQ250", scene_id="LQ250_SC01")
+    final_scene = session.get(FinalScene, "final_scene_LQ250_SC01_v1")
+    final_scene.content = (
+        "月光像旧伤疤一样贴在档案柜上，冷意仿佛命运的回声。"
+        "“真相是官方报告被改过，所以我解释给你听。”许望说。"
+        "林岑知道自己必须公开证据。"
+    )
+    session.commit()
+
+    response = client.get(
+        "/api/v1/literary-quality/overview",
+        params={"chapter_id": "LQ250", "risk_type": "decorative_imagery"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["items"]
+    assert payload["risk_clusters"][0]["dimension"] == "decorative_imagery"
+    assert payload["items"][0]["recommended_next_action"]["risk_type"] in {
+        "painless_scene",
+        "decorative_imagery",
+        "dialogue_as_report",
+    }
+
+
 def _seed_cross_scene_template_reuse(session) -> None:
     chapter_id = "LQ300"
     session.add(

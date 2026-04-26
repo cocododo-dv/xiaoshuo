@@ -129,6 +129,32 @@ function dashboardPayload(overrides = {}) {
         debt_state: "open",
       },
     ],
+    debt_radar: [
+      {
+        promise_ref: "chapter_promise:LFC100",
+        debt_type: "chapter_promise",
+        chapter_id: "LFC100",
+        scene_id: null,
+        text: "Find out why the witness lied",
+        opened_at: "chapter:LFC100",
+        expected_payoff_window: "chapter:LFC100:ending",
+        payoff_status: "open",
+        deferral_reason: "Who warned CHAR_B?",
+        risk_level: "major",
+      },
+      {
+        promise_ref: "foreshadow:FS-LFC100",
+        debt_type: "foreshadow",
+        chapter_id: "LFC100",
+        scene_id: "LFC100_SC01",
+        text: "CHAR_B knows the missing name",
+        opened_at: "scene:LFC100_SC01",
+        expected_payoff_window: "chapter:LFC100",
+        payoff_status: "open",
+        deferral_reason: "still open",
+        risk_level: "critical",
+      },
+    ],
     foreshadow_debts: [
       {
         row_id: "foreshadow_row_LFC100",
@@ -213,6 +239,7 @@ describe("longform control api and store", () => {
     expect(store.dashboard.summary.chapter_count).toBe(1);
     expect(store.chapters[0].chapter_id).toBe("LFC100");
     expect(store.promisePayoff[0].chapter_promise).toContain("witness");
+    expect(store.debtRadar[0].promise_ref).toBe("chapter_promise:LFC100");
     expect(store.relationTensionMatrix[0].pair_key).toBe("CHAR_A/CHAR_B");
     expect(store.readerHookDebts[0].question).toContain("CHAR_B");
     expect(store.hasAlerts).toBe(true);
@@ -250,6 +277,7 @@ describe("longform control view", () => {
       expect(container.querySelector('[data-testid="longform-rhythm-map"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-character-arcs"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-promise-payoff"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="longform-debt-radar"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-literary-signals"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-foreshadow-debts"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="longform-continuity-alerts"]')).not.toBeNull();
@@ -257,6 +285,8 @@ describe("longform control view", () => {
       expect(container.textContent).toContain("LFC100");
       expect(container.textContent).toContain("CHAR_A");
       expect(container.textContent).toContain("Find out why the witness lied");
+      expect(container.textContent).toContain("chapter_promise:LFC100");
+      expect(container.textContent).toContain("foreshadow:FS-LFC100");
       expect(container.textContent).toContain("blue umbrella");
       expect(container.textContent).toContain("shared secret");
       expect(container.textContent).toContain("CHAR_B knows the missing name");

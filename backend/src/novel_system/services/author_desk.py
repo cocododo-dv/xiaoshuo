@@ -236,6 +236,9 @@ class AuthorDeskService:
                         "dimension": finding.get("dimension") or "",
                         "title": finding.get("issue") or finding.get("dimension") or "处理深改问题",
                         "summary": finding.get("recommendation") or finding.get("why_it_matters") or "",
+                        "why_it_matters": _focus_why_it_matters(layer, finding),
+                        "proposed_action": finding.get("recommendation") or "回到作者稿做局部修订。",
+                        "tradeoff": _focus_tradeoff(layer, finding),
                     }
                 )
                 if len(focus) >= 5:
@@ -249,6 +252,9 @@ class AuthorDeskService:
                     "dimension": card.get("card_type") or "",
                     "title": (card.get("evidence") or {}).get("issue") or card.get("card_type") or "处理长篇压力",
                     "summary": (card.get("recommendation") or {}).get("summary") or "",
+                    "why_it_matters": "长篇债务会影响后续章节的读者期待和人物连续性。",
+                    "proposed_action": (card.get("recommendation") or {}).get("summary") or "回到长篇控制塔处理这张压力卡。",
+                    "tradeoff": "可能牺牲局部顺滑推进，但会保护全书承诺和后续偿还。",
                     "card_id": card.get("card_id"),
                 }
             )
@@ -334,3 +340,22 @@ def _judgment_layers(findings: list[dict[str, Any]]) -> dict[str, list[dict[str,
         else:
             layers["revision"].append(finding)
     return layers
+
+
+def _focus_why_it_matters(layer: str, finding: dict[str, Any]) -> str:
+    if layer == "blocking":
+        return "必须先修正阻断级问题，避免后续深改建立在错误事实上。"
+    return finding.get("why_it_matters") or "这会影响读者是否相信人物选择、关系变化或下一步阅读动力。"
+
+
+def _focus_tradeoff(layer: str, finding: dict[str, Any]) -> str:
+    dimension = str(finding.get("dimension") or "")
+    if dimension in {"choice_pressure", "character_contradiction", "painless_scene"}:
+        return "可能牺牲原段落的顺滑感，但会让人物选择更有重量。"
+    if dimension in {"dialogue_subtext", "dialogue_as_report", "expository_dialogue"}:
+        return "可能减少信息直给，但会让对白承担关系压力。"
+    if dimension in {"image_necessity", "decorative_imagery", "image_homogeneity"}:
+        return "可能删掉好看的氛围句，但会让意象更有叙事功能。"
+    if layer == "taste":
+        return "这是审美取舍，保留作者声线优先于机械修正。"
+    return "改动会提高戏剧清晰度，但需要作者确认是否伤及原本声线。"

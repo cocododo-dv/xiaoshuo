@@ -69,6 +69,13 @@ class LongformControlService:
         motif_tracking = self._motif_tracking(chapter_ids, scenes)
         information_release_curve = self._information_release_curve(chapter_ids, scenes, evaluations)
         reader_hook_debts = self._reader_hook_debts(chapters, scenes, foreshadow_debts, evaluations)
+        debt_radar = self._debt_radar(
+            chapters=chapters,
+            scenes=scenes,
+            chapter_rows=chapter_rows,
+            foreshadow_debts=foreshadow_debts,
+            reader_hook_debts=reader_hook_debts,
+        )
         revision_pressure = [
             self._revision_pressure_row(row, evaluations.get(row["chapter_id"], []), candidates.get(row["chapter_id"], []))
             for row in chapter_rows
@@ -79,7 +86,7 @@ class LongformControlService:
             llm_errors=llm_errors,
         )
         return {
-            "summary": self._summary(chapter_rows, revision_pressure, foreshadow_debts, continuity_alerts),
+            "summary": self._summary(chapter_rows, revision_pressure, foreshadow_debts, continuity_alerts, debt_radar),
             "chapters": chapter_rows,
             "rhythm_map": rhythm_map,
             "character_arcs": character_arcs,
@@ -89,6 +96,7 @@ class LongformControlService:
             "motif_tracking": motif_tracking,
             "information_release_curve": information_release_curve,
             "reader_hook_debts": reader_hook_debts,
+            "debt_radar": debt_radar,
             "foreshadow_debts": foreshadow_debts,
             "continuity_alerts": continuity_alerts,
             "revision_pressure": revision_pressure,
@@ -355,6 +363,7 @@ class LongformControlService:
                 "runtime_eligible": bool(row.runtime_eligible),
                 "created_at": row.created_at,
                 "updated_at": row.updated_at,
+                "target_ref": f"scene_card:{row.scene_id}" if row.scene_id else f"chapter:{row.chapter_id}",
             }
             for row in rows
         ]
@@ -589,6 +598,94 @@ class LongformControlService:
         return debts
 
     @staticmethod
+    def _debt_radar(
+        *,
+        chapters: list[ChapterGoal],
+        scenes: dict[str, list[SceneCard]],
+        chapter_rows: list[dict[str, Any]],
+        foreshadow_debts: list[dict[str, Any]],
+        reader_hook_debts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        chapter_status = {row["chapter_id"]: row for row in chapter_rows}
+        rows: list[dict[str, Any]] = []
+        for chapter in chapters:
+            brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
+            promise = brief.get("chapter_promise") or brief.get("core_promise") or chapter.chapter_goal or ""
+            payoff_target = brief.get("payoff_target") or chapter.ending_effect or ""
+            ending_question = brief.get("ending_question") or brief.get("chapter_question") or ""
+            if not any((promise, payoff_target, ending_question)):
+                continue
+            status = chapter_status.get(chapter.chapter_id, {})
+            completion = status.get("completion_status")
+            comparison = status.get("comparison_status")
+            if completion == "complete" and comparison == "aggregate_matches_current" and payoff_target:
+                payoff_status = "needs_review"
+                risk_level = "minor"
+                deferral_reason = "章节已有完整聚合稿，但仍需要作者确认承诺是否真正兑现。"
+            else:
+                payoff_status = "open"
+                risk_level = "major" if completion != "complete" else "critical"
+                deferral_reason = ending_question or "章节承诺尚未在当前成稿中明确偿还。"
+            rows.append(
+                {
+                    "promise_ref": f"chapter_promise:{chapter.chapter_id}",
+                    "debt_type": "chapter_promise",
+                    "chapter_id": chapter.chapter_id,
+                    "scene_id": None,
+                    "text": promise,
+                    "opened_at": f"chapter:{chapter.chapter_id}",
+                    "expected_payoff_window": f"chapter:{chapter.chapter_id}:ending",
+                    "payoff_status": payoff_status,
+                    "deferral_reason": deferral_reason,
+                    "risk_level": risk_level,
+                    "target_ref": f"chapter:{chapter.chapter_id}",
+                }
+            )
+        for debt in foreshadow_debts:
+            status = chapter_status.get(debt["chapter_id"], {})
+            open_debt = debt["debt_state"] == "open"
+            complete = status.get("completion_status") == "complete"
+            rows.append(
+                {
+                    "promise_ref": f"foreshadow:{debt['foreshadow_id']}",
+                    "debt_type": "foreshadow",
+                    "chapter_id": debt["chapter_id"],
+                    "scene_id": debt["scene_id"],
+                    "text": debt["text"],
+                    "opened_at": f"scene:{debt['scene_id']}" if debt["scene_id"] else f"chapter:{debt['chapter_id']}",
+                    "expected_payoff_window": f"chapter:{debt['chapter_id']}",
+                    "payoff_status": debt["debt_state"],
+                    "deferral_reason": "" if not open_debt else "伏笔仍未偿还或未标注延宕理由。",
+                    "risk_level": "critical" if open_debt and complete else "major" if open_debt else "info",
+                    "target_ref": debt["target_ref"],
+                }
+            )
+        seen_refs = {row["promise_ref"] for row in rows}
+        for hook in reader_hook_debts:
+            if hook.get("source") == "foreshadow":
+                continue
+            promise_ref = f"reader_hook:{hook['chapter_id']}:{hook.get('scene_id') or 'chapter'}:{hook.get('source')}"
+            if promise_ref in seen_refs:
+                continue
+            rows.append(
+                {
+                    "promise_ref": promise_ref,
+                    "debt_type": "reader_hook",
+                    "chapter_id": hook["chapter_id"],
+                    "scene_id": hook.get("scene_id"),
+                    "text": hook.get("hook_text") or "",
+                    "opened_at": f"scene:{hook['scene_id']}" if hook.get("scene_id") else f"chapter:{hook['chapter_id']}",
+                    "expected_payoff_window": f"chapter:{hook['chapter_id']}",
+                    "payoff_status": hook.get("debt_state") or "open",
+                    "deferral_reason": "读者问题需要后续场景偿还，或在章节目标中明确延宕。",
+                    "risk_level": "major" if hook.get("debt_state") in {"open", "weak"} else "info",
+                    "target_ref": hook["target_ref"],
+                }
+            )
+        rank = {"critical": 0, "major": 1, "minor": 2, "info": 3}
+        return sorted(rows, key=lambda row: (rank.get(row["risk_level"], 9), row["chapter_id"], row["promise_ref"]))
+
+    @staticmethod
     def _revision_pressure_row(
         chapter_row: dict[str, Any],
         evaluations: list[WriterEvaluation],
@@ -686,7 +783,9 @@ class LongformControlService:
         revision_pressure: list[dict[str, Any]],
         foreshadow_debts: list[dict[str, Any]],
         continuity_alerts: list[dict[str, Any]],
+        debt_radar: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        open_statuses = {"open", "weak", "overdue", "needs_review"}
         return {
             "chapter_count": len(chapter_rows),
             "scene_count": sum(row["scene_count"] for row in chapter_rows),
@@ -696,6 +795,8 @@ class LongformControlService:
             "human_review_count": sum(row["requires_human_review_count"] for row in revision_pressure),
             "open_foreshadow_count": sum(1 for row in foreshadow_debts if row["debt_state"] == "open"),
             "continuity_alert_count": len(continuity_alerts),
+            "open_debt_count": sum(1 for row in debt_radar if row["payoff_status"] in open_statuses),
+            "critical_debt_count": sum(1 for row in debt_radar if row["risk_level"] == "critical"),
         }
 
     @staticmethod

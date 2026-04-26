@@ -66,6 +66,7 @@ const qualityContractRows = computed(() => [
   { key: "price_paid", label: "代价", value: qualityContractPayload.value.price_paid },
   { key: "relationship_turn", label: "关系转向", value: qualityContractPayload.value.relationship_turn },
   { key: "information_release", label: "信息释放", value: qualityContractPayload.value.information_release },
+  { key: "image_necessity", label: "意象必要性", value: qualityContractPayload.value.image_necessity },
   { key: "irreversible_change", label: "不可逆变化", value: qualityContractPayload.value.irreversible_change },
   { key: "ending_action", label: "结尾动作", value: qualityContractPayload.value.ending_action },
   { key: "next_scene_pull", label: "下一场牵引", value: qualityContractPayload.value.next_scene_pull },
@@ -182,6 +183,18 @@ function proposalTypeLabel(value) {
 
 function focusTitle(item) {
   return item?.title || item?.issue || item?.dimension || item?.card_type || "focus";
+}
+
+function focusWhy(item) {
+  return item?.why_it_matters || item?.summary || item?.issue || "这会影响人物代价、关系转向或下一场牵引。";
+}
+
+function focusAction(item) {
+  return item?.proposed_action || item?.recommendation?.summary || "先做一处小刀式改动，再回看整场是否成立。";
+}
+
+function focusTradeoff(item) {
+  return item?.tradeoff || "改得更锋利会牺牲一部分顺滑解释，需要保护作者声线。";
 }
 
 function candidateCategoryLabel(value) {
@@ -609,7 +622,7 @@ onActivated(() => {
     <WorkflowPageHeader view-id="deepdesk" />
     <PanelShell
       eyebrow="写作与深改台"
-      title="先写正文，再让系统理解结构"
+      title="职业作者日用写作舱"
       description="作者稿是第一入口：AI 可以反向提取戏剧卡、诊断、生成候选、记录偏好，但不会自动覆盖 FinalScene 或 ChapterMemory。"
     >
       <template #actions>
@@ -779,6 +792,30 @@ onActivated(() => {
               </ol>
               <div v-else class="empty">No daily focus yet.</div>
             </article>
+          </section>
+
+          <section class="author-next-actions" data-testid="author-next-actions">
+            <div class="receipt-head compact">
+              <div>
+                <h4>下一步改稿动作</h4>
+                <p class="muted receipt-copy">把诊断翻译成作者今天能下手的一处局部动作。</p>
+              </div>
+              <span class="badge">{{ dailyFocus.length }} actions</span>
+            </div>
+            <div v-if="!dailyFocus.length" class="empty">还没有可执行动作。</div>
+            <div v-else class="author-action-grid">
+              <article v-for="item in dailyFocus" :key="`action-${item.source}-${item.dimension}-${focusTitle(item)}`" class="author-action-card">
+                <strong>{{ focusTitle(item) }}</strong>
+                <dl>
+                  <dt>为什么要改</dt>
+                  <dd>{{ focusWhy(item) }}</dd>
+                  <dt>建议动作</dt>
+                  <dd>{{ focusAction(item) }}</dd>
+                  <dt>取舍</dt>
+                  <dd>{{ focusTradeoff(item) }}</dd>
+                </dl>
+              </article>
+            </div>
           </section>
 
           <section class="draft-proposal-panel" data-testid="draft-proposals">
@@ -1322,6 +1359,7 @@ onActivated(() => {
 .deep-candidates,
 .deep-structure,
 .author-radar-strip,
+.author-next-actions,
 .draft-proposal-panel,
 .judgment-layers-panel,
 .scene-quality-panel,
@@ -1515,6 +1553,7 @@ onActivated(() => {
 }
 
 .author-radar-card,
+.author-action-card,
 .judgment-layer-card {
   display: grid;
   gap: 0.55rem;
@@ -1538,6 +1577,28 @@ onActivated(() => {
 
 .author-focus-list span {
   display: block;
+}
+
+.author-action-grid {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.author-action-card dl {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 0.4rem 0.7rem;
+  margin: 0;
+}
+
+.author-action-card dt {
+  color: var(--muted);
+}
+
+.author-action-card dd {
+  margin: 0;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .draft-event-list {

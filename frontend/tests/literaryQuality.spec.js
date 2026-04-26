@@ -85,6 +85,14 @@ describe("literary quality engine console", () => {
     expect(source).toContain("false_clarity");
     expect(source).toContain("valid_ambiguity");
     expect(source).toContain("choice_pressure");
+    expect(source).toContain("painless_scene");
+    expect(source).toContain("decorative_imagery");
+    expect(source).toContain("dialogue_as_report");
+    expect(source).toContain("over_explained_motive");
+    expect(source).toContain("false_poetic_closure");
+    expect(source).toContain("人物无痛");
+    expect(source).toContain("装饰性意象");
+    expect(source).toContain("汇报式对白");
     expect(source).toContain("quality_signal_id");
     expect(source).toContain("span_findings");
     expect(source).toContain("spanFindings");

@@ -24,6 +24,7 @@ const promisePayoff = computed(() => control.promisePayoff);
 const informationReleaseCurve = computed(() => control.informationReleaseCurve);
 const relationTensionMatrix = computed(() => control.relationTensionMatrix);
 const motifTracking = computed(() => control.motifTracking);
+const debtRadar = computed(() => control.debtRadar);
 const foreshadowDebts = computed(() => control.foreshadowDebts);
 const continuityAlerts = computed(() => control.continuityAlerts);
 const revisionPressure = computed(() => control.revisionPressure);
@@ -60,6 +61,26 @@ function severityLabel(value) {
     major: "重要",
     critical: "关键",
   }[value] || value || "-";
+}
+
+function debtTypeLabel(value) {
+  return {
+    chapter_promise: "章节承诺",
+    reader_hook: "读者钩子",
+    foreshadow: "伏笔债务",
+    character_arc: "人物弧线",
+    information_release: "信息释放",
+  }[value] || value || "-";
+}
+
+function payoffStatusLabel(value) {
+  return {
+    open: "待偿还",
+    deferred: "已延宕",
+    paid: "已偿还",
+    resolved: "已解决",
+    overdue: "已逾期",
+  }[value] || statusLabel(value);
 }
 
 function cardTitle(card) {
@@ -223,9 +244,40 @@ onActivated(() => {
             <strong>{{ summary.open_foreshadow_count || 0 }}</strong>
           </article>
           <article class="paper mini">
+            <span>开放债务</span>
+            <strong>{{ summary.open_debt_count || 0 }}</strong>
+          </article>
+          <article class="paper mini">
             <span>已发布指导</span>
             <strong>{{ editor.cardSummary.published_guidance_count || 0 }}</strong>
           </article>
+        </section>
+
+        <section class="paper longform-section" data-testid="longform-debt-radar">
+          <div class="receipt-head">
+            <div>
+              <h3>小说债务雷达</h3>
+              <p class="muted receipt-copy">把章节承诺、读者钩子和伏笔统一成可追责债务：何时打开、何时应还、当前是否拖欠。</p>
+            </div>
+            <span class="badge">{{ summary.critical_debt_count || 0 }} 关键</span>
+          </div>
+          <div v-if="!debtRadar.length" class="empty">当前没有开放债务。</div>
+          <div v-else class="longform-card-grid">
+            <article v-for="debt in debtRadar" :key="debt.promise_ref" class="longform-card">
+              <div class="receipt-head compact">
+                <div>
+                  <strong>{{ debt.promise_ref }}</strong>
+                  <p class="muted">{{ debtTypeLabel(debt.debt_type) }} · {{ payoffStatusLabel(debt.payoff_status) }}</p>
+                </div>
+                <span class="badge">{{ severityLabel(debt.risk_level) }}</span>
+              </div>
+              <p>{{ debt.text || debt.deferral_reason || "债务需要作者判断。" }}</p>
+              <p class="muted">
+                打开：{{ debt.opened_at || debt.chapter_id || "-" }} · 应还：{{ debt.expected_payoff_window || "-" }}
+              </p>
+              <p v-if="debt.deferral_reason" class="muted">延宕理由：{{ debt.deferral_reason }}</p>
+            </article>
+          </div>
         </section>
 
         <nav class="toolbar compact" data-testid="longform-editor-tabs">

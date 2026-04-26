@@ -273,4 +273,7 @@ def test_author_desk_snapshot_exposes_work_profile_judgment_layers_and_daily_foc
     assert data["daily_focus"][0]["source"] == "deep_review"
     assert data["daily_focus"][0]["severity"] == "blocking"
     assert data["daily_focus"][0]["target_view"] == "deepdesk"
+    assert data["daily_focus"][0]["why_it_matters"] == "必须先修正阻断级问题，避免后续深改建立在错误事实上。"
+    assert data["daily_focus"][1]["proposed_action"] == "补一个可见代价。"
+    assert data["daily_focus"][1]["tradeoff"] == "可能牺牲原段落的顺滑感，但会让人物选择更有重量。"
     assert len(data["daily_focus"]) <= 5

@@ -191,6 +191,16 @@ def test_longform_control_dashboard_aggregates_read_only_signals(client, session
     assert data["character_arcs"][0]["low_agency_finding_count"] == 1
     assert data["foreshadow_debts"][0]["debt_state"] == "open"
     assert data["foreshadow_debts"][0]["text"] == "CHAR_B knows the missing name"
+    assert data["summary"]["open_debt_count"] >= 2
+    assert data["debt_radar"]
+    debt_refs = {row["promise_ref"] for row in data["debt_radar"]}
+    assert "chapter_promise:LFC100" in debt_refs
+    assert "foreshadow:FS-LFC100" in debt_refs
+    foreshadow_debt = next(row for row in data["debt_radar"] if row["promise_ref"] == "foreshadow:FS-LFC100")
+    assert foreshadow_debt["opened_at"] == "scene:LFC100_SC01"
+    assert foreshadow_debt["expected_payoff_window"] == "chapter:LFC100"
+    assert foreshadow_debt["payoff_status"] == "open"
+    assert foreshadow_debt["risk_level"] in {"major", "critical"}
     assert {alert["alert_type"] for alert in data["continuity_alerts"]} >= {
         "aggregate_missing",
         "missing_final_scene",

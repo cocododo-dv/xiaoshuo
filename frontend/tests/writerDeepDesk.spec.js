@@ -623,6 +623,7 @@ describe("writer deep revision desk", () => {
     expect(source).toContain('data-testid="draft-proposal-generate-set"');
     expect(source).toContain('data-testid="author-daily-focus"');
     expect(source).toContain('data-testid="author-work-profile"');
+    expect(source).toContain('data-testid="author-next-actions"');
     expect(source).toContain('data-testid="judgment-layers"');
     expect(source).toContain('data-testid="draft-proposal-apply-replace"');
     expect(source).toContain('data-testid="draft-proposal-apply-append"');
@@ -650,6 +651,7 @@ describe("writer deep revision desk", () => {
     expect(source).toContain('data-testid="passage-patch-candidates"');
     expect(source).toContain('data-testid="author-preference-profile"');
     expect(source).toContain("写作与深改台");
+    expect(source).toContain("职业作者日用写作舱");
     expect(source).toContain("我先写");
     expect(source).toContain("AI 起草");
     expect(source).toContain("深改诊断");
@@ -657,6 +659,9 @@ describe("writer deep revision desk", () => {
     expect(source).toContain("AI 草稿提案");
     expect(source).toContain("三类候选");
     expect(source).toContain("今日焦点");
+    expect(source).toContain("为什么要改");
+    expect(source).toContain("建议动作");
+    expect(source).toContain("取舍");
     expect(source).toContain("作品档案");
     expect(source).toContain("追加到当前稿");
     expect(source).toContain("作为新版本");

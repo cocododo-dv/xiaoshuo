@@ -25,22 +25,32 @@ QUALITY_DIMENSIONS: tuple[str, ...] = (
     "syntax_monotony",
     "false_clarity",
     "valid_ambiguity",
+    "painless_scene",
+    "decorative_imagery",
+    "dialogue_as_report",
+    "over_explained_motive",
+    "false_poetic_closure",
 )
 
 DIMENSION_WEIGHTS = {
-    "model_voice": 0.13,
-    "image_homogeneity": 0.08,
-    "repetitive_action": 0.08,
-    "expository_dialogue": 0.12,
-    "no_choice_scene": 0.10,
-    "summary_ending": 0.10,
-    "choice_pressure": 0.10,
-    "ending_drive": 0.10,
-    "template_action_reuse": 0.08,
-    "image_field_reuse": 0.05,
-    "syntax_monotony": 0.04,
+    "model_voice": 0.09,
+    "image_homogeneity": 0.05,
+    "repetitive_action": 0.05,
+    "expository_dialogue": 0.07,
+    "no_choice_scene": 0.08,
+    "summary_ending": 0.06,
+    "choice_pressure": 0.08,
+    "ending_drive": 0.08,
+    "template_action_reuse": 0.06,
+    "image_field_reuse": 0.03,
+    "syntax_monotony": 0.03,
     "false_clarity": 0.02,
     "valid_ambiguity": 0.00,
+    "painless_scene": 0.10,
+    "decorative_imagery": 0.05,
+    "dialogue_as_report": 0.07,
+    "over_explained_motive": 0.04,
+    "false_poetic_closure": 0.04,
 }
 
 SEVERITY_RANK = {"blocking": 0, "revision": 1, "taste": 2, "info": 3}
@@ -264,6 +274,118 @@ FALSE_CLARITY_TERMS = (
     "突然意识到",
     "真相必须",
     "一切都变得",
+)
+
+COST_TERMS = (
+    "cost",
+    "price",
+    "risk",
+    "lose",
+    "lost",
+    "sacrifice",
+    "give up",
+    "betray",
+    "hide",
+    "代价",
+    "牺牲",
+    "失去",
+    "冒险",
+    "背叛",
+    "隐瞒",
+    "误伤",
+    "放弃",
+    "不能同时",
+    "只能",
+)
+
+DECORATIVE_IMAGE_TERMS = (
+    "as if fate",
+    "like fate",
+    "old wound",
+    "destiny",
+    "atmosphere",
+    "仿佛命运",
+    "像旧伤疤",
+    "旧伤疤",
+    "命运",
+    "冷意",
+    "回声",
+    "氛围",
+    "像某种",
+    "仿佛",
+)
+
+REPORT_DIALOGUE_TERMS = (
+    "official report",
+    "the report",
+    "the truth is",
+    "i explain",
+    "let me explain",
+    "evidence shows",
+    "官方报告",
+    "真相是",
+    "我解释",
+    "解释给你听",
+    "证据显示",
+    "报告里",
+    "这是因为",
+)
+
+MOTIVE_EXPLANATION_TERMS = (
+    "because she",
+    "because he",
+    "because they",
+    "so she",
+    "so he",
+    "she knew she had to",
+    "he knew he had to",
+    "为了",
+    "因为她",
+    "因为他",
+    "因为他们",
+    "所以她",
+    "所以他",
+    "她知道自己必须",
+    "他知道自己必须",
+    "原因是",
+)
+
+POETIC_CLOSURE_TERMS = (
+    "everything changed forever",
+    "as if fate",
+    "echo",
+    "destiny",
+    "一切都变得",
+    "仿佛命运",
+    "命运",
+    "回声",
+    "余韵",
+    "她知道",
+    "他知道",
+)
+
+POETIC_CLOSURE_ACTION_TERMS = (
+    "opened",
+    "closed",
+    "left",
+    "took",
+    "handed",
+    "raised",
+    "crossed",
+    "stepped",
+    "pressed",
+    "held",
+    "放下",
+    "推开",
+    "打开",
+    "关上",
+    "走出",
+    "递出",
+    "举起",
+    "落下",
+    "转身",
+    "按下",
+    "握住",
 )
 
 
@@ -537,6 +659,7 @@ def analyze_literary_quality(text: str) -> tuple[dict[str, dict[str, Any]], list
     _add_false_clarity_signal(signals, findings, normalized)
     _add_valid_ambiguity_signal(signals, findings, normalized)
     _add_expository_dialogue_signal(signals, findings, normalized)
+    _add_dialogue_as_report_signal(signals, findings, normalized)
     _add_absence_signal(
         signals,
         findings,
@@ -557,6 +680,10 @@ def analyze_literary_quality(text: str) -> tuple[dict[str, dict[str, Any]], list
         recommendation="State the tradeoff through action: what is lost, risked, or refused because of the choice.",
     )
     _add_ending_drive_signal(signals, findings, normalized)
+    _add_painless_scene_signal(signals, findings, normalized)
+    _add_decorative_imagery_signal(signals, findings, normalized)
+    _add_over_explained_motive_signal(signals, findings, normalized)
+    _add_false_poetic_closure_signal(signals, findings, normalized)
 
     for dimension in QUALITY_DIMENSIONS:
         signals.setdefault(dimension, {"risk": False, "score": 1.0, "evidence": ""})
@@ -616,6 +743,12 @@ def _filter_quality_items(
     for item in items:
         if risk_type and not item.get("signals", {}).get(risk_type, {}).get("risk"):
             continue
+        if risk_type:
+            focused_findings = [finding for finding in item.get("findings") or [] if finding.get("dimension") == risk_type]
+            item = {
+                **item,
+                "recommended_next_action": _recommended_next_action(focused_findings, item.get("signals") or {}),
+            }
         if threshold is not None and not any(
             SEVERITY_RANK.get(finding.get("severity"), 99) <= threshold
             for finding in item.get("findings") or []
@@ -892,6 +1025,120 @@ def _add_expository_dialogue_signal(
             )
             return
     signals["expository_dialogue"] = {"risk": False, "score": 1.0, "evidence": ""}
+
+
+def _add_dialogue_as_report_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    for dialogue in _dialogue_spans(text):
+        term = _first_present_term(dialogue, REPORT_DIALOGUE_TERMS)
+        if not term:
+            continue
+        evidence = _excerpt(dialogue, term)
+        signals["dialogue_as_report"] = {"risk": True, "score": 0.0, "evidence": evidence}
+        findings.append(
+            _finding(
+                "dialogue_as_report",
+                "revision",
+                "Dialogue is reporting plot information instead of changing pressure between characters.",
+                evidence,
+                "Turn the fact into a withheld answer, accusation, bargaining chip, or relationship wound.",
+            )
+        )
+        return
+    signals["dialogue_as_report"] = {"risk": False, "score": 1.0, "evidence": ""}
+
+
+def _add_painless_scene_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    choice_term = _first_present_term(text, CHOICE_TERMS)
+    cost_term = _first_present_term(text, COST_TERMS)
+    if cost_term:
+        signals["painless_scene"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = _excerpt(text, choice_term or "")
+    signals["painless_scene"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "painless_scene",
+            "revision",
+            "The scene may be structurally clear but emotionally painless: no concrete loss, betrayal, risk, or sacrifice is visible.",
+            evidence,
+            "Make the character pay on the page: lose a resource, damage a bond, hide something, betray a value, or choose one safety over another.",
+        )
+    )
+
+
+def _add_decorative_imagery_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    hits = [term for term in DECORATIVE_IMAGE_TERMS if term.lower() in text.lower()]
+    if len(hits) < 2:
+        signals["decorative_imagery"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = _excerpt(text, hits[0])
+    signals["decorative_imagery"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "decorative_imagery",
+            "taste",
+            "The image work is carrying atmosphere more than action, relationship, information, or theme pressure.",
+            evidence,
+            "Keep the strongest image only if it changes what a character does, reveals a withheld fact, or sharpens the cost of the choice.",
+        )
+    )
+
+
+def _add_over_explained_motive_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    term = _first_present_term(text, MOTIVE_EXPLANATION_TERMS)
+    if not term:
+        signals["over_explained_motive"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = _excerpt(text, term)
+    signals["over_explained_motive"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "over_explained_motive",
+            "revision",
+            "The motive is being explained directly instead of being pressured into action or omission.",
+            evidence,
+            "Let the reader infer motive from what the character refuses, delays, hides, or chooses under pressure.",
+        )
+    )
+
+
+def _add_false_poetic_closure_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    ending = _ending_slice(text)
+    term = _first_present_term(ending, POETIC_CLOSURE_TERMS)
+    if not term or _first_present_term(ending, POETIC_CLOSURE_ACTION_TERMS):
+        signals["false_poetic_closure"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = _excerpt(ending, term)
+    signals["false_poetic_closure"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "false_poetic_closure",
+            "revision",
+            "The ending closes with poetic certainty rather than a hard next-scene action.",
+            evidence,
+            "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance.",
+        )
+    )
 
 
 def _add_image_signal(

@@ -532,6 +532,12 @@ def _contract_payload(*, scene: SceneCard, chapter: ChapterGoal, source_snapshot
         "price_paid": _first_text(scene_brief.get("stakes"), blueprint.get("price_paid"), scene.exit_change),
         "relationship_turn": _first_text(scene_brief.get("power_shift"), blueprint.get("relationship_turn"), chapter_brief.get("relationship_delta")),
         "information_release": _first_text(scene_brief.get("new_information"), blueprint.get("information_release"), scene.must_include_text),
+        "image_necessity": _first_text(
+            scene_brief.get("image_necessity"),
+            blueprint.get("image_necessity"),
+            f"让{scene.must_include_text}推动人物、关系、信息或主题压力。" if scene.must_include_text else "",
+            "意象必须推动人物、关系、信息或主题压力，不能只负责氛围。",
+        ),
         "irreversible_change": _first_text(scene_brief.get("irreversible_change"), scene.exit_change, chapter.ending_effect),
         "ending_action": _first_text(blueprint.get("ending_action"), scene.exit_change, scene.hook),
         "next_scene_pull": _first_text(scene_brief.get("reader_aftertaste"), blueprint.get("next_scene_pull"), scene.hook),
