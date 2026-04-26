@@ -49,6 +49,14 @@ SCENE_FORMS: tuple[str, ...] = (
     "revelation_scene",
     "transition_scene",
 )
+PATCH_CATEGORIES: tuple[str, ...] = (
+    "dialogue_rewrite",
+    "action_replace",
+    "ending_pressure",
+    "information_reorder",
+    "de_model_voice",
+    "local_patch",
+)
 
 
 class WriterDeepReviewService:
@@ -109,6 +117,11 @@ class WriterDeepReviewService:
             generation_llm_call_id=patch_payload.get("generation_llm_call_id"),
             source_excerpt=source_excerpt,
             issue_dimension=issue_dimension,
+            candidate_category=_candidate_category(payload, issue_dimension),
+            target_range_json=_target_range(payload.get("target_range")),
+            revision_strategy=_revision_strategy(payload, issue_dimension),
+            preference_tags_json=_preference_tags(payload, issue_dimension),
+            inserted_into_author_draft=0,
             replacement_options_json=patch_payload["replacement_options"],
             rationale=patch_payload.get("rationale"),
             manual_only=1,
@@ -203,6 +216,11 @@ class WriterDeepReviewService:
             "generation_llm_call_id": row.generation_llm_call_id,
             "source_excerpt": row.source_excerpt,
             "issue_dimension": row.issue_dimension,
+            "candidate_category": row.candidate_category,
+            "target_range": row.target_range_json or None,
+            "revision_strategy": row.revision_strategy,
+            "preference_tags": row.preference_tags_json or [],
+            "inserted_into_author_draft": bool(row.inserted_into_author_draft),
             "replacement_options": row.replacement_options_json or [],
             "rationale": row.rationale,
             "manual_only": bool(row.manual_only),
@@ -779,6 +797,68 @@ def _infer_scene_form(text: str) -> str:
     return "plot_scene"
 
 
+def _candidate_category(payload: dict[str, Any], issue_dimension: str) -> str:
+    explicit = _optional_text(payload, "candidate_category")
+    if explicit in PATCH_CATEGORIES:
+        return explicit
+    dimension = str(issue_dimension or "")
+    if dimension in {"dialogue_subtext", "dialogue_edge", "relationship_tension"}:
+        return "dialogue_rewrite"
+    if dimension in {"image_necessity", "repetitive_expression", "template_action_reuse"}:
+        return "action_replace"
+    if dimension in {"ending_drive", "summary_ending"}:
+        return "ending_pressure"
+    if dimension in {"information_rhythm", "expository_dialogue", "false_clarity"}:
+        return "information_reorder"
+    if dimension in {"model_voice", "prose_model_voice", "image_homogeneity", "syntax_monotony"}:
+        return "de_model_voice"
+    return "local_patch"
+
+
+def _target_range(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    for key in ("start", "end"):
+        if isinstance(value.get(key), int):
+            result[key] = value[key]
+    unit = value.get("unit")
+    if isinstance(unit, str) and unit.strip():
+        result["unit"] = unit.strip()
+    return result or None
+
+
+def _revision_strategy(payload: dict[str, Any], issue_dimension: str) -> str:
+    explicit = _optional_text(payload, "revision_strategy")
+    if explicit:
+        return explicit
+    category = _candidate_category(payload, issue_dimension)
+    return {
+        "dialogue_rewrite": "用反问、截断或沉默替代解释性对白。",
+        "action_replace": "用物件移动、身体位置或关系后果替代模板动作。",
+        "ending_pressure": "把结尾改成推动下一场的硬动作或视觉钩子。",
+        "information_reorder": "让信息通过行动分段释放，避免一次性说明。",
+        "de_model_voice": "删掉抽象总结和泛化比喻，保留具体动作压力。",
+    }.get(category, f"围绕 {issue_dimension} 做局部深改。")
+
+
+def _preference_tags(payload: dict[str, Any], issue_dimension: str) -> list[str]:
+    raw = payload.get("preference_tags")
+    if isinstance(raw, list):
+        tags = [str(item).strip() for item in raw if str(item).strip()]
+        if tags:
+            return _dedupe(tags)[:8]
+    category = _candidate_category(payload, issue_dimension)
+    defaults = {
+        "dialogue_rewrite": ["少解释", "对白更短"],
+        "action_replace": ["动作承压", "少模板手势"],
+        "ending_pressure": ["结尾硬钩子"],
+        "information_reorder": ["信息分段释放"],
+        "de_model_voice": ["去模型腔", "少抽象总结"],
+    }
+    return defaults.get(category, [issue_dimension])[:8]
+
+
 def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
     return any(token and token in text for token in tokens)
 
@@ -1062,10 +1142,16 @@ def _preference_summary(rows: list[PassagePatchCandidate]) -> dict[str, list[str
     preferred: list[str] = []
     rejected: list[str] = []
     ai_traces: list[str] = []
+    preferred_categories: list[str] = []
+    rejected_categories: list[str] = []
+    preference_tags: list[str] = []
     for row in rows:
+        category_label = _category_label(row.candidate_category)
         if row.author_decision == "accepted":
             selected = _selected_option(row)
             tone = selected.get("tone") if selected else ""
+            preferred_categories.append(category_label)
+            preference_tags.extend(str(item) for item in (row.preference_tags_json or []) if str(item).strip())
             if tone == "sharper":
                 preferred.append("偏好更锋利的局部改写，让动作代替解释。")
             elif tone == "subtler":
@@ -1073,14 +1159,18 @@ def _preference_summary(rows: list[PassagePatchCandidate]) -> dict[str, list[str
             elif tone == "shorter":
                 preferred.append("偏好更短的句段，压缩解释余量。")
             else:
-                preferred.append(f"偏好围绕 {row.issue_dimension} 的人工局部改写。")
+                preferred.append(f"偏好{category_label}：{row.revision_strategy or row.issue_dimension}。")
         elif row.author_decision == "rejected":
+            rejected_categories.append(category_label)
             note = row.author_decision_note or "保留作者原句，不把所有重复都视为错误。"
             rejected.append(note if "保留" in note else f"保留原意：{note}")
         ai_traces.extend(term for term in _repeated_ai_trace_terms(row.source_excerpt) if term not in ai_traces)
     return {
         "preferred_revision_moves": _dedupe(preferred),
         "rejected_revision_moves": _dedupe(rejected),
+        "preferred_patch_categories": _dedupe(preferred_categories),
+        "rejected_patch_categories": _dedupe(rejected_categories),
+        "preference_tags": _dedupe(preference_tags),
         "ai_trace_terms_to_watch": _dedupe(ai_traces),
         "runtime_policy": ["偏好摘要保持 draft；审核批准前不得进入运行 bundle。"],
     }
@@ -1097,9 +1187,23 @@ def _empty_preference_summary() -> dict[str, list[str]]:
     return {
         "preferred_revision_moves": [],
         "rejected_revision_moves": [],
+        "preferred_patch_categories": [],
+        "rejected_patch_categories": [],
+        "preference_tags": [],
         "ai_trace_terms_to_watch": [],
         "runtime_policy": ["偏好摘要保持 draft；审核批准前不得进入运行 bundle。"],
     }
+
+
+def _category_label(value: str | None) -> str:
+    return {
+        "dialogue_rewrite": "对白改写",
+        "action_replace": "动作替换",
+        "ending_pressure": "结尾重压",
+        "information_reorder": "信息释放重排",
+        "de_model_voice": "去模型腔",
+        "local_patch": "局部深改",
+    }.get(value or "", "局部深改")
 
 
 def _repeated_ai_trace_terms(text: str) -> list[str]:

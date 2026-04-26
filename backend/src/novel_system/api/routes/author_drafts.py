@@ -40,6 +40,12 @@ def save_author_draft(draft_id: str, payload: dict, request: Request, session: S
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.get("/api/v1/author-drafts/{draft_id}/events")
+def get_author_draft_events(draft_id: str, request: Request, session: Session = Depends(get_session)):
+    result = AuthorDraftService(session).events(draft_id)
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v1/author-drafts/{draft_id}/derive-from-generation")
 def derive_author_draft_from_generation(draft_id: str, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"

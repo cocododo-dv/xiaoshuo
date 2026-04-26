@@ -194,6 +194,37 @@ def test_candidate_event_records_without_mutating_author_draft_content(client, s
     assert current["content"] == "原始作者稿。"
 
 
+def test_author_draft_events_endpoint_returns_timeline_in_creation_order(client, session) -> None:
+    _create_chapter(client, "AD450", planned_scene_count=1)
+    _create_scene(client, "AD450_SC01", chapter_id="AD450", scene_seq=1, is_chapter_last=1)
+    _finalize_scene(session, "AD450_SC01", "AD450", "作者稿事件源。")
+    draft = client.post("/api/v1/author-drafts/scene/AD450_SC01/ensure").json()["data"]["draft"]
+    saved = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": "作者保存后的版本。", "base_revision_no": draft["revision_no"]},
+    ).json()["data"]["draft"]
+    event_response = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/candidate-events",
+        json={
+            "event_type": "candidate_rejected",
+            "patch_id": "patch_AD450",
+            "option_id": "sharp",
+            "note": "太直白，保留原句。",
+        },
+    )
+    assert event_response.status_code == 200
+
+    response = client.get(f"/api/v1/author-drafts/{draft['draft_id']}/events")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["draft_id"] == draft["draft_id"]
+    assert [event["event_type"] for event in data["events"]] == ["created", "edited", "candidate_rejected"]
+    assert data["events"][1]["payload_json"]["revision_no"] == saved["revision_no"]
+    assert data["events"][2]["patch_id"] == "patch_AD450"
+    assert data["events"][2]["note"] == "太直白，保留原句。"
+
+
 def test_ensure_blank_creates_author_drafts_without_runtime_final_scene(client, session) -> None:
     _create_chapter(client, "AD500", planned_scene_count=1)
     _create_scene(client, "AD500_SC01", chapter_id="AD500", scene_seq=1, is_chapter_last=1)
@@ -287,6 +318,57 @@ def test_apply_patch_option_updates_author_draft_without_accepting_candidate_or_
     assert event.option_id == "option_subtext"
     assert event.payload_json["applied_to"] == "author_draft"
     assert session.query(AuthorPreferenceProfile).count() == 0
+
+
+def test_apply_patch_option_marks_patch_inserted_but_keeps_author_decision_pending(client, session) -> None:
+    _create_chapter(client, "AD570", planned_scene_count=1)
+    _create_scene(client, "AD570_SC01", chapter_id="AD570", scene_seq=1, is_chapter_last=1)
+    _finalize_scene(session, "AD570_SC01", "AD570", "她解释这是为了保护所有人。")
+    draft = client.post("/api/v1/author-drafts/scene/AD570_SC01/ensure").json()["data"]["draft"]
+    session.add(
+        PassagePatchCandidate(
+            patch_id="patch_AD570",
+            object_type="scene",
+            object_id="AD570_SC01",
+            chapter_id="AD570",
+            scene_id="AD570_SC01",
+            source_text_ref=f"author_draft:{draft['draft_id']}",
+            target_text_ref=f"author_draft:{draft['draft_id']}",
+            source_draft_id=draft["draft_id"],
+            source_excerpt="她解释这是为了保护所有人。",
+            issue_dimension="dialogue_subtext",
+            candidate_category="dialogue_rewrite",
+            target_range_json={"start": 0, "end": 13, "unit": "char"},
+            revision_strategy="用动作和反问替代解释",
+            preference_tags_json=["少解释", "对白更短"],
+            inserted_into_author_draft=0,
+            replacement_options_json=[
+                {
+                    "option_id": "option_dialogue",
+                    "source_excerpt": "她解释这是为了保护所有人。",
+                    "replacement_text": "她扣上门锁，只问：你也想现在公开吗？",
+                    "label": "对白更短",
+                }
+            ],
+            status="candidate",
+        )
+    )
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/apply-patch-option",
+        json={"patch_id": "patch_AD570", "option_id": "option_dialogue"},
+    )
+
+    assert response.status_code == 200
+    session.expire_all()
+    patch = session.get(PassagePatchCandidate, "patch_AD570")
+    assert patch.inserted_into_author_draft == 1
+    assert patch.status == "candidate"
+    assert patch.author_decision == "pending"
+    event = session.query(AuthorDraftEvent).filter_by(draft_id=draft["draft_id"], event_type="candidate_inserted").one()
+    assert event.payload_json["candidate_category"] == "dialogue_rewrite"
+    assert event.payload_json["preference_tags"] == ["少解释", "对白更短"]
 
 
 def test_structure_extract_creates_candidate_and_apply_updates_scene_brief_only(client, session) -> None:

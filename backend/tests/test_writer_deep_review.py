@@ -359,6 +359,45 @@ def test_passage_patch_candidate_uses_writer_passage_patch_llm_and_records_prove
     assert session.get(LlmCall, candidate["generation_llm_call_id"]).node_id == "writer_passage_patch"
 
 
+def test_passage_patch_candidate_records_category_range_strategy_and_preference_tags(session) -> None:
+    _seed_finished_scene(session)
+    draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
+
+    result = WriterDeepReviewService(session).create_patch_candidate(
+        {
+            "object_type": "scene",
+            "object_id": SCENE_ID,
+            "chapter_id": CHAPTER_ID,
+            "scene_id": SCENE_ID,
+            "target_text_ref": f"author_draft:{draft['draft_id']}",
+            "source_draft_id": draft["draft_id"],
+            "source_excerpt": "她低声说证据还不能公开，然后又解释这是为了保护所有人。",
+            "issue_dimension": "dialogue_subtext",
+            "candidate_category": "dialogue_rewrite",
+            "target_range": {"start": 8, "end": 32, "unit": "char"},
+            "revision_strategy": "反问替代解释",
+            "preference_tags": ["少解释", "对白更短", "动作承压"],
+        },
+        actor_ref="writer",
+    )
+
+    candidate = result["candidate"]
+
+    assert candidate["candidate_category"] == "dialogue_rewrite"
+    assert candidate["target_range"] == {"start": 8, "end": 32, "unit": "char"}
+    assert candidate["revision_strategy"] == "反问替代解释"
+    assert candidate["preference_tags"] == ["少解释", "对白更短", "动作承压"]
+    assert candidate["inserted_into_author_draft"] is False
+
+    session.expire_all()
+    row = session.get(PassagePatchCandidate, candidate["patch_id"])
+    assert row.candidate_category == "dialogue_rewrite"
+    assert row.target_range_json == {"start": 8, "end": 32, "unit": "char"}
+    assert row.revision_strategy == "反问替代解释"
+    assert row.preference_tags_json == ["少解释", "对白更短", "动作承压"]
+    assert row.inserted_into_author_draft == 0
+
+
 def test_passage_patch_prompt_includes_only_approved_runtime_author_preference(session) -> None:
     _seed_finished_scene(session)
     draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]

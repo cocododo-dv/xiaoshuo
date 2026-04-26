@@ -148,3 +148,56 @@ cases:
     banned_terms: ["她很难过", "气氛十分尴尬"]
     min_chars: 90
     max_chars: 700
+
+  - case_id: chinese_strong_plot_choice_cost
+    title: 中文强情节选择代价
+    prompt: >
+      写一个中文原创短场景：档案修复师拿到能公开真相的录音，
+      但公开会暴露幸存者位置。必须出现选择、代价和一个推动下一场的硬动作。
+      不要用总结句解释主题。
+    baseline_text: >
+      林岑把录音卡按在证据袋下。许望伸手要拿，她没有松开。
+
+      “公开它，阿砚的位置也会公开。”他说。
+
+      她把录音卡掰成两片，一片塞进许望掌心，另一片藏进灯座裂缝。门外的脚步声停了，像有人终于确认他们在里面。
+    required_terms: ["录音", "证据"]
+    style_cues: ["动作", "克制", "压力"]
+    character_contradiction_cues: ["公开", "没有松开"]
+    dialogue_edge_cues: ["位置也会公开"]
+    image_necessity_cues: ["录音卡掰成两片", "灯座裂缝"]
+    ending_drive_cues: ["门外的脚步声停了"]
+    model_voice_banned_terms: ["某种意义上", "她知道"]
+    expository_dialogue_banned_terms: ["你知道"]
+    choice_pressure_cues: ["公开它", "掰成两片"]
+    summary_ending_banned_terms: ["解释了一切", "一切都变了"]
+    image_variety_cues: ["录音卡", "证据袋", "灯座"]
+    banned_terms: ["忽然意识到", "事情从此不同"]
+    min_chars: 100
+    max_chars: 760
+
+  - case_id: chinese_strong_plot_ending_drive
+    title: 中文强情节结尾驱动
+    prompt: >
+      写一个中文原创短场景结尾：人物必须延后公开证据以保护一个人，
+      结尾用视觉动作推动下一章。对白要短，不能解释完整前史。
+    baseline_text: >
+      许望把钥匙推回桌面：“现在开门，里面的人就活不了。”
+
+      林岑看着门缝里的光，没有替自己辩解。她明明该公开证据，却把证据袋贴上旧标签，写下一个假的编号。
+
+      锁舌扣回去的瞬间，门外有人敲了三下。第三下之后，钥匙自己转了半圈。
+    required_terms: ["钥匙", "证据"]
+    style_cues: ["短对白", "视觉", "动作"]
+    character_contradiction_cues: ["公开证据", "假的编号"]
+    dialogue_edge_cues: ["活不了"]
+    image_necessity_cues: ["旧标签", "锁舌"]
+    ending_drive_cues: ["钥匙自己转了半圈"]
+    model_voice_banned_terms: ["某种意义上", "她知道"]
+    expository_dialogue_banned_terms: ["你知道"]
+    choice_pressure_cues: ["现在开门", "假的编号"]
+    summary_ending_banned_terms: ["解释了一切", "一切都变了"]
+    image_variety_cues: ["钥匙", "证据袋", "锁舌"]
+    banned_terms: ["真相必须", "忽然意识到"]
+    min_chars: 90
+    max_chars: 720

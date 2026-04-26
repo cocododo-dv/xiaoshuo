@@ -410,6 +410,16 @@ export function fetchCurrentAuthorDraft(objectType, objectId) {
   );
 }
 
+export function fetchAuthorDeskSnapshot(objectType, objectId) {
+  return apiGet(
+    `/api/v1/author-desk/${encodeURIComponent(objectType)}/${encodeURIComponent(objectId)}/snapshot`,
+  );
+}
+
+export function fetchAuthorDraftEvents(draftId) {
+  return apiGet(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/events`);
+}
+
 export function ensureAuthorDraft(objectType, objectId) {
   return apiPost(
     `/api/v1/author-drafts/${encodeURIComponent(objectType)}/${encodeURIComponent(objectId)}/ensure`,

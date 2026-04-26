@@ -60,6 +60,11 @@ describe("literary quality engine console", () => {
     expect(source).toContain("image_homogeneity");
     expect(source).toContain("repetitive_action");
     expect(source).toContain("expository_dialogue");
+    expect(source).toContain("template_action_reuse");
+    expect(source).toContain("image_field_reuse");
+    expect(source).toContain("syntax_monotony");
+    expect(source).toContain("false_clarity");
+    expect(source).toContain("valid_ambiguity");
     expect(source).toContain('navigate("deepdesk")');
     expect(source).toContain("runBaselineEval");
     expect(source).toContain("runLiveEval");

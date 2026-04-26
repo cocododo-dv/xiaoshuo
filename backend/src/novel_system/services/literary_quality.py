@@ -14,21 +14,33 @@ from novel_system.services.errors import DomainError
 QUALITY_DIMENSIONS: tuple[str, ...] = (
     "model_voice",
     "image_homogeneity",
+    "repetitive_action",
     "expository_dialogue",
     "no_choice_scene",
     "summary_ending",
     "choice_pressure",
     "ending_drive",
+    "template_action_reuse",
+    "image_field_reuse",
+    "syntax_monotony",
+    "false_clarity",
+    "valid_ambiguity",
 )
 
 DIMENSION_WEIGHTS = {
-    "model_voice": 0.18,
-    "image_homogeneity": 0.12,
-    "expository_dialogue": 0.16,
-    "no_choice_scene": 0.15,
-    "summary_ending": 0.13,
-    "choice_pressure": 0.13,
-    "ending_drive": 0.13,
+    "model_voice": 0.13,
+    "image_homogeneity": 0.08,
+    "repetitive_action": 0.08,
+    "expository_dialogue": 0.12,
+    "no_choice_scene": 0.10,
+    "summary_ending": 0.10,
+    "choice_pressure": 0.10,
+    "ending_drive": 0.10,
+    "template_action_reuse": 0.08,
+    "image_field_reuse": 0.05,
+    "syntax_monotony": 0.04,
+    "false_clarity": 0.02,
+    "valid_ambiguity": 0.00,
 }
 
 MODEL_VOICE_TERMS = (
@@ -208,6 +220,41 @@ IMAGE_TERMS = (
     "钥匙",
     "手",
     "眼",
+)
+
+ATMOSPHERIC_IMAGE_TERMS = (
+    "moon",
+    "shadow",
+    "dark",
+    "rain",
+    "wind",
+    "fog",
+    "cold",
+    "light",
+    "月",
+    "月光",
+    "影",
+    "阴影",
+    "冷",
+    "风",
+    "雾",
+    "雾气",
+    "光",
+)
+
+FALSE_CLARITY_TERMS = (
+    "she knew",
+    "he knew",
+    "finally understood",
+    "suddenly realized",
+    "everything became clear",
+    "她知道",
+    "他知道",
+    "终于明白",
+    "忽然意识到",
+    "突然意识到",
+    "真相必须",
+    "一切都变得",
 )
 
 
@@ -392,6 +439,11 @@ def analyze_literary_quality(text: str) -> tuple[dict[str, dict[str, Any]], list
     )
     _add_image_signal(signals, findings, normalized)
     _add_repetitive_action_signal(signals, findings, normalized)
+    _add_template_action_reuse_signal(signals, findings, normalized)
+    _add_image_field_reuse_signal(signals, findings, normalized)
+    _add_syntax_monotony_signal(signals, findings, normalized)
+    _add_false_clarity_signal(signals, findings, normalized)
+    _add_valid_ambiguity_signal(signals, findings, normalized)
     _add_expository_dialogue_signal(signals, findings, normalized)
     _add_absence_signal(
         signals,
@@ -537,6 +589,112 @@ def _add_repetitive_action_signal(
     )
 
 
+def _add_template_action_reuse_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    sentences = _sentences(text)
+    templates = Counter(_action_template(sentence) for sentence in sentences)
+    templates.pop("", None)
+    template, count = max(templates.items(), key=lambda item: item[1]) if templates else ("", 0)
+    if count < 3:
+        signals["template_action_reuse"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = " / ".join(sentence for sentence in sentences if _action_template(sentence) == template)[:180]
+    signals["template_action_reuse"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "template_action_reuse",
+            "revision",
+            "Action beats are repeating the same sentence template.",
+            evidence,
+            "Keep one beat, then vary blocking, object movement, silence, or relational pressure.",
+        )
+    )
+
+
+def _add_image_field_reuse_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    lowered = text.lower()
+    hits: list[str] = []
+    for term in ATMOSPHERIC_IMAGE_TERMS:
+        count = len(re.findall(rf"\b{re.escape(term)}\b", lowered)) if re.fullmatch(r"[a-z]+", term) else lowered.count(term.lower())
+        hits.extend([term] * count)
+    if len(hits) < 4 or len(set(hits)) < 3:
+        signals["image_field_reuse"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = _excerpt(text, hits[0])
+    signals["image_field_reuse"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "image_field_reuse",
+            "taste",
+            f"The atmospheric image field is doing too much repeated work: {', '.join(sorted(set(hits))[:5])}.",
+            evidence,
+            "Let one image carry mood, and make the next beat change through an object, decision, or body position.",
+        )
+    )
+
+
+def _add_syntax_monotony_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    sentences = _sentences(text)
+    patterns = Counter(_syntax_pattern(sentence) for sentence in sentences)
+    patterns.pop("", None)
+    pattern, count = max(patterns.items(), key=lambda item: item[1]) if patterns else ("", 0)
+    if count < 3:
+        signals["syntax_monotony"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = " / ".join(sentence for sentence in sentences if _syntax_pattern(sentence) == pattern)[:180]
+    signals["syntax_monotony"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "syntax_monotony",
+            "taste",
+            "Several consecutive sentences use the same syntactic shape.",
+            evidence,
+            "Break the rhythm with a short sentence, a withheld response, or a sentence that starts from consequence instead of gesture.",
+        )
+    )
+
+
+def _add_false_clarity_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    term = _first_present_term(text, FALSE_CLARITY_TERMS)
+    if not term:
+        signals["false_clarity"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = _excerpt(text, term)
+    signals["false_clarity"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "false_clarity",
+            "revision",
+            "The passage tells the reader what became clear instead of letting pressure reveal it.",
+            evidence,
+            "Cut the explanation and let a choice, refusal, object transfer, or silence create the reader's inference.",
+        )
+    )
+
+
+def _add_valid_ambiguity_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    signals["valid_ambiguity"] = {"risk": False, "score": 1.0, "evidence": ""}
+
+
 def _add_summary_ending_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
@@ -607,6 +765,32 @@ def _dialogue_spans(text: str) -> list[str]:
     spans.extend(re.findall(r"“([^”]+)”", text, flags=re.DOTALL))
     spans.extend(re.findall(r"「([^」]+)」", text, flags=re.DOTALL))
     return [_compact_ws(span) for span in spans if span.strip()]
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"[。！？.!?]+", text) if part.strip()]
+
+
+def _action_template(sentence: str) -> str:
+    normalized = _compact_ws(sentence)
+    lowered = normalized.lower()
+    if re.search(r"^[她他][^，。！？]{0,16}低头看着[^，。！？]*，[^。！？]*沉默了片刻", normalized):
+        return "pronoun_looked_at_object_then_silence"
+    for action in ("turned", "looked", "nodded", "smiled", "sighed", "转身", "低头", "看着", "点头", "笑", "叹气", "沉默"):
+        if action in lowered:
+            return f"action:{action}"
+    return ""
+
+
+def _syntax_pattern(sentence: str) -> str:
+    normalized = _compact_ws(sentence)
+    if not normalized:
+        return ""
+    if re.match(r"^[她他][^，,]{2,24}[，,][^，,]{2,24}$", normalized):
+        return "pronoun_phrase_comma_phrase"
+    comma_count = normalized.count("，") + normalized.count(",")
+    length_bucket = min(len(normalized) // 12, 4)
+    return f"comma:{comma_count}:len:{length_bucket}"
 
 
 def _ending_slice(text: str) -> str:

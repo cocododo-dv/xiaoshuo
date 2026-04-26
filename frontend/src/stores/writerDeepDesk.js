@@ -8,6 +8,8 @@ import {
   deriveAuthorDraftFromGeneration,
   ensureBlankAuthorDraft as ensureBlankAuthorDraftApi,
   extractAuthorDraftStructure,
+  fetchAuthorDeskSnapshot,
+  fetchAuthorDraftEvents,
   fetchAuthorPreferenceProfile,
   fetchChapterDeepReview,
   fetchChapterManuscriptDetail,
@@ -78,8 +80,11 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     detail: null,
     deepReview: null,
     preferenceProfile: null,
+    authorDeskSnapshot: null,
+    draftEvents: [],
     draftMode: "chapter",
     authorDraft: null,
+    deskStage: "write",
     deskMode: "write_first",
     deskContext: {},
     draftContent: "",
@@ -132,6 +137,9 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       return mergeCandidates(state.deepReview?.patch_candidates || [], state.patchCandidates);
     },
     structureCandidateRows: (state) => snapshotPayloadList(state.structureCandidates || []),
+    longformPressure: (state) => snapshotPayloadList(state.authorDeskSnapshot?.longform_pressure || []),
+    snapshotOpenCandidates: (state) => snapshotPayloadList(state.authorDeskSnapshot?.open_candidates || []),
+    snapshotDeepReviewSummary: (state) => snapshotPayload(state.authorDeskSnapshot?.deep_review_summary || null),
     excerptForPatch() {
       return this.selectedExcerpt.trim() || preferredExcerpt(this.draftContent);
     },
@@ -148,6 +156,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.draftSavedContent = "";
       this.pendingCandidateDecisions = [];
       this.structureCandidates = [];
+      this.authorDeskSnapshot = null;
+      this.draftEvents = [];
     },
     clearStructureCandidates() {
       this.structureCandidates = [];
@@ -221,6 +231,24 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       const payload = await fetchAuthorPreferenceProfile();
       this.preferenceProfile = snapshotPayload(payload.profile || null);
     },
+    async loadAuthorDeskSnapshot() {
+      if (!this.draftObjectId) {
+        this.authorDeskSnapshot = null;
+        return null;
+      }
+      const payload = await fetchAuthorDeskSnapshot(this.draftObjectType, this.draftObjectId);
+      this.authorDeskSnapshot = snapshotPayload(payload);
+      return this.authorDeskSnapshot;
+    },
+    async loadDraftEvents() {
+      if (!this.authorDraft?.draft_id) {
+        this.draftEvents = [];
+        return [];
+      }
+      const payload = await fetchAuthorDraftEvents(this.authorDraft.draft_id);
+      this.draftEvents = snapshotPayloadList(payload.events || []);
+      return this.draftEvents;
+    },
     async loadAuthorDraft({ ensure = true } = {}) {
       if (!this.draftObjectId) {
         this.clearAuthorDraft();
@@ -262,6 +290,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       if (this.selectedChapterId) {
         await this.loadDetail(this.selectedChapterId);
         await this.loadAuthorDraft({ ensure: true });
+        await this.loadAuthorDeskSnapshot();
+        await this.loadDraftEvents();
         await this.loadDeepReview();
       }
       await this.loadPreference();
@@ -293,6 +323,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         this.clearStructureCandidates();
         await this.loadDetail(chapterId);
         await this.loadAuthorDraft({ ensure: true });
+        await this.loadAuthorDeskSnapshot();
+        await this.loadDraftEvents();
         await this.loadDeepReview();
         await this.loadPreference();
         this.markFresh();
@@ -315,6 +347,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.syncSelectedScene();
       try {
         await this.loadAuthorDraft({ ensure: true });
+        await this.loadAuthorDeskSnapshot();
+        await this.loadDraftEvents();
         await this.loadDeepReview();
       } catch (error) {
         this.error = error.message;
@@ -323,6 +357,16 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
     },
     setDeskMode(mode) {
       this.deskMode = mode === "ai_draft" ? "ai_draft" : "write_first";
+    },
+    setDeskStage(stage) {
+      const nextStage = ["write", "ai", "review", "longform"].includes(stage) ? stage : "write";
+      this.deskStage = nextStage;
+      if (nextStage === "ai") {
+        this.setDeskMode("ai_draft");
+      }
+      if (nextStage === "write") {
+        this.setDeskMode("write_first");
+      }
     },
     async selectSceneDraft(sceneId) {
       if (!sceneId || this.selectedSceneId === sceneId) {
@@ -335,6 +379,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.clearStructureCandidates();
       try {
         await this.loadAuthorDraft({ ensure: true });
+        await this.loadAuthorDeskSnapshot();
+        await this.loadDraftEvents();
         await this.loadDeepReview();
       } catch (error) {
         this.error = error.message;
@@ -348,7 +394,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.actionId = "ai-draft";
       this.error = "";
       try {
-        this.setDeskMode("ai_draft");
+        this.setDeskStage("ai");
         if (this.draftMode !== "scene") {
           this.draftMode = "scene";
         }
@@ -378,6 +424,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         this.draftSavedContent = this.draftContent;
         this.structureCandidates = snapshotPayloadList(result.open_structure_candidates || []);
         this.patchCandidates = mergeCandidates(snapshotPayloadList(result.open_patch_candidates || []), this.patchCandidates);
+        await this.loadAuthorDeskSnapshot();
+        await this.loadDraftEvents();
         await this.loadDeepReview();
         await this.loadPreference();
         return `AI 起草已转入作者稿：${this.authorDraft?.draft_id || "-"}`;
@@ -407,6 +455,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         const result = await runChapterDeepReviewApi(chapterId);
         this.deepReview = snapshotPayload(result);
         this.patchCandidates = snapshotPayloadList(result.patch_candidates || []);
+        await this.loadAuthorDeskSnapshot();
         return `深改诊断完成：${result.latest_score ?? "-"}`;
       } catch (error) {
         this.error = error.message;
@@ -422,6 +471,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         const result = await runSceneDeepReview(sceneId);
         this.deepReview = snapshotPayload(result);
         this.patchCandidates = snapshotPayloadList(result.patch_candidates || []);
+        await this.loadAuthorDeskSnapshot();
         return `场景深改诊断完成：${result.latest_score ?? "-"}`;
       } catch (error) {
         this.error = error.message;
@@ -449,6 +499,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
         });
         const candidate = snapshotPayload(result.candidate);
         this.patchCandidates = snapshotPayloadList([candidate, ...this.candidateRows]);
+        await this.loadAuthorDeskSnapshot();
         await this.loadPreference();
         return `已生成局部候选：${candidate.patch_id}`;
       } catch (error) {
@@ -500,6 +551,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
           await this.loadDetail(this.selectedChapterId);
         }
         await markStructureDependentsStale();
+        await this.loadAuthorDeskSnapshot();
         await this.loadDeepReview();
         await this.loadPreference();
         return `结构候选已应用：${row?.candidate_id || candidateId}`;
@@ -523,6 +575,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
           ...payload,
         });
         const row = this.upsertStructureCandidate(result.candidate);
+        await this.loadAuthorDeskSnapshot();
         await this.loadPreference();
         return `结构候选已拒绝：${row?.candidate_id || candidateId}`;
       } catch (error) {
@@ -582,6 +635,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
           decision,
           ...this.pendingCandidateDecisions.filter((item) => item.patch_id !== decision.patch_id),
         ]);
+        await this.loadDraftEvents();
         return "已放入作者稿编辑器，保存作者稿后才会记录采纳。";
       } catch (error) {
         this.error = error.message;
@@ -624,6 +678,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
           });
         }
         this.pendingCandidateDecisions = [];
+        await this.loadAuthorDeskSnapshot();
+        await this.loadDraftEvents();
         await this.loadDeepReview();
         await this.loadPreference();
         return `作者稿已保存到第 ${this.authorDraft?.revision_no || "-"} 版`;
@@ -640,6 +696,7 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
       this.error = "";
       try {
         const result = await acceptPassagePatchCandidate(patchId, payload);
+        await this.loadAuthorDeskSnapshot();
         await this.loadDeepReview();
         await this.loadPreference();
         return `已记录采纳：${result.candidate?.patch_id || patchId}`;
@@ -660,6 +717,8 @@ export const useWriterDeepDeskStore = defineStore("writerDeepDesk", {
           note: payload.note || "rejected from writer deep desk",
         });
         const result = await rejectPassagePatchCandidate(patchId, payload);
+        await this.loadAuthorDeskSnapshot();
+        await this.loadDraftEvents();
         await this.loadDeepReview();
         await this.loadPreference();
         return `已记录拒绝：${result.candidate?.patch_id || patchId}`;

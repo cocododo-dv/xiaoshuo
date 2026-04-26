@@ -12,6 +12,7 @@ from novel_system.db.models import (
     SceneCard,
     SceneRunState,
 )
+from novel_system.services.literary_quality import analyze_literary_quality
 
 
 def _seed_quality_scene(session, *, chapter_id: str = "LQ100", scene_id: str = "LQ100_SC01") -> str:
@@ -154,3 +155,29 @@ def test_literary_quality_overview_falls_back_to_runtime_text_and_final_aggregat
     assert scene_item["source_ref"] == f"final_scene:{final_row_id}"
     assert chapter_item["text_layer"] == "chapter_memory_final"
     assert chapter_item["source_ref"] == f"chapter_memory:{memory.row_id}"
+
+
+def test_literary_quality_detects_template_reuse_and_protects_valid_ambiguity() -> None:
+    text = (
+        "她低头看着钥匙，沉默了片刻。\n"
+        "他低头看着录音，沉默了片刻。\n"
+        "她低头看着门缝，沉默了片刻。\n"
+        "月光、阴影、冷风和雾气反复压下来，月光又落在她手上。\n"
+        "她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+    )
+
+    signals, findings = analyze_literary_quality(text)
+
+    assert signals["template_action_reuse"]["risk"] is True
+    assert signals["image_field_reuse"]["risk"] is True
+    assert signals["syntax_monotony"]["risk"] is True
+    assert signals["false_clarity"]["risk"] is True
+    assert signals["valid_ambiguity"]["risk"] is False
+    assert signals["valid_ambiguity"]["score"] == 1.0
+    finding_dimensions = {finding["dimension"] for finding in findings}
+    assert {
+        "template_action_reuse",
+        "image_field_reuse",
+        "syntax_monotony",
+        "false_clarity",
+    } <= finding_dimensions

@@ -815,7 +815,39 @@ def _apply_scene_near_final_gates(payload: dict[str, Any], source_content: str) 
         return payload
     missing = _missing_scene_machinery(source_content)
     if not missing:
-        return payload
+        model_voice_findings = _model_voice_gate_findings(source_content)
+        if not model_voice_findings:
+            return payload
+        findings = [*model_voice_findings, *(payload.get("findings") or [])]
+        revision_brief = list(payload.get("revision_brief") or [])
+        revision_brief.insert(
+            0,
+            {
+                "dimension": "model_voice_risk",
+                "action": "删掉抽象总结、解释性因果和万能情绪句；把判断改成物件移动、沉默、反问或不可撤回动作。",
+                "priority": "high",
+            },
+        )
+        scores = dict(payload.get("scores") or {})
+        scores["model_voice_risk"] = min(float(scores.get("model_voice_risk", 0.4) or 0.4), 0.4)
+        scores["author_voice_match"] = min(float(scores.get("author_voice_match", 0.55) or 0.55), 0.55)
+        overall_score = payload.get("overall_score")
+        if payload.get("pass_flag"):
+            overall_score = min(float(overall_score or 0.56), 0.56)
+        return {
+            **payload,
+            "near_final_status": "revision_required",
+            "pass_flag": False,
+            "overall_score": overall_score,
+            "scores": scores,
+            "failure_class": "prose_model_voice",
+            "requires_human_review": False,
+            "findings": findings,
+            "revision_brief": revision_brief,
+        }
+    scores = dict(payload.get("scores") or {})
+    scores.setdefault("choice_pressure", 0.3)
+    scores.setdefault("ending_drive", 0.3)
     findings = list(payload.get("findings") or [])
     findings.insert(
         0,
@@ -841,6 +873,7 @@ def _apply_scene_near_final_gates(payload: dict[str, Any], source_content: str) 
         "near_final_status": "revision_required",
         "pass_flag": False,
         "overall_score": overall_score,
+        "scores": scores,
         "failure_class": "scene_structure_failure",
         "requires_human_review": False,
         "findings": findings,
@@ -858,6 +891,40 @@ def _missing_scene_machinery(content: str) -> list[str]:
     if not _has_ending_action(text):
         missing.append("ending_action")
     return missing
+
+
+def _model_voice_gate_findings(content: str) -> list[dict[str, Any]]:
+    text = content or ""
+    terms = [
+        term
+        for term in (
+            "某种意义上",
+            "一切都变得",
+            "她知道",
+            "他知道",
+            "忽然意识到",
+            "突然意识到",
+            "解释了一切",
+            "解释了所有",
+            "前因后果",
+            "事情从此不同",
+            "意义重大",
+        )
+        if term in text
+    ]
+    if not terms:
+        return []
+    return [
+        {
+            "dimension": "model_voice_risk",
+            "severity": "revision",
+            "issue": f"准终稿仍保留模型腔或解释性总结：{'、'.join(terms[:4])}。",
+            "recommendation": "把概括性判断改成角色必须承担的动作、物件转移、沉默或反问。",
+            "evidence_excerpt": _compact_text(_first_term_window(text, terms[0]), limit=120),
+            "evidence_location": "scene body",
+            "why_it_matters": "强情节准终稿需要让读者自行从压力中推断意义，不能由叙述替读者总结。",
+        }
+    ]
 
 
 def _is_test_placeholder_draft(content: str) -> bool:
@@ -1046,6 +1113,13 @@ def _string_list(value: Any) -> list[str]:
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(term.lower() in lowered for term in terms)
+
+
+def _first_term_window(text: str, term: str) -> str:
+    index = text.find(term)
+    if index < 0:
+        return text[:120]
+    return text[max(0, index - 36) : index + len(term) + 64]
 
 
 def _is_missing_task_route(exc: LLMNodeExecutionError) -> bool:

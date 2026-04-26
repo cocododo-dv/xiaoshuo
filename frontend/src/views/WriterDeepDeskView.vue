@@ -31,6 +31,8 @@ const findings = computed(() => desk.findings || []);
 const lensEvaluations = computed(() => desk.lensEvaluations || []);
 const candidates = computed(() => desk.candidateRows || []);
 const structureCandidates = computed(() => desk.structureCandidateRows || []);
+const longformPressure = computed(() => desk.longformPressure || []);
+const draftEvents = computed(() => desk.draftEvents || []);
 const preference = computed(() => desk.preferenceProfile || null);
 const profileSummary = computed(() => preference.value?.summary || {});
 const selectedExcerpt = computed({
@@ -107,6 +109,76 @@ function statusLabel(value) {
     current: "当前",
     superseded: "已替换",
   }[value] || value || "-";
+}
+
+function candidateCategoryLabel(value) {
+  return {
+    dialogue_rewrite: "对白改写",
+    action_replace: "动作替换",
+    ending_pressure: "结尾重压",
+    information_reorder: "信息释放重排",
+    de_model_voice: "去模型腔",
+    local_patch: "局部深改",
+  }[value] || "局部深改";
+}
+
+function candidateMetaLine(candidate) {
+  const range = candidate?.target_range;
+  const rangeText = range?.unit ? `${range.unit}:${range.start ?? "-"}-${range.end ?? "-"}` : "";
+  return [
+    candidateCategoryLabel(candidate?.candidate_category),
+    candidate?.revision_strategy,
+    rangeText,
+  ].filter(Boolean).join(" · ");
+}
+
+function candidateTagLine(candidate) {
+  const tags = Array.isArray(candidate?.preference_tags) ? candidate.preference_tags.filter(Boolean) : [];
+  return tags.length ? `偏好标签：${tags.join(" / ")}` : "偏好标签：暂无";
+}
+
+function longformCardTypeLabel(value) {
+  return {
+    character_arc_gap: "人物弧线断点",
+    foreshadow_debt: "伏笔债务",
+    foreshadowing_debt: "伏笔债务",
+    promise_without_payoff: "章节承诺未兑现",
+    chapter_promise_unpaid: "章节承诺未兑现",
+    motif_reuse: "意象复用",
+    information_release_gap: "信息释放断点",
+  }[value] || value || "长篇压力";
+}
+
+function longformSeverityLabel(value) {
+  return {
+    critical: "高压",
+    major: "中压",
+    minor: "低压",
+    info: "提示",
+  }[value] || value || "未分级";
+}
+
+function longformRecommendation(card) {
+  const recommendation = card?.recommendation || {};
+  if (typeof recommendation === "string") {
+    return recommendation;
+  }
+  return recommendation.summary || recommendation.action || recommendation.note || "等待人工判断下一步。";
+}
+
+function eventTypeLabel(value) {
+  return {
+    created: "创建作者稿",
+    edited: "保存版本",
+    candidate_inserted: "候选放入稿件",
+    candidate_saved: "候选保存确认",
+    candidate_rejected: "拒绝候选",
+    structure_extracted: "结构提取",
+  }[value] || value || "稿件事件";
+}
+
+function eventNote(event) {
+  return event?.note || event?.patch_id || event?.option_id || event?.actor_ref || "";
 }
 
 function scoreLabel(value) {
@@ -191,6 +263,10 @@ async function selectDraftMode(mode) {
 
 function selectDeskMode(mode) {
   desk.setDeskMode(mode);
+}
+
+function selectDeskStage(stage) {
+  desk.setDeskStage(stage);
 }
 
 async function runAiDraftToAuthorDraft() {
@@ -438,6 +514,40 @@ onActivated(() => {
           </div>
 
           <div class="desk-mode-strip" aria-label="作家书桌模式">
+            <div class="desk-stage-tabs" role="group" aria-label="作者书桌状态">
+              <button
+                type="button"
+                data-testid="desk-stage-write"
+                :class="{ active: desk.deskStage === 'write' }"
+                @click="selectDeskStage('write')"
+              >
+                我先写
+              </button>
+              <button
+                type="button"
+                data-testid="desk-stage-ai"
+                :class="{ active: desk.deskStage === 'ai' }"
+                @click="selectDeskStage('ai')"
+              >
+                AI 起草
+              </button>
+              <button
+                type="button"
+                data-testid="desk-stage-review"
+                :class="{ active: desk.deskStage === 'review' }"
+                @click="selectDeskStage('review')"
+              >
+                深改诊断
+              </button>
+              <button
+                type="button"
+                data-testid="desk-stage-longform"
+                :class="{ active: desk.deskStage === 'longform' }"
+                @click="selectDeskStage('longform')"
+              >
+                长篇压力
+              </button>
+            </div>
             <div class="desk-mode-buttons" role="group" aria-label="起草模式">
               <button
                 type="button"
@@ -515,6 +625,23 @@ onActivated(() => {
             </button>
           </div>
           <FlowActionReceipt :receipt="receipt(DRAFT_SCOPE)" />
+
+          <section class="draft-event-timeline" data-testid="author-draft-events">
+            <div class="receipt-head compact">
+              <div>
+                <h4>作者稿时间线</h4>
+                <p class="muted receipt-copy">版本、候选插入、拒绝和结构提取会留在作者稿账本里。</p>
+              </div>
+              <span class="badge">{{ draftEvents.length }} 条</span>
+            </div>
+            <div v-if="!draftEvents.length" class="empty">暂无作者稿事件。</div>
+            <ol v-else class="draft-event-list">
+              <li v-for="event in draftEvents" :key="event.event_id || `${event.event_type}-${event.created_at}`">
+                <strong>{{ eventTypeLabel(event.event_type) }}</strong>
+                <span v-if="eventNote(event)" class="muted">{{ eventNote(event) }}</span>
+              </li>
+            </ol>
+          </section>
 
           <section class="deep-structure" data-testid="author-structure-candidates">
             <div class="receipt-head compact">
@@ -630,6 +757,28 @@ onActivated(() => {
           </button>
           <FlowActionReceipt :receipt="receipt(REVIEW_SCOPE)" />
 
+          <section class="deep-longform-pressure" data-testid="desk-longform-pressure">
+            <div class="receipt-head compact">
+              <div>
+                <h4>长篇压力</h4>
+                <p class="muted receipt-copy">只推当前稿件最需要处理的连续性压力。</p>
+              </div>
+              <span class="badge">{{ longformPressure.length }} 条</span>
+            </div>
+            <div v-if="!longformPressure.length" class="empty">暂无高优先级长篇压力。</div>
+            <article
+              v-for="card in longformPressure"
+              :key="card.card_id"
+              class="deep-pressure-row"
+            >
+              <div class="receipt-head compact">
+                <strong>{{ longformCardTypeLabel(card.card_type) }}</strong>
+                <span class="badge">{{ longformSeverityLabel(card.severity) }}</span>
+              </div>
+              <p>{{ longformRecommendation(card) }}</p>
+            </article>
+          </section>
+
           <section class="deep-review-findings" data-testid="deep-review-findings">
             <div v-if="!findings.length" class="empty">还没有深改批注。</div>
             <article
@@ -672,11 +821,16 @@ onActivated(() => {
         <article v-for="candidate in candidates" :key="candidate.patch_id" class="deep-candidate-row">
           <div class="receipt-head compact">
             <div>
-              <strong>{{ candidate.issue_dimension }}</strong>
+              <strong>{{ candidateCategoryLabel(candidate.candidate_category) }} / {{ candidate.issue_dimension }}</strong>
+              <p class="muted">{{ candidateMetaLine(candidate) }}</p>
+              <p class="muted">{{ candidateTagLine(candidate) }}</p>
               <p class="muted">{{ candidate.source_excerpt }}</p>
               <small v-if="candidate.rationale" class="muted">{{ candidate.rationale }}</small>
             </div>
-            <span class="badge">{{ statusLabel(candidate.status) }}</span>
+            <div class="candidate-badges">
+              <span class="badge">{{ statusLabel(candidate.status) }}</span>
+              <span v-if="candidate.inserted_into_author_draft" class="badge">已放入稿件</span>
+            </div>
           </div>
           <div class="deep-option-grid">
             <section v-for="option in candidate.replacement_options" :key="option.option_id" class="deep-option">
@@ -730,6 +884,14 @@ onActivated(() => {
           <article>
             <h4>AI 痕迹监测</h4>
             <p>{{ (profileSummary.ai_trace_terms_to_watch || []).join(" / ") || "暂无监测词。" }}</p>
+          </article>
+          <article>
+            <h4>偏好候选类型</h4>
+            <p>{{ (profileSummary.preferred_patch_categories || []).join(" / ") || "暂无类型样本。" }}</p>
+          </article>
+          <article>
+            <h4>偏好标签</h4>
+            <p>{{ (profileSummary.preference_tags || []).join(" / ") || "暂无标签样本。" }}</p>
           </article>
           <article>
             <h4>运行资格</h4>
@@ -819,6 +981,32 @@ onActivated(() => {
   background: rgba(255, 255, 255, 0.52);
 }
 
+.desk-stage-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+  min-width: min(32rem, 100%);
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.desk-stage-tabs button {
+  min-width: 0;
+  padding: 0.5rem 0.65rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.desk-stage-tabs button.active {
+  border-color: rgba(36, 71, 86, 0.2);
+  background: rgba(36, 71, 86, 0.12);
+  color: var(--ink);
+}
+
 .desk-mode-buttons {
   display: inline-flex;
   gap: 0.35rem;
@@ -898,6 +1086,30 @@ onActivated(() => {
   border-top: 1px dashed var(--line);
 }
 
+.draft-event-timeline,
+.deep-longform-pressure {
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed var(--line);
+}
+
+.draft-event-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.draft-event-list li {
+  line-height: 1.55;
+}
+
+.draft-event-list span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .deep-selection-input {
   min-height: 8.5rem;
   resize: vertical;
@@ -921,6 +1133,7 @@ onActivated(() => {
 .deep-option,
 .deep-candidate-row,
 .deep-structure-row,
+.deep-pressure-row,
 .deep-preference-grid > article {
   display: grid;
   gap: 0.65rem;
@@ -934,6 +1147,7 @@ onActivated(() => {
 .deep-option p,
 .deep-candidate-row p,
 .deep-structure-row p,
+.deep-pressure-row p,
 .deep-preference p {
   margin: 0;
 }
@@ -1007,6 +1221,13 @@ onActivated(() => {
   border-bottom: 1px solid rgba(37, 51, 66, 0.1);
 }
 
+.candidate-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
 .deep-option-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -1032,7 +1253,7 @@ onActivated(() => {
 }
 
 .deep-preference-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 @media (max-width: 1200px) {
@@ -1048,6 +1269,16 @@ onActivated(() => {
   .deep-option-grid,
   .deep-preference-grid {
     grid-template-columns: 1fr;
+  }
+
+  .desk-mode-strip {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .desk-stage-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
   }
 }
 </style>

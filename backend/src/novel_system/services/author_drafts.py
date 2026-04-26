@@ -178,6 +178,7 @@ class AuthorDraftService:
         draft.content = _replace_or_append(draft.content or "", source_excerpt, replacement)
         draft.revision_no += 1
         draft.updated_by = actor_ref or draft.updated_by
+        patch.inserted_into_author_draft = 1
         selected_option_id = str(option.get("option_id") or option_id or "")
         self._add_event(
             draft,
@@ -191,6 +192,10 @@ class AuthorDraftService:
                 "source_excerpt": source_excerpt,
                 "replacement_text": replacement,
                 "label": option.get("label") or option.get("tone") or "",
+                "candidate_category": patch.candidate_category,
+                "target_range": patch.target_range_json,
+                "revision_strategy": patch.revision_strategy,
+                "preference_tags": patch.preference_tags_json or [],
                 "revision_no": draft.revision_no,
             },
         )
@@ -214,6 +219,21 @@ class AuthorDraftService:
         )
         self.session.flush()
         return {"event": self.serialize_event(event)}
+
+    def events(self, draft_id: str) -> dict[str, Any]:
+        draft = self._require_draft(draft_id)
+        rows = self.session.execute(
+            select(AuthorDraftEvent)
+            .where(AuthorDraftEvent.draft_id == draft.draft_id)
+            .order_by(AuthorDraftEvent.created_at.asc(), AuthorDraftEvent.event_id.asc())
+        ).scalars().all()
+        return {
+            "draft_id": draft.draft_id,
+            "object_type": draft.object_type,
+            "object_id": draft.object_id,
+            "revision_no": draft.revision_no,
+            "events": [self.serialize_event(row) for row in rows],
+        }
 
     def _draft_response(self, draft: AuthorDraft) -> dict[str, Any]:
         return {
@@ -651,6 +671,11 @@ def _serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
         "source_draft_id": row.source_draft_id,
         "source_excerpt": row.source_excerpt,
         "issue_dimension": row.issue_dimension,
+        "candidate_category": row.candidate_category,
+        "target_range": row.target_range_json or None,
+        "revision_strategy": row.revision_strategy,
+        "preference_tags": row.preference_tags_json or [],
+        "inserted_into_author_draft": bool(row.inserted_into_author_draft),
         "replacement_options": row.replacement_options_json or [],
         "rationale": row.rationale,
         "status": row.status,

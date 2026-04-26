@@ -324,6 +324,20 @@ def test_repo_literary_small_suite_baselines_are_valid() -> None:
     assert result["summary"]["failed_count"] == 0
 
 
+def test_repo_literary_small_suite_includes_chinese_strong_plot_gate_cases() -> None:
+    suite_path = Path(__file__).resolve().parents[2] / "config" / "evals" / "literary_small.yaml"
+
+    suite = load_literary_eval_suite(suite_path)
+    strong_plot_cases = [case for case in suite.cases if case.case_id.startswith("chinese_strong_plot_")]
+
+    assert len(strong_plot_cases) >= 2
+    assert all(case.required_terms for case in strong_plot_cases)
+    assert all(case.choice_pressure_cues for case in strong_plot_cases)
+    assert all(case.ending_drive_cues for case in strong_plot_cases)
+    assert any("解释了一切" in case.summary_ending_banned_terms for case in strong_plot_cases)
+    assert any("某种意义上" in case.model_voice_banned_terms for case in strong_plot_cases)
+
+
 def test_literary_eval_tool_baseline_mode_writes_report(tmp_path: Path) -> None:
     suite_path = tmp_path / "suite.yaml"
     suite_path.write_text(

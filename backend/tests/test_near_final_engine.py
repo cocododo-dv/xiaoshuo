@@ -306,6 +306,33 @@ def test_near_final_acceptance_blocks_scene_without_choice_cost_or_ending_action
     assert "选择" in candidate.instruction_json[0]["action"]
 
 
+def test_near_final_acceptance_blocks_model_voice_even_when_scene_machinery_exists(session) -> None:
+    _seed_scene(session)
+    service = NearFinalAcceptanceService(session, llm_client=SequencedClient([_near_final_pass()]))
+    content = (
+        "林岑决定公开录音还是保护阿砚，她把证据分成两份交给许望，自己藏起另一份。"
+        "某种意义上，这一切都变得非常重要。她知道真相必须被看见，于是解释了所有前因后果。"
+        "最后她转身看见雾墙亮起。"
+    )
+
+    result = service.evaluate_scene(
+        SCENE_ID,
+        bundle={"bundle_id": "bundle_voice", "bundle_snapshot_hash": "hash_voice", "snapshot": {"inline_digests": {}}},
+        source_draft_row_id="draft_voice",
+        source_content=content,
+    )
+    session.commit()
+
+    evaluation = session.execute(select(WriterEvaluation)).scalars().one()
+    candidate = session.execute(select(RevisionCandidate)).scalars().one()
+    assert result["near_final_status"] == "revision_required"
+    assert result["failure_class"] == "prose_model_voice"
+    assert result["pass_flag"] is False
+    assert result["scores"]["model_voice_risk"] <= 0.4
+    assert any(finding["dimension"] == "model_voice_risk" for finding in evaluation.findings_json)
+    assert any(item["dimension"] == "model_voice_risk" for item in candidate.instruction_json)
+
+
 def test_orchestrator_archives_only_after_near_final_acceptance(session) -> None:
     _seed_scene(session)
     planning_client = SequencedClient([{}, {}])

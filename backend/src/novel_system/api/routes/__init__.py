@@ -1,5 +1,6 @@
 __all__ = [
     "author_drafts",
+    "author_desk",
     "chapters",
     "domain",
     "indexing",

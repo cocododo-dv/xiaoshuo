@@ -570,7 +570,8 @@ templates:
     task_prompt: |
       Review the supplied scene for near_final_acceptance_v1.
       Write Chinese string fields while preserving English schema keys.
-      A ready scene must have story necessity, character pressure, dialogue edge, information release, prose freshness, ending drive, continuity, and reference safety.
+      A ready scene must have story necessity, character pressure, forced choice pressure, dialogue edge, information release, prose freshness, ending drive, continuity, author voice match, low model_voice_risk, and reference safety.
+      Do not pass scenes that rely on abstract summary, explanatory cause-and-effect, no-choice motion, generic "she knew" clarity, or soft atmospheric ending instead of a hard next-scene action.
       Use failure_class only from: fact_blocker, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, chapter_payoff_gap, reference_safety.
       If the scene is ready, near_final_status must be near_final_ready and pass_flag true. Otherwise near_final_status must be revision_required and pass_flag false.
     structured_schema:
