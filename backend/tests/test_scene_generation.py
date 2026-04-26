@@ -80,6 +80,44 @@ class FakeFailingClient:
         raise ValueError("malformed provider payload")
 
 
+class FakeDeTemplateClient:
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            structured_output = {
+                "scene_text": (
+                    "她低头看着钥匙，沉默了片刻。"
+                    "他低头看着录音，沉默了片刻。"
+                    "她低头看着门缝，沉默了片刻。"
+                    "她知道真相必须公开。"
+                ),
+                "style_notes": ["kept an unsafe template"],
+            }
+            request_id = "resp_fake_style_template"
+            model = "fake-style-model"
+        else:
+            structured_output = {
+                "scene_text": "她把钥匙扣进掌心，转身拔掉录音线。门缝里的光灭了，外面的人开始敲门。",
+                "style_notes": ["removed repeated action template"],
+            }
+            request_id = "resp_fake_de_template"
+            model = "fake-patch-model"
+        return LLMResponse(
+            request_id=request_id,
+            provider="fake-provider",
+            model=model,
+            text=__import__("json").dumps(structured_output),
+            structured_output=structured_output,
+            response_format="json_object",
+            raw_response={"id": request_id, "model": model, "usage": {}, "finish_reason": "stop"},
+            usage={"input_tokens": 101, "output_tokens": 25, "total_tokens": 126},
+            finish_reason="stop",
+        )
+
+
 def _seed_scene(session) -> None:
     session.add(
         ChapterGoal(
@@ -359,6 +397,47 @@ def test_bundle_and_style_prompt_include_only_approved_runtime_author_preference
     assert style_call is not None
     prompt_summary = style_call.request_payload_summary or {}
     assert "author_preference_profile" in prompt_summary["token_budget"]["included_sections"]
+
+
+def test_generate_style_draft_runs_one_de_template_pass_for_high_risk_anti_template(session) -> None:
+    _seed_scene(session)
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+    }
+    fake_client = FakeDeTemplateClient()
+
+    result = SceneGenerationService(session, llm_client=fake_client).generate_style_draft(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content="Approved neutral draft.",
+    )
+
+    assert len(fake_client.requests) == 2
+    assert fake_client.requests[1].node_id == "style_patch"
+    assert "De-template Rewrite Brief" in fake_client.requests[1].messages[1]["content"]
+    assert "quality:scene:CH100_SC01:template_action_reuse" in fake_client.requests[1].messages[1]["content"]
+
+    drafts = session.execute(select(SceneDraft).order_by(SceneDraft.created_at.asc(), SceneDraft.row_id.asc())).scalars().all()
+    assert [draft.stage for draft in drafts] == ["style_draft", "de_template"]
+    assert drafts[0].content.startswith("她低头看着钥匙")
+    assert drafts[1].content == result.content
+    assert result.row_id == drafts[1].row_id
+
+    llm_calls_by_step = {
+        row.step: row for row in session.execute(select(LlmCall).order_by(LlmCall.created_at.asc())).scalars().all()
+    }
+    assert set(llm_calls_by_step) == {"style_draft", "de_template"}
+    assert llm_calls_by_step["de_template"].node_id == "style_patch"
+
+    attempts = {
+        row.step: row for row in session.execute(select(AttemptTracker).order_by(AttemptTracker.created_at.asc())).scalars().all()
+    }
+    assert attempts["de_template"].details_json["quality_gate"]["triggered"] is True
+    assert attempts["de_template"].details_json["quality_gate"]["rewrite_pass"] == 1
+    assert session.get(SceneRunState, "CH100_SC01").current_style_draft_row_id == drafts[1].row_id
 
 
 def test_generate_style_draft_blocks_provider_when_scene_must_split(session) -> None:

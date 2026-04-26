@@ -453,26 +453,55 @@ class LongformControlService:
 
     @staticmethod
     def _motif_tracking(chapter_ids: list[str], scenes: dict[str, list[SceneCard]]) -> list[dict[str, Any]]:
-        anchors: list[tuple[str, SceneCard, str]] = []
+        anchors: list[tuple[str, SceneCard, str, str]] = []
         for chapter_id in chapter_ids:
             for scene in scenes.get(chapter_id, []):
                 brief = normalize_scene_writer_brief(scene.writer_brief_json)
                 image_anchor = brief.get("image_anchor") or ""
                 if image_anchor:
-                    anchors.append((chapter_id, scene, image_anchor))
+                    transformation_note = " / ".join(
+                        item
+                        for item in (
+                            brief.get("power_shift") or "",
+                            brief.get("emotional_turn") or "",
+                            brief.get("reader_aftertaste") or "",
+                        )
+                        if item
+                    )
+                    anchors.append((chapter_id, scene, image_anchor, transformation_note))
         counts: dict[str, int] = defaultdict(int)
-        for _chapter_id, _scene, image_anchor in anchors:
+        notes_by_anchor: dict[str, set[str]] = defaultdict(set)
+        latest_note_by_anchor: dict[str, str] = {}
+        chapters_by_anchor: dict[str, set[str]] = defaultdict(set)
+        for chapter_id, _scene, image_anchor, transformation_note in anchors:
             counts[image_anchor] += 1
+            chapters_by_anchor[image_anchor].add(chapter_id)
+            if transformation_note:
+                notes_by_anchor[image_anchor].add(transformation_note)
+                latest_note_by_anchor[image_anchor] = transformation_note
+        rows: list[dict[str, Any]] = []
+        for chapter_id, scene, image_anchor, transformation_note in anchors:
+            repeat_count = counts[image_anchor]
+            transformed = repeat_count > 1 and len(notes_by_anchor[image_anchor]) > 1
+            transformation_status = "transformed" if transformed else "static_repeat" if repeat_count > 1 else "fresh"
+            rows.append(
+                {
+                    "chapter_id": chapter_id,
+                    "scene_id": scene.scene_id,
+                    "image_anchor": image_anchor,
+                    "motif": image_anchor,
+                    "chapters": sorted(chapters_by_anchor[image_anchor]),
+                    "repeat_count": repeat_count,
+                    "repeat_risk": repeat_count > 1 and not transformed,
+                    "risk": "repeating" if repeat_count > 1 and not transformed else "fresh",
+                    "transformation_status": transformation_status,
+                    "transformation_note": latest_note_by_anchor.get(image_anchor) or transformation_note,
+                    "target_ref": f"scene_card:{scene.scene_id}",
+                }
+            )
         return [
-            {
-                "chapter_id": chapter_id,
-                "scene_id": scene.scene_id,
-                "image_anchor": image_anchor,
-                "repeat_count": counts[image_anchor],
-                "risk": "repeating" if counts[image_anchor] > 1 else "fresh",
-                "target_ref": f"scene_card:{scene.scene_id}",
-            }
-            for chapter_id, scene, image_anchor in anchors
+            row
+            for row in sorted(rows, key=lambda item: (item["chapter_id"], item["scene_id"], item["image_anchor"]))
         ]
 
     def _information_release_curve(

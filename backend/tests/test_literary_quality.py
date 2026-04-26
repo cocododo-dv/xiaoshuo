@@ -156,6 +156,18 @@ def test_literary_quality_overview_falls_back_to_runtime_text_and_final_aggregat
     assert chapter_item["text_layer"] == "chapter_memory_final"
     assert chapter_item["source_ref"] == f"chapter_memory:{memory.row_id}"
 
+    runtime_response = client.get("/api/v1/literary-quality/overview?text_layer=runtime_final_scene&chapter_id=LQ200")
+    assert runtime_response.status_code == 200
+    runtime_items = runtime_response.json()["data"]["items"]
+    assert [item["object_type"] for item in runtime_items] == ["scene"]
+    assert runtime_items[0]["text_layer"] == "runtime_final_scene"
+
+    memory_response = client.get("/api/v1/literary-quality/overview?text_layer=chapter_memory_final&chapter_id=LQ200")
+    assert memory_response.status_code == 200
+    memory_items = memory_response.json()["data"]["items"]
+    assert [item["object_type"] for item in memory_items] == ["chapter"]
+    assert memory_items[0]["text_layer"] == "chapter_memory_final"
+
 
 def test_literary_quality_detects_template_reuse_and_protects_valid_ambiguity() -> None:
     text = (
@@ -181,3 +193,116 @@ def test_literary_quality_detects_template_reuse_and_protects_valid_ambiguity() 
         "syntax_monotony",
         "false_clarity",
     } <= finding_dimensions
+
+
+def _seed_cross_scene_template_reuse(session) -> None:
+    chapter_id = "LQ300"
+    session.add(
+        ChapterGoal(
+            chapter_id=chapter_id,
+            planned_scene_count=2,
+            chapter_goal="Two strong-type scenes should avoid repeating the same visible machinery.",
+        )
+    )
+    session.add(ChapterState(chapter_id=chapter_id, current_phase="drafting"))
+    for index, object_term in enumerate(("钥匙", "录音"), start=1):
+        scene_id = f"{chapter_id}_SC0{index}"
+        final_row_id = f"final_scene_{scene_id}_v1"
+        session.add(
+            SceneCard(
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                scene_seq=index,
+                scene_goal=f"林岑必须处理{object_term}带来的选择压力。",
+            )
+        )
+        session.add(
+            SceneRunState(
+                scene_id=scene_id,
+                scene_status="archived",
+                current_final_scene_row_id=final_row_id,
+            )
+        )
+        session.add(
+            FinalScene(
+                row_id=final_row_id,
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                content=(
+                    f"她低头看着{object_term}，沉默了片刻。"
+                    f"他低头看着{object_term}，沉默了片刻。"
+                    f"林岑低头看着{object_term}，沉默了片刻。"
+                    "月光、阴影、冷风和雾气反复压下来。"
+                    "她忽然意识到这一切都变得不同了。她知道真相必须公开。"
+                ),
+                status="approved",
+                source_bundle_id=f"bundle_{scene_id}",
+                source_bundle_hash=f"hash_{scene_id}",
+            )
+        )
+    session.commit()
+
+
+def test_literary_quality_overview_exposes_filters_clusters_fingerprints_and_reuse(client, session) -> None:
+    _seed_cross_scene_template_reuse(session)
+
+    response = client.get(
+        "/api/v1/literary-quality/overview",
+        params={
+            "chapter_id": "LQ300",
+            "risk_type": "template_action_reuse",
+            "min_severity": "revision",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+
+    assert payload["filters"] == {
+        "text_layer": "author_draft_preferred",
+        "chapter_id": "LQ300",
+        "risk_type": "template_action_reuse",
+        "min_severity": "revision",
+    }
+    assert payload["items"]
+    assert {item["chapter_id"] for item in payload["items"]} == {"LQ300"}
+    assert all(item["signals"]["template_action_reuse"]["risk"] for item in payload["items"])
+    assert all(item["recommended_next_action"]["action"] == "open_deepdesk_patch" for item in payload["items"])
+    assert payload["risk_clusters"][0]["dimension"] == "template_action_reuse"
+    assert payload["risk_clusters"][0]["count"] >= 2
+    assert any(row["object_id"].startswith("LQ300_SC") for row in payload["fingerprints"])
+    assert "action_templates" in payload["fingerprints"][0]["fingerprint"]
+    assert any(row["cluster_type"] == "action_template" for row in payload["cross_scene_reuse"])
+    assert payload["recommended_next_action"]["action"] == "open_deepdesk_patch"
+
+
+def test_literary_quality_analyze_text_returns_quality_spine_without_database_mutation(client, session) -> None:
+    _seed_quality_scene(session, chapter_id="LQ400", scene_id="LQ400_SC01")
+
+    response = client.post(
+        "/api/v1/literary-quality/analyze-text",
+        json={
+            "content": (
+                "她低头看着钥匙，沉默了片刻。"
+                "他低头看着录音，沉默了片刻。"
+                "她低头看着门缝，沉默了片刻。"
+                "她知道真相必须公开。"
+            ),
+            "object_type": "scene",
+            "object_id": "scratch",
+            "chapter_id": "scratch_chapter",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+
+    assert payload["object_type"] == "scene"
+    assert payload["object_id"] == "scratch"
+    assert payload["score"] < 0.75
+    assert payload["fingerprint"]["action_templates"]
+    assert payload["risk_clusters"][0]["count"] >= 1
+    assert payload["recommended_next_action"]["action"] == "open_deepdesk_patch"
+
+    session.expire_all()
+    assert session.get(SceneRunState, "LQ400_SC01").scene_status == "archived"

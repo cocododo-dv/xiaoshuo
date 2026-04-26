@@ -27,6 +27,7 @@ from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.literary_quality import LiteraryQualityService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import NEAR_FINAL_REWRITE_TYPE, NEAR_FINAL_RUBRIC_ID
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
@@ -319,6 +320,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
             "style_draft": {"row_id": style.row_id, "content": style.content} if style else None,
             "final_scene": {"row_id": final.row_id, "content": final.content} if final else None,
             "source_safety_scan": source_safety_scan,
+            "anti_template_quality_summary": _serialize_anti_template_quality_summary(session, final),
             "literary_blueprint": blueprint_service.latest_payload(scene_id),
             "scene_memory": {"row_id": memory.row_id, "content": memory.content} if memory else None,
             "generation_summary": _serialize_generation_summary(session, scene_id, state),
@@ -340,6 +342,21 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     )
     session.commit()
     return response
+
+
+def _serialize_anti_template_quality_summary(session: Session, final: FinalScene | None) -> dict | None:
+    if final is None or not (final.content or "").strip():
+        return None
+    return LiteraryQualityService(session).analyze_text(
+        {
+            "content": final.content or "",
+            "object_type": "scene",
+            "object_id": final.scene_id,
+            "chapter_id": final.chapter_id,
+            "scene_id": final.scene_id,
+            "source_ref": f"final_scene:{final.row_id}",
+        }
+    )
 
 
 def _serialize_generation_summary(session: Session, scene_id: str, state: SceneRunState) -> dict | None:

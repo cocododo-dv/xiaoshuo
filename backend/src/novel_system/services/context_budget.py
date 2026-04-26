@@ -35,6 +35,7 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("pov_voice", "POV Voice", ("voice_card",)),
     ("style_profile", "Style Feature Contract", ("style_profile", "style_feature_contract")),
     ("author_preference_profile", "Author Preference Profile", ("author_preference_profile",)),
+    ("literary_freshness_budget", "Literary Freshness Budget", ("literary_freshness_budget",)),
     ("longform_structure_guidance", "Longform Structure Guidance", ("longform_structure_guidance",)),
     ("style_rules", "Style Rules", ("style_rule",)),
     ("banned_rules", "Banned Rules", ("banned_rule",)),

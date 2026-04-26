@@ -281,8 +281,15 @@ export function fetchLiteraryQualityOverview(filters = {}) {
   return apiGet(
     buildQueryPath("/api/v1/literary-quality/overview", filters, {
       textLayer: "text_layer",
+      chapterId: "chapter_id",
+      riskType: "risk_type",
+      minSeverity: "min_severity",
     }),
   );
+}
+
+export function analyzeLiteraryQualityText(payload) {
+  return apiPost("/api/v1/literary-quality/analyze-text", payload);
 }
 
 export function fetchStyleProfileContract() {

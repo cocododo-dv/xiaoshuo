@@ -28,6 +28,11 @@ describe("literary quality engine console", () => {
 
     expect(apiSource).toContain("fetchLiteraryQualityOverview");
     expect(apiSource).toContain("/api/v1/literary-quality/overview");
+    expect(apiSource).toContain('chapterId: "chapter_id"');
+    expect(apiSource).toContain('riskType: "risk_type"');
+    expect(apiSource).toContain('minSeverity: "min_severity"');
+    expect(apiSource).toContain("analyzeLiteraryQualityText");
+    expect(apiSource).toContain("/api/v1/literary-quality/analyze-text");
     expect(apiSource).toContain("fetchLiteraryEvalLatest");
     expect(apiSource).toContain("runLiteraryEval");
   });
@@ -39,9 +44,15 @@ describe("literary quality engine console", () => {
 
     expect(source).toContain('defineStore("literaryQuality"');
     expect(source).toContain("fetchLiteraryQualityOverview");
+    expect(source).toContain("analyzeLiteraryQualityText");
     expect(source).toContain("fetchLiteraryEvalLatest");
     expect(source).toContain("runLiteraryEval");
     expect(source).toContain("overviewItems");
+    expect(source).toContain("riskClusters");
+    expect(source).toContain("fingerprints");
+    expect(source).toContain("crossSceneReuse");
+    expect(source).toContain("recommendedNextAction");
+    expect(source).toContain("analyzeText");
     expect(source).toContain("runBaselineEval");
     expect(source).toContain("runLiveEval");
   });
@@ -54,6 +65,13 @@ describe("literary quality engine console", () => {
     expect(source).toContain('data-testid="literary-quality-view"');
     expect(source).toContain('data-testid="quality-tab-overview"');
     expect(source).toContain('data-testid="quality-tab-benchmark"');
+    expect(source).toContain('data-testid="quality-filters"');
+    expect(source).toContain('data-testid="quality-filter-risk-type"');
+    expect(source).toContain('data-testid="quality-filter-min-severity"');
+    expect(source).toContain('data-testid="quality-ad-hoc-scan"');
+    expect(source).toContain('data-testid="quality-risk-clusters"');
+    expect(source).toContain('data-testid="quality-cross-scene-reuse"');
+    expect(source).toContain('data-testid="quality-fingerprint-summary"');
     expect(source).toContain('data-testid="quality-overview-items"');
     expect(source).toContain('data-testid="quality-eval-report"');
     expect(source).toContain("model_voice");
@@ -65,6 +83,9 @@ describe("literary quality engine console", () => {
     expect(source).toContain("syntax_monotony");
     expect(source).toContain("false_clarity");
     expect(source).toContain("valid_ambiguity");
+    expect(source).toContain("choice_pressure");
+    expect(source).toContain("quality_signal_id");
+    expect(source).toContain("recommended_next_action");
     expect(source).toContain('navigate("deepdesk")');
     expect(source).toContain("runBaselineEval");
     expect(source).toContain("runLiveEval");

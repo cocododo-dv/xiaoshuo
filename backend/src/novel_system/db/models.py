@@ -351,6 +351,7 @@ class PassagePatchCandidate(Base):
     target_text_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     source_draft_id: Mapped[str | None] = mapped_column(String, nullable=True)
     generation_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    quality_signal_id: Mapped[str | None] = mapped_column(String, nullable=True)
     source_excerpt: Mapped[str] = mapped_column(Text)
     issue_dimension: Mapped[str] = mapped_column(String)
     candidate_category: Mapped[str] = mapped_column(String, default="local_patch")

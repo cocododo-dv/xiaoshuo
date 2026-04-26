@@ -6,6 +6,7 @@ from novel_system.db.models import (
     BannedRuleCluster,
     CalibrationLine,
     ChapterGoal,
+    FinalScene,
     SceneCard,
     SceneMemory,
     SceneRunState,
@@ -202,6 +203,26 @@ def test_prompt_builder_renders_style_feature_contract_for_style_draft() -> None
     assert "narrative_distance" in payload["user_prompt"]
     assert "paragraph_density" in payload["user_prompt"]
     assert "style_profile" in payload["token_budget"]["included_sections"]
+
+
+def test_prompt_builder_injects_literary_freshness_budget() -> None:
+    builder = PromptBuilder()
+    snapshot = _bundle_snapshot()
+    snapshot["inline_digests"]["literary_freshness_budget"] = """
+{
+  "schema_version": "literary_freshness_budget_v1",
+  "avoid_action_templates": ["pronoun_looked_at_object_then_silence"],
+  "avoid_image_fields": ["钥匙"],
+  "avoid_summary_endings": ["一切都变了"]
+}
+""".strip()
+
+    payload = builder.build(snapshot, "style_draft")
+
+    assert "## Literary Freshness Budget" in payload["user_prompt"]
+    assert "pronoun_looked_at_object_then_silence" in payload["user_prompt"]
+    assert "avoid_summary_endings" in payload["user_prompt"]
+    assert "literary_freshness_budget" in payload["token_budget"]["included_sections"]
 
 
 def test_chapter_summary_schema_requires_carry_forward() -> None:
@@ -642,3 +663,51 @@ def test_bundle_builder_uses_only_prior_scene_memory(session) -> None:
     assert "scene_memory" not in first_snapshot["inline_digests"]
     assert second_snapshot["source_version_refs"]["scene_memory_prev"] == "CH902_SC01"
     assert second_snapshot["inline_digests"]["scene_memory"] == "prior scene memory"
+
+
+def test_bundle_builder_adds_literary_freshness_budget_from_prior_final_scenes(session) -> None:
+    session.add(
+        ChapterGoal(
+            chapter_id="CH903",
+            planned_scene_count=3,
+            chapter_goal="Protect the witness without draining the chapter rhythm.",
+        )
+    )
+    session.add_all(
+        [
+            SceneCard(scene_id="CH903_SC01", chapter_id="CH903", scene_seq=1, scene_goal="First exchange."),
+            SceneCard(scene_id="CH903_SC02", chapter_id="CH903", scene_seq=2, scene_goal="Second exchange."),
+            SceneCard(scene_id="CH903_SC03", chapter_id="CH903", scene_seq=3, scene_goal="Break the pattern."),
+            SceneRunState(scene_id="CH903_SC01"),
+            SceneRunState(scene_id="CH903_SC02"),
+            SceneRunState(scene_id="CH903_SC03"),
+            FinalScene(
+                row_id="final_scene_CH903_SC01_v1",
+                scene_id="CH903_SC01",
+                chapter_id="CH903",
+                content="林岑低头看着钥匙，沉默了片刻。雨敲着门。她必须选择公开。",
+                source_bundle_id="bundle_CH903_SC01_v1",
+                source_bundle_hash="hash_CH903_SC01_v1",
+            ),
+            FinalScene(
+                row_id="final_scene_CH903_SC02_v1",
+                scene_id="CH903_SC02",
+                chapter_id="CH903",
+                content="许望低头看着证据，沉默了片刻。雨又敲着门。他必须选择隐瞒。",
+                source_bundle_id="bundle_CH903_SC02_v1",
+                source_bundle_hash="hash_CH903_SC02_v1",
+            ),
+        ]
+    )
+    session.commit()
+
+    snapshot = BundleBuilder(session).build("CH903_SC03")["snapshot"]
+
+    budget = snapshot["inline_digests"]["literary_freshness_budget"]
+    assert "literary_freshness_budget_v1" in budget
+    assert "pronoun_looked_at_object_then_silence" in budget
+    assert "avoid_summary_endings" in budget
+    assert snapshot["source_version_refs"]["literary_freshness_source_final_scene_ids"] == [
+        "final_scene_CH903_SC01_v1",
+        "final_scene_CH903_SC02_v1",
+    ]

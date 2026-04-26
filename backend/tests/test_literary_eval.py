@@ -338,6 +338,26 @@ def test_repo_literary_small_suite_includes_chinese_strong_plot_gate_cases() -> 
     assert any("某种意义上" in case.model_voice_banned_terms for case in strong_plot_cases)
 
 
+def test_repo_literary_small_suite_includes_chinese_anti_template_gates() -> None:
+    suite_path = Path(__file__).resolve().parents[2] / "config" / "evals" / "literary_small.yaml"
+
+    suite = load_literary_eval_suite(suite_path)
+    anti_template_cases = [case for case in suite.cases if case.case_id.startswith("chinese_anti_template_")]
+
+    assert {case.case_id for case in anti_template_cases} >= {
+        "chinese_anti_template_repeated_gesture",
+        "chinese_anti_template_cross_scene_reuse",
+    }
+    assert all(case.required_terms for case in anti_template_cases)
+    assert all(case.choice_pressure_cues for case in anti_template_cases)
+    assert all(case.ending_drive_cues for case in anti_template_cases)
+    assert any("低头看着" in case.banned_terms for case in anti_template_cases)
+    assert any("沉默了片刻" in case.banned_terms for case in anti_template_cases)
+    assert any("盐霜" in case.banned_terms for case in anti_template_cases)
+    assert any("她知道" in case.model_voice_banned_terms for case in anti_template_cases)
+    assert any("这意味着" in case.summary_ending_banned_terms for case in anti_template_cases)
+
+
 def test_literary_eval_tool_baseline_mode_writes_report(tmp_path: Path) -> None:
     suite_path = tmp_path / "suite.yaml"
     suite_path.write_text(

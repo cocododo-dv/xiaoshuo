@@ -10,6 +10,7 @@ from novel_system.contracts.bundle import BundleSnapshotHashProjection
 from novel_system.db.models import (
     AuthorPreferenceProfile,
     ChapterGoal,
+    FinalScene,
     GenerationPlanningArtifact,
     LongformStructureGuidance,
     SceneBlueprint,
@@ -21,6 +22,7 @@ from novel_system.db.models import (
 from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
+from novel_system.services.literary_quality import fingerprint_literary_quality
 from novel_system.services.resolver import Resolver
 from novel_system.services.character_continuity import CHARACTER_CONTRACT_VERSION, build_character_contract_digest
 from novel_system.services.scene_digest import scene_card_digest
@@ -226,6 +228,22 @@ class BundleBuilder:
                 {"slot": "prev_scene_memory", "ref_id": previous_memory.scene_id, "digest_key": "scene_memory"}
             )
             inline_digests["scene_memory"] = previous_memory.content
+
+        freshness_budget = self._literary_freshness_budget(scene)
+        if freshness_budget is not None:
+            source_version_refs["literary_freshness_source_final_scene_ids"] = freshness_budget["source_final_scene_ids"]
+            ordered_injections.append(
+                {
+                    "slot": "literary_freshness_budget",
+                    "ref_id": scene.chapter_id,
+                    "digest_key": "literary_freshness_budget",
+                }
+            )
+            inline_digests["literary_freshness_budget"] = json.dumps(
+                freshness_budget["budget"],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
 
         style_rules = self.resolver.resolve_active_style_rules(self.session, scene)
         if style_rules:
@@ -439,6 +457,57 @@ class BundleBuilder:
             )
             .order_by(GenerationPlanningArtifact.created_at.desc(), GenerationPlanningArtifact.row_id.desc())
         ).scalars().first()
+
+    def _literary_freshness_budget(self, scene: SceneCard) -> dict[str, Any] | None:
+        rows = self.session.execute(
+            select(FinalScene)
+            .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+            .where(
+                FinalScene.chapter_id == scene.chapter_id,
+                FinalScene.status == "approved",
+                SceneCard.trashed_flag == 0,
+                SceneCard.scene_seq < scene.scene_seq,
+            )
+            .order_by(SceneCard.scene_seq.asc(), FinalScene.created_at.asc(), FinalScene.row_id.asc())
+        ).scalars().all()
+        if not rows:
+            return None
+
+        source_rows = rows[-3:]
+        combined_text = "\n".join(row.content or "" for row in source_rows)
+        fingerprint = fingerprint_literary_quality(combined_text)
+        action_templates = [
+            row["value"]
+            for row in fingerprint.get("action_templates", [])
+            if int(row.get("count") or 0) >= 2
+        ]
+        image_fields = [
+            row["value"]
+            for row in fingerprint.get("image_fields", [])
+            if int(row.get("count") or 0) >= 2
+        ]
+        syntax_shapes = [
+            row["value"]
+            for row in fingerprint.get("syntax_shapes", [])
+            if int(row.get("count") or 0) >= 3
+        ]
+        budget = {
+            "schema_version": "literary_freshness_budget_v1",
+            "source_scene_ids": [row.scene_id for row in source_rows],
+            "avoid_action_templates": action_templates,
+            "avoid_image_fields": image_fields[:6],
+            "vary_syntax_shapes": syntax_shapes[:5],
+            "avoid_false_clarity": ["她知道", "他知道", "忽然意识到", "突然意识到"],
+            "avoid_summary_endings": ["这意味着", "一切都变了", "事情从此不同", "解释了一切"],
+            "instruction": (
+                "Use this as a freshness budget: do not repeat high-frequency action templates, "
+                "rotate image fields, and end on a hard action instead of explanation."
+            ),
+        }
+        return {
+            "source_final_scene_ids": [row.row_id for row in source_rows],
+            "budget": budget,
+        }
 
     def _approved_runtime_author_preference_profile(self) -> AuthorPreferenceProfile | None:
         return self.session.execute(

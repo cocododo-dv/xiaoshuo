@@ -201,3 +201,57 @@ cases:
     banned_terms: ["真相必须", "忽然意识到"]
     min_chars: 90
     max_chars: 720
+
+  - case_id: chinese_anti_template_repeated_gesture
+    title: 中文反模板重复动作闸门
+    prompt: >
+      写一个中文原创短场景：调查员拿到公开令和证据袋，但公开会暴露幸存者地址。
+      必须让人物在动作中做选择，避免“低头看着、沉默了片刻、她知道”等模板化承接。
+    baseline_text: >
+      钟遥把证据袋放到桌沿。她原本要签公开令，笔尖却停在幸存者住址上方。
+
+      审计员说：“签了，他今晚就搬不走。”
+
+      她把笔帽扣回去，撕下一张空白封条贴住地址，又把公开令推给审计员。
+      走廊灯忽然全灭，只剩证据袋里的录音灯还在闪。
+    required_terms: ["证据袋", "公开令"]
+    style_cues: ["笔帽", "封条", "闪"]
+    character_contradiction_cues: ["要签公开令", "贴住地址"]
+    dialogue_edge_cues: ["今晚就搬不走"]
+    image_necessity_cues: ["封条贴住地址", "录音灯还在闪"]
+    ending_drive_cues: ["走廊灯忽然全灭"]
+    model_voice_banned_terms: ["她知道", "某种意义上"]
+    expository_dialogue_banned_terms: ["你知道", "其实我一直"]
+    choice_pressure_cues: ["要签公开令", "把公开令推给审计员"]
+    summary_ending_banned_terms: ["这意味着", "一切都变了"]
+    image_variety_cues: ["证据袋", "笔帽", "封条"]
+    banned_terms: ["低头看着", "沉默了片刻", "忽然意识到"]
+    min_chars: 100
+    max_chars: 760
+
+  - case_id: chinese_anti_template_cross_scene_reuse
+    title: 中文跨场景复用闸门
+    prompt: >
+      写一个中文原创短场景：旧码头交易录音，人物必须在保护亲人与交出证据之间取舍。
+      不要复用“盐霜、低鸣、手指停顿、沉默了片刻”等连续场景里常见的意象和动作。
+    baseline_text: >
+      旧码头的雨把铁链敲得发亮。林岑必须把录音交给追捕者，才能让弟弟从船舱离开。
+
+      “你交给他，我就上岸。”弟弟在舱门后说。
+
+      她把录音卡塞进空油桶底，递出去的却是空壳。船舱门内传来弟弟的咳嗽，
+      追捕者的手电已经照到桶口。
+    required_terms: ["录音", "码头"]
+    style_cues: ["雨", "铁链", "手电"]
+    character_contradiction_cues: ["必须把录音交给追捕者", "递出去的却是空壳"]
+    dialogue_edge_cues: ["我就上岸"]
+    image_necessity_cues: ["空油桶底", "手电已经照到桶口"]
+    ending_drive_cues: ["手电已经照到桶口"]
+    model_voice_banned_terms: ["她知道", "某种意义上"]
+    expository_dialogue_banned_terms: ["你知道", "其实我一直"]
+    choice_pressure_cues: ["才能让弟弟", "递出去的却是空壳"]
+    summary_ending_banned_terms: ["这意味着", "一切都变了"]
+    image_variety_cues: ["雨", "铁链", "油桶", "手电"]
+    banned_terms: ["盐霜", "低鸣", "手指停顿", "沉默了片刻"]
+    min_chars: 100
+    max_chars: 760

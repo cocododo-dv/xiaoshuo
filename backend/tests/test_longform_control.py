@@ -38,6 +38,11 @@ def test_longform_control_dashboard_aggregates_read_only_signals(client, session
             scene_goal="CHAR_A presses CHAR_B for the missing name",
             beats_json=["press", "deflect"],
             hook="CHAR_B lies badly",
+            writer_brief_json={
+                "image_anchor": "blue umbrella",
+                "power_shift": "CHAR_B keeps leverage",
+                "reader_aftertaste": "affection feels dangerous",
+            },
         )
     )
     session.add(
@@ -50,6 +55,11 @@ def test_longform_control_dashboard_aggregates_read_only_signals(client, session
             scene_goal="CHAR_A acts on the lie",
             beats_json=[],
             is_chapter_last=1,
+            writer_brief_json={
+                "image_anchor": "blue umbrella",
+                "power_shift": "CHAR_A takes leverage",
+                "reader_aftertaste": "the umbrella becomes evidence",
+            },
         )
     )
     session.add(
@@ -190,3 +200,7 @@ def test_longform_control_dashboard_aggregates_read_only_signals(client, session
     assert data["revision_pressure"][0]["chapter_id"] == "LFC100"
     assert data["revision_pressure"][0]["open_candidate_count"] == 1
     assert data["revision_pressure"][0]["top_low_dimensions"][0]["dimension"] == "power_shift"
+    assert data["motif_tracking"][0]["motif"] == "blue umbrella"
+    assert data["motif_tracking"][0]["repeat_risk"] is False
+    assert data["motif_tracking"][0]["transformation_status"] == "transformed"
+    assert "CHAR_A takes leverage" in data["motif_tracking"][0]["transformation_note"]

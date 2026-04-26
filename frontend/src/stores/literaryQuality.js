@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 
 import {
+  analyzeLiteraryQualityText,
   fetchLiteraryEvalLatest,
   fetchLiteraryQualityOverview,
   runLiteraryEval,
@@ -16,6 +17,10 @@ function emptyOverview() {
       model_voice_count: 0,
     },
     items: [],
+    risk_clusters: [],
+    fingerprints: [],
+    cross_scene_reuse: [],
+    recommended_next_action: null,
   };
 }
 
@@ -27,13 +32,23 @@ export const useLiteraryQualityStore = defineStore("literaryQuality", {
     stale: false,
     loading: false,
     evalLoading: false,
+    analyzeLoading: false,
     error: "",
     evalError: "",
+    analyzeError: "",
     textLayer: "author_draft_preferred",
+    chapterId: "",
+    riskType: "",
+    minSeverity: "",
+    analyzeResult: null,
   }),
   getters: {
     summary: (state) => state.overview.summary || {},
     overviewItems: (state) => state.overview.items || [],
+    riskClusters: (state) => state.overview.risk_clusters || [],
+    fingerprints: (state) => state.overview.fingerprints || [],
+    crossSceneReuse: (state) => state.overview.cross_scene_reuse || [],
+    recommendedNextAction: (state) => state.overview.recommended_next_action || null,
     benchmarkCases: (state) => state.latestReport?.cases || [],
     benchmarkSummary: (state) => state.latestReport?.summary || {},
   },
@@ -53,13 +68,32 @@ export const useLiteraryQualityStore = defineStore("literaryQuality", {
       this.loading = true;
       this.error = "";
       try {
+        if (Object.prototype.hasOwnProperty.call(filters, "textLayer")) {
+          this.textLayer = filters.textLayer || "author_draft_preferred";
+        }
+        if (Object.prototype.hasOwnProperty.call(filters, "chapterId")) {
+          this.chapterId = filters.chapterId || "";
+        }
+        if (Object.prototype.hasOwnProperty.call(filters, "riskType")) {
+          this.riskType = filters.riskType || "";
+        }
+        if (Object.prototype.hasOwnProperty.call(filters, "minSeverity")) {
+          this.minSeverity = filters.minSeverity || "";
+        }
         const payload = await fetchLiteraryQualityOverview({
           textLayer: this.textLayer,
-          ...filters,
+          chapterId: this.chapterId,
+          riskType: this.riskType,
+          minSeverity: this.minSeverity,
         });
         this.overview = snapshotPayload({
           summary: payload.summary || {},
           items: snapshotPayloadList(payload.items || []),
+          risk_clusters: snapshotPayloadList(payload.risk_clusters || []),
+          fingerprints: snapshotPayloadList(payload.fingerprints || []),
+          cross_scene_reuse: snapshotPayloadList(payload.cross_scene_reuse || []),
+          recommended_next_action: payload.recommended_next_action || null,
+          filters: payload.filters || {},
         });
       } catch (error) {
         this.overview = emptyOverview();
@@ -72,6 +106,21 @@ export const useLiteraryQualityStore = defineStore("literaryQuality", {
     async refreshOverview() {
       await this.loadOverview();
       this.markFresh();
+    },
+    async analyzeText(payload = {}) {
+      this.analyzeLoading = true;
+      this.analyzeError = "";
+      try {
+        const result = await analyzeLiteraryQualityText(payload);
+        this.analyzeResult = snapshotPayload(result || null);
+        return this.analyzeResult;
+      } catch (error) {
+        this.analyzeResult = null;
+        this.analyzeError = error.message;
+        throw error;
+      } finally {
+        this.analyzeLoading = false;
+      }
     },
     async loadLatestEval() {
       this.evalLoading = true;

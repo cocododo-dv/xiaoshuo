@@ -43,6 +43,15 @@ DIMENSION_WEIGHTS = {
     "valid_ambiguity": 0.00,
 }
 
+SEVERITY_RANK = {"blocking": 0, "revision": 1, "taste": 2, "info": 3}
+QUALITY_TEXT_LAYERS = {
+    "author_draft_preferred",
+    "runtime",
+    "runtime_final_scene",
+    "chapter_memory_final",
+    "chapter_assembled",
+}
+
 MODEL_VOICE_TERMS = (
     "suddenly realized",
     "somehow meaningful",
@@ -262,29 +271,91 @@ class LiteraryQualityService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def overview(self, *, text_layer: str = "author_draft_preferred") -> dict[str, Any]:
-        if text_layer not in {"author_draft_preferred", "runtime"}:
+    def overview(
+        self,
+        *,
+        text_layer: str = "author_draft_preferred",
+        chapter_id: str | None = None,
+        risk_type: str | None = None,
+        min_severity: str | None = None,
+    ) -> dict[str, Any]:
+        if text_layer not in QUALITY_TEXT_LAYERS:
             raise DomainError("LITERARY_QUALITY_LAYER_INVALID", "unsupported literary quality text layer", status_code=400)
+        _validate_quality_filters(risk_type=risk_type, min_severity=min_severity)
 
         items: list[dict[str, Any]] = []
         for chapter in self._chapters():
-            source = self._chapter_source(chapter, prefer_author_draft=text_layer == "author_draft_preferred")
+            if chapter_id and chapter.chapter_id != chapter_id:
+                continue
+            source = self._chapter_source(chapter, text_layer=text_layer)
             if source is not None:
                 items.append(self._analyze_item("chapter", chapter.chapter_id, chapter.chapter_id, None, source))
         for scene in self._scenes():
-            source = self._scene_source(scene, prefer_author_draft=text_layer == "author_draft_preferred")
+            if chapter_id and scene.chapter_id != chapter_id:
+                continue
+            source = self._scene_source(scene, text_layer=text_layer)
             if source is not None:
                 items.append(self._analyze_item("scene", scene.scene_id, scene.chapter_id, scene.scene_id, source))
 
+        items = _filter_quality_items(items, risk_type=risk_type, min_severity=min_severity)
         mean_score = round(sum(item["score"] for item in items) / len(items), 4) if items else None
+        risk_clusters = _risk_clusters(items, risk_type=risk_type, min_severity=min_severity)
+        cross_scene_reuse = _cross_scene_reuse(items)
         return {
+            "filters": {
+                "text_layer": text_layer,
+                "chapter_id": chapter_id,
+                "risk_type": risk_type,
+                "min_severity": min_severity,
+            },
             "summary": {
                 "object_count": len(items),
                 "mean_score": mean_score,
                 "high_risk_count": sum(1 for item in items if item["score"] < 0.72),
                 "model_voice_count": sum(1 for item in items if item["signals"]["model_voice"]["risk"]),
+                "risk_cluster_count": len(risk_clusters),
+                "cross_scene_reuse_count": len(cross_scene_reuse),
             },
             "items": items,
+            "risk_clusters": risk_clusters,
+            "fingerprints": [
+                {
+                    "object_type": item["object_type"],
+                    "object_id": item["object_id"],
+                    "chapter_id": item["chapter_id"],
+                    "scene_id": item["scene_id"],
+                    "source_ref": item["source_ref"],
+                    "fingerprint": item["fingerprint"],
+                }
+                for item in items
+            ],
+            "cross_scene_reuse": cross_scene_reuse,
+            "recommended_next_action": _top_recommended_action(items),
+        }
+
+    def analyze_text(self, payload: dict[str, Any]) -> dict[str, Any]:
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise DomainError("LITERARY_QUALITY_TEXT_REQUIRED", "content is required", status_code=400)
+        object_type = _optional_string(payload.get("object_type")) or "ad_hoc"
+        object_id = _optional_string(payload.get("object_id")) or "scratch"
+        chapter_id = _optional_string(payload.get("chapter_id")) or object_id
+        scene_id = _optional_string(payload.get("scene_id"))
+        item = self._analyze_item(
+            object_type,
+            object_id,
+            chapter_id,
+            scene_id,
+            {
+                "text_layer": "ad_hoc",
+                "source_ref": _optional_string(payload.get("source_ref")) or f"ad_hoc:{object_id}",
+                "content": content,
+            },
+        )
+        return {
+            **item,
+            "risk_clusters": _risk_clusters([item]),
+            "recommended_next_action": item["recommended_next_action"],
         }
 
     def _analyze_item(
@@ -297,6 +368,15 @@ class LiteraryQualityService:
     ) -> dict[str, Any]:
         text = source["content"] or ""
         signals, findings = analyze_literary_quality(text)
+        findings = _enrich_findings(
+            findings,
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=chapter_id,
+            scene_id=scene_id,
+            source_ref=source["source_ref"],
+        )
+        fingerprint = fingerprint_literary_quality(text)
         score = round(sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS), 4)
         return {
             "object_type": object_type,
@@ -308,6 +388,8 @@ class LiteraryQualityService:
             "score": score,
             "signals": signals,
             "findings": findings,
+            "fingerprint": fingerprint,
+            "recommended_next_action": _recommended_next_action(findings, signals),
         }
 
     def _chapters(self) -> list[ChapterGoal]:
@@ -324,8 +406,8 @@ class LiteraryQualityService:
             .order_by(SceneCard.chapter_id.asc(), SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
         ).scalars().all()
 
-    def _chapter_source(self, chapter: ChapterGoal, *, prefer_author_draft: bool) -> dict[str, str] | None:
-        if prefer_author_draft:
+    def _chapter_source(self, chapter: ChapterGoal, *, text_layer: str) -> dict[str, str] | None:
+        if text_layer == "author_draft_preferred":
             draft = self._current_author_draft("chapter", chapter.chapter_id)
             if draft is not None:
                 return {
@@ -333,26 +415,32 @@ class LiteraryQualityService:
                     "source_ref": f"author_draft:{draft.draft_id}",
                     "content": draft.content or "",
                 }
+        if text_layer == "runtime_final_scene":
+            return None
 
-        memory = self._final_chapter_memory(chapter.chapter_id)
-        if memory is not None:
-            return {
-                "text_layer": "chapter_memory_final",
-                "source_ref": f"chapter_memory:{memory.row_id}",
-                "content": memory.content or "",
-            }
+        if text_layer in {"author_draft_preferred", "runtime", "chapter_memory_final"}:
+            memory = self._final_chapter_memory(chapter.chapter_id)
+            if memory is not None:
+                return {
+                    "text_layer": "chapter_memory_final",
+                    "source_ref": f"chapter_memory:{memory.row_id}",
+                    "content": memory.content or "",
+                }
+            if text_layer == "chapter_memory_final":
+                return None
 
-        assembled = self._assembled_chapter_text(chapter.chapter_id)
-        if assembled:
-            return {
-                "text_layer": "chapter_assembled",
-                "source_ref": f"chapter_assembled:{chapter.chapter_id}",
-                "content": assembled,
-            }
+        if text_layer in {"author_draft_preferred", "runtime", "chapter_assembled"}:
+            assembled = self._assembled_chapter_text(chapter.chapter_id)
+            if assembled:
+                return {
+                    "text_layer": "chapter_assembled",
+                    "source_ref": f"chapter_assembled:{chapter.chapter_id}",
+                    "content": assembled,
+                }
         return None
 
-    def _scene_source(self, scene: SceneCard, *, prefer_author_draft: bool) -> dict[str, str] | None:
-        if prefer_author_draft:
+    def _scene_source(self, scene: SceneCard, *, text_layer: str) -> dict[str, str] | None:
+        if text_layer == "author_draft_preferred":
             draft = self._current_author_draft("scene", scene.scene_id)
             if draft is not None:
                 return {
@@ -360,6 +448,8 @@ class LiteraryQualityService:
                     "source_ref": f"author_draft:{draft.draft_id}",
                     "content": draft.content or "",
                 }
+        if text_layer not in {"author_draft_preferred", "runtime", "runtime_final_scene"}:
+            return None
 
         final_scene = self._final_scene(scene.scene_id)
         if final_scene is None:
@@ -469,6 +559,219 @@ def analyze_literary_quality(text: str) -> tuple[dict[str, dict[str, Any]], list
     for dimension in QUALITY_DIMENSIONS:
         signals.setdefault(dimension, {"risk": False, "score": 1.0, "evidence": ""})
     return signals, findings
+
+
+def fingerprint_literary_quality(text: str) -> dict[str, Any]:
+    normalized = _compact_ws(text)
+    sentences = _sentences(normalized)
+    action_templates = Counter(_action_template(sentence) for sentence in sentences)
+    action_templates.pop("", None)
+    syntax_shapes = Counter(_syntax_pattern(sentence) for sentence in sentences)
+    syntax_shapes.pop("", None)
+
+    lowered = normalized.lower()
+    image_fields: Counter[str] = Counter()
+    for term in tuple(dict.fromkeys((*IMAGE_TERMS, *ATMOSPHERIC_IMAGE_TERMS))):
+        if re.fullmatch(r"[a-z]+", term):
+            count = len(re.findall(rf"\b{re.escape(term)}\b", lowered))
+        else:
+            count = lowered.count(term.lower())
+        if count:
+            image_fields[term] = count
+
+    dialogue_exposition: Counter[str] = Counter()
+    for dialogue in _dialogue_spans(normalized):
+        for term in EXPOSITORY_DIALOGUE_TERMS:
+            if term.lower() in dialogue.lower():
+                dialogue_exposition[term] += 1
+
+    return {
+        "action_templates": _top_counter(action_templates, limit=8),
+        "image_fields": _top_counter(image_fields, limit=10),
+        "syntax_shapes": _top_counter(syntax_shapes, limit=8),
+        "false_clarity": [term for term in FALSE_CLARITY_TERMS if term.lower() in lowered],
+        "summary_ending": [term for term in SUMMARY_ENDING_TERMS if term.lower() in _ending_slice(normalized).lower()],
+        "dialogue_exposition": _top_counter(dialogue_exposition, limit=6),
+        "choice_pressure": [term for term in PRESSURE_TERMS if term.lower() in lowered],
+    }
+
+
+def _validate_quality_filters(*, risk_type: str | None, min_severity: str | None) -> None:
+    if risk_type and risk_type not in QUALITY_DIMENSIONS:
+        raise DomainError("LITERARY_QUALITY_RISK_TYPE_INVALID", "unsupported literary quality risk_type", status_code=400)
+    if min_severity and min_severity not in SEVERITY_RANK:
+        raise DomainError("LITERARY_QUALITY_SEVERITY_INVALID", "unsupported literary quality min_severity", status_code=400)
+
+
+def _filter_quality_items(
+    items: list[dict[str, Any]],
+    *,
+    risk_type: str | None,
+    min_severity: str | None,
+) -> list[dict[str, Any]]:
+    threshold = SEVERITY_RANK[min_severity] if min_severity else None
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        if risk_type and not item.get("signals", {}).get(risk_type, {}).get("risk"):
+            continue
+        if threshold is not None and not any(
+            SEVERITY_RANK.get(finding.get("severity"), 99) <= threshold
+            for finding in item.get("findings") or []
+        ):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _enrich_findings(
+    findings: list[dict[str, str]],
+    *,
+    object_type: str,
+    object_id: str,
+    chapter_id: str,
+    scene_id: str | None,
+    source_ref: str,
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for finding in findings:
+        dimension = finding.get("dimension", "unknown")
+        signal_id = f"quality:{object_type}:{object_id}:{dimension}"
+        enriched.append(
+            {
+                **finding,
+                "quality_signal_id": signal_id,
+                "signal_id": signal_id,
+                "object_type": object_type,
+                "object_id": object_id,
+                "chapter_id": chapter_id,
+                "scene_id": scene_id,
+                "source_ref": source_ref,
+                "target_text_ref": source_ref,
+            }
+        )
+    return enriched
+
+
+def _recommended_next_action(findings: list[dict[str, Any]], signals: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    if not findings:
+        return {"action": "none", "label": "暂无动作", "reason": "未发现明显文学质量风险。"}
+    priority = sorted(findings, key=lambda item: (SEVERITY_RANK.get(item.get("severity"), 99), item.get("dimension", "")))[0]
+    dimension = priority.get("dimension") or "quality"
+    action = "open_deepdesk_patch"
+    label = "去深改台生成局部候选"
+    return {
+        "action": action,
+        "label": label,
+        "risk_type": dimension,
+        "quality_signal_id": priority.get("quality_signal_id"),
+        "target_text_ref": priority.get("target_text_ref"),
+        "source_excerpt": priority.get("evidence_excerpt") or signals.get(dimension, {}).get("evidence") or "",
+        "reason": priority.get("issue") or "",
+        "recommendation": priority.get("recommendation") or "",
+    }
+
+
+def _top_recommended_action(items: list[dict[str, Any]]) -> dict[str, Any]:
+    actions = [item.get("recommended_next_action") for item in items if item.get("recommended_next_action", {}).get("action") != "none"]
+    if not actions:
+        return {"action": "none", "label": "暂无动作", "reason": "当前列表没有明显文学质量风险。"}
+    return actions[0]
+
+
+def _risk_clusters(
+    items: list[dict[str, Any]],
+    *,
+    risk_type: str | None = None,
+    min_severity: str | None = None,
+) -> list[dict[str, Any]]:
+    threshold = SEVERITY_RANK[min_severity] if min_severity else None
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in items:
+        for finding in item.get("findings") or []:
+            dimension = finding.get("dimension") or "unknown"
+            if risk_type and dimension != risk_type:
+                continue
+            if threshold is not None and SEVERITY_RANK.get(finding.get("severity"), 99) > threshold:
+                continue
+            cluster = grouped.setdefault(
+                dimension,
+                {
+                    "dimension": dimension,
+                    "severity": finding.get("severity") or "revision",
+                    "count": 0,
+                    "object_refs": [],
+                    "quality_signal_ids": [],
+                    "representative_evidence": finding.get("evidence_excerpt") or "",
+                    "recommendation": finding.get("recommendation") or "",
+                },
+            )
+            cluster["count"] += 1
+            ref = {
+                "object_type": item["object_type"],
+                "object_id": item["object_id"],
+                "chapter_id": item["chapter_id"],
+                "scene_id": item["scene_id"],
+                "source_ref": item["source_ref"],
+            }
+            if ref not in cluster["object_refs"]:
+                cluster["object_refs"].append(ref)
+            signal_id = finding.get("quality_signal_id")
+            if signal_id and signal_id not in cluster["quality_signal_ids"]:
+                cluster["quality_signal_ids"].append(signal_id)
+            if SEVERITY_RANK.get(finding.get("severity"), 99) < SEVERITY_RANK.get(cluster["severity"], 99):
+                cluster["severity"] = finding.get("severity")
+    return sorted(grouped.values(), key=lambda row: (-row["count"], SEVERITY_RANK.get(row["severity"], 99), row["dimension"]))
+
+
+def _cross_scene_reuse(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in items:
+        if item.get("object_type") != "scene":
+            continue
+        chapter_id = item.get("chapter_id") or ""
+        fingerprint = item.get("fingerprint") or {}
+        for cluster_type, key in (
+            ("action_template", "action_templates"),
+            ("image_field", "image_fields"),
+            ("syntax_shape", "syntax_shapes"),
+        ):
+            for token_row in fingerprint.get(key) or []:
+                token = token_row.get("value")
+                if not token:
+                    continue
+                group = grouped.setdefault(
+                    (chapter_id, cluster_type, token),
+                    {
+                        "chapter_id": chapter_id,
+                        "cluster_type": cluster_type,
+                        "token": token,
+                        "count": 0,
+                        "object_ids": [],
+                        "source_refs": [],
+                        "severity": "revision" if cluster_type != "image_field" else "taste",
+                    },
+                )
+                group["count"] += int(token_row.get("count") or 0)
+                if item["object_id"] not in group["object_ids"]:
+                    group["object_ids"].append(item["object_id"])
+                if item["source_ref"] not in group["source_refs"]:
+                    group["source_refs"].append(item["source_ref"])
+    rows = [row for row in grouped.values() if len(row["object_ids"]) >= 2]
+    return sorted(rows, key=lambda row: (-row["count"], row["chapter_id"], row["cluster_type"], row["token"]))
+
+
+def _top_counter(counter: Counter[str], *, limit: int) -> list[dict[str, Any]]:
+    return [
+        {"value": value, "count": count}
+        for value, count in counter.most_common(limit)
+        if value and count > 0
+    ]
+
+
+def _optional_string(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _add_term_signal(
@@ -774,7 +1077,7 @@ def _sentences(text: str) -> list[str]:
 def _action_template(sentence: str) -> str:
     normalized = _compact_ws(sentence)
     lowered = normalized.lower()
-    if re.search(r"^[她他][^，。！？]{0,16}低头看着[^，。！？]*，[^。！？]*沉默了片刻", normalized):
+    if re.search(r"^[^，。！？]{1,10}低头看着[^，。！？]*，[^。！？]*沉默了片刻", normalized):
         return "pronoun_looked_at_object_then_silence"
     for action in ("turned", "looked", "nodded", "smiled", "sighed", "转身", "低头", "看着", "点头", "笑", "叹气", "沉默"):
         if action in lowered:

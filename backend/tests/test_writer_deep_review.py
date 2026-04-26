@@ -398,6 +398,34 @@ def test_passage_patch_candidate_records_category_range_strategy_and_preference_
     assert row.inserted_into_author_draft == 0
 
 
+def test_passage_patch_candidate_records_quality_signal_id_for_quality_handoff(session) -> None:
+    _seed_finished_scene(session)
+    draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
+
+    result = WriterDeepReviewService(session).create_patch_candidate(
+        {
+            "object_type": "scene",
+            "object_id": SCENE_ID,
+            "chapter_id": CHAPTER_ID,
+            "scene_id": SCENE_ID,
+            "target_text_ref": f"author_draft:{draft['draft_id']}",
+            "source_draft_id": draft["draft_id"],
+            "source_excerpt": "林岑的手指再次停顿。",
+            "issue_dimension": "template_action_reuse",
+            "quality_signal_id": "quality:scene:DEEP_CH01_SC01:template_action_reuse",
+        },
+        actor_ref="writer",
+    )
+
+    candidate = result["candidate"]
+
+    assert candidate["quality_signal_id"] == "quality:scene:DEEP_CH01_SC01:template_action_reuse"
+
+    session.expire_all()
+    row = session.get(PassagePatchCandidate, candidate["patch_id"])
+    assert row.quality_signal_id == "quality:scene:DEEP_CH01_SC01:template_action_reuse"
+
+
 def test_passage_patch_prompt_includes_only_approved_runtime_author_preference(session) -> None:
     _seed_finished_scene(session)
     draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]

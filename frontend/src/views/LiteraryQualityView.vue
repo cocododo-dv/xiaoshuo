@@ -1,5 +1,5 @@
 <script setup>
-import { ArrowRight, FlaskConical, Play, RefreshCcw } from "lucide-vue-next";
+import { ArrowRight, FlaskConical, Play, RefreshCcw, Search } from "lucide-vue-next";
 import { computed, onActivated, onMounted, ref } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
@@ -12,12 +12,44 @@ const emit = defineEmits(["notice"]);
 const quality = useLiteraryQualityStore();
 const { navigate } = useShellRouter();
 const activeTab = ref("overview");
+const adHocText = ref("");
 
 const summary = computed(() => quality.summary || {});
 const items = computed(() => quality.overviewItems || []);
+const riskClusters = computed(() => quality.riskClusters || []);
+const fingerprints = computed(() => quality.fingerprints || []);
+const crossSceneReuse = computed(() => quality.crossSceneReuse || []);
+const recommendedNextAction = computed(() => quality.recommendedNextAction || null);
+const analyzeResult = computed(() => quality.analyzeResult || null);
 const report = computed(() => quality.latestReport || null);
 const reportSummary = computed(() => quality.benchmarkSummary || {});
 const benchmarkCases = computed(() => quality.benchmarkCases || []);
+
+const TEXT_LAYER_OPTIONS = [
+  { value: "author_draft_preferred", label: "作者稿优先" },
+  { value: "runtime_final_scene", label: "运行终稿" },
+  { value: "chapter_memory_final", label: "最终聚合稿" },
+  { value: "chapter_assembled", label: "实时拼接稿" },
+];
+
+const RISK_TYPE_OPTIONS = [
+  { value: "", label: "全部风险" },
+  { value: "template_action_reuse", label: "动作模板复用" },
+  { value: "image_field_reuse", label: "意象场复用" },
+  { value: "syntax_monotony", label: "句法单调" },
+  { value: "false_clarity", label: "假清晰" },
+  { value: "summary_ending", label: "总结式结尾" },
+  { value: "expository_dialogue", label: "解释性对白" },
+  { value: "choice_pressure", label: "选择压力" },
+];
+
+const SEVERITY_OPTIONS = [
+  { value: "", label: "全部等级" },
+  { value: "blocking", label: "阻断及以上" },
+  { value: "revision", label: "修订及以上" },
+  { value: "taste", label: "审美及以上" },
+  { value: "info", label: "信息及以上" },
+];
 
 const DIMENSION_LABELS = {
   model_voice: "模型腔",
@@ -56,6 +88,7 @@ function severityLabel(value) {
     blocking: "阻断",
     revision: "修订",
     taste: "审美",
+    info: "信息",
   }[value] || value || "-";
 }
 
@@ -77,6 +110,29 @@ function dimensionScoreEntries(dimensions = {}) {
   }));
 }
 
+function tokenList(rows = []) {
+  const values = rows
+    .slice(0, 3)
+    .map((row) => `${row.value} x${row.count}`)
+    .filter(Boolean);
+  return values.length ? values.join(" / ") : "无";
+}
+
+function fingerprintLine(fingerprint = {}) {
+  const action = tokenList(fingerprint.action_templates || []);
+  const image = tokenList(fingerprint.image_fields || []);
+  const syntax = tokenList(fingerprint.syntax_shapes || []);
+  return `动作 ${action}；意象 ${image}；句法 ${syntax}`;
+}
+
+function reuseTypeLabel(value) {
+  return {
+    action_template: "动作模板",
+    image_field: "意象场",
+    syntax_shape: "句法形状",
+  }[value] || value || "-";
+}
+
 function openDeepDesk() {
   navigate("deepdesk");
 }
@@ -84,6 +140,34 @@ function openDeepDesk() {
 async function refreshOverview() {
   try {
     await quality.refreshOverview();
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function applyFilters() {
+  try {
+    await quality.loadOverview({
+      textLayer: quality.textLayer,
+      chapterId: quality.chapterId,
+      riskType: quality.riskType,
+      minSeverity: quality.minSeverity,
+    });
+    quality.markFresh();
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function analyzeText() {
+  try {
+    await quality.analyzeText({
+      content: adHocText.value,
+      object_type: "ad_hoc",
+      object_id: "quality_console",
+      source_ref: "quality_console:paste",
+    });
+    emit("notice", "文本扫描已完成");
   } catch (error) {
     emit("notice", error.message);
   }
@@ -161,6 +245,63 @@ onActivated(() => {
       </div>
 
       <div v-if="activeTab === 'overview'" class="quality-overview">
+        <section class="paper quality-filter-panel" data-testid="quality-filters">
+          <label>
+            <span>文本层</span>
+            <select v-model="quality.textLayer" data-testid="quality-filter-text-layer">
+              <option v-for="option in TEXT_LAYER_OPTIONS" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <label>
+            <span>章节</span>
+            <input v-model.trim="quality.chapterId" type="text" placeholder="chapter_id" />
+          </label>
+          <label>
+            <span>风险类型</span>
+            <select v-model="quality.riskType" data-testid="quality-filter-risk-type">
+              <option v-for="option in RISK_TYPE_OPTIONS" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <label>
+            <span>最低等级</span>
+            <select v-model="quality.minSeverity" data-testid="quality-filter-min-severity">
+              <option v-for="option in SEVERITY_OPTIONS" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <button type="button" class="ghost" :disabled="quality.loading" @click="applyFilters">
+            <Search :size="16" aria-hidden="true" />
+            <span>应用筛选</span>
+          </button>
+        </section>
+
+        <section class="paper quality-ad-hoc" data-testid="quality-ad-hoc-scan">
+          <div class="receipt-head compact">
+            <div>
+              <h3>临时文本扫描</h3>
+              <p class="muted receipt-copy">粘贴片段只做即时分析，不写入作者稿、运行终稿或章节记忆。</p>
+            </div>
+            <button type="button" :disabled="quality.analyzeLoading || !adHocText.trim()" @click="analyzeText">
+              <Search :size="16" aria-hidden="true" />
+              <span>{{ quality.analyzeLoading ? "扫描中..." : "扫描" }}</span>
+            </button>
+          </div>
+          <textarea v-model="adHocText" rows="4" placeholder="把需要巡检的段落粘贴到这里。" />
+          <div v-if="quality.analyzeError" class="empty compact">{{ quality.analyzeError }}</div>
+          <article v-else-if="analyzeResult" class="quality-scan-result">
+            <strong>{{ scoreLabel(analyzeResult.score) }}</strong>
+            <span>{{ analyzeResult.recommended_next_action?.label || "暂无动作" }}</span>
+            <small v-if="analyzeResult.recommended_next_action?.quality_signal_id">
+              {{ analyzeResult.recommended_next_action.quality_signal_id }}
+            </small>
+          </article>
+        </section>
+
         <section class="quality-summary-grid">
           <article class="paper mini">
             <span>巡检对象</span>
@@ -177,6 +318,77 @@ onActivated(() => {
           <article class="paper mini">
             <span>模型腔</span>
             <strong>{{ summary.model_voice_count || 0 }}</strong>
+          </article>
+          <article class="paper mini">
+            <span>风险簇</span>
+            <strong>{{ summary.risk_cluster_count || 0 }}</strong>
+          </article>
+          <article class="paper mini">
+            <span>跨场景复用</span>
+            <strong>{{ summary.cross_scene_reuse_count || 0 }}</strong>
+          </article>
+        </section>
+
+        <section class="quality-evidence-grid">
+          <article class="paper quality-clusters" data-testid="quality-risk-clusters">
+            <div class="receipt-head compact">
+              <div>
+                <h3>风险簇</h3>
+                <p class="muted receipt-copy">{{ recommendedNextAction?.label || "暂无动作" }}</p>
+              </div>
+              <span class="badge">{{ riskClusters.length }}</span>
+            </div>
+            <div v-if="!riskClusters.length" class="empty compact">当前筛选下没有风险簇。</div>
+            <div v-else class="quality-stack">
+              <article v-for="cluster in riskClusters" :key="cluster.dimension" class="quality-mini-row">
+                <strong>{{ DIMENSION_LABELS[cluster.dimension] || cluster.dimension }}</strong>
+                <span>{{ severityLabel(cluster.severity) }} / {{ cluster.count }} 处</span>
+                <small v-if="cluster.quality_signal_ids?.length">{{ cluster.quality_signal_ids[0] }}</small>
+              </article>
+            </div>
+          </article>
+
+          <article class="paper quality-reuse" data-testid="quality-cross-scene-reuse">
+            <div class="receipt-head compact">
+              <div>
+                <h3>跨场景复用</h3>
+                <p class="muted receipt-copy">动作、意象、句法在相邻场景浮出时优先处理。</p>
+              </div>
+              <span class="badge">{{ crossSceneReuse.length }}</span>
+            </div>
+            <div v-if="!crossSceneReuse.length" class="empty compact">暂未发现跨场景复用。</div>
+            <div v-else class="quality-stack">
+              <article
+                v-for="reuse in crossSceneReuse"
+                :key="`${reuse.chapter_id}-${reuse.cluster_type}-${reuse.token}`"
+                class="quality-mini-row"
+              >
+                <strong>{{ reuseTypeLabel(reuse.cluster_type) }}</strong>
+                <span>{{ reuse.token }} x{{ reuse.count }}</span>
+                <small>{{ reuse.object_ids?.join(" / ") }}</small>
+              </article>
+            </div>
+          </article>
+
+          <article class="paper quality-fingerprints" data-testid="quality-fingerprint-summary">
+            <div class="receipt-head compact">
+              <div>
+                <h3>质量指纹</h3>
+                <p class="muted receipt-copy">动作模板、意象场和句法形状用于新鲜度预算。</p>
+              </div>
+              <span class="badge">{{ fingerprints.length }}</span>
+            </div>
+            <div v-if="!fingerprints.length" class="empty compact">暂无指纹。</div>
+            <div v-else class="quality-stack">
+              <article
+                v-for="row in fingerprints.slice(0, 5)"
+                :key="`${row.object_type}-${row.object_id}-${row.source_ref}`"
+                class="quality-mini-row"
+              >
+                <strong>{{ row.object_id }}</strong>
+                <span>{{ fingerprintLine(row.fingerprint) }}</span>
+              </article>
+            </div>
           </article>
         </section>
 
@@ -220,8 +432,13 @@ onActivated(() => {
                 <p>{{ finding.issue }}</p>
                 <blockquote v-if="finding.evidence_excerpt">{{ finding.evidence_excerpt }}</blockquote>
                 <small>{{ finding.recommendation }}</small>
+                <small v-if="finding.quality_signal_id">{{ finding.quality_signal_id }}</small>
               </article>
             </div>
+
+            <small v-if="item.recommended_next_action" class="quality-next-action">
+              {{ item.recommended_next_action.label }} / {{ item.recommended_next_action.risk_type }}
+            </small>
 
             <button type="button" class="ghost quality-open" @click="openDeepDesk">
               <ArrowRight :size="16" aria-hidden="true" />
@@ -316,6 +533,8 @@ onActivated(() => {
 
 .quality-actions button,
 .quality-eval-toolbar button,
+.quality-filter-panel button,
+.quality-ad-hoc button,
 .quality-open {
   display: inline-flex;
   align-items: center;
@@ -351,20 +570,78 @@ onActivated(() => {
 .quality-eval-layout,
 .quality-card-list,
 .quality-findings,
+.quality-stack,
 .quality-eval-cases {
   display: grid;
   gap: 1rem;
 }
 
+.quality-filter-panel {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(7rem, 0.8fr) minmax(9rem, 1fr) minmax(8rem, 0.9fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.quality-filter-panel label,
+.quality-ad-hoc {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.quality-filter-panel label span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.quality-filter-panel select,
+.quality-filter-panel input,
+.quality-ad-hoc textarea {
+  width: 100%;
+  min-height: 2.45rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--ink);
+}
+
+.quality-filter-panel select,
+.quality-filter-panel input {
+  padding: 0 0.7rem;
+}
+
+.quality-ad-hoc {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.quality-ad-hoc textarea {
+  min-height: 7rem;
+  padding: 0.75rem;
+  resize: vertical;
+  line-height: 1.55;
+}
+
 .quality-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.85rem;
+}
+
+.quality-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.85rem;
 }
 
 .quality-card,
 .quality-case-row,
-.quality-eval-toolbar {
+.quality-eval-toolbar,
+.quality-evidence-grid > .paper {
   display: grid;
   gap: 0.9rem;
   padding: 1rem;
@@ -413,6 +690,25 @@ onActivated(() => {
   background: rgba(255, 255, 255, 0.5);
 }
 
+.quality-mini-row,
+.quality-scan-result {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(37, 51, 66, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.quality-mini-row span,
+.quality-mini-row small,
+.quality-scan-result span,
+.quality-scan-result small,
+.quality-next-action {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .quality-finding p,
 .quality-finding blockquote,
 .quality-finding small,
@@ -453,6 +749,8 @@ onActivated(() => {
 
 @media (max-width: 980px) {
   .quality-summary-grid,
+  .quality-filter-panel,
+  .quality-evidence-grid,
   .quality-eval-toolbar {
     grid-template-columns: 1fr;
   }

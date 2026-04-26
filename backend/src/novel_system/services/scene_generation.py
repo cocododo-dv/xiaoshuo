@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import AttemptTracker, LlmCall, SceneCard, SceneDraft, SceneRunState
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
+from novel_system.services.literary_quality import DIMENSION_WEIGHTS, QUALITY_DIMENSIONS, analyze_literary_quality
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_task_runner import (
     CONTINUITY_BUDGET_ERROR_CODE,
@@ -44,6 +45,14 @@ class StyleGenerationResult:
 
 
 JSON_SCHEMA_INSTRUCTION = "Return JSON that matches the structured schema exactly."
+ANTI_TEMPLATE_GATE_DIMENSIONS = {
+    "template_action_reuse",
+    "image_field_reuse",
+    "syntax_monotony",
+    "false_clarity",
+    "summary_ending",
+    "expository_dialogue",
+}
 
 
 def versioned_scene_artifact_id(prefix: str, scene_id: str, bundle: dict[str, Any]) -> str:
@@ -443,9 +452,120 @@ class SceneGenerationService:
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         self.session.flush()
 
+        if stage == "style_draft":
+            quality_gate = _anti_template_quality_gate(style_content, scene_id=scene.scene_id, chapter_id=scene.chapter_id)
+            if quality_gate["triggered"]:
+                de_template_result = self._run_de_template_pass(
+                    scene=scene,
+                    state=state,
+                    bundle=bundle,
+                    prompt=prompt,
+                    source_row_id=row_id,
+                    source_content=style_content,
+                    quality_gate=quality_gate,
+                )
+                if de_template_result is not None:
+                    return de_template_result
+
         return StyleGenerationResult(
             row_id=row_id,
             content=style_content,
+            llm_call_id=node_result.llm_call_id,
+            bundle_id=bundle["bundle_id"],
+            bundle_hash=bundle["bundle_snapshot_hash"],
+        )
+
+    def _run_de_template_pass(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        bundle: dict[str, Any],
+        prompt: dict[str, Any],
+        source_row_id: str,
+        source_content: str,
+        quality_gate: dict[str, Any],
+    ) -> StyleGenerationResult | None:
+        row_id = versioned_scene_artifact_id("draft_style_de_template", scene.scene_id, bundle)
+        user_prompt = self._build_style_user_prompt(
+            prompt["user_prompt"],
+            neutral_content=source_content,
+            source_label="Style Draft Requiring De-template Pass",
+            source_row_id=source_row_id,
+            extra_instruction=(
+                "Apply exactly one controlled de-template rewrite pass. Preserve facts, names, chronology, "
+                "required objects, and ending function. Remove repeated gesture templates, false-clarity phrasing, "
+                "summary endings, and exposition-first dialogue."
+            ),
+            patch_brief=_de_template_rewrite_brief(quality_gate),
+            patch_heading="De-template Rewrite Brief",
+        )
+        try:
+            node_result = self._llm_runner.run(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                bundle_id=bundle["bundle_id"],
+                bundle_hash=bundle["bundle_snapshot_hash"],
+                node_id="style_patch",
+                step="de_template",
+                prompt=prompt,
+                user_prompt=user_prompt,
+                offline_client_factory=lambda: OfflineStyleClient(patch_mode=True),
+                source_draft_row_id=source_row_id,
+                source_draft_content=source_content,
+            )
+            rewritten_content = _extract_scene_text(node_result.response)
+        except LLMNodeExecutionError as exc:
+            self._record_runner_failure_attempt(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                step="de_template",
+                prompt=prompt,
+                exc=exc,
+                source_draft_row_id=source_row_id,
+            )
+            return None
+
+        self.session.add(
+            SceneDraft(
+                row_id=row_id,
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                stage="de_template",
+                content=rewritten_content,
+                source_bundle_id=bundle["bundle_id"],
+                source_bundle_hash=bundle["bundle_snapshot_hash"],
+                generation_llm_call_id=node_result.llm_call_id,
+            )
+        )
+        self.session.flush()
+
+        self.session.add(
+            AttemptTracker(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                step="de_template",
+                status="completed",
+                source_bundle_id=bundle["bundle_id"],
+                details_json={
+                    "row_id": row_id,
+                    "llm_call_id": node_result.llm_call_id,
+                    "source_style_draft_row_id": source_row_id,
+                    "quality_gate": quality_gate,
+                },
+            )
+        )
+        self.session.flush()
+
+        state.current_style_draft_row_id = row_id
+        state.current_bundle_id = bundle["bundle_id"]
+        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+        self.session.flush()
+
+        return StyleGenerationResult(
+            row_id=row_id,
+            content=rewritten_content,
             llm_call_id=node_result.llm_call_id,
             bundle_id=bundle["bundle_id"],
             bundle_hash=bundle["bundle_snapshot_hash"],
@@ -460,6 +580,7 @@ class SceneGenerationService:
         source_row_id: str,
         extra_instruction: str,
         patch_brief: list[str] | None = None,
+        patch_heading: str = "Patch Brief",
     ) -> str:
         prompt_parts = [
             base_prompt,
@@ -474,7 +595,7 @@ class SceneGenerationService:
             prompt_parts.extend(
                 [
                     "",
-                    "## Patch Brief",
+                    f"## {patch_heading}",
                     "\n".join(f"- {item}" for item in patch_brief),
                 ]
             )
@@ -616,6 +737,48 @@ def _extract_scene_text(response: LLMResponse) -> str:
     if isinstance(scene_text, str) and scene_text.strip():
         return scene_text.strip()
     raise ValueError("neutral_draft response missing scene_text")
+
+
+def _anti_template_quality_gate(text: str, *, scene_id: str, chapter_id: str) -> dict[str, Any]:
+    signals, findings = analyze_literary_quality(text)
+    score = round(sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS), 4)
+    risky_findings = [
+        {
+            **finding,
+            "quality_signal_id": f"quality:scene:{scene_id}:{finding.get('dimension')}",
+            "scene_id": scene_id,
+            "chapter_id": chapter_id,
+        }
+        for finding in findings
+        if finding.get("dimension") in ANTI_TEMPLATE_GATE_DIMENSIONS
+    ]
+    triggered = bool(risky_findings)
+    return {
+        "triggered": triggered,
+        "rewrite_pass": 1 if triggered else 0,
+        "score": score,
+        "risk_dimensions": [finding["dimension"] for finding in risky_findings],
+        "quality_signal_ids": [finding["quality_signal_id"] for finding in risky_findings],
+        "findings": risky_findings,
+    }
+
+
+def _de_template_rewrite_brief(quality_gate: dict[str, Any]) -> list[str]:
+    brief = [
+        "Run no more than this one de-template pass; do not add another rewrite loop.",
+        "Keep the same plot facts, speaker identities, core choice, cost, and final hook.",
+    ]
+    for finding in quality_gate.get("findings", [])[:5]:
+        signal_id = finding.get("quality_signal_id", "quality:unknown")
+        issue = finding.get("issue") or "anti-template risk"
+        evidence = finding.get("evidence_excerpt") or ""
+        recommendation = finding.get("recommendation") or ""
+        brief.append(f"{signal_id}: {issue}")
+        if evidence:
+            brief.append(f"Evidence: {evidence}")
+        if recommendation:
+            brief.append(f"Fix: {recommendation}")
+    return brief
 
 
 def _extract_scene_id(request: LLMRequest) -> str:
