@@ -6,8 +6,12 @@ __all__ = [
     "hash_engine",
     "idempotency",
     "orchestrator",
+    "projects",
     "qc_validator",
     "resolver",
+    "snowflake_steps",
+    "snowflake_workspace",
+    "snowflake_workspace_assistant",
     "vector_store",
     "version_manager",
 ]

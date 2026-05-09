@@ -24,8 +24,9 @@ from novel_system.db.models import (
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_client import LLMRequest, LLMResponse
-from novel_system.services.llm_task_runner import LLMNodeRunner
+from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.settings import get_settings
 
 
 LITERARY_REVISION_RUBRIC_ID = "literary_revision_v1"
@@ -190,6 +191,7 @@ class WriterDeepReviewService:
             "rubric_id": row.rubric_id,
             "source_text_ref": row.source_text_ref,
             "source_bundle_id": row.source_bundle_id,
+            "evaluator_llm_call_id": row.evaluator_llm_call_id,
             "lens": row.lens or "aggregate",
             "parent_evaluation_id": row.parent_evaluation_id,
             "evidence_spans": row.evidence_spans_json or [],
@@ -274,6 +276,15 @@ class WriterDeepReviewService:
         ).scalars().all():
             row.status = "superseded"
 
+        if get_settings().llm_enabled:
+            return self._create_deep_review_with_llm(
+                object_type=object_type,
+                object_id=object_id,
+                chapter_id=chapter_id,
+                scene_id=scene_id,
+                source=source,
+            )
+
         lens_rows: list[WriterEvaluation] = []
         lens_payloads = _diagnose_by_lens(source["content"])
         aggregate_findings: list[dict[str, Any]] = []
@@ -345,6 +356,105 @@ class WriterDeepReviewService:
             )
             self.session.add(row)
             lens_rows.append(row)
+        self.session.flush()
+        return self._review_payload(object_type, object_id)
+
+    def _create_deep_review_with_llm(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        chapter_id: str | None,
+        scene_id: str | None,
+        source: dict[str, Any],
+    ) -> dict[str, Any]:
+        snapshot = {
+            "object_type": object_type,
+            "object_id": object_id,
+            "chapter_id": chapter_id,
+            "scene_id": scene_id,
+            "rubric_id": LITERARY_REVISION_RUBRIC_ID,
+            "dimensions": list(LITERARY_REVISION_DIMENSIONS),
+            "lenses": list(DEEP_REVIEW_LENSES),
+            "source": source,
+            "scene_summary": source.get("content") if object_type == "scene" else None,
+            "chapter_summary": source.get("content") if object_type == "chapter" else None,
+        }
+        prompt = self.prompt_builder.build(snapshot, "writer_deep_review")
+        try:
+            node_result = self._llm_runner.run(
+                scene_id=scene_id or object_id,
+                chapter_id=chapter_id or object_id,
+                bundle_id=source.get("source_text_ref") or f"writer_deep_review:{object_type}:{object_id}",
+                bundle_hash=hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
+                node_id="writer_deep_review",
+                step="writer_deep_review",
+                prompt=prompt,
+                user_prompt=prompt["user_prompt"],
+                offline_client_factory=lambda: OfflineWriterDeepReviewClient(source_text=source.get("content") or ""),
+            )
+        except LLMNodeExecutionError as exc:
+            raise DomainError(
+                "WRITER_DEEP_REVIEW_LLM_FAILED",
+                exc.message,
+                status_code=409,
+                details={
+                    "llm_call_id": exc.llm_call_id,
+                    "node_id": "writer_deep_review",
+                    "error_code": exc.error_code,
+                    "next_action": "configure_writer_deep_review_route_and_retry",
+                    "response_summary": exc.response_summary,
+                },
+            ) from exc
+        normalized = _normalize_deep_review_output(node_result.response.structured_output or {})
+        parent = WriterEvaluation(
+            evaluation_id=f"writer_deep_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=chapter_id,
+            scene_id=scene_id,
+            rubric_id=LITERARY_REVISION_RUBRIC_ID,
+            source_text_ref=source.get("source_text_ref"),
+            source_bundle_id=source.get("source_bundle_id"),
+            evaluator_llm_call_id=node_result.llm_call_id,
+            lens="aggregate",
+            parent_evaluation_id=None,
+            evidence_spans_json=_evidence_spans(source["content"], normalized["findings"]),
+            overall_score=normalized["overall_score"],
+            scores_json=normalized["scores"],
+            findings_json=normalized["findings"],
+            revision_brief_json=normalized["revision_brief"],
+            requires_human_review=1 if normalized["requires_human_review"] else 0,
+            status="completed",
+        )
+        self.session.add(parent)
+        self.session.flush()
+
+        for payload in normalized["lens_evaluations"]:
+            lens = str(payload.get("lens") or "story")
+            scores = _normalize_scores(payload.get("scores"))
+            findings = _normalize_findings(payload.get("findings"))
+            row = WriterEvaluation(
+                evaluation_id=f"writer_deep_eval_{object_type}_{object_id}_{lens}_{uuid.uuid4().hex[:8]}",
+                object_type=object_type,
+                object_id=object_id,
+                chapter_id=chapter_id,
+                scene_id=scene_id,
+                rubric_id=LITERARY_REVISION_RUBRIC_ID,
+                source_text_ref=source.get("source_text_ref"),
+                source_bundle_id=source.get("source_bundle_id"),
+                evaluator_llm_call_id=node_result.llm_call_id,
+                lens=lens,
+                parent_evaluation_id=parent.evaluation_id,
+                evidence_spans_json=_evidence_spans(source["content"], findings),
+                overall_score=_optional_score(payload.get("overall_score")) or (round(mean(scores.values()), 2) if scores else None),
+                scores_json=scores,
+                findings_json=findings,
+                revision_brief_json=_normalize_revision_brief(payload.get("revision_brief"), findings),
+                requires_human_review=1 if any(item.get("severity") == "blocking" for item in findings) else 0,
+                status="completed",
+            )
+            self.session.add(row)
         self.session.flush()
         return self._review_payload(object_type, object_id)
 
@@ -790,18 +900,17 @@ def _compact_text(value: str, limit: int) -> str:
 
 def _infer_scene_form(text: str) -> str:
     value = str(text or "")
-    if _contains_any(value, ("选择", "决定", "必须", "代价", "公开", "保护", "不能", "閫夋嫨", "鍐冲畾", "蹇呴』", "浠ｄ环", "鍏紑", "淇濇姢", "涓嶈兘")):
+    if _contains_any(value, ("选择", "决定", "必须", "代价", "公开", "保护", "不能")):
         return "plot_scene"
-    if _contains_any(value, ("真相", "证据", "秘密", "录音", "发现", "揭示", "鐪熺浉", "璇佹嵁", "绉樺瘑", "褰曢煶", "鍙戠幇")):
+    if _contains_any(value, ("真相", "证据", "秘密", "录音", "发现", "揭示")):
         return "revelation_scene"
-    if _contains_any(value, ("关系", "信任", "背叛", "靠近", "疏远", "沉默", "对视", "鍏崇郴", "淇′换", "鑳屽彌", "闈犺繎", "鐤忚繙", "娌夐粯")):
+    if _contains_any(value, ("关系", "信任", "背叛", "靠近", "疏远", "沉默", "对视")):
         return "relationship_scene"
-    if _contains_any(value, ("离开", "抵达", "回到", "之后", "翌日", "穿过", "转入", "绂诲紑", "鎶佃揪", "鍥炲埌", "涔嬪悗", "绌胯繃", "杞叆")):
+    if _contains_any(value, ("离开", "抵达", "回到", "之后", "翌日", "穿过", "转入")):
         return "transition_scene"
-    if _contains_any(value, ("雨", "雾", "风", "灯", "霜", "影", "气味", "闆", "闆炬", "椋", "鐏", "闇", "褰", "姘斿懗")):
+    if _contains_any(value, ("雨", "雪", "风", "灯", "雾", "影", "气味", "夜", "门", "窗", "月", "光")):
         return "atmosphere_scene"
     return "plot_scene"
-
 
 def _candidate_category(payload: dict[str, Any], issue_dimension: str) -> str:
     explicit = _optional_text(payload, "candidate_category")
@@ -1019,6 +1128,96 @@ def _diagnose_by_lens(content: str) -> dict[str, dict[str, Any]]:
             "scores": _scores_for_findings(lens_findings),
         }
     return payloads
+
+
+def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
+    findings = _normalize_findings(payload.get("findings"))
+    scores = _normalize_scores(payload.get("scores"))
+    overall_score = _optional_score(payload.get("overall_score"))
+    if overall_score is None:
+        overall_score = round(mean(scores.values()), 2) if scores else None
+    revision_brief = _normalize_revision_brief(payload.get("revision_brief"), findings)
+    lens_evaluations = payload.get("lens_evaluations") if isinstance(payload.get("lens_evaluations"), list) else []
+    normalized_lenses = [dict(item) for item in lens_evaluations if isinstance(item, dict)]
+    if not normalized_lenses:
+        findings_by_lens: dict[str, list[dict[str, Any]]] = {lens: [] for lens in DEEP_REVIEW_LENSES}
+        for finding in findings:
+            lens = str(finding.get("lens") or "story")
+            findings_by_lens.setdefault(lens, []).append(finding)
+        normalized_lenses = [
+            {
+                "lens": lens,
+                "scores": _scores_for_findings(lens_findings) if lens_findings else scores,
+                "findings": lens_findings,
+                "revision_brief": _revision_brief_from_findings(lens_findings),
+            }
+            for lens, lens_findings in findings_by_lens.items()
+            if lens_findings
+        ]
+    requires_human_review = bool(payload.get("requires_human_review"))
+    if any(finding.get("severity") == "blocking" for finding in findings):
+        requires_human_review = True
+    return {
+        "overall_score": overall_score,
+        "scores": scores,
+        "findings": findings,
+        "revision_brief": revision_brief,
+        "requires_human_review": requires_human_review,
+        "lens_evaluations": normalized_lenses,
+    }
+
+
+def _normalize_scores(value: Any) -> dict[str, float]:
+    scores = {dimension: 0.78 for dimension in LITERARY_REVISION_DIMENSIONS}
+    if isinstance(value, dict):
+        for dimension, raw_score in value.items():
+            if dimension not in scores:
+                continue
+            score = _optional_score(raw_score)
+            if score is not None:
+                scores[dimension] = score
+    return scores
+
+
+def _optional_score(value: Any) -> float | None:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, round(score, 2)))
+
+
+def _normalize_findings(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    findings: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        finding = dict(item)
+        severity = str(finding.get("severity") or finding.get("classification") or "revision")
+        if severity not in {"blocking", "revision", "taste", "ignore_ok"}:
+            severity = "revision"
+        finding["severity"] = severity
+        finding["classification"] = str(finding.get("classification") or severity)
+        finding["lens"] = str(finding.get("lens") or "story")
+        finding["dimension"] = str(finding.get("dimension") or "choice_pressure")
+        finding["issue"] = str(finding.get("issue") or "")
+        finding["recommendation"] = str(finding.get("recommendation") or "")
+        finding["evidence_excerpt"] = str(finding.get("evidence_excerpt") or "")
+        finding["evidence_location"] = str(finding.get("evidence_location") or "source text")
+        finding["why_it_matters"] = str(finding.get("why_it_matters") or "")
+        finding["scene_form"] = str(finding.get("scene_form") or "plot_scene")
+        findings.append(finding)
+    return findings
+
+
+def _normalize_revision_brief(value: Any, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        items = [dict(item) for item in value if isinstance(item, dict)]
+        if items:
+            return items
+    return _revision_brief_from_findings(findings)
 
 
 def _finding(

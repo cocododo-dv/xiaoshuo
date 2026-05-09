@@ -1,7 +1,15 @@
 import { ref } from "vue";
 
-const activeView = ref("deepdesk");
-const visitedViews = ref(["deepdesk"]);
+import { useUiMode } from "./composables/useUiMode";
+
+const activeView = ref("snowflake-workbench");
+const visitedViews = ref(["snowflake-workbench"]);
+const routeContext = ref({
+  step: "",
+  panel: "",
+  target: "",
+  focus: "",
+});
 const focusTarget = ref({
   target_type: null,
   target_id: null,
@@ -10,6 +18,28 @@ const focusTarget = ref({
   source_id: null,
 });
 const pendingFocusView = ref(null);
+let popstateInstalled = false;
+
+function hasWindowLocation() {
+  return typeof window !== "undefined" && window.location && window.history;
+}
+
+function cleanRouteContext(value = {}) {
+  return {
+    step: String(value.step || "").trim(),
+    panel: String(value.panel || "").trim(),
+    target: String(value.target || value.target_id || value.target_ref || "").trim(),
+    focus: String(value.focus || value.target_type || "").trim(),
+  };
+}
+
+function contextHasValue(context) {
+  return Object.values(context || {}).some((value) => String(value || "").trim());
+}
+
+function applyRouteContext(nextContext = {}) {
+  routeContext.value = cleanRouteContext(nextContext);
+}
 
 export const workflowGroups = [
   {
@@ -31,6 +61,42 @@ export const workflowGroups = [
 
 const views = [
   {
+    id: "snowflake-workbench",
+    label: "雪花工作台",
+    stepLabel: "雪花工作台",
+    legacyLabel: "雪花主导写作工作台",
+    description: "把十步雪花、场景急救和章节结构草案放在同一个创作工作台里。",
+    group: "日用写作",
+    groupId: "daily",
+    icon: "Snowflake",
+    nextViews: ["reference", "review", "writer-room"],
+    cacheMode: "light",
+    writerPrimary: true,
+    writerOrder: 1,
+    writerLabel: "雪花工作台",
+    writerGoal: "把故事从十步雪花推进到可继续写作的章节结构草案。",
+    writerDoneSignal: "关键雪花步骤已确认，场景急救和准备度检查没有硬阻断。",
+    writerNextAction: "继续打磨当前构思，或进入场景急救补齐薄弱场景。",
+  },
+  {
+    id: "writer-room",
+    label: "写作房间",
+    stepLabel: "写作房间",
+    legacyLabel: "文本优先工作台",
+    description: "先回到正文，再比较诊断、改法和长篇压力。",
+    group: "日用写作",
+    groupId: "daily",
+    icon: "Feather",
+    nextViews: ["snowflake-workbench", "deepdesk", "manuscripts"],
+    cacheMode: "light",
+    writerPrimary: true,
+    writerOrder: 2,
+    writerLabel: "小修写作",
+    writerGoal: "在当前章节或场景里直接打磨作者正文。",
+    writerDoneSignal: "草稿已保存，候选改法已明确采纳或放弃。",
+    writerNextAction: "先保存当前正文，再比较候选改法或回到雪花工作台校准结构。",
+  },
+  {
     id: "config",
     label: "1 配置环境",
     stepLabel: "配置环境",
@@ -50,12 +116,11 @@ const views = [
     description: "选择章节，维护章节目标和场景卡，再把场景送去运行。",
     group: "创作输入",
     groupId: "daily",
-    icon: "PenLine",
+    icon: "ScrollText",
     nextViews: ["deepdesk", "workbench", "trash"],
     cacheMode: "light",
-    writerPrimary: true,
-    writerOrder: 2,
-    writerLabel: "章节编排",
+    writerPrimary: false,
+    writerOrder: 12,
   },
   {
     id: "workbench",
@@ -80,6 +145,12 @@ const views = [
     icon: "ClipboardCheck",
     nextViews: ["index", "knowledge", "workbench"],
     cacheMode: "light",
+    writerPrimary: true,
+    writerOrder: 4,
+    writerLabel: "待处理建议",
+    writerGoal: "清掉会阻断创作链路的候选、风险和人工事件。",
+    writerDoneSignal: "优先审核项已处理，剩余内容不会阻塞下一场写作。",
+    writerNextAction: "先处理待作者决策的建议，再回到写作房间或参考书学习。",
   },
   {
     id: "quality",
@@ -89,12 +160,11 @@ const views = [
     description: "巡检作者稿优先的章节/场景文本，并运行文学基准评测；只提示风险，不阻断发布。",
     group: "运行与审核",
     groupId: "daily",
-    icon: "ClipboardCheck",
+    icon: "ShieldCheck",
     nextViews: ["deepdesk", "review", "workbench"],
     cacheMode: "light",
-    writerPrimary: true,
-    writerOrder: 4,
-    writerLabel: "文学质检",
+    writerPrimary: false,
+    writerOrder: 13,
   },
   {
     id: "manuscripts",
@@ -104,7 +174,7 @@ const views = [
     description: "阅读实时拼接和最终聚合正文，确认章节是否可交付。",
     group: "运行与审核",
     groupId: "production",
-    icon: "BookOpenCheck",
+    icon: "BookOpenText",
     nextViews: ["deepdesk", "longform", "author", "trash", "workbench"],
     cacheMode: "light",
   },
@@ -116,12 +186,11 @@ const views = [
     description: "先写作者稿，再反向提取戏剧卡、运行深改诊断、生成局部候选并记录作者决定。",
     group: "运行与审核",
     groupId: "daily",
-    icon: "BookOpenCheck",
+    icon: "Microscope",
     nextViews: ["author", "manuscripts", "longform", "workbench"],
     cacheMode: "light",
-    writerPrimary: true,
-    writerOrder: 1,
-    writerLabel: "写作舱",
+    writerPrimary: false,
+    writerOrder: 14,
   },
   {
     id: "longform",
@@ -134,9 +203,8 @@ const views = [
     icon: "Radar",
     nextViews: ["manuscripts", "knowledge", "review"],
     cacheMode: "light",
-    writerPrimary: true,
-    writerOrder: 3,
-    writerLabel: "长篇雷达",
+    writerPrimary: false,
+    writerOrder: 15,
   },
   {
     id: "trash",
@@ -185,6 +253,12 @@ const views = [
     icon: "GraduationCap",
     nextViews: ["review", "knowledge"],
     cacheMode: "light",
+    writerPrimary: true,
+    writerOrder: 3,
+    writerLabel: "参考书学习",
+    writerGoal: "把参考书抽象成安全可用的风格画像和审核卡。",
+    writerDoneSignal: "画像已生成并创建应用审核项，没有直接复制源文风险。",
+    writerNextAction: "导入或继续分析参考书，然后去待处理建议确认应用。",
   },
   {
     id: "interop",
@@ -194,7 +268,7 @@ const views = [
     description: "预览工作表、导入外部包、导出 bundle，并回放运行结果。",
     group: "运维工具",
     groupId: "advanced",
-    icon: "Files",
+    icon: "FileInput",
     nextViews: ["workbench", "author"],
     cacheMode: "light",
   },
@@ -209,6 +283,12 @@ const workbenchTargetTypes = new Set([
   "final_scene",
   "scene_attempt",
 ]);
+const writerRoomTargetTypes = new Set([
+  "author_draft",
+  "author_draft_proposal",
+  "author_draft_scene",
+  "author_draft_chapter",
+]);
 
 function ensureVisited(nextView) {
   if (!viewMap[nextView]) {
@@ -221,8 +301,72 @@ function ensureVisited(nextView) {
 }
 
 export function useShellRouter() {
+  function serializeLocation(viewId = activeView.value, context = routeContext.value) {
+    const params = new URLSearchParams();
+    const normalizedView = viewMap[viewId] ? viewId : "snowflake-workbench";
+    params.set("view", normalizedView);
+    const { uiMode } = useUiMode();
+    if (uiMode.value) {
+      params.set("mode", uiMode.value);
+    }
+    const cleanedContext = cleanRouteContext(context);
+    Object.entries(cleanedContext).forEach(([key, value]) => {
+      if (value) {
+        params.set(key, value);
+      }
+    });
+    return `?${params.toString()}`;
+  }
+
+  function writeLocation(viewId = activeView.value, { replace = false, target = routeContext.value } = {}) {
+    if (!hasWindowLocation()) {
+      return;
+    }
+    const nextSearch = serializeLocation(viewId, target);
+    const nextUrl = `${window.location.pathname}${nextSearch}${window.location.hash || ""}`;
+    if (replace) {
+      window.history.replaceState({}, "", nextUrl);
+      return;
+    }
+    window.history.pushState({}, "", nextUrl);
+  }
+
+  function hydrateFromLocation({ replaceInvalid = true } = {}) {
+    if (!hasWindowLocation()) {
+      return activeView.value;
+    }
+    const params = new URLSearchParams(window.location.search || "");
+    const requestedView = params.get("view") || "snowflake-workbench";
+    const nextView = viewMap[requestedView] ? requestedView : "snowflake-workbench";
+    const requestedMode = params.get("mode") || "";
+    if (requestedMode) {
+      useUiMode().setUiMode(requestedMode);
+    }
+    applyRouteContext({
+      step: params.get("step") || "",
+      panel: params.get("panel") || "",
+      target: params.get("target") || "",
+      focus: params.get("focus") || "",
+    });
+    ensureVisited(nextView);
+    activeView.value = nextView;
+    if (requestedView !== nextView && replaceInvalid) {
+      writeLocation(nextView, { replace: true });
+    }
+    return nextView;
+  }
+
+  function installLocationSync() {
+    if (!hasWindowLocation() || popstateInstalled) {
+      return;
+    }
+    window.addEventListener("popstate", () => hydrateFromLocation({ replaceInvalid: true }));
+    popstateInstalled = true;
+  }
+
   function clearFocus() {
     pendingFocusView.value = null;
+    applyRouteContext();
     focusTarget.value = {
       target_type: null,
       target_id: null,
@@ -232,17 +376,24 @@ export function useShellRouter() {
     };
   }
 
-  function navigate(nextView) {
+  function navigate(nextView, options = {}) {
     if (viewMap[nextView]) {
       ensureVisited(nextView);
       if (pendingFocusView.value && pendingFocusView.value !== nextView) {
         pendingFocusView.value = null;
       }
+      applyRouteContext(options.target || options.context || {});
       activeView.value = nextView;
+      if (options.syncUrl !== false) {
+        writeLocation(nextView, { replace: Boolean(options.replace), target: routeContext.value });
+      }
     }
   }
 
   function targetView(targetType) {
+    if (writerRoomTargetTypes.has(targetType)) {
+      return "writer-room";
+    }
     if (targetType === "chapter_manuscript") {
       return "manuscripts";
     }
@@ -277,7 +428,13 @@ export function useShellRouter() {
       source_type: options.source_type ?? target.source_type ?? null,
       source_id: options.source_id ?? target.source_id ?? null,
     };
-    navigate(nextView);
+    navigate(nextView, {
+      replace: options.replace,
+      target: {
+        focus: target.target_type,
+        target: target.target_ref || target.target_id,
+      },
+    });
   }
 
   function settleFocusView(viewId) {
@@ -287,28 +444,35 @@ export function useShellRouter() {
   }
 
   function viewMeta(viewId) {
-    return viewMap[viewId] || viewMap.workbench;
+    return viewMap[viewId] || viewMap["snowflake-workbench"];
   }
 
   function isViewActive(viewId) {
     return activeView.value === viewId;
   }
 
-  function reset() {
-    activeView.value = "deepdesk";
-    visitedViews.value = ["deepdesk"];
+  function reset(options = {}) {
+    activeView.value = "snowflake-workbench";
+    visitedViews.value = ["snowflake-workbench"];
     clearFocus();
+    if (options.replace) {
+      writeLocation(activeView.value, { replace: true, target: routeContext.value });
+    }
   }
 
   return {
     activeView,
     visitedViews,
+    routeContext,
     focusTarget,
     pendingFocusView,
     views,
     workflowGroups,
     navigate,
     openTarget,
+    hydrateFromLocation,
+    installLocationSync,
+    serializeLocation,
     clearFocus,
     settleFocusView,
     viewMeta,

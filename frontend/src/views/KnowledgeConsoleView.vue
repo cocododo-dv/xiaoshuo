@@ -1088,7 +1088,7 @@ watch(
               >
                 <template #default="{ items }">
                   <ol class="history-list">
-                    <li v-for="row in items" :key="row.rowId" class="history-entry" :data-testid="`knowledge-version-row-${row.rowId}`">
+                    <li v-for="row in items" :key="row.rowId" class="history-entry compact-history-row" :data-testid="`knowledge-version-row-${row.rowId}`">
                       <p class="history-meta">
                         <strong>{{ row.rowId }}</strong>
                         <span>{{ row.versionLabel }}</span>
@@ -1110,7 +1110,7 @@ watch(
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="row in items" :key="row.reviewId" class="history-entry" :data-testid="`knowledge-review-row-${row.reviewId}`">
+                    <li v-for="row in items" :key="row.reviewId" class="history-entry compact-history-row" :data-testid="`knowledge-review-row-${row.reviewId}`">
                       <p class="history-meta">
                         <strong>{{ row.reviewId }}</strong>
                         <span>{{ row.statusLabel }}</span>
@@ -1142,7 +1142,7 @@ watch(
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="row in items" :key="row.jobId" class="history-entry" :data-testid="`knowledge-job-row-${row.jobId}`">
+                    <li v-for="row in items" :key="row.jobId" class="history-entry compact-history-row" :data-testid="`knowledge-job-row-${row.jobId}`">
                       <p class="history-meta">
                         <strong>{{ row.jobId }}</strong>
                         <span>{{ row.statusLabel }}</span>
@@ -1170,7 +1170,7 @@ watch(
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="row in items" :key="row.eventId" class="history-entry" :data-testid="`knowledge-human-review-row-${row.eventId}`">
+                    <li v-for="row in items" :key="row.eventId" class="history-entry compact-history-row" :data-testid="`knowledge-human-review-row-${row.eventId}`">
                       <p class="history-meta">
                         <strong>{{ row.eventId }}</strong>
                         <span>{{ row.statusLabel }}</span>
@@ -1208,7 +1208,7 @@ watch(
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="row in items" :key="row.targetRef" class="history-entry" :data-testid="`knowledge-activity-row-${row.targetRef}`">
+                    <li v-for="row in items" :key="row.targetRef" class="history-entry compact-history-row" :data-testid="`knowledge-activity-row-${row.targetRef}`">
                       <p class="history-meta">
                         <strong>{{ row.targetRef }}</strong>
                         <span>{{ row.activityCount }} 条活动</span>
@@ -1240,7 +1240,7 @@ watch(
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="row in items" :key="row.reviewRef" class="history-entry" :data-testid="`knowledge-review-ref-row-${row.reviewRef}`">
+                    <li v-for="row in items" :key="row.reviewRef" class="history-entry compact-history-row" :data-testid="`knowledge-review-ref-row-${row.reviewRef}`">
                       <p class="history-meta">
                         <strong>{{ row.reviewRef }}</strong>
                         <span>{{ row.targetType }}</span>
@@ -1275,7 +1275,7 @@ watch(
               >
                 <template #default="{ items }">
                   <ol v-if="items.length" class="history-list">
-                    <li v-for="row in items" :key="row.bundleId" class="history-entry" :data-testid="`knowledge-bundle-ref-row-${row.bundleId}`">
+                    <li v-for="row in items" :key="row.bundleId" class="history-entry compact-history-row" :data-testid="`knowledge-bundle-ref-row-${row.bundleId}`">
                       <p class="history-meta">
                         <strong>{{ row.bundleId }}</strong>
                         <span>{{ row.sceneId }}</span>

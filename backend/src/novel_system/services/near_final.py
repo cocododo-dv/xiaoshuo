@@ -167,7 +167,7 @@ class NearFinalPlanningService:
                 payload = _normalize_chapter_architecture_payload(node_result.response.structured_output)
                 llm_call_id = node_result.llm_call_id
             except LLMNodeExecutionError as exc:
-                if _is_missing_task_route(exc):
+                if _is_missing_task_route(exc) and not get_settings().llm_enabled:
                     payload = _fallback_chapter_architecture_payload()
                     llm_call_id = None
                 else:
@@ -175,6 +175,13 @@ class NearFinalPlanningService:
                         "CHAPTER_STORY_ARCHITECTURE_FAILED",
                         f"chapter architecture generation failed: {exc.message}",
                         status_code=502,
+                        details={
+                            "llm_call_id": exc.llm_call_id,
+                            "node_id": CHAPTER_ARCHITECTURE_ARTIFACT,
+                            "error_code": exc.error_code,
+                            "next_action": "configure_chapter_story_architecture_route_and_retry",
+                            "response_summary": exc.response_summary,
+                        },
                     ) from exc
         return self._persist_artifact(
             artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
@@ -217,7 +224,7 @@ class NearFinalPlanningService:
                 payload = _normalize_character_pressure_payload(node_result.response.structured_output)
                 llm_call_id = node_result.llm_call_id
             except LLMNodeExecutionError as exc:
-                if _is_missing_task_route(exc):
+                if _is_missing_task_route(exc) and not get_settings().llm_enabled:
                     payload = _fallback_character_pressure_payload()
                     llm_call_id = None
                 else:
@@ -225,6 +232,13 @@ class NearFinalPlanningService:
                         "CHARACTER_PRESSURE_BLUEPRINT_FAILED",
                         f"character pressure generation failed: {exc.message}",
                         status_code=502,
+                        details={
+                            "llm_call_id": exc.llm_call_id,
+                            "node_id": CHARACTER_PRESSURE_ARTIFACT,
+                            "error_code": exc.error_code,
+                            "next_action": "configure_character_pressure_blueprint_route_and_retry",
+                            "response_summary": exc.response_summary,
+                        },
                     ) from exc
         return self._persist_artifact(
             artifact_type=CHARACTER_PRESSURE_ARTIFACT,

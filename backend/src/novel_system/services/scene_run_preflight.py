@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneBlueprint, SceneCard
 from novel_system.services.resolver import Resolver
+from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.writer_review import normalize_scene_writer_brief
 
 
@@ -15,9 +16,11 @@ class SceneRunPreflightService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.resolver = Resolver()
+        self.contracts = SceneExecutionContractService(session)
 
     def build(self, scene: SceneCard, chapter_state: dict[str, Any]) -> dict[str, Any]:
-        blocking_items = self._blocking_items(scene)
+        execution_contract = self.contracts.latest(scene.scene_id)
+        blocking_items = self._blocking_items(scene, execution_contract)
         warning_items = self._warning_items(scene)
         context_items = self._context_items(chapter_state)
         missing_dependencies = self._missing_dependencies(scene)
@@ -137,8 +140,28 @@ class SceneRunPreflightService:
                     break
         return conflicts
 
-    def _blocking_items(self, scene: SceneCard) -> list[dict[str, Any]]:
+    def _blocking_items(self, scene: SceneCard, execution_contract) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
+
+        if execution_contract is not None and execution_contract.status == "blocked":
+            missing_fields = ", ".join(execution_contract.missing_fields_json or [])
+            items.append(
+                {
+                    "code": "SCENE_EXECUTION_CONTRACT_BLOCKED",
+                    "title": "Scene execution contract is incomplete",
+                    "detail": f"Fill the missing execution contract fields before drafting: {missing_fields}",
+                    "technical_hint": execution_contract.contract_id,
+                }
+            )
+        elif execution_contract is not None and execution_contract.status == "stale":
+            items.append(
+                {
+                    "code": "SCENE_EXECUTION_CONTRACT_STALE",
+                    "title": "Scene execution contract is stale",
+                    "detail": "Upstream planning changed. Regenerate the contract and replan this scene before drafting.",
+                    "technical_hint": execution_contract.contract_id,
+                }
+            )
 
         voice_profile_id = self.resolver.resolve_voice_profile_id(scene)
         if voice_profile_id and self.resolver.resolve_active_voice_profile(self.session, scene) is None:

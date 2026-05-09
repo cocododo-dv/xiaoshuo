@@ -37,7 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--model",
         default=None,
-        help="Live LLM model override. Defaults to models.yaml task_routing.stylize.model.",
+        help="Live LLM model override. Defaults to the literary_eval_live node route.",
     )
     args = parser.parse_args(argv)
 
@@ -57,9 +57,9 @@ def _generator_for_mode(mode: str, *, model: str | None):
         raise SystemExit("live literary eval requires NOVEL_SYSTEM_LLM_ENABLED=true")
 
     routing = load_model_routing_config()
-    task_config = routing.node_routing.get("literary_eval_live") or routing.node_routing.get("style_draft")
+    task_config = routing.node_routing.get("literary_eval_live")
     if task_config is None and model is None:
-        raise SystemExit("live literary eval requires --model or task_routing.stylize")
+        raise SystemExit("live literary eval requires --model or a configured literary_eval_live node route")
     provider_configs = load_llm_provider_runtime_configs()
     if not _live_credentials_available(
         settings.llm_api_key,

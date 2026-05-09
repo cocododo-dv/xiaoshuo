@@ -986,45 +986,54 @@ onBeforeUnmount(() => {
         test-id="index-jobs-virtual-list"
       >
         <template #default="{ row }">
-          <div class="job-row" :data-testid="`verify-job-${row.jobId}`" :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === row.jobId }">
-          <div class="job-main">
-            <strong>{{ row.jobTypeLabel }}</strong>
-            <div class="muted">{{ isAdvancedMode ? row.jobId : row.jobSummary }}</div>
-            <div class="muted">{{ row.aliasScope }}</div>
-            <div v-if="isAdvancedMode" class="muted" data-testid="index-job-technical-ref">
-              任务 ID：{{ row.jobId || "-" }} | 审核 ID：{{ row.reviewId || "-" }} | 别名：{{ row.rawAliasScope }}
+          <div
+            class="readable-job-row job-row"
+            :data-testid="`verify-job-${row.jobId}`"
+            :class="{ 'focused-card': ['verify_job', 'reindex_job'].includes(focusTargetType) && focusTargetId === row.jobId }"
+          >
+            <div class="readable-row-main job-main">
+              <strong class="readable-row-title">{{ row.jobTypeLabel }}</strong>
+              <div class="muted readable-row-copy">{{ row.jobSummary }}</div>
+              <div class="muted readable-tech-ref" :title="row.rawAliasScope">{{ row.aliasScope }}</div>
+              <div
+                v-if="isAdvancedMode"
+                class="muted readable-tech-ref"
+                data-testid="index-job-technical-ref"
+                :title="`任务 ID：${row.jobId || '-'} | 审核 ID：${row.reviewId || '-'} | 别名：${row.rawAliasScope}`"
+              >
+                任务 ID：{{ row.jobId || "-" }} | 审核 ID：{{ row.reviewId || "-" }} | 别名：{{ row.rawAliasScope }}
+              </div>
             </div>
-          </div>
-          <div class="job-diagnostics">
-            <p><strong>状态</strong><br />{{ row.statusLabel }}</p>
-            <p><strong>范围</strong><br />{{ row.aliasScope }}</p>
-            <template v-if="isAdvancedMode">
-              <p><strong>目标快照</strong><br />{{ row.targetSnapshotVersion }}</p>
-              <p><strong>目标嵌入</strong><br />{{ row.targetEmbeddingVersion }}</p>
-              <p><strong>工作器</strong><br />{{ row.workerId }}</p>
-              <p><strong>尝试次数</strong><br />{{ row.attemptNo }}</p>
-              <p><strong>心跳时间</strong><br />{{ row.heartbeatAt }}</p>
-              <p><strong>租约到期</strong><br />{{ row.leaseExpiresAt }}</p>
-              <p><strong>开始时间</strong><br />{{ row.startedAt }}</p>
-              <p><strong>完成时间</strong><br />{{ row.finishedAt }}</p>
-            </template>
-            <p v-if="row.errorText !== '-' || isAdvancedMode"><strong>{{ isAdvancedMode ? "错误" : "需要关注" }}</strong><br />{{ row.errorText }}</p>
-          </div>
-          <div class="job-actions">
-            <p v-if="row.statusLabel === '失败' || row.errorText !== '-'" class="muted">
-              历史校验记录：旧候选或旧目标可能仍保留失败记录，不一定代表当前创作失败。
-            </p>
-            <button
-              v-if="jobTarget(row.item)"
-              class="ghost"
-              type="button"
-              @click="jumpToTarget(withIndexFocusTarget(jobTarget(row.item), 'index_job', row.jobId))"
-            >
-              查看目标
-            </button>
-            <button v-if="row.retryable" :disabled="indexConsole.actionId === row.jobId" :data-testid="`retry-verify-job-${row.jobId}`" @click="retry(row.jobId)">重试校验</button>
-            <span class="muted">{{ row.retryable ? "无需处理时可忽略历史记录" : "自动生成" }}</span>
-          </div>
+            <div class="readable-row-meta job-diagnostics">
+              <p><strong>状态</strong><span>{{ row.statusLabel }}</span></p>
+              <p><strong>范围</strong><span>{{ row.aliasScope }}</span></p>
+              <template v-if="isAdvancedMode">
+                <p><strong>目标快照</strong><span class="readable-tech-ref" :title="row.targetSnapshotVersion">{{ row.targetSnapshotVersion }}</span></p>
+                <p><strong>目标嵌入</strong><span class="readable-tech-ref" :title="row.targetEmbeddingVersion">{{ row.targetEmbeddingVersion }}</span></p>
+                <p><strong>工作器</strong><span class="readable-tech-ref" :title="row.workerId">{{ row.workerId }}</span></p>
+                <p><strong>尝试次数</strong><span>{{ row.attemptNo }}</span></p>
+                <p><strong>心跳时间</strong><span class="readable-tech-ref" :title="row.heartbeatAt">{{ row.heartbeatAt }}</span></p>
+                <p><strong>租约到期</strong><span class="readable-tech-ref" :title="row.leaseExpiresAt">{{ row.leaseExpiresAt }}</span></p>
+                <p><strong>开始时间</strong><span class="readable-tech-ref" :title="row.startedAt">{{ row.startedAt }}</span></p>
+                <p><strong>完成时间</strong><span class="readable-tech-ref" :title="row.finishedAt">{{ row.finishedAt }}</span></p>
+              </template>
+              <p v-if="row.errorText !== '-' || isAdvancedMode"><strong>{{ isAdvancedMode ? "错误" : "需要关注" }}</strong><span>{{ row.errorText }}</span></p>
+            </div>
+            <div class="job-actions">
+              <p v-if="row.statusLabel === '失败' || row.errorText !== '-'" class="muted">
+                历史校验记录：旧候选或旧目标可能仍保留失败记录，不一定代表当前创作失败。
+              </p>
+              <button
+                v-if="jobTarget(row.item)"
+                class="ghost"
+                type="button"
+                @click="jumpToTarget(withIndexFocusTarget(jobTarget(row.item), 'index_job', row.jobId))"
+              >
+                查看目标
+              </button>
+              <button v-if="row.retryable" :disabled="indexConsole.actionId === row.jobId" :data-testid="`retry-verify-job-${row.jobId}`" @click="retry(row.jobId)">重试校验</button>
+              <span class="muted">{{ row.retryable ? "无需处理时可忽略历史记录" : "自动生成" }}</span>
+            </div>
           </div>
         </template>
       </VirtualList>

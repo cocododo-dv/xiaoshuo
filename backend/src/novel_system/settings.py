@@ -21,6 +21,15 @@ class Settings:
     llm_enabled: bool = False
     admin_token: str | None = None
     config_secret: str | None = None
+    auto_create_tables: bool = True
+    cors_origins: tuple[str, ...] = (
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:8081",
+        "http://localhost:8081",
+    )
+    cors_allow_credentials: bool = True
+    expose_error_detail: bool = False
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -40,6 +49,14 @@ def _get_float_env(name: str, default: float) -> float:
         raise ValueError(f"{name} must be a valid number") from exc
 
 
+def _get_list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    items = tuple(item.strip() for item in raw_value.split(",") if item.strip())
+    return items or default
+
+
 def get_settings(*, include_runtime_config: bool = True) -> Settings:
     database_url = os.environ.get(
         "NOVEL_SYSTEM_DATABASE_URL",
@@ -57,6 +74,18 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_ENABLED", False)
     admin_token = os.environ.get("NOVEL_SYSTEM_ADMIN_TOKEN")
     config_secret = os.environ.get("NOVEL_SYSTEM_CONFIG_SECRET")
+    auto_create_tables = _get_bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", True)
+    cors_origins = _get_list_env(
+        "NOVEL_SYSTEM_CORS_ORIGINS",
+        (
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:8081",
+            "http://localhost:8081",
+        ),
+    )
+    cors_allow_credentials = _get_bool_env("NOVEL_SYSTEM_CORS_ALLOW_CREDENTIALS", True)
+    expose_error_detail = _get_bool_env("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", False)
     vector_store_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(
         database_url=database_url,
@@ -70,6 +99,10 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_enabled=llm_enabled,
         admin_token=admin_token,
         config_secret=config_secret,
+        auto_create_tables=auto_create_tables,
+        cors_origins=cors_origins,
+        cors_allow_credentials=cors_allow_credentials,
+        expose_error_detail=expose_error_detail,
     )
     if not include_runtime_config:
         return settings

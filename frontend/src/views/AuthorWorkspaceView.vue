@@ -6,6 +6,7 @@ import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { compactEntityOptions, formatChapterChoice, formatSceneChoice } from "../lib/readableRefs";
 import { useShellRouter } from "../router";
 import { useAuthorWorkspaceStore } from "../stores/authorWorkspace";
 
@@ -102,6 +103,15 @@ const creatingScene = ref(false);
 
 const chapters = computed(() => authorWorkspace.chapters || []);
 const scenes = computed(() => authorWorkspace.scenes || []);
+const chapterChoiceState = computed(() =>
+  compactEntityOptions(chapters.value, {
+    idKey: "chapter_id",
+    titleKeys: ["chapter_title", "chapter_goal"],
+    selectedId: authorWorkspace.selectedChapterId,
+    formatter: formatChapterChoice,
+  }),
+);
+const visibleChapters = computed(() => chapterChoiceState.value.options.map((option) => option.item).filter(Boolean));
 const pinnedChapterKeys = computed(() => (authorWorkspace.selectedChapterId ? [authorWorkspace.selectedChapterId] : []));
 const pinnedSceneKeys = computed(() => (selectedSceneId.value ? [selectedSceneId.value] : []));
 const chapterRunStatus = computed(() => authorWorkspace.chapterRunStatus || null);
@@ -259,9 +269,12 @@ function isChapterTrashAllowed(item) {
 }
 
 function authorChapterRow(item) {
+  const display = formatChapterChoice(item);
   return {
     item,
     chapterId: item?.chapter_id || "",
+    chapterLabel: display.label,
+    technicalRef: display.technical,
     chapterGoal: item?.chapter_goal || "",
     currentPhase: item?.current_phase || "-",
     activeSceneCount: item?.active_scene_count ?? 0,
@@ -273,10 +286,13 @@ function authorChapterRow(item) {
 
 function authorSceneRow(item) {
   const sceneId = item?.scene_id || "";
+  const display = formatSceneChoice(item);
 
   return {
     item,
     sceneId,
+    sceneLabel: display.label,
+    technicalRef: display.technical,
     sceneSeq: item?.scene_seq ?? 0,
     sceneGoal: item?.scene_goal || "",
     sceneStatus: item?.scene_status || "-",
@@ -570,8 +586,11 @@ onActivated(() => {
               <h3>章节列表</h3>
               <p class="muted receipt-copy">选择一个活跃章节继续编辑，或从这里新建章节。</p>
             </div>
-            <span class="badge">{{ chapters.length }} 个活跃章节</span>
+            <span class="badge">{{ visibleChapters.length }} / {{ chapters.length }} 个活跃章节</span>
           </div>
+          <p v-if="chapterChoiceState.hiddenCount" class="muted receipt-copy">
+            已折叠 {{ chapterChoiceState.hiddenCount }} 条同名历史 QA 章节，可从写作房间搜索 ID 找回。
+          </p>
 
           <div class="author-list-toolbar">
             <button
@@ -585,11 +604,11 @@ onActivated(() => {
           </div>
           <FlowActionReceipt compact :receipt="receipt(AUTHOR_CHAPTER_SCOPE)" />
 
-          <div v-if="!chapters.length" class="empty">当前还没有活跃章节。</div>
+          <div v-if="!visibleChapters.length" class="empty">当前还没有活跃章节。</div>
           <VirtualList
             v-else
             class="author-list"
-            :items="chapters"
+            :items="visibleChapters"
             item-key="chapter_id"
             :estimated-item-height="128"
             :threshold="8"
@@ -622,8 +641,9 @@ onActivated(() => {
                   :data-testid="`author-chapter-select-${row.chapterId}`"
                   @click="selectChapter(row.chapterId)"
                 >
-                  <strong>{{ row.chapterId }}</strong>
-                  <span>{{ row.chapterGoal }}</span>
+                  <strong class="line-clamp-2">{{ row.chapterLabel }}</strong>
+                  <span class="line-clamp-3">{{ row.chapterGoal }}</span>
+                  <small class="technical-ref">{{ row.technicalRef }}</small>
                   <span class="muted">{{ row.currentPhase }} · {{ row.activeSceneCount }} 个活跃场景</span>
                 </button>
 
@@ -813,8 +833,9 @@ onActivated(() => {
 
                 <div class="author-scene-body">
                   <div class="author-scene-meta" @click="selectScene(row.sceneId)">
-                    <strong>{{ row.sceneSeq }}. {{ row.sceneId }}</strong>
-                    <span>{{ row.sceneGoal }}</span>
+                    <strong class="line-clamp-2">{{ row.sceneSeq }}. {{ row.sceneLabel }}</strong>
+                    <span class="line-clamp-3">{{ row.sceneGoal }}</span>
+                    <small class="technical-ref">{{ row.technicalRef }}</small>
                     <span class="muted">{{ row.sceneStatus }} · {{ row.locationLabel }}</span>
                     <span class="badge" :data-testid="`author-scene-batch-state-${row.sceneId}`">
                       {{ row.batchLabel }}

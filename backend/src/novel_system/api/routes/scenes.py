@@ -32,6 +32,7 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import NEAR_FINAL_REWRITE_TYPE, NEAR_FINAL_RUBRIC_ID
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.scene_execution import SceneExecutionContractService, SceneTriageService
 from novel_system.services.scene_quality import SceneAutoRewriteService, SceneQualityService
 from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
@@ -165,6 +166,56 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
+@router.get("/api/v1/scenes/{scene_id}/execution-contract")
+def get_scene_execution_contract(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    contract = SceneExecutionContractService(session).get_or_create(scene_id, actor_ref=actor_ref)
+    session.commit()
+    return ok(
+        {"contract": SceneExecutionContractService(session).serialize(contract)},
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.post("/api/v1/scenes/{scene_id}/execution-contract")
+def generate_scene_execution_contract(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/execution-contract",
+        payload={"scene_id": scene_id},
+        action=lambda: {
+            "contract": SceneExecutionContractService(session).serialize(
+                SceneExecutionContractService(session).generate(scene_id, actor_ref=actor_ref)
+            )
+        },
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/scenes/{scene_id}/triage")
+def triage_scene(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/triage",
+        payload={"scene_id": scene_id},
+        action=lambda: {"triage": SceneTriageService(session).evaluate(scene_id, actor_ref=actor_ref, mutate=True)},
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
 @router.post("/api/v1/scenes/{scene_id}/literary-blueprint")
 def generate_scene_literary_blueprint(scene_id: str, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
@@ -271,7 +322,7 @@ def create_scene_run_job(scene_id: str, request: Request, start: bool = True, se
     job = service.create_job(scene_id, actor_ref=actor_ref)
     payload = service.serialize_job(job)
     session.commit()
-    if start:
+    if start and job.status == "queued":
         start_scene_run_job_worker(job.job_id)
     return ok(payload, req_id=getattr(request.state, "request_id", None))
 
@@ -368,6 +419,8 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
         select(AttemptTracker).where(AttemptTracker.scene_id == scene_id).order_by(AttemptTracker.attempt_id.asc())
     ).scalars().all()
     blueprint_service = SceneBlueprintService(session)
+    contract_service = SceneExecutionContractService(session)
+    execution_contract = contract_service.latest(scene_id)
     response = ok(
         {
             "chapter_goal": {
@@ -403,11 +456,13 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
             "source_safety_scan": source_safety_scan,
             "anti_template_quality_summary": _serialize_anti_template_quality_summary(session, final),
             "literary_blueprint": blueprint_service.latest_payload(scene_id),
+            "execution_contract": contract_service.serialize(execution_contract),
             "scene_memory": {"row_id": memory.row_id, "content": memory.content} if memory else None,
             "generation_summary": _serialize_generation_summary(session, scene_id, state),
             "near_final_summary": _serialize_near_final_summary(session, scene_id),
             "hard_qc_summary": _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "hard_qc")),
             "soft_qc_summary": _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "soft_qc")),
+            "triage_preview": SceneTriageService(session).evaluate(scene_id, actor_ref="preview", mutate=False),
             "rewrite_counters": {
                 "hard_partial_rewrite_count": state.hard_partial_rewrite_count,
                 "hard_full_rewrite_count": state.hard_full_rewrite_count,

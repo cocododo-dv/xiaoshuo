@@ -13,10 +13,208 @@ def utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class StoryProject(Base):
+    __tablename__ = "story_projects"
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    title: Mapped[str] = mapped_column(String)
+    genre: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_word_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_chapter_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outline_text: Mapped[str] = mapped_column(Text)
+    planning_mode: Mapped[str] = mapped_column(String, default="outline_driven")
+    snowflake_schema_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="outline_draft")
+    active_outline_plan_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    approved_chapter_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    reference_profile_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class OutlinePlan(Base):
+    __tablename__ = "outline_plans"
+
+    plan_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="pending_review")
+    plan_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    approved_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class SnowflakeArtifact(Base):
+    __tablename__ = "snowflake_artifacts"
+
+    artifact_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    step_key: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="pending_review")
+    artifact_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    input_refs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    diagnosis_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    approved_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class SnowflakeStepRun(Base):
+    __tablename__ = "snowflake_step_runs"
+
+    step_run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    step_key: Mapped[str] = mapped_column(String)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String, default="pending_review")
+    draft_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    health_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
+    input_refs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    approved_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+    @property
+    def artifact_json(self) -> dict[str, Any]:
+        return self.draft_json or {}
+
+
+class SnowflakeAssistantTurn(Base):
+    __tablename__ = "snowflake_assistant_turns"
+
+    turn_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    step_key: Mapped[str] = mapped_column(String)
+    focus_scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_message: Mapped[str] = mapped_column(Text)
+    reply: Mapped[str] = mapped_column(Text)
+    suggestions_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    candidate_label: Mapped[str | None] = mapped_column(String, nullable=True)
+    candidate_patch_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
+    source: Mapped[str] = mapped_column(String, default="fallback")
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class SnowflakeCharacterPlan(Base):
+    __tablename__ = "snowflake_character_plans"
+
+    character_plan_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    character_id: Mapped[str] = mapped_column(String)
+    display_name: Mapped[str] = mapped_column(String)
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
+    synopsis_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
+    bible_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
+    source_step_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class SnowflakeScenePlan(Base):
+    __tablename__ = "snowflake_scene_plans"
+
+    scene_plan_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    scene_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(String)
+    chapter_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chapter_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scene_seq: Mapped[int] = mapped_column(Integer, default=1)
+    pov_character_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    onstage_chars_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scene_type: Mapped[str] = mapped_column(String, default="proactive")
+    location: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_crucible: Mapped[str | None] = mapped_column(Text, nullable=True)
+    goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conflict: Mapped[str | None] = mapped_column(Text, nullable=True)
+    setback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reaction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dilemma: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    beats_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    must_include_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exit_change: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hook: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_length_band: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnosis_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class SnowflakeSceneTriageItem(Base):
+    __tablename__ = "snowflake_scene_triage_items"
+
+    triage_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    scene_plan_id: Mapped[str] = mapped_column(ForeignKey("snowflake_scene_plans.scene_plan_id"))
+    scene_id: Mapped[str] = mapped_column(String)
+    recommended_status: Mapped[str] = mapped_column(String, default="")
+    manual_status: Mapped[str] = mapped_column(String, default="")
+    effective_status: Mapped[str] = mapped_column(String, default="")
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    missing_fields_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    fix_steps_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    repair_patch_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    pressure_flags_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blocking: Mapped[int] = mapped_column(Integer, default=0)
+    manual_override: Mapped[int] = mapped_column(Integer, default=0)
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class SnowflakeRevisionLink(Base):
+    __tablename__ = "snowflake_revision_links"
+
+    revision_link_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    source_step_key: Mapped[str] = mapped_column(String)
+    source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    affected_kind: Mapped[str] = mapped_column(String)
+    affected_id: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, default="open")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    resolved_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class StoryCharacter(Base):
+    __tablename__ = "story_characters"
+
+    character_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    display_name: Mapped[str] = mapped_column(String)
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    bible_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class ChapterGoal(Base):
     __tablename__ = "chapter_goals"
 
     chapter_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("story_projects.project_id"), nullable=True)
+    outline_plan_id: Mapped[str | None] = mapped_column(ForeignKey("outline_plans.plan_id"), nullable=True)
     planned_scene_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mid_aggregate_enabled: Mapped[int] = mapped_column(Integer, default=0)
     chapter_goal: Mapped[str] = mapped_column(Text)
@@ -38,6 +236,8 @@ class SceneCard(Base):
 
     scene_id: Mapped[str] = mapped_column(String, primary_key=True)
     chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"))
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("story_projects.project_id"), nullable=True)
+    outline_plan_id: Mapped[str | None] = mapped_column(ForeignKey("outline_plans.plan_id"), nullable=True)
     scene_seq: Mapped[int] = mapped_column(Integer)
     pov_character_id: Mapped[str | None] = mapped_column(String, nullable=True)
     onstage_chars_json: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -211,6 +411,29 @@ class SceneQualityContract(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
+class SceneExecutionContract(Base):
+    __tablename__ = "scene_execution_contracts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','blocked','stale','superseded')",
+            name="ck_scene_execution_contracts_status",
+        ),
+    )
+
+    contract_id: Mapped[str] = mapped_column(String, primary_key=True)
+    scene_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(String)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    contract_version: Mapped[str] = mapped_column(String, default="scene_execution_contract_v1")
+    source_snapshot_hash: Mapped[str] = mapped_column(String)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    missing_fields_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String, default="active", server_default="active")
+    created_by: Mapped[str] = mapped_column(String, default="scene_execution")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class GenerationPlanningArtifact(Base):
     __tablename__ = "generation_planning_artifacts"
     __table_args__ = (
@@ -252,6 +475,7 @@ class LlmCall(Base):
     credential_mode: Mapped[str | None] = mapped_column(String, nullable=True)
     prompt_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     step: Mapped[str | None] = mapped_column(String, nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
     chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
     request_payload_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -272,6 +496,7 @@ class SceneDraft(Base):
     scene_id: Mapped[str] = mapped_column(String)
     chapter_id: Mapped[str] = mapped_column(String)
     stage: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active", server_default="active")
     content: Mapped[str] = mapped_column(Text)
     source_bundle_id: Mapped[str] = mapped_column(String)
     source_bundle_hash: Mapped[str] = mapped_column(String)
@@ -286,6 +511,7 @@ class QcReport(Base):
     scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
     chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
     qc_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="active")
     source_draft_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
     resolution_code: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -512,6 +738,12 @@ class AuthorDraftProposal(Base):
     content: Mapped[str] = mapped_column(Text)
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_range_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    before_text_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    replacement_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposal_kind: Mapped[str] = mapped_column(String, default="whole_draft")
+    source_evaluation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    merge_status: Mapped[str] = mapped_column(String, default="pending")
     status: Mapped[str] = mapped_column(String, default="candidate")
     author_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String, default="author_draft_proposal")
@@ -812,6 +1044,33 @@ class HumanReviewEvent(Base):
     result_status_map_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     default_action: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ProjectBacktrackItem(Base):
+    __tablename__ = "project_backtrack_items"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','resolved','superseded')",
+            name="ck_project_backtrack_items_status",
+        ),
+    )
+
+    item_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scope: Mapped[str] = mapped_column(String)
+    target_ref: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    problem_summary: Mapped[str] = mapped_column(Text)
+    recommended_fix: Mapped[str] = mapped_column(Text)
+    reason_codes_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_qc_report_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_contract_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="scene_triage")
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 

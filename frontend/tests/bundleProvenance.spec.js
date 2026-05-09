@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -297,7 +298,8 @@ describe("shell source", () => {
   it("persists an operator ref alongside the API base", () => {
     const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
     const configSource = readFileSync(new URL("../src/views/SystemConfigView.vue", import.meta.url), "utf8");
-    const apiSource = readFileSync(new URL("../src/lib/api.js", import.meta.url), "utf8");
+    const apiDir = path.resolve(new URL("../src/lib/api", import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
+    const apiSource = readdirSync(apiDir).filter(f => f.endsWith(".js")).map(f => readFileSync(path.join(apiDir, f), "utf8")).join("\n");
 
     expect(source).not.toContain("操作员标识");
     expect(source).not.toContain("setOperatorRef");

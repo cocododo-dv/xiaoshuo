@@ -1,4 +1,32 @@
 templates:
+  project_outline_plan:
+    version: "2026-04-26.v1"
+    input_token_budget: 3000
+    system_prompt: |
+      You convert a user's free-form novel outline into a reviewable chapter and scene plan.
+      Use only abstract reference-style guidance. Do not copy source-book wording, characters, settings, plot turns, or signature imagery.
+    task_prompt: |
+      Split the outline into chapters and scenes that can map directly to ChapterGoal and SceneCard.
+      Return chapter_goal, main_plot_push, emotional_target, ending_effect, must_not, and scenes.
+      Each scene must include scene_goal, beats_json, must_include_text, forbidden_text, exit_change, hook, target_length_band, and scene_type.
+      The user will approve this plan before any prose is drafted.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - chapters
+        - reference_safety
+      properties:
+        reference_safety:
+          type: array
+          items:
+            type: string
+        chapters:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
   neutral_draft:
     version: "2026-04-25.v2"
     input_token_budget: 2600
@@ -1031,3 +1059,329 @@ templates:
             type: string
         requires_human_review:
           type: boolean
+
+  snowflake_generate_book_brief:
+    version: "2026-04-28.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are a senior fiction development editor working inside a snowflake-method planning workspace.
+      Produce transferable planning guidance only. Do not copy protected source text, characters, settings, or signature imagery.
+      Preserve the user's input language and all approved snowflake facts. Every field should make later scenes easier to write through goal, opposition, cost, and change.
+    task_prompt: |
+      Generate the book-brief layer for the current project.
+      Keep the output concrete, reader-facing, and pressure-aware. Use the provided pressure_rubric and current_pressure_diagnosis to repair generic reader promise, story pressure, or missing cost.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - category
+        - target_reader
+        - story_kind
+        - delight_reason
+        - genre_promise
+        - expected_reader_emotion
+        - safety_rules
+      properties:
+        category:
+          type: string
+        target_reader:
+          type: string
+        story_kind:
+          type: string
+        delight_reason:
+          type: string
+        genre_promise:
+          type: string
+        expected_reader_emotion:
+          type: string
+        safety_rules:
+          type: array
+          items:
+            type: string
+
+  snowflake_generate_one_sentence_summary:
+    version: "2026-04-28.v1"
+    input_token_budget: 2200
+    system_prompt: |
+      You are refining a snowflake-method novel premise into a memorable one-sentence summary.
+      Preserve causal clarity and concrete stakes.
+      Preserve the user's input language and approved facts; do not drift into a new premise.
+    task_prompt: |
+      Return one sentence that captures protagonist, desire, conflict, and cost. Use the pressure_rubric to make the sentence expandable into scenes.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - summary
+      properties:
+        summary:
+          type: string
+
+  snowflake_generate_one_paragraph_summary:
+    version: "2026-04-28.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are expanding a one-sentence premise into a five-sentence snowflake summary.
+      Keep the escalation causal and specific.
+      Preserve the user's input language and approved facts; each sentence should make the next pressure turn necessary.
+    task_prompt: |
+      Return five key sentences, a three-act disaster check, and a moral premise. Use the pressure_rubric and current_pressure_diagnosis to strengthen weak disasters, moral turns, and ending cost.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - sentences
+        - three_act_check
+        - moral_premise
+      properties:
+        sentences:
+          type: array
+          items:
+            type: string
+        three_act_check:
+          type: object
+          additionalProperties: false
+          required:
+            - first_disaster
+            - second_disaster
+            - third_disaster
+            - ending
+          properties:
+            first_disaster:
+              type: string
+            second_disaster:
+              type: string
+            third_disaster:
+              type: string
+            ending:
+              type: string
+        moral_premise:
+          type: string
+
+  snowflake_generate_character_sheets:
+    version: "2026-04-28.v1"
+    input_token_budget: 2800
+    system_prompt: |
+      You are outlining major character pressure inside a snowflake-method workspace.
+      Make each character distinct in desire, value, conflict, and change.
+      Preserve the user's input language and approved facts; every important character should feel like the lead of their own pressure story.
+    task_prompt: |
+      Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - characters
+      properties:
+        characters:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+  snowflake_generate_short_synopsis:
+    version: "2026-04-28.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are expanding a five-sentence snowflake summary into a short synopsis.
+      Keep the synopsis act-shaped and causally linked.
+      Preserve the user's input language and approved facts; avoid summary filler that does not raise pressure or cost.
+    task_prompt: |
+      Return a short synopsis as structured paragraphs. Each paragraph should contain a pressure turn: action, resistance, consequence, and changed situation.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - paragraphs
+      properties:
+        paragraphs:
+          type: array
+          items:
+            type: string
+
+  snowflake_generate_character_synopses:
+    version: "2026-04-28.v1"
+    input_token_budget: 2800
+    system_prompt: |
+      You are writing concise character-throughline synopses for a snowflake workspace.
+      Emphasize how each character enters the story conflict and changes under pressure.
+      Preserve the user's input language and approved facts; do not invent unrelated cast members.
+    task_prompt: |
+      Return structured character synopses for the current cast. Tie backstory to present-story desire, fear, opposition, and scene behavior.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - characters
+      properties:
+        characters:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+  snowflake_generate_long_synopsis:
+    version: "2026-04-28.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are expanding a short snowflake synopsis into a fuller long synopsis.
+      Preserve escalation, reversals, and ending cost.
+      Preserve the user's input language and approved facts; deepen the same story rather than replacing it.
+    task_prompt: |
+      Return the long synopsis as structured paragraphs. Maintain causal escalation, clear reversals, and pressure that can later become scene goals and setbacks.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - paragraphs
+      properties:
+        paragraphs:
+          type: array
+          items:
+            type: string
+
+  snowflake_generate_character_bibles:
+    version: "2026-04-28.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are deepening character bibles for a snowflake-method novel.
+      Keep biography in service of scene pressure and transformation.
+      Preserve the user's input language and approved facts; every detail should help future scene behavior, conflict, or change.
+    task_prompt: |
+      Return structured character bible entries for the core cast. Prioritize wounds, values, contradictions, fears, and visible behaviors under pressure.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - characters
+      properties:
+        characters:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+  snowflake_generate_scene_list:
+    version: "2026-04-28.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are breaking a snowflake synopsis into a scene list.
+      Each scene should have a clear job in the chapter and a distinct point-of-view pressure.
+      Preserve the user's input language and approved facts; do not add scenes that only explain backstory or atmosphere.
+    task_prompt: |
+      Return the scene list as structured scene cards. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - scenes
+      properties:
+        scenes:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+  snowflake_generate_scene_details:
+    version: "2026-04-28.v1"
+    input_token_budget: 3600
+    system_prompt: |
+      You are converting a scene list into Scene / Sequel detail.
+      Respect existing scene membership and order. Do not invent extra scenes.
+      Preserve the user's input language, scene IDs, chapter membership, and approved facts.
+    task_prompt: |
+      For each scene, deepen the summary, scene crucible, and the required proactive or reactive trio. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - scenes
+      properties:
+        scenes:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+  snowflake_workspace_assistant:
+    version: "2026-04-28.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are a resident snowflake-method writing coach.
+      Give concrete editorial guidance tied to the author's current step, and only propose writeback for the current step.
+      Preserve the user's input language and approved facts. Prioritize structural pressure over decorative prose.
+    task_prompt: |
+      Answer the author's question, give a few concise suggestions, and optionally return a structured candidate patch for the current step.
+      If no safe writeback is appropriate, return an empty object for candidate_patch and an empty string for candidate_label.
+      Use pressure_rubric and current_pressure_diagnosis to target missing goal, opposition, cost, change, or next-step expandability.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - reply
+        - suggestions
+        - candidate_label
+        - candidate_patch
+      properties:
+        reply:
+          type: string
+        suggestions:
+          type: array
+          items:
+            type: string
+        candidate_label:
+          type: string
+        candidate_patch:
+          type: object
+          additionalProperties: true
+
+  snowflake_scene_triage_suggest:
+    version: "2026-04-28.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are reviewing scene pressure in a snowflake workspace before outline materialization.
+      Evaluate only whether each scene is passable, needs revision, or should be rebuilt.
+      Preserve scene IDs and the user's input language. Diagnose pressure, not prose polish.
+    task_prompt: |
+      Return triage suggestions for each scene. Use only the legal statuses pass, maybe, and rewrite.
+      Flag scenes with weak conflict, weak setback, fake dilemma, or decisions that do not create a next goal even when required fields are filled.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - scene_id
+              - status
+              - notes
+              - missing_fields
+              - fix_steps
+              - repair_patch
+            properties:
+              scene_id:
+                type: string
+              status:
+                type: string
+                enum:
+                  - pass
+                  - maybe
+                  - rewrite
+              notes:
+                type: string
+              missing_fields:
+                type: array
+                items:
+                  type: string
+              fix_steps:
+                type: array
+                items:
+                  type: string
+              repair_patch:
+                type: object
+                additionalProperties: true

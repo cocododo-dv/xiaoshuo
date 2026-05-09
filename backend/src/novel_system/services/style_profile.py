@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import yaml
+from sqlalchemy.orm import Session
 
+from novel_system.services.errors import DomainError
+from novel_system.services.hash_engine import canonical_json
 from novel_system.services.hash_engine import normalize
+from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.settings import get_settings
 
 
 STYLE_FEATURE_CONTRACT_VERSION = "STYLE_FEATURE_CONTRACT_v1"
@@ -148,6 +155,72 @@ class StyleProfileService:
         return json.dumps(profile, ensure_ascii=False, sort_keys=True, indent=2)
 
 
+class StyleProfileExtractionService:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self._prompt_builder = PromptBuilder()
+
+    def extract(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if get_settings().llm_enabled:
+            return self._extract_with_llm(payload)
+        profile = StyleProfileService.build_profile_from_texts(**payload)
+        return {
+            "profile": profile,
+            "profile_yaml": StyleProfileService.render_profile_yaml(profile),
+            "source": "offline_deterministic",
+            "llm_call_id": None,
+        }
+
+    def _extract_with_llm(self, payload: dict[str, Any]) -> dict[str, Any]:
+        snapshot = {
+            "sample_texts": _coerce_text_list(payload.get("sample_texts")),
+            "style_rules": _coerce_text_list(payload.get("style_rules")),
+            "style_observations": _coerce_text_list(payload.get("style_observations")),
+            "calibration_lines": _coerce_text_list(payload.get("calibration_lines")),
+            "banned_moves": _coerce_text_list(payload.get("banned_moves")),
+            "contract_version": STYLE_FEATURE_CONTRACT_VERSION,
+            "feature_names": list(STYLE_FEATURE_NAMES),
+            "safety": {
+                "extract_abstract_craft_only": True,
+                "do_not_reuse_protected_phrasing": True,
+            },
+        }
+        prompt = self._prompt_builder.build(snapshot, "style_profile_extract")
+        bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        try:
+            result = LLMNodeRunner(self.session).run(
+                scene_id="style_profile_extract",
+                chapter_id="global",
+                bundle_id="style_profile_extract:global",
+                bundle_hash=bundle_hash,
+                node_id="style_profile_extract",
+                step="style_profile_extract",
+                prompt=prompt,
+                user_prompt=prompt["user_prompt"],
+                offline_client_factory=lambda: None,
+            )
+        except LLMNodeExecutionError as exc:
+            raise DomainError(
+                "STYLE_PROFILE_EXTRACT_LLM_FAILED",
+                exc.message,
+                status_code=409,
+                details={
+                    "llm_call_id": exc.llm_call_id,
+                    "node_id": "style_profile_extract",
+                    "error_code": exc.error_code,
+                    "next_action": "configure_style_profile_extract_route_and_retry",
+                    "response_summary": exc.response_summary,
+                },
+            ) from exc
+        profile = _normalize_style_profile_payload(result.response.structured_output or {})
+        return {
+            "profile": profile,
+            "profile_yaml": StyleProfileService.render_profile_yaml(profile),
+            "source": "llm",
+            "llm_call_id": result.llm_call_id,
+        }
+
+
 class StyleScoreService:
     @staticmethod
     def report_summary(report: Any) -> dict[str, Any] | None:
@@ -184,6 +257,25 @@ class StyleScoreService:
                 "style_deviations": _list_payload(entry.get("style_deviations")),
             }
         return None
+
+
+def _normalize_style_profile_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    profile_payload = payload.get("style_profile") if isinstance(payload.get("style_profile"), Mapping) else payload
+    features_payload = profile_payload.get("features") if isinstance(profile_payload.get("features"), Mapping) else {}
+    features: dict[str, dict[str, list[str]]] = {}
+    for feature_name in STYLE_FEATURE_NAMES:
+        feature_payload = features_payload.get(feature_name) if isinstance(features_payload, Mapping) else {}
+        if isinstance(feature_payload, Mapping):
+            guidance = feature_payload.get("guidance")
+        else:
+            guidance = feature_payload
+        features[feature_name] = {"guidance": _coerce_text_list(guidance)}
+    return {
+        "contract_version": str(profile_payload.get("contract_version") or STYLE_FEATURE_CONTRACT_VERSION),
+        "features": features,
+        "calibration_lines": _coerce_text_list(profile_payload.get("calibration_lines")),
+        "banned_moves": _coerce_text_list(profile_payload.get("banned_moves")),
+    }
 
 
 def _row_texts(rows: Iterable[Any], field_names: tuple[str, ...]) -> list[str]:

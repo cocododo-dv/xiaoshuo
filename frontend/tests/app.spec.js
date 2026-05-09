@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
 
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -680,7 +681,8 @@ describe("api helpers", () => {
   });
 
   it("ships dedicated interop API helpers", () => {
-    const source = readFileSync(new URL("../src/lib/api.js", import.meta.url), "utf8");
+    const apiDir = path.resolve(new URL("../src/lib/api", import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
+    const source = readdirSync(apiDir).filter(f => f.endsWith(".js")).map(f => readFileSync(path.join(apiDir, f), "utf8")).join("\n");
 
     expect(source).toContain("previewBundleWorksheet");
     expect(source).toContain("/api/v1/interop/preview/bundle-worksheet");
@@ -692,7 +694,7 @@ describe("api helpers", () => {
   });
 
   it("preserves structured database-busy API errors", async () => {
-    const { fetchRunJob } = await import("../src/lib/api.js");
+    const { fetchRunJob } = await import("../src/lib/api/index.js");
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 503,

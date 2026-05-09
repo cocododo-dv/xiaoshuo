@@ -65,6 +65,23 @@ CONTINUITY_POLICY: list[str] = [
     "split_scene_recommendation",
 ]
 
+TASK_KIND_POLICIES: dict[str, list[str]] = {
+    "default": list(CONTINUITY_POLICY),
+    "drafting": [
+        "preserve_style_profile_author_preference_and_calibration",
+        *CONTINUITY_POLICY,
+    ],
+    "hard_qc": [
+        "preserve_facts_constraints_and_character_contract",
+        "drop_style_context_before_fact_context",
+        *CONTINUITY_POLICY,
+    ],
+    "chapter_review": [
+        "preserve_chapter_promise_payoff_and_memory",
+        *CONTINUITY_POLICY,
+    ],
+}
+
 
 def collect_prompt_sections(bundle_snapshot: Mapping[str, Any]) -> list[PromptSection]:
     inline_digests = bundle_snapshot.get("inline_digests")
@@ -87,16 +104,19 @@ def apply_context_budget(
     bundle_snapshot: Mapping[str, Any],
     sections: list[PromptSection],
     max_input_tokens: int,
+    task_kind: str = "default",
 ) -> dict[str, Any]:
+    normalized_task_kind = task_kind if task_kind in TASK_KIND_POLICIES else "default"
     budget = {
         "target_input_tokens": max_input_tokens,
+        "task_kind": normalized_task_kind,
         "estimated_input_tokens": 0,
         "remaining_input_tokens": 0,
         "included_sections": [],
         "compressed_sections": [],
         "omitted_sections": [],
         "section_status": {},
-        "continuity_policy": list(CONTINUITY_POLICY),
+        "continuity_policy": list(TASK_KIND_POLICIES[normalized_task_kind]),
         "split_scene_recommended": False,
         "stop_reason": None,
         "continuity_warning": None,
@@ -113,6 +133,15 @@ def apply_context_budget(
         similar_scene = section_lookup.get("similar_scene_context")
         if similar_scene is not None:
             similar_scene.status = "omitted"
+
+        if normalized_task_kind == "hard_qc" and _rendered_prompt_tokens(
+            system_prompt=system_prompt,
+            task_prompt=task_prompt,
+            bundle_snapshot=bundle_snapshot,
+            sections=sections,
+            split_scene_recommended=False,
+        ) > max_input_tokens:
+            _omit_section(section_lookup, "style_rules")
 
         if _rendered_prompt_tokens(
             system_prompt=system_prompt,
@@ -345,6 +374,12 @@ def _compress_continuity_digest(text: str) -> str:
     if len(tokens) <= 12:
         return _normalize_text(text)
     return " ".join(tokens[:12]) + " ..."
+
+
+def _omit_section(section_lookup: Mapping[str, PromptSection], section_name: str) -> None:
+    section = section_lookup.get(section_name)
+    if section is not None:
+        section.status = "omitted"
 
 
 def _first_text(inline_digests: Mapping[str, Any], digest_keys: tuple[str, ...]) -> str | None:

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from novel_system.api.app import create_app
-from novel_system.db.models import SystemSecret
+from novel_system.db.models import LlmCall, SystemSecret
 from novel_system.services.settings_helpers import llm_generation_mode
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
@@ -96,15 +96,106 @@ def test_llm_overview_marks_default_routes_without_provider_as_not_ready(client)
 
     assert response.status_code == 200
     payload = response.json()["data"]
+    assert "node_catalog" in payload
+    assert payload["node_catalog"]["project_outline_plan"]["status"] == "active"
+    assert payload["node_catalog"]["writer_deep_review"]["group"] == "deep_review"
+    assert payload["node_catalog"]["scene_auto_rewrite"]["requires_llm"] is True
     assert payload["providers"] == {}
     assert payload["readiness"]["provider_count"] == 0
     assert payload["readiness"]["configured_route_count"] > 0
     assert payload["readiness"]["ready_route_count"] == 0
     assert payload["readiness"]["ready"] is False
+    assert "project_outline_plan" in payload["missing_active_routes"]
+    assert "writer_deep_review" in payload["missing_active_routes"]
     route = payload["node_routes"]["neutral_draft"]
     assert route["configured"] is True
     assert route["ready"] is False
     assert route["provider_missing"] is True
+
+
+def test_llm_sync_missing_routes_populates_all_active_nodes(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "local_qwen",
+            "provider_type": "openai_compatible",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "enabled": True,
+            "credential_mode": "none",
+            "api_mode": "chat",
+            "models": ["Qwen3-14B-Q8_0.gguf"],
+        },
+    )
+    assert provider_response.status_code == 200
+
+    response = client.post(
+        "/api/v1/system-config/llm/node-routes/sync-missing",
+        headers=ADMIN_HEADERS,
+        json={"activate": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert "project_outline_plan" in payload["synced_node_ids"]
+    assert "writer_deep_review" in payload["synced_node_ids"]
+    assert "scene_auto_rewrite" in payload["synced_node_ids"]
+    assert payload["snapshot"]["active"] is True
+
+    overview = client.get("/api/v1/system-config/llm").json()["data"]
+    assert overview["missing_active_routes"] == []
+    assert overview["node_routes"]["project_outline_plan"]["ready"] is True
+    assert overview["node_routes"]["writer_deep_review"]["provider_id"] == "local_qwen"
+    assert overview["node_routes"]["scene_auto_rewrite"]["model"] == "Qwen3-14B-Q8_0.gguf"
+
+
+def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
+    session.add(
+        LlmCall(
+            llm_call_id="llm_call_offline_scene_auto_rewrite_test",
+            provider="offline_deterministic",
+            model="scene-auto-rewrite-policy",
+            node_id="scene_auto_rewrite",
+            step="scene_auto_rewrite",
+            scene_id="SC_AUDIT",
+            chapter_id="CH_AUDIT",
+            request_payload_summary={},
+            response_payload_summary={"source": "offline_deterministic"},
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            latency_ms=0,
+        )
+    )
+    session.add(
+        LlmCall(
+            llm_call_id="llm_call_live_project_outline_test",
+            provider="fake",
+            model="fake-model",
+            node_id="project_outline_plan",
+            step="project_outline_plan",
+            request_payload_summary={},
+            response_payload_summary={"source": "llm"},
+            prompt_tokens=1,
+            completion_tokens=1,
+            total_tokens=2,
+            latency_ms=1,
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/v1/system-config/llm/calls/audit")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["offline_deterministic_required_count"] == 1
+    assert payload["offline_deterministic_required_calls"][0]["node_id"] == "scene_auto_rewrite"
+    matrix = {item["node_id"]: item for item in payload["required_node_matrix"]}
+    assert matrix["project_outline_plan"]["success_count"] == 1
+    assert matrix["scene_auto_rewrite"]["offline_deterministic_count"] == 1
 
 
 def test_llm_node_route_activation_requires_existing_provider_binding(client, monkeypatch) -> None:
@@ -500,17 +591,62 @@ def test_llm_config_provider_secret_and_node_routes_do_not_leak_credentials(clie
     assert overview.status_code == 200
     overview_payload = overview.json()["data"]
     assert "sk-secret-openai" not in overview.text
+    assert overview_payload["default_provider_id"] == "openai_primary"
     assert overview_payload["providers"]["openai_primary"]["secret"]["configured"] is True
     assert overview_payload["node_routes"]["neutral_draft"]["provider_id"] == "openai_primary"
     assert overview_payload["node_routes"]["neutral_draft"]["ready"] is True
-    assert overview_payload["node_routes"]["style_patch"]["model"] == "gpt-5.4"
-    assert overview_payload["readiness"]["ready"] is True
-    assert overview_payload["readiness"]["blocked_route_count"] == 0
+    assert overview_payload["node_routes"]["style_draft"]["model"] == "gpt-5.4"
+    assert overview_payload["node_routes"]["style_patch"]["configured"] is False
+    assert overview_payload["readiness"]["ready"] is False
+    assert "project_outline_plan" in overview_payload["missing_active_routes"]
+    assert "style_patch" in overview_payload["missing_active_routes"]
+    assert overview_payload["readiness"]["ready_route_count"] >= 2
+    assert overview_payload["readiness"]["blocked_route_count"] > 0
 
     routing_config = load_model_routing_config()
     assert routing_config.node_routing["neutral_draft"].provider_id == "openai_primary"
     assert routing_config.node_routing["neutral_draft"].reasoning_level == "medium"
-    assert routing_config.node_routing["style_patch"].reasoning_level == "high"
+    assert routing_config.node_routing["style_draft"].reasoning_level == "high"
+    assert "style_patch" not in routing_config.node_routing
+
+
+def test_llm_provider_default_can_be_changed_without_leaking_secret(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    for provider_id, api_key in (("openai_primary", "sk-primary-secret"), ("openai_backup", "sk-backup-secret")):
+        response = client.post(
+            "/api/v1/system-config/llm/providers",
+            headers=ADMIN_HEADERS,
+            json={
+                "provider_id": provider_id,
+                "provider_type": "openai",
+                "account_id": "acct_ops",
+                "base_url": "https://api.openai.example/v1",
+                "enabled": True,
+                "credential_mode": "api_key",
+                "api_mode": "responses",
+                "models": ["gpt-5.4"],
+                "api_key": api_key,
+            },
+        )
+        assert response.status_code == 200
+
+    default_response = client.post(
+        "/api/v1/system-config/llm/providers/openai_backup/default",
+        headers=ADMIN_HEADERS,
+    )
+
+    assert default_response.status_code == 200
+    assert "sk-primary-secret" not in default_response.text
+    assert "sk-backup-secret" not in default_response.text
+    payload = default_response.json()["data"]
+    assert payload["default_provider_id"] == "openai_backup"
+    assert payload["snapshot"]["active"] is True
+
+    overview = client.get("/api/v1/system-config/llm")
+    assert overview.status_code == 200
+    assert overview.json()["data"]["default_provider_id"] == "openai_backup"
 
 
 def test_llm_config_supports_local_openai_compatible_without_secret(client, session, monkeypatch) -> None:
@@ -613,16 +749,18 @@ def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(clien
     assert stored_secret.metadata_json["provider_id"] == "cli_proxy"
     assert "cliproxy-secret" not in stored_secret.encrypted_value
 
-    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
         assert url == "http://127.0.0.1:8317/v1/models"
         assert headers == {"Authorization": "Bearer cliproxy-secret"}
         assert timeout == 30.0
+        assert trust_env is False
         return httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
 
-    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float, trust_env: bool):
         assert url == "http://127.0.0.1:8317/v1/chat/completions"
         assert headers == {"Authorization": "Bearer cliproxy-secret"}
         assert timeout == 30.0
+        assert trust_env is False
         assert json["model"] == "gpt-5"
         assert json["stream"] is False
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
@@ -642,6 +780,72 @@ def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(clien
     assert probe["checks"]["connection"]["ok"] is True
     assert probe["checks"]["model"]["ok"] is True
     assert probe["checks"]["completion"]["ok"] is True
+
+
+def test_llm_provider_probe_bypasses_system_proxy_for_loopback_base_url(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
+        assert url == "http://127.0.0.1:7861/v1/models"
+        assert headers == {}
+        assert timeout == 10.0
+        assert trust_env is False
+        return httpx.Response(200, json={"data": [{"id": "relay-model"}]})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+
+    response = client.post(
+        "/api/v1/system-config/test-provider",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider": "openai_compatible",
+            "base_url": "http://127.0.0.1:7861/v1",
+            "credential_mode": "none",
+            "model": "relay-model",
+            "check_completion": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["ok"] is True
+    assert payload["checks"]["connection"]["ok"] is True
+    assert payload["checks"]["model"]["ok"] is True
+
+
+def test_llm_provider_probe_normalizes_proxy_alias_model_ids(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
+        assert url == "http://127.0.0.1:7861/v1/models"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gemini-2.5-pro"},
+                    {"id": "假流式/gemini-2.5-pro"},
+                    {"id": "流式抗截断/gemini-2.5-pro"},
+                    {"id": "流式抗截断/gemini-2.5-pro-max"},
+                ]
+            },
+        )
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+
+    response = client.post(
+        "/api/v1/system-config/test-provider",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider": "openai_compatible",
+            "base_url": "http://127.0.0.1:7861/v1",
+            "credential_mode": "none",
+            "check_completion": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["available_models"] == ["gemini-2.5-pro", "gemini-2.5-pro-max"]
 
 
 def test_llm_config_normalizes_host_only_openai_compatible_base_url_to_v1(client, monkeypatch) -> None:
@@ -708,16 +912,18 @@ llm:
     )
     assert activate_response.status_code == 200
 
-    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
         assert url == "https://local-llm.test/v1/models"
         assert headers == {}
         assert timeout == 180.0
+        assert trust_env is True
         return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}]})
 
-    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float, trust_env: bool):
         assert url == "https://local-llm.test/v1/chat/completions"
         assert headers == {}
         assert timeout == 180.0
+        assert trust_env is True
         assert json["model"] == "qwen3:14b"
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
@@ -756,16 +962,18 @@ def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, 
     assert provider_response.status_code == 200
     assert provider_response.json()["data"]["provider"]["base_url"] == "https://local-llm.test/v1"
 
-    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
         assert url == "https://local-llm.test/v1/models"
         assert headers == {}
         assert timeout == 30.0
+        assert trust_env is True
         return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}]})
 
-    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float, trust_env: bool):
         assert url == "https://local-llm.test/v1/chat/completions"
         assert headers == {}
         assert timeout == 30.0
+        assert trust_env is True
         assert json["model"] == "qwen3:14b"
         assert json["messages"][0]["content"] == "ping"
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
@@ -782,11 +990,61 @@ def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, 
     assert response.status_code == 200
     payload = response.json()["data"]
     assert payload["ok"] is True
+    assert payload["available_models"] == ["qwen3:14b"]
     assert payload["checks"]["connection"]["ok"] is True
     assert payload["checks"]["model"]["ok"] is True
     assert payload["checks"]["completion"]["ok"] is True
     assert payload["checks"]["model"]["requested_model"] == "qwen3:14b"
     assert "qwen3:14b" in payload["message"]
+
+
+def test_llm_provider_probe_uses_configured_responses_protocol(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "gcli2api",
+            "provider_type": "openai",
+            "account_id": "relay",
+            "base_url": "http://127.0.0.1:7861/v1",
+            "credential_mode": "api_key",
+            "api_key": "relay-key",
+            "api_mode": "responses",
+            "models": ["gemini-3.1-pro-preview"],
+        },
+    )
+    assert provider_response.status_code == 200, provider_response.text
+
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
+        assert url == "http://127.0.0.1:7861/v1/models"
+        return httpx.Response(200, json={"data": [{"id": "gemini-3.1-pro-preview"}]})
+
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float, trust_env: bool):
+        assert url == "http://127.0.0.1:7861/v1/responses"
+        assert json["model"] == "gemini-3.1-pro-preview"
+        assert "input" in json
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+
+    probe_response = client.post(
+        "/api/v1/system-config/llm/providers/gcli2api/probe",
+        headers=ADMIN_HEADERS,
+        json={"model": "gemini-3.1-pro-preview", "check_completion": True},
+    )
+
+    assert probe_response.status_code == 200
+    payload = probe_response.json()["data"]
+    assert payload["ok"] is False
+    assert payload["checks"]["completion"]["endpoint"] == "/responses"
+    assert payload["checks"]["completion"]["api_mode"] == "responses"
+    assert payload["checks"]["completion"]["next_action"] == "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider"
+    assert "Responses API" in payload["message"]
+    assert "chat" in payload["message"]
 
 
 def test_llm_provider_probe_accepts_completion_when_models_endpoint_is_unavailable(client, monkeypatch) -> None:
@@ -810,16 +1068,18 @@ def test_llm_provider_probe_accepts_completion_when_models_endpoint_is_unavailab
     )
     assert provider_response.status_code == 200
 
-    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
         assert url == "http://127.0.0.1:8317/v1/models"
         assert headers == {"Authorization": "Bearer cliproxy-secret"}
         assert timeout == 30.0
+        assert trust_env is False
         return httpx.Response(404, text="404 page not found")
 
-    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float):
+    def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float, trust_env: bool):
         assert url == "http://127.0.0.1:8317/v1/chat/completions"
         assert headers == {"Authorization": "Bearer cliproxy-secret"}
         assert timeout == 30.0
+        assert trust_env is False
         assert json["model"] == "gemini-3.1-pro-preview"
         assert json["stream"] is False
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
@@ -861,7 +1121,8 @@ def test_llm_provider_probe_reports_available_models_when_local_name_does_not_ma
     )
     assert provider_response.status_code == 200
 
-    def fake_models(url: str, *, headers: dict[str, str], timeout: float):
+    def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
+        assert trust_env is True
         return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}, {"id": "llama3.1:8b"}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
@@ -875,6 +1136,7 @@ def test_llm_provider_probe_reports_available_models_when_local_name_does_not_ma
     assert response.status_code == 200
     payload = response.json()["data"]
     assert payload["ok"] is False
+    assert payload["available_models"] == ["qwen3:14b", "llama3.1:8b"]
     assert payload["checks"]["connection"]["ok"] is True
     assert payload["checks"]["model"]["ok"] is False
     assert payload["checks"]["model"]["requested_model"] == "Qwen3 14B"

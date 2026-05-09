@@ -1,14 +1,18 @@
 <script setup>
 import {
-  BookOpenCheck,
+  BookOpenText,
   ClipboardCheck,
-  Files,
+  Feather,
+  FileInput,
   GraduationCap,
   Library,
-  PenLine,
+  Microscope,
   PlayCircle,
   Radar,
+  ScrollText,
   Settings2,
+  ShieldCheck,
+  Snowflake,
   Trash2,
   UploadCloud,
 } from "lucide-vue-next";
@@ -29,21 +33,29 @@ const props = defineProps({
     type: String,
     required: true,
   },
+  collapsed: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const emit = defineEmits(["navigate"]);
 const { isAdvancedMode } = useUiMode();
 
 const ICONS = {
-  BookOpenCheck,
+  BookOpenText,
   ClipboardCheck,
-  Files,
+  Feather,
+  FileInput,
   GraduationCap,
   Library,
-  PenLine,
+  Microscope,
   PlayCircle,
   Radar,
+  ScrollText,
   Settings2,
+  ShieldCheck,
+  Snowflake,
   Trash2,
   UploadCloud,
 };
@@ -78,7 +90,12 @@ function labelFor(view) {
 </script>
 
 <template>
-  <nav class="workflow-nav" aria-label="工作流步骤导航" data-testid="workflow-nav">
+  <nav
+    class="workflow-nav"
+    :class="{ collapsed }"
+    aria-label="工作流步骤导航"
+    data-testid="workflow-nav"
+  >
     <label class="workflow-nav-mobile" data-testid="workflow-nav-mobile">
       <span>当前步骤</span>
       <select
@@ -99,7 +116,7 @@ function labelFor(view) {
 
     <div class="workflow-nav-desktop-list" data-testid="workflow-nav-desktop-list">
       <section v-for="row in orderedRows" :key="row.view.id" class="workflow-nav-group">
-        <div v-if="row.showGroup" class="workflow-nav-group-head">
+        <div v-if="row.showGroup && !collapsed" class="workflow-nav-group-head">
           <strong>{{ row.group.label }}</strong>
           <span>{{ row.group.description }}</span>
         </div>
@@ -108,13 +125,15 @@ function labelFor(view) {
           class="workflow-nav-btn"
           :class="{ active: activeView === row.view.id }"
           :aria-current="activeView === row.view.id ? 'page' : undefined"
+          :aria-label="collapsed ? labelFor(row.view) : undefined"
           :data-testid="`nav-${row.view.id}`"
+          :title="collapsed ? labelFor(row.view) : undefined"
           @click="emit('navigate', row.view.id)"
         >
           <span class="workflow-nav-icon" aria-hidden="true">
             <component :is="iconFor(row.view)" :size="17" />
           </span>
-          <span class="workflow-nav-copy">
+          <span v-if="!collapsed" class="workflow-nav-copy">
             <strong>{{ labelFor(row.view) }}</strong>
             <small v-if="isAdvancedMode">{{ row.view.legacyLabel }}</small>
             <span

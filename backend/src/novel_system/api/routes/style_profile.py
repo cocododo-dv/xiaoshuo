@@ -15,7 +15,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.human_review_support import structured_target
 from novel_system.services.idempotency import execute_with_idempotency
-from novel_system.services.style_profile import StyleProfileService
+from novel_system.services.style_profile import StyleProfileExtractionService, StyleProfileService
 
 router = APIRouter(tags=["style_profile"])
 
@@ -167,12 +167,12 @@ def _serialize_style_profile_review(item: ReviewItem) -> dict[str, Any]:
 
 
 @router.post("/api/v1/style-profile/extract")
-def extract_style_profile(payload: StyleProfileExtractRequest, request: Request):
-    profile = StyleProfileService.build_profile_from_texts(**payload.model_dump())
+def extract_style_profile(
+    payload: StyleProfileExtractRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
     return ok(
-        {
-            "profile": profile,
-            "profile_yaml": StyleProfileService.render_profile_yaml(profile),
-        },
+        StyleProfileExtractionService(session).extract(payload.model_dump()),
         req_id=getattr(request.state, "request_id", None),
     )

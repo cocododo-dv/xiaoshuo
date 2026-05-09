@@ -495,3 +495,43 @@ def test_literary_eval_run_api_allows_live_local_provider_without_api_key(
     assert report["mode"] == "live"
     assert report["cases"][0]["generation"]["model"] == "Qwen3-14B-Q8_0.gguf"
     assert report_path.exists()
+
+
+def test_literary_eval_live_requires_direct_node_route_instead_of_style_fallback(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "latest.json"
+    monkeypatch.setenv("NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH", str(report_path))
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_BASE_URL", "http://127.0.0.1:8080/v1")
+
+    from novel_system.api.routes import literary_eval as route_module
+
+    task_config = TaskModelConfig(
+        provider="openai_compatible",
+        provider_id="local_qwen3",
+        model="Qwen3-14B-Q8_0.gguf",
+        temperature=0.2,
+        max_output_tokens=200,
+        response_format="json_object",
+        api_mode="chat",
+        credential_mode="none",
+    )
+    monkeypatch.setattr(
+        route_module,
+        "load_model_routing_config",
+        lambda: ModelRoutingConfig(
+            node_routing={"style_draft": task_config},
+            task_routing={"stylize": task_config},
+            retry_budget={},
+            job_runtime={},
+        ),
+    )
+
+    response = client.post("/api/v1/literary-eval/run", json={"mode": "live"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "LITERARY_EVAL_LIVE_MODEL_MISSING"

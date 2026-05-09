@@ -101,9 +101,9 @@ class TaskModelConfig:
 class ModelRoutingConfig:
     node_routing: dict[str, TaskModelConfig]
     task_routing: dict[str, TaskModelConfig]
-    model_profiles: dict[str, dict[str, Any]]
-    retry_budget: dict[str, int]
-    job_runtime: dict[str, Any]
+    model_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    retry_budget: dict[str, int] = field(default_factory=dict)
+    job_runtime: dict[str, Any] = field(default_factory=dict)
 
 
 class LLMClientError(Exception):
@@ -203,11 +203,14 @@ class LLMClient:
                         continue
                     raise LLMRateLimitError(
                         "LLM_RATE_LIMITED",
-                        _error_message_for_status(response),
+                        _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
                         status_code=429,
                         retryable=True,
-                        details=_with_attempt_metadata(
-                            _extract_error_details(response),
+                        details=_http_error_details(
+                            response,
+                            request=request,
+                            provider_config=provider_config,
+                            endpoint=endpoint,
                             attempt=attempt,
                             max_retries=self._max_retries,
                         ),
@@ -218,11 +221,14 @@ class LLMClient:
                         continue
                     raise LLMHTTPError(
                         "LLM_HTTP_RETRYABLE_FAILURE",
-                        _error_message_for_status(response),
+                        _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
                         status_code=response.status_code,
                         retryable=True,
-                        details=_with_attempt_metadata(
-                            _extract_error_details(response),
+                        details=_http_error_details(
+                            response,
+                            request=request,
+                            provider_config=provider_config,
+                            endpoint=endpoint,
                             attempt=attempt,
                             max_retries=self._max_retries,
                         ),
@@ -231,10 +237,13 @@ class LLMClient:
                 if response.is_error:
                     raise LLMHTTPError(
                         "LLM_HTTP_FAILURE",
-                        _error_message_for_status(response),
+                        _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
                         status_code=response.status_code,
-                        details=_with_attempt_metadata(
-                            _extract_error_details(response),
+                        details=_http_error_details(
+                            response,
+                            request=request,
+                            provider_config=provider_config,
+                            endpoint=endpoint,
                             attempt=attempt,
                             max_retries=self._max_retries,
                         ),
@@ -595,15 +604,13 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
 
     for task_name, task_config in task_routing.items():
         if task_name == "stylize":
-            node_routing.setdefault("style_draft", task_config)
-            node_routing.setdefault("style_patch", task_config)
+            continue
         else:
             node_routing.setdefault(task_name, task_config)
 
     for node_name, node_config in node_routing.items():
         task_routing.setdefault(node_name, node_config)
     if "style_draft" in node_routing:
-        node_routing.setdefault("style_patch", node_routing["style_draft"])
         task_routing.setdefault("stylize", node_routing["style_draft"])
 
     return ModelRoutingConfig(
@@ -985,9 +992,76 @@ def _with_attempt_metadata(details: dict[str, Any], *, attempt: int, max_retries
     }
 
 
-def _error_message_for_status(response: httpx.Response) -> str:
+def _http_error_details(
+    response: httpx.Response,
+    *,
+    request: LLMRequest,
+    provider_config: ProviderRuntimeConfig,
+    endpoint: str,
+    attempt: int,
+    max_retries: int,
+) -> dict[str, Any]:
+    details = _with_attempt_metadata(
+        _extract_error_details(response),
+        attempt=attempt,
+        max_retries=max_retries,
+    )
+    hint = _provider_protocol_hint(response, request=request, provider_config=provider_config, endpoint=endpoint)
+    if hint:
+        details.update(
+            {
+                "status_code": response.status_code,
+                "provider_id": provider_config.provider_id,
+                "provider_type": provider_config.provider_type,
+                "model": request.model,
+                "node_id": request.node_id,
+                "api_mode": request.api_mode,
+                "endpoint": endpoint,
+            }
+        )
+        details.setdefault("hint", hint["message"])
+        details.setdefault("next_action", hint["next_action"])
+    return details
+
+
+def _error_message_for_status(
+    response: httpx.Response,
+    *,
+    request: LLMRequest | None = None,
+    provider_config: ProviderRuntimeConfig | None = None,
+    endpoint: str | None = None,
+) -> str:
     details = _extract_error_details(response)
     detail_message = details.get("message")
     if isinstance(detail_message, str) and detail_message:
-        return detail_message
-    return f"llm request failed with status {response.status_code}"
+        message = detail_message
+    else:
+        message = f"llm request failed with status {response.status_code}"
+    if request is not None and provider_config is not None and endpoint is not None:
+        hint = _provider_protocol_hint(response, request=request, provider_config=provider_config, endpoint=endpoint)
+        if hint:
+            return f"{message}; {hint['message']}"
+    return message
+
+
+def _provider_protocol_hint(
+    response: httpx.Response,
+    *,
+    request: LLMRequest,
+    provider_config: ProviderRuntimeConfig,
+    endpoint: str,
+) -> dict[str, str] | None:
+    if (
+        response.status_code == 404
+        and endpoint == "/responses"
+        and request.api_mode == "responses"
+        and provider_config.provider_type in {"openai", "openai_compatible"}
+    ):
+        return {
+            "message": (
+                "Responses API endpoint returned 404. This provider or relay may only support Chat Completions; "
+                "set api_mode to chat and sync node routes, or use a provider that supports the Responses API."
+            ),
+            "next_action": "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider",
+        }
+    return None

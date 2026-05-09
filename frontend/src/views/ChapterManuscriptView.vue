@@ -588,11 +588,11 @@ onActivated(() => {
             </button>
           </div>
           <div v-if="!items.length" class="empty">还没有活跃章节。</div>
-          <div v-else class="manuscript-chapter-list" data-testid="manuscript-chapter-list">
+          <div v-else class="readable-list manuscript-chapter-list" data-testid="manuscript-chapter-list">
             <article
               v-for="item in items"
               :key="item.chapter_id"
-              class="manuscript-list-row"
+              class="readable-selector-row manuscript-list-row"
               :class="{ active: manuscripts.selectedChapterId === item.chapter_id }"
             >
               <label class="author-select-cell" :for="`manuscript-chapter-${item.chapter_id}`">
@@ -604,14 +604,16 @@ onActivated(() => {
                   :disabled="Number(item.trash_allowed) !== 1"
                 />
               </label>
-              <button class="manuscript-list-button" :data-testid="`manuscript-select-${item.chapter_id}`" @click="selectChapter(item.chapter_id)">
-                <strong>{{ item.chapter_id }}</strong>
-                <span>{{ item.chapter_goal || "未填写章节目标" }}</span>
-                <span class="muted">
-                  {{ item.generated_scene_count }}/{{ item.scene_count }} 场 · {{ statusLabel(item.completion_status) }} ·
-                  {{ statusLabel(item.comparison_status) }}
+              <button class="readable-row-main manuscript-list-button" :data-testid="`manuscript-select-${item.chapter_id}`" @click="selectChapter(item.chapter_id)">
+                <strong class="readable-row-title">{{ item.chapter_title || item.title || item.chapter_goal || item.chapter_id }}</strong>
+                <small class="readable-tech-ref" :title="item.chapter_id">{{ item.chapter_id }}</small>
+                <span class="readable-row-copy">{{ item.chapter_goal || "未填写章节目标" }}</span>
+                <span class="readable-row-meta muted">
+                  <span>{{ item.generated_scene_count }}/{{ item.scene_count }} 场</span>
+                  <span>{{ statusLabel(item.completion_status) }}</span>
+                  <span>{{ statusLabel(item.comparison_status) }}</span>
+                  <span v-if="item.chapter_backfill_pending_count" class="badge">待回填 {{ item.chapter_backfill_pending_count }}</span>
                 </span>
-                <span v-if="item.chapter_backfill_pending_count" class="badge">待回填 {{ item.chapter_backfill_pending_count }}</span>
               </button>
             </article>
           </div>

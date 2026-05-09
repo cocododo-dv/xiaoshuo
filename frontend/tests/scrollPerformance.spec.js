@@ -1175,6 +1175,9 @@ describe("index console scroll performance integration", () => {
       const jobRows = mounted.container.querySelectorAll('[data-testid^="verify-job-"]');
       expect(jobRows.length).toBeGreaterThan(0);
       expect(jobRows.length).toBeLessThan(mounted.store.jobs.length);
+      expect(jobRows[0].className).toContain("readable-job-row");
+      expect(jobRows[0].querySelector(".job-diagnostics").className).toContain("readable-row-meta");
+      expect(jobRows[0].querySelector(".readable-tech-ref")).not.toBeNull();
       expect(mounted.container.querySelector('[data-testid="verify-job-verify-job-14"]')).not.toBeNull();
       expect(mounted.container.querySelector('[data-testid="retry-verify-job-verify-job-14"]')).not.toBeNull();
 

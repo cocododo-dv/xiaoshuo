@@ -19,11 +19,11 @@ describe("shell smoothness architecture", () => {
     const router = useShellRouter();
 
     router.reset();
-    expect(router.visitedViews.value).toEqual(["deepdesk"]);
+    expect(router.visitedViews.value).toEqual(["snowflake-workbench"]);
 
     router.navigate("review");
     expect(router.activeView.value).toBe("review");
-    expect(router.visitedViews.value).toEqual(["deepdesk", "review"]);
+    expect(router.visitedViews.value).toEqual(["snowflake-workbench", "review"]);
 
     router.openTarget({
       target_type: "knowledge_entry",
@@ -31,7 +31,7 @@ describe("shell smoothness architecture", () => {
       target_ref: "knowledge_entry:style_rule:STYLE_TEST",
     });
     expect(router.activeView.value).toBe("knowledge");
-    expect(router.visitedViews.value).toEqual(["deepdesk", "review", "knowledge"]);
+    expect(router.visitedViews.value).toEqual(["snowflake-workbench", "review", "knowledge"]);
   });
 
   it("ships async cached shell mounting instead of eager v-show views", () => {

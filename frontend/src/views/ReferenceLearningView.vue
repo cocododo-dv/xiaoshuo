@@ -1138,13 +1138,13 @@ onBeforeUnmount(() => {
             <p class="reference-action-hint">{{ flowHint }}</p>
           </div>
 
-          <div class="reference-next-action" data-testid="reference-next-action">
+          <div class="reference-next-action" data-testid="reference-next-action" aria-live="polite">
             <div>
               <span>当前卡住点</span>
               <strong>{{ currentTask }}</strong>
             </div>
-            <div>
-              <span>下一步</span>
+            <div class="reference-next-action-primary">
+              <span>当前下一步</span>
               <strong>{{ nextAction }}</strong>
             </div>
           </div>

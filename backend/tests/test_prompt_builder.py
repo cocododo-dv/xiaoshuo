@@ -316,6 +316,21 @@ templates:
     assert explicit_payload["token_budget"]["target_input_tokens"] == 60
 
 
+def test_prompt_builder_passes_template_task_kind_to_context_budget() -> None:
+    builder = PromptBuilder()
+
+    hard_qc = builder.build(_bundle_snapshot(), "hard_qc", max_input_tokens=120)
+    drafting = builder.build(_bundle_snapshot(), "style_draft", max_input_tokens=120)
+    chapter_review = builder.build(_bundle_snapshot(), "chapter_summary", max_input_tokens=120)
+
+    assert hard_qc["token_budget"]["task_kind"] == "hard_qc"
+    assert "drop_style_context_before_fact_context" in hard_qc["token_budget"]["continuity_policy"]
+    assert drafting["token_budget"]["task_kind"] == "drafting"
+    assert "preserve_style_profile_author_preference_and_calibration" in drafting["token_budget"]["continuity_policy"]
+    assert chapter_review["token_budget"]["task_kind"] == "chapter_review"
+    assert "preserve_chapter_promise_payoff_and_memory" in chapter_review["token_budget"]["continuity_policy"]
+
+
 def test_hard_qc_schema_requires_rewrite_brief_for_runtime_validator() -> None:
     payload = PromptBuilder().build(_bundle_snapshot(), "hard_qc")
 
@@ -565,6 +580,58 @@ def test_bundle_builder_adds_style_observation_digest_to_snapshot(session) -> No
     assert "imagery" in snapshot["inline_digests"]["style_profile"]
     assert "calibration_lines" in snapshot["inline_digests"]["style_profile"]
     assert "The gate clicked shut like a verdict." in snapshot["inline_digests"]["style_profile"]
+
+
+def test_bundle_builder_prefers_scoped_calibration_over_unrelated_global_lines(session) -> None:
+    session.add(
+        ChapterGoal(
+            chapter_id="CH902",
+            planned_scene_count=1,
+            chapter_goal="Open a new project with isolated calibration.",
+        )
+    )
+    session.add(
+        SceneCard(
+            scene_id="CH902_SC01",
+            chapter_id="CH902",
+            scene_seq=1,
+            onstage_chars_json=[],
+            scene_goal="Follow the current chapter calibration only.",
+        )
+    )
+    session.add(SceneRunState(scene_id="CH902_SC01"))
+    session.add(
+        CalibrationLine(
+            row_id="calibration_line_CAL_GLOBAL_OLD_v1",
+            calibration_line_id="CAL_GLOBAL_OLD",
+            scope="global",
+            scope_ref_id="global",
+            text="The unrelated old gate calibration must not leak into this chapter.",
+            active_flag=1,
+            runtime_eligible=1,
+            created_at="2026-04-14T00:00:00+00:00",
+        )
+    )
+    session.add(
+        CalibrationLine(
+            row_id="calibration_line_CAL_CH902_v1",
+            calibration_line_id="CAL_CH902",
+            scope="chapter",
+            scope_ref_id="CH902",
+            text="Use glass-rain evidence before explanation.",
+            active_flag=1,
+            runtime_eligible=1,
+            created_at="2026-05-07T00:00:00+00:00",
+        )
+    )
+    session.commit()
+
+    payload = BundleBuilder(session).build("CH902_SC01")
+    snapshot = payload["snapshot"]
+
+    assert snapshot["source_version_refs"]["calibration_line_ids"] == ["CAL_CH902"]
+    assert snapshot["inline_digests"]["calibration_line"] == "Use glass-rain evidence before explanation."
+    assert "unrelated old gate" not in snapshot["inline_digests"]["style_profile"]
 
 
 def test_bundle_builder_scene_digest_includes_operational_scene_constraints(session) -> None:

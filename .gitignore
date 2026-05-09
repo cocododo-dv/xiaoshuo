@@ -21,6 +21,10 @@ frontend/node_modules/
 frontend/test-results/
 .codex-run/
 .playwright-cli/
+.playwright-mcp/
 .worktrees/
+node_modules/
+output/playwright/
+snowflake-ui-*.png
 output/playwright/longzu-full-cloud-qa-*/
 output/playwright/runner-logs/

@@ -50,9 +50,9 @@ function formatYesNo(value) {
 
 <template>
   <article class="paper">
-    <h3>{{ readableAliasScope.label }}</h3>
-    <p class="muted">高级详情：{{ readableAliasScope.raw || "-" }}</p>
-    <p class="muted">{{ item.object_type }} / {{ item.scope }} / {{ item.scope_ref_id || "-" }}</p>
+    <h3 class="line-clamp-2">{{ readableAliasScope.label }}</h3>
+    <p class="muted">高级详情：<span class="technical-ref">{{ readableAliasScope.technical || readableAliasScope.raw || "-" }}</span></p>
+    <p class="muted wrap-anywhere">{{ item.object_type }} / {{ item.scope }} / {{ item.scope_ref_id || "-" }}</p>
     <p><strong>集合族</strong> {{ item.collection_family }}</p>
     <p><strong>生效别名</strong> {{ item.active_alias || "-" }}</p>
     <p><strong>候选别名</strong> {{ item.candidate_alias || "-" }}</p>

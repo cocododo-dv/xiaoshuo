@@ -65,6 +65,23 @@ const reviewItemsSummary = computed(() => {
   const total = pagination.total ?? reviewInbox.items.length;
   return `当前 ${returned} / 共 ${total}`;
 });
+const authorDecisionItems = computed(() =>
+  reviewInbox.items.filter((item) =>
+    ["pending", "waiting_review", "needs_author"].includes(String(item.status || "").toLowerCase()),
+  ),
+);
+const reviewInboxFocusedItems = computed(() =>
+  authorDecisionItems.value.length ? authorDecisionItems.value : reviewInbox.items,
+);
+const reviewFocusSummary = computed(() => {
+  if (authorDecisionItems.value.length) {
+    return `优先处理 ${authorDecisionItems.value.length} 个需要作者决策的审核项。`;
+  }
+  if (visibleHumanReviewItems.value.length) {
+    return `优先处理 ${visibleHumanReviewItems.value.length}${humanReviewSection.value.countLabel}。`;
+  }
+  return "当前没有阻塞作家主路径的审核项。";
+});
 
 const humanReviewSection = computed(() => {
   if (reviewInbox.humanReviewFilters.eventSource === "manual_scene_review") {
@@ -406,6 +423,15 @@ watch(
       <div v-if="reviewInbox.loading" class="empty">正在加载审核收件箱...</div>
       <div v-else-if="reviewInbox.error" class="empty">{{ reviewInbox.error }}</div>
       <template v-else>
+        <section class="review-inbox-section review-focus-summary" data-testid="review-focus-summary" aria-live="polite">
+          <div>
+            <span class="eyebrow">作家主路径</span>
+            <h3>优先处理</h3>
+            <p class="muted">{{ reviewFocusSummary }}</p>
+          </div>
+          <span class="badge">聚焦 {{ reviewInboxFocusedItems.length }} 项</span>
+        </section>
+
         <section class="review-inbox-section review-inbox-filters" data-testid="review-inbox-filters">
           <div>
             <h3>筛选</h3>

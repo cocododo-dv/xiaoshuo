@@ -24,6 +24,12 @@ const nextViews = computed(() =>
     .map((viewId) => viewMeta(viewId))
     .filter(Boolean),
 );
+const writerBriefItems = computed(() => [
+  { label: "当前目标", value: meta.value.writerGoal },
+  { label: "完成信号", value: meta.value.writerDoneSignal },
+  { label: "下一步", value: meta.value.writerNextAction },
+].filter((item) => item.value));
+const hasWriterBrief = computed(() => !isAdvancedMode.value && writerBriefItems.value.length > 0);
 </script>
 
 <template>
@@ -34,12 +40,23 @@ const nextViews = computed(() =>
         <span>{{ kicker || meta.group }}</span>
       </div>
       <h1>{{ meta.stepLabel }}</h1>
-      <p>
+      <p v-if="isAdvancedMode">
         <strong>{{ meta.legacyLabel }}</strong>
         <span v-if="meta.description"> / {{ meta.description }}</span>
       </p>
+      <p v-else>{{ meta.description }}</p>
       <div
-        v-if="!isAdvancedMode"
+        v-if="hasWriterBrief"
+        class="workflow-writer-brief"
+        :data-testid="`workflow-writer-brief-${viewId}`"
+      >
+        <div v-for="item in writerBriefItems" :key="item.label" class="workflow-writer-brief-item">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </div>
+      </div>
+      <div
+        v-else-if="!isAdvancedMode"
         class="workflow-guided-brief"
         :data-testid="`workflow-guided-brief-${viewId}`"
       >

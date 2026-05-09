@@ -45,6 +45,37 @@ CHARACTER_CONTINUITY_INSTRUCTION = (
     "relation digest, previous scene memory, or source draft. "
     "When pronouns are ambiguous, repeat the character name."
 )
+DRAFTING_TEMPLATE_NAMES = {
+    "neutral_draft",
+    "style_draft",
+    "scene_literary_rewrite",
+    "near_final_rewrite",
+    "project_outline_plan",
+    "scene_blueprint",
+    "chapter_story_architecture",
+    "character_pressure_blueprint",
+    "snowflake_generate_logline",
+    "snowflake_generate_one_paragraph",
+    "snowflake_generate_character_lineup",
+    "snowflake_generate_plot_beats",
+    "snowflake_generate_scene_plan",
+    "snowflake_generate_character_plan",
+    "snowflake_workspace_assistant",
+    "snowflake_scene_triage_suggest",
+}
+HARD_QC_TEMPLATE_NAMES = {
+    "hard_qc",
+    "soft_qc",
+    "near_final_acceptance_review",
+}
+CHAPTER_REVIEW_TEMPLATE_NAMES = {
+    "chapter_summary",
+    "chapter_near_final_review",
+    "writer_chapter_diagnosis",
+    "writer_chapter_revision",
+    "writer_deep_review",
+    "writer_reference_application_review",
+}
 
 
 class PromptBuilder:
@@ -73,6 +104,7 @@ class PromptBuilder:
             bundle_snapshot=snapshot,
             sections=sections,
             max_input_tokens=target_input_tokens,
+            task_kind=_task_kind_for_template(template.name),
         )
         budget = context_budget["budget"]
         system_prompt = template.system_prompt
@@ -123,6 +155,16 @@ def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTem
         except yaml.YAMLError as exc:
             raise PromptConfigurationError("prompts config could not be parsed") from exc
     return parse_prompt_templates(raw_payload)
+
+
+def _task_kind_for_template(template_name: str) -> str:
+    if template_name in HARD_QC_TEMPLATE_NAMES:
+        return "hard_qc"
+    if template_name in CHAPTER_REVIEW_TEMPLATE_NAMES:
+        return "chapter_review"
+    if template_name in DRAFTING_TEMPLATE_NAMES:
+        return "drafting"
+    return "default"
 
 
 def parse_prompt_templates(raw_payload: Any) -> dict[str, PromptTemplate]:

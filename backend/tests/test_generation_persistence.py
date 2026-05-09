@@ -29,6 +29,12 @@ EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS = {
     "content",
     "rationale",
     "source_llm_call_id",
+    "target_range_json",
+    "before_text_hash",
+    "replacement_text",
+    "proposal_kind",
+    "source_evaluation_id",
+    "merge_status",
     "status",
     "author_decision_note",
 }
@@ -43,6 +49,94 @@ EXPECTED_WORK_PROFILE_COLUMNS = {
     "profile_json",
     "status",
     "created_by",
+}
+
+EXPECTED_STORY_PROJECT_COLUMNS = {
+    "project_id",
+    "title",
+    "genre",
+    "target_word_count",
+    "target_chapter_count",
+    "outline_text",
+    "planning_mode",
+    "snowflake_schema_version",
+    "status",
+    "active_outline_plan_id",
+    "current_chapter_id",
+    "approved_chapter_ids_json",
+    "reference_profile_ids_json",
+}
+
+EXPECTED_OUTLINE_PLAN_COLUMNS = {
+    "plan_id",
+    "project_id",
+    "version",
+    "status",
+    "plan_json",
+    "approved_at",
+}
+
+EXPECTED_SNOWFLAKE_ARTIFACT_COLUMNS = {
+    "artifact_id",
+    "project_id",
+    "step_key",
+    "version",
+    "status",
+    "artifact_json",
+    "input_refs_json",
+    "diagnosis_json",
+    "llm_call_id",
+    "approved_at",
+}
+
+EXPECTED_STORY_CHARACTER_COLUMNS = {
+    "character_id",
+    "project_id",
+    "display_name",
+    "role",
+    "summary_json",
+    "bible_json",
+    "status",
+}
+
+EXPECTED_SNOWFLAKE_ASSISTANT_TURN_COLUMNS = {
+    "turn_id",
+    "project_id",
+    "step_key",
+    "focus_scene_id",
+    "user_message",
+    "reply",
+    "suggestions_json",
+    "candidate_label",
+    "candidate_patch_json",
+    "source",
+    "llm_call_id",
+    "created_at",
+}
+
+EXPECTED_LLM_CALL_COLUMNS = {
+    "llm_call_id",
+    "provider",
+    "provider_id",
+    "account_id",
+    "model",
+    "node_id",
+    "reasoning_level",
+    "native_reasoning_json",
+    "credential_mode",
+    "prompt_hash",
+    "step",
+    "project_id",
+    "scene_id",
+    "chapter_id",
+    "request_payload_summary",
+    "response_payload_summary",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "latency_ms",
+    "finish_reason",
+    "error_code",
 }
 
 
@@ -86,6 +180,13 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
         work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
+        story_project_columns = _pragma_columns_by_name(connection, "story_projects")
+        outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
+        snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
+        story_character_columns = _pragma_columns_by_name(connection, "story_characters")
+        assistant_turn_columns = _pragma_columns_by_name(connection, "snowflake_assistant_turns")
+        chapter_goal_columns = _pragma_columns_by_name(connection, "chapter_goals")
+        scene_card_columns = _pragma_columns_by_name(connection, "scene_cards")
     finally:
         connection.close()
 
@@ -94,29 +195,12 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert "chapter_run_jobs" in table_names
     assert "author_draft_proposals" in table_names
     assert "work_profiles" in table_names
-    assert {
-        "llm_call_id",
-        "provider",
-        "provider_id",
-        "account_id",
-        "model",
-        "node_id",
-        "reasoning_level",
-        "native_reasoning_json",
-        "credential_mode",
-        "prompt_hash",
-        "step",
-        "scene_id",
-        "chapter_id",
-        "request_payload_summary",
-        "response_payload_summary",
-        "prompt_tokens",
-        "completion_tokens",
-        "total_tokens",
-        "latency_ms",
-        "finish_reason",
-        "error_code",
-    } <= llm_columns.keys()
+    assert "story_projects" in table_names
+    assert "outline_plans" in table_names
+    assert "snowflake_artifacts" in table_names
+    assert "story_characters" in table_names
+    assert "snowflake_assistant_turns" in table_names
+    assert EXPECTED_LLM_CALL_COLUMNS <= llm_columns.keys()
     assert {
         "qc_report_id",
         "scene_id",
@@ -136,6 +220,15 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
     assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
+    assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
+    assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()
+    assert EXPECTED_SNOWFLAKE_ARTIFACT_COLUMNS <= snowflake_columns.keys()
+    assert EXPECTED_STORY_CHARACTER_COLUMNS <= story_character_columns.keys()
+    assert EXPECTED_SNOWFLAKE_ASSISTANT_TURN_COLUMNS <= assistant_turn_columns.keys()
+    if "chapter_goals" in table_names:
+        assert {"project_id", "outline_plan_id"} <= chapter_goal_columns.keys()
+    if "scene_cards" in table_names:
+        assert {"project_id", "outline_plan_id"} <= scene_card_columns.keys()
     assert chapter_job_columns["status"][3] == 1
     assert chapter_job_columns["job_type"][3] == 1
 
@@ -147,6 +240,7 @@ def test_generation_persistence_orm_round_trip(session) -> None:
         provider="demo-provider",
         model="demo-model",
         prompt_hash="hash_prompt_demo",
+        project_id="PRJ_DEMO",
         step="style_draft",
         scene_id="CH001_SC01",
         chapter_id="CH001",
@@ -244,6 +338,13 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
         work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
+        story_project_columns = _pragma_columns_by_name(connection, "story_projects")
+        outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
+        snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
+        story_character_columns = _pragma_columns_by_name(connection, "story_characters")
+        assistant_turn_columns = _pragma_columns_by_name(connection, "snowflake_assistant_turns")
+        chapter_goal_columns = _pragma_columns_by_name(connection, "chapter_goals")
+        scene_card_columns = _pragma_columns_by_name(connection, "scene_cards")
         historical_draft = connection.execute(
             """
             SELECT row_id, scene_id, chapter_id, stage, generation_llm_call_id
@@ -262,7 +363,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-    assert version_row == ("20260426_0022",)
+        assert version_row == ("20260429_0032",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -273,6 +374,13 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert "author_draft_events" in table_names
     assert "author_draft_proposals" in table_names
     assert "work_profiles" in table_names
+    assert "story_projects" in table_names
+    assert "outline_plans" in table_names
+    assert "snowflake_artifacts" in table_names
+    assert "story_characters" in table_names
+    assert "snowflake_assistant_turns" in table_names
+    assert "scene_execution_contracts" in table_names
+    assert "project_backtrack_items" in table_names
     assert "author_structure_candidates" in table_names
     assert "generation_planning_artifacts" in table_names
     assert "longform_diagnostic_cards" in table_names
@@ -280,9 +388,10 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert "system_config_snapshots" in table_names
     assert "system_secrets" in table_names
     assert "generation_llm_call_id" in draft_columns
+    assert "status" in draft_columns
     assert "generation_llm_call_id" in final_columns
     assert {"llm_call_id", "provider", "provider_id", "account_id", "model", "node_id"} <= llm_columns.keys()
-    assert {"qc_report_id", "source_draft_row_id", "issues_json"} <= qc_columns.keys()
+    assert {"qc_report_id", "source_draft_row_id", "issues_json", "status"} <= qc_columns.keys()
     assert {"job_id", "chapter_id", "status", "job_type"} <= job_columns.keys()
     assert {"snapshot_id", "category", "version", "yaml_raw", "active_flag"} <= config_columns.keys()
     assert {"secret_id", "encrypted_value", "value_hint", "secret_type", "metadata_json", "expires_at"} <= secret_columns.keys()
@@ -306,6 +415,15 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
     assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
+    assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
+    assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()
+    assert EXPECTED_SNOWFLAKE_ARTIFACT_COLUMNS <= snowflake_columns.keys()
+    assert EXPECTED_STORY_CHARACTER_COLUMNS <= story_character_columns.keys()
+    assert EXPECTED_SNOWFLAKE_ASSISTANT_TURN_COLUMNS <= assistant_turn_columns.keys()
+    if "chapter_goals" in table_names:
+        assert {"project_id", "outline_plan_id"} <= chapter_goal_columns.keys()
+    if "scene_cards" in table_names:
+        assert {"project_id", "outline_plan_id"} <= scene_card_columns.keys()
     assert job_columns["status"][3] == 1
     assert job_columns["job_type"][3] == 1
     assert historical_draft == ("draft_hist_CH001_SC01", "CH001_SC01", "CH001", "neutral_draft", None)
@@ -377,6 +495,13 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
         work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
+        story_project_columns = _pragma_columns_by_name(connection, "story_projects")
+        outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
+        snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
+        story_character_columns = _pragma_columns_by_name(connection, "story_characters")
+        assistant_turn_columns = _pragma_columns_by_name(connection, "snowflake_assistant_turns")
+        chapter_goal_columns = _pragma_columns_by_name(connection, "chapter_goals")
+        scene_card_columns = _pragma_columns_by_name(connection, "scene_cards")
         scene_draft = connection.execute(
             """
             SELECT row_id, generation_llm_call_id
@@ -395,7 +520,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260426_0022",)
+    assert version_row == ("20260429_0032",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -405,7 +530,14 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     assert "author_drafts" in table_names
     assert "author_draft_events" in table_names
     assert "author_draft_proposals" in table_names
+    assert "scene_execution_contracts" in table_names
+    assert "project_backtrack_items" in table_names
     assert "work_profiles" in table_names
+    assert "story_projects" in table_names
+    assert "outline_plans" in table_names
+    assert "snowflake_artifacts" in table_names
+    assert "story_characters" in table_names
+    assert "snowflake_assistant_turns" in table_names
     assert "author_structure_candidates" in table_names
     assert "generation_planning_artifacts" in table_names
     assert "longform_diagnostic_cards" in table_names
@@ -434,6 +566,13 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
     assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
+    assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
+    assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()
+    assert EXPECTED_SNOWFLAKE_ARTIFACT_COLUMNS <= snowflake_columns.keys()
+    assert EXPECTED_STORY_CHARACTER_COLUMNS <= story_character_columns.keys()
+    assert EXPECTED_SNOWFLAKE_ASSISTANT_TURN_COLUMNS <= assistant_turn_columns.keys()
+    assert {"project_id", "outline_plan_id"} <= chapter_goal_columns.keys()
+    assert {"project_id", "outline_plan_id"} <= scene_card_columns.keys()
     assert llm_call == ("llm_call_existing", "seed-provider", "seed-model", "style_draft", 42)
     assert qc_report == ("qc_report_existing", "draft_existing", "bundle_existing", "pass")
     assert chapter_job == ("chapter_job_existing", "CH001", "queued", "chapter_qc")
@@ -573,6 +712,8 @@ def _build_true_pre_0007_database(db_path: Path) -> None:
 def _seed_dynamic_0006_materialized_generation_rows(db_path: Path) -> None:
     connection = sqlite3.connect(db_path)
     try:
+        scene_draft_columns = _pragma_columns_by_name(connection, "scene_drafts")
+        qc_report_columns = _pragma_columns_by_name(connection, "qc_reports")
         connection.execute(
             """
             INSERT INTO llm_calls (
@@ -613,32 +754,62 @@ def _seed_dynamic_0006_materialized_generation_rows(db_path: Path) -> None:
                 "2026-04-14T00:00:00+00:00",
             ),
         )
-        connection.execute(
-            """
-            INSERT INTO scene_drafts (
-                row_id,
-                scene_id,
-                chapter_id,
-                stage,
-                content,
-                source_bundle_id,
-                source_bundle_hash,
-                generation_llm_call_id,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "draft_existing",
-                "CH001_SC01",
-                "CH001",
-                "style_draft",
-                "existing draft",
-                "bundle_existing",
-                "bundle_hash_existing",
-                "llm_call_existing",
-                "2026-04-14T00:00:00+00:00",
-            ),
-        )
+        if "status" in scene_draft_columns:
+            connection.execute(
+                """
+                INSERT INTO scene_drafts (
+                    row_id,
+                    scene_id,
+                    chapter_id,
+                    stage,
+                    status,
+                    content,
+                    source_bundle_id,
+                    source_bundle_hash,
+                    generation_llm_call_id,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "draft_existing",
+                    "CH001_SC01",
+                    "CH001",
+                    "style_draft",
+                    "active",
+                    "existing draft",
+                    "bundle_existing",
+                    "bundle_hash_existing",
+                    "llm_call_existing",
+                    "2026-04-14T00:00:00+00:00",
+                ),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO scene_drafts (
+                    row_id,
+                    scene_id,
+                    chapter_id,
+                    stage,
+                    content,
+                    source_bundle_id,
+                    source_bundle_hash,
+                    generation_llm_call_id,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "draft_existing",
+                    "CH001_SC01",
+                    "CH001",
+                    "style_draft",
+                    "existing draft",
+                    "bundle_existing",
+                    "bundle_hash_existing",
+                    "llm_call_existing",
+                    "2026-04-14T00:00:00+00:00",
+                ),
+            )
         connection.execute(
             """
             INSERT INTO final_scenes (
@@ -665,38 +836,74 @@ def _seed_dynamic_0006_materialized_generation_rows(db_path: Path) -> None:
                 "2026-04-14T00:00:00+00:00",
             ),
         )
-        connection.execute(
-            """
-            INSERT INTO qc_reports (
-                qc_report_id,
-                scene_id,
-                chapter_id,
-                qc_type,
-                source_draft_row_id,
-                source_bundle_id,
-                resolution_code,
-                pass_flag,
-                next_action,
-                issues_json,
-                rewrite_brief_json,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "qc_report_existing",
-                "CH001_SC01",
-                "CH001",
-                "hard_qc",
-                "draft_existing",
-                "bundle_existing",
-                "hard_pass",
-                1,
-                "pass",
-                '[{"issue_key":"ok"}]',
-                "[]",
-                "2026-04-14T00:00:00+00:00",
-            ),
-        )
+        if "status" in qc_report_columns:
+            connection.execute(
+                """
+                INSERT INTO qc_reports (
+                    qc_report_id,
+                    scene_id,
+                    chapter_id,
+                    qc_type,
+                    status,
+                    source_draft_row_id,
+                    source_bundle_id,
+                    resolution_code,
+                    pass_flag,
+                    next_action,
+                    issues_json,
+                    rewrite_brief_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "qc_report_existing",
+                    "CH001_SC01",
+                    "CH001",
+                    "hard_qc",
+                    "active",
+                    "draft_existing",
+                    "bundle_existing",
+                    "hard_pass",
+                    1,
+                    "pass",
+                    '[{"issue_key":"ok"}]',
+                    "[]",
+                    "2026-04-14T00:00:00+00:00",
+                ),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO qc_reports (
+                    qc_report_id,
+                    scene_id,
+                    chapter_id,
+                    qc_type,
+                    source_draft_row_id,
+                    source_bundle_id,
+                    resolution_code,
+                    pass_flag,
+                    next_action,
+                    issues_json,
+                    rewrite_brief_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "qc_report_existing",
+                    "CH001_SC01",
+                    "CH001",
+                    "hard_qc",
+                    "draft_existing",
+                    "bundle_existing",
+                    "hard_pass",
+                    1,
+                    "pass",
+                    '[{"issue_key":"ok"}]',
+                    "[]",
+                    "2026-04-14T00:00:00+00:00",
+                ),
+            )
         connection.execute(
             """
             INSERT INTO chapter_run_jobs (

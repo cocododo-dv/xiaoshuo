@@ -4,6 +4,7 @@ import {
   analyzeLiteraryQualityText,
   fetchLiteraryEvalLatest,
   fetchLiteraryQualityOverview,
+  runLiteraryQualityChapterSetReview,
   runLiteraryEval,
 } from "../lib/api";
 import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
@@ -33,14 +34,17 @@ export const useLiteraryQualityStore = defineStore("literaryQuality", {
     loading: false,
     evalLoading: false,
     analyzeLoading: false,
+    chapterSetLoading: false,
     error: "",
     evalError: "",
     analyzeError: "",
+    chapterSetError: "",
     textLayer: "author_draft_preferred",
     chapterId: "",
     riskType: "",
     minSeverity: "",
     analyzeResult: null,
+    chapterSetReview: null,
   }),
   getters: {
     summary: (state) => state.overview.summary || {},
@@ -52,6 +56,9 @@ export const useLiteraryQualityStore = defineStore("literaryQuality", {
     spanFindings: (state) => state.analyzeResult?.span_findings || [],
     benchmarkCases: (state) => state.latestReport?.cases || [],
     benchmarkSummary: (state) => state.latestReport?.summary || {},
+    chapterSetScores: (state) => state.chapterSetReview?.scores || {},
+    chapterSetPatterns: (state) => state.chapterSetReview?.repeated_patterns || [],
+    chapterSetSafetyFindings: (state) => state.chapterSetReview?.reference_safety_findings || [],
   },
   actions: {
     markFresh() {
@@ -121,6 +128,21 @@ export const useLiteraryQualityStore = defineStore("literaryQuality", {
         throw error;
       } finally {
         this.analyzeLoading = false;
+      }
+    },
+    async runChapterSetReview(payload = {}) {
+      this.chapterSetLoading = true;
+      this.chapterSetError = "";
+      try {
+        const result = await runLiteraryQualityChapterSetReview(payload);
+        this.chapterSetReview = snapshotPayload(result || null);
+        return this.chapterSetReview;
+      } catch (error) {
+        this.chapterSetReview = null;
+        this.chapterSetError = error.message;
+        throw error;
+      } finally {
+        this.chapterSetLoading = false;
       }
     },
     async loadLatestEval() {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { createApp, nextTick } from "vue";
@@ -15,7 +15,10 @@ import ReferenceLearningView from "../src/views/ReferenceLearningView.vue";
 const REFERENCE_VIEW_PATH = resolve(process.cwd(), "src/views/ReferenceLearningView.vue");
 const REFERENCE_STORE_PATH = resolve(process.cwd(), "src/stores/referenceLearning.js");
 const ROUTER_PATH = resolve(process.cwd(), "src/router.js");
-const API_PATH = resolve(process.cwd(), "src/lib/api.js");
+const API_DIR = resolve(process.cwd(), "src/lib/api");
+function readApiLayerSource() {
+  return readdirSync(API_DIR).filter(f => f.endsWith(".js")).map(f => readFileSync(resolve(API_DIR, f), "utf8")).join("\n");
+}
 const APP_PATH = resolve(process.cwd(), "src/App.vue");
 const STYLE_PATH = resolve(process.cwd(), "src/styles/app.css");
 
@@ -665,6 +668,9 @@ describe("reference learning store", () => {
     expect(source).toContain("referenceProfileReceipt");
     expect(source).toContain("去审核收件箱");
     expect(source).toContain("referenceLearning.initialize()");
+    expect(source).toContain('aria-live="polite"');
+    expect(source).toContain("reference-next-action-primary");
+    expect(source).toContain("当前下一步");
   });
 
   it("shows safe profile summaries and gates stale profile application in the view source", () => {
@@ -688,7 +694,7 @@ describe("reference learning store", () => {
 
   it("does not render the retired sample demo workspace in the reference learning view", () => {
     const source = readFileSync(REFERENCE_VIEW_PATH, "utf8");
-    const apiSource = readFileSync(API_PATH, "utf8");
+    const apiSource = readApiLayerSource();
     const retiredTitle = ["Demo", "Studio"].join(" ");
     const retiredChineseTitle = ["\u4e09\u7ae0", "\u4fee\u4ed9 Demo"].join("");
     const retiredStateRef = ["dragon", "Demo", "Status"].join("");
@@ -729,7 +735,7 @@ describe("reference learning store", () => {
     const appSource = readFileSync(APP_PATH, "utf8");
     const styleSource = readFileSync(STYLE_PATH, "utf8");
 
-    expect(appSource).toContain("formatNotice");
+    expect(appSource).toContain("useNotices");
     expect(styleSource).toContain("max-width: 34rem");
     expect(styleSource).toContain("overflow-wrap: anywhere");
     expect(styleSource).not.toContain("grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));");

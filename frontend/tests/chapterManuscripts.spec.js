@@ -422,7 +422,13 @@ describe("chapter manuscript view", () => {
       await flushUi();
 
       expect(container.querySelector('[data-testid="chapter-manuscript-view"]')).not.toBeNull();
-      expect(container.querySelector('[data-testid="manuscript-chapter-list"]')).not.toBeNull();
+      const chapterList = container.querySelector('[data-testid="manuscript-chapter-list"]');
+      expect(chapterList).not.toBeNull();
+      expect(chapterList.className).toContain("readable-list");
+      const chapterRow = chapterList.querySelector(".manuscript-list-row");
+      expect(chapterRow.className).toContain("readable-selector-row");
+      expect(chapterRow.querySelector(".readable-row-title").textContent).toContain("完整查看生成章节");
+      expect(chapterRow.querySelector(".readable-tech-ref").textContent).toContain("CHM900");
       expect(container.querySelector('[data-testid="manuscript-management-panel"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="assembled-manuscript-pane"]').textContent).toContain("第一场正文");
       expect(container.querySelector('[data-testid="aggregate-manuscript-pane"]').textContent).toContain("旧版聚合正文");

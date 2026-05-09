@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import LlmCall
 from novel_system.services.context_budget import finalize_request_budget
 from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse, load_model_routing_config
+from novel_system.services.llm_node_registry import llm_node_route_fallbacks
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
 
@@ -17,6 +18,7 @@ from novel_system.settings import get_settings
 CONTINUITY_BUDGET_ERROR_CODE = "CONTINUITY_BUDGET_EXCEEDED"
 CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe continuity budget after deterministic compaction."
 SCENE_SPLIT_RECOMMENDATION = "Split the scene and retry generation with a smaller continuity scope."
+NODE_ROUTE_FALLBACKS: dict[str, tuple[str, ...]] = llm_node_route_fallbacks()
 
 
 @dataclass(slots=True)
@@ -106,7 +108,49 @@ class LLMNodeRunner:
         request_summary: dict[str, Any] = {}
 
         try:
-            task_config = self.task_config(node_id)
+            try:
+                task_config = self.task_config(node_id)
+            except KeyError as exc:
+                if self.settings.llm_enabled:
+                    request_summary = {
+                        "node_id": node_id,
+                        "template_name": _template_name(prompt, node_id),
+                        "template_version": _template_version(prompt),
+                        "bundle_id": bundle_id,
+                        "bundle_hash": bundle_hash,
+                        "source_draft_row_id": source_draft_row_id,
+                        "recommended_action": "Configure this node in System Config > LLM node routes, or run sync-missing.",
+                    }
+                    response_summary = {
+                        "message": f"LLM node route is not configured: {node_id}",
+                        "node_id": node_id,
+                        "error_code": "LLM_ROUTE_NOT_CONFIGURED",
+                        "retryable": False,
+                        "recommended_action": "Open System Config > LLM and sync missing active node routes.",
+                    }
+                    self._persist_call(
+                        llm_call_id=llm_call_id,
+                        scene_id=scene_id,
+                        chapter_id=chapter_id,
+                        step=step,
+                        request=None,
+                        task_config=None,
+                        prompt=prompt,
+                        request_summary=request_summary,
+                        response_summary=response_summary,
+                        started_at=started_at,
+                        error_code="LLM_ROUTE_NOT_CONFIGURED",
+                    )
+                    raise LLMNodeExecutionError(
+                        llm_call_id=llm_call_id,
+                        error_code="LLM_ROUTE_NOT_CONFIGURED",
+                        message=f"LLM node route is not configured: {node_id}",
+                        request_summary=request_summary,
+                        response_summary=response_summary,
+                        original_error=exc,
+                        retryable=False,
+                    ) from exc
+                raise
             request = self._build_request(prompt, user_prompt=user_prompt, node_id=node_id, task_config=task_config)
             final_budget = finalize_request_budget(
                 system_prompt=request.messages[0]["content"],
@@ -220,8 +264,15 @@ class LLMNodeRunner:
         task_routing = getattr(routing, "task_routing", {})
         if node_id in task_routing:
             return task_routing[node_id]
+        if self.settings.llm_enabled:
+            raise KeyError(node_id)
         if node_id in {"style_draft", "style_patch"} and "stylize" in task_routing:
             return task_routing["stylize"]
+        for fallback_node_id in NODE_ROUTE_FALLBACKS.get(node_id, ()):
+            if isinstance(node_routing, dict) and fallback_node_id in node_routing:
+                return node_routing[fallback_node_id]
+            if fallback_node_id in task_routing:
+                return task_routing[fallback_node_id]
         raise KeyError(node_id)
 
     def _routing(self) -> Any:

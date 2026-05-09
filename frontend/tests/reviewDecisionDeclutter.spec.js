@@ -249,5 +249,9 @@ describe("decision review decluttering", () => {
     expect(source).toContain("@open-reference");
     expect(source).toContain("handleReviewOpenReference");
     expect(source).toContain('navigate("reference")');
+    expect(source).toContain("authorDecisionItems");
+    expect(source).toContain("review-focus-summary");
+    expect(source).toContain("优先处理");
+    expect(source).toContain("reviewInboxFocusedItems");
   });
 });

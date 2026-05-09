@@ -15,7 +15,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_client import LLMResponse
-from novel_system.services.reference_learning import ReferenceLearningService, _sanitize_reference_profile_text
+from novel_system.services.reference_learning import ReferenceLearningService, _is_front_matter_segment, _sanitize_reference_profile_text
 from novel_system.services.versioning.review_materialization import ReviewMaterializationService
 
 
@@ -88,6 +88,10 @@ def _import_reference_book(client, tmp_path: Path) -> str:
     )
     assert response.status_code == 200
     return response.json()["data"]["book_id"]
+
+
+def test_reference_learning_front_matter_filter_recognizes_standard_chinese_markers() -> None:
+    assert _is_front_matter_segment("《示例一》《示例二》\n作者")
 
 
 def _start_and_advance(client, book_id: str) -> dict:
@@ -1203,6 +1207,13 @@ def test_reference_profile_sanitizes_llm_evidence_and_source_markers(session, tm
     assert profile["profile_json"]["source_term_audit"]["blocked_markers"] == []
     assert "repetition_score" in profile["profile_json"]
     assert "safety_findings" in profile["profile_json"]
+    assert profile["profile_json"]["craft_metrics"]["style_feature_count"] >= 1
+    assert profile["profile_json"]["craft_metrics"]["narrative_pattern_count"] >= 1
+    assert profile["profile_json"]["applicability"]["safe_to_apply"] is True
+    assert profile["profile_json"]["applicability"]["applicable_techniques"]
+    assert profile["profile_json"]["anti_copy_rules"]
+    assert profile["profile_json"]["evidence_safety_summary"]["safe"] is True
+    assert profile["profile_json"]["evidence_safety_summary"]["blocked_markers"] == []
     for marker in ["Evidence:", "Evidence pattern:", "txt8080", "声明：本书", "路明非", "楚子航", "卡塞尔", "江南"]:
         assert marker not in serialized_profile
 

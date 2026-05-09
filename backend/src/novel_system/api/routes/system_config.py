@@ -60,6 +60,14 @@ class LlmNodeRoutesRequest(BaseModel):
     activate: bool = False
 
 
+class LlmNodeRouteSyncRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    provider_id: str | None = None
+    model: str | None = None
+    activate: bool = True
+
+
 @router.get("/api/v1/system-config")
 def system_config_overview(request: Request, session: Session = Depends(get_session)):
     return ok(SystemConfigService(session).overview(), req_id=getattr(request.state, "request_id", None))
@@ -122,6 +130,11 @@ def system_config_llm_overview(request: Request, session: Session = Depends(get_
     return ok(SystemConfigService(session).llm_overview(), req_id=getattr(request.state, "request_id", None))
 
 
+@router.get("/api/v1/system-config/llm/calls/audit")
+def system_config_llm_call_audit(request: Request, session: Session = Depends(get_session)):
+    return ok(SystemConfigService(session).llm_call_audit(), req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v1/system-config/llm/providers")
 def save_system_config_llm_provider(
     payload: LlmProviderConfigRequest,
@@ -137,6 +150,21 @@ def save_system_config_llm_provider(
     )
 
 
+@router.post("/api/v1/system-config/llm/providers/{provider_id}/default")
+def set_default_system_config_llm_provider(
+    provider_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    require_admin_token(x_admin_token, client_host=_client_host(request))
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    return ok(
+        SystemConfigService(session).set_default_llm_provider(provider_id=provider_id, actor_ref=actor_ref),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
 @router.post("/api/v1/system-config/llm/node-routes")
 def save_system_config_llm_node_routes(
     payload: LlmNodeRoutesRequest,
@@ -148,6 +176,24 @@ def save_system_config_llm_node_routes(
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     return ok(
         SystemConfigService(session).save_llm_node_routes(payload=payload.model_dump(mode="json", exclude_none=True), actor_ref=actor_ref),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.post("/api/v1/system-config/llm/node-routes/sync-missing")
+def sync_missing_system_config_llm_node_routes(
+    payload: LlmNodeRouteSyncRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    require_admin_token(x_admin_token, client_host=_client_host(request))
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    return ok(
+        SystemConfigService(session).sync_missing_llm_node_routes(
+            payload=payload.model_dump(mode="json", exclude_none=True),
+            actor_ref=actor_ref,
+        ),
         req_id=getattr(request.state, "request_id", None),
     )
 

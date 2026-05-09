@@ -1,0 +1,242 @@
+import { computed } from "vue";
+
+import { useShellRouter } from "../router";
+import { useReferenceLearningStore } from "../stores/referenceLearning";
+import { useReviewInboxStore } from "../stores/reviewInbox";
+import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
+import { useWriterRoomStore } from "../stores/writerRoom";
+
+export const WRITER_PATH_VIEW_IDS = ["snowflake-workbench", "writer-room", "reference", "review"];
+
+export const WRITER_PATH_STATUS_LABELS = {
+  todo: "未开始",
+  active: "进行中",
+  running: "处理中",
+  blocked: "待处理",
+  done: "已完成",
+};
+
+const REVIEW_DECISION_STATUSES = new Set(["pending", "waiting_review", "needs_author"]);
+const HUMAN_REVIEW_DONE_STATUSES = new Set(["resolved", "dismissed", "completed", "approved"]);
+
+function activeActionLabel(actionId) {
+  return actionId ? "处理中" : "";
+}
+
+function currentStepLabel(snowflake) {
+  return snowflake.currentStep?.label || snowflake.currentStep?.step_key || "当前雪花步骤";
+}
+
+function snowflakeItem(meta, activeView, snowflake) {
+  const hasProject = Boolean(snowflake.selectedProjectId || snowflake.project?.project_id);
+  const stepCount = snowflake.steps?.length || 0;
+  const doneCount = (snowflake.steps || []).filter((step) => step.gate_satisfied).length;
+  const gateStatus = String(snowflake.materializationGate?.status || "").toLowerCase();
+  const structureReady = Boolean(snowflake.readyToMaterialize || ["ready", "approved", "done"].includes(gateStatus));
+  const isLoaded = Boolean(snowflake.loaded || snowflake.workspace || hasProject);
+
+  let status = "active";
+  let summary = `继续推进 ${currentStepLabel(snowflake)}。`;
+  let nextAction = meta.writerNextAction || "继续确认当前雪花步骤。";
+  let countLabel = stepCount ? `${doneCount}/${stepCount}` : "待推进";
+
+  if (snowflake.actionId) {
+    status = "running";
+    summary = "雪花工作台正在处理当前操作。";
+    nextAction = "等待操作完成后再继续下一步。";
+    countLabel = activeActionLabel(snowflake.actionId);
+  } else if (!hasProject) {
+    status = "todo";
+    summary = "先创建或选择一个雪花项目。";
+    nextAction = "在雪花工作台创建项目，进入十步雪花。";
+    countLabel = "待建项";
+  } else if (snowflake.currentStepDirty) {
+    status = "blocked";
+    summary = `${currentStepLabel(snowflake)} 有未保存内容。`;
+    nextAction = "先保存或确认当前步骤，再切到下一环。";
+    countLabel = "未保存";
+  } else if (structureReady) {
+    status = "done";
+    summary = "雪花结构已准备好进入结构确认或正文写作。";
+    nextAction = "进入写作房间，开始打磨正文。";
+    countLabel = "可物化";
+  } else if (!isLoaded) {
+    status = "todo";
+    summary = "雪花工作台尚未加载项目状态。";
+    nextAction = "打开雪花工作台查看当前步骤。";
+    countLabel = "未加载";
+  }
+
+  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded });
+}
+
+function writerRoomItem(meta, activeView, room) {
+  const candidateCount = (room.proposalCards?.length ? room.proposalCards : room.proposals || [])
+    .filter((proposal) => proposal?.status !== "rejected").length;
+  const hasAdvice = Boolean(room.topIssue || room.keepAdvice);
+  const isLoaded = Boolean(room.loaded || room.writerRoomPayload);
+
+  let status = "todo";
+  let summary = "写作房间尚未打开。";
+  let nextAction = meta.writerNextAction || "打开写作房间，保存正文并比较候选。";
+  let countLabel = "未加载";
+
+  if (room.actionId) {
+    status = "running";
+    summary = "写作房间正在处理正文或候选改法。";
+    nextAction = "等待操作完成，避免重复应用候选。";
+    countLabel = activeActionLabel(room.actionId);
+  } else if (!isLoaded) {
+    status = "todo";
+  } else if (room.draftDirty) {
+    status = "blocked";
+    summary = "当前正文有未保存修改。";
+    nextAction = "先保存正文，再比较候选或继续写。";
+    countLabel = "未保存";
+  } else if (candidateCount > 0) {
+    status = "active";
+    summary = "已有候选改法等待作者比较。";
+    nextAction = "预览、采纳或放弃候选改法。";
+    countLabel = `${candidateCount} 候选`;
+  } else if (hasAdvice) {
+    status = "active";
+    summary = "当前正文有一条优先建议可处理。";
+    nextAction = "围绕最重要建议做一轮小修。";
+    countLabel = "有建议";
+  } else {
+    status = "done";
+    summary = "正文已保存，暂无阻塞候选。";
+    nextAction = "继续写下一段，或回雪花工作台校准结构。";
+    countLabel = "已保存";
+  }
+
+  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded });
+}
+
+function referenceItem(meta, activeView, reference) {
+  const isLoaded = Boolean(reference.loaded || reference.books?.length || reference.detail || reference.currentRun);
+  const readyProfiles = (reference.profiles || []).filter((profile) =>
+    ["ready", "active", "applied"].includes(String(profile?.status || "").toLowerCase()),
+  );
+  const pendingCount = reference.pendingDecisionCount || 0;
+
+  let status = "todo";
+  let summary = "还没有导入参考书。";
+  let nextAction = meta.writerNextAction || "导入或继续分析参考书。";
+  let countLabel = "未导入";
+
+  if (reference.actionId) {
+    status = "running";
+    summary = "参考书学习正在处理导入、分析或应用。";
+    nextAction = "等待长任务完成后再继续分析。";
+    countLabel = activeActionLabel(reference.actionId);
+  } else if (!reference.books?.length) {
+    status = "todo";
+  } else if (pendingCount > 0) {
+    status = "blocked";
+    summary = "参考学习产生了待审核候选卡。";
+    nextAction = "先审核候选卡，避免未经确认的风格进入正文。";
+    countLabel = `${pendingCount} 待审`;
+  } else if (reference.lastApplicationGuidance) {
+    status = "active";
+    summary = "参考画像已创建应用审核项。";
+    nextAction = "去待处理建议确认应用结果。";
+    countLabel = "已送审";
+  } else if (readyProfiles.length > 0) {
+    status = "done";
+    summary = "已有安全可用的参考画像。";
+    nextAction = "选择应用范围，或进入待处理建议确认。";
+    countLabel = `${readyProfiles.length} 画像`;
+  } else if (isLoaded) {
+    status = "active";
+    summary = "参考书已就绪，可以启动或继续分析。";
+    nextAction = "启动学习或继续分析下一轮。";
+    countLabel = reference.currentRun ? "分析中" : "可学习";
+  }
+
+  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded });
+}
+
+function reviewItem(meta, activeView, review) {
+  const authorDecisionCount = (review.items || []).filter((item) =>
+    REVIEW_DECISION_STATUSES.has(String(item?.status || "").toLowerCase()),
+  ).length;
+  const humanDecisionCount = (review.humanReviewItems || []).filter((item) =>
+    !HUMAN_REVIEW_DONE_STATUSES.has(String(item?.status || "").toLowerCase()),
+  ).length;
+  const blockerCount = authorDecisionCount + humanDecisionCount;
+  const isLoaded = Boolean(review.loaded);
+
+  let status = "todo";
+  let summary = "待处理建议尚未加载。";
+  let nextAction = meta.writerNextAction || "打开待处理建议处理待决策项。";
+  let countLabel = "未加载";
+
+  if (review.actionId) {
+    status = "running";
+    summary = "待处理建议正在处理当前决策。";
+    nextAction = "等待审核操作完成后再处理下一项。";
+    countLabel = activeActionLabel(review.actionId);
+  } else if (!isLoaded) {
+    status = "todo";
+  } else if (blockerCount > 0) {
+    status = "blocked";
+    summary = "有需要作者决策的建议或人工事件。";
+    nextAction = "先处理待作者决策的卡片。";
+    countLabel = `${blockerCount} 待决策`;
+  } else {
+    status = "done";
+    summary = "当前没有阻塞作家主路径的审核项。";
+    nextAction = "回到写作房间继续正文。";
+    countLabel = "已清空";
+  }
+
+  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded });
+}
+
+function buildItem(meta, activeView, state) {
+  return {
+    viewId: meta.id,
+    label: meta.writerLabel || meta.stepLabel || meta.label,
+    isActive: activeView === meta.id,
+    ...state,
+  };
+}
+
+export function useWriterPathProgress() {
+  const router = useShellRouter();
+  const snowflake = useSnowflakeWorkbenchStore();
+  const room = useWriterRoomStore();
+  const reference = useReferenceLearningStore();
+  const review = useReviewInboxStore();
+
+  const items = computed(() => {
+    const activeView = router.activeView.value;
+    return [
+      snowflakeItem(router.viewMeta("snowflake-workbench"), activeView, snowflake),
+      writerRoomItem(router.viewMeta("writer-room"), activeView, room),
+      referenceItem(router.viewMeta("reference"), activeView, reference),
+      reviewItem(router.viewMeta("review"), activeView, review),
+    ];
+  });
+
+  const activeItem = computed(() =>
+    items.value.find((item) => item.isActive)
+    || items.value.find((item) => item.status === "blocked")
+    || items.value[0]
+    || null,
+  );
+
+  function navigateToItem(itemOrViewId) {
+    const viewId = typeof itemOrViewId === "string" ? itemOrViewId : itemOrViewId?.viewId;
+    if (viewId) {
+      router.navigate(viewId);
+    }
+  }
+
+  return {
+    items,
+    activeItem,
+    navigateToItem,
+  };
+}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from novel_system.db.models import (
@@ -17,11 +19,17 @@ from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.writer_deep_review import LITERARY_REVISION_RUBRIC_ID
 from novel_system.services.writer_deep_review import WriterDeepReviewService
+from novel_system.services.writer_deep_review import _infer_scene_form
 
 
 CHAPTER_ID = "DEEP_CH01"
 SCENE_ID = "DEEP_CH01_SC01"
 FINAL_ROW_ID = "final_DEEP_CH01_SC01"
+
+
+def test_scene_form_inference_recognizes_chinese_atmosphere_markers() -> None:
+    assert _infer_scene_form("雨夜里灯光晃了一下。") == "atmosphere_scene"
+    assert _infer_scene_form("雪落在门前。") == "atmosphere_scene"
 
 
 def _seed_finished_scene(session) -> None:
@@ -124,6 +132,66 @@ def test_scene_deep_review_creates_strict_literary_evaluation_and_theme_lens(cli
         parent_evaluation_id=None,
     ).all()
     assert len(aggregate_rows) == 1
+
+
+def test_scene_deep_review_uses_llm_when_live(client: TestClient, session, monkeypatch) -> None:
+    class FakeDeepReviewRunner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        def run(self, **kwargs):
+            assert kwargs["node_id"] == "writer_deep_review"
+            return SimpleNamespace(
+                llm_call_id="llm_call_writer_deep_review_test",
+                response=SimpleNamespace(
+                    structured_output={
+                        "overall_score": 0.61,
+                        "scores": {"choice_pressure": 0.55, "dialogue_subtext": 0.6},
+                        "findings": [
+                            {
+                                "lens": "story",
+                                "dimension": "choice_pressure",
+                                "severity": "revision",
+                                "classification": "revision",
+                                "issue": "The choice is described rather than enacted.",
+                                "recommendation": "Rewrite the choice as a visible action.",
+                                "evidence_excerpt": "truth mattered",
+                                "evidence_location": "scene body",
+                                "why_it_matters": "Deep review must use textual evidence.",
+                                "scene_form": "plot_scene",
+                            }
+                        ],
+                        "revision_brief": [
+                            {
+                                "classification": "revision",
+                                "dimension": "choice_pressure",
+                                "recommendation": "Make the choice visible.",
+                            }
+                        ],
+                        "lens_evaluations": [
+                            {
+                                "lens": "story",
+                                "overall_score": 0.61,
+                                "scores": {"choice_pressure": 0.55},
+                                "findings": [],
+                                "revision_brief": [],
+                            }
+                        ],
+                    }
+                ),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", FakeDeepReviewRunner)
+    _seed_finished_scene(session)
+
+    response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+
+    assert response.status_code == 200
+    evaluation = response.json()["data"]["latest_evaluation"]
+    assert evaluation["evaluator_llm_call_id"] == "llm_call_writer_deep_review_test"
+    assert evaluation["overall_score"] == 0.61
+    assert evaluation["findings"][0]["issue"] == "The choice is described rather than enacted."
 
 
 def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(client: TestClient, session) -> None:

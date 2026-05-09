@@ -13,6 +13,7 @@ import { useSystemConfigStore } from "../stores/systemConfig";
 const emit = defineEmits(["notice"]);
 const systemConfig = useSystemConfigStore();
 const activeConfigSection = ref("setup");
+const connectionExpanded = ref(false);
 const { isAdvancedMode } = useUiMode();
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
@@ -41,6 +42,65 @@ const styleProfileDraftReady = computed(() => Boolean(systemConfig.styleProfileD
 const providerTypeOptions = computed(() => systemConfig.providerCatalogOptions);
 const providerRows = computed(() => systemConfig.providerRows);
 const configDashboardSummary = computed(() => systemConfig.configDashboardSummary);
+const missingActiveRouteCount = computed(() => systemConfig.llm.missing_active_routes?.length || 0);
+const providerDraftSavedProvider = computed(() => systemConfig.llm.providers?.[systemConfig.providerDraft.provider_id] || null);
+const providerDraftKeyStatus = computed(() => {
+  if (systemConfig.providerDraft.credential_mode === "none") {
+    return "当前凭据模式无需密钥。";
+  }
+  if (String(systemConfig.providerDraft.api_key || "").trim()) {
+    return "已输入新密钥；保存后会替换后端密钥，不会回显原文。";
+  }
+  const secret = providerDraftSavedProvider.value?.secret || {};
+  if (secret.configured) {
+    return `已配置密钥 ${secret.hint || "configured"}；留空会继续使用现有密钥。`;
+  }
+  return "尚未配置密钥；保存时填写后只提交到后端，不会回显。";
+});
+function containsCjk(value) {
+  return /[\u3400-\u9fff\uf900-\ufaff]/u.test(String(value || ""));
+}
+
+function normalizeProviderModelLabel(value) {
+  const text = String(value || "").trim();
+  if (!text.includes("/")) {
+    return text;
+  }
+  const [prefix, ...rest] = text.split("/");
+  const suffix = rest.join("/").trim();
+  if (containsCjk(prefix) && suffix && !containsCjk(suffix) && !/\s/u.test(suffix) && /[a-z0-9]/iu.test(suffix)) {
+    return suffix;
+  }
+  return text;
+}
+
+const providerDraftModelLines = computed(() =>
+  Array.from(new Set(String(systemConfig.providerDraft.modelsText || "")
+    .split(/\r?\n/u)
+    .map((item) => item.trim())
+    .map(normalizeProviderModelLabel)
+    .filter(Boolean))),
+);
+const providerDraftSavedModelLines = computed(() =>
+  Array.from(new Set((providerDraftSavedProvider.value?.models || [])
+    .map(normalizeProviderModelLabel)
+    .filter(Boolean))),
+);
+const providerDraftConfiguredModelLines = computed(() => {
+  if (providerDraftModelLines.value.length > 8 && providerDraftSavedModelLines.value.length) {
+    return providerDraftSavedModelLines.value;
+  }
+  return providerDraftModelLines.value;
+});
+const providerModelCatalogCount = computed(() =>
+  Math.max(
+    systemConfig.providerModelCatalogCount || 0,
+    providerDraftModelLines.value.length > providerDraftConfiguredModelLines.value.length ? providerDraftModelLines.value.length : 0,
+  ),
+);
+const providerDraftVisibleModels = computed(() => providerDraftConfiguredModelLines.value.slice(0, 8));
+const providerDraftHiddenModelCount = computed(() => Math.max(0, providerDraftConfiguredModelLines.value.length - providerDraftVisibleModels.value.length));
+const routeBatchModelOptions = computed(() => systemConfig.providerModels(systemConfig.nodeRouteBatchDraft.provider_id));
 const reasoningLevels = ["off", "low", "medium", "high"];
 const responseFormatOptions = ["text", "json_object", "json_schema"];
 
@@ -95,8 +155,24 @@ function saveLlmProvider() {
   runAction(() => systemConfig.saveLlmProvider(), { actionLabel: "保存模型提供方", runningMessage: "正在保存模型提供方配置...", nextStep: "下一步：测试连接或配置节点路由。" });
 }
 
+function discoverProviderDraftModels() {
+  runAction(() => systemConfig.discoverProviderDraftModels(), { actionLabel: "获取模型列表", runningMessage: "正在读取提供方模型列表...", nextStep: "下一步：确认模型名后保存接入。" });
+}
+
 function saveLlmNodeRoutes() {
   runAction(() => systemConfig.saveLlmNodeRoutes(), { actionLabel: "保存节点路由", runningMessage: "正在保存 LLM 节点路由...", nextStep: "下一步：运行评测或回到生成流程验证。" });
+}
+
+function syncMissingLlmNodeRoutes() {
+  runAction(() => systemConfig.syncMissingLlmNodeRoutes(), {
+    actionLabel: "补全节点路由",
+    runningMessage: "正在补全未配置的 LLM 节点...",
+    nextStep: "下一步：检查节点矩阵状态，再运行创作闭环。",
+  });
+}
+
+function applyNodeRouteBatch() {
+  runAction(() => systemConfig.applyNodeRouteBatch(), { actionLabel: "批量设置节点", runningMessage: "正在批量更新节点路由草稿...", nextStep: "下一步：检查节点状态后保存并激活。" });
 }
 
 function probeLlmProvider(providerId) {
@@ -107,8 +183,19 @@ function editLlmProvider(provider) {
   systemConfig.editLlmProviderDraft(provider);
 }
 
+function setDefaultLlmProvider(providerId) {
+  runAction(() => systemConfig.setDefaultLlmProvider(providerId), { actionLabel: "设置默认账号", runningMessage: "正在设置默认模型账号...", nextStep: "下一步：如需批量改路由，可在节点矩阵顶部应用。" });
+}
+
 function providerTypeLabel(providerType) {
   return providerTypeOptions.value.find((item) => item.provider_type === providerType)?.label || providerType;
+}
+
+function providerSecretLabel(provider) {
+  if (provider.credential_mode === "none") {
+    return "无需密钥";
+  }
+  return provider.secret?.configured ? provider.secret.hint || "configured" : "未配置密钥";
 }
 
 function credentialModesFor(providerType) {
@@ -128,6 +215,10 @@ function providerProbeCheckItems(result) {
       label,
       ok: checks[key].ok,
     }));
+}
+
+function nodeRouteDatalistId(nodeId) {
+  return `config-llm-node-model-options-${nodeId}`;
 }
 
 function runLiteraryEval(mode = "baseline") {
@@ -285,8 +376,55 @@ function selectConfigSection(sectionId) {
         data-testid="config-section-setup"
         role="tabpanel"
       >
-      <PanelShell eyebrow="Connection" title="连接设置" description="本机控制台连接与后端管理令牌。">
-        <form class="config-form-grid" autocomplete="off" @submit.prevent>
+      <PanelShell
+        class="config-connection-panel"
+        :class="{ 'is-collapsed': !connectionExpanded }"
+        eyebrow="Connection"
+        title="连接设置"
+        description="本机控制台连接与后端管理令牌。"
+      >
+        <template #actions>
+          <button
+            class="ghost"
+            type="button"
+            data-testid="config-connection-collapse-toggle"
+            :aria-expanded="connectionExpanded"
+            @click="connectionExpanded = !connectionExpanded"
+          >
+            {{ connectionExpanded ? "收起" : "展开" }}
+          </button>
+        </template>
+        <div class="config-connection-summary">
+          <span class="badge ghost" data-testid="config-api-base-effective">
+            当前生效 {{ systemConfig.apiBase }}
+          </span>
+          <span class="badge ghost">操作员 {{ systemConfig.operatorRef || "operator" }}</span>
+          <span class="badge" :class="{ danger: missingActiveRouteCount > 0 }">
+            缺失节点 {{ missingActiveRouteCount }}
+          </span>
+          <button
+            class="ghost"
+            type="button"
+            data-testid="config-llm-node-routes-sync-missing"
+            :disabled="systemConfig.llmSaving || configDashboardSummary.needsProvider"
+            @click="syncMissingLlmNodeRoutes"
+          >
+            一键补齐
+          </button>
+          <span class="badge ghost">
+            管理令牌 {{ systemConfig.adminToken ? "已填写" : systemConfig.runtime.admin_configured ? "未填写" : "本地模式" }}
+          </span>
+          <button
+            type="button"
+            class="ghost"
+            data-testid="config-api-base-probe"
+            :disabled="systemConfig.testing"
+            @click="probeApiBase"
+          >
+            {{ systemConfig.testing ? "测试中..." : "测试连接" }}
+          </button>
+        </div>
+        <form class="config-form-grid" v-show="connectionExpanded" autocomplete="off" @submit.prevent>
           <label>
             <span>API 地址</span>
             <input
@@ -316,20 +454,6 @@ function selectConfigSection(sectionId) {
             />
           </label>
         </form>
-        <div class="config-action-row">
-          <span class="badge ghost" data-testid="config-api-base-effective">
-            当前生效 {{ systemConfig.apiBase }}
-          </span>
-          <button
-            type="button"
-            class="ghost"
-            data-testid="config-api-base-probe"
-            :disabled="systemConfig.testing"
-            @click="probeApiBase"
-          >
-            {{ systemConfig.testing ? "测试中..." : "测试连接" }}
-          </button>
-        </div>
         <p
           v-if="systemConfig.apiBaseProbe"
           class="muted"
@@ -486,16 +610,58 @@ function selectConfigSection(sectionId) {
                 <option value="chat">chat</option>
               </select>
             </label>
-            <label class="config-wide-field">
-              <span>模型名（每行一个）</span>
-              <textarea
-                v-model="systemConfig.providerDraft.modelsText"
-                class="control-input control-textarea llm-model-list-editor"
-                data-testid="config-llm-provider-models"
-                placeholder="qwen2.5:7b&#10;llama3.1:8b"
-                spellcheck="false"
-              />
-            </label>
+            <div class="config-wide-field config-labeled-control">
+              <div class="config-field-head">
+                <span>模型清单</span>
+                <button
+                  class="ghost"
+                  type="button"
+                  data-testid="config-llm-provider-model-discover"
+                  :disabled="systemConfig.providerModelDiscoveryPending"
+                  @click="discoverProviderDraftModels"
+                >
+                  {{ systemConfig.providerModelDiscoveryPending ? "获取中..." : "获取模型列表" }}
+                </button>
+              </div>
+              <div class="llm-model-editor-shell">
+                <div
+                  class="llm-model-preview"
+                  data-testid="config-llm-provider-model-preview"
+                >
+                  <span class="badge">已配置 {{ providerDraftConfiguredModelLines.length || 0 }} 个模型</span>
+                  <span
+                    v-for="model in providerDraftVisibleModels"
+                    :key="model"
+                    class="llm-model-chip"
+                    :title="model"
+                  >
+                    {{ model }}
+                  </span>
+                  <span v-if="providerDraftHiddenModelCount" class="llm-model-chip muted">
+                    +{{ providerDraftHiddenModelCount }} 个
+                  </span>
+                  <span v-if="!providerDraftVisibleModels.length" class="muted">尚未填写模型名。</span>
+                </div>
+                <p
+                  v-if="providerModelCatalogCount > providerDraftConfiguredModelLines.length"
+                  class="llm-model-catalog-note"
+                  data-testid="config-llm-provider-model-catalog-note"
+                >
+                  可用目录 {{ providerModelCatalogCount }} 个；当前只保存上方 {{ providerDraftConfiguredModelLines.length }} 个模型用于路由。
+                </p>
+                <details class="llm-model-raw-editor" data-testid="config-llm-provider-model-editor">
+                  <summary>批量编辑模型名</summary>
+                  <textarea
+                    v-model="systemConfig.providerDraft.modelsText"
+                    class="control-input control-textarea llm-model-list-editor"
+                    data-testid="config-llm-provider-models"
+                    placeholder="qwen2.5:7b&#10;llama3.1:8b"
+                    rows="4"
+                    spellcheck="false"
+                  />
+                </details>
+              </div>
+            </div>
             <label v-if='systemConfig.providerDraft.credential_mode !== "none"' class="config-wide-field">
               <span>API Key（云厂商 / 中转站）</span>
               <input
@@ -505,6 +671,9 @@ function selectConfigSection(sectionId) {
                 type="password"
                 placeholder="只提交到后端，不回显"
               />
+              <small class="llm-key-status" data-testid="config-llm-provider-key-status">
+                {{ providerDraftKeyStatus }}
+              </small>
             </label>
             <div v-else class="config-wide-field llm-no-secret-note" data-testid="config-llm-provider-no-secret">
               无需密钥：本地 OpenAI-compatible 服务通常只需要服务地址和模型名。
@@ -526,18 +695,20 @@ function selectConfigSection(sectionId) {
                   {{ providerTypeLabel(provider.provider_type) }} · {{ provider.account_id || "default" }}
                 </p>
               </div>
-              <span class="badge">
-                {{
-                  provider.credential_mode === "none"
-                    ? "无需密钥"
-                    : provider.secret?.configured
-                      ? provider.secret.hint || "configured"
-                      : "未配置密钥"
-                }}
-              </span>
+              <span v-if="provider.is_default" class="badge llm-default-badge">默认账号</span>
+              <span class="badge">{{ providerSecretLabel(provider) }}</span>
               <span class="badge">{{ provider.models?.length || 0 }}{{ isAdvancedMode ? " models" : " 个模型" }}</span>
               <div class="config-action-row">
                 <button class="ghost" type="button" @click="editLlmProvider(provider)">编辑</button>
+                <button
+                  class="ghost"
+                  type="button"
+                  :data-testid="`config-llm-provider-default-${provider.provider_id}`"
+                  :disabled="provider.is_default || systemConfig.llmSaving"
+                  @click="setDefaultLlmProvider(provider.provider_id)"
+                >
+                  {{ provider.is_default ? "已默认" : "设为默认" }}
+                </button>
                 <button
                   class="ghost"
                   type="button"
@@ -591,15 +762,82 @@ function selectConfigSection(sectionId) {
         title="节点路由矩阵"
         description="每个真实 LLM 调用节点都可以独立绑定供应商账号、模型、结构化输出和思考档位。"
       >
-        <template #actions>
+        <div class="config-route-publication-strip" data-testid="config-route-publication-strip">
+          <span class="badge">模型接入 {{ configDashboardSummary.providerCount }}</span>
+          <span class="badge">可用节点 {{ configDashboardSummary.activeNodeCount }}</span>
+          <span class="badge" :class="{ danger: configDashboardSummary.blockedNodeCount > 0 }">
+            阻塞 {{ configDashboardSummary.blockedNodeCount }}
+          </span>
+          <span class="badge ghost">
+            快照 {{ systemConfig.llm.models_snapshot?.snapshot_id || "默认配置" }}
+          </span>
           <button
             data-testid="config-llm-node-routes-save"
-            :disabled="systemConfig.llmSaving"
+            :disabled="
+              systemConfig.llmSaving ||
+              configDashboardSummary.needsProvider ||
+              configDashboardSummary.needsActiveRoutes ||
+              configDashboardSummary.needsRouteProviders
+            "
             @click="saveLlmNodeRoutes"
           >
             保存并激活
           </button>
-        </template>
+        </div>
+
+        <div class="llm-route-batch-toolbar" data-testid="config-llm-route-batch">
+          <label>
+            <span>范围</span>
+            <select v-model="systemConfig.nodeRouteBatchDraft.scope" class="control-input">
+              <option value="blocked">仅未完成/异常节点</option>
+              <option value="all-active">全部真实节点</option>
+            </select>
+          </label>
+          <label>
+            <span>账号</span>
+            <select v-model="systemConfig.nodeRouteBatchDraft.provider_id" class="control-input">
+              <option value="">不改账号</option>
+              <option v-for="provider in providerRows" :key="provider.provider_id" :value="provider.provider_id">
+                {{ provider.provider_id }} · {{ providerTypeLabel(provider.provider_type) }}
+              </option>
+            </select>
+          </label>
+          <label>
+            <span>模型</span>
+            <input
+              v-model="systemConfig.nodeRouteBatchDraft.model"
+              class="control-input"
+              list="config-llm-route-batch-model-options"
+              placeholder="不改模型"
+            />
+            <datalist id="config-llm-route-batch-model-options">
+              <option v-for="model in routeBatchModelOptions" :key="model" :value="model" />
+            </datalist>
+          </label>
+          <label>
+            <span>思考</span>
+            <select v-model="systemConfig.nodeRouteBatchDraft.reasoning_level" class="control-input">
+              <option value="">不改</option>
+              <option v-for="level in reasoningLevels" :key="level" :value="level">{{ level }}</option>
+            </select>
+          </label>
+          <label>
+            <span>温度</span>
+            <input v-model.number="systemConfig.nodeRouteBatchDraft.temperature" class="control-input" type="number" min="0" max="2" step="0.1" />
+          </label>
+          <label>
+            <span>tokens</span>
+            <input v-model.number="systemConfig.nodeRouteBatchDraft.max_output_tokens" class="control-input" type="number" min="1" step="256" />
+          </label>
+          <label>
+            <span>格式</span>
+            <select v-model="systemConfig.nodeRouteBatchDraft.response_format" class="control-input">
+              <option value="">不改</option>
+              <option v-for="format in responseFormatOptions" :key="format" :value="format">{{ format }}</option>
+            </select>
+          </label>
+          <button class="ghost" type="button" @click="applyNodeRouteBatch">批量应用</button>
+        </div>
 
         <div class="llm-node-matrix-table">
           <div
@@ -615,29 +853,28 @@ function selectConfigSection(sectionId) {
             </div>
             <div v-if="systemConfig.nodeRouteDrafts[row.node_id]" class="llm-node-controls">
               <label>
-                <span>{{ isAdvancedMode ? "provider" : "模型渠道" }}</span>
-                <select v-model="systemConfig.nodeRouteDrafts[row.node_id].provider" class="control-input">
-                  <option
-                    v-for="provider in providerTypeOptions"
-                    :key="provider.provider_type"
-                    :value="provider.provider_type"
-                  >
-                    {{ provider.label }}
-                  </option>
-                </select>
-              </label>
-              <label>
                 <span>{{ isAdvancedMode ? "account" : "接入账号" }}</span>
-                <select v-model="systemConfig.nodeRouteDrafts[row.node_id].provider_id" class="control-input">
-                  <option value="">默认账号</option>
+                <select
+                  v-model="systemConfig.nodeRouteDrafts[row.node_id].provider_id"
+                  class="control-input"
+                  @change="systemConfig.setNodeRouteProvider(row.node_id, systemConfig.nodeRouteDrafts[row.node_id].provider_id)"
+                >
+                  <option value="">选择账号</option>
                   <option v-for="provider in providerRows" :key="provider.provider_id" :value="provider.provider_id">
-                    {{ provider.provider_id }}
+                    {{ provider.provider_id }} · {{ providerTypeLabel(provider.provider_type) }}
                   </option>
                 </select>
               </label>
               <label>
                 <span>{{ isAdvancedMode ? "model" : "模型名称" }}</span>
-                <input v-model="systemConfig.nodeRouteDrafts[row.node_id].model" class="control-input" />
+                <input
+                  v-model="systemConfig.nodeRouteDrafts[row.node_id].model"
+                  class="control-input"
+                  :list="nodeRouteDatalistId(row.node_id)"
+                />
+                <datalist :id="nodeRouteDatalistId(row.node_id)" :data-testid="`config-llm-node-model-options-${row.node_id}`">
+                  <option v-for="model in systemConfig.routeModelOptions(row.node_id)" :key="model" :value="model" />
+                </datalist>
               </label>
               <label>
                 <span>{{ isAdvancedMode ? "reasoning" : "思考强度" }}</span>
@@ -686,62 +923,6 @@ function selectConfigSection(sectionId) {
         data-testid="config-section-validation"
         role="tabpanel"
       >
-      <PanelShell
-        class="config-wide-panel"
-        eyebrow="Readiness"
-        title="验证发布"
-        description="这里集中检查账号、节点、探测结果和最近激活快照。"
-      >
-        <div class="config-readiness-grid">
-          <div class="config-readiness-item" :class="{ warning: configDashboardSummary.needsProvider }">
-            <span>模型接入</span>
-            <strong>{{ configDashboardSummary.providerCount }}</strong>
-            <small>{{ configDashboardSummary.needsProvider ? "先添加至少一个模型接入" : "可用于节点路由" }}</small>
-          </div>
-          <div
-            class="config-readiness-item"
-            :class="{ warning: configDashboardSummary.needsActiveRoutes || configDashboardSummary.needsRouteProviders }"
-          >
-            <span>已接入节点</span>
-            <strong>{{ configDashboardSummary.activeNodeCount }}</strong>
-            <small>
-              {{
-                configDashboardSummary.needsRouteProviders
-                  ? `有 ${configDashboardSummary.blockedNodeCount} 个节点缺少可用 provider/model`
-                  : configDashboardSummary.needsActiveRoutes
-                    ? "先为真实调用节点选择模型"
-                    : "可以保存并激活"
-              }}
-            </small>
-          </div>
-          <div class="config-readiness-item">
-            <span>预留节点</span>
-            <strong>{{ configDashboardSummary.reservedNodeCount }}</strong>
-            <small>后续功能打开时再接入</small>
-          </div>
-          <div class="config-readiness-item">
-            <span>模型快照</span>
-            <strong>{{ systemConfig.llm.models_snapshot?.snapshot_id || "默认配置" }}</strong>
-            <small>{{ systemConfig.llm.models_snapshot?.active ? "已激活" : "尚未激活新快照" }}</small>
-          </div>
-        </div>
-        <div class="config-action-row">
-          <button
-            data-testid="config-llm-node-routes-save-validation"
-            :disabled="
-              systemConfig.llmSaving ||
-              configDashboardSummary.needsProvider ||
-              configDashboardSummary.needsActiveRoutes ||
-              configDashboardSummary.needsRouteProviders
-            "
-            @click="saveLlmNodeRoutes"
-          >
-            保存并激活节点路由
-          </button>
-          <span class="muted">日常发布只需要确认上面的状态，再保存节点路由。</span>
-        </div>
-      </PanelShell>
-
       <PanelShell eyebrow="Literary Eval" title="文学评测" description="小规模评测集用于检查风格与场景生成质量。">
         <template #actions>
           <button
@@ -767,7 +948,7 @@ function selectConfigSection(sectionId) {
             v-model="systemConfig.literaryEvalModel"
             class="control-input"
             data-testid="config-literary-eval-model"
-            placeholder="留空使用 stylize 路由"
+            placeholder="Configure literary_eval_live route or enter a model"
           />
         </label>
         <div class="config-overview" data-testid="config-literary-eval-summary">

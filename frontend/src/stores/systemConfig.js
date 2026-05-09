@@ -17,15 +17,19 @@ import {
   saveLlmProviderConfig,
   saveSystemConfigDraft,
   setApiBase,
+  setDefaultLlmProvider as setDefaultLlmProviderRequest,
   setOperatorRef,
+  syncMissingLlmNodeRoutes as syncMissingLlmNodeRoutesRequest,
   submitStyleProfileCandidate as submitStyleProfileCandidateRequest,
   testSystemConfigProvider,
 } from "../lib/api";
 
 const ADMIN_TOKEN_KEY = "novel-system-admin-token";
+const PROVIDER_PROBE_RESULTS_KEY = "novel-system-provider-probe-results";
+const PROVIDER_DISCOVERY_CONFIG_LIMIT = 8;
 const DEFAULT_CATEGORY = "api";
 const REASONING_LEVELS = new Set(["off", "low", "medium", "high"]);
-const LLM_NODE_ORDER = [
+const FALLBACK_LLM_NODE_ORDER = [
   "neutral_draft",
   "style_draft",
   "style_patch",
@@ -92,17 +96,52 @@ const DEFAULT_NODE_ROUTE = {
   credential_mode: "api_key",
   provider_options: {},
 };
+const DEFAULT_NODE_ROUTE_BATCH = {
+  scope: "blocked",
+  provider_id: "",
+  model: "",
+  reasoning_level: "",
+  temperature: null,
+  max_output_tokens: null,
+  response_format: "",
+};
+
+function browserStorage() {
+  return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
+}
 
 function storedAdminToken() {
-  if (typeof window === "undefined") {
+  const storage = browserStorage();
+  if (!storage) {
     return "";
   }
-  return window.localStorage.getItem(ADMIN_TOKEN_KEY) || "";
+  return storage.getItem(ADMIN_TOKEN_KEY) || "";
 }
 
 function persistAdminToken(value) {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(ADMIN_TOKEN_KEY, value);
+  const storage = browserStorage();
+  if (storage) {
+    storage.setItem(ADMIN_TOKEN_KEY, value);
+  }
+}
+
+function storedProviderProbeResults() {
+  const storage = browserStorage();
+  if (!storage) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(storage.getItem(PROVIDER_PROBE_RESULTS_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistProviderProbeResults(results = {}) {
+  const storage = browserStorage();
+  if (storage) {
+    storage.setItem(PROVIDER_PROBE_RESULTS_KEY, JSON.stringify(results || {}));
   }
 }
 
@@ -120,17 +159,62 @@ function parseTextList(value) {
     .filter(Boolean);
 }
 
-function firstProviderModel(provider) {
-  const models = Array.isArray(provider?.models) ? provider.models : [];
-  return models.map((model) => String(model).trim()).find(Boolean) || "";
+function containsCjk(value) {
+  return /[\u3400-\u9fff\uf900-\ufaff]/u.test(String(value || ""));
 }
 
-function buildProviderProbePayload(provider) {
+function looksLikeProviderModelId(value) {
+  const text = String(value || "").trim();
+  return Boolean(text) && !containsCjk(text) && !/\s/u.test(text) && /[a-z0-9]/iu.test(text);
+}
+
+function normalizeProviderModelId(value) {
+  const text = String(value || "").trim();
+  if (!text.includes("/")) {
+    return text;
+  }
+  const [prefix, ...rest] = text.split("/");
+  const suffix = rest.join("/").trim();
+  if (containsCjk(prefix) && looksLikeProviderModelId(suffix)) {
+    return suffix;
+  }
+  return text;
+}
+
+function parseProviderModelList(value) {
+  return Array.from(new Set(parseTextList(value).map(normalizeProviderModelId).filter(Boolean)));
+}
+
+function configuredModelsFromDiscovery({ availableModels = [], draftModels = [], savedModels = [] } = {}) {
+  const available = parseProviderModelList(availableModels);
+  const availableSet = new Set(available);
+  const saved = parseProviderModelList(savedModels).filter((model) => !availableSet.size || availableSet.has(model));
+  if (saved.length) {
+    return saved.slice(0, PROVIDER_DISCOVERY_CONFIG_LIMIT);
+  }
+  const current = parseProviderModelList(draftModels).filter((model) => !availableSet.size || availableSet.has(model));
+  if (current.length && current.length <= PROVIDER_DISCOVERY_CONFIG_LIMIT) {
+    return current;
+  }
+  if (available.length <= PROVIDER_DISCOVERY_CONFIG_LIMIT) {
+    return available;
+  }
+  return available.slice(0, PROVIDER_DISCOVERY_CONFIG_LIMIT);
+}
+
+function firstProviderModel(provider) {
+  return parseProviderModelList(provider?.models || []).find(Boolean) || "";
+}
+
+function buildProviderProbePayload(provider, options = {}) {
   const model = firstProviderModel(provider);
+  const completionCheckProviders = new Set(["openai", "openai_compatible", "deepseek", "zhipu_glm"]);
   const payload = {};
   if (model) {
     payload.model = model;
-    payload.check_completion = provider?.provider_type === "openai_compatible";
+    payload.check_completion = options.light ? false : completionCheckProviders.has(provider?.provider_type);
+  } else if (options.light) {
+    payload.check_completion = false;
   }
   return payload;
 }
@@ -163,10 +247,15 @@ function normalizeReasoningLevel(value) {
   return REASONING_LEVELS.has(value) ? value : DEFAULT_NODE_ROUTE.reasoning_level;
 }
 
-function normalizeNodeRouteDraft(nodeId, route = {}) {
+function normalizeNodeRouteDraft(nodeId, route = {}, catalogEntry = {}) {
   return {
     ...DEFAULT_NODE_ROUTE,
     node_id: nodeId,
+    group: route.group || catalogEntry.group || "custom",
+    label: route.label || catalogEntry.label || nodeId,
+    requires_llm: route.requires_llm !== undefined ? Boolean(route.requires_llm) : catalogEntry.requires_llm !== false,
+    template_name: route.template_name || catalogEntry.template_name || "",
+    order: Number.isFinite(Number(route.order ?? catalogEntry.order)) ? Number(route.order ?? catalogEntry.order) : 9999,
     status: route.status || "active",
     configured: Boolean(route.configured),
     provider: route.provider || route.provider_type || DEFAULT_NODE_ROUTE.provider,
@@ -184,13 +273,21 @@ function normalizeNodeRouteDraft(nodeId, route = {}) {
   };
 }
 
-function normalizeNodeRouteDrafts(routes = {}) {
-  const nodeIds = [
-    ...LLM_NODE_ORDER,
-    ...Object.keys(routes || {}).filter((nodeId) => !LLM_NODE_ORDER.includes(nodeId)),
+function nodeIdsFromCatalogAndRoutes(catalog = {}, routes = {}) {
+  const catalogIds = Object.entries(catalog || {})
+    .sort(([, left], [, right]) => Number(left?.order ?? 9999) - Number(right?.order ?? 9999))
+    .map(([nodeId]) => nodeId);
+  const baseIds = catalogIds.length ? catalogIds : FALLBACK_LLM_NODE_ORDER;
+  return [
+    ...baseIds,
+    ...Object.keys(routes || {}).filter((nodeId) => !baseIds.includes(nodeId)),
   ];
+}
+
+function normalizeNodeRouteDrafts(routes = {}, catalog = {}) {
+  const nodeIds = nodeIdsFromCatalogAndRoutes(catalog, routes);
   return nodeIds.reduce((drafts, nodeId) => {
-    drafts[nodeId] = normalizeNodeRouteDraft(nodeId, routes?.[nodeId] || {});
+    drafts[nodeId] = normalizeNodeRouteDraft(nodeId, routes?.[nodeId] || {}, catalog?.[nodeId] || {});
     return drafts;
   }, {});
 }
@@ -205,7 +302,7 @@ function providerDraftFrom(provider = {}) {
     enabled: provider.enabled !== false,
     credential_mode: provider.credential_mode || DEFAULT_PROVIDER_DRAFT.credential_mode,
     api_mode: provider.api_mode || "",
-    modelsText: parseTextList(provider.models || []).join("\n"),
+    modelsText: parseProviderModelList(provider.models || []).join("\n"),
     api_key: "",
   };
 }
@@ -258,9 +355,10 @@ function providerProbeSignature(provider = {}) {
     base_url: provider.base_url || "",
     credential_mode: provider.credential_mode || "api_key",
     api_mode: provider.api_mode || "",
-    models: parseTextList(provider.models || []).join("\n"),
+    models: parseProviderModelList(provider.models || []).join("\n"),
     secret_configured: provider.secret?.configured === true,
     secret_hint: provider.secret?.hint || "",
+    secret_updated_at: provider.secret?.updated_at || "",
   });
 }
 
@@ -276,6 +374,7 @@ function reconcileProviderProbeResults(results = {}, providers = {}) {
 
 function routeReadinessFromDraft(draft, source = {}, providers = {}) {
   const status = draft.status || source.status || "active";
+  const requiresLlm = draft.requires_llm !== false && source.requires_llm !== false;
   const providerId = draft.provider_id || "";
   const model = draft.model || "";
   const configured = Boolean(providerId || model || source.configured);
@@ -297,7 +396,7 @@ function routeReadinessFromDraft(draft, source = {}, providers = {}) {
     };
   }
 
-  if (status === "reserved") {
+  if (status === "reserved" || !requiresLlm) {
     return {
       status,
       configured: false,
@@ -367,7 +466,7 @@ function buildProviderPayload(draft) {
     provider_type: String(draft.provider_type || DEFAULT_PROVIDER_DRAFT.provider_type).trim(),
     enabled: draft.enabled !== false,
     credential_mode: String(draft.credential_mode || DEFAULT_PROVIDER_DRAFT.credential_mode).trim(),
-    models: parseTextList(draft.modelsText),
+    models: parseProviderModelList(draft.modelsText),
   };
   ["account_id", "base_url", "api_mode"].forEach((field) => {
     const value = String(draft[field] || "").trim();
@@ -403,6 +502,22 @@ function buildNodeRoutePayload(draft) {
   return payload;
 }
 
+function applyProviderToRouteDraft(draft, provider, options = {}) {
+  if (!draft || !provider) {
+    return;
+  }
+  const previousProviderId = draft.provider_id || "";
+  const models = parseProviderModelList(provider.models || []);
+  draft.provider = provider.provider_type || provider.provider || draft.provider || DEFAULT_NODE_ROUTE.provider;
+  draft.provider_id = provider.provider_id || "";
+  draft.account_id = provider.account_id || "";
+  draft.api_mode = provider.api_mode || "";
+  draft.credential_mode = provider.credential_mode || DEFAULT_NODE_ROUTE.credential_mode;
+  if (models.length && (options.forceModel || previousProviderId !== provider.provider_id || !draft.model || !models.includes(draft.model))) {
+    draft.model = models[0];
+  }
+}
+
 function buildNodeRoutingPayload(drafts) {
   return Object.entries(drafts || {}).reduce((nodeRouting, [nodeId, draft]) => {
     if (!String(draft?.model || "").trim()) {
@@ -427,16 +542,25 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     providerProbe: null,
     llm: {
       provider_catalog: {},
+      default_provider_id: "",
       providers: {},
+      node_catalog: {},
       node_routes: {},
+      missing_active_routes: [],
+      blocked_routes: [],
+      readiness: {},
       api_snapshot: null,
       models_snapshot: null,
     },
     providerDraft: { ...DEFAULT_PROVIDER_DRAFT },
     providerDraftTouched: false,
     nodeRouteDrafts: normalizeNodeRouteDrafts({}),
-    providerProbeResults: {},
+    nodeRouteBatchDraft: { ...DEFAULT_NODE_ROUTE_BATCH },
+    providerProbeResults: storedProviderProbeResults(),
     providerProbePending: {},
+    providerModelDiscoveryPending: false,
+    providerModelCatalogCount: 0,
+    providerModelCatalogSample: [],
     llmActionMessage: "",
     llmActionTone: "",
     exportResult: null,
@@ -469,24 +593,40 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         credential_modes: item?.credential_modes || ["api_key"],
         default_base_url: item?.default_base_url || "",
       })),
+    defaultProviderId: (state) => state.llm.default_provider_id || "",
     providerRows: (state) =>
-      Object.values(state.llm.providers || {}).sort((left, right) =>
-        String(left.provider_id || "").localeCompare(String(right.provider_id || "")),
-      ),
+      Object.values(state.llm.providers || {})
+        .map((provider) => ({
+          ...provider,
+          is_default: provider.provider_id === (state.llm.default_provider_id || ""),
+        }))
+        .sort((left, right) => {
+          if (left.is_default !== right.is_default) {
+            return left.is_default ? -1 : 1;
+          }
+          return String(left.provider_id || "").localeCompare(String(right.provider_id || ""));
+        }),
+    providerModels: (state) => (providerId) => parseProviderModelList(state.llm.providers?.[providerId]?.models || []),
+    routeModelOptions: (state) => (nodeId) => {
+      const providerId = state.nodeRouteDrafts?.[nodeId]?.provider_id || "";
+      return parseProviderModelList(state.llm.providers?.[providerId]?.models || []);
+    },
     nodeRouteRows: (state) => {
       const drafts = state.nodeRouteDrafts || {};
       const providers = state.llm.providers || {};
-      const nodeIds = [
-        ...LLM_NODE_ORDER,
-        ...Object.keys(drafts).filter((nodeId) => !LLM_NODE_ORDER.includes(nodeId)),
-      ];
+      const nodeIds = nodeIdsFromCatalogAndRoutes(state.llm.node_catalog || {}, drafts);
       return nodeIds.map((nodeId) => {
-        const draft = drafts[nodeId] || normalizeNodeRouteDraft(nodeId, {});
+        const catalogEntry = state.llm.node_catalog?.[nodeId] || {};
+        const draft = drafts[nodeId] || normalizeNodeRouteDraft(nodeId, {}, catalogEntry);
         const source = state.llm.node_routes?.[nodeId] || {};
         const readiness = routeReadinessFromDraft(draft, source, providers);
         return {
           ...draft,
           node_id: nodeId,
+          label: draft.label || source.label || catalogEntry.label || nodeId,
+          group: draft.group || source.group || catalogEntry.group || "custom",
+          requires_llm: draft.requires_llm !== false && source.requires_llm !== false && catalogEntry.requires_llm !== false,
+          template_name: draft.template_name || source.template_name || catalogEntry.template_name || "",
           status: readiness.status,
           configured: readiness.configured,
           ready: readiness.ready,
@@ -500,12 +640,14 @@ export const useSystemConfigStore = defineStore("systemConfig", {
     configDashboardSummary() {
       const providerCount = this.providerRows.length;
       const configuredRows = this.nodeRouteRows.filter((row) => row.configured);
-      const runnableRows = configuredRows.filter((row) => row.status !== "reserved" && row.ready);
-      const blockedRows = configuredRows.filter((row) => row.status !== "reserved" && !row.ready);
-      const reservedRows = this.nodeRouteRows.filter((row) => row.status === "reserved");
+      const activeRows = this.nodeRouteRows.filter((row) => row.status !== "reserved" && row.requires_llm !== false);
+      const runnableRows = activeRows.filter((row) => row.ready);
+      const blockedRows = activeRows.filter((row) => row.configured && !row.ready);
+      const reservedRows = this.nodeRouteRows.filter((row) => row.status === "reserved" || row.requires_llm === false);
       return {
         providerCount,
         configuredNodeCount: configuredRows.length,
+        missingActiveRouteCount: Array.isArray(this.llm.missing_active_routes) ? this.llm.missing_active_routes.length : 0,
         activeNodeCount: runnableRows.length,
         blockedNodeCount: blockedRows.length,
         reservedNodeCount: reservedRows.length,
@@ -647,17 +789,24 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         const payload = await fetchLlmConfig();
         this.llm = {
           provider_catalog: payload.provider_catalog || {},
+          default_provider_id: payload.default_provider_id || "",
           providers: payload.providers || {},
+          node_catalog: payload.node_catalog || {},
           node_routes: payload.node_routes || {},
+          missing_active_routes: payload.missing_active_routes || [],
+          blocked_routes: payload.blocked_routes || [],
+          readiness: payload.readiness || {},
           api_snapshot: payload.api_snapshot || null,
           models_snapshot: payload.models_snapshot || null,
         };
         this.providerProbeResults = reconcileProviderProbeResults(this.providerProbeResults, this.llm.providers);
-        this.nodeRouteDrafts = normalizeNodeRouteDrafts(this.llm.node_routes);
+        persistProviderProbeResults(this.providerProbeResults);
+        this.nodeRouteDrafts = normalizeNodeRouteDrafts(this.llm.node_routes, this.llm.node_catalog);
         const preferredProvider = selectPreferredProvider(this.llm.providers, this.llm.node_routes);
         if (preferredProvider && !this.providerDraftTouched && providerDraftIsDefault(this.providerDraft)) {
           this.providerDraft = providerDraftFrom(preferredProvider);
         }
+        await this.autoProbeLlmProviders();
         return this.llm;
       } catch (error) {
         this.error = error.message;
@@ -689,6 +838,11 @@ export const useSystemConfigStore = defineStore("systemConfig", {
       this.llmActionMessage = "正在保存模型接入...";
       this.llmActionTone = "info";
       try {
+        const savedModels = parseProviderModelList(this.llm.providers?.[this.providerDraft.provider_id]?.models || []);
+        const draftModels = parseProviderModelList(this.providerDraft.modelsText);
+        if (savedModels.length && draftModels.length > PROVIDER_DISCOVERY_CONFIG_LIMIT) {
+          this.providerDraft.modelsText = savedModels.slice(0, PROVIDER_DISCOVERY_CONFIG_LIMIT).join("\n");
+        }
         const payload = buildProviderPayload(this.providerDraft);
         const result = await saveLlmProviderConfig(payload, this.adminToken);
         this.providerDraft.api_key = "";
@@ -706,6 +860,99 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         this.llmSaving = false;
       }
     },
+    async discoverProviderDraftModels() {
+      this.providerModelDiscoveryPending = true;
+      this.error = "";
+      try {
+        const payload = {
+          ...buildProviderPayload(this.providerDraft),
+          check_completion: false,
+        };
+        const result = await testSystemConfigProvider(payload, this.adminToken);
+        const availableModels = parseProviderModelList(result.available_models || result.checks?.model?.available_models || []);
+        if (!availableModels.length) {
+          this.providerModelCatalogCount = 0;
+          this.providerModelCatalogSample = [];
+          const message = "未从服务返回中发现模型列表，可以继续手动填写。";
+          this.llmActionMessage = message;
+          this.llmActionTone = "info";
+          return message;
+        }
+        this.providerModelCatalogCount = availableModels.length;
+        this.providerModelCatalogSample = availableModels.slice(0, PROVIDER_DISCOVERY_CONFIG_LIMIT);
+        const configuredModels = configuredModelsFromDiscovery({
+          availableModels,
+          draftModels: this.providerDraft.modelsText,
+          savedModels: this.llm.providers?.[this.providerDraft.provider_id]?.models || [],
+        });
+        this.providerDraft.modelsText = configuredModels.join("\n");
+        const message = availableModels.length > configuredModels.length
+          ? `已发现 ${availableModels.length} 个可用目录项，当前配置 ${configuredModels.length} 个模型`
+          : `已获取 ${configuredModels.length} 个模型`;
+        this.llmActionMessage = message;
+        this.llmActionTone = "success";
+        return message;
+      } catch (error) {
+        const message = `获取模型列表失败：${error.message}`;
+        this.error = error.message;
+        this.llmActionMessage = message;
+        this.llmActionTone = "error";
+        return message;
+      } finally {
+        this.providerModelDiscoveryPending = false;
+      }
+    },
+    async setDefaultLlmProvider(providerId) {
+      const result = await setDefaultLlmProviderRequest(providerId, this.adminToken);
+      this.llm = {
+        ...this.llm,
+        default_provider_id: result.default_provider_id || providerId,
+        api_snapshot: result.snapshot || this.llm.api_snapshot,
+      };
+      return `默认账号已设置：${result.default_provider_id || providerId}`;
+    },
+    setNodeRouteProvider(nodeId, providerId) {
+      const draft = this.nodeRouteDrafts?.[nodeId];
+      const provider = this.llm.providers?.[providerId];
+      applyProviderToRouteDraft(draft, provider, { forceModel: draft?.provider_id !== providerId });
+    },
+    applyNodeRouteBatch() {
+      const batch = this.nodeRouteBatchDraft || {};
+      const targetRows = this.nodeRouteRows.filter((row) => {
+        if (row.status === "reserved") {
+          return false;
+        }
+        if (batch.scope === "all-active") {
+          return true;
+        }
+        return row.ready !== true;
+      });
+      targetRows.forEach((row) => {
+        const draft = this.nodeRouteDrafts[row.node_id];
+        if (!draft) {
+          return;
+        }
+        if (batch.provider_id) {
+          this.setNodeRouteProvider(row.node_id, batch.provider_id);
+        }
+        if (batch.model) {
+          draft.model = String(batch.model).trim();
+        }
+        if (batch.reasoning_level) {
+          draft.reasoning_level = normalizeReasoningLevel(batch.reasoning_level);
+        }
+        if (batch.temperature !== null && batch.temperature !== "" && batch.temperature !== undefined) {
+          draft.temperature = normalizeNumber(batch.temperature, draft.temperature);
+        }
+        if (batch.max_output_tokens !== null && batch.max_output_tokens !== "" && batch.max_output_tokens !== undefined) {
+          draft.max_output_tokens = normalizeNumber(batch.max_output_tokens, draft.max_output_tokens);
+        }
+        if (batch.response_format) {
+          draft.response_format = batch.response_format;
+        }
+      });
+      return `已批量更新 ${targetRows.length} 个节点`;
+    },
     async saveLlmNodeRoutes() {
       this.llmSaving = true;
       this.error = "";
@@ -713,6 +960,8 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         const modelsPayload = categoryPayload(this.categories, "models")?.parsed || {};
         const payload = {
           activate: true,
+          model_profiles: modelsPayload.model_profiles || {},
+          task_routing: modelsPayload.task_routing || {},
           node_routing: buildNodeRoutingPayload(this.nodeRouteDrafts),
           retry_budget: modelsPayload.retry_budget || {},
           job_runtime: modelsPayload.job_runtime || {},
@@ -728,7 +977,30 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         this.llmSaving = false;
       }
     },
-    async probeLlmProvider(providerId) {
+    async syncMissingLlmNodeRoutes() {
+      this.llmSaving = true;
+      this.error = "";
+      this.llmActionMessage = "Syncing missing LLM node routes...";
+      this.llmActionTone = "info";
+      try {
+        const result = await syncMissingLlmNodeRoutesRequest({ activate: true }, this.adminToken);
+        await this.load();
+        await this.loadLlmConfig();
+        const count = Array.isArray(result.synced_node_ids) ? result.synced_node_ids.length : 0;
+        const message = `Synced ${count} missing LLM node routes`;
+        this.llmActionMessage = message;
+        this.llmActionTone = "success";
+        return message;
+      } catch (error) {
+        this.error = error.message;
+        this.llmActionMessage = configWriteErrorMessage(error);
+        this.llmActionTone = "error";
+        throw error;
+      } finally {
+        this.llmSaving = false;
+      }
+    },
+    async probeLlmProvider(providerId, options = {}) {
       this.providerProbePending = {
         ...this.providerProbePending,
         [providerId]: true,
@@ -736,7 +1008,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
       this.error = "";
       try {
         const provider = this.llm.providers?.[providerId] || {};
-        const probePayload = buildProviderProbePayload(provider);
+        const probePayload = buildProviderProbePayload(provider, options);
         const result = await probeLlmProviderRequest(providerId, probePayload, this.adminToken);
         this.providerProbeResults = {
           ...this.providerProbeResults,
@@ -745,6 +1017,7 @@ export const useSystemConfigStore = defineStore("systemConfig", {
             _provider_signature: providerProbeSignature(provider),
           },
         };
+        persistProviderProbeResults(this.providerProbeResults);
         if (!result.ok) {
           return `模型验证失败：${result.message || providerId}`;
         }
@@ -757,6 +1030,21 @@ export const useSystemConfigStore = defineStore("systemConfig", {
         delete providerProbePending[providerId];
         this.providerProbePending = providerProbePending;
       }
+    },
+    async autoProbeLlmProviders() {
+      if (this.runtime.admin_configured !== false && !String(this.adminToken || "").trim()) {
+        return;
+      }
+      const providers = Object.values(this.llm.providers || {}).filter((provider) => {
+        const providerId = provider.provider_id || "";
+        return (
+          providerId
+          && providerViewReady(provider)
+          && !this.providerProbePending[providerId]
+          && !this.providerProbeResults[providerId]
+        );
+      });
+      await Promise.allSettled(providers.map((provider) => this.probeLlmProvider(provider.provider_id, { light: true })));
     },
     async exportCategory(category = this.selectedCategory) {
       this.exportResult = await exportSystemConfigCategory(category);

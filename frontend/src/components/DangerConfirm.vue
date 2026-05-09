@@ -42,8 +42,15 @@ function arm() {
 
 <template>
   <div class="danger-confirm" :class="{ armed }">
-    <p v-if="armed" class="danger-confirm-message">{{ message }}</p>
-    <button type="button" class="danger-button" :data-testid="testId || undefined" :disabled="disabled" @click="arm">
+    <p v-if="armed" class="danger-confirm-message" role="alert">{{ message }}</p>
+    <button
+      type="button"
+      class="danger-button"
+      :data-testid="testId || undefined"
+      :disabled="disabled"
+      :aria-pressed="armed ? 'true' : 'false'"
+      @click="arm"
+    >
       {{ armed ? confirmLabel : label }}
     </button>
   </div>

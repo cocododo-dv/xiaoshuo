@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,13 +21,17 @@ from novel_system.api.routes import (
     literary_quality,
     longform_control,
     longform_editor,
+    projects,
     reference_books,
     reference_safety,
     review,
     scenes,
+    snowflake,
+    snowflake_workspace,
     style_profile,
     system_config,
     work_profile,
+    writer_room,
     writer_deep_review,
     writer_review,
 )
@@ -35,6 +40,10 @@ from novel_system.db.base import Base
 from novel_system.db.session import engine
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
+from novel_system.settings import get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def _operator_ref_from_request(request: Request) -> str:
@@ -43,12 +52,16 @@ def _operator_ref_from_request(request: Request) -> str:
 
 
 def create_app() -> FastAPI:
-    Base.metadata.create_all(bind=engine())
+    app_settings = get_settings(include_runtime_config=False)
+    if app_settings.auto_create_tables:
+        Base.metadata.create_all(bind=engine())
     app = FastAPI(title="Novel System P2")
+    allow_origins = list(app_settings.cors_origins)
+    allow_credentials = app_settings.cors_allow_credentials and "*" not in allow_origins
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=allow_origins,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -57,7 +70,9 @@ def create_app() -> FastAPI:
     async def request_id_middleware(request: Request, call_next):
         request.state.request_id = f"req_{uuid.uuid4().hex[:12]}"
         request.state.operator_ref = _operator_ref_from_request(request)
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = request.state.request_id
+        return response
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(request: Request, exc: DomainError):
@@ -89,21 +104,27 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):
+        req_id = getattr(request.state, "request_id", None)
+        logger.exception("Unhandled API error request_id=%s", req_id)
         return error(
             "INTERNAL_ERROR",
-            str(exc) or "internal server error",
+            str(exc) if app_settings.expose_error_detail else "internal server error",
             status_code=500,
             details={"retryable": False},
-            req_id=getattr(request.state, "request_id", None),
+            req_id=req_id,
         )
 
     app.include_router(chapters.router)
+    app.include_router(projects.router)
     app.include_router(author_drafts.router)
     app.include_router(author_desk.router)
     app.include_router(chapter_manuscripts.router)
     app.include_router(longform_control.router)
     app.include_router(longform_editor.router)
     app.include_router(scenes.router)
+    app.include_router(snowflake.router)
+    app.include_router(snowflake_workspace.router)
+    app.include_router(writer_room.router)
     app.include_router(writer_review.router)
     app.include_router(writer_deep_review.router)
     app.include_router(review.router)

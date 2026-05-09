@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import AttemptTracker, FinalScene, QcReport, SceneCard, SceneDraft, SceneRunState
+from novel_system.services.errors import DomainError
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.bundle_builder import BundleBuilder
@@ -12,6 +13,7 @@ from novel_system.services.llm_task_runner import LLMNodeRunner
 from novel_system.services.near_final import NearFinalAcceptanceService, NearFinalPlanningService
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import SceneGenerationService, versioned_scene_artifact_id
 from novel_system.services.version_manager import VersionManager
 
@@ -37,6 +39,7 @@ class Orchestrator:
         self.hard_qc_engine = hard_qc_engine or HardQcEngine(session, llm_runner=llm_runner)
         self.soft_qc_engine = soft_qc_engine or SoftQcEngine(session, llm_runner=llm_runner)
         self.scene_blueprint_service = SceneBlueprintService(session, llm_runner=llm_runner)
+        self.execution_contract_service = SceneExecutionContractService(session)
         self.planning_service = planning_service or NearFinalPlanningService(session, llm_runner=llm_runner)
         self.near_final_service = near_final_service or NearFinalAcceptanceService(session, llm_runner=llm_runner)
 
@@ -44,6 +47,34 @@ class Orchestrator:
         self.version_manager.recover_stuck_jobs()
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        contract = self.execution_contract_service.get_or_create(scene_id, actor_ref="orchestrator")
+        if contract.status != "active":
+            detail_reason = "scene execution contract is not ready for drafting"
+            if contract.status == "blocked":
+                missing_fields = list(contract.missing_fields_json or [])
+                detail_reason = "scene execution contract is missing required fields"
+                raise DomainError(
+                    "SCENE_EXECUTION_CONTRACT_BLOCKED",
+                    detail_reason,
+                    status_code=409,
+                    details={
+                        "scene_id": scene_id,
+                        "execution_contract_id": contract.contract_id,
+                        "status": contract.status,
+                        "missing_fields": missing_fields,
+                    },
+                )
+            raise DomainError(
+                "SCENE_EXECUTION_CONTRACT_BLOCKED",
+                detail_reason,
+                status_code=409,
+                details={
+                    "scene_id": scene_id,
+                    "execution_contract_id": contract.contract_id,
+                    "status": contract.status,
+                    "missing_fields": list(contract.missing_fields_json or []),
+                },
+            )
         self._prepare_state_for_run(state)
         self.scene_blueprint_service.ensure_for_scene(scene_id)
         planning = self.planning_service.ensure_scene_planning(scene_id)

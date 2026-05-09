@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from sqlalchemy import select
 
 from novel_system.db.models import (
@@ -7,6 +9,7 @@ from novel_system.db.models import (
     AutoRewriteRun,
     ChapterGoal,
     FinalScene,
+    LlmCall,
     QcReport,
     SceneCard,
     SceneQualityContract,
@@ -172,6 +175,56 @@ def test_auto_rewrite_full_scene_can_promote_and_rollback_without_overwriting_au
     assert rolled_back["status"] == "rolled_back"
     assert session.get(SceneRunState, SCENE_ID).current_final_scene_row_id == FINAL_ROW_ID
     assert session.get(AutoRewriteRun, run["run_id"]).promoted_final_scene_row_id == promoted["promoted_final_scene_row_id"]
+
+
+def test_auto_rewrite_uses_llm_candidate_when_live(client, session, monkeypatch) -> None:
+    class FakeAutoRewriteRunner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        def run(self, **kwargs):
+            assert kwargs["node_id"] == "scene_auto_rewrite"
+            self.session.add(
+                LlmCall(
+                    llm_call_id="llm_call_scene_auto_rewrite_test",
+                    provider="fake",
+                    model="fake-model",
+                    node_id="scene_auto_rewrite",
+                    step="scene_auto_rewrite",
+                    request_payload_summary={"template_name": "scene_auto_rewrite"},
+                    response_payload_summary={"source": "llm"},
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                    total_tokens=2,
+                    latency_ms=1,
+                )
+            )
+            self.session.flush()
+            return SimpleNamespace(
+                llm_call_id="llm_call_scene_auto_rewrite_test",
+                response=SimpleNamespace(
+                    structured_output={
+                        "scene_text": "LLM rewritten scene keeps the required evidence and adds a visible cost.",
+                        "rewrite_notes": ["LLM candidate"],
+                    }
+                ),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr("novel_system.services.scene_quality.LLMNodeRunner", FakeAutoRewriteRunner, raising=False)
+    _seed_scene(
+        session,
+        content="Lin sees the evidence. She realizes the truth matters. In the end, everything changes.",
+    )
+
+    response = client.post(f"/api/v1/scenes/{SCENE_ID}/auto-rewrite", headers=_headers("rewrite-live-llm"))
+
+    assert response.status_code == 200
+    run = response.json()["data"]["run"]
+    assert run["llm_call_id"] == "llm_call_scene_auto_rewrite_test"
+    assert run["candidate_draft_row_id"]
+    session.expire_all()
+    assert session.get(LlmCall, "llm_call_scene_auto_rewrite_test").provider == "fake"
 
 
 def test_auto_rewrite_routes_language_only_failure_to_local_patch(client, session) -> None:

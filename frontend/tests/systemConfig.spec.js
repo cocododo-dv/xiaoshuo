@@ -33,6 +33,7 @@ describe("system config api helpers", () => {
       },
       "admin-token",
     );
+    await api.setDefaultLlmProvider("openai_primary", "admin-token");
     await api.saveLlmNodeRoutes(
       {
         activate: true,
@@ -50,6 +51,7 @@ describe("system config api helpers", () => {
       },
       "admin-token",
     );
+    await api.syncMissingLlmNodeRoutes({ activate: true }, "admin-token");
     await api.probeLlmProvider("openai_primary", {}, "admin-token");
     await api.exportSystemConfigCategory("models");
     await api.fetchLiteraryEvalLatest();
@@ -102,10 +104,25 @@ describe("system config api helpers", () => {
       }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/system-config/llm/providers/openai_primary/default",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/v1/system-config/llm/node-routes",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
+      }),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/v1/system-config/llm/node-routes/sync-missing",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Admin-Token": "admin-token" }),
+        body: JSON.stringify({ activate: true }),
       }),
     );
     expect(globalThis.fetch).toHaveBeenCalledWith(
@@ -207,10 +224,12 @@ describe("system config store", () => {
               base_url: "https://api.openai.example/v1",
               enabled: true,
               credential_mode: "api_key",
+              api_mode: "responses",
               models: ["gpt-5.4"],
               secret: { configured: true, hint: "sk-...test" },
             },
           },
+          default_provider_id: "openai_primary",
           node_routes: {
             neutral_draft: {
               node_id: "neutral_draft",
@@ -271,6 +290,15 @@ describe("system config store", () => {
             active: Boolean(body.activate),
             parsed: body,
           },
+        });
+      }
+      if (url.endsWith("/api/v1/system-config/llm/node-routes/sync-missing") && options.method === "POST") {
+        return ok({
+          snapshot: {
+            snapshot_id: "config_models_sync_001",
+            active: true,
+          },
+          synced_node_ids: ["project_outline_plan", "writer_deep_review"],
         });
       }
       if (url.endsWith("/api/v1/system-config/llm/providers/openai_primary/probe") && options.method === "POST") {
@@ -440,10 +468,12 @@ describe("system config store", () => {
     const routeMessage = await store.saveLlmNodeRoutes();
     const probeMessage = await store.probeLlmProvider("openai_primary");
     expect(store.llm.providers.openai_primary.secret.hint).toBe("sk-...test");
+    expect(store.defaultProviderId).toBe("openai_primary");
     expect(store.nodeRouteRows.some((row) => row.node_id === "chapter_summary" && row.status === "reserved")).toBe(true);
     expect(store.configDashboardSummary).toEqual({
       providerCount: 1,
       configuredNodeCount: 1,
+      missingActiveRouteCount: 0,
       activeNodeCount: 1,
       blockedNodeCount: 0,
       reservedNodeCount: 1,
@@ -455,6 +485,386 @@ describe("system config store", () => {
     expect(routeMessage).toContain("config_models_llm_001");
     expect(probeMessage).toContain("成功");
     expect(store.providerDraft.api_key).toBe("");
+  });
+
+  it("uses backend node catalog ordering and syncs missing active routes", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+    let syncCalled = false;
+    const llmPayload = {
+      provider_catalog: {},
+      default_provider_id: "local_qwen",
+      providers: {
+        local_qwen: {
+          provider_id: "local_qwen",
+          provider_type: "openai_compatible",
+          account_id: "local",
+          base_url: "http://127.0.0.1:8080/v1",
+          enabled: true,
+          credential_mode: "none",
+          api_mode: "chat",
+          models: ["qwen3:14b"],
+          secret: { configured: false, secret_type: "none" },
+        },
+      },
+      node_catalog: {
+        project_outline_plan: {
+          node_id: "project_outline_plan",
+          label: "Project outline plan",
+          group: "project",
+          status: "active",
+          requires_llm: true,
+          order: 0,
+        },
+        neutral_draft: {
+          node_id: "neutral_draft",
+          label: "Neutral draft",
+          group: "scene_generation",
+          status: "active",
+          requires_llm: true,
+          order: 1,
+        },
+        chapter_summary: {
+          node_id: "chapter_summary",
+          label: "Chapter summary",
+          group: "local",
+          status: "reserved",
+          requires_llm: false,
+          order: 2,
+        },
+      },
+      node_routes: {
+        project_outline_plan: {
+          node_id: "project_outline_plan",
+          status: "active",
+          group: "project",
+          configured: false,
+          requires_llm: true,
+          ready: false,
+          readiness_reason: "not_configured",
+        },
+        neutral_draft: {
+          node_id: "neutral_draft",
+          status: "active",
+          group: "scene_generation",
+          configured: true,
+          requires_llm: true,
+          provider: "openai_compatible",
+          provider_id: "local_qwen",
+          model: "qwen3:14b",
+          temperature: 0.6,
+          max_output_tokens: 6000,
+          response_format: "json_object",
+          reasoning_level: "medium",
+          ready: true,
+        },
+        chapter_summary: {
+          node_id: "chapter_summary",
+          status: "reserved",
+          group: "local",
+          configured: false,
+          requires_llm: false,
+        },
+      },
+      missing_active_routes: ["project_outline_plan"],
+      blocked_routes: [],
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.endsWith("/api/v1/system-config/llm") && !options.method) {
+        return ok(llmPayload);
+      }
+      if (url.endsWith("/api/v1/system-config") && !options.method) {
+        return ok({
+          runtime: { admin_configured: true },
+          categories: { models: { parsed: {} } },
+          history: [],
+        });
+      }
+      if (url.endsWith("/api/v1/system-config/llm/node-routes/sync-missing") && options.method === "POST") {
+        syncCalled = true;
+        expect(JSON.parse(options.body)).toEqual({ activate: true });
+        return ok({
+          snapshot: { snapshot_id: "config_models_sync_001", active: true },
+          synced_node_ids: ["project_outline_plan"],
+        });
+      }
+      if (url.endsWith("/api/v1/system-config/llm/providers/local_qwen/probe") && options.method === "POST") {
+        return ok({ ok: true, message: "provider probe succeeded" });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    await store.loadLlmConfig();
+
+    expect(store.nodeRouteRows.map((row) => row.node_id)).toEqual([
+      "project_outline_plan",
+      "neutral_draft",
+      "chapter_summary",
+    ]);
+    expect(store.nodeRouteRows[0]).toMatchObject({
+      node_id: "project_outline_plan",
+      group: "project",
+      requires_llm: true,
+      configured: false,
+    });
+    expect(store.configDashboardSummary.missingActiveRouteCount).toBe(1);
+
+    const message = await store.syncMissingLlmNodeRoutes();
+
+    expect(syncCalled).toBe(true);
+    expect(message).toContain("Synced 1");
+  });
+
+  it("discovers provider models without blocking manual entry on failure", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+    store.providerDraft = {
+      provider_id: "local_qwen",
+      provider_type: "openai_compatible",
+      account_id: "local",
+      base_url: "http://127.0.0.1:8080/v1",
+      credential_mode: "none",
+      api_mode: "chat",
+      modelsText: "manual-model",
+      api_key: "",
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.endsWith("/api/v1/system-config/test-provider") && options.method === "POST") {
+        const body = JSON.parse(options.body);
+        expect(body).toMatchObject({
+          provider_id: "local_qwen",
+          provider_type: "openai_compatible",
+          base_url: "http://127.0.0.1:8080/v1",
+          credential_mode: "none",
+          check_completion: false,
+        });
+        return ok({
+          ok: true,
+          available_models: ["qwen3:14b", "假流式/qwen3:14b", "流式抗截断/llama3.1:8b"],
+          checks: { connection: { ok: true } },
+          message: "provider probe succeeded",
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const message = await store.discoverProviderDraftModels();
+
+    expect(message).toContain("2");
+    expect(store.providerDraft.modelsText).toBe("qwen3:14b\nllama3.1:8b");
+
+    store.providerDraft.modelsText = "keep-this-model";
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("connect ECONNREFUSED");
+    });
+
+    const failure = await store.discoverProviderDraftModels();
+
+    expect(failure).toContain("获取模型列表失败");
+    expect(store.providerDraft.modelsText).toBe("keep-this-model");
+    expect(store.llmActionTone).toBe("error");
+  });
+
+  it("keeps large discovered provider catalogs separate from configured models", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+    store.llm.providers = {
+      gcli2api: {
+        provider_id: "gcli2api",
+        provider_type: "openai",
+        models: ["gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview"],
+      },
+    };
+    store.providerDraft = {
+      provider_id: "gcli2api",
+      provider_type: "openai",
+      account_id: "relay",
+      base_url: "http://127.0.0.1:7861/v1",
+      credential_mode: "api_key",
+      api_mode: "responses",
+      modelsText: Array.from({ length: 144 }, (_, index) => `legacy-model-${index}`).join("\n"),
+      api_key: "",
+    };
+    const catalog = [
+      "gemini-3.1-pro-preview",
+      "gemini-3.1-flash-lite-preview",
+      ...Array.from({ length: 142 }, (_, index) => `假流式/gemini-extra-${index}`),
+    ];
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.endsWith("/api/v1/system-config/test-provider") && options.method === "POST") {
+        return ok({
+          ok: true,
+          available_models: catalog,
+          checks: { connection: { ok: true } },
+          message: "provider probe succeeded",
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const message = await store.discoverProviderDraftModels();
+
+    expect(message).toContain("144");
+    expect(message).toContain("2");
+    expect(store.providerModelCatalogCount).toBe(144);
+    expect(store.providerDraft.modelsText).toBe("gemini-3.1-pro-preview\ngemini-3.1-flash-lite-preview");
+  });
+
+  it("persists provider probe results and auto-probes with lightweight checks only", async () => {
+    const storage = new Map();
+    globalThis.window = {
+      localStorage: {
+        getItem: (key) => storage.get(key) || null,
+        setItem: (key, value) => storage.set(key, String(value)),
+        removeItem: (key) => storage.delete(key),
+      },
+    };
+    vi.resetModules();
+    setActivePinia(createPinia());
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.runtime = { admin_configured: true };
+    store.setAdminToken("admin-token");
+
+    await store.loadLlmConfig();
+
+    const autoProbeCall = globalThis.fetch.mock.calls.find(([url, options]) =>
+      url.endsWith("/api/v1/system-config/llm/providers/openai_primary/probe") && options.method === "POST"
+    );
+    expect(JSON.parse(autoProbeCall[1].body)).toEqual({ model: "gpt-5.4", check_completion: false });
+    expect(store.providerProbeResults.openai_primary.ok).toBe(true);
+
+    vi.resetModules();
+    setActivePinia(createPinia());
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.endsWith("/api/v1/system-config/llm") && !options.method) {
+        return ok({
+          provider_catalog: {},
+          default_provider_id: "openai_primary",
+          providers: {
+            openai_primary: {
+              provider_id: "openai_primary",
+              provider_type: "openai",
+              account_id: "acct_ops",
+              base_url: "https://api.openai.example/v1",
+              enabled: true,
+              credential_mode: "api_key",
+              api_mode: "responses",
+              models: ["gpt-5.4"],
+              secret: { configured: true, hint: "sk-...test" },
+            },
+          },
+          node_routes: {},
+        });
+      }
+      throw new Error(`Unexpected fetch after persisted probe: ${url}`);
+    });
+    const { useSystemConfigStore: useReloadedSystemConfigStore } = await import("../src/stores/systemConfig");
+    const reloaded = useReloadedSystemConfigStore();
+    reloaded.runtime = { admin_configured: true };
+    reloaded.setAdminToken("admin-token");
+
+    await reloaded.loadLlmConfig();
+
+    expect(reloaded.providerProbeResults.openai_primary.ok).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    delete globalThis.window;
+  });
+
+  it("sets default provider and infers node routes from selected accounts", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+    await store.loadLlmConfig();
+    store.llm.providers.openai_backup = {
+      provider_id: "openai_backup",
+      provider_type: "openai",
+      account_id: "acct_backup",
+      base_url: "https://api.openai.example/v1",
+      enabled: true,
+      credential_mode: "api_key",
+      api_mode: "responses",
+      models: ["gpt-5.4-mini", "gpt-5.4"],
+      secret: { configured: true, hint: "sk-...test" },
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.endsWith("/api/v1/system-config/llm/providers/openai_backup/default") && options.method === "POST") {
+        return ok({
+          default_provider_id: "openai_backup",
+          snapshot: { snapshot_id: "config_api_default_001", active: true },
+        });
+      }
+      if (url.endsWith("/api/v1/system-config/llm") && !options.method) {
+        return ok({
+          provider_catalog: {},
+          default_provider_id: "openai_backup",
+          providers: store.llm.providers,
+          node_routes: store.llm.node_routes,
+        });
+      }
+      return ok({});
+    });
+
+    const message = await store.setDefaultLlmProvider("openai_backup");
+    store.setNodeRouteProvider("neutral_draft", "openai_backup");
+
+    expect(message).toContain("openai_backup");
+    expect(store.defaultProviderId).toBe("openai_backup");
+    expect(store.nodeRouteDrafts.neutral_draft).toMatchObject({
+      provider: "openai",
+      provider_id: "openai_backup",
+      account_id: "acct_backup",
+      api_mode: "responses",
+      credential_mode: "api_key",
+      model: "gpt-5.4-mini",
+    });
+    expect(store.routeModelOptions("neutral_draft")).toEqual(["gpt-5.4-mini", "gpt-5.4"]);
+  });
+
+  it("applies batch node route edits only to active rows in the selected scope", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    await store.loadLlmConfig();
+    store.llm.providers.local_qwen = {
+      provider_id: "local_qwen",
+      provider_type: "openai_compatible",
+      account_id: "local",
+      base_url: "http://127.0.0.1:8080/v1",
+      enabled: true,
+      credential_mode: "none",
+      api_mode: "chat",
+      models: ["qwen3:14b"],
+      secret: { configured: false, secret_type: "none" },
+    };
+    store.nodeRouteDrafts.neutral_draft.provider_id = "";
+    store.nodeRouteBatchDraft = {
+      scope: "blocked",
+      provider_id: "local_qwen",
+      model: "qwen3:14b",
+      reasoning_level: "low",
+      temperature: 0.4,
+      max_output_tokens: 2048,
+      response_format: "json_object",
+    };
+
+    const message = store.applyNodeRouteBatch();
+
+    expect(message).toContain("1");
+    expect(store.nodeRouteDrafts.neutral_draft).toMatchObject({
+      provider: "openai_compatible",
+      provider_id: "local_qwen",
+      account_id: "local",
+      api_mode: "chat",
+      credential_mode: "none",
+      model: "qwen3:14b",
+      reasoning_level: "low",
+      temperature: 0.4,
+      max_output_tokens: 2048,
+    });
+    expect(store.nodeRouteDrafts.chapter_summary.provider_id).not.toBe("local_qwen");
   });
 
   it("does not count provider-missing node routes as runnable active routes", async () => {
@@ -704,6 +1114,50 @@ describe("system config store", () => {
     expect(store.providerProbeResults.local_qwen.checks.completion.ok).toBe(true);
   });
 
+  it("runs completion checks for OpenAI relay providers too", async () => {
+    const { useSystemConfigStore } = await import("../src/stores/systemConfig");
+    const store = useSystemConfigStore();
+    store.setAdminToken("admin-token");
+
+    await store.loadLlmConfig();
+    store.llm.providers.gcli2api = {
+      provider_id: "gcli2api",
+      provider_type: "openai",
+      account_id: "relay",
+      base_url: "http://127.0.0.1:7861/v1",
+      enabled: true,
+      credential_mode: "api_key",
+      api_mode: "responses",
+      models: ["gemini-3.1-pro-preview"],
+      secret: { configured: true, secret_type: "api_key" },
+    };
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (url.endsWith("/api/v1/system-config/llm/providers/gcli2api/probe") && options.method === "POST") {
+        expect(JSON.parse(options.body)).toEqual({ model: "gemini-3.1-pro-preview", check_completion: true });
+        return ok({
+          ok: false,
+          status_code: 404,
+          message: "Responses API endpoint returned 404; switch api_mode to chat",
+          checks: {
+            completion: {
+              ok: false,
+              endpoint: "/responses",
+              api_mode: "responses",
+              next_action: "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider",
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const message = await store.probeLlmProvider("gcli2api");
+
+    expect(message).toContain("Responses API");
+    expect(store.providerProbeResults.gcli2api.checks.completion.endpoint).toBe("/responses");
+  });
+
   it("tracks llm provider probe loading per provider", async () => {
     const { useSystemConfigStore } = await import("../src/stores/systemConfig");
     const store = useSystemConfigStore();
@@ -941,6 +1395,7 @@ describe("system config shell registration", () => {
     expect(viewSource).toContain("config-api-base-effective");
     expect(viewSource).toContain("config-api-base-probe");
     expect(viewSource).toContain("probeApiBase");
+    expect(viewSource).toContain("config-connection-collapse-toggle");
     expect(storeSource).toContain("apiBaseProbe");
     expect(storeSource).toContain("probeApiBase");
     expect(viewSource).toContain('<form class="config-form-grid"');
@@ -950,6 +1405,21 @@ describe("system config shell registration", () => {
     expect(viewSource).toContain("config-llm-local-preset-lm-studio");
     expect(viewSource).toContain("config-llm-local-preset-cli-proxy");
     expect(viewSource).toContain("config-llm-local-preset-custom");
+    expect(viewSource).toContain("config-llm-provider-model-discover");
+    expect(viewSource).toContain("normalizeProviderModelLabel");
+    expect(viewSource).toContain("providerDraftVisibleModels");
+    expect(viewSource).toContain("providerDraftHiddenModelCount");
+    expect(viewSource).toContain("providerDraftConfiguredModelLines");
+    expect(viewSource).toContain("providerModelCatalogCount");
+    expect(viewSource).toContain("config-llm-provider-model-preview");
+    expect(viewSource).toContain("config-llm-provider-model-catalog-note");
+    expect(viewSource).toContain("llm-model-chip");
+    expect(viewSource).toContain("config-llm-provider-key-status");
+    expect(viewSource).toContain("config-llm-provider-default-");
+    expect(viewSource).toContain("config-llm-route-batch");
+    expect(viewSource).toContain("config-llm-node-model-options-");
+    expect(viewSource).toContain("config-route-publication-strip");
+    expect(viewSource).toContain("config-llm-node-routes-sync-missing");
     expect(viewSource).toContain("systemConfig.applyLocalProviderPreset");
     expect(viewSource).toContain("systemConfig.providerDraft.credential_mode !== \"none\"");
     expect(viewSource).toContain("无需密钥");
@@ -958,6 +1428,12 @@ describe("system config shell registration", () => {
     expect(viewSource).toContain("config-llm-node-row-");
     expect(viewSource).toContain("systemConfig.nodeRouteRows");
     expect(viewSource).toContain("saveLlmNodeRoutes");
+    expect(viewSource).toContain("补全节点路由");
+    expect(viewSource).toContain("缺失节点");
+    expect(viewSource).toContain("一键补齐");
+    expect(viewSource).not.toMatch(/[\uE000-\uF8FF]|\u741b\u30e5\u53cf|\u947a\u509c\u5063|\u6d93\u20ac\u95bf|\u7f02\u509a/);
+    expect(storeSource).toContain("syncMissingLlmNodeRoutes");
+    expect(viewSource).not.toContain("config-readiness-grid");
     expect(viewSource).not.toContain("config-api-key-input");
     expect(viewSource).not.toContain("config-provider-test");
     expect(viewSource).not.toContain("systemConfig.apiKeyInput");

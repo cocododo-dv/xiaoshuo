@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import time
 import uuid
 from dataclasses import replace
@@ -16,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import OperationLog, SystemConfigSnapshot, SystemSecret, utcnow
+from novel_system.db.models import LlmCall, OperationLog, SystemConfigSnapshot, SystemSecret, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
@@ -27,6 +28,13 @@ from novel_system.services.llm_client import (
     SUPPORTED_CREDENTIAL_MODES,
     SUPPORTED_PROVIDERS,
     parse_model_routing_config,
+)
+from novel_system.services.llm_node_registry import (
+    active_llm_node_ids,
+    default_task_config_payload,
+    llm_node_catalog,
+    llm_node_statuses,
+    reserved_llm_node_ids,
 )
 from novel_system.services.prompt_builder import PromptConfigurationError, parse_prompt_templates
 
@@ -40,20 +48,7 @@ YAML_CONFIG_FILES = {
 }
 LLM_API_KEY_SECRET_ID = "llm_api_key"
 LLM_PROVIDER_SECRET_PREFIX = "llm_provider"
-LLM_NODE_STATUSES = {
-    "neutral_draft": "active",
-    "style_draft": "active",
-    "style_patch": "active",
-    "hard_qc": "active",
-    "soft_qc": "active",
-    "literary_eval_live": "active",
-    "author_structure_extract": "active",
-    "style_profile_extract": "reserved",
-    "chapter_summary": "reserved",
-    "continuity_compression": "reserved",
-    "archive": "reserved",
-    "chapter_aggregate": "reserved",
-}
+LLM_NODE_STATUSES = llm_node_statuses()
 
 
 def repo_config_dir() -> Path:
@@ -315,15 +310,17 @@ class SystemConfigService:
         timeout_seconds = _float_value(10.0 if timeout_value is None else timeout_value, "timeout_seconds")
         requested_model = _requested_probe_model(provider_payload)
         should_check_completion = bool(requested_model) and _bool_value(provider_payload.get("check_completion", False))
+        trust_env = _httpx_trust_env_for_base_url(base_url)
         started_at = time.perf_counter()
         try:
-            response = httpx.get(f"{base_url}/models", headers=headers, timeout=timeout_seconds)
+            response = httpx.get(f"{base_url}/models", headers=headers, timeout=timeout_seconds, trust_env=trust_env)
         except httpx.RequestError as exc:
             return {
                 "ok": False,
                 "status_code": None,
                 "latency_ms": int((time.perf_counter() - started_at) * 1000),
                 "message": str(exc),
+                "available_models": [],
                 "checks": {
                     "connection": {
                         "ok": False,
@@ -344,11 +341,12 @@ class SystemConfigService:
         }
         if not response.is_success:
             if should_check_completion and requested_model:
-                completion_result = _probe_chat_completion(
+                completion_result = _probe_completion(
                     provider=provider,
                     base_url=base_url,
                     headers=headers,
                     model=str(requested_model),
+                    api_mode=str(provider_payload.get("api_mode") or "chat"),
                     timeout_seconds=timeout_seconds,
                 )
                 checks["completion"] = completion_result
@@ -361,6 +359,7 @@ class SystemConfigService:
                             f"模型 {requested_model} 已通过最小生成探测；"
                             f"/models 不可用：{_provider_error_summary(response)}"
                         ),
+                        "available_models": [],
                         "checks": checks,
                     }
             return {
@@ -368,6 +367,7 @@ class SystemConfigService:
                 "status_code": response.status_code,
                 "latency_ms": latency_ms,
                 "message": _provider_error_summary(response),
+                "available_models": [],
                 "checks": checks,
             }
 
@@ -386,15 +386,17 @@ class SystemConfigService:
                     "status_code": response.status_code,
                     "latency_ms": latency_ms,
                     "message": f"模型 {requested_model} 未在服务返回的模型列表中出现。可用模型：{available_hint}",
+                    "available_models": model_ids,
                     "checks": checks,
                 }
 
         if should_check_completion:
-            completion_result = _probe_chat_completion(
+            completion_result = _probe_completion(
                 provider=provider,
                 base_url=base_url,
                 headers=headers,
                 model=str(requested_model),
+                api_mode=str(provider_payload.get("api_mode") or "chat"),
                 timeout_seconds=timeout_seconds,
             )
             checks["completion"] = completion_result
@@ -404,6 +406,7 @@ class SystemConfigService:
                     "status_code": completion_result.get("status_code") or response.status_code,
                     "latency_ms": int((time.perf_counter() - started_at) * 1000),
                     "message": completion_result["message"],
+                    "available_models": model_ids,
                     "checks": checks,
                 }
 
@@ -417,6 +420,7 @@ class SystemConfigService:
             "status_code": response.status_code,
             "latency_ms": int((time.perf_counter() - started_at) * 1000),
             "message": message,
+            "available_models": model_ids,
             "checks": checks,
         }
 
@@ -436,24 +440,134 @@ class SystemConfigService:
             }
         except LLMConfigurationError:
             node_routes = {}
-        for node_id, status in LLM_NODE_STATUSES.items():
+        node_catalog = llm_node_catalog()
+        for node_id, spec in node_catalog.items():
             node_routes.setdefault(
                 node_id,
                 {
                     "node_id": node_id,
-                    "status": status,
+                    "status": spec["status"],
                     "configured": False,
                 },
             )
-            node_routes[node_id]["status"] = status
+            node_routes[node_id].update(
+                {
+                    "status": spec["status"],
+                    "group": spec["group"],
+                    "label": spec["label"],
+                    "requires_llm": spec["requires_llm"],
+                    "template_name": spec["template_name"],
+                    "order": spec["order"],
+                }
+            )
         _annotate_node_route_readiness(node_routes=node_routes, providers=providers)
+        missing_active_routes = [
+            node_id
+            for node_id in active_llm_node_ids()
+            if node_id in node_routes and not bool(node_routes[node_id].get("configured"))
+        ]
+        blocked_routes = [
+            {
+                "node_id": route.get("node_id"),
+                "group": route.get("group"),
+                "provider_id": route.get("provider_id"),
+                "model": route.get("model"),
+                "reason": route.get("readiness_reason"),
+            }
+            for route in node_routes.values()
+            if _route_requires_llm(route)
+            and route.get("configured")
+            and route.get("ready") is not True
+        ]
         return {
             "provider_catalog": _provider_catalog(),
+            "default_provider_id": llm_payload.get("default_provider_id") or next(iter(providers.keys()), None),
             "providers": providers,
+            "node_catalog": node_catalog,
             "node_routes": node_routes,
+            "missing_active_routes": missing_active_routes,
+            "blocked_routes": blocked_routes,
             "readiness": _llm_readiness_summary(providers=providers, node_routes=node_routes),
             "api_snapshot": api_payload.get("active_snapshot"),
             "models_snapshot": models_payload.get("active_snapshot"),
+        }
+
+    def llm_call_audit(self, *, limit: int = 1000) -> dict[str, Any]:
+        node_catalog = llm_node_catalog()
+        active_nodes = set(active_llm_node_ids())
+        rows = self.session.execute(
+            select(LlmCall)
+            .order_by(LlmCall.created_at.desc(), LlmCall.llm_call_id.desc())
+            .limit(max(1, min(int(limit or 1000), 5000)))
+        ).scalars().all()
+        by_node: dict[str, dict[str, Any]] = {
+            node_id: {
+                "node_id": node_id,
+                "group": node_catalog.get(node_id, {}).get("group"),
+                "requires_llm": True,
+                "call_count": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "latest_provider": None,
+                "latest_provider_id": None,
+                "latest_model": None,
+                "latest_error_code": None,
+                "offline_deterministic_count": 0,
+            }
+            for node_id in active_nodes
+        }
+        offline_required_calls: list[dict[str, Any]] = []
+        for row in rows:
+            node_id = str(row.node_id or row.step or "")
+            if not node_id:
+                continue
+            entry = by_node.setdefault(
+                node_id,
+                {
+                    "node_id": node_id,
+                    "group": node_catalog.get(node_id, {}).get("group"),
+                    "requires_llm": node_id in active_nodes,
+                    "call_count": 0,
+                    "success_count": 0,
+                    "failure_count": 0,
+                    "latest_provider": None,
+                    "latest_provider_id": None,
+                    "latest_model": None,
+                    "latest_error_code": None,
+                    "offline_deterministic_count": 0,
+                },
+            )
+            entry["call_count"] += 1
+            if row.error_code:
+                entry["failure_count"] += 1
+            else:
+                entry["success_count"] += 1
+            if entry["latest_provider"] is None:
+                entry["latest_provider"] = row.provider
+                entry["latest_provider_id"] = row.provider_id
+                entry["latest_model"] = row.model
+                entry["latest_error_code"] = row.error_code
+            if row.provider == "offline_deterministic":
+                entry["offline_deterministic_count"] += 1
+                if node_id in active_nodes:
+                    offline_required_calls.append(
+                        {
+                            "llm_call_id": row.llm_call_id,
+                            "node_id": node_id,
+                            "step": row.step,
+                            "scene_id": row.scene_id,
+                            "chapter_id": row.chapter_id,
+                            "model": row.model,
+                            "created_at": _serialize_datetimeish(row.created_at),
+                        }
+                    )
+        required_matrix = [by_node[node_id] for node_id in active_llm_node_ids()]
+        return {
+            "limit": limit,
+            "required_node_matrix": required_matrix,
+            "offline_deterministic_required_calls": offline_required_calls,
+            "offline_deterministic_required_count": len(offline_required_calls),
+            "nodes_without_calls": [item["node_id"] for item in required_matrix if item["call_count"] == 0],
         }
 
     def save_llm_provider(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
@@ -504,8 +618,35 @@ class SystemConfigService:
             "snapshot": _serialize_snapshot(snapshot),
         }
 
+    def set_default_llm_provider(self, *, provider_id: str, actor_ref: str) -> dict[str, Any]:
+        provider_id = _required_text(provider_id, "provider_id")
+        llm_payload = self._current_api_llm_payload()
+        providers = _provider_payloads_from_llm(llm_payload)
+        if provider_id not in providers:
+            raise DomainError("CONFIG_PROVIDER_NOT_FOUND", f"provider {provider_id} was not found", status_code=404)
+        llm_payload["providers"] = providers
+        llm_payload["default_provider_id"] = provider_id
+        llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
+        llm_payload.setdefault("timeout_seconds", 30.0)
+        snapshot = self._store_config_snapshot(
+            category="api",
+            parsed={"llm": llm_payload},
+            validation={"ok": True, "message": "api config is valid"},
+            status="active",
+            active=True,
+            actor_ref=actor_ref,
+        )
+        self.session.commit()
+        return {
+            "default_provider_id": provider_id,
+            "provider": self._serialize_provider(provider_id, providers[provider_id]),
+            "snapshot": _serialize_snapshot(snapshot),
+        }
+
     def save_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
         config_payload = {
+            "model_profiles": dict(payload.get("model_profiles") or {}),
+            "task_routing": dict(payload.get("task_routing") or {}),
             "node_routing": dict(payload.get("node_routing") or {}),
             "retry_budget": dict(payload.get("retry_budget") or {}),
             "job_runtime": dict(payload.get("job_runtime") or {}),
@@ -526,6 +667,96 @@ class SystemConfigService:
         )
         self.session.commit()
         return {"snapshot": _serialize_snapshot(snapshot)}
+
+    def sync_missing_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
+        overview = self.llm_overview()
+        providers = overview["providers"]
+        llm_payload = self._current_api_llm_payload()
+        provider_id = _optional_text(payload.get("provider_id")) or _optional_text(llm_payload.get("default_provider_id"))
+        if provider_id is None:
+            provider_id = next(iter(providers.keys()), None)
+        if provider_id is None or provider_id not in providers:
+            raise DomainError("CONFIG_PROVIDER_NOT_FOUND", "configure a provider before syncing node routes", status_code=422)
+
+        provider = providers[provider_id]
+        if not _provider_view_ready(provider):
+            raise DomainError(
+                "CONFIG_ROUTE_PROVIDER_NOT_READY",
+                f"provider {provider_id} is not ready; enable it and configure credentials first",
+                status_code=422,
+            )
+        models = _normalize_provider_model_ids(provider.get("models") or [])
+        model = _optional_text(payload.get("model")) or (models[0] if models else None)
+        if not model:
+            raise DomainError(
+                "CONFIG_ROUTE_MODEL_MISSING",
+                f"provider {provider_id} has no models; probe or fill the model list first",
+                status_code=422,
+            )
+        if models and model not in models:
+            raise DomainError(
+                "CONFIG_ROUTE_MODEL_MISSING",
+                f"model {model} is not listed by provider {provider_id}",
+                status_code=422,
+            )
+
+        current_models = dict(self._category_payload("models").get("parsed") or {})
+        node_routing = dict(current_models.get("node_routing") or {})
+        task_routing = dict(current_models.get("task_routing") or {})
+        config_payload = {
+            "model_profiles": dict(current_models.get("model_profiles") or {}),
+            "task_routing": task_routing,
+            "node_routing": node_routing,
+            "retry_budget": dict(current_models.get("retry_budget") or {}),
+            "job_runtime": dict(current_models.get("job_runtime") or {}),
+        }
+        synced_node_ids: list[str] = []
+        provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
+        account_id = _optional_text(provider.get("account_id"))
+        api_mode = _optional_text(provider.get("api_mode")) or "responses"
+        credential_mode = _optional_text(provider.get("credential_mode"))
+        for node_id in active_llm_node_ids():
+            route = overview["node_routes"].get(node_id) or {}
+            needs_sync = (
+                not bool(route.get("configured"))
+                or not _optional_text(route.get("provider_id"))
+                or not _optional_text(route.get("model"))
+                or route.get("ready") is not True
+            )
+            if not needs_sync:
+                continue
+            node_routing[node_id] = default_task_config_payload(
+                node_id,
+                provider_id=provider_id,
+                provider=provider_type,
+                model=model,
+                account_id=account_id,
+                api_mode=api_mode,
+                credential_mode=credential_mode,
+            )
+            synced_node_ids.append(node_id)
+
+        routing_config = parse_model_routing_config(config_payload)
+        activate = _bool_value(payload.get("activate", False))
+        if activate:
+            _validate_activating_node_route_bindings(
+                node_routing=routing_config.node_routing,
+                providers=providers,
+            )
+        snapshot = self._store_config_snapshot(
+            category="models",
+            parsed=config_payload,
+            validation={"ok": True, "message": "models config is valid"},
+            status="active" if activate else "draft",
+            active=activate,
+            actor_ref=actor_ref,
+        )
+        self.session.commit()
+        return {
+            "snapshot": _serialize_snapshot(snapshot),
+            "synced_node_ids": synced_node_ids,
+            "overview": self.llm_overview(),
+        }
 
     def probe_llm_provider(self, *, provider_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         llm_payload = self._current_api_llm_payload()
@@ -677,7 +908,7 @@ class SystemConfigService:
             "enabled": _bool_value(payload.get("enabled", True)),
             "credential_mode": credential_mode,
             "api_mode": payload.get("api_mode", "chat"),
-            "models": list(payload.get("models") or []),
+            "models": _normalize_provider_model_ids(payload.get("models") or []),
             "provider_options": dict(payload.get("provider_options") or {}),
             "secret": secret_status,
         }
@@ -769,6 +1000,14 @@ def _serialize_snapshot(snapshot: SystemConfigSnapshot) -> dict[str, Any]:
     }
 
 
+def _serialize_datetimeish(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
 def _ensure_category(category: str) -> None:
     if category not in CONFIG_CATEGORIES:
         raise DomainError("CONFIG_CATEGORY_UNSUPPORTED", f"unsupported config category {category}", status_code=404)
@@ -852,6 +1091,21 @@ def _normalize_provider_base_url(value: Any, provider: Any | None = None) -> str
     return base_url
 
 
+def _httpx_trust_env_for_base_url(base_url: str) -> bool:
+    try:
+        hostname = urlsplit(base_url).hostname
+    except ValueError:
+        return True
+    if not hostname:
+        return True
+    if hostname.lower() == "localhost":
+        return False
+    try:
+        return not ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return True
+
+
 def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     provider_id = _required_text(payload.get("provider_id"), "provider_id")
     provider_type = str(payload.get("provider_type") or payload.get("provider") or "").strip()
@@ -873,7 +1127,7 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "enabled": _bool_value(payload.get("enabled", True)),
         "credential_mode": credential_mode,
         "api_mode": str(payload.get("api_mode") or ("responses" if provider_type in {"openai", "openai_compatible"} else "chat")),
-        "models": [str(model) for model in models if isinstance(model, str) and model.strip()],
+        "models": _normalize_provider_model_ids(models),
         "provider_options": dict(provider_options),
     }
 
@@ -925,7 +1179,8 @@ def _none_secret_status() -> dict[str, Any]:
 
 
 def _serialize_task_config(node_id: str, task_config) -> dict[str, Any]:
-    return {
+    spec = llm_node_catalog().get(node_id, {})
+    payload = {
         "node_id": node_id,
         "status": LLM_NODE_STATUSES.get(node_id, "active"),
         "configured": True,
@@ -941,6 +1196,20 @@ def _serialize_task_config(node_id: str, task_config) -> dict[str, Any]:
         "credential_mode": task_config.credential_mode,
         "provider_options": task_config.provider_options,
     }
+    if spec:
+        payload.update(
+            {
+                "status": spec["status"],
+                "group": spec["group"],
+                "label": spec["label"],
+                "requires_llm": spec["requires_llm"],
+                "template_name": spec["template_name"],
+                "order": spec["order"],
+            }
+        )
+    else:
+        payload.setdefault("requires_llm", True)
+    return payload
 
 
 def _provider_view_ready(provider: dict[str, Any]) -> bool:
@@ -958,7 +1227,7 @@ def _route_readiness(route: dict[str, Any], providers: dict[str, dict[str, Any]]
     provider_id = _optional_text(route.get("provider_id"))
     model = _optional_text(route.get("model"))
     configured = bool(route.get("configured") or provider_id or model)
-    if status == "reserved":
+    if status == "reserved" or route.get("requires_llm") is False:
         return {
             "ready": False,
             "provider_ready": False,
@@ -1002,7 +1271,7 @@ def _route_readiness(route: dict[str, Any], providers: dict[str, dict[str, Any]]
             "model_missing": True,
             "readiness_reason": "model_missing",
         }
-    models = [str(model) for model in provider.get("models") or []]
+    models = _normalize_provider_model_ids(provider.get("models") or [])
     model_missing = bool(models and model not in models)
     ready = provider_ready and not model_missing
     reason = "ready"
@@ -1028,6 +1297,10 @@ def _annotate_node_route_readiness(
         route.update(_route_readiness(route, providers))
 
 
+def _route_requires_llm(route: dict[str, Any]) -> bool:
+    return str(route.get("status") or "active") == "active" and route.get("requires_llm") is not False
+
+
 def _llm_readiness_summary(
     *,
     providers: dict[str, dict[str, Any]],
@@ -1035,18 +1308,18 @@ def _llm_readiness_summary(
 ) -> dict[str, Any]:
     provider_count = len(providers)
     active_provider_count = sum(1 for provider in providers.values() if _provider_view_ready(provider))
-    active_routes = [
+    active_routes = [route for route in node_routes.values() if _route_requires_llm(route)]
+    configured_routes = [
         route
-        for route in node_routes.values()
-        if route.get("status") != "reserved"
-        and (route.get("configured") or route.get("provider_id") or route.get("model"))
+        for route in active_routes
+        if route.get("configured") or route.get("provider_id") or route.get("model")
     ]
     ready_routes = [route for route in active_routes if route.get("ready") is True]
     blocked_routes = [route for route in active_routes if route.get("ready") is not True]
     return {
         "provider_count": provider_count,
         "active_provider_count": active_provider_count,
-        "configured_route_count": len(active_routes),
+        "configured_route_count": len(configured_routes),
         "active_route_count": len(active_routes),
         "ready_route_count": len(ready_routes),
         "blocked_route_count": len(blocked_routes),
@@ -1071,8 +1344,9 @@ def _validate_activating_node_route_bindings(
     missing_bindings: list[str] = []
     missing_models: list[str] = []
     not_ready_providers: list[str] = []
+    reserved_nodes = reserved_llm_node_ids()
     for node_id, task_config in node_routing.items():
-        if LLM_NODE_STATUSES.get(node_id) == "reserved":
+        if node_id in reserved_nodes:
             continue
         provider_id = task_config.provider_id
         if not provider_id or provider_id not in providers:
@@ -1080,7 +1354,7 @@ def _validate_activating_node_route_bindings(
             continue
         if not _provider_view_ready(providers[provider_id]):
             not_ready_providers.append(f"{node_id}:{provider_id}")
-        models = [str(model) for model in providers[provider_id].get("models") or []]
+        models = _normalize_provider_model_ids(providers[provider_id].get("models") or [])
         if not _optional_text(task_config.model):
             missing_models.append(f"{node_id}:{provider_id}:missing_model")
         elif models and task_config.model not in models:
@@ -1188,6 +1462,43 @@ def _requested_probe_model(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _contains_cjk(value: str) -> bool:
+    return any(
+        "\u3400" <= char <= "\u9fff" or "\uf900" <= char <= "\ufaff"
+        for char in value
+    )
+
+
+def _looks_like_provider_model_id(value: str) -> bool:
+    text = value.strip()
+    return bool(text) and not _contains_cjk(text) and not any(char.isspace() for char in text) and any(char.isalnum() for char in text)
+
+
+def _normalize_provider_model_id(value: str) -> str:
+    text = value.strip()
+    if "/" not in text:
+        return text
+    prefix, suffix = text.split("/", 1)
+    suffix = suffix.strip()
+    if _contains_cjk(prefix) and _looks_like_provider_model_id(suffix):
+        return suffix
+    return text
+
+
+def _normalize_provider_model_ids(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple)):
+        return []
+    return list(
+        dict.fromkeys(
+            normalized
+            for model in values
+            if isinstance(model, str)
+            for normalized in [_normalize_provider_model_id(model)]
+            if normalized
+        )
+    )
+
+
 def _extract_model_ids(response: httpx.Response) -> list[str]:
     try:
         payload = response.json()
@@ -1207,55 +1518,95 @@ def _extract_model_ids(response: httpx.Response) -> list[str]:
     model_ids: list[str] = []
     for item in candidates:
         if isinstance(item, str):
-            model_ids.append(item)
+            normalized = _normalize_provider_model_id(item)
+            if normalized:
+                model_ids.append(normalized)
         elif isinstance(item, dict):
             for key in ("id", "name", "model"):
                 value = _optional_text(item.get(key))
                 if value:
-                    model_ids.append(value)
+                    normalized = _normalize_provider_model_id(value)
+                    if normalized:
+                        model_ids.append(normalized)
                     break
     return list(dict.fromkeys(model_ids))
 
 
-def _probe_chat_completion(
+def _probe_completion(
     *,
     provider: str,
     base_url: str,
     headers: dict[str, str],
     model: str,
+    api_mode: str,
     timeout_seconds: float,
 ) -> dict[str, Any]:
     if provider not in {"openai", "openai_compatible", "deepseek", "zhipu_glm"}:
         return {
             "ok": None,
             "status_code": None,
+            "api_mode": api_mode,
+            "endpoint": None,
             "message": f"completion check skipped for provider {provider}",
+        }
+    normalized_api_mode = "responses" if provider in {"openai", "openai_compatible"} and api_mode == "responses" else "chat"
+    endpoint = "/responses" if normalized_api_mode == "responses" else "/chat/completions"
+    if normalized_api_mode == "responses":
+        request_json = {
+            "model": model,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "ping"}],
+                }
+            ],
+            "temperature": 0,
+            "max_output_tokens": 8,
+        }
+    else:
+        request_json = {
+            "model": model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "temperature": 0,
+            "max_tokens": 8,
+            "stream": False,
         }
     try:
         response = httpx.post(
-            f"{base_url}/chat/completions",
+            f"{base_url}{endpoint}",
             headers=headers,
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": "ping"}],
-                "temperature": 0,
-                "max_tokens": 8,
-                "stream": False,
-            },
+            json=request_json,
             timeout=timeout_seconds,
+            trust_env=_httpx_trust_env_for_base_url(base_url),
         )
     except httpx.RequestError as exc:
         return {
             "ok": False,
             "status_code": None,
+            "api_mode": normalized_api_mode,
+            "endpoint": endpoint,
             "message": str(exc),
         }
-    return {
+    result = {
         "ok": response.is_success,
         "status_code": response.status_code,
         "model": model,
-        "message": "minimal completion succeeded" if response.is_success else _provider_error_summary(response),
+        "api_mode": normalized_api_mode,
+        "endpoint": endpoint,
+        "message": "minimal completion succeeded" if response.is_success else _completion_error_summary(response, api_mode=normalized_api_mode, endpoint=endpoint),
     }
+    if response.status_code == 404 and normalized_api_mode == "responses":
+        result["next_action"] = "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider"
+    return result
+
+
+def _completion_error_summary(response: httpx.Response, *, api_mode: str, endpoint: str) -> str:
+    if response.status_code == 404 and api_mode == "responses" and endpoint == "/responses":
+        return (
+            "Responses API endpoint returned 404; this provider or relay may only support Chat Completions. "
+            "Set api_mode to chat and sync node routes, or use a provider that supports the Responses API."
+        )
+    return _provider_error_summary(response)
 
 
 def _provider_error_summary(response: httpx.Response) -> str:

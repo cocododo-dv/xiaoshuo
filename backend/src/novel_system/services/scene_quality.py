@@ -25,7 +25,9 @@ from novel_system.db.models import (
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import analyze_literary_quality
+from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.source_safety import scan_source_safety
+from novel_system.settings import get_settings
 
 
 CONTRACT_VERSION = "scene_quality_contract_v1"
@@ -274,13 +276,25 @@ class SceneAutoRewriteService:
         )
 
         if branch in {"full_scene", "local_patch"}:
-            llm_call_id = self._persist_offline_llm_call(scene, branch=branch, contract=contract)
+            candidate_content = None
+            if get_settings().llm_enabled:
+                llm_call_id, candidate_content = self._generate_llm_candidate(
+                    scene=scene,
+                    source_final=source_final,
+                    contract=contract,
+                    branch=branch,
+                    diagnosis=diagnosis,
+                    gate_results=gate_results,
+                )
+            else:
+                llm_call_id = self._persist_offline_llm_call(scene, branch=branch, contract=contract)
             candidate_row_id = self._persist_candidate_draft(
                 scene=scene,
                 source_final=source_final,
                 contract=contract,
                 branch=branch,
                 llm_call_id=llm_call_id,
+                content_override=candidate_content,
             )
             if not gate_results["promotable"]:
                 status = "blocked"
@@ -477,6 +491,95 @@ class SceneAutoRewriteService:
         self.session.flush()
         return llm_call_id
 
+    def _generate_llm_candidate(
+        self,
+        *,
+        scene: SceneCard,
+        source_final: FinalScene | None,
+        contract: SceneQualityContract,
+        branch: str,
+        diagnosis: dict[str, Any],
+        gate_results: dict[str, Any],
+    ) -> tuple[str, str]:
+        snapshot = {
+            "scene_id": scene.scene_id,
+            "chapter_id": scene.chapter_id,
+            "branch": branch,
+            "contract": contract.payload_json or {},
+            "source_text": source_final.content if source_final else "",
+            "diagnosis": diagnosis,
+            "gate_results": gate_results,
+            "constraints": {
+                "preserve_facts": True,
+                "preserve_required_terms": scene.must_include_text,
+                "forbidden_text": scene.forbidden_text,
+                "return_complete_scene_text": branch == "full_scene",
+            },
+        }
+        user_prompt = canonical_json(snapshot)
+        prompt = {
+            "template_name": "scene_auto_rewrite",
+            "template_version": "runtime_v1",
+            "system_prompt": (
+                "You are a senior fiction revision model. Rewrite only within the supplied facts, "
+                "preserve protected names and required evidence, and return JSON."
+            ),
+            "user_prompt": user_prompt,
+            "structured_schema": {
+                "type": "object",
+                "properties": {
+                    "scene_text": {"type": "string"},
+                    "rewrite_notes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["scene_text"],
+                "additionalProperties": True,
+            },
+            "prompt_hash": _hash_json({"template_name": "scene_auto_rewrite", "snapshot": snapshot}),
+            "token_budget": {
+                "target_input_tokens": 6000,
+                "estimated_input_tokens": 0,
+                "remaining_input_tokens": 6000,
+                "split_scene_recommended": False,
+                "continuity_warning": None,
+            },
+        }
+        try:
+            result = LLMNodeRunner(self.session).run(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                bundle_id=f"scene_auto_rewrite:{scene.scene_id}:{contract.contract_id}",
+                bundle_hash=contract.contract_hash,
+                node_id="scene_auto_rewrite",
+                step="scene_auto_rewrite",
+                prompt=prompt,
+                user_prompt=user_prompt,
+                offline_client_factory=lambda: None,
+                source_draft_content=source_final.content if source_final else None,
+            )
+        except LLMNodeExecutionError as exc:
+            raise DomainError(
+                "SCENE_AUTO_REWRITE_LLM_FAILED",
+                exc.message,
+                status_code=409,
+                details={
+                    "llm_call_id": exc.llm_call_id,
+                    "node_id": "scene_auto_rewrite",
+                    "error_code": exc.error_code,
+                    "next_action": "configure_scene_auto_rewrite_route_and_retry",
+                    "response_summary": exc.response_summary,
+                },
+            ) from exc
+        structured = result.response.structured_output or {}
+        scene_text = structured.get("scene_text")
+        if not isinstance(scene_text, str) or not scene_text.strip():
+            raise DomainError(
+                "SCENE_AUTO_REWRITE_EMPTY",
+                "scene_auto_rewrite returned no scene_text",
+                status_code=502,
+                details={"llm_call_id": result.llm_call_id, "node_id": "scene_auto_rewrite"},
+            )
+        return result.llm_call_id, scene_text.strip()
+
     def _persist_candidate_draft(
         self,
         *,
@@ -485,9 +588,10 @@ class SceneAutoRewriteService:
         contract: SceneQualityContract,
         branch: str,
         llm_call_id: str,
+        content_override: str | None = None,
     ) -> str:
         row_id = f"draft_auto_rewrite_{scene.scene_id}_{uuid.uuid4().hex[:10]}"
-        content = _candidate_content(
+        content = content_override or _candidate_content(
             source_text=source_final.content if source_final else "",
             contract=contract.payload_json or {},
             branch=branch,

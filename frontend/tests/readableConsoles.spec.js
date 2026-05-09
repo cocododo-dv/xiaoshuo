@@ -163,6 +163,8 @@ describe("user-facing Chinese readability guard", () => {
       "src/router.js",
       "src/components/CursorPager.vue",
       "src/stores/workbench.js",
+      "src/stores/writerRoom.js",
+      "src/views/WriterRoomView.vue",
       "src/views/ReferenceLearningView.vue",
       "src/views/AuthorWorkspaceView.vue",
       "src/views/SceneWorkbenchView.vue",
@@ -174,16 +176,16 @@ describe("user-facing Chinese readability guard", () => {
       "src/views/SystemConfigView.vue",
     ];
     const mojibakeFingerprints = [
-      "浣滆",
-      "鍦烘",
-      "瀹℃",
-      "鏆傛",
-      "涓婁竴",
-      "鐭ヨ",
-      "绱㈠",
-      "鍙傝",
-      "鎿嶄",
-      "鍚",
+      "\u5a34\uff43\u7c8f",
+      "\u95b8\uffe3\u5124",
+      "\u940e\u5149\u525d",
+      "\u95ba\u55d7\u5039",
+      "\u5a11\u6493\ufe63\u7ed4?",
+      "\u95bb\ue145\u5134",
+      "\u7f01\u4fbf\u57b9",
+      "\u95b8\u6b0f\u503d",
+      "\u95b9\u57ae\u79f3",
+      "\u95b8\u6c3c\u57b0",
     ];
     const offenders = [];
 

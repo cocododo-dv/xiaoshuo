@@ -115,7 +115,7 @@ class Resolver:
         ).scalars().all()
 
     def resolve_active_calibration_lines(self, session: Session, scene: SceneCard) -> list[CalibrationLine]:
-        return session.execute(
+        rows = session.execute(
             select(CalibrationLine)
             .where(
                 CalibrationLine.active_flag == 1,
@@ -124,6 +124,8 @@ class Resolver:
             )
             .order_by(CalibrationLine.created_at.asc(), CalibrationLine.row_id.asc())
         ).scalars().all()
+        scoped_rows = [row for row in rows if row.scope in {"chapter", "scene"}]
+        return scoped_rows or rows
 
     def resolve_open_foreshadow_trackers(self, session: Session, scene: SceneCard) -> list[ForeshadowTracker]:
         return session.execute(

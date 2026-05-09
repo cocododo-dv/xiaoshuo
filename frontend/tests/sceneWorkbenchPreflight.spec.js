@@ -165,6 +165,10 @@ describe("scene workbench preflight view wiring", () => {
     const source = readFileSync(new URL("../src/views/SceneWorkbenchView.vue", import.meta.url), "utf8");
 
     expect(source).toContain('data-testid="scene-run-preflight-card"');
+    expect(source).toContain('data-testid="scene-execution-contract-card"');
+    expect(source).toContain('data-testid="scene-execution-contract-button"');
+    expect(source).toContain('data-testid="scene-triage-button"');
+    expect(source).toContain('data-testid="scene-triage-preview"');
     expect(source).toContain('data-testid="scene-run-preflight-blocking"');
     expect(source).toContain('data-testid="scene-run-preflight-warning"');
     expect(source).toContain('data-testid="scene-run-preflight-context"');
@@ -175,6 +179,8 @@ describe("scene workbench preflight view wiring", () => {
     expect(source).toContain("runPreflight");
     expect(source).toContain("missingDependencies");
     expect(source).toContain("constraintConflicts");
+    expect(source).toContain("executionContract");
+    expect(source).toContain("triagePreview");
     expect(source).toContain("item.detail");
     expect(source).toContain("item.technical_hint");
     expect(source).toContain("!runPreflight.can_run");

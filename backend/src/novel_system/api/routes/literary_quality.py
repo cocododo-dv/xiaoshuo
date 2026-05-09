@@ -36,3 +36,13 @@ def literary_quality_analyze_text(
 ):
     payload = LiteraryQualityService(session).analyze_text(payload)
     return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/literary-quality/chapter-set-review")
+def literary_quality_chapter_set_review(
+    payload: dict,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    payload = LiteraryQualityService(session).chapter_set_review(payload)
+    return ok(payload, req_id=getattr(request.state, "request_id", None))

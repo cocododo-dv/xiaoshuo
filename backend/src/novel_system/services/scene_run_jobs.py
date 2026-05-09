@@ -13,6 +13,7 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.errors import DomainError
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.scene_run_preflight import SceneRunPreflightService
 
 JOB_TYPE_SCENE_FULL = "scene_run_full"
 SCENE_RUN_STAGE_ORDER = [
@@ -35,28 +36,39 @@ class SceneRunJobService:
 
     def create_job(self, scene_id: str, *, actor_ref: str = "operator") -> ChapterRunJob:
         scene = AuthorLifecycleService(self.session).require_active_scene(scene_id)
+        run_preflight = SceneRunPreflightService(self.session).build(scene, {})
+        can_run = bool(run_preflight.get("can_run"))
+        current_step = "queued" if can_run else "preflight_blocked"
+        status = "queued" if can_run else "blocked"
+        first_blocker = _first_preflight_blocker(run_preflight)
         now = utcnow()
         job = ChapterRunJob(
             job_id=f"scene_run_{scene_id}_{uuid4().hex[:10]}",
             chapter_id=scene.chapter_id,
-            status="queued",
+            status=status,
             job_type=JOB_TYPE_SCENE_FULL,
             payload_json={
                 "scene_id": scene_id,
                 "actor_ref": actor_ref,
-                "current_step": "queued",
+                "current_step": current_step,
                 "stage_order": SCENE_RUN_STAGE_ORDER,
                 "lock_wait_ms": 0,
+                "run_preflight_status": run_preflight.get("overall_status"),
             },
             result_summary_json={
                 "scene_id": scene_id,
-                "current_step": "queued",
+                "current_step": current_step,
                 "latest_qc": None,
                 "needs_human_review": False,
+                "run_preflight": run_preflight,
+                "next_action": _preflight_next_action(run_preflight) if not can_run else None,
             },
             worker_id=None,
             attempt_no=0,
             heartbeat_at=now,
+            finished_at=now if not can_run else None,
+            error_code=first_blocker.get("code") if first_blocker else None,
+            error_text=first_blocker.get("detail") or first_blocker.get("technical_hint") if first_blocker else None,
         )
         self.session.add(job)
         self.session.flush()
@@ -90,6 +102,7 @@ class SceneRunJobService:
             "needs_human_review": bool(summary.get("needs_human_review")),
             "error_code": job.error_code,
             "error_text": job.error_text,
+            "run_preflight": summary.get("run_preflight"),
             "result_summary": summary,
         }
 
@@ -140,13 +153,23 @@ class SceneRunJobService:
         ).scalars().first()
         if report is None:
             return None
+        issues = report.issues_json or []
+        issue_keys: list[str] = []
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            key = str(issue.get("issue_key") or issue.get("dimension") or issue.get("code") or "").strip()
+            if key and key not in issue_keys:
+                issue_keys.append(key)
         return {
             "qc_report_id": report.qc_report_id,
             "qc_type": report.qc_type,
             "pass_flag": None if report.pass_flag is None else bool(report.pass_flag),
             "resolution_code": report.resolution_code,
             "next_action": report.next_action,
-            "issues": report.issues_json or [],
+            "issues": issues,
+            "issue_keys": issue_keys,
+            "primary_issue_key": issue_keys[0] if issue_keys else None,
         }
 
     @staticmethod
@@ -156,6 +179,40 @@ class SceneRunJobService:
     @staticmethod
     def _update_summary(job: ChapterRunJob, **updates: Any) -> None:
         job.result_summary_json = {**dict(job.result_summary_json or {}), **updates}
+
+
+def _first_preflight_blocker(run_preflight: dict[str, Any]) -> dict[str, Any]:
+    blockers = run_preflight.get("blocking_items") or []
+    if blockers:
+        return dict(blockers[0] or {})
+    conflicts = run_preflight.get("constraint_conflicts") or []
+    if conflicts:
+        conflict = dict(conflicts[0] or {})
+        return {
+            "code": "SCENE_CONSTRAINT_CONFLICT",
+            "detail": conflict.get("human_readable_reason") or "scene constraint conflict",
+            "technical_hint": f"{conflict.get('required_source')} conflicts with {conflict.get('forbidden_source')}",
+        }
+    dependencies = run_preflight.get("missing_dependencies") or []
+    if dependencies:
+        dependency = dict(dependencies[0] or {})
+        return {
+            "code": dependency.get("blocking_code") or "SCENE_DEPENDENCY_MISSING",
+            "detail": f"missing dependency: {dependency.get('lineage_key') or dependency.get('dependency_type')}",
+            "technical_hint": dependency.get("lineage_key"),
+        }
+    return {}
+
+
+def _preflight_next_action(run_preflight: dict[str, Any]) -> str:
+    actions = run_preflight.get("create_actions") or []
+    if actions:
+        labels = [str(action.get("label") or action.get("action") or "").strip() for action in actions[:2]]
+        labels = [item for item in labels if item]
+        if labels:
+            return "Create or release missing knowledge cards: " + "; ".join(labels)
+    blocker = _first_preflight_blocker(run_preflight)
+    return str(blocker.get("detail") or blocker.get("technical_hint") or "Resolve preflight blockers before running.")
 
 
 def start_scene_run_job_worker(job_id: str) -> None:

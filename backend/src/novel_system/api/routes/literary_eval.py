@@ -73,11 +73,11 @@ def _generator_for_mode(mode: str, *, model: str | None):
         )
 
     routing = load_model_routing_config()
-    task_config = routing.node_routing.get("literary_eval_live") or routing.node_routing.get("style_draft")
+    task_config = routing.node_routing.get("literary_eval_live")
     if task_config is None and model is None:
         raise DomainError(
             "LITERARY_EVAL_LIVE_MODEL_MISSING",
-            "Live literary eval requires a model override or task_routing.stylize.",
+            "Live literary eval requires a model override or a configured literary_eval_live node route.",
             status_code=400,
         )
     provider_configs = load_llm_provider_runtime_configs()

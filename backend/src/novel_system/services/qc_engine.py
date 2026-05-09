@@ -189,9 +189,55 @@ def _terms_from_qc_text(text: str) -> list[str]:
     return unique
 
 
+QC_TERM_CHANGE_MARKERS = (
+    "replace",
+    "remove",
+    "delete",
+    "avoid",
+    "forbid",
+    "forbidden",
+    "rename",
+    "change",
+    "cut",
+    "neutral clue",
+    "neutralize",
+    "substitute",
+    "替换",
+    "删除",
+    "去掉",
+    "拿掉",
+    "避免",
+    "不要",
+    "不得",
+    "禁用",
+    "改成",
+    "改掉",
+    "改写",
+    "换成",
+)
+
+
+def _qc_text_requests_term_change(text: str, term: str) -> bool:
+    if not text or not term:
+        return False
+    lowered = text.lower()
+    normalized_term = term.lower()
+    start = 0
+    while True:
+        index = lowered.find(normalized_term, start)
+        if index < 0:
+            return False
+        window = lowered[max(0, index - 48) : index + len(normalized_term) + 48]
+        if any(marker in window for marker in QC_TERM_CHANGE_MARKERS):
+            return True
+        start = index + len(normalized_term)
+
+
 def _constraint_conflicts_for_text(scene: SceneCard, text: str) -> list[dict[str, Any]]:
     conflicts: list[dict[str, Any]] = []
     for term in _terms_from_qc_text(text):
+        if not _qc_text_requests_term_change(text, term):
+            continue
         for source_name, source_text in _named_scene_card_source_texts(scene):
             if term in source_text:
                 conflicts.append(

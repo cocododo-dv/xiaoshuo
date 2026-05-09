@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,11 @@ const SOURCE_ROOT = process.cwd();
 
 function readSource(relativePath) {
   return readFileSync(path.join(SOURCE_ROOT, relativePath), "utf8");
+}
+
+function readApiLayerSource() {
+  const dir = path.join(SOURCE_ROOT, "src/lib/api");
+  return readdirSync(dir).filter(f => f.endsWith(".js")).map(f => readFileSync(path.join(dir, f), "utf8")).join("\n");
 }
 
 describe("literary quality engine console", () => {
@@ -24,7 +29,7 @@ describe("literary quality engine console", () => {
   });
 
   it("exposes overview and literary eval API helpers", () => {
-    const apiSource = readSource("src/lib/api.js");
+    const apiSource = readApiLayerSource();
 
     expect(apiSource).toContain("fetchLiteraryQualityOverview");
     expect(apiSource).toContain("/api/v1/literary-quality/overview");
@@ -33,6 +38,8 @@ describe("literary quality engine console", () => {
     expect(apiSource).toContain('minSeverity: "min_severity"');
     expect(apiSource).toContain("analyzeLiteraryQualityText");
     expect(apiSource).toContain("/api/v1/literary-quality/analyze-text");
+    expect(apiSource).toContain("runLiteraryQualityChapterSetReview");
+    expect(apiSource).toContain("/api/v1/literary-quality/chapter-set-review");
     expect(apiSource).toContain("fetchLiteraryEvalLatest");
     expect(apiSource).toContain("runLiteraryEval");
   });
@@ -45,6 +52,9 @@ describe("literary quality engine console", () => {
     expect(source).toContain('defineStore("literaryQuality"');
     expect(source).toContain("fetchLiteraryQualityOverview");
     expect(source).toContain("analyzeLiteraryQualityText");
+    expect(source).toContain("runLiteraryQualityChapterSetReview");
+    expect(source).toContain("chapterSetReview");
+    expect(source).toContain("runChapterSetReview");
     expect(source).toContain("fetchLiteraryEvalLatest");
     expect(source).toContain("runLiteraryEval");
     expect(source).toContain("overviewItems");
@@ -64,6 +74,7 @@ describe("literary quality engine console", () => {
 
     expect(source).toContain('data-testid="literary-quality-view"');
     expect(source).toContain('data-testid="quality-tab-overview"');
+    expect(source).toContain('data-testid="quality-tab-chapter-set"');
     expect(source).toContain('data-testid="quality-tab-benchmark"');
     expect(source).toContain('data-testid="quality-filters"');
     expect(source).toContain('data-testid="quality-filter-risk-type"');
@@ -75,6 +86,12 @@ describe("literary quality engine console", () => {
     expect(source).toContain('data-testid="quality-fingerprint-summary"');
     expect(source).toContain('data-testid="quality-overview-items"');
     expect(source).toContain('data-testid="quality-eval-report"');
+    expect(source).toContain('data-testid="quality-chapter-set-review"');
+    expect(source).toContain('data-testid="quality-chapter-set-input"');
+    expect(source).toContain('data-testid="quality-chapter-set-run"');
+    expect(source).toContain('data-testid="quality-chapter-set-scores"');
+    expect(source).toContain('data-testid="quality-chapter-set-patterns"');
+    expect(source).toContain('data-testid="quality-chapter-set-safety"');
     expect(source).toContain("model_voice");
     expect(source).toContain("image_homogeneity");
     expect(source).toContain("repetitive_action");

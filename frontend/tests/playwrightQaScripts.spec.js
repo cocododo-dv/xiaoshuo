@@ -10,6 +10,7 @@ const QA_ROOTS = [
   path.resolve(process.cwd(), "../output/playwright/longzu-three-chapter-qa-20260422-111535"),
 ];
 const FULL_CLOUD_RUNNER = path.resolve(process.cwd(), "../scripts/run-longzu-full-cloud-qa.cjs");
+const CURRENT_DB_RUNNER = path.resolve(process.cwd(), "../scripts/run-currentdb-three-chapter-qa.cjs");
 const require = createRequire(import.meta.url);
 
 describe("three-chapter QA script portability", () => {
@@ -113,5 +114,53 @@ describe("three-chapter QA script portability", () => {
     expect(chapterScores.CHOR01.languageTexture).toBeGreaterThanOrEqual(8);
     expect(chapterScores.CHOR01.manualRemark).toBe("人工复核：保留克制感。");
     expect(scoring.buildExperienceScores()["review inbox"].note).toContain("校验");
+  });
+
+  it("defines the current-DB three-chapter QA runner with unique artifacts and safety scans", () => {
+    const script = readFileSync(CURRENT_DB_RUNNER, "utf8");
+
+    expect(script).toContain("currentdb-three-chapter-qa-");
+    expect(script).toContain("玻璃雨停在零点");
+    expect(script).toContain("C:\\\\Users\\\\duwei\\\\Downloads\\\\龙族.txt");
+    expect(script).toContain("segments_only");
+    expect(script).toContain("protectedTerms");
+    expect(script).toContain("/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs");
+    expect(script).toContain("/api/v1/literary-quality/chapter-set-review");
+    expect(script).toContain("qa-live-results.json");
+    expect(script).toContain("final-scenes.json");
+    expect(script).toContain("report.md");
+    expect(script).toContain("layoutFindings");
+    expect(script).toContain("collectLayoutFindings");
+    expect(script).toContain("资深创作者体验审查");
+    expect(script).toContain("开发根因与修复");
+    expect(script).not.toContain("http://127.0.0.1:8000");
+  });
+
+  it("lets the current-DB QA runner reset author state before a from-zero run", () => {
+    const script = readFileSync(CURRENT_DB_RUNNER, "utf8");
+
+    expect(script).toContain("QA_RESET_AUTHOR_STATE");
+    expect(script).toContain("QA_MANAGE_DEV_SERVICES");
+    expect(script).toContain("python -m alembic upgrade head");
+    expect(script).toContain("novel_system.tools.reset_author_state");
+    expect(script).toContain("--execute");
+    expect(script).toContain("start-dev.cmd");
+    expect(script).toContain("isWindowsCommandScript");
+    expect(script).toContain("cmd.exe");
+    expect(script).toContain("stdioMode");
+    expect(script).toContain("作者态重置");
+    expect(script).toContain("resetAuthorState");
+    expect(script).toContain("QA_ASSUME_SERVICES_STOPPED");
+  });
+
+  it("treats missing reference profiles and current-run blockers as first-class QA evidence", () => {
+    const script = readFileSync(CURRENT_DB_RUNNER, "utf8");
+
+    expect(script).toContain("reference learning did not produce a ready profile");
+    expect(script).toContain("throwReferenceLearningBlocker");
+    expect(script).toContain("deriveCurrentRunBlockerFindings");
+    expect(script).toContain("currentRunBlockers");
+    expect(script).toContain("run-log.ndjson");
+    expect(script).not.toContain("latest QA stopped after four scene attempts");
   });
 });

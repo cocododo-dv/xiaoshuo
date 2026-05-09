@@ -215,6 +215,54 @@ def test_apply_context_budget_compresses_calibration_and_digest_context_before_s
     assert "Second calibration line." not in result["user_prompt"]
 
 
+def test_apply_context_budget_uses_task_aware_preservation_policy() -> None:
+    snapshot = _bundle_snapshot()
+    snapshot["inline_digests"].update(
+        {
+            "style_profile": "STYLE_FEATURE_CONTRACT_v1\nrhythm: preserve clipped glass-rain beats.",
+            "style_rule": " ".join(["raw duplicated style rule"] * 180),
+            "calibration_line": "Line one.\n\nLine two.",
+            "relation_card": " ".join(["relationship debt"] * 80),
+            "scene_memory": " ".join(["previous witness memory"] * 80),
+        }
+    )
+
+    drafting = apply_context_budget(
+        system_prompt="System prompt.",
+        task_prompt="Task prompt.",
+        bundle_snapshot=snapshot,
+        sections=collect_prompt_sections(snapshot),
+        max_input_tokens=150,
+        task_kind="drafting",
+    )["budget"]
+    hard_qc = apply_context_budget(
+        system_prompt="System prompt.",
+        task_prompt="Task prompt.",
+        bundle_snapshot=snapshot,
+        sections=collect_prompt_sections(snapshot),
+        max_input_tokens=150,
+        task_kind="hard_qc",
+    )["budget"]
+    chapter_review = apply_context_budget(
+        system_prompt="System prompt.",
+        task_prompt="Task prompt.",
+        bundle_snapshot=snapshot,
+        sections=collect_prompt_sections(snapshot),
+        max_input_tokens=150,
+        task_kind="chapter_review",
+    )["budget"]
+
+    assert drafting["task_kind"] == "drafting"
+    assert drafting["section_status"]["style_profile"]["status"] == "included"
+    assert drafting["section_status"]["calibration_lines"]["status"] == "compressed"
+    assert hard_qc["task_kind"] == "hard_qc"
+    assert hard_qc["section_status"]["style_rules"]["status"] == "omitted"
+    assert hard_qc["section_status"]["relation_digest"]["status"] in {"compressed", "included"}
+    assert chapter_review["task_kind"] == "chapter_review"
+    assert chapter_review["section_status"]["chapter_goal"]["status"] == "included"
+    assert chapter_review["section_status"]["scene_memory_digest"]["status"] in {"compressed", "included"}
+
+
 def test_hard_qc_engine_escalates_continuity_warning_before_llm_call(session) -> None:
     _seed_scene(session)
     session.add(

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,11 @@ const SOURCE_ROOT = process.cwd();
 
 function readSource(relativePath) {
   return readFileSync(path.join(SOURCE_ROOT, relativePath), "utf8");
+}
+
+function readApiLayerSource() {
+  const dir = path.join(SOURCE_ROOT, "src/lib/api");
+  return readdirSync(dir).filter(f => f.endsWith(".js")).map(f => readFileSync(path.join(dir, f), "utf8")).join("\n");
 }
 
 describe("writer mode", () => {
@@ -67,7 +72,7 @@ describe("writer mode", () => {
   });
 
   it("exposes writer review endpoints through the frontend API layer", () => {
-    const source = readSource("src/lib/api.js");
+    const source = readApiLayerSource();
 
     expect(source).toContain("runSceneWriterReview");
     expect(source).toContain("runSceneLiteraryBlueprint");

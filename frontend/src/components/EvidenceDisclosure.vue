@@ -24,6 +24,10 @@ const props = defineProps({
 
 const { isAdvancedMode } = useUiMode();
 const expanded = ref(props.initiallyOpen || isAdvancedMode.value);
+const bodyId = computed(() => {
+  const source = props.testId || props.title || "evidence-disclosure";
+  return `${source.replace(/[^a-zA-Z0-9_-]+/g, "-")}-body`;
+});
 
 watch(isAdvancedMode, (advanced) => {
   expanded.value = advanced || props.initiallyOpen;
@@ -47,12 +51,14 @@ const buttonLabel = computed(() => (expanded.value ? "收起证据" : "查看证
         type="button"
         class="ghost evidence-disclosure-toggle"
         :data-testid="testId ? `${testId}-toggle` : undefined"
+        :aria-expanded="expanded ? 'true' : 'false'"
+        :aria-controls="bodyId"
         @click="expanded = !expanded"
       >
         {{ buttonLabel }}
       </button>
     </div>
-    <div v-show="expanded" class="evidence-disclosure-body">
+    <div v-show="expanded" :id="bodyId" class="evidence-disclosure-body">
       <slot />
     </div>
   </section>

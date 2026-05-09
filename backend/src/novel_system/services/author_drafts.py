@@ -46,6 +46,27 @@ AUTHOR_DRAFT_EVENT_TYPES = {
 
 DESK_DEFAULT_MODE = "write_first"
 AUTHOR_PROPOSAL_TRIAD = ("structure_candidate", "passage_candidate", "language_candidate")
+AUTHOR_PROPOSAL_APPLY_MODES = {"replace", "append", "new_version", "local_patch", "range_replace", "paragraph_replace"}
+AUTHOR_PROPOSAL_KIND_APPLY_MODES = {
+    "structure_note": "append",
+    "whole_draft": "replace",
+    "local_patch": "local_patch",
+    "dialogue_pass": "local_patch",
+    "language_pass": "local_patch",
+    "continuation": "append",
+    "near_final_rewrite": "replace",
+}
+AUTHOR_PROPOSAL_MODE_TRIADS = {
+    "explore": (("structure_candidate", "structure_note"), ("continuation", "continuation"), ("passage_candidate", "local_patch")),
+    "structure": (("structure_candidate", "structure_note"), ("whole_draft", "whole_draft"), ("local_patch", "local_patch")),
+    "dialogue": (("dialogue_pass", "dialogue_pass"), ("local_patch", "local_patch"), ("language_pass", "language_pass")),
+    "language": (("language_pass", "language_pass"), ("local_patch", "local_patch"), ("near_final_rewrite", "near_final_rewrite")),
+    "rewrite": (("whole_draft", "whole_draft"), ("local_patch", "local_patch"), ("structure_candidate", "structure_note")),
+    "continuation": (("continuation", "continuation"), ("structure_candidate", "structure_note"), ("language_pass", "language_pass")),
+    "near_final": (("near_final_rewrite", "near_final_rewrite"), ("language_pass", "language_pass"), ("dialogue_pass", "dialogue_pass")),
+    "acceptance": (("near_final_rewrite", "near_final_rewrite"), ("language_pass", "language_pass"), ("structure_candidate", "structure_note")),
+    "daily": (("structure_candidate", "structure_note"), ("passage_candidate", "local_patch"), ("language_candidate", "language_pass")),
+}
 
 
 class AuthorDraftService:
@@ -188,6 +209,10 @@ class AuthorDraftService:
             "scene_draft" if draft.object_type == "scene" else "chapter_draft"
         )
         instruction = _optional_text(request_payload, "instruction")
+        target_range = request_payload.get("target_range") if isinstance(request_payload.get("target_range"), dict) else None
+        replacement_text = _optional_text(request_payload, "replacement_text")
+        proposal_kind = _optional_text(request_payload, "proposal_kind") or _proposal_kind_from_type(proposal_type)
+        source_evaluation_id = _optional_text(request_payload, "source_evaluation_id")
         target = self._target_payload(draft.object_type, draft.object_id)
         proposal = self._create_proposal(
             draft,
@@ -195,6 +220,10 @@ class AuthorDraftService:
             proposal_type=proposal_type,
             instruction=instruction,
             proposal_source=_optional_text(request_payload, "proposal_source") or "single_request",
+            proposal_kind=proposal_kind,
+            target_range=target_range,
+            replacement_text=replacement_text,
+            source_evaluation_id=source_evaluation_id,
             actor_ref=actor_ref,
         )
         self.session.flush()
@@ -209,7 +238,12 @@ class AuthorDraftService:
     ) -> dict[str, Any]:
         draft = self._require_draft(draft_id)
         request_payload = payload or {}
+        requested_mode = _optional_text(request_payload, "mode")
+        mode = _proposal_generation_mode(requested_mode)
+        proposal_source = f"author_cockpit_{mode}" if requested_mode else "author_cockpit_triad"
         instruction = _optional_text(request_payload, "instruction")
+        target_range = request_payload.get("target_range") if isinstance(request_payload.get("target_range"), dict) else None
+        source_evaluation_id = _optional_text(request_payload, "source_evaluation_id")
         target = self._target_payload(draft.object_type, draft.object_id)
         proposals = [
             self._create_proposal(
@@ -217,13 +251,106 @@ class AuthorDraftService:
                 target=target,
                 proposal_type=proposal_type,
                 instruction=instruction,
-                proposal_source="author_cockpit_triad",
+                proposal_source=proposal_source,
+                proposal_kind=proposal_kind,
+                target_range=target_range,
+                replacement_text=None,
+                source_evaluation_id=source_evaluation_id,
                 actor_ref=actor_ref,
             )
-            for proposal_type in AUTHOR_PROPOSAL_TRIAD
+            for proposal_type, proposal_kind in _proposal_mode_triads(mode)
         ]
         self.session.flush()
-        return {"draft_id": draft.draft_id, "proposals": [self.serialize_proposal(row) for row in proposals]}
+        return {"draft_id": draft.draft_id, "mode": mode, "proposals": [self.serialize_proposal(row) for row in proposals]}
+
+    def proposal_diff(self, draft_id: str, proposal_id: str) -> dict[str, Any]:
+        draft = self._require_draft(draft_id)
+        proposal = self._require_proposal(proposal_id)
+        self._validate_proposal_for_draft(draft, proposal)
+        before_text = draft.content or ""
+        after_text = _apply_proposal_to_content(before_text, proposal, _apply_mode_for_proposal(proposal))
+        merge_status = "clean" if _proposal_hash_matches(proposal, before_text) else "conflict"
+        proposal.merge_status = merge_status
+        self.session.flush()
+        return {
+            "draft_id": draft.draft_id,
+            "proposal_id": proposal.proposal_id,
+            "object_type": draft.object_type,
+            "object_id": draft.object_id,
+            "proposal_kind": proposal.proposal_kind or _proposal_kind_from_type(proposal.proposal_type),
+            "proposal_type": proposal.proposal_type,
+            "target_range": proposal.target_range_json or None,
+            "before_text_hash": proposal.before_text_hash,
+            "current_text_hash": _text_hash(before_text),
+            "merge_status": merge_status,
+            "before_text": before_text,
+            "after_text": after_text,
+            "replacement_text": proposal.replacement_text or proposal.content or "",
+            "source_evaluation_id": proposal.source_evaluation_id,
+            "source_llm_call_id": proposal.source_llm_call_id,
+            "rationale": proposal.rationale,
+        }
+
+    def apply_proposal_to_draft(
+        self,
+        draft_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        draft = self._require_draft(draft_id)
+        proposal_id = _required_text(payload or {}, "proposal_id")
+        proposal = self._require_proposal(proposal_id)
+        self._validate_proposal_for_draft(draft, proposal)
+        if proposal.status != "candidate":
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_CLOSED", "author draft proposal is not open", status_code=409)
+        current = draft.content or ""
+        if not _proposal_hash_matches(proposal, current):
+            proposal.merge_status = "conflict"
+            self.session.flush()
+            raise DomainError(
+                "AUTHOR_DRAFT_PROPOSAL_CONFLICT",
+                "author draft changed after this proposal was created; review the diff before applying",
+                status_code=409,
+                details={
+                    "draft_id": draft.draft_id,
+                    "proposal_id": proposal.proposal_id,
+                    "before_text_hash": proposal.before_text_hash,
+                    "current_text_hash": _text_hash(current),
+                },
+            )
+        request_payload = payload or {}
+        apply_mode = _normalize_apply_mode(_optional_text(request_payload, "apply_mode"), proposal)
+        if apply_mode not in AUTHOR_PROPOSAL_APPLY_MODES:
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_APPLY_MODE_INVALID", "unsupported proposal apply_mode", status_code=400)
+        draft.content = _apply_proposal_to_content(current, proposal, apply_mode)
+        draft.revision_no += 1
+        draft.updated_by = actor_ref or draft.updated_by
+        proposal.status = "accepted"
+        proposal.merge_status = "applied"
+        proposal.author_decision_note = _optional_text(request_payload, "note") or proposal.author_decision_note
+        decision_reason = _optional_text(request_payload, "decision_reason")
+        self._add_event(
+            draft,
+            event_type="proposal_applied",
+            actor_ref=actor_ref,
+            revision_id=proposal.proposal_id,
+            note=proposal.author_decision_note,
+            payload={
+                "proposal_id": proposal.proposal_id,
+                "proposal_type": proposal.proposal_type,
+                "proposal_kind": proposal.proposal_kind,
+                "proposal_source": proposal.proposal_source,
+                "apply_mode": apply_mode,
+                "target_range": proposal.target_range_json,
+                "affected_excerpt": _target_excerpt(proposal) or _short_excerpt(proposal.replacement_text or proposal.content),
+                "decision_reason": decision_reason or "",
+                "revision_no": draft.revision_no,
+            },
+        )
+        self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref, decision_reason=decision_reason)
+        self.session.flush()
+        return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
 
     def apply_proposal(
         self,
@@ -239,16 +366,17 @@ class AuthorDraftService:
         if draft.object_type != proposal.object_type or draft.object_id != proposal.object_id:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_TARGET_MISMATCH", "proposal target does not match author draft", status_code=409)
         request_payload = payload or {}
-        apply_mode = _optional_text(request_payload, "apply_mode") or "replace"
-        if apply_mode not in {"replace", "append", "new_version"}:
+        apply_mode = _normalize_apply_mode(_optional_text(request_payload, "apply_mode"), proposal)
+        if apply_mode not in AUTHOR_PROPOSAL_APPLY_MODES:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_APPLY_MODE_INVALID", "unsupported proposal apply_mode", status_code=400)
         decision_reason = _optional_text(request_payload, "decision_reason")
         affected_excerpt = _optional_text(request_payload, "affected_excerpt")
 
-        draft.content = _apply_proposal_content(draft.content or "", proposal.content or "", apply_mode)
+        draft.content = _apply_proposal_to_content(draft.content or "", proposal, apply_mode)
         draft.revision_no += 1
         draft.updated_by = actor_ref or draft.updated_by
         proposal.status = "accepted"
+        proposal.merge_status = "applied"
         proposal.author_decision_note = _optional_text(request_payload, "note") or proposal.author_decision_note
         self._add_event(
             draft,
@@ -259,6 +387,7 @@ class AuthorDraftService:
             payload={
                 "proposal_id": proposal.proposal_id,
                 "proposal_type": proposal.proposal_type,
+                "proposal_kind": proposal.proposal_kind,
                 "proposal_source": proposal.proposal_source,
                 "apply_mode": apply_mode,
                 "affected_excerpt": affected_excerpt or _short_excerpt(proposal.content),
@@ -285,6 +414,7 @@ class AuthorDraftService:
         decision_reason = _optional_text(payload or {}, "decision_reason")
         rejected_ai_trace = _optional_text(payload or {}, "rejected_ai_trace")
         proposal.status = "rejected"
+        proposal.merge_status = "rejected"
         proposal.author_decision_note = note or proposal.author_decision_note
         self._add_event(
             draft,
@@ -318,8 +448,18 @@ class AuthorDraftService:
         proposal_type: str,
         instruction: str | None,
         proposal_source: str,
+        proposal_kind: str,
+        target_range: dict[str, Any] | None,
+        replacement_text: str | None,
+        source_evaluation_id: str | None,
         actor_ref: str,
     ) -> AuthorDraftProposal:
+        generated_content = _proposal_content(draft, target=target, proposal_type=proposal_type, instruction=instruction)
+        proposal_content = (
+            _apply_patch_preview(draft.content or "", target_range or {}, replacement_text)
+            if replacement_text
+            else generated_content
+        )
         proposal = AuthorDraftProposal(
             proposal_id=f"author_draft_proposal_{draft.object_type}_{draft.object_id}_{uuid.uuid4().hex[:10]}",
             draft_id=draft.draft_id,
@@ -327,9 +467,15 @@ class AuthorDraftService:
             object_id=draft.object_id,
             proposal_type=proposal_type,
             proposal_source=proposal_source,
-            content=_proposal_content(draft, target=target, proposal_type=proposal_type, instruction=instruction),
+            content=proposal_content,
             rationale=_proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction),
             source_llm_call_id=None,
+            target_range_json=target_range,
+            before_text_hash=_text_hash(draft.content or ""),
+            replacement_text=replacement_text,
+            proposal_kind=proposal_kind,
+            source_evaluation_id=source_evaluation_id,
+            merge_status="pending",
             status="candidate",
             created_by=actor_ref or "author_draft_proposal",
         )
@@ -631,6 +777,12 @@ class AuthorDraftService:
             "content": row.content,
             "rationale": row.rationale,
             "source_llm_call_id": row.source_llm_call_id,
+            "target_range": row.target_range_json or None,
+            "before_text_hash": row.before_text_hash,
+            "replacement_text": row.replacement_text,
+            "proposal_kind": row.proposal_kind or _proposal_kind_from_type(row.proposal_type),
+            "source_evaluation_id": row.source_evaluation_id,
+            "merge_status": row.merge_status or "pending",
             "status": row.status,
             "author_decision_note": row.author_decision_note,
             "created_by": row.created_by,
@@ -693,6 +845,12 @@ class AuthorDraftService:
         if proposal is None:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_NOT_FOUND", "author draft proposal not found", status_code=404)
         return proposal
+
+    def _validate_proposal_for_draft(self, draft: AuthorDraft, proposal: AuthorDraftProposal) -> None:
+        if proposal.draft_id != draft.draft_id:
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_DRAFT_MISMATCH", "proposal belongs to a different author draft", status_code=409)
+        if draft.object_type != proposal.object_type or draft.object_id != proposal.object_id:
+            raise DomainError("AUTHOR_DRAFT_PROPOSAL_TARGET_MISMATCH", "proposal target does not match author draft", status_code=409)
 
     def _refresh_proposal_preference_profile(
         self,
@@ -934,6 +1092,100 @@ def _apply_proposal_content(current: str, proposal_content: str, apply_mode: str
     return proposal_text
 
 
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _proposal_kind_from_type(proposal_type: str | None) -> str:
+    value = str(proposal_type or "").strip()
+    if value in {"passage_candidate", "local_patch"}:
+        return "local_patch"
+    if value in {"language_candidate", "language_pass"}:
+        return "language_pass"
+    if value in {"structure_candidate", "structure_note"}:
+        return "structure_note"
+    if value in {"dialogue_pass", "continuation", "near_final_rewrite"}:
+        return value
+    if value in {"scene_draft", "chapter_draft", "whole_draft"}:
+        return "whole_draft"
+    return "whole_draft"
+
+
+def _apply_mode_for_proposal(proposal: AuthorDraftProposal) -> str:
+    kind = str(proposal.proposal_kind or "").strip() or _proposal_kind_from_type(proposal.proposal_type)
+    return AUTHOR_PROPOSAL_KIND_APPLY_MODES.get(kind, "replace")
+
+
+def _normalize_apply_mode(requested: str | None, proposal: AuthorDraftProposal) -> str:
+    value = str(requested or "").strip()
+    if not value:
+        return _apply_mode_for_proposal(proposal)
+    if value in AUTHOR_PROPOSAL_APPLY_MODES:
+        return value
+    return AUTHOR_PROPOSAL_KIND_APPLY_MODES.get(value, _apply_mode_for_proposal(proposal))
+
+
+def _proposal_generation_mode(mode: str | None) -> str:
+    value = str(mode or "").strip().lower()
+    aliases = {
+        "draft": "daily",
+        "write": "daily",
+        "exploration": "explore",
+        "structure_draft": "structure",
+        "dialogue_pass": "dialogue",
+        "local_language": "language",
+        "full_rewrite": "rewrite",
+        "scene_rewrite": "rewrite",
+        "near_final_review": "near_final",
+        "final": "acceptance",
+    }
+    normalized = aliases.get(value, value)
+    return normalized if normalized in AUTHOR_PROPOSAL_MODE_TRIADS else "daily"
+
+
+def _proposal_mode_triads(mode: str) -> tuple[tuple[str, str], tuple[str, str], tuple[str, str]]:
+    return AUTHOR_PROPOSAL_MODE_TRIADS.get(mode, AUTHOR_PROPOSAL_MODE_TRIADS["daily"])
+
+
+def _proposal_hash_matches(proposal: AuthorDraftProposal, current: str) -> bool:
+    return not proposal.before_text_hash or proposal.before_text_hash == _text_hash(current)
+
+
+def _target_excerpt(proposal: AuthorDraftProposal) -> str:
+    target_range = proposal.target_range_json if isinstance(proposal.target_range_json, dict) else {}
+    for key in ("source_excerpt", "before_text", "excerpt"):
+        value = target_range.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _apply_patch_preview(current: str, target_range: dict[str, Any], replacement_text: str | None) -> str:
+    replacement = str(replacement_text or "").strip()
+    if not replacement:
+        return str(current or "")
+    if str(target_range.get("unit") or "") == "char":
+        try:
+            start = max(0, int(target_range.get("start", 0)))
+            end = max(start, int(target_range.get("end", start)))
+        except (TypeError, ValueError):
+            start = end = 0
+        return f"{current[:start]}{replacement}{current[end:]}"
+    source_excerpt = ""
+    for key in ("source_excerpt", "before_text", "excerpt"):
+        value = target_range.get(key)
+        if isinstance(value, str) and value.strip():
+            source_excerpt = value.strip()
+            break
+    return _replace_or_append(current, source_excerpt, replacement)
+
+
+def _apply_proposal_to_content(current: str, proposal: AuthorDraftProposal, apply_mode: str) -> str:
+    if apply_mode in {"local_patch", "range_replace", "paragraph_replace"}:
+        return _apply_patch_preview(current, proposal.target_range_json or {}, proposal.replacement_text or proposal.content)
+    return _apply_proposal_content(current, proposal.replacement_text or proposal.content or "", apply_mode)
+
+
 def _proposal_content(
     draft: AuthorDraft,
     *,
@@ -998,6 +1250,70 @@ def _proposal_content(
                 f"待处理材料：{seed}",
             ]
         ).strip()
+    if proposal_type == "dialogue_pass":
+        return "\n".join(
+            [
+                "[对白深改]",
+                *target_lines,
+                "",
+                "改法：",
+                "把解释句改成反问、截断、沉默和位置动作，让关系压力先于信息说明出现。",
+                "",
+                "候选片段：",
+                f"{seed}",
+                "许望没有接话，只问：你现在护住的是证据，还是那个人？",
+            ]
+        ).strip()
+    if proposal_type == "language_pass":
+        return "\n".join(
+            [
+                "[语言压缩]",
+                *target_lines,
+                "",
+                "改法：",
+                "删除重复解释，压短抽象判断，保留能承载代价的物件、动作和停顿。",
+                "",
+                f"压缩对象：{seed}",
+            ]
+        ).strip()
+    if proposal_type == "continuation":
+        return "\n".join(
+            [
+                "[续写候选]",
+                *target_lines,
+                "",
+                "下一拍：",
+                f"{seed}",
+                "门外的脚步声停住，她终于意识到，自己刚刚保护的名字已经被第三个人听见。",
+            ]
+        ).strip()
+    if proposal_type == "near_final_rewrite":
+        return "\n".join(
+            [
+                "[近终稿重写]",
+                *target_lines,
+                "",
+                "重写目标：",
+                "保留作者声线和关键意象，只移除解释性对白、松散承接和没有行动后果的句子。",
+                "",
+                "候选稿：",
+                f"{seed}",
+                "她没有解释前史。盐钟第三次响起时，她把录音带按进掌心，像按住一个还会呼吸的名字。",
+            ]
+        ).strip()
+    if proposal_type in {"whole_draft", "scene_draft", "chapter_draft"}:
+        return "\n".join(
+            [
+                "[整段候选]",
+                *target_lines,
+                "",
+                "候选稿：",
+                f"{seed}",
+                "",
+                "收束方向：",
+                "让本段从一个可见目标开始，以一个改变关系或局势的动作结束。",
+            ]
+        ).strip()
     return "\n".join(
         [
             "[AI draft proposal]",
@@ -1020,6 +1336,16 @@ def _proposal_rationale(*, target: dict[str, Any], proposal_type: str, instructi
         return f"局部段落候选：给作者一个可追加或替换的高压片段。依据：{focus}"
     if proposal_type == "language_candidate":
         return f"语言候选：压缩模型腔、解释句和重复动作。依据：{focus}"
+    if proposal_type == "dialogue_pass":
+        return f"对白深改：把说明性对白改成关系压力、停顿和反问。依据：{focus}"
+    if proposal_type == "language_pass":
+        return f"语言压缩：保留意象和动作，删去解释、重复和过度总结。依据：{focus}"
+    if proposal_type == "continuation":
+        return f"续写候选：只推进下一拍，不改写作者现有正文。依据：{focus}"
+    if proposal_type == "near_final_rewrite":
+        return f"近终稿重写：保留作者声线、核心意象和已成立关系，只处理解释性对白与收束。依据：{focus}"
+    if proposal_type in {"whole_draft", "scene_draft", "chapter_draft"}:
+        return f"整段候选：提供可对照的完整改写，但仍需作者显式采纳。依据：{focus}"
     return f"Generated as a comparable {proposal_type} proposal from the current author draft target: {focus}"
 
 

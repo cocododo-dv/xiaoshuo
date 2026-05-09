@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import { createPinia, setActivePinia } from "pinia";
@@ -12,6 +12,47 @@ const SOURCE_ROOT = process.cwd();
 
 function readSource(relativePath) {
   return readFileSync(path.join(SOURCE_ROOT, relativePath), "utf8");
+}
+
+function readApiLayerSource() {
+  const dir = path.join(SOURCE_ROOT, "src/lib/api");
+  return readdirSync(dir).filter(f => f.endsWith(".js")).map(f => readFileSync(path.join(dir, f), "utf8")).join("\n");
+}
+
+function resolveVueImport(importerPath, specifier) {
+  if (!specifier.startsWith(".") || !specifier.endsWith(".vue")) {
+    return null;
+  }
+  return path.normalize(path.join(path.dirname(importerPath), specifier)).replace(/\\/g, "/");
+}
+
+function readVueImportGraphSource(entryPath) {
+  const seen = new Set();
+  const chunks = [];
+
+  function visit(relativePath) {
+    if (seen.has(relativePath)) {
+      return;
+    }
+    seen.add(relativePath);
+
+    const source = readSource(relativePath);
+    chunks.push(source);
+
+    for (const match of source.matchAll(/import\s+[^;]+?\s+from\s+["']([^"']+\.vue)["']/g)) {
+      const resolved = resolveVueImport(relativePath, match[1]);
+      if (resolved) {
+        visit(resolved);
+      }
+    }
+  }
+
+  visit(entryPath);
+  return chunks.join("\n");
+}
+
+function readDeepDeskViewSource() {
+  return readVueImportGraphSource("src/views/WriterDeepDeskView.vue");
 }
 
 function okEnvelope(data) {
@@ -206,7 +247,7 @@ describe("writer deep revision desk", () => {
   });
 
   it("exposes blank draft, structure extraction, deep review, passage patch, and author preference API helpers", () => {
-    const apiSource = readSource("src/lib/api.js");
+    const apiSource = readApiLayerSource();
 
     expect(apiSource).toContain("fetchAuthorDeskSnapshot");
     expect(apiSource).toContain("/api/v1/author-desk");
@@ -604,10 +645,13 @@ describe("writer deep revision desk", () => {
   it("renders a quiet reader, diagnosis rail, patch candidates, and preference draft", () => {
     const viewPath = path.join(SOURCE_ROOT, "src/views/WriterDeepDeskView.vue");
     expect(existsSync(viewPath)).toBe(true);
-    const source = readSource("src/views/WriterDeepDeskView.vue");
+    const source = readDeepDeskViewSource();
 
     expect(source).toContain('data-testid="writer-deep-desk"');
     expect(source).toContain('data-testid="deep-desk-reader"');
+    expect(source).toContain("readable-list deep-chapter-list");
+    expect(source).toContain("readable-selector-row deep-chapter-row");
+    expect(source).toContain("readable-tech-ref");
     expect(source).toContain('data-testid="draft-mode-chapter"');
     expect(source).toContain('data-testid="draft-mode-scene"');
     expect(source).toContain('data-testid="desk-mode-write-first"');
@@ -679,10 +723,10 @@ describe("writer deep revision desk", () => {
     expect(source).toContain("candidate.status !== 'candidate'");
   });
 
-  it("uses the writer desk as the default first screen", () => {
+  it("keeps the snowflake workbench as the default first screen", () => {
     const routerSource = readSource("src/router.js");
 
-    expect(routerSource).toContain('const activeView = ref("deepdesk")');
-    expect(routerSource).toContain('const visitedViews = ref(["deepdesk"])');
+    expect(routerSource).toContain('const activeView = ref("snowflake-workbench")');
+    expect(routerSource).toContain('const visitedViews = ref(["snowflake-workbench"])');
   });
 });

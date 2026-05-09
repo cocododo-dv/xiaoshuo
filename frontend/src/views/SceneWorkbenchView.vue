@@ -68,6 +68,8 @@ const rewriteCounters = computed(() => workbench.data?.rewrite_counters || null)
 const humanReviewSummary = computed(() => workbench.data?.human_review_summary || null);
 const writerReviewSummary = computed(() => workbench.data?.writer_review_summary || null);
 const literaryBlueprint = computed(() => workbench.data?.literary_blueprint || null);
+const executionContract = computed(() => workbench.data?.execution_contract || null);
+const triagePreview = computed(() => workbench.data?.triage_preview || null);
 const blueprintItems = computed(() => Object.entries(literaryBlueprint.value?.blueprint_json || {}));
 const sourceSafetyScan = computed(() => workbench.data?.source_safety_scan || {
   safe: true,
@@ -367,6 +369,38 @@ async function generateBlueprint() {
   });
 }
 
+async function generateExecutionContract() {
+  const sceneId = resolveSceneId();
+  if (!sceneId) {
+    emit("notice", "Please choose a scene before generating an execution contract.");
+    return;
+  }
+  await runFlowAction({
+    scopeKey: WORKBENCH_MAIN_SCOPE,
+    actionLabel: "Generate execution contract",
+    runningMessage: "Building the scene execution contract...",
+    successMessage: (message) => message || "Execution contract is ready.",
+    nextStep: () => "Next: review the contract and triage state before drafting.",
+    action: () => workbench.generateExecutionContract(sceneId),
+  });
+}
+
+async function runSceneTriage() {
+  const sceneId = resolveSceneId();
+  if (!sceneId) {
+    emit("notice", "Please choose a scene before running triage.");
+    return;
+  }
+  await runFlowAction({
+    scopeKey: WORKBENCH_MAIN_SCOPE,
+    actionLabel: "Run scene triage",
+    runningMessage: "Evaluating whether the scene should advance, rewrite, or replan...",
+    successMessage: (message) => message || "Scene triage completed.",
+    nextStep: () => "Next: follow the triage decision shown below.",
+    action: () => workbench.runTriage(sceneId),
+  });
+}
+
 async function acceptWriterRevision(revisionId) {
   await runFlowAction({
     scopeKey: WORKBENCH_MAIN_SCOPE,
@@ -506,6 +540,20 @@ onDeactivated(() => {
             placeholder="从作者工作台选择场景，或输入场景 ID"
           />
           <button data-testid="scene-load-button" @click="loadWorkbench">读取</button>
+          <button
+            :disabled="workbench.actionId === 'scene-execution-contract' || !resolveSceneId()"
+            data-testid="scene-execution-contract-button"
+            @click="generateExecutionContract"
+          >
+            {{ workbench.actionId === "scene-execution-contract" ? "生成中..." : "生成执行合同" }}
+          </button>
+          <button
+            :disabled="workbench.actionId === 'scene-triage' || !resolveSceneId()"
+            data-testid="scene-triage-button"
+            @click="runSceneTriage"
+          >
+            {{ workbench.actionId === "scene-triage" ? "评估中..." : "运行 Triage" }}
+          </button>
           <button
             :disabled="workbench.actionId === 'run-scene' || workbench.runJobPolling || !runPreflight.can_run || !resolveSceneId()"
             data-testid="run-full-scene-button"
@@ -820,6 +868,38 @@ onDeactivated(() => {
           >
             当前没有预检提示，可以直接执行完整场景运行。
           </p>
+        </article>
+
+        <article class="paper receipt-card" data-testid="scene-execution-contract-card">
+          <div class="receipt-head">
+            <div>
+              <h3>场景执行合同</h3>
+              <p class="muted receipt-copy">统一显示 SceneExecutionContract 与 triage 结果，决定是起草、重写还是回流返工。</p>
+            </div>
+            <span class="badge">{{ executionContract?.status || "未生成" }}</span>
+          </div>
+          <div v-if="executionContract" class="receipt-grid">
+            <p><strong>形态</strong><br />{{ executionContract.payload?.scene_mode || "-" }}</p>
+            <p><strong>POV</strong><br />{{ executionContract.payload?.pov_character_id || "-" }}</p>
+            <p><strong>Crucible</strong><br />{{ executionContract.payload?.scene_crucible || "-" }}</p>
+            <p><strong>下一步</strong><br />{{ triagePreview?.next_action || "-" }}</p>
+          </div>
+          <p v-if="executionContract?.missing_fields?.length" class="muted">
+            缺失字段：{{ executionContract.missing_fields.join(" / ") }}
+          </p>
+          <p v-if="triagePreview" class="muted" data-testid="scene-triage-preview">
+            Triage：{{ triagePreview.decision }} / {{ triagePreview.next_action }}
+            <span v-if="triagePreview.reason_codes?.length"> / {{ triagePreview.reason_codes.join(" / ") }}</span>
+          </p>
+          <div v-if="executionContract?.payload?.reference_rules?.safety_rules?.length" class="review-safety">
+            <span
+              v-for="rule in executionContract.payload.reference_rules.safety_rules"
+              :key="rule"
+            >
+              {{ rule }}
+            </span>
+          </div>
+          <p v-else class="muted">先生成执行合同，再查看结构门禁和安全规则。</p>
         </article>
 
         <article

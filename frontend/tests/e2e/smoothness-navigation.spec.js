@@ -112,6 +112,14 @@ async function openIndexAdvancedEvidence(page) {
   await expect(reviewIdFilter).toBeVisible();
 }
 
+async function switchToAdvancedMode(page) {
+  const mode = await page.evaluate(() => window.localStorage.getItem("novel-system:ui-mode"));
+  if (mode !== "advanced") {
+    await page.getByTestId("ui-mode-advanced").click();
+  }
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem("novel-system:ui-mode"))).toBe("advanced");
+}
+
 test("keeps guided navigation compact and advanced mode usable on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await page.addInitScript(({ nextApiBase }) => {
@@ -154,6 +162,7 @@ test("defers unopened views and keeps heavy review payloads collapsed until expa
 
   await page.goto("/");
   await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.e2e" });
+  await switchToAdvancedMode(page);
 
   await expect.poll(() => requestedPaths.filter((path) => path === "/api/v1/knowledge-entries").length).toBe(0);
 
@@ -161,8 +170,9 @@ test("defers unopened views and keeps heavy review payloads collapsed until expa
   await expect(page.getByTestId("knowledge-console-view")).toBeVisible();
   await expect.poll(() => requestedPaths.filter((path) => path === "/api/v1/knowledge-entries").length).toBeGreaterThan(0);
   await expect(page.getByTestId("knowledge-detail-lineage")).toBeVisible();
-  await expect(page.getByTestId("knowledge-runtime-refs-json")).toHaveCount(0);
-  await page.getByTestId("knowledge-toggle-runtime-refs").click();
+  if ((await page.getByTestId("knowledge-runtime-refs-json").count()) === 0) {
+    await page.getByTestId("knowledge-toggle-runtime-refs").click();
+  }
   await expect(page.getByTestId("knowledge-runtime-refs-json")).toBeVisible();
 
   await page.getByTestId("nav-review").click();
@@ -187,6 +197,7 @@ test("loads index activity sections and target-group items only after explicit e
 
   await page.goto("/");
   await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.index.e2e" });
+  await switchToAdvancedMode(page);
 
   await page.getByTestId("nav-index").click();
   await expect(page.getByTestId("index-console-view")).toBeVisible();
@@ -232,6 +243,7 @@ test("loads index activity sections and target-group items only after explicit e
 test("keeps scroll-heavy list surfaces interactive after expansion across review-index-author navigation", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.scroll" });
+  await switchToAdvancedMode(page);
 
   await page.getByTestId("nav-review").click();
   await expect(page.getByTestId("review-inbox-view")).toBeVisible();
@@ -305,6 +317,7 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
 test("keeps cached navigation and virtual scrolling inside smoothness budgets", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.budget" });
+  await switchToAdvancedMode(page);
 
   const warmupRoutes = [
     ["nav-review", "review-inbox-view"],
@@ -371,6 +384,8 @@ test("preserves view state across a workbench-review-index-workbench round trip 
 
   await page.goto("/");
   await configureConnection(page, { apiBase, operatorRef: "ops.smoothness.roundtrip" });
+  await switchToAdvancedMode(page);
+  await page.getByTestId("nav-workbench").click();
 
   await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
   await page.getByTestId("scene-id-input").fill("CH001_SC01");

@@ -188,6 +188,51 @@ ENDING_ACTION_TERMS = (
     "握",
 )
 
+CHAPTER_SET_NEXT_PULL_TERMS = (
+    "hook",
+    "next",
+    "arrived",
+    "arrives",
+    "left",
+    "opened",
+    "handed",
+    "pressed",
+    "sent",
+    "called",
+    "revealed",
+    "refused",
+    "released",
+    "下一",
+    "入口",
+    "名单",
+    "反证",
+    "钩子",
+    "推开",
+    "递给",
+    "交给",
+    "离开",
+    "按下",
+    "拨通",
+    "公开",
+    "拒绝",
+    "证人",
+    "保护",
+)
+NEGATED_ACTION_CONTEXT_TERMS = (
+    "no ",
+    "not ",
+    "never ",
+    "without ",
+    "did not ",
+    "does not ",
+    "没有",
+    "并未",
+    "未曾",
+    "不能",
+    "不再",
+    "无",
+)
+
 REPETITIVE_ACTION_TERMS = (
     "turned",
     "looked",
@@ -480,6 +525,87 @@ class LiteraryQualityService:
             "span_findings": _span_findings(content, item["findings"]),
             "risk_clusters": _risk_clusters([item]),
             "recommended_next_action": item["recommended_next_action"],
+        }
+
+    def chapter_set_review(self, payload: dict[str, Any]) -> dict[str, Any]:
+        chapter_ids = _string_list(payload.get("chapter_ids"))
+        if not chapter_ids:
+            raise DomainError("LITERARY_QUALITY_CHAPTER_SET_REQUIRED", "chapter_ids are required", status_code=400)
+        protected_terms = _string_list(payload.get("protected_terms"))
+        text_layer = _optional_string(payload.get("text_layer")) or "author_draft_preferred"
+        if text_layer not in QUALITY_TEXT_LAYERS:
+            raise DomainError("LITERARY_QUALITY_LAYER_INVALID", "unsupported literary quality text layer", status_code=400)
+
+        chapters: list[ChapterGoal] = []
+        for chapter_id in chapter_ids:
+            chapter = self.session.get(ChapterGoal, chapter_id)
+            if chapter is None or chapter.trashed_flag:
+                raise DomainError("LITERARY_QUALITY_CHAPTER_NOT_FOUND", f"chapter {chapter_id} not found", status_code=404)
+            chapters.append(chapter)
+
+        chapter_items: list[dict[str, Any]] = []
+        scene_items: list[dict[str, Any]] = []
+        source_rows: list[dict[str, Any]] = []
+        for chapter in chapters:
+            chapter_source = self._chapter_source(chapter, text_layer=text_layer)
+            if chapter_source is not None:
+                chapter_items.append(self._analyze_item("chapter", chapter.chapter_id, chapter.chapter_id, None, chapter_source))
+                source_rows.append(
+                    {
+                        "object_type": "chapter",
+                        "object_id": chapter.chapter_id,
+                        "chapter_id": chapter.chapter_id,
+                        "scene_id": None,
+                        "source_ref": chapter_source["source_ref"],
+                        "text_layer": chapter_source["text_layer"],
+                        "content": chapter_source["content"],
+                    }
+                )
+            for scene in self.session.execute(
+                select(SceneCard)
+                .where(SceneCard.chapter_id == chapter.chapter_id, SceneCard.trashed_flag == 0)
+                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+            ).scalars().all():
+                scene_source = self._scene_source(scene, text_layer=text_layer)
+                if scene_source is None:
+                    continue
+                scene_items.append(self._analyze_item("scene", scene.scene_id, chapter.chapter_id, scene.scene_id, scene_source))
+                source_rows.append(
+                    {
+                        "object_type": "scene",
+                        "object_id": scene.scene_id,
+                        "chapter_id": chapter.chapter_id,
+                        "scene_id": scene.scene_id,
+                        "source_ref": scene_source["source_ref"],
+                        "text_layer": scene_source["text_layer"],
+                        "content": scene_source["content"],
+                    }
+                )
+
+        all_items = [*chapter_items, *scene_items]
+        mean_score = round(sum(item["score"] for item in all_items) / len(all_items), 4) if all_items else None
+        payoff_reveal_checks = _chapter_set_payoff_reveal_checks(chapters, source_rows)
+        safety_findings = _reference_safety_findings(source_rows, protected_terms)
+        repeated_patterns = _chapter_set_repeated_patterns(source_rows, scene_items)
+        scores = _chapter_set_scores(mean_score, payoff_reveal_checks, safety_findings, len(chapters))
+        return {
+            "chapter_ids": chapter_ids,
+            "summary": {
+                "chapter_count": len(chapters),
+                "scene_count": len(scene_items),
+                "mean_score": mean_score,
+                "high_risk_count": sum(1 for item in all_items if item["score"] < 0.72),
+                "repeated_pattern_count": len(repeated_patterns),
+                "reference_safety_finding_count": len(safety_findings),
+            },
+            "scores": scores,
+            "chapters": chapter_items,
+            "scenes": scene_items,
+            "risk_clusters": _risk_clusters(all_items),
+            "repeated_patterns": repeated_patterns,
+            "payoff_reveal_checks": payoff_reveal_checks,
+            "reference_safety_findings": safety_findings,
+            "recommended_next_action": _top_recommended_action(all_items),
         }
 
     def _analyze_item(
@@ -953,6 +1079,183 @@ def _cross_scene_reuse(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (-row["count"], row["chapter_id"], row["cluster_type"], row["token"]))
 
 
+def _chapter_set_payoff_reveal_checks(chapters: list[ChapterGoal], source_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_chapter: dict[str, str] = {}
+    for row in source_rows:
+        by_chapter[row["chapter_id"]] = "\n".join([by_chapter.get(row["chapter_id"], ""), str(row.get("content") or "")])
+    forced_choice_ids: list[str] = []
+    cost_ids: list[str] = []
+    next_pull_ids: list[str] = []
+    for chapter in chapters:
+        source_text = _compact_ws(by_chapter.get(chapter.chapter_id, ""))
+        fallback_text = _compact_ws(
+            "\n".join(
+                [
+                    chapter.chapter_goal or "",
+                    chapter.main_plot_push or "",
+                    chapter.emotional_target or "",
+                    chapter.ending_effect or "",
+                    by_chapter.get(chapter.chapter_id, ""),
+                ]
+            )
+        )
+        combined_text = source_text or fallback_text
+        if _first_present_term(combined_text, CHOICE_TERMS):
+            forced_choice_ids.append(chapter.chapter_id)
+        if _first_present_term(combined_text, COST_TERMS) or _first_present_term(combined_text, PRESSURE_TERMS):
+            cost_ids.append(chapter.chapter_id)
+        if _first_non_negated_present_term(_ending_slice(combined_text), CHAPTER_SET_NEXT_PULL_TERMS):
+            next_pull_ids.append(chapter.chapter_id)
+    ordered_chapter_ids = [chapter.chapter_id for chapter in chapters]
+    missing_forced_choice_ids = [chapter_id for chapter_id in ordered_chapter_ids if chapter_id not in forced_choice_ids]
+    missing_cost_ids = [chapter_id for chapter_id in ordered_chapter_ids if chapter_id not in cost_ids]
+    missing_next_pull_ids = [chapter_id for chapter_id in ordered_chapter_ids if chapter_id not in next_pull_ids]
+    missing_payoff_ids = [
+        chapter_id
+        for chapter_id in ordered_chapter_ids
+        if chapter_id in {*missing_forced_choice_ids, *missing_cost_ids, *missing_next_pull_ids}
+    ]
+    return {
+        "has_forced_choice_count": len(forced_choice_ids),
+        "has_cost_count": len(cost_ids),
+        "has_next_pull_count": len(next_pull_ids),
+        "forced_choice_chapter_ids": forced_choice_ids,
+        "cost_chapter_ids": cost_ids,
+        "next_pull_chapter_ids": next_pull_ids,
+        "missing_forced_choice_chapter_ids": missing_forced_choice_ids,
+        "missing_cost_chapter_ids": missing_cost_ids,
+        "missing_next_pull_chapter_ids": missing_next_pull_ids,
+        "missing_payoff_chapter_ids": missing_payoff_ids,
+    }
+
+
+def _reference_safety_findings(source_rows: list[dict[str, Any]], protected_terms: list[str]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for row in source_rows:
+        text = str(row.get("content") or "")
+        for term in protected_terms:
+            if term and term in text:
+                findings.append(
+                    {
+                        "term": term,
+                        "chapter_id": row.get("chapter_id"),
+                        "scene_id": row.get("scene_id"),
+                        "object_type": row.get("object_type"),
+                        "object_id": row.get("object_id"),
+                        "source_ref": row.get("source_ref"),
+                        "evidence_excerpt": _excerpt(text, term),
+                    }
+                )
+    return findings
+
+
+def _chapter_set_repeated_patterns(source_rows: list[dict[str, Any]], scene_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in scene_items:
+        fingerprint = item.get("fingerprint") or {}
+        for cluster_type, key in (
+            ("action_template", "action_templates"),
+            ("image_field", "image_fields"),
+            ("syntax_shape", "syntax_shapes"),
+        ):
+            for token_row in fingerprint.get(key) or []:
+                _add_repeated_pattern(
+                    grouped,
+                    cluster_type=cluster_type,
+                    token=str(token_row.get("value") or ""),
+                    count=int(token_row.get("count") or 0),
+                    chapter_id=item.get("chapter_id"),
+                    object_id=item.get("object_id"),
+                )
+    for row in source_rows:
+        text = str(row.get("content") or "")
+        for token, count in _cjk_key_term_counts(text).items():
+            _add_repeated_pattern(
+                grouped,
+                cluster_type="key_term",
+                token=token,
+                count=count,
+                chapter_id=row.get("chapter_id"),
+                object_id=row.get("object_id"),
+            )
+    patterns = [
+        row
+        for row in grouped.values()
+        if row["count"] >= 2 and len(row["chapter_ids"]) >= 2
+    ]
+    return sorted(patterns, key=lambda row: (-row["count"], row["cluster_type"], row["token"]))[:20]
+
+
+def _add_repeated_pattern(
+    grouped: dict[tuple[str, str], dict[str, Any]],
+    *,
+    cluster_type: str,
+    token: str,
+    count: int,
+    chapter_id: str | None,
+    object_id: str | None,
+) -> None:
+    if not token or count <= 0:
+        return
+    row = grouped.setdefault(
+        (cluster_type, token),
+        {"cluster_type": cluster_type, "token": token, "count": 0, "chapter_ids": [], "object_ids": []},
+    )
+    row["count"] += count
+    if chapter_id and chapter_id not in row["chapter_ids"]:
+        row["chapter_ids"].append(chapter_id)
+    if object_id and object_id not in row["object_ids"]:
+        row["object_ids"].append(object_id)
+
+
+def _cjk_key_term_counts(text: str) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    normalized = _compact_ws(text)
+    for token in re.findall(r"[\u4e00-\u9fff]{2,6}", normalized):
+        if token in {"必须选择", "公开证据"}:
+            counts[token] += 1
+        if token.endswith("雨") or token.endswith("证") or token.endswith("名单"):
+            counts[token] += 1
+    for marker in ("玻璃雨", "零点", "证人", "反证", "名单"):
+        marker_count = normalized.count(marker)
+        if marker_count:
+            counts[marker] += marker_count
+    return counts
+
+
+def _chapter_set_scores(
+    mean_score: float | None,
+    payoff_reveal_checks: dict[str, Any],
+    safety_findings: list[dict[str, Any]],
+    chapter_count: int,
+) -> dict[str, Any]:
+    denominator = max(1, chapter_count)
+    arc_score = round(
+        (
+            payoff_reveal_checks["has_forced_choice_count"]
+            + payoff_reveal_checks["has_cost_count"]
+            + payoff_reveal_checks["has_next_pull_count"]
+        )
+        / (denominator * 3),
+        4,
+    )
+    return {
+        "literary_quality": mean_score,
+        "cross_chapter_arc": arc_score,
+        "reference_safety": 0.0 if safety_findings else 1.0,
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    values: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip() and item.strip() not in values:
+            values.append(item.strip())
+    return values
+
+
 def _top_counter(counter: Counter[str], *, limit: int) -> list[dict[str, Any]]:
     return [
         {"value": value, "count": count}
@@ -1367,6 +1670,24 @@ def _first_present_term(text: str, terms: tuple[str, ...]) -> str:
         normalized_term = term.lower()
         if normalized_term.strip() and normalized_term in lowered:
             return term
+    return ""
+
+
+def _first_non_negated_present_term(text: str, terms: tuple[str, ...]) -> str:
+    lowered = text.lower()
+    for term in terms:
+        normalized_term = term.lower().strip()
+        if not normalized_term:
+            continue
+        start = 0
+        while True:
+            index = lowered.find(normalized_term, start)
+            if index == -1:
+                break
+            context = lowered[max(0, index - 18) : index]
+            if not any(marker in context for marker in NEGATED_ACTION_CONTEXT_TERMS):
+                return term
+            start = index + len(normalized_term)
     return ""
 
 

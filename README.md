@@ -1,278 +1,204 @@
-# Novel System P2
+# 雪花法驱动小说系统
 
-## Operator Manual
+这是当前仓库唯一保留的项目说明。
 
-For day-to-day operation, start with the new operator-facing manual:
+系统主线已经升级为“雪花法驱动”：你提供小说大纲和可选参考书，系统先按雪花法逐层生成候选，作者逐层确认，再把已确认的场景列表和场景规划整理成章节结构草案。当前 `雪花工作台` 前端覆盖项目创建、十步雪花、场景急救、章节结构草案整理和结构确认；逐章运行、终稿批准和更细的运行证据仍是后续支撑接口/高级链路能力。`写作房间` 保留为小范围人工修改工具；旧的大纲驱动页和深改台下沉到高级模式，不再作为普通作家模式的主流程。
 
-- [docs/operator-manual.md](docs/operator-manual.md)
+## 当前入口
 
-Writer mode quick entry:
+前端默认进入 `雪花工作台`。
 
-- Start in the shell's `作家` UI mode, then follow [作家模式闭环](docs/operator-manual.md#作家模式闭环).
-- The short path is: `2 编排章节` fill chapter/scene drama cards -> `3 运行场景` run the scene and `运行戏剧诊断` -> `5 查看成稿` run chapter diagnosis and handle the revision candidate ledger.
-- Accepting a writer revision candidate records the author's decision only; it does not overwrite the final scene or chapter manuscript.
+作家模式只保留：
 
-This repository currently uses a split verification strategy for the vector layer:
+- `雪花工作台`：创建小说项目，逐步确认十步雪花，做场景急救，整理章节结构草案，并确认生成 `ChapterGoal` / `SceneCard` 的结构基础。
+- `小修写作`：进入当前章节或场景的正文小修。
+- `参考书学习`：导入参考书、学习抽象风格画像、绑定 ready 画像到项目。
+- `待处理建议`：处理中途异常、QC 阻塞、参考安全风险和其他需要作者决策的建议。
 
-- Windows native Python is supported for non-Chroma unit and contract tests.
-- Real Chroma write-path verification is treated as Linux-only and should run in WSL Ubuntu 24.04.
+高级模式保留全部后台工具，包括章节编排、运行场景、成稿中心、深改台、长篇控制、文学质检、索引、知识、导入导出和系统配置。
 
-This prevents the Windows native `chromadb` crash path from taking down unrelated backend tests.
-The strict Chroma lane has already been verified successfully in WSL Ubuntu 24.04 for this repo; keep using that lane for future real-Chroma regression checks.
+## 首次使用最短路径
 
-## Verification Scripts
+1. 准备依赖：后端使用 Python 3.12，前端使用 Node/npm；首次运行前在 `frontend` 下执行 `npm install`。
+2. 迁移数据库：进入 `backend` 后执行 `python -m alembic upgrade head`。
+3. 如需清空旧作者态数据，先执行 `python -m novel_system.tools.reset_author_state` 查看 dry-run，再执行 `python -m novel_system.tools.reset_author_state --execute --yes`。
+4. 回到仓库根目录执行 `.\start-dev.cmd`，打开前端 `http://127.0.0.1:5173`。
+5. 在左侧 `界面模式` 选择 `作家`，进入默认的 `雪花工作台`。
+6. 点击 `项目 / 新建`，填写标题、题材、目标章节数/字数，并粘贴故事起始大纲。
+7. 在 `规划` 模式中逐步 `生成候选`、编辑、`保存步骤`、`确认步骤`。
+8. 完成 `场景列表` 和 `场景规划` 后进入 `急救`，生成急救建议，按 `合格 / 需修改 / 废除重写` 修正并保存。
+9. 回到 `规划`，在 `整理章节结构` 中点击 `整理成章节结构`，检查章节计划后点击 `确认结构`。
+10. 如需正文小修、参考画像或人工决策，分别进入 `小修写作`、`参考书学习`、`待处理建议`。逐章运行与终稿批准可走已保留的支撑接口或高级链路，不是当前雪花页的直接按钮。
 
-Use the repository-level verification scripts first. They wrap the current supported test/build flows and keep the commands aligned with CI and release docs.
+## 标准流程
 
-Windows-safe verification:
+1. 在 `雪花工作台` 创建项目，普通作家模式只创建 `snowflake` 项目。
+2. 粘贴小说大纲，可选填写标题、题材、目标字数、章节数。
+3. 如需参考书，先在 `参考书学习` 导入、学习，并把 `ready` 状态画像绑定到项目。
+4. 在 `雪花工作台` 逐步生成、编辑并确认十步雪花：读者定位、一句话概括、一段话概括、角色摘要表、一页梗概、角色背景故事、长篇大纲、角色全档案、场景列表、场景规划。
+5. 雪花步骤允许带原因跳过；整理章节结构前，`读者定位`、`一句话概括`、`一段话概括`、`场景列表`、`场景规划` 是硬性检查项，其余角色/长纲步骤会以预警形式提示。
+6. 在工作台中完成 `场景急救`，把场景标记为 `合格 / 需修改 / 废除重写`。
+7. 点击 `整理成章节结构`，系统把已确认的场景列表和场景规划转成待确认结构计划。
+8. 在工作台中确认结构计划，系统创建 `ChapterGoal` 和 `SceneCard`，并把主动场景的 `Goal / Conflict / Setback` 或反应场景的 `Reaction / Dilemma / Decision` 写入场景戏剧卡。
+9. 后续逐章运行、终稿批准和章节级审核包由保留的项目支撑接口承担；当前 `雪花工作台` 前端不直接暴露 `运行本章` 或 `批准终稿` 按钮。
+10. 需要人工微调正文时进入 `小修写作`；需要处理异常、QC 或安全项时进入 `待处理建议`。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1
-```
+v1 不一次性生成整本书，只做逐章推进。
 
-The backend half of `scripts/verify_windows.ps1` is the current CI-safe verification lane for true generation work:
+## 参考书边界
 
-- `backend/tests/test_scene_generation.py` exercises provider-backed generation with fake-provider fixtures.
-- `backend/tests/test_qc_engine.py` exercises hard/soft QC with fake-provider fixtures.
-- `backend/tests/test_chapter_runner.py` and `backend/tests/test_chapter_runtime.py` cover the current chapter runner/runtime path inside the same backend pytest lane.
-- Until secrets handling is formalized, real-provider smoke checks remain local-only evidence and must be reported separately from this required fake-provider/deterministic lane.
+参考书只用于生成抽象风格画像，例如节奏、句法、叙事手法、结构技巧和禁复刻规则。
 
-WSL strict Chroma verification:
+系统不得复制参考书原文表达、人物、设定、桥段、特殊意象或标志性句式。项目运行包只携带抽象画像和安全提示。
 
-```powershell
-wsl -d Ubuntu-24.04 bash -lc "cd <current-checkout-in-wsl> && bash scripts/verify_wsl_strict.sh"
-```
+## 项目接口
 
-Replace `<current-checkout-in-wsl>` with the checkout/worktree root you are validating, not a different clone.
+雪花工作台主接口：
 
-Release preflight from Windows:
+- `POST /api/v2/projects`
+- `GET /api/v2/projects`
+- `GET /api/v2/projects/{project_id}/snowflake-workspace`
+- `POST /api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate`
+- `PATCH /api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}`
+- `POST /api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve`
+- `POST /api/v2/projects/{project_id}/snowflake-workspace/assistant`
+- `POST /api/v2/projects/{project_id}/snowflake-workspace/scene-triage/suggest`
+- `POST /api/v2/projects/{project_id}/snowflake-workspace/scene-triage`
+- `PATCH /api/v2/projects/{project_id}/snowflake-workspace/scenes/{scene_plan_id}`
+- `POST /api/v2/projects/{project_id}/snowflake-workspace/scene-triage/{triage_id}/apply`
+- `POST /api/v2/projects/{project_id}/snowflake-workspace/materialize`
+- `POST /api/v2/projects/{project_id}/snowflake-workspace/outline/approve`
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/verify_release.ps1
-```
+仍保留的支撑接口：
 
-`scripts/verify_release.ps1` now runs three local lanes in order:
+- `POST /api/v1/projects/{project_id}/chapters/{chapter_id}/run`
+- `POST /api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final`
+- `POST /api/v1/projects/{project_id}/reference-profiles`
 
-- Windows-safe backend/frontend verification via `scripts/verify_windows.ps1`
-- Seeded chapter-runtime + runtime-ops + knowledge-console + interop-center browser E2E via `cd frontend && npm run test:e2e`
-- WSL strict Chroma verification via `scripts/verify_wsl_strict.sh`
+后端新增：
 
-GitHub Actions still covers the backend non-Chroma lane plus the frontend test/build lane only. That means CI must stay green on the fake-provider/deterministic backend lane, while any real-provider smoke evidence is local-only until secrets handling is formalized. The seeded browser E2E lane and the WSL strict Chroma lane remain required local release checks on this machine. Use [docs/release-checklist.md](docs/release-checklist.md) before marking a Draft PR ready.
+- `StoryProject`
+- `OutlinePlan`
+- `SnowflakeArtifact`
+- `StoryCharacter`
+- `ProjectService`
+- `SnowflakeWorkspaceService`
+- `SnowflakeWorkspaceAssistantService`
+- `SnowflakeStepCatalog`
+- `ProjectChapterFlowService`
+- `reset_author_state` CLI
 
-## Backend on Windows
+章节和场景现在可以通过 nullable `project_id` / `outline_plan_id` 追踪项目归属。雪花整理出的场景会把 proactive 场景的 `Goal / Conflict / Setback` 或 reactive 场景的 `Reaction / Dilemma / Decision` 同步到 `SceneCard.writer_brief_json`。
 
-Use the Windows lane for regular backend work that does not require real Chroma writes.
+## 数据重置
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1 -BackendOnly
-```
+切换到新的雪花工作台前，推荐先执行一次作者态重置，清掉旧项目、旧雪花、旧章节运行产物和旧作者修订数据。
 
-Notes:
-
-- Non-integration backend tests default to `NOVEL_SYSTEM_VECTOR_BACKEND=memory`.
-- If `NOVEL_SYSTEM_VECTOR_BACKEND=chroma` is selected on native Windows, the app fails fast with a clear `CHROMA_RUNTIME_UNSUPPORTED` error instead of crashing the process.
-
-## Strict Chroma in WSL
-
-The strict Chroma lane is intended for WSL Ubuntu 24.04 and is the verified path for real Chroma on this machine.
-
-Recommended setup:
-
-```powershell
-wsl --install -d Ubuntu-24.04
-```
-
-Once the distro is available:
-
-```bash
-cd <current-checkout-in-wsl>/backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
-cd ..
-bash scripts/verify_wsl_strict.sh
-```
-
-The `python -m novel_system.tools.chroma_smoke` command is the minimum preflight check. It must succeed before running the strict Chroma backend suite.
-
-Most recent successful verification:
-
-- `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
-- `cd frontend && npm run test:e2e`
-- `wsl -d Ubuntu-24.04 bash -lc "cd <current-checkout-in-wsl> && bash scripts/verify_wsl_strict.sh"`
-- 2026-04-15 Windows lane result: backend `164 passed, 12 deselected`; frontend `92 passed`; frontend smoke passed; production build succeeded.
-- 2026-04-15 seeded browser E2E result: Playwright `8 passed`, including chapter runtime ops, the focused scene LLM pipeline, runtime-ops closeout, `Knowledge Console` workflow/provenance, and `Interop Center` worksheet preview/import/export/replay.
-- 2026-04-12 WSL strict lane result: Chroma smoke succeeded; focused Chroma suite `12 passed`; full backend suite `91 passed, 1 skipped`.
-
-## Demo seed
-
-Use the demo seed to bootstrap the first chapter, three scene cards, and one pending review item.
+先看 dry-run：
 
 ```powershell
 cd backend
-alembic upgrade head
-python -m novel_system.tools.seed_demo
-python -m uvicorn novel_system.api.app:create_app --factory --reload
-cd ../frontend
-npm install
-npm run dev
+python -m novel_system.tools.reset_author_state
 ```
 
-The seed expects the local SQLite schema to be at the current Alembic head. Run `alembic upgrade head` first if you are starting from a fresh or older local database.
+确认后再真正执行：
 
-The seed is idempotent, so rerunning it keeps the same `CH001` / `CH001_SC01..03` / `review_demo_style_observation` records, avoids duplicate rows, and resets the seeded chapter, scene, and review records back to their bootstrap shape. Shared vector alias state is still owned by the normal review/reindex flow.
+```powershell
+cd backend
+python -m novel_system.tools.reset_author_state --execute --yes
+```
 
-For the memory backend used by the Windows-safe lane and the local demo path, the in-process vector store is reused per resolved vector-store directory. That keeps seeded candidate/active alias state visible across multiple API requests in the same session, so the demo can now complete `approve -> verify -> release` without switching backends.
+重置会删除：
 
-Runtime-ops closeout note:
+- `StoryProject / OutlinePlan / SnowflakeArtifact / StoryCharacter`
+- `ChapterGoal / SceneCard / ChapterState / SceneRunState`
+- 作者草稿、提案、结构候选、QC、自动重写、运行产物、审核项、索引作业和相关审计记录
 
-- The shell persists the operator identity in local storage under `novel-system-operator-ref`.
-- Every mutating frontend POST request sends `X-Operator-Ref`, so receipts, runtime ledger entries, and human review follow-up actions can be traced back to the active operator.
+重置会保留：
 
-## One-click Windows Dev Lifecycle
+- `ReferenceBook / ReferenceBookSegment / ReferenceLearningRun / ReferenceLearningRound / ReferenceFinding / ReferenceProfile`
+- `SystemConfigSnapshot / SystemSecret`
+- `config/models.yaml` 与 `config/prompts.yaml`
 
-Use the root launchers when you want the local demo stack to bootstrap and run without manually opening separate backend/frontend terminals.
+## 本地启动
 
-Start both services:
+推荐使用根目录脚本：
 
 ```powershell
 .\start-dev.cmd
 ```
 
-Stop the tracked backend/frontend process trees:
+停止服务：
 
 ```powershell
 .\stop-dev.cmd
 ```
 
-Restart the full stack:
+重启服务：
 
 ```powershell
 .\restart-dev.cmd
 ```
 
-What the lifecycle wrapper does:
+默认地址：
 
-- runs `alembic upgrade head` in `backend`
-- reruns the idempotent demo seed
-- starts FastAPI on `http://127.0.0.1:8000` when available, otherwise the next bindable local port
-- starts Vite on `http://127.0.0.1:5173`
-- records logs and the resolved backend/frontend URLs under `.codex-run/`
+- 前端：`http://127.0.0.1:5173`
+- 后端：`http://127.0.0.1:8000`
 
-If you want to re-verify the wrapper itself, run:
+如果后端端口被占用，脚本会选择下一个可用端口，并写入 `.codex-run/backend.url`。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/test_dev_lifecycle.ps1
-```
+本地首次切到新工作台时，推荐顺序：
 
-## Reference Book Learning Quick Start
+1. `cd backend`
+2. `python -m alembic upgrade head`
+3. `python -m novel_system.tools.reset_author_state`
+4. `python -m novel_system.tools.reset_author_state --execute --yes`
+5. 回到仓库根目录运行 `.\start-dev.cmd`
 
-Use this flow when you want to drop in one TXT/MD reference book, let the system sample it, and only make review decisions.
+## 数据库迁移
 
-1. Start the local stack with `.\start-dev.cmd` or `.\restart-dev.cmd`, then open `http://127.0.0.1:5173`.
-2. Open `Reference Learning` in the shell.
-3. Import a `.txt`, `.md`, or `.markdown` file by upload or local path.
-4. Choose the cloud policy before importing:
-   - `local_only`: never calls the LLM path; uses deterministic local heuristics.
-   - `segments_only`: sends only selected segments to the configured LLM route.
-   - `allow_full_cloud`: allows full-book processing through segment-by-segment map/reduce; it does not send the whole book as one prompt.
-5. Start a learning run and click advance. Each round produces review cards for style rules, style observations, narrative patterns, banned replication rules, and calibration candidates.
-6. Approve or reject the cards. The run pauses whenever review is pending; once enough approved coverage exists, it synthesizes a per-book reference profile.
-7. Apply the profile to `global`, `chapter`, or `scene`. Applying only creates review items; it does not activate the profile automatically.
-8. In `Review Inbox`, approve and release the generated apply reviews. After release, the scene bundle can include the style profile and narrative patterns.
-
-The reference profile is intentionally abstract. Runtime data should contain transferable craft guidance, narrative structure, calibration notes, and forbidden replication rules; it should not preserve long source sentences, named characters, settings, proper nouns, or recognizable scene bridges from the reference book.
-
-Current v1 limits:
-
-- TXT/MD only; EPUB/PDF/DOCX are not supported yet.
-- UTF-8 is tried first, then GB18030 fallback.
-- Reference profiles are stored as independent assets per book and only enter generation after manual apply/review/release.
-
-## End-to-end Demo
+代码依赖最新 Alembic 迁移。页面出现 `database operation failed` 时，优先检查数据库版本。
 
 ```powershell
 cd backend
-alembic upgrade head
-python -m novel_system.tools.seed_demo
-python -m uvicorn novel_system.api.app:create_app --factory --reload
-cd ../frontend
-npm install
-npm run dev
+python -m alembic current
+python -m alembic heads
+python -m alembic upgrade head
 ```
 
-Manual inspection is still useful during development. When you want the release-grade seeded runtime-ops coverage on Windows, run the automated lane instead:
+## 代码入口
+
+- 前端壳层：`frontend/src/App.vue`
+- 前端导航：`frontend/src/router.js`
+- 雪花工作台页：`frontend/src/views/SnowflakeWorkbenchView.vue`
+- 雪花工作台状态：`frontend/src/stores/snowflakeWorkbench.js`
+- 前端 API：`frontend/src/lib/api/`（域模块，通过 `index.js` 统一导出）
+- 后端应用：`backend/src/novel_system/api/app.py`
+- 项目接口：`backend/src/novel_system/api/routes/projects.py`
+- 雪花工作台接口：`backend/src/novel_system/api/routes/snowflake_workspace.py`
+- 项目服务：`backend/src/novel_system/services/projects.py`
+- 雪花工作台服务：`backend/src/novel_system/services/snowflake_workspace.py`
+- 重置工具：`backend/src/novel_system/tools/reset_author_state.py`
+- 数据模型：`backend/src/novel_system/db/models.py`
+
+## 验证
+
+后端项目流：
+
+```powershell
+python -m pytest backend/tests/test_snowflake_workspace_v2.py backend/tests/test_snowflake_planner.py backend/tests/test_reset_author_state.py
+```
+
+前端工作台和导航：
 
 ```powershell
 cd frontend
-npm run test:e2e
+npx vitest run tests/snowflakeWorkbench.spec.js tests/workflowUx.spec.js
 ```
 
-The Playwright lane seeds the browser fixtures, forces the memory vector backend, keeps `NOVEL_SYSTEM_LLM_ENABLED=false`, and validates five browser paths with `Operator Ref = ops.chapter.e2e`, `ops.scene-llm.e2e`, `ops.runtime.e2e`, `ops.knowledge.e2e`, and `ops.interop.e2e`. This browser lane proves the deterministic offline/fake-provider path, not a real-provider secret-backed integration:
-
-- `Scene Workbench` chapter runtime path loads `CH200_SC01` and exercises staged backfill, manual hold, and final aggregate
-- `Scene Workbench` scene LLM path loads `CH001_SC01`, runs the full scene pipeline, records `offline_deterministic` generation evidence, shows hard/soft QC pass summaries, and finishes with an archived final scene
-- `Scene Workbench` runtime path loads `CH001_SC01` and runs the full scene pipeline
-- `Review Inbox` approves, verifies, and releases `review_demo_style_observation`
-- `Index Console` retries verify jobs, runs due promotions, and runs recovery sweep
-- Recovery-generated human review follow-up actions progress through `retry_request`, `retry_verify`, and `release_review`
-- Receipts, runtime ledger views, target activity, and cross-view target focus all keep the expected actor / linked-target identity
-- `Knowledge Console` creates candidates, runs approve / verify / release workflow, applies object / scope / scope-ref / status filters, clears stale detail state when filters exclude the current lineage, opens linked review refs in `Review Inbox`, and opens bundle refs in `Scene Workbench`
-- `Interop Center` previews strict YAML worksheets, imports validated bundles, exports bundle worksheets, replays final-scene envelopes, and surfaces version/text drift comparisons with cross-view jumps back into the shell
-
-If you want to inspect the seed manually instead, use the local dev servers above and inspect:
-
-- `Author Workspace` for chapter/scene source-of-truth editing and handoff into runtime
-- `Author Trash` for restore / purge behavior after author-side trash actions
-- `Scene Workbench` with `CH001_SC01`
-- `Review Inbox` with `review_demo_style_observation`
-- `Index Console` after approve / verify / release actions create alias and job activity
-- `Interop Center` with a strict YAML worksheet targeting existing `CH001` / `CH001_SC01` records
-
-## Runtime Ops Closeout Demo
-
-Use this walkthrough only when you need an extra manual spot-check beyond the automated `npm run test:e2e` lane:
-
-1. Start from the seeded flow above, including `alembic upgrade head`, and set `Operator Ref` in the shell rail before taking any mutating action.
-2. In `Scene Workbench`, load `CH001_SC01`, run the full scene pipeline, and confirm the run receipt updates in place.
-3. In `Review Inbox`, approve and release `review_demo_style_observation`, then inspect any surfaced human review events and trigger the available retry action.
-4. In `Index Console`, exercise verify retry, `run due promotions`, and `recovery sweep`.
-5. Confirm the latest receipts, runtime ledger, and target activity groups all retain the correct actor and linked targets.
-
-The runtime-ops slice is considered closed out only when the seeded demo path, the runtime ledger, and the cross-view target jumps all agree on actor and target identity.
-
-If you need strict real-Chroma verification, use the WSL lane above instead of native Windows.
-
-## Runtime Shell Read APIs
-
-The shell currently reads through a mix of stable compatibility endpoints and decomposed domain endpoints:
-
-- `Review Inbox` reads `GET /api/v1/review-items` and `GET /api/v1/human-review-events`
-- `Scene Workbench` reads `GET /api/v1/scenes/{scene_id}/workbench`, `GET /api/v1/scenes/{scene_id}/attempts`, and scene-scoped human review reads
-- `Knowledge Console` reads `GET /api/v1/knowledge-entries` plus its detail/workflow endpoints
-- `Index Console` reads `GET /api/v1/vector-alias-scopes`, `GET /api/v1/jobs`, `GET /api/v1/activity-events`, and `GET /api/v1/target-activity-groups`
-
-The legacy `GET /api/v1/index/alias-scopes`, `GET /api/v1/index/jobs`, and `GET /api/v1/index/runtime-ledger` routes remain available as compatibility surfaces, but the current shell's primary read path for knowledge/index workflows has moved to the decomposed domain endpoints above.
-
-## Pagination
-
-The runtime shell now uses dual-stack pagination on the list endpoints that need operator paging:
-
-- `GET /api/v1/review-items`
-- `GET /api/v1/human-review-events`
-- `GET /api/v1/jobs`
-- `GET /api/v1/scenes/{scene_id}/attempts`
-
-Each endpoint accepts both `page` / `page_size` and `cursor` / `limit`. `Scene Workbench` still includes the full attempt list inside `/api/v1/scenes/{scene_id}/workbench` for compatibility, while the dedicated `/attempts` endpoint is the paged source used by the UI pager.
-
-## Frontend
-
-The frontend now runs as a Vue 3 + Pinia Vite app on top of the existing backend contract.
+完整前端单测：
 
 ```powershell
 cd frontend
-npm install
-npm run dev
+npm run test
 ```
-
-The shell currently exposes `Author Workspace`, `Chapter Manuscript Center`, `Longform Control`, `Author Trash`, `Scene Workbench`, `Review Inbox`, `Index Console`, `Knowledge Console`, `Reference Learning`, and `Interop Center`. Writer mode is the default author-friendly UI layer; advanced mode reveals technical IDs, hashes, payloads, and evidence. `Interop Center` is the worksheet workstation for strict YAML preview/import/export/replay flows and cross-view provenance inspection, while `Author Workspace` / `Author Trash` cover the author-side source-of-truth and recycle lifecycle.

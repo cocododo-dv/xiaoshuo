@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -83,6 +85,48 @@ def test_style_profile_extract_api_returns_structured_profile_yaml(client: TestC
     assert profile["banned_moves"] == ["Do not copy named-author phrasing."]
     assert payload["profile_yaml"].startswith("style_profile:")
     assert "dialogue_ratio:" in payload["profile_yaml"]
+
+
+def test_style_profile_extract_api_uses_llm_when_live(client: TestClient, monkeypatch) -> None:
+    class FakeStyleProfileRunner:
+        def __init__(self, db_session) -> None:
+            self.session = db_session
+
+        def run(self, **kwargs):
+            assert kwargs["node_id"] == "style_profile_extract"
+            return SimpleNamespace(
+                llm_call_id="llm_call_style_profile_extract_test",
+                response=SimpleNamespace(
+                    structured_output={
+                        "contract_version": STYLE_FEATURE_CONTRACT_VERSION,
+                        "features": {
+                            "rhythm": {"guidance": ["LLM rhythm guidance"]},
+                            "syntax": {"guidance": []},
+                            "imagery": {"guidance": ["LLM image guidance"]},
+                            "narrative_distance": {"guidance": []},
+                            "emotion_curve": {"guidance": []},
+                            "paragraph_density": {"guidance": []},
+                            "dialogue_ratio": {"guidance": ["LLM dialogue guidance"]},
+                        },
+                        "calibration_lines": ["LLM calibration"],
+                        "banned_moves": ["No protected imitation"],
+                    }
+                ),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr("novel_system.services.style_profile.LLMNodeRunner", FakeStyleProfileRunner, raising=False)
+
+    response = client.post(
+        "/api/v1/style-profile/extract",
+        json={"sample_texts": ["short rhythm and tactile image pressure"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["source"] == "llm"
+    assert payload["llm_call_id"] == "llm_call_style_profile_extract_test"
+    assert payload["profile"]["features"]["rhythm"]["guidance"] == ["LLM rhythm guidance"]
 
 
 def test_style_profile_review_candidate_api_creates_pending_style_rule_review(

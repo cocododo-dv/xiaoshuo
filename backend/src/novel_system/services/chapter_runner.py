@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState, utcnow
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.project_backtracks import ProjectBacktrackService
 from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.orchestrator import Orchestrator
 
@@ -302,6 +303,17 @@ class ChapterRunnerService:
         human_review_error = self._scene_human_review_error(scene_id)
         if human_review_error is not None:
             return human_review_error
+        pending_backtracks = [
+            item
+            for item in ProjectBacktrackService(self.session).pending_for_chapter(chapter_id)
+            if item.scene_id in {None, scene_id}
+        ]
+        if pending_backtracks:
+            first_item = pending_backtracks[0]
+            return {
+                "code": "CHAPTER_RUN_BACKTRACK_REQUIRED",
+                "message": f"chapter run is blocked by pending replanning work: {first_item.scope}",
+            }
         chapter_state = ChapterRuntimeService(self.session).chapter_state_payload(chapter_id)
         manual_hold_reason = chapter_state.get("manual_hold_reason")
         if isinstance(manual_hold_reason, str) and manual_hold_reason.strip():

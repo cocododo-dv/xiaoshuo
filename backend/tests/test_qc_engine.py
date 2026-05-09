@@ -991,6 +991,60 @@ def test_hard_qc_report_adds_evidence_and_constraint_conflict_metadata(session) 
     assert rewrite["conflicts_with"][0]["constraint_source"] == "scene_card.hook"
 
 
+def test_hard_qc_required_term_evidence_does_not_force_human_review(session) -> None:
+    _seed_scene(session)
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.must_include_text = "证人"
+    session.add(
+        SceneDraft(
+            row_id="draft_neutral_CH100_SC01",
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            stage="neutral_draft",
+            content="证人站在门边，主角做出了决定。",
+            source_bundle_id="bundle_CH100_SC01",
+            source_bundle_hash="bundle_hash_CH100_SC01",
+        )
+    )
+    session.commit()
+
+    engine = HardQcEngine(
+        session,
+        llm_client=FakeQcClient(
+            _base_qc_payload(
+                resolution_code="hard_fail_partial",
+                next_action="partial_rewrite",
+                issues=[
+                    {
+                        "issue_key": "missing_relation_digest_argument",
+                        "message": "Add the evidence-vs-speed argument while protecting the 证人.",
+                    }
+                ],
+            )
+        ),
+    )
+
+    decision = engine.evaluate(
+        scene_id="CH100_SC01",
+        bundle={
+            "bundle_id": "bundle_CH100_SC01",
+            "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+            "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+        },
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content="证人站在门边，主角做出了决定。",
+    )
+    session.commit()
+
+    report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
+    issue = report.issues_json[0]
+
+    assert decision.branch == "rewrite_partial"
+    assert report.next_action == "partial_rewrite"
+    assert issue["evidence_spans"][0]["text"] == "证人"
+    assert issue["conflicts_with"] == []
+
+
 def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -> None:
     _seed_scene(session)
     first = _make_orchestrator(

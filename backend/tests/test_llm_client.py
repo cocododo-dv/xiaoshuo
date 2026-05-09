@@ -142,6 +142,52 @@ def test_llm_client_generates_structured_json_from_chat_completions_api() -> Non
     assert response.finish_reason == "stop"
 
 
+def test_llm_client_responses_404_includes_protocol_hint() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.test/v1/responses"
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    client = LLMClient(
+        provider="openai",
+        base_url="https://example.test/v1",
+        api_key="relay-key",
+        timeout_seconds=12,
+        transport=httpx.MockTransport(handler),
+        provider_configs={
+            "gcli2api": ProviderRuntimeConfig(
+                provider_id="gcli2api",
+                provider_type="openai",
+                base_url="https://example.test/v1",
+                api_key="relay-key",
+                api_mode="responses",
+            )
+        },
+    )
+
+    with pytest.raises(LLMHTTPError) as error:
+        client.generate(
+            LLMRequest(
+                node_id="snowflake_step_generate",
+                provider="openai",
+                provider_id="gcli2api",
+                model="gemini-3.1-pro-preview",
+                messages=[{"role": "user", "content": "Return JSON."}],
+                temperature=0.2,
+                max_output_tokens=100,
+                response_format="json_object",
+                api_mode="responses",
+            )
+        )
+
+    assert error.value.status_code == 404
+    assert "Responses API" in error.value.message
+    assert "chat" in error.value.message
+    assert error.value.details["endpoint"] == "/responses"
+    assert error.value.details["api_mode"] == "responses"
+    assert error.value.details["provider_id"] == "gcli2api"
+    assert error.value.details["next_action"] == "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider"
+
+
 def test_llm_client_retries_http_429_before_succeeding() -> None:
     attempts = 0
 
@@ -672,7 +718,7 @@ def test_load_model_routing_config_rejects_invalid_task_model_values(
         load_model_routing_config(config_path)
 
 
-def test_parse_model_routing_config_normalizes_node_routing_and_legacy_stylize() -> None:
+def test_parse_model_routing_config_preserves_legacy_stylize_without_marking_style_nodes_configured() -> None:
     config = parse_model_routing_config(
         {
             "node_routing": {
@@ -706,17 +752,13 @@ def test_parse_model_routing_config_normalizes_node_routing_and_legacy_stylize()
     )
 
     neutral = config.node_routing["neutral_draft"]
-    style = config.node_routing["style_draft"]
-    patch = config.node_routing["style_patch"]
-
     assert neutral.provider == "openai"
     assert neutral.provider_id == "openai_primary"
     assert neutral.account_id == "acct_ops"
     assert neutral.reasoning_level == "medium"
     assert neutral.provider_options == {"text_verbosity": "low"}
-    assert style.provider == "anthropic"
-    assert style.model == "claude-sonnet-4-5"
-    assert patch.model == "claude-sonnet-4-5"
+    assert "style_draft" not in config.node_routing
+    assert "style_patch" not in config.node_routing
     assert config.task_routing["stylize"].model == "claude-sonnet-4-5"
 
 

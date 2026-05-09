@@ -3,6 +3,7 @@ import { computed, onActivated, onMounted, ref } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
+import { formatChapterChoice, formatReadableTargetRef, formatSceneChoice } from "../lib/readableRefs";
 import { useShellRouter } from "../router";
 import { useLongformControlStore } from "../stores/longformControl";
 import { useLongformEditorStore } from "../stores/longformEditor";
@@ -81,6 +82,22 @@ function payoffStatusLabel(value) {
     resolved: "已解决",
     overdue: "已逾期",
   }[value] || statusLabel(value);
+}
+
+function chapterLabel(chapterId) {
+  return chapterId ? formatChapterChoice({ chapter_id: chapterId }).label : "全书";
+}
+
+function sceneLabel(sceneId) {
+  return sceneId ? formatSceneChoice({ scene_id: sceneId }).label : "";
+}
+
+function targetLabel(chapterId, sceneId) {
+  return [chapterLabel(chapterId), sceneLabel(sceneId)].filter(Boolean).join(" / ");
+}
+
+function technicalLabel(value) {
+  return formatReadableTargetRef(value).technical || value || "-";
 }
 
 function cardTitle(card) {
@@ -262,18 +279,19 @@ onActivated(() => {
             <span class="badge">{{ summary.critical_debt_count || 0 }} 关键</span>
           </div>
           <div v-if="!debtRadar.length" class="empty">当前没有开放债务。</div>
-          <div v-else class="longform-card-grid">
+          <div v-else class="longform-card-grid readable-grid">
             <article v-for="debt in debtRadar" :key="debt.promise_ref" class="longform-card">
               <div class="receipt-head compact">
                 <div>
-                  <strong>{{ debt.promise_ref }}</strong>
+                  <strong class="line-clamp-2">{{ debtTypeLabel(debt.debt_type) }}</strong>
+                  <p class="technical-ref">{{ technicalLabel(debt.promise_ref) }}</p>
                   <p class="muted">{{ debtTypeLabel(debt.debt_type) }} · {{ payoffStatusLabel(debt.payoff_status) }}</p>
                 </div>
                 <span class="badge">{{ severityLabel(debt.risk_level) }}</span>
               </div>
               <p>{{ debt.text || debt.deferral_reason || "债务需要作者判断。" }}</p>
               <p class="muted">
-                打开：{{ debt.opened_at || debt.chapter_id || "-" }} · 应还：{{ debt.expected_payoff_window || "-" }}
+                打开：{{ debt.opened_at || chapterLabel(debt.chapter_id) || "-" }} · 应还：{{ debt.expected_payoff_window || "-" }}
               </p>
               <p v-if="debt.deferral_reason" class="muted">延宕理由：{{ debt.deferral_reason }}</p>
             </article>
@@ -300,18 +318,19 @@ onActivated(() => {
             </div>
           </div>
           <div v-if="!cards.length" class="empty">暂无诊断卡。点击“生成诊断卡”开始结构巡检。</div>
-          <div v-else class="longform-card-grid">
+          <div v-else class="longform-card-grid readable-grid">
             <article v-for="card in cards" :key="card.card_id" class="longform-card">
               <div class="receipt-head compact">
                 <div>
                   <strong>{{ cardTitle(card) }}</strong>
-                  <p class="muted">{{ card.chapter_id || "全书" }}{{ card.scene_id ? ` / ${card.scene_id}` : "" }}</p>
+                  <p class="muted">{{ targetLabel(card.chapter_id, card.scene_id) }}</p>
+                  <p class="technical-ref">{{ targetLabel(card.chapter_id, card.scene_id) ? `${card.chapter_id || "global"}${card.scene_id ? ` / ${card.scene_id}` : ""}` : "global" }}</p>
                 </div>
                 <span class="badge">{{ severityLabel(card.severity) }} · {{ statusLabel(card.status) }}</span>
               </div>
               <p>{{ card.evidence?.issue || card.evidence?.text || card.evidence?.chapter_promise || "结构压力需要作者判断。" }}</p>
               <p class="muted">{{ card.recommendation?.summary || "-" }}</p>
-              <p class="muted">明确目标：改 {{ card.chapter_id || "全书" }}{{ card.scene_id ? ` / ${card.scene_id}` : "" }} 的 {{ cardTitle(card) }}</p>
+              <p class="muted">明确目标：改 {{ targetLabel(card.chapter_id, card.scene_id) }} 的 {{ cardTitle(card) }}</p>
               <textarea
                 v-model="guidanceDraft[card.card_id]"
                 rows="3"
@@ -351,11 +370,12 @@ onActivated(() => {
               <p class="muted receipt-copy">来自 ForeshadowTracker 的开启、触碰和解决状态。</p>
             </div>
           </div>
-          <div class="longform-card-grid">
+          <div class="longform-card-grid readable-grid">
             <article v-for="debt in foreshadowDebts" :key="debt.row_id" class="longform-card">
-              <strong>{{ debt.foreshadow_id }}</strong>
+              <strong class="line-clamp-2">{{ debt.text || "伏笔债务" }}</strong>
+              <p class="technical-ref">{{ technicalLabel(debt.foreshadow_id) }}</p>
               <p>{{ debt.text }}</p>
-              <p class="muted">{{ debt.chapter_id }}{{ debt.scene_id ? ` / ${debt.scene_id}` : "" }} · {{ statusLabel(debt.debt_state) }}</p>
+              <p class="muted">{{ targetLabel(debt.chapter_id, debt.scene_id) }} · {{ statusLabel(debt.debt_state) }}</p>
             </article>
           </div>
         </section>

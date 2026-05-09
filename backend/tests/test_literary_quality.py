@@ -245,6 +245,165 @@ def test_literary_quality_overview_can_filter_professional_writer_risk(client, s
     }
 
 
+def test_literary_quality_chapter_set_review_scores_cross_chapter_arc_and_safety(client, session) -> None:
+    for index, chapter_id in enumerate(("LQSET01", "LQSET02", "LQSET03"), start=1):
+        scene_id = f"{chapter_id}_SC01"
+        final_row_id = f"final_scene_{scene_id}_v1"
+        session.add(
+            ChapterGoal(
+                chapter_id=chapter_id,
+                planned_scene_count=1,
+                chapter_goal=f"第{index}章：玻璃雨逼迫主角在公开证据和保护证人之间选择。",
+                main_plot_push=f"推进第{index}个未来失踪反证。",
+                emotional_target="让主角付出关系或安全代价。",
+                ending_effect="结尾留下下一章必须处理的反证。",
+            )
+        )
+        session.add(ChapterState(chapter_id=chapter_id, current_phase="drafting"))
+        session.add(
+            SceneCard(
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                scene_seq=1,
+                scene_goal="主角必须选择公开档案还是转移证人。",
+                beats_json=["玻璃雨落下", "反证出现", "必须选择", "付出代价"],
+                exit_change="证人得到保护，但公开证据被延迟。",
+                hook="玻璃雨停在零点，下一份名单浮出。",
+            )
+        )
+        session.add(
+            SceneRunState(
+                scene_id=scene_id,
+                scene_status="archived",
+                current_final_scene_row_id=final_row_id,
+                current_bundle_id=f"bundle_{scene_id}_v1",
+                current_bundle_hash=f"hash_{scene_id}_v1",
+            )
+        )
+        session.add(
+            FinalScene(
+                row_id=final_row_id,
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                content=(
+                    "零点的玻璃雨敲在废线站顶棚。她必须选择公开证据，还是先把证人送走。"
+                    "她放弃了即时直播，把录音塞进防水袋，代价是自己的坐标暴露。"
+                    "玻璃雨再次停住，新的名单在地面积水里浮现。"
+                ),
+                status="approved",
+                source_bundle_id=f"bundle_{scene_id}_v1",
+                source_bundle_hash=f"hash_{scene_id}_v1",
+            )
+        )
+    session.commit()
+
+    response = client.post(
+        "/api/v1/literary-quality/chapter-set-review",
+        json={
+            "chapter_ids": ["LQSET01", "LQSET02", "LQSET03"],
+            "protected_terms": ["龙族", "路明非", "卡塞尔"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["chapter_ids"] == ["LQSET01", "LQSET02", "LQSET03"]
+    assert payload["summary"]["chapter_count"] == 3
+    assert payload["summary"]["scene_count"] == 3
+    assert payload["scores"]["reference_safety"] == 1.0
+    assert payload["payoff_reveal_checks"]["has_forced_choice_count"] == 3
+    assert payload["payoff_reveal_checks"]["has_cost_count"] == 3
+    assert payload["payoff_reveal_checks"]["has_next_pull_count"] == 3
+    assert payload["reference_safety_findings"] == []
+    assert any(row["token"] == "玻璃雨" for row in payload["repeated_patterns"])
+    assert payload["recommended_next_action"]["action"] in {"open_deepdesk_patch", "none"}
+
+
+def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(client, session) -> None:
+    final_row_id = _seed_quality_scene(session, chapter_id="LQSET_LAYER", scene_id="LQSET_LAYER_SC01")
+    scene_draft = AuthorDraft(
+        draft_id="author_draft_scene_LQSET_LAYER_SC01_current",
+        object_type="scene",
+        object_id="LQSET_LAYER_SC01",
+        source_text_ref=f"final_scene:{final_row_id}",
+        content="作者稿里误写了龙族；角色只能选择保护证人，代价是公开证据被延迟。",
+        revision_no=1,
+        status="current",
+    )
+    session.add(scene_draft)
+    session.commit()
+
+    response = client.post(
+        "/api/v1/literary-quality/chapter-set-review",
+        json={
+            "chapter_ids": ["LQSET_LAYER"],
+            "text_layer": "author_draft_preferred",
+            "protected_terms": ["龙族"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["summary"]["scene_count"] == 1
+    assert payload["scenes"][0]["text_layer"] == "author_draft"
+    assert payload["scenes"][0]["source_ref"] == f"author_draft:{scene_draft.draft_id}"
+    assert payload["reference_safety_findings"][0]["term"] == "龙族"
+    assert payload["reference_safety_findings"][0]["source_ref"] == f"author_draft:{scene_draft.draft_id}"
+
+
+def test_literary_quality_chapter_set_review_reports_missing_payoff_chapter_ids(client, session) -> None:
+    session.add(
+        ChapterGoal(
+            chapter_id="LQSET_MISSING",
+            planned_scene_count=1,
+            chapter_goal="A quiet archive interlude.",
+            main_plot_push="Hold atmosphere.",
+            emotional_target="Stay uncertain.",
+            ending_effect="Fade out.",
+        )
+    )
+    session.add(ChapterState(chapter_id="LQSET_MISSING", current_phase="drafting"))
+    session.add(
+        SceneCard(
+            scene_id="LQSET_MISSING_SC01",
+            chapter_id="LQSET_MISSING",
+            scene_seq=1,
+            scene_goal="Describe the room without a decision.",
+        )
+    )
+    session.add(
+        SceneRunState(
+            scene_id="LQSET_MISSING_SC01",
+            scene_status="archived",
+            current_final_scene_row_id="final_scene_LQSET_MISSING_SC01_v1",
+        )
+    )
+    session.add(
+        FinalScene(
+            row_id="final_scene_LQSET_MISSING_SC01_v1",
+            scene_id="LQSET_MISSING_SC01",
+            chapter_id="LQSET_MISSING",
+            content="灰尘落在档案柜上，灯光安静地停住。她看着房间，没有行动。",
+            status="approved",
+            source_bundle_id="bundle_LQSET_MISSING",
+            source_bundle_hash="hash_LQSET_MISSING",
+        )
+    )
+    session.commit()
+
+    response = client.post(
+        "/api/v1/literary-quality/chapter-set-review",
+        json={"chapter_ids": ["LQSET_MISSING"], "text_layer": "runtime_final_scene"},
+    )
+
+    assert response.status_code == 200
+    checks = response.json()["data"]["payoff_reveal_checks"]
+    assert checks["missing_forced_choice_chapter_ids"] == ["LQSET_MISSING"]
+    assert checks["missing_cost_chapter_ids"] == ["LQSET_MISSING"]
+    assert checks["missing_next_pull_chapter_ids"] == ["LQSET_MISSING"]
+    assert checks["missing_payoff_chapter_ids"] == ["LQSET_MISSING"]
+
+
 def _seed_cross_scene_template_reuse(session) -> None:
     chapter_id = "LQ300"
     session.add(

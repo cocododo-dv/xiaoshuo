@@ -29,13 +29,15 @@ function mountComponent(component, props = {}) {
 }
 
 describe("workflow-driven shell metadata", () => {
-  it("keeps the writer deep desk as the default entry while exposing step navigation metadata", () => {
+  it("keeps the snowflake workbench as the default entry while exposing step navigation metadata", () => {
     const router = useShellRouter();
 
     router.reset();
 
-    expect(router.activeView.value).toBe("deepdesk");
+    expect(router.activeView.value).toBe("snowflake-workbench");
     expect(router.views.map((view) => view.id)).toEqual([
+      "snowflake-workbench",
+      "writer-room",
       "config",
       "author",
       "workbench",
@@ -70,6 +72,16 @@ describe("workflow-driven shell metadata", () => {
     );
   });
 
+  it("documents the snowflake workbench with the reference ten-step names", () => {
+    const readme = readFileSync(path.join(SOURCE_ROOT, "..", "README.md"), "utf8");
+
+    expect(readme).toContain(
+      "读者定位、一句话概括、一段话概括、角色摘要表、一页梗概、角色背景故事、长篇大纲、角色全档案、场景列表、场景规划",
+    );
+    expect(readme).not.toContain("读者与类型");
+    expect(readme).not.toContain("单场景计划");
+  });
+
   it("ships grouped workflow metadata for every console page", () => {
     const router = useShellRouter();
 
@@ -80,12 +92,79 @@ describe("workflow-driven shell metadata", () => {
     ]);
     expect(router.views.every((view) => view.label && view.legacyLabel && view.stepLabel && view.group && view.icon)).toBe(true);
     expect(router.views.every((view) => Array.isArray(view.nextViews))).toBe(true);
-    expect(router.views.filter((view) => view.writerPrimary).map((view) => view.id)).toEqual([
-      "author",
-      "quality",
-      "deepdesk",
-      "longform",
-    ]);
+    expect(router.views
+      .filter((view) => view.writerPrimary)
+      .sort((left, right) => (left.writerOrder || 99) - (right.writerOrder || 99))
+      .map((view) => view.id)).toEqual([
+        "snowflake-workbench",
+        "writer-room",
+        "reference",
+        "review",
+      ]);
+    router.views
+      .filter((view) => view.writerPrimary)
+      .forEach((view) => {
+        expect(view.writerGoal, `${view.id} writerGoal`).toBeTruthy();
+        expect(view.writerDoneSignal, `${view.id} writerDoneSignal`).toBeTruthy();
+        expect(view.writerNextAction, `${view.id} writerNextAction`).toBeTruthy();
+      });
+  });
+
+  it("keeps every desktop navigation icon unique for the collapsed rail", () => {
+    const router = useShellRouter();
+    const icons = router.views.map((view) => view.icon);
+    const iconByView = Object.fromEntries(router.views.map((view) => [view.id, view.icon]));
+
+    expect(new Set(icons).size).toBe(icons.length);
+    expect(iconByView["writer-room"]).not.toBe(iconByView.author);
+    expect(iconByView.review).not.toBe(iconByView.quality);
+    expect(iconByView.manuscripts).not.toBe(iconByView.deepdesk);
+  });
+
+  it("keeps shell navigation in the URL and restores deep-link context", async () => {
+    const { UI_MODE_STORAGE_KEY } = await import("../src/composables/useUiMode.js");
+    const router = useShellRouter();
+
+    window.history.replaceState({}, "", "/");
+    localStorage.clear();
+    router.reset({ replace: true });
+
+    router.navigate("review", {
+      target: {
+        step: "scene_details",
+        panel: "materialization",
+        target: "PRJ_WS_CH01_SC01",
+      },
+    });
+
+    let params = new URL(window.location.href).searchParams;
+    expect(params.get("view")).toBe("review");
+    expect(params.get("step")).toBe("scene_details");
+    expect(params.get("panel")).toBe("materialization");
+    expect(params.get("target")).toBe("PRJ_WS_CH01_SC01");
+    expect(router.routeContext.value).toMatchObject({
+      step: "scene_details",
+      panel: "materialization",
+      target: "PRJ_WS_CH01_SC01",
+    });
+
+    window.history.replaceState({}, "", "/?view=reference&mode=advanced&step=book_brief&panel=assistant");
+    router.hydrateFromLocation();
+
+    expect(router.activeView.value).toBe("reference");
+    expect(localStorage.getItem(UI_MODE_STORAGE_KEY)).toBe("advanced");
+    expect(router.routeContext.value).toMatchObject({
+      step: "book_brief",
+      panel: "assistant",
+    });
+
+    window.history.replaceState({}, "", "/?view=missing-console&mode=writer");
+    router.hydrateFromLocation();
+
+    expect(router.activeView.value).toBe("snowflake-workbench");
+    params = new URL(window.location.href).searchParams;
+    expect(params.get("view")).toBe("snowflake-workbench");
+    expect(localStorage.getItem(UI_MODE_STORAGE_KEY)).toBe("writer");
   });
 });
 
@@ -114,6 +193,7 @@ describe("writer and advanced UI modes", () => {
   it("provides shared workflow and evidence components", () => {
     const expectedFiles = [
       "src/components/WorkflowNav.vue",
+      "src/components/WriterPathProgress.vue",
       "src/components/WorkflowPageHeader.vue",
       "src/components/UiModeSwitch.vue",
       "src/components/EvidenceDisclosure.vue",
@@ -141,10 +221,13 @@ describe("writer and advanced UI modes", () => {
     });
 
     try {
-      expect(wrapper.el.textContent).toContain("写作舱");
-      expect(wrapper.el.textContent).toContain("章节编排");
-      expect(wrapper.el.textContent).toContain("长篇雷达");
-      expect(wrapper.el.textContent).toContain("文学质检");
+      expect(wrapper.el.textContent).toContain("雪花工作台");
+      expect(wrapper.el.textContent).toContain("小修写作");
+      expect(wrapper.el.textContent).toContain("参考书学习");
+      expect(wrapper.el.textContent).toContain("待处理建议");
+      expect(wrapper.el.textContent).not.toContain("章节编排");
+      expect(wrapper.el.textContent).not.toContain("长篇雷达");
+      expect(wrapper.el.textContent).not.toContain("文学质检");
       expect(wrapper.el.textContent).not.toContain("场景工作台");
       expect(wrapper.el.querySelector('[data-testid="nav-workbench-route"]')).toBeNull();
 
@@ -179,17 +262,88 @@ describe("writer and advanced UI modes", () => {
       const selector = wrapper.el.querySelector('[data-testid="workflow-nav-mobile-select"]');
 
       expect(selector).not.toBeNull();
-      expect(selector.value).toBe("deepdesk");
-      expect([...selector.options].map((option) => option.value)).toEqual(["deepdesk", "author", "longform", "quality"]);
+      expect(selector.value).toBe("snowflake-workbench");
+      expect([...selector.options].map((option) => option.value)).toEqual([
+        "snowflake-workbench",
+        "writer-room",
+        "reference",
+        "review",
+      ]);
 
-      selector.value = "quality";
+      selector.value = "review";
       selector.dispatchEvent(new Event("change"));
 
-      expect(onNavigate).toHaveBeenCalledWith("quality");
+      expect(onNavigate).toHaveBeenCalledWith("review");
       expect(wrapper.el.querySelector('[data-testid="workflow-nav-desktop-list"]')).not.toBeNull();
     } finally {
       wrapper.unmount();
     }
+  });
+
+  it("keeps desktop navigation usable as an icon rail when collapsed", async () => {
+    const { useUiMode } = await import("../src/composables/useUiMode.js");
+    const { default: WorkflowNav } = await import("../src/components/WorkflowNav.vue");
+    const router = useShellRouter();
+    const mode = useUiMode();
+    const onNavigate = vi.fn();
+
+    router.reset();
+    mode.setUiMode("advanced");
+
+    const wrapper = mountComponent(WorkflowNav, {
+      views: router.views,
+      groups: router.workflowGroups,
+      activeView: router.activeView.value,
+      collapsed: true,
+      onNavigate,
+    });
+
+    try {
+      const desktopList = wrapper.el.querySelector('[data-testid="workflow-nav-desktop-list"]');
+      const workbenchButton = wrapper.el.querySelector('[data-testid="nav-workbench"]');
+      const workbenchTitle = router.views.find((view) => view.id === "workbench").label;
+
+      expect(desktopList).not.toBeNull();
+      expect(workbenchButton).not.toBeNull();
+      expect(workbenchButton.getAttribute("title")).toBe(workbenchTitle);
+      expect(workbenchButton.getAttribute("aria-label")).toBe(workbenchTitle);
+      expect(desktopList.textContent).not.toContain(workbenchTitle);
+      expect(desktopList.textContent).not.toContain("view: workbench");
+      expect(wrapper.el.querySelector('[data-testid="nav-workbench-route"]')).toBeNull();
+
+      workbenchButton.dispatchEvent(new MouseEvent("click"));
+
+      expect(onNavigate).toHaveBeenCalledWith("workbench");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("declares persisted shell rail collapse state and responsive styles", () => {
+    const appSource = readSource("src/App.vue");
+    const styleSource = readSource("src/styles/app.css");
+
+    expect(appSource).toContain("railCollapsed");
+    expect(appSource).toContain("novel-system:rail-collapsed");
+    expect(appSource).toContain("PanelLeftClose");
+    expect(appSource).toContain("PanelLeftOpen");
+    expect(appSource).toContain('data-testid="rail-toggle"');
+    expect(styleSource).toContain(".shell.rail-collapsed");
+    expect(styleSource).toContain(".rail-toggle");
+    expect(styleSource).toMatch(/@media \(max-width:\s*980px\)[\s\S]*\.shell\.rail-collapsed/);
+  });
+
+  it("mounts the writer path task bar only in writer mode", () => {
+    const appSource = readSource("src/App.vue");
+    const componentSource = readSource("src/components/WriterPathProgress.vue");
+    const styleSource = readSource("src/styles/app.css");
+
+    expect(appSource).toContain("WriterPathProgress");
+    expect(appSource).toContain('v-if="uiMode === \'writer\'"');
+    expect(componentSource).toContain('data-testid="writer-path-progress"');
+    expect(componentSource).toContain('data-testid="writer-path-active-summary"');
+    expect(styleSource).toContain(".writer-path-progress");
+    expect(styleSource).toMatch(/@media \(max-width:\s*768px\)[\s\S]*\.writer-path-list/);
   });
 
   it("keeps page headers outcome-first in guided mode and metadata-rich in advanced mode", async () => {
@@ -218,11 +372,84 @@ describe("writer and advanced UI modes", () => {
       wrapper.unmount();
     }
   });
+
+  it("renders writer path goal, done signal, and next action in writer mode headers", async () => {
+    const { useUiMode } = await import("../src/composables/useUiMode.js");
+    const { default: WorkflowPageHeader } = await import("../src/components/WorkflowPageHeader.vue");
+    const router = useShellRouter();
+    const mode = useUiMode();
+
+    router.reset();
+    mode.setUiMode("writer");
+
+    const wrapper = mountComponent(WorkflowPageHeader, { viewId: "snowflake-workbench" });
+
+    try {
+      const writerBrief = wrapper.el.querySelector('[data-testid="workflow-writer-brief-snowflake-workbench"]');
+
+      expect(writerBrief).not.toBeNull();
+      expect(writerBrief.textContent).toContain("当前目标");
+      expect(writerBrief.textContent).toContain(router.viewMeta("snowflake-workbench").writerGoal);
+      expect(writerBrief.textContent).toContain("完成信号");
+      expect(writerBrief.textContent).toContain(router.viewMeta("snowflake-workbench").writerDoneSignal);
+      expect(writerBrief.textContent).toContain("下一步");
+      expect(writerBrief.textContent).toContain(router.viewMeta("snowflake-workbench").writerNextAction);
+
+      mode.setUiMode("advanced");
+      await nextTick();
+
+      expect(wrapper.el.querySelector('[data-testid="workflow-writer-brief-snowflake-workbench"]')).toBeNull();
+      expect(wrapper.el.querySelector('[data-testid="workflow-advanced-meta-snowflake-workbench"]')).not.toBeNull();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("adds accessible expanded state to shared disclosure controls", async () => {
+    const { useUiMode } = await import("../src/composables/useUiMode.js");
+    const { default: LazySection } = await import("../src/components/LazySection.vue");
+    const { default: EvidenceDisclosure } = await import("../src/components/EvidenceDisclosure.vue");
+
+    useUiMode().setUiMode("writer");
+
+    const lazy = mountComponent(LazySection, {
+      title: "关联证据",
+      toggleTestId: "lazy-a11y-toggle",
+    });
+
+    try {
+      const toggle = lazy.el.querySelector('[data-testid="lazy-a11y-toggle"]');
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(toggle.getAttribute("aria-controls")).toBeTruthy();
+
+      toggle.click();
+      await nextTick();
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(lazy.el.querySelector(`#${toggle.getAttribute("aria-controls")}`)).not.toBeNull();
+    } finally {
+      lazy.unmount();
+    }
+
+    const evidence = mountComponent(EvidenceDisclosure, {
+      title: "运行证据",
+      testId: "evidence-a11y",
+    });
+
+    try {
+      const toggle = evidence.el.querySelector('[data-testid="evidence-a11y-toggle"]');
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(toggle.getAttribute("aria-controls")).toBeTruthy();
+    } finally {
+      evidence.unmount();
+    }
+  });
 });
 
 describe("workflow page adoption", () => {
-  it("uses the shared workflow page header on all twelve console pages", () => {
+  it("uses the shared workflow page header on all console pages", () => {
     const pages = [
+      "SnowflakeWorkbenchView.vue",
+      "WriterRoomView.vue",
       "AuthorWorkspaceView.vue",
       "ChapterManuscriptView.vue",
       "WriterDeepDeskView.vue",

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { createApp, h, nextTick } from "vue";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import FlowActionReceipt from "../src/components/FlowActionReceipt.vue";
 import { useFlowActionFeedback } from "../src/composables/useFlowActionFeedback";
@@ -38,6 +38,10 @@ function mountReceipt(receipt, props = {}) {
 }
 
 describe("flow action feedback", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("records running and success receipts while still emitting a notice", async () => {
     const notices = [];
     const pending = deferred();
@@ -128,5 +132,98 @@ describe("flow action feedback", () => {
     expect(onNavigate).toHaveBeenCalledWith(receipt.target);
 
     unmount();
+  });
+
+  it("uses accessible status semantics, dismiss controls, and inline recovery actions", async () => {
+    const onDismiss = vi.fn();
+    const onRetry = vi.fn();
+    const receipt = {
+      status: "error",
+      actionLabel: "保存正文",
+      message: "网络中断，正文尚未保存。",
+      nextStep: "检查连接后重试，当前草稿仍保留在编辑器里。",
+      actions: [{ label: "重试保存", onClick: onRetry }],
+    };
+    const { host, unmount } = mountReceipt(receipt, { onDismiss });
+
+    try {
+      const node = host.querySelector('[data-testid="flow-action-receipt"]');
+      const retry = host.querySelector('[data-testid="flow-action-action-0"]');
+      const dismiss = host.querySelector('[data-testid="flow-action-dismiss"]');
+
+      expect(node.getAttribute("role")).toBe("alert");
+      expect(node.getAttribute("aria-live")).toBe("assertive");
+      expect(node.getAttribute("data-tone")).toBe("error");
+      expect(node.textContent).toContain("失败");
+      expect(node.textContent).toContain("重试保存");
+
+      retry.click();
+      dismiss.click();
+      await nextTick();
+
+      expect(onRetry).toHaveBeenCalledWith(receipt);
+      expect(onDismiss).toHaveBeenCalledWith(receipt);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("shows long-running state, request traces, and retry/stop-wait actions", async () => {
+    vi.useFakeTimers();
+    const pending = deferred();
+    const retry = vi.fn();
+    const stopWaiting = vi.fn();
+    const { runFlowAction, receiptFor } = useFlowActionFeedback();
+
+    const promise = runFlowAction({
+      scopeKey: "snowflake:generate",
+      actionLabel: "生成候选",
+      runningMessage: "正在生成候选...",
+      phaseLabel: "正在整理雪花材料",
+      longRunningMs: 1000,
+      onCancelWait: stopWaiting,
+      onRetry: retry,
+      retryable: true,
+      action: async () => {
+        await pending.promise;
+      },
+    });
+
+    expect(receiptFor("snowflake:generate").value).toMatchObject({
+      status: "running",
+      startedAt: expect.any(Number),
+      phaseLabel: "正在整理雪花材料",
+      longRunning: false,
+    });
+
+    await vi.advanceTimersByTimeAsync(1200);
+
+    expect(receiptFor("snowflake:generate").value).toMatchObject({
+      status: "running",
+      longRunning: true,
+      nextStep: "仍在处理，可以继续编辑当前内容。",
+    });
+    expect(receiptFor("snowflake:generate").value.actions.map((action) => action.label)).toContain("停止等待");
+
+    const error = new Error("模型暂时不可用");
+    Object.assign(error, {
+      code: "LLM_TIMEOUT",
+      status: 504,
+      requestId: "req_server_001",
+      clientRequestId: "client_local_001",
+      retryable: true,
+      details: { retryable: true },
+    });
+    pending.reject(error);
+    await promise;
+
+    expect(receiptFor("snowflake:generate").value).toMatchObject({
+      status: "error",
+      requestId: "req_server_001",
+      clientRequestId: "client_local_001",
+      code: "LLM_TIMEOUT",
+      retryable: true,
+    });
+    expect(receiptFor("snowflake:generate").value.actions.map((action) => action.label)).toContain("重试");
   });
 });

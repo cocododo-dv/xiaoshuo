@@ -25,8 +25,8 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_client import LLMClient, LLMRequest, load_model_routing_config
-from novel_system.services.prompt_builder import load_prompt_templates
+from novel_system.services.llm_client import LLMClient, LLMConfigurationError, LLMRequest, load_model_routing_config
+from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
 from novel_system.services.style_profile import StyleProfileService
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.services.versioning.shared import now_iso
@@ -979,8 +979,23 @@ class ReferenceLearningService:
         book: ReferenceBook,
         segment: ReferenceBookSegment | None = None,
     ) -> dict[str, Any]:
-        task_config = self._task_config(node_id)
-        template = self._template(node_id)
+        live_mode = bool(self.settings.llm_enabled)
+        try:
+            task_config = self._task_config(node_id)
+            template = self._template(node_id)
+        except (KeyError, LLMConfigurationError, PromptConfigurationError) as exc:
+            if live_mode:
+                raise DomainError(
+                    "REFERENCE_LLM_ROUTE_OR_PROMPT_MISSING",
+                    f"reference learning LLM node is not configured: {node_id}",
+                    status_code=409,
+                    details={
+                        "node_id": node_id,
+                        "error_code": getattr(exc, "code", exc.__class__.__name__),
+                        "next_action": "configure_reference_learning_node_route_and_prompt_then_retry",
+                    },
+                ) from exc
+            return {}
         user_prompt = _reference_user_prompt(template.task_prompt, payload)
         prompt_hash = _prompt_hash(
             node_id=node_id,
@@ -1052,6 +1067,22 @@ class ReferenceLearningService:
                 )
             )
             self.session.flush()
+            if live_mode:
+                raise DomainError(
+                    "REFERENCE_LLM_CALL_FAILED",
+                    str(exc),
+                    status_code=409,
+                    details={
+                        "llm_call_id": llm_call_id,
+                        "node_id": node_id,
+                        "error_code": getattr(exc, "code", exc.__class__.__name__),
+                        "next_action": "check_provider_route_model_and_retry",
+                        "response_summary": {
+                            "message": str(exc),
+                            "retryable": bool(getattr(exc, "retryable", False)),
+                        },
+                    },
+                ) from exc
             return {}
         self.session.add(
             LlmCall(
@@ -1671,6 +1702,33 @@ def _enrich_reference_profile_payload(
             - (0.15 if not _has_profile_dimensions(enriched) else 0.0),
         ),
     )
+    craft_metrics = {
+        "style_feature_count": len(_string_list(enriched.get("style_features")))
+        + len(_string_list(literary_profile.get("dialogue_strategies")))
+        + len(_string_list(literary_profile.get("image_usage"))),
+        "narrative_pattern_count": len(_string_list(enriched.get("narrative_patterns")))
+        + len(_string_list(literary_profile.get("scene_shapes"))),
+        "calibration_count": len(_string_list(enriched.get("calibration_guidance"))),
+        "banned_rule_count": len(_string_list(literary_profile.get("banned_replication_rules"))),
+    }
+    anti_copy_rules = (
+        _string_list(literary_profile.get("banned_replication_rules"))
+        or _string_list(enriched.get("banned_replication_rules"))
+        or ["do not reuse source names, settings, signature plot bridges, protected scenes, or recognizable sentence shapes"]
+    )
+    applicability = {
+        "safe_to_apply": not source_term_audit["blocked_markers"],
+        "applicable_techniques": [
+            *[f"scene_shape: {item}" for item in _string_list(literary_profile.get("scene_shapes"))[:2]],
+            *[f"dialogue_strategy: {item}" for item in _string_list(literary_profile.get("dialogue_strategies"))[:2]],
+            *[f"image_usage: {item}" for item in _string_list(literary_profile.get("image_usage"))[:2]],
+        ][:6],
+        "inapplicable_techniques": [
+            "source-specific names, settings, bridge events, signature scenes, and recognizable syntax are not applicable",
+        ],
+    }
+    if not applicability["applicable_techniques"]:
+        applicability["applicable_techniques"] = ["use reviewed abstract craft guidance only"]
     enriched.update(
         {
             "locale": locale,
@@ -1678,6 +1736,10 @@ def _enrich_reference_profile_payload(
             "source_term_audit": source_term_audit,
             "repetition_score": round(repetition_score, 3),
             "safety_findings": safety_findings,
+            "craft_metrics": craft_metrics,
+            "applicability": applicability,
+            "anti_copy_rules": anti_copy_rules[:8],
+            "evidence_safety_summary": _profile_safety_summary(enriched, stripped_count=stripped_count),
         }
     )
     return enriched
@@ -2145,32 +2207,30 @@ def _is_front_matter_segment(text: str) -> bool:
     lower = compact.lower()
     if not compact:
         return True
-    if any(marker in compact for marker in ("内容简介", "內容簡介", "内容提要", "作品简介")):
+    if any(marker in compact for marker in ("内容简介", "內容簡介", "内容提要", "內容提要", "作品简介", "作品簡介")):
         return True
-    if any(marker in compact for marker in ("目录", "目錄", "鐩綍")) and len(compact) <= 260:
+    if any(marker in compact for marker in ("目录", "目錄")) and len(compact) <= 260:
         return True
     if (
-        any(marker in compact for marker in ("合集", "鍚堥泦"))
-        and any(marker in compact for marker in ("包含", "鍖呭惈"))
-        and any(marker in compact for marker in ("著", "作者", "钁?", "浣滆€?"))
+        any(marker in compact for marker in ("合集", "合辑", "合輯"))
+        and any(marker in compact for marker in ("包含", "收录", "收錄"))
+        and any(marker in compact for marker in ("著", "作者", "目录", "目錄"))
     ):
         return True
-    title_mark_count = compact.count("《") + compact.count("》") + compact.count("銆?")
-    if title_mark_count >= 3 and any(marker in compact for marker in ("著", "作者", "目录", "钁?", "浣滆€?", "鐩綍")):
+    title_mark_count = compact.count("《") + compact.count("》") + compact.count("〈") + compact.count("〉")
+    if title_mark_count >= 3 and any(marker in compact for marker in ("著", "作者", "目录", "目錄")):
         return True
     if len(compact) <= 120 and len(lines) <= 3 and any(line.endswith(("著", "作者")) for line in lines):
         return True
-    has_cjk = any("\u4e00" <= char <= "\u9fff" for char in raw)
+    has_cjk = any("一" <= char <= "鿿" for char in raw)
     looks_like_numbered_scene = re.match(r"scene\d+[:：]", lower) is not None
     if not has_cjk and len(compact) <= 160 and len(lines) <= 4 and not looks_like_numbered_scene:
         return True
     if len(compact) > 260:
         return False
-    if "合集" in compact and "包含《" in compact and "著" in compact:
+    if "合集" in compact and "包含" in compact and "著" in compact:
         return True
-    title_mark_count = compact.count("《")
-    return title_mark_count >= 3 and ("作者" in compact or "著" in compact or "目录" in compact)
-
+    return title_mark_count >= 3 and ("作者" in compact or "著" in compact or "目录" in compact or "目錄" in compact)
 
 def _is_boilerplate_segment(text: str) -> bool:
     compact = re.sub(r"\s+", "", text).lower()

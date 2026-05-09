@@ -4,6 +4,7 @@ import { computed, onActivated, onMounted, ref } from "vue";
 
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
+import { formatChapterChoice, formatReadableTargetRef, formatSceneChoice } from "../lib/readableRefs";
 import { useShellRouter } from "../router";
 import { useLiteraryQualityStore } from "../stores/literaryQuality";
 
@@ -13,6 +14,8 @@ const quality = useLiteraryQualityStore();
 const { navigate } = useShellRouter();
 const activeTab = ref("overview");
 const adHocText = ref("");
+const chapterSetInput = ref("");
+const chapterSetProtectedTerms = ref("龙族\n江南\n路明非\n楚子航\n恺撒\n诺诺\n卡塞尔\n龙王\n血统\n屠龙");
 
 const summary = computed(() => quality.summary || {});
 const items = computed(() => quality.overviewItems || []);
@@ -26,6 +29,10 @@ const spanFindings = computed(() => quality.spanFindings || []);
 const report = computed(() => quality.latestReport || null);
 const reportSummary = computed(() => quality.benchmarkSummary || {});
 const benchmarkCases = computed(() => quality.benchmarkCases || []);
+const chapterSetReview = computed(() => quality.chapterSetReview || null);
+const chapterSetScores = computed(() => quality.chapterSetScores || {});
+const chapterSetPatterns = computed(() => quality.chapterSetPatterns || []);
+const chapterSetSafetyFindings = computed(() => quality.chapterSetSafetyFindings || []);
 
 const TEXT_LAYER_OPTIONS = [
   { value: "author_draft_preferred", label: "作者稿优先" },
@@ -145,6 +152,27 @@ function reuseTypeLabel(value) {
   }[value] || value || "-";
 }
 
+function parseLineList(value) {
+  return String(value || "")
+    .split(/[\n,，\s]+/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function qualityObjectLabel(item) {
+  if (item?.object_type === "chapter") {
+    return formatChapterChoice({ chapter_id: item.object_id, chapter_goal: item.title || item.chapter_goal }).label;
+  }
+  if (item?.object_type === "scene") {
+    return formatSceneChoice({ scene_id: item.object_id, scene_goal: item.title || item.scene_goal }).label;
+  }
+  return formatReadableTargetRef(`${item?.object_type || "quality"}:${item?.object_id || ""}`).label;
+}
+
+function qualityTechnicalRef(item) {
+  return formatReadableTargetRef(item?.source_ref || `${item?.object_type || "quality"}:${item?.object_id || ""}`).technical;
+}
+
 function openDeepDesk() {
   navigate("deepdesk");
 }
@@ -180,6 +208,24 @@ async function analyzeText() {
       source_ref: "quality_console:paste",
     });
     emit("notice", "文本扫描已完成");
+  } catch (error) {
+    emit("notice", error.message);
+  }
+}
+
+async function runChapterSetReview() {
+  const chapterIds = parseLineList(chapterSetInput.value);
+  if (!chapterIds.length) {
+    emit("notice", "请先输入至少一个 chapter_id。");
+    return;
+  }
+  try {
+    await quality.runChapterSetReview({
+      chapter_ids: chapterIds,
+      protected_terms: parseLineList(chapterSetProtectedTerms.value),
+      text_layer: quality.textLayer,
+    });
+    emit("notice", "章组复审已完成。");
   } catch (error) {
     emit("notice", error.message);
   }
@@ -245,6 +291,14 @@ onActivated(() => {
           @click="activeTab = 'overview'"
         >
           稿件巡检
+        </button>
+        <button
+          type="button"
+          data-testid="quality-tab-chapter-set"
+          :class="{ active: activeTab === 'chapter-set' }"
+          @click="activeTab = 'chapter-set'"
+        >
+          章组复审
         </button>
         <button
           type="button"
@@ -424,10 +478,11 @@ onActivated(() => {
           >
             <div class="receipt-head compact">
               <div>
-                <h3>{{ item.object_id }}</h3>
+                <h3 class="line-clamp-2">{{ qualityObjectLabel(item) }}</h3>
                 <p class="muted receipt-copy">
-                  {{ item.object_type }} / {{ layerLabel(item.text_layer) }} / {{ item.source_ref }}
+                  {{ item.object_type }} / {{ layerLabel(item.text_layer) }}
                 </p>
+                <p class="technical-ref">{{ qualityTechnicalRef(item) }}</p>
               </div>
               <span class="badge">{{ scoreLabel(item.score) }}</span>
             </div>
@@ -449,10 +504,10 @@ onActivated(() => {
                   <strong>{{ DIMENSION_LABELS[finding.dimension] || finding.dimension }}</strong>
                   <span class="badge">{{ severityLabel(finding.severity) }}</span>
                 </div>
-                <p>{{ finding.issue }}</p>
+                <p><strong>问题：</strong>{{ finding.issue }}</p>
                 <blockquote v-if="finding.evidence_excerpt">{{ finding.evidence_excerpt }}</blockquote>
-                <small>{{ finding.recommendation }}</small>
-                <small v-if="finding.quality_signal_id">{{ finding.quality_signal_id }}</small>
+                <small><strong>建议：</strong>{{ finding.recommendation }}</small>
+                <small v-if="finding.quality_signal_id" class="technical-ref">{{ finding.quality_signal_id }}</small>
               </article>
             </div>
 
@@ -468,7 +523,141 @@ onActivated(() => {
         </section>
       </div>
 
-      <div v-else class="quality-benchmark" data-testid="quality-eval-report">
+      <div v-else-if="activeTab === 'chapter-set'" class="quality-chapter-set" data-testid="quality-chapter-set-review">
+        <section class="paper quality-chapter-set-toolbar">
+          <div>
+            <h3>跨章质量复审</h3>
+            <p class="muted receipt-copy">
+              面向三章或多章成稿，合并检查承诺兑现、重复模式、揭示节奏和参考学习安全边界。
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="quality-chapter-set-run"
+            :disabled="quality.chapterSetLoading || !chapterSetInput.trim()"
+            @click="runChapterSetReview"
+          >
+            <Search :size="16" aria-hidden="true" />
+            <span>{{ quality.chapterSetLoading ? "复审中..." : "运行复审" }}</span>
+          </button>
+        </section>
+
+        <section class="paper quality-chapter-set-form">
+          <label>
+            <span>chapter_id 列表</span>
+            <textarea
+              v-model="chapterSetInput"
+              data-testid="quality-chapter-set-input"
+              rows="4"
+              placeholder="每行一个 chapter_id"
+            />
+          </label>
+          <label>
+            <span>参考安全词</span>
+            <textarea v-model="chapterSetProtectedTerms" rows="4" placeholder="每行一个需要避开的受保护词" />
+          </label>
+        </section>
+
+        <div v-if="quality.chapterSetLoading" class="empty">正在执行章组复审...</div>
+        <div v-else-if="quality.chapterSetError" class="empty">{{ quality.chapterSetError }}</div>
+        <section v-else-if="chapterSetReview" class="quality-chapter-set-layout">
+          <section class="quality-summary-grid" data-testid="quality-chapter-set-scores">
+            <article class="paper mini">
+              <span>章节</span>
+              <strong>{{ chapterSetReview.summary?.chapter_count || 0 }}</strong>
+            </article>
+            <article class="paper mini">
+              <span>场景</span>
+              <strong>{{ chapterSetReview.summary?.scene_count || 0 }}</strong>
+            </article>
+            <article class="paper mini">
+              <span>文学质量</span>
+              <strong>{{ scoreLabel(chapterSetScores.literary_quality) }}</strong>
+            </article>
+            <article class="paper mini">
+              <span>跨章弧线</span>
+              <strong>{{ scoreLabel(chapterSetScores.cross_chapter_arc) }}</strong>
+            </article>
+            <article class="paper mini">
+              <span>参考安全</span>
+              <strong>{{ scoreLabel(chapterSetScores.reference_safety) }}</strong>
+            </article>
+          </section>
+
+          <section class="quality-evidence-grid">
+            <article class="paper quality-chapter-set-payoff">
+              <div class="receipt-head compact">
+                <div>
+                  <h3>承诺与兑现</h3>
+                  <p class="muted receipt-copy">{{ chapterSetReview.recommended_next_action?.label || "暂无动作" }}</p>
+                </div>
+              </div>
+              <div class="dimension-grid">
+                <span>选择 {{ chapterSetReview.payoff_reveal_checks?.has_forced_choice_count || 0 }}</span>
+                <span>代价 {{ chapterSetReview.payoff_reveal_checks?.has_cost_count || 0 }}</span>
+                <span>牵引 {{ chapterSetReview.payoff_reveal_checks?.has_next_pull_count || 0 }}</span>
+              </div>
+              <div v-if="chapterSetReview.payoff_reveal_checks?.missing_payoff_chapter_ids?.length" class="quality-stack">
+                <article
+                  v-for="chapterId in chapterSetReview.payoff_reveal_checks.missing_payoff_chapter_ids"
+                  :key="`missing-${chapterId}`"
+                  class="quality-mini-row"
+                >
+                  <strong>{{ chapterId }}</strong>
+                  <span>需要补强章节结尾的兑现或下一章牵引。</span>
+                </article>
+              </div>
+            </article>
+
+            <article class="paper quality-chapter-set-patterns" data-testid="quality-chapter-set-patterns">
+              <div class="receipt-head compact">
+                <div>
+                  <h3>重复模式</h3>
+                  <p class="muted receipt-copy">跨章意象、动作模板和句法形态的复用提示。</p>
+                </div>
+                <span class="badge">{{ chapterSetPatterns.length }}</span>
+              </div>
+              <div v-if="!chapterSetPatterns.length" class="empty compact">暂无明显重复模式。</div>
+              <div v-else class="quality-stack">
+                <article
+                  v-for="pattern in chapterSetPatterns.slice(0, 8)"
+                  :key="`${pattern.cluster_type}-${pattern.token}`"
+                  class="quality-mini-row"
+                >
+                  <strong>{{ pattern.token }}</strong>
+                  <span>{{ reuseTypeLabel(pattern.cluster_type) }} / {{ pattern.count }} 次</span>
+                  <small>{{ pattern.object_ids?.join(" / ") }}</small>
+                </article>
+              </div>
+            </article>
+
+            <article class="paper quality-chapter-set-safety" data-testid="quality-chapter-set-safety">
+              <div class="receipt-head compact">
+                <div>
+                  <h3>参考安全</h3>
+                  <p class="muted receipt-copy">只允许抽象技法迁移，阻断专名、设定、桥段和标志性意象搬运。</p>
+                </div>
+                <span class="badge">{{ chapterSetSafetyFindings.length }}</span>
+              </div>
+              <div v-if="!chapterSetSafetyFindings.length" class="empty compact">未命中参考安全风险。</div>
+              <div v-else class="quality-stack">
+                <article
+                  v-for="finding in chapterSetSafetyFindings"
+                  :key="`${finding.term}-${finding.object_id}`"
+                  class="quality-mini-row"
+                >
+                  <strong>{{ finding.term }}</strong>
+                  <span>{{ finding.object_id }} / {{ finding.count }} 次</span>
+                  <small>{{ finding.recommendation }}</small>
+                </article>
+              </div>
+            </article>
+          </section>
+        </section>
+        <div v-else class="empty">输入章 ID 后运行复审。</div>
+      </div>
+
+      <div v-else-if="activeTab === 'benchmark'" class="quality-benchmark" data-testid="quality-eval-report">
         <section class="paper quality-eval-toolbar">
           <div>
             <h3>Literary Eval</h3>
@@ -553,6 +742,7 @@ onActivated(() => {
 
 .quality-actions button,
 .quality-eval-toolbar button,
+.quality-chapter-set-toolbar button,
 .quality-filter-panel button,
 .quality-ad-hoc button,
 .quality-open {
@@ -587,6 +777,8 @@ onActivated(() => {
 
 .quality-overview,
 .quality-benchmark,
+.quality-chapter-set,
+.quality-chapter-set-layout,
 .quality-eval-layout,
 .quality-card-list,
 .quality-findings,
@@ -607,7 +799,8 @@ onActivated(() => {
 }
 
 .quality-filter-panel label,
-.quality-ad-hoc {
+.quality-ad-hoc,
+.quality-chapter-set-form label {
   display: grid;
   gap: 0.5rem;
 }
@@ -619,7 +812,8 @@ onActivated(() => {
 
 .quality-filter-panel select,
 .quality-filter-panel input,
-.quality-ad-hoc textarea {
+.quality-ad-hoc textarea,
+.quality-chapter-set-form textarea {
   width: 100%;
   min-height: 2.45rem;
   border: 1px solid var(--line);
@@ -633,17 +827,25 @@ onActivated(() => {
   padding: 0 0.7rem;
 }
 
-.quality-ad-hoc {
+.quality-ad-hoc,
+.quality-chapter-set-form {
   padding: 1rem;
   border: 1px solid var(--line);
   border-radius: 8px;
 }
 
-.quality-ad-hoc textarea {
+.quality-ad-hoc textarea,
+.quality-chapter-set-form textarea {
   min-height: 7rem;
   padding: 0.75rem;
   resize: vertical;
   line-height: 1.55;
+}
+
+.quality-chapter-set-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.85rem;
 }
 
 .quality-summary-grid {
@@ -654,13 +856,14 @@ onActivated(() => {
 
 .quality-evidence-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17.5rem), 1fr));
   gap: 0.85rem;
 }
 
 .quality-card,
 .quality-case-row,
 .quality-eval-toolbar,
+.quality-chapter-set-toolbar,
 .quality-evidence-grid > .paper {
   display: grid;
   gap: 0.9rem;
@@ -668,6 +871,7 @@ onActivated(() => {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.58);
+  min-width: 0;
 }
 
 .quality-card.risky,
@@ -766,7 +970,8 @@ onActivated(() => {
   justify-self: start;
 }
 
-.quality-eval-toolbar {
+.quality-eval-toolbar,
+.quality-chapter-set-toolbar {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
 }
@@ -784,7 +989,9 @@ onActivated(() => {
   .quality-summary-grid,
   .quality-filter-panel,
   .quality-evidence-grid,
-  .quality-eval-toolbar {
+  .quality-eval-toolbar,
+  .quality-chapter-set-toolbar,
+  .quality-chapter-set-form {
     grid-template-columns: 1fr;
   }
 

@@ -7,10 +7,12 @@ import {
   fetchRunJob,
   fetchSceneAttempts,
   fetchWorkbench,
+  generateSceneExecutionContract as postSceneExecutionContract,
   rejectRevisionCandidate,
   runChapterBackfill as postChapterBackfill,
   runChapterFinalAggregate as postChapterFinalAggregate,
   runFullScene,
+  runSceneTriage as postSceneTriage,
   runSceneLiteraryBlueprint,
   runSceneWriterReview,
   setChapterManualHold as postChapterManualHold,
@@ -361,6 +363,35 @@ export const useWorkbenchStore = defineStore("workbench", {
         await this.load(sceneId);
         this.markFresh();
         return `Scene blueprint ready: ${result.row_id || sceneId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async generateExecutionContract(sceneId = this.sceneId) {
+      this.actionId = "scene-execution-contract";
+      this.error = "";
+      try {
+        const result = await postSceneExecutionContract(sceneId);
+        await this.load(sceneId);
+        this.markFresh();
+        return `Execution contract ready: ${result.contract?.contract_id || sceneId}`;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async runTriage(sceneId = this.sceneId) {
+      this.actionId = "scene-triage";
+      this.error = "";
+      try {
+        const result = await postSceneTriage(sceneId);
+        await this.refreshAll(sceneId, { force: true });
+        return `Scene triage: ${result.triage?.decision || "-"}`;
       } catch (error) {
         this.error = error.message;
         throw error;

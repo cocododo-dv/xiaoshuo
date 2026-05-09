@@ -214,6 +214,27 @@ task_routing:
     temperature: 0.1
     max_output_tokens: 1800
     response_format: json_object
+  snowflake_step_generate:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.25
+    max_output_tokens: 3200
+    response_format: json_object
+    model_profile: quality_strong
+  snowflake_workspace_assistant:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.35
+    max_output_tokens: 2200
+    response_format: json_object
+    model_profile: quality_strong
+  snowflake_scene_triage:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.15
+    max_output_tokens: 2200
+    response_format: json_object
+    model_profile: quality_strong
 
 retry_budget:
   hard_partial_max: 2
