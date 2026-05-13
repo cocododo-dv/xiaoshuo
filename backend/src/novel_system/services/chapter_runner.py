@@ -91,20 +91,59 @@ class ChapterRunnerService:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
         job = self._latest_job(chapter_id)
         if job is None:
+            scene_ids = self._scene_ids(chapter_id)
             return {
                 "job_id": None,
                 "chapter_id": chapter_id,
                 "job_type": JOB_TYPE_CHAPTER_FULL,
                 "status": "idle",
-                "scene_ids": self._scene_ids(chapter_id),
+                "scene_ids": scene_ids,
                 "current_scene_id": None,
                 "completed_scene_ids": [],
                 "blocked_scene_id": None,
                 "latest_error": None,
+                "scene_count": len(scene_ids),
+                "completed_count": 0,
+                "progress_pct": 0,
+                "started_at": None,
+                "finished_at": None,
             }
         self._reconcile_job(job, self._scene_ids(chapter_id))
         self.session.flush()
         return self._serialize_job(job)
+
+    def prepare_full_run(self, chapter_id: str, *, offline_demo: bool = False) -> tuple[dict[str, Any], bool]:
+        AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
+        scene_ids = self._scene_ids(chapter_id)
+        job = self._resumeable_job(chapter_id)
+        should_start_worker = False
+        if job is None:
+            job = self._create_job(chapter_id, scene_ids)
+            should_start_worker = True
+        else:
+            previous_status = job.status
+            self._reconcile_job(job, scene_ids)
+            should_start_worker = job.status == JOB_STATUS_PENDING and previous_status != JOB_STATUS_RUNNING
+            if job.status == JOB_STATUS_BLOCKED:
+                blocked_scene_id = self._blocked_scene_id(job, scene_ids)
+                if self._chapter_gate_error(chapter_id, scene_id=blocked_scene_id) is None:
+                    payload = self._payload(job)
+                    payload["blocked_scene_id"] = None
+                    job.payload_json = payload
+                    job.status = JOB_STATUS_PENDING
+                    job.error_code = None
+                    job.error_text = None
+                    job.finished_at = None
+                    self._update_summary(job, blocked_scene_id=None, latest_error=None)
+                    should_start_worker = True
+        if offline_demo:
+            payload = self._payload(job)
+            payload["offline_demo"] = True
+            payload["source"] = "fallback"
+            job.payload_json = payload
+            self._update_summary(job, offline_demo=True, source="fallback")
+        self.session.flush()
+        return self._serialize_job(job), should_start_worker
 
     def _scene_ids(self, chapter_id: str) -> list[str]:
         scenes = self.session.execute(
@@ -407,14 +446,28 @@ class ChapterRunnerService:
 
     def _serialize_job(self, job: ChapterRunJob) -> dict[str, Any]:
         summary = dict(job.result_summary_json or {})
+        scene_ids = summary.get("scene_ids") or self._payload(job).get("scene_ids", [])
+        completed_scene_ids = summary.get("completed_scene_ids") or []
+        scene_count = len(scene_ids)
+        completed_count = len(completed_scene_ids)
+        progress_pct = 100 if scene_count == 0 and job.status == JOB_STATUS_COMPLETED else 0
+        if scene_count:
+            progress_pct = min(100, round((completed_count / scene_count) * 100))
         return {
             "job_id": job.job_id,
             "chapter_id": job.chapter_id,
             "job_type": job.job_type,
             "status": job.status,
-            "scene_ids": summary.get("scene_ids") or self._payload(job).get("scene_ids", []),
+            "scene_ids": scene_ids,
             "current_scene_id": summary.get("current_scene_id"),
-            "completed_scene_ids": summary.get("completed_scene_ids") or [],
+            "completed_scene_ids": completed_scene_ids,
             "blocked_scene_id": summary.get("blocked_scene_id"),
             "latest_error": summary.get("latest_error"),
+            "scene_count": scene_count,
+            "completed_count": completed_count,
+            "progress_pct": progress_pct,
+            "started_at": job.started_at,
+            "finished_at": job.finished_at,
+            "offline_demo": bool(summary.get("offline_demo") or self._payload(job).get("offline_demo")),
+            "source": summary.get("source") or self._payload(job).get("source") or "llm",
         }

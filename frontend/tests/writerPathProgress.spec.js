@@ -8,6 +8,7 @@ import { useShellRouter } from "../src/router";
 import { useReferenceLearningStore } from "../src/stores/referenceLearning";
 import { useReviewInboxStore } from "../src/stores/reviewInbox";
 import { useSnowflakeWorkbenchStore } from "../src/stores/snowflakeWorkbench";
+import { useWriterFlowStore } from "../src/stores/writerFlow";
 import { useWriterRoomStore } from "../src/stores/writerRoom";
 
 function mountWithPinia(component) {
@@ -35,6 +36,7 @@ describe("writer path progress", () => {
   it("maps writer path store state into stable task statuses without loading data", async () => {
     const { useWriterPathProgress } = await import("../src/composables/useWriterPathProgress.js");
     const snowflake = useSnowflakeWorkbenchStore();
+    const writerFlow = useWriterFlowStore();
     const writerRoom = useWriterRoomStore();
     const reference = useReferenceLearningStore();
     const review = useReviewInboxStore();
@@ -65,6 +67,12 @@ describe("writer path progress", () => {
     review.loaded = true;
     review.items = [{ review_id: "R2", status: "needs_author" }];
     review.humanReviewItems = [{ event_id: "H1", status: "resolved" }];
+    writerFlow.applyDashboard({
+      project: { project_id: "PRJ_PATH", status: "chapter_running", current_chapter_id: "CH001" },
+      current_chapter: { chapter_id: "CH001", chapter_goal: "Draft the chapter" },
+      next_action: "view_chapter_progress",
+    });
+    writerFlow.runStatus = { status: "running", progress_pct: 40, completed_count: 1, scene_count: 3 };
 
     const { items } = useWriterPathProgress();
     const byId = Object.fromEntries(items.value.map((item) => [item.viewId, item]));
@@ -78,6 +86,11 @@ describe("writer path progress", () => {
       status: "blocked",
       isLoaded: true,
       countLabel: "未保存",
+    }));
+    expect(byId["writer-flow"]).toEqual(expect.objectContaining({
+      status: "running",
+      isLoaded: true,
+      countLabel: "40%",
     }));
     expect(byId.reference).toEqual(expect.objectContaining({
       status: "blocked",
@@ -94,6 +107,7 @@ describe("writer path progress", () => {
   it("reports done and todo states for clean loaded and unloaded writer path steps", async () => {
     const { useWriterPathProgress } = await import("../src/composables/useWriterPathProgress.js");
     const snowflake = useSnowflakeWorkbenchStore();
+    const writerFlow = useWriterFlowStore();
     const writerRoom = useWriterRoomStore();
     const reference = useReferenceLearningStore();
     const review = useReviewInboxStore();
@@ -125,11 +139,18 @@ describe("writer path progress", () => {
     review.loaded = true;
     review.items = [];
     review.humanReviewItems = [];
+    writerFlow.applyDashboard({
+      project: { project_id: "PRJ_DONE", status: "chapter_final_review", current_chapter_id: "CH001" },
+      current_chapter: { chapter_id: "CH001", chapter_goal: "Clean chapter" },
+      review_packet: { chapter_id: "CH001", body: "ready body", body_source: "assembled" },
+      next_action: "approve_chapter_final",
+    });
 
     const { items } = useWriterPathProgress();
     const byId = Object.fromEntries(items.value.map((item) => [item.viewId, item]));
 
     expect(byId["snowflake-workbench"].status).toBe("done");
+    expect(byId["writer-flow"].status).toBe("active");
     expect(byId["writer-room"].status).toBe("done");
     expect(byId.reference.status).toBe("done");
     expect(byId.review.status).toBe("done");
@@ -140,6 +161,7 @@ describe("writer path progress", () => {
     const freshById = Object.fromEntries(fresh.items.value.map((item) => [item.viewId, item]));
 
     expect(freshById["snowflake-workbench"].status).toBe("todo");
+    expect(freshById["writer-flow"].status).toBe("todo");
     expect(freshById["writer-room"].status).toBe("todo");
     expect(freshById.reference.status).toBe("todo");
     expect(freshById.review.status).toBe("todo");

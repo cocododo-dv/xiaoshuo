@@ -4,6 +4,7 @@ import { configureConnection } from "./helpers.js";
 
 const VIEW_TARGETS = [
   ["snowflake-workbench", "snowflake-workbench-view"],
+  ["writer-flow", "writer-flow-view"],
   ["reference", "reference-learning-view"],
   ["review", "review-inbox-view"],
   ["writer-room", "writer-room-view"],

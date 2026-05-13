@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 import uuid
 from typing import Any
 
@@ -19,6 +20,8 @@ from novel_system.db.models import (
     StoryProject,
     utcnow,
 )
+from novel_system.db.session import SessionLocal
+from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
@@ -97,6 +100,10 @@ class ProjectService:
             "backtrack_items": backtrack_items,
             "review_packet": ProjectChapterFlowService(self.session).review_packet(project, project.current_chapter_id),
             "next_action": self._next_action(project, latest_plan, backtrack_items=backtrack_items),
+            "runtime": {
+                "llm_enabled": bool(get_settings().llm_enabled),
+                "generation_mode": "live" if get_settings().llm_enabled else "offline_disabled",
+            },
         }
 
     def attach_reference_profile(self, project_id: str, profile_id: str) -> dict[str, Any]:
@@ -282,6 +289,8 @@ class ProjectService:
             return "completed"
         if project.status == PROJECT_STATUS_CHAPTER_FINAL_REVIEW:
             return "approve_chapter_final"
+        if project.status == PROJECT_STATUS_CHAPTER_RUNNING:
+            return "view_chapter_progress"
         if project.status == PROJECT_STATUS_CHAPTER_READY:
             return "run_current_chapter"
         if project.status == PROJECT_STATUS_CHAPTER_BLOCKED:
@@ -590,6 +599,47 @@ class ProjectChapterFlowService:
             "review_packet": self.review_packet(project, chapter_id),
         }
 
+    def prepare_chapter_run_job(self, project_id: str, chapter_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = payload or {}
+        project = ProjectService(self.session).require_project(project_id)
+        self._require_project_chapter(project, chapter_id)
+        if project.current_chapter_id != chapter_id:
+            raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter can be run from project dashboard")
+
+        allow_demo = bool(body.get("allow_demo") or body.get("offline_demo"))
+        if not get_settings().llm_enabled and not allow_demo:
+            raise DomainError(
+                "LLM_DISABLED_FOR_CHAPTER_RUN",
+                "LLM is disabled; enable a live model before starting chapter generation, or explicitly run an offline demo.",
+                status_code=409,
+                details={"retryable": False, "generation_mode": "offline_disabled"},
+            )
+
+        run_payload, should_start_worker = ChapterRunnerService(self.session).prepare_full_run(
+            chapter_id,
+            offline_demo=allow_demo and not get_settings().llm_enabled,
+        )
+        if run_payload.get("status") in {"pending", "running"}:
+            project.status = PROJECT_STATUS_CHAPTER_RUNNING
+            next_action = "view_chapter_progress"
+        elif run_payload.get("status") == "completed":
+            project.status = PROJECT_STATUS_CHAPTER_FINAL_REVIEW
+            next_action = "approve_chapter_final"
+        elif run_payload.get("status") == "blocked":
+            project.status = PROJECT_STATUS_CHAPTER_BLOCKED
+            next_action = "resolve_blocker"
+        else:
+            project.status = PROJECT_STATUS_CHAPTER_READY
+            next_action = "run_current_chapter"
+        self.session.flush()
+        return {
+            "project": project_payload(project),
+            "run": run_payload,
+            "review_packet": self.review_packet(project, chapter_id),
+            "next_action": next_action,
+            "_start_worker": should_start_worker and run_payload.get("status") == "pending",
+        }
+
     def approve_final(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         project = ProjectService(self.session).require_project(project_id)
         self._require_project_chapter(project, chapter_id)
@@ -626,10 +676,36 @@ class ProjectChapterFlowService:
         latest_error = (latest_job.result_summary_json or {}).get("latest_error") if latest_job else None
         if latest_error:
             issues_summary.append(latest_error)
+        manuscript = ChapterManuscriptService(self.session).manuscript_detail(chapter_id)
+        aggregate = manuscript.get("aggregate") or None
+        assembled = manuscript.get("assembled") or {}
+        if aggregate and str(aggregate.get("content") or ""):
+            body = str(aggregate.get("content") or "")
+            body_source = "aggregate"
+            char_count = int(aggregate.get("char_count") or len(body))
+            aggregate_row_id = aggregate.get("row_id")
+        else:
+            body = str(assembled.get("content") or "")
+            body_source = "assembled" if body else "empty"
+            char_count = int(assembled.get("char_count") or len(body))
+            aggregate_row_id = None
+        missing_scene_ids = list(assembled.get("missing_scene_ids") or [])
+        completion_status = manuscript.get("completion_status") or "empty"
+        body_empty_reason = None
+        if not body:
+            body_empty_reason = "no_generated_scenes" if completion_status == "empty" else "manuscript_body_empty"
         return {
             "chapter_id": chapter.chapter_id,
             "chapter_goal": chapter.chapter_goal,
-            "body": "",
+            "body": body,
+            "body_source": body_source,
+            "char_count": char_count,
+            "body_empty_reason": body_empty_reason,
+            "completion_status": completion_status,
+            "comparison_status": manuscript.get("comparison_status"),
+            "missing_scene_ids": missing_scene_ids,
+            "aggregate_row_id": aggregate_row_id,
+            "source_safety_scan": manuscript.get("source_safety_scan"),
             "issues_summary": issues_summary,
             "run_status": latest_job.status if latest_job else "idle",
             "reference_safety": list(REFERENCE_SAFETY_RULES),
@@ -667,6 +743,65 @@ class ProjectChapterFlowService:
             .where(ChapterRunJob.chapter_id == chapter_id)
             .order_by(ChapterRunJob.created_at.desc(), ChapterRunJob.job_id.desc())
         ).scalars().first()
+
+
+def start_project_chapter_run_job_worker(project_id: str, chapter_id: str, job_id: str) -> None:
+    thread = threading.Thread(
+        target=_run_project_chapter_job_worker,
+        args=(project_id, chapter_id, job_id),
+        daemon=True,
+    )
+    thread.start()
+
+
+def _run_project_chapter_job_worker(project_id: str, chapter_id: str, job_id: str) -> None:
+    session = SessionLocal()
+    try:
+        project = ProjectService(session).require_project(project_id)
+        if project.current_chapter_id != chapter_id:
+            raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter can be run from project dashboard")
+        project.status = PROJECT_STATUS_CHAPTER_RUNNING
+        session.commit()
+
+        run_result = ChapterRunnerService(session).run_full(chapter_id)
+        project = ProjectService(session).require_project(project_id)
+        if run_result.get("status") == "completed":
+            project.status = PROJECT_STATUS_CHAPTER_FINAL_REVIEW
+        elif run_result.get("status") == "blocked":
+            project.status = PROJECT_STATUS_CHAPTER_BLOCKED
+        elif run_result.get("status") == "failed":
+            project.status = PROJECT_STATUS_CHAPTER_BLOCKED
+        else:
+            project.status = PROJECT_STATUS_CHAPTER_READY
+        session.commit()
+    except DomainError as exc:
+        session.rollback()
+        _mark_project_chapter_job_failed(job_id, project_id, chapter_id, exc.code, exc.message)
+    except Exception as exc:  # pragma: no cover - defensive worker boundary
+        session.rollback()
+        _mark_project_chapter_job_failed(job_id, project_id, chapter_id, "CHAPTER_RUN_JOB_FAILED", str(exc) or "chapter run job failed")
+    finally:
+        session.close()
+
+
+def _mark_project_chapter_job_failed(job_id: str, project_id: str, chapter_id: str, error_code: str, error_text: str) -> None:
+    session = SessionLocal()
+    try:
+        job = session.get(ChapterRunJob, job_id)
+        if job is not None:
+            job.status = "failed"
+            job.error_code = error_code
+            job.error_text = error_text
+            job.finished_at = utcnow()
+            summary = dict(job.result_summary_json or {})
+            summary["latest_error"] = {"code": error_code, "message": error_text}
+            job.result_summary_json = summary
+        project = session.get(StoryProject, project_id)
+        if project is not None and project.current_chapter_id == chapter_id:
+            project.status = PROJECT_STATUS_CHAPTER_BLOCKED
+        session.commit()
+    finally:
+        session.close()
 
 
 def project_summary_payload(project: StoryProject) -> dict[str, Any]:

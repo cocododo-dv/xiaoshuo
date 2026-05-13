@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState
+from novel_system.services.chapter_runner import ChapterRunnerService
 
 
 def _create_chapter(client, chapter_id: str) -> None:
@@ -149,7 +150,13 @@ def test_chapter_run_full_executes_scenes_in_order_and_reports_completed_status(
 
     status_response = client.get("/api/v1/chapters/CH900/run-status")
     assert status_response.status_code == 200
-    assert status_response.json()["data"]["status"] == "completed"
+    status_payload = status_response.json()["data"]
+    assert status_payload["status"] == "completed"
+    assert status_payload["scene_count"] == 3
+    assert status_payload["completed_count"] == 3
+    assert status_payload["progress_pct"] == 100
+    assert status_payload["started_at"]
+    assert status_payload["finished_at"]
 
     job = session.query(ChapterRunJob).filter_by(chapter_id="CH900").one()
     assert job.status == "completed"
@@ -303,6 +310,43 @@ def test_chapter_run_full_stays_blocked_until_human_review_resolves(client, sess
     completed = resumed_after_resolution.json()["data"]
     assert completed["status"] == "completed"
     assert completed["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02"]
+
+
+def test_prepare_full_run_restarts_resolved_blocked_job(client, session, monkeypatch) -> None:
+    _create_chapter(client, "CH900")
+    _create_scene(client, "CH900", "CH900_SC01", 1)
+    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
+    _install_fake_runner(monkeypatch, blocked_scene="CH900_SC01", block_kind="human_review")
+
+    blocked_response = client.post(
+        "/api/v1/chapters/CH900/run/full",
+        headers={"X-Idempotency-Key": "chapter-run-prepare-blocked"},
+    )
+    assert blocked_response.status_code == 200
+    assert blocked_response.json()["data"]["status"] == "blocked"
+    session.add(
+        HumanReviewEvent(
+            event_id="review_CH900_SC01",
+            scene_id="CH900_SC01",
+            chapter_id="CH900",
+            object_ref="scene_card:CH900_SC01",
+            event_source="scene_generation",
+            priority="high",
+            status="resolved",
+            allowed_actions_json=["inspect"],
+            result_status_map_json={"inspect": "resolved"},
+            details_json={},
+            default_action="inspect",
+        )
+    )
+    session.commit()
+
+    prepared, should_start = ChapterRunnerService(session).prepare_full_run("CH900")
+
+    assert should_start is True
+    assert prepared["status"] == "pending"
+    assert prepared["blocked_scene_id"] is None
+    assert prepared["latest_error"] is None
 
 
 def test_chapter_run_full_persists_completed_scenes_when_blocked_by_backfill_and_resumes_from_next_scene(

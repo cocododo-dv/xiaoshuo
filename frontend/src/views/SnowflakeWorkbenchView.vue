@@ -358,6 +358,15 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
+.snowflake-workbench-view .snowflake-offline-demo-note {
+  margin: 8px 0 0;
+  border: 1px solid rgba(140, 103, 43, 0.24);
+  border-radius: 8px;
+  background: var(--snowflake-warning-soft);
+  color: var(--snowflake-warning);
+  padding: 10px 12px;
+}
+
 .snowflake-workbench-view .snowflake-progress-track {
   height: 8px;
   overflow: hidden;

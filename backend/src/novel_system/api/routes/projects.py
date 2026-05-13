@@ -9,7 +9,12 @@ from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.project_backtracks import ProjectBacktrackService
-from novel_system.services.projects import OutlinePlannerService, ProjectChapterFlowService, ProjectService
+from novel_system.services.projects import (
+    OutlinePlannerService,
+    ProjectChapterFlowService,
+    ProjectService,
+    start_project_chapter_run_job_worker,
+)
 
 router = APIRouter(tags=["projects"])
 
@@ -137,6 +142,23 @@ def run_project_chapter(
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/run-job")
+def run_project_chapter_job(
+    project_id: str,
+    chapter_id: str,
+    payload: dict[str, Any] | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload or {}
+    result = ProjectChapterFlowService(session).prepare_chapter_run_job(project_id, chapter_id, body)
+    should_start_worker = bool(result.pop("_start_worker", False))
+    session.commit()
+    if should_start_worker:
+        start_project_chapter_run_job_worker(project_id, chapter_id, result["run"]["job_id"])
+    return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final")

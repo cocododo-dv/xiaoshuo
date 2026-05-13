@@ -70,6 +70,13 @@ export function runProjectChapter(projectId, chapterId, payload = {}) {
   );
 }
 
+export function runProjectChapterJob(projectId, chapterId, payload = {}) {
+  return apiPost(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/run-job`,
+    payload,
+  );
+}
+
 export function approveProjectChapterFinal(projectId, chapterId, payload = {}) {
   return apiPost(
     `/api/v1/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/approve-final`,

@@ -4,11 +4,13 @@ import { Check, WandSparkles } from "lucide-vue-next";
 
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { useShellRouter } from "../router";
 import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
 
 const emit = defineEmits(["notice"]);
 
 const store = useSnowflakeWorkbenchStore();
+const router = useShellRouter();
 const SNOWFLAKE_STRUCTURE_SCOPE = "snowflake:structure";
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
@@ -86,8 +88,26 @@ async function approveOutline() {
     actionLabel: "确认结构",
     runningMessage: "正在确认章节结构...",
     successMessage: () => store.lastActionMessage || "结构已确认。",
-    nextStep: () => "下一步：进入写作房间小修正文，或去待处理建议里处理风险。",
+    nextStep: () => "下一步：进入写作总控，开始当前章节起草或查看阻塞项。",
+    target: (result) => ({
+      view: "writer-flow",
+      label: "进入写作总控",
+      focus: "story_project",
+      target: result?.project?.project_id || store.selectedProjectId || store.project?.project_id || "",
+    }),
     action: () => store.approveOutline(),
+  });
+}
+
+function handleReceiptNavigate(target) {
+  if (!target?.view) {
+    return;
+  }
+  router.navigate(target.view, {
+    target: {
+      focus: target.focus || "",
+      target: target.target || "",
+    },
   });
 }
 </script>
@@ -124,7 +144,7 @@ async function approveOutline() {
         </button>
       </div>
     </div>
-    <FlowActionReceipt :receipt="receipt(SNOWFLAKE_STRUCTURE_SCOPE)" />
+    <FlowActionReceipt :receipt="receipt(SNOWFLAKE_STRUCTURE_SCOPE)" :on-navigate="handleReceiptNavigate" />
 
     <div class="materialization-gate" :class="materializationGate.status">
       <div>

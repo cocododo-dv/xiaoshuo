@@ -22,6 +22,7 @@ const { receipt, runFlowAction } = useFlowActionFeedback({
 const project = computed(() => store.project);
 const steps = computed(() => store.steps);
 const currentStep = computed(() => store.currentStep);
+const currentStepUsesFallback = computed(() => String(currentStep.value?.last_generation_source || "").toLowerCase() === "fallback");
 const currentStepIndex = computed(() =>
   steps.value.findIndex((s) => s.step_key === currentStep.value?.step_key),
 );
@@ -290,6 +291,9 @@ function updateSceneCrucible(fieldKey, index, value) {
             <p v-if="currentStep.last_generation_source || currentStep.last_llm_call_id" class="step-meta">
               <span v-if="currentStep.last_generation_source">生成来源：{{ sourceLabel(currentStep.last_generation_source) }}</span>
               <span v-if="currentStep.last_llm_call_id"> / 已记录模型调用</span>
+            </p>
+            <p v-if="currentStepUsesFallback" class="snowflake-offline-demo-note" data-testid="snowflake-offline-demo-note">
+              当前内容来自离线演示，不代表真实模型生成；启用模型后再用于正文生产。
             </p>
           </div>
 

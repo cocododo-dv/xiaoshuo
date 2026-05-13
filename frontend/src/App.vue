@@ -11,6 +11,7 @@ import { useShellRouter } from "./router";
 
 const VIEW_COMPONENTS = {
   "snowflake-workbench": defineAsyncComponent(() => import("./views/SnowflakeWorkbenchView.vue")),
+  "writer-flow": defineAsyncComponent(() => import("./views/WriterFlowView.vue")),
   "writer-room": defineAsyncComponent(() => import("./views/WriterRoomView.vue")),
   author: defineAsyncComponent(() => import("./views/AuthorWorkspaceView.vue")),
   manuscripts: defineAsyncComponent(() => import("./views/ChapterManuscriptView.vue")),
@@ -40,6 +41,7 @@ const railCollapsed = ref(readRailCollapsed());
 
 // Legacy route markers kept as source anchors for shell registration tests:
 // activeView === 'snowflake-workbench'
+// activeView === 'writer-flow'
 // activeView === 'writer-room'
 // activeView === 'author'
 // activeView === 'manuscripts'

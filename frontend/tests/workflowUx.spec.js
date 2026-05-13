@@ -37,6 +37,7 @@ describe("workflow-driven shell metadata", () => {
     expect(router.activeView.value).toBe("snowflake-workbench");
     expect(router.views.map((view) => view.id)).toEqual([
       "snowflake-workbench",
+      "writer-flow",
       "writer-room",
       "config",
       "author",
@@ -97,6 +98,7 @@ describe("workflow-driven shell metadata", () => {
       .sort((left, right) => (left.writerOrder || 99) - (right.writerOrder || 99))
       .map((view) => view.id)).toEqual([
         "snowflake-workbench",
+        "writer-flow",
         "writer-room",
         "reference",
         "review",
@@ -265,6 +267,7 @@ describe("writer and advanced UI modes", () => {
       expect(selector.value).toBe("snowflake-workbench");
       expect([...selector.options].map((option) => option.value)).toEqual([
         "snowflake-workbench",
+        "writer-flow",
         "writer-room",
         "reference",
         "review",

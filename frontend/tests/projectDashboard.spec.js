@@ -49,13 +49,17 @@ describe("outline-driven project dashboard", () => {
       .sort((left, right) => (left.writerOrder || 99) - (right.writerOrder || 99))
       .map((view) => view.id)).toEqual([
       "snowflake-workbench",
+      "writer-flow",
       "writer-room",
       "reference",
       "review",
     ]);
     expect(routerSource).toContain('id: "snowflake-workbench"');
+    expect(routerSource).toContain('id: "writer-flow"');
     expect(appSource).toContain('"snowflake-workbench": defineAsyncComponent');
+    expect(appSource).toContain('"writer-flow": defineAsyncComponent');
     expect(appSource).toContain("./views/SnowflakeWorkbenchView.vue");
+    expect(appSource).toContain("./views/WriterFlowView.vue");
   });
 
   it("exposes project orchestration API helpers", async () => {
@@ -68,6 +72,7 @@ describe("outline-driven project dashboard", () => {
     await api.generateProjectOutlinePlan("PRJ_FLOW");
     await api.approveProjectOutlinePlan("PRJ_FLOW", "PLAN_1");
     await api.runProjectChapter("PRJ_FLOW", "PRJ_FLOW_CH01");
+    await api.runProjectChapterJob("PRJ_FLOW", "PRJ_FLOW_CH01");
     await api.approveProjectChapterFinal("PRJ_FLOW", "PRJ_FLOW_CH01");
     await api.attachProjectReferenceProfile("PRJ_FLOW", "PROFILE_READY");
     await api.resolveProjectBacktrackItem("PRJ_FLOW", "BT_1", { resolution_note: "fixed" });
@@ -80,6 +85,7 @@ describe("outline-driven project dashboard", () => {
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_FLOW/outline-plan");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_FLOW/outline-plan/PLAN_1/approve");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_FLOW/chapters/PRJ_FLOW_CH01/run");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_FLOW/chapters/PRJ_FLOW_CH01/run-job");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_FLOW/chapters/PRJ_FLOW_CH01/approve-final");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_FLOW/reference-profiles");
   });

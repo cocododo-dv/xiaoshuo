@@ -3,13 +3,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from novel_system.db.models import (
+    ChapterMemory,
     ChapterGoal,
     ChapterRunJob,
+    FinalScene,
     LlmCall,
     ReferenceBook,
     ReferenceLearningRun,
     ReferenceProfile,
     SceneCard,
+    SceneRunState,
+    StoryProject,
 )
 
 
@@ -322,3 +326,173 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
     assert next_project["status"] == "chapter_ready"
     assert next_project["current_chapter_id"].endswith("_CH02")
     assert next_project["approved_chapter_ids"] == [first_chapter_id]
+
+
+def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(client, session) -> None:
+    project = _create_project(client, target_chapter_count=1, key="review-packet-body")
+    plan = _generate_plan(client, project["project_id"])
+    approved = _approve_plan(client, project["project_id"], plan["plan_id"])
+    chapter_id = approved["project"]["current_chapter_id"]
+    scenes = (
+        session.query(SceneCard)
+        .filter(SceneCard.chapter_id == chapter_id)
+        .order_by(SceneCard.scene_seq)
+        .all()
+    )
+    assert scenes
+
+    for index, scene in enumerate(scenes, start=1):
+        final_row_id = f"final_{scene.scene_id}"
+        session.add(
+            FinalScene(
+                row_id=final_row_id,
+                scene_id=scene.scene_id,
+                chapter_id=chapter_id,
+                content=f"assembled scene {index}",
+                source_bundle_id=f"bundle_{index}",
+                source_bundle_hash=f"hash_{index}",
+            )
+        )
+        state = session.get(SceneRunState, scene.scene_id)
+        assert state is not None
+        state.current_final_scene_row_id = final_row_id
+        state.scene_status = "archived"
+
+    session.add(
+        ChapterMemory(
+            row_id="chapter_memory_final",
+            chapter_id=chapter_id,
+            aggregate_stage="final",
+            content="aggregate chapter body",
+            active_flag=1,
+            runtime_eligible=1,
+            runtime_eligibility_basis="final_aggregate",
+        )
+    )
+    session.add(
+        ChapterRunJob(
+            job_id=f"completed_job_{chapter_id}",
+            chapter_id=chapter_id,
+            status="completed",
+            job_type="chapter_run_full",
+            payload_json={},
+            result_summary_json={"latest_error": None},
+        )
+    )
+    db_project = session.get(StoryProject, project["project_id"])
+    assert db_project is not None
+    db_project.status = "chapter_final_review"
+    session.commit()
+
+    response = client.get(f"/api/v1/projects/{project['project_id']}/dashboard")
+
+    assert response.status_code == 200
+    packet = response.json()["data"]["review_packet"]
+    assert packet["chapter_id"] == chapter_id
+    assert packet["body"] == "aggregate chapter body"
+    assert packet["body_source"] == "aggregate"
+    assert packet["char_count"] == len("aggregate chapter body")
+    assert packet["body_empty_reason"] is None
+    assert packet["completion_status"] == "complete"
+    assert packet["comparison_status"] == "aggregate_differs_current"
+    assert packet["missing_scene_ids"] == []
+    assert packet["aggregate_row_id"] == "chapter_memory_final"
+    assert "source_safety_scan" in packet
+
+
+def test_project_review_packet_reports_empty_body_reason(client, session) -> None:
+    project = _create_project(client, target_chapter_count=1, key="review-packet-empty")
+    plan = _generate_plan(client, project["project_id"])
+    approved = _approve_plan(client, project["project_id"], plan["plan_id"])
+    chapter_id = approved["project"]["current_chapter_id"]
+    session.add(
+        ChapterRunJob(
+            job_id=f"empty_job_{chapter_id}",
+            chapter_id=chapter_id,
+            status="completed",
+            job_type="chapter_run_full",
+            payload_json={},
+            result_summary_json={"latest_error": None},
+        )
+    )
+    db_project = session.get(StoryProject, project["project_id"])
+    assert db_project is not None
+    db_project.status = "chapter_final_review"
+    session.commit()
+
+    response = client.get(f"/api/v1/projects/{project['project_id']}/dashboard")
+
+    assert response.status_code == 200
+    packet = response.json()["data"]["review_packet"]
+    assert packet["body"] == ""
+    assert packet["body_source"] == "empty"
+    assert packet["body_empty_reason"] == "no_generated_scenes"
+    assert packet["completion_status"] == "empty"
+    assert packet["missing_scene_ids"]
+
+
+def test_project_chapter_run_job_blocks_when_llm_disabled(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
+    project = _create_project(client, target_chapter_count=1, key="run-job-offline")
+    plan = _generate_plan(client, project["project_id"])
+    approved = _approve_plan(client, project["project_id"], plan["plan_id"])
+    chapter_id = approved["project"]["current_chapter_id"]
+
+    response = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/run-job",
+        json={},
+        headers={"X-Idempotency-Key": "run-job-offline"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "LLM_DISABLED_FOR_CHAPTER_RUN"
+
+
+def test_project_chapter_run_job_reuses_existing_running_job(client, session, monkeypatch) -> None:
+    project = _create_project(client, target_chapter_count=1, key="run-job-reuse")
+    plan = _generate_plan(client, project["project_id"])
+    approved = _approve_plan(client, project["project_id"], plan["plan_id"])
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    chapter_id = approved["project"]["current_chapter_id"]
+    session.add(
+        ChapterRunJob(
+            job_id="chapter_run_existing",
+            chapter_id=chapter_id,
+            status="running",
+            job_type="chapter_run_full",
+            payload_json={
+                "scene_ids": [scene["scene_id"] for scene in approved["plan"]["plan_json"]["chapters"][0]["scenes"]],
+                "completed_scene_ids": [],
+                "current_scene_id": None,
+                "blocked_scene_id": None,
+            },
+            result_summary_json={
+                "scene_ids": [scene["scene_id"] for scene in approved["plan"]["plan_json"]["chapters"][0]["scenes"]],
+                "completed_scene_ids": [],
+                "current_scene_id": None,
+                "blocked_scene_id": None,
+                "latest_error": None,
+            },
+        )
+    )
+    session.commit()
+
+    started_jobs = []
+    monkeypatch.setattr(
+        "novel_system.api.routes.projects.start_project_chapter_run_job_worker",
+        lambda *args: started_jobs.append(args),
+        raising=False,
+    )
+
+    response = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/run-job",
+        json={},
+        headers={"X-Idempotency-Key": "run-job-reuse"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["project"]["status"] == "chapter_running"
+    assert payload["run"]["job_id"] == "chapter_run_existing"
+    assert payload["run"]["status"] == "running"
+    assert started_jobs == []

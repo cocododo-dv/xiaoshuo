@@ -4,9 +4,10 @@ import { useShellRouter } from "../router";
 import { useReferenceLearningStore } from "../stores/referenceLearning";
 import { useReviewInboxStore } from "../stores/reviewInbox";
 import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
+import { useWriterFlowStore } from "../stores/writerFlow";
 import { useWriterRoomStore } from "../stores/writerRoom";
 
-export const WRITER_PATH_VIEW_IDS = ["snowflake-workbench", "writer-room", "reference", "review"];
+export const WRITER_PATH_VIEW_IDS = ["snowflake-workbench", "writer-flow", "writer-room", "reference", "review"];
 
 export const WRITER_PATH_STATUS_LABELS = {
   todo: "未开始",
@@ -113,6 +114,56 @@ function writerRoomItem(meta, activeView, room) {
   return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded });
 }
 
+function writerFlowItem(meta, activeView, flow) {
+  const isLoaded = Boolean(flow.loaded || flow.dashboard || flow.project);
+  const nextAction = flow.nextAction || "";
+  const runStatus = flow.runStatus || {};
+
+  let status = "todo";
+  let summary = "写作总控尚未打开。";
+  let nextActionText = meta.writerNextAction || "打开写作总控，继续当前项目的下一步。";
+  let countLabel = "未加载";
+
+  if (flow.actionId) {
+    status = "running";
+    summary = "写作总控正在处理当前动作。";
+    nextActionText = "等待动作完成后再继续推进章节。";
+    countLabel = activeActionLabel(flow.actionId);
+  } else if (!isLoaded) {
+    status = "todo";
+  } else if (nextAction === "view_chapter_progress" || ["pending", "running", "queued"].includes(String(runStatus.status || "").toLowerCase())) {
+    status = "running";
+    summary = "当前章节正在起草。";
+    nextActionText = "查看进度，完成后进入终稿审阅。";
+    countLabel = `${Number(runStatus.progress_pct ?? flow.progressPercent ?? 0)}%`;
+  } else if (nextAction === "approve_chapter_final") {
+    status = "active";
+    summary = "当前章节已进入终稿审阅。";
+    nextActionText = "阅读正文来源和风险提示，确认后批准本章。";
+    countLabel = flow.reviewPacket?.body ? "待批准" : "缺正文";
+  } else if (nextAction === "resolve_blocker" || nextAction === "resolve_backtrack_items") {
+    status = "blocked";
+    summary = "当前章节有阻塞或返工项。";
+    nextActionText = "先处理阻塞原因，再继续起草。";
+    const pendingCount = Array.isArray(flow.backtrackItems)
+      ? flow.backtrackItems.filter((item) => item.status === "pending").length
+      : 0;
+    countLabel = `${pendingCount || 1} 待处理`;
+  } else if (nextAction === "completed") {
+    status = "done";
+    summary = "项目章节主线已完成。";
+    nextActionText = "可以查看成稿或继续做文本小修。";
+    countLabel = "已完成";
+  } else if (nextAction === "run_current_chapter") {
+    status = "active";
+    summary = "当前章节可以开始起草。";
+    nextActionText = "启动当前章起草，随后在这里查看进度。";
+    countLabel = "可起草";
+  }
+
+  return buildItem(meta, activeView, { status, summary, nextAction: nextActionText, countLabel, isLoaded });
+}
+
 function referenceItem(meta, activeView, reference) {
   const isLoaded = Boolean(reference.loaded || reference.books?.length || reference.detail || reference.currentRun);
   const readyProfiles = (reference.profiles || []).filter((profile) =>
@@ -206,6 +257,7 @@ function buildItem(meta, activeView, state) {
 export function useWriterPathProgress() {
   const router = useShellRouter();
   const snowflake = useSnowflakeWorkbenchStore();
+  const writerFlow = useWriterFlowStore();
   const room = useWriterRoomStore();
   const reference = useReferenceLearningStore();
   const review = useReviewInboxStore();
@@ -214,6 +266,7 @@ export function useWriterPathProgress() {
     const activeView = router.activeView.value;
     return [
       snowflakeItem(router.viewMeta("snowflake-workbench"), activeView, snowflake),
+      writerFlowItem(router.viewMeta("writer-flow"), activeView, writerFlow),
       writerRoomItem(router.viewMeta("writer-room"), activeView, room),
       referenceItem(router.viewMeta("reference"), activeView, reference),
       reviewItem(router.viewMeta("review"), activeView, review),
