@@ -377,11 +377,11 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         this.actionId = "";
       }
     },
-    async actOnHumanReviewEvent(eventId, action) {
+    async actOnHumanReviewEvent(eventId, action, payload = {}) {
       this.actionId = `human-review:${eventId}:${action}`;
       this.error = "";
       try {
-        const result = await actOnHumanReviewEvent(eventId, action);
+        const result = await actOnHumanReviewEvent(eventId, action, payload);
         this.lastActionResult = result;
         await this.refreshSelection();
         return `已对 ${eventId} 执行动作 ${action}（${result.status || "已更新"}）`;

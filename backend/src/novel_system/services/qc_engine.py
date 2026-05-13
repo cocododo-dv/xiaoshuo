@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -136,6 +137,10 @@ def _issue_blob(issues: list[Any], rewrite_brief: list[Any]) -> str:
             parts.append(str(issue.get("message") or ""))
     parts.extend(str(item) for item in rewrite_brief)
     return "\n".join(parts)
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
 
 
 def _contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
@@ -1175,6 +1180,40 @@ class SoftQcEngine:
 
         if branch == "human_review_required":
             blocking_issue = has_blocking_qc_issue(payload.get("issues", []))
+            trigger_reason = "blocking_soft_qc_issue" if blocking_issue else "soft_qc_requested_human_review"
+            source_draft_content_hash = _content_hash(source_draft_content)
+            accepted_waiver = self.human_review_manager.accepted_soft_risk_waiver(
+                scene_id=scene.scene_id,
+                trigger_reason=trigger_reason,
+                source_draft_content_hash=source_draft_content_hash,
+            )
+            if accepted_waiver is not None:
+                state.current_human_review_event_id = None
+                state.scene_status = "soft_qc_passed_with_author_acceptance"
+                self._apply_issue_tracking(state, payload["issues"])
+                self._record_attempt(
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    source_bundle_id=bundle["bundle_id"],
+                    source_draft_row_id=source_draft_row_id,
+                    branch="accepted_soft_risk",
+                    qc_report_id=qc_report.qc_report_id,
+                    resolution_code=qc_report.resolution_code or "",
+                    next_action=qc_report.next_action or "",
+                    human_review_event_id=accepted_waiver["event_id"],
+                    rewrite_brief=payload["rewrite_brief"],
+                    llm_call_id=llm_call_id,
+                )
+                self.session.flush()
+                return SoftQcDecision(
+                    branch="waive",
+                    qc_report_id=qc_report.qc_report_id,
+                    human_review_event_id=accepted_waiver["event_id"],
+                    resolution_code=qc_report.resolution_code or "",
+                    next_action=qc_report.next_action or "",
+                    should_continue=True,
+                    stop_reason=f"accepted_soft_risk:{accepted_waiver['event_id']}",
+                )
             self._clear_downstream_outputs(state)
             return self._escalate_existing_report(
                 scene=scene,
@@ -1188,7 +1227,8 @@ class SoftQcEngine:
                     if blocking_issue
                     else "soft_qc explicitly requested human review before finalization."
                 ),
-                trigger_reason="blocking_soft_qc_issue" if blocking_issue else "soft_qc_requested_human_review",
+                trigger_reason=trigger_reason,
+                source_draft_content_hash=source_draft_content_hash,
                 llm_call_id=llm_call_id,
             )
 
@@ -1509,6 +1549,7 @@ class SoftQcEngine:
         llm_call_id: str | None = None,
         error_code: str | None = None,
         retryable: bool | None = None,
+        source_draft_content_hash: str | None = None,
     ) -> SoftQcDecision:
         replay_context = {
             "scene_id": scene.scene_id,
@@ -1520,6 +1561,8 @@ class SoftQcEngine:
             "scene_status_before_block": state.scene_status,
             "soft_patch_count": state.soft_patch_count,
         }
+        if source_draft_content_hash is not None:
+            replay_context["source_draft_content_hash"] = source_draft_content_hash
         if llm_call_id is not None:
             replay_context["llm_call_id"] = llm_call_id
         if error_code is not None:
@@ -1528,6 +1571,10 @@ class SoftQcEngine:
             replay_context["retryable"] = retryable
         if continuity_warning is not None:
             replay_context["continuity_warning"] = continuity_warning
+        allow_soft_risk_acceptance = (
+            source_draft_content_hash is not None
+            and trigger_reason in {"blocking_soft_qc_issue", "soft_qc_requested_human_review"}
+        )
         event = self.human_review_manager.create_generation_blocker_event(
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
@@ -1539,6 +1586,7 @@ class SoftQcEngine:
             trigger_reason=trigger_reason,
             recommended_action="human_review_required",
             replay_context=replay_context,
+            allow_soft_risk_acceptance=allow_soft_risk_acceptance,
         )
         state.current_human_review_event_id = event.event_id
         state.scene_status = "human_review_required"

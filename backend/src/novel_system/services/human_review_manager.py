@@ -33,7 +33,13 @@ class HumanReviewManager:
         trigger_reason: str,
         recommended_action: str,
         replay_context: dict,
+        allow_soft_risk_acceptance: bool = False,
     ) -> HumanReviewEvent:
+        allowed_actions = ["inspect", "accept_soft_risk"] if allow_soft_risk_acceptance else ["inspect"]
+        result_status_map = {
+            "inspect": "needs_followup",
+            **({"accept_soft_risk": "resolved"} if allow_soft_risk_acceptance else {}),
+        }
         event = HumanReviewEvent(
             event_id=f"human_review_generation_{scene_id}_{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}",
             scene_id=scene_id,
@@ -42,12 +48,13 @@ class HumanReviewManager:
             event_source="scene_generation",
             priority="high",
             status="needs_followup",
-            allowed_actions_json=["inspect"],
-            result_status_map_json={"inspect": "needs_followup"},
+            allowed_actions_json=allowed_actions,
+            result_status_map_json=result_status_map,
             details_json={
                 "failure_reason": failure_reason,
                 "trigger_reason": trigger_reason,
                 "recommended_action": recommended_action,
+                "soft_risk_acceptance_allowed": bool(allow_soft_risk_acceptance),
                 "linked_target_type": target_type,
                 "linked_target_id": target_id,
                 "linked_target_ref": target_ref,
@@ -59,7 +66,7 @@ class HumanReviewManager:
         self.session.flush()
         return event
 
-    def run_action(self, event_id: str, action: str, *, actor_ref: str = "operator") -> dict:
+    def run_action(self, event_id: str, action: str, *, actor_ref: str = "operator", payload: dict | None = None) -> dict:
         event = self.session.get(HumanReviewEvent, event_id)
         if event is None:
             raise DomainError("HUMAN_REVIEW_EVENT_NOT_FOUND", f"event {event_id} not found", status_code=404)
@@ -71,6 +78,7 @@ class HumanReviewManager:
             )
 
         action_at = datetime.now(UTC).isoformat()
+        action_payload = dict(payload or {})
         status_before = event.status
         details_json = dict(event.details_json or {})
         linked_target = recovery_linked_target(
@@ -90,6 +98,32 @@ class HumanReviewManager:
         elif action == "release_review":
             replay_result = self._release_review_followup(event)
             event.status, resolution_reason, followup = self._workflow_after_release_followup(replay_result)
+        elif action == "accept_soft_risk":
+            reason = str(action_payload.get("reason") or "").strip()
+            if not reason:
+                raise DomainError("HUMAN_REVIEW_ACCEPT_REASON_REQUIRED", "accept_soft_risk requires a reason", status_code=400)
+            if event.event_source != "scene_generation" or not details_json.get("soft_risk_acceptance_allowed"):
+                raise DomainError(
+                    "HUMAN_REVIEW_ACTION_NOT_ALLOWED",
+                    f"action {action} is not allowed for event {event_id}",
+                    status_code=409,
+                )
+            event.status = "resolved"
+            resolution_reason = "Author accepted soft QC risk."
+            replay_context = details_json.get("replay_context") if isinstance(details_json.get("replay_context"), dict) else {}
+            details_json["soft_risk_acceptance"] = {
+                "accepted": True,
+                "reason": reason,
+                "actor_ref": actor_ref,
+                "accepted_at": action_at,
+                "event_id": event.event_id,
+                "scene_id": event.scene_id,
+                "chapter_id": event.chapter_id,
+                "qc_report_id": replay_context.get("current_qc_report_id"),
+                "source_draft_row_id": replay_context.get("source_draft_row_id"),
+                "source_draft_content_hash": replay_context.get("source_draft_content_hash"),
+                "trigger_reason": details_json.get("trigger_reason"),
+            }
         else:
             event.status = (event.result_status_map_json or {}).get(action, event.status)
 
@@ -107,6 +141,9 @@ class HumanReviewManager:
             action_entry["replay_result"] = replay_result
         if resolution_reason is not None:
             action_entry["resolution_reason"] = resolution_reason
+        if action == "accept_soft_risk":
+            action_entry["reason"] = details_json["soft_risk_acceptance"]["reason"]
+            action_entry["qc_report_id"] = details_json["soft_risk_acceptance"].get("qc_report_id")
         if followup["followup_action"] is not None:
             action_entry["followup_action"] = followup["followup_action"]
             action_entry["followup_target_ref"] = followup["followup_target_ref"]
@@ -171,6 +208,39 @@ class HumanReviewManager:
             "followup_target": followup_target_object,
             "followup_target_ref": followup["followup_target_ref"],
         }
+
+    def accepted_soft_risk_waiver(
+        self,
+        *,
+        scene_id: str,
+        trigger_reason: str,
+        source_draft_content_hash: str,
+    ) -> dict[str, str] | None:
+        rows = self.session.execute(
+            select(HumanReviewEvent)
+            .where(HumanReviewEvent.scene_id == scene_id)
+            .where(HumanReviewEvent.event_source == "scene_generation")
+            .where(HumanReviewEvent.status == "resolved")
+            .order_by(HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc())
+        ).scalars().all()
+        for event in rows:
+            details = dict(event.details_json or {})
+            acceptance = details.get("soft_risk_acceptance") if isinstance(details.get("soft_risk_acceptance"), dict) else {}
+            replay_context = details.get("replay_context") if isinstance(details.get("replay_context"), dict) else {}
+            if not acceptance.get("accepted"):
+                continue
+            if str(acceptance.get("trigger_reason") or details.get("trigger_reason") or "") != trigger_reason:
+                continue
+            accepted_hash = str(acceptance.get("source_draft_content_hash") or replay_context.get("source_draft_content_hash") or "")
+            if accepted_hash != source_draft_content_hash:
+                continue
+            return {
+                "event_id": event.event_id,
+                "reason": str(acceptance.get("reason") or ""),
+                "actor_ref": str(acceptance.get("actor_ref") or ""),
+                "qc_report_id": str(acceptance.get("qc_report_id") or replay_context.get("current_qc_report_id") or ""),
+            }
+        return None
 
     def _retry_recovery_request(self, event: HumanReviewEvent) -> dict:
         details = dict(event.details_json or {})

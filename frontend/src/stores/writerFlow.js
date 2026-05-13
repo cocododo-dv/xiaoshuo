@@ -25,6 +25,7 @@ export const useWriterFlowStore = defineStore("writerFlow", {
     actionId: "",
     error: "",
     lastActionMessage: "",
+    lastApprovalNote: null,
     loaded: false,
   }),
   getters: {
@@ -117,7 +118,7 @@ export const useWriterFlowStore = defineStore("writerFlow", {
       }
       return status;
     },
-    async approveCurrentChapterFinal() {
+    async approveCurrentChapterFinal(payload = {}) {
       const projectId = this.selectedProjectId || projectIdOf(this.project);
       const chapterId = currentChapterId(this) || this.reviewPacket?.chapter_id;
       if (!projectId || !chapterId) {
@@ -126,7 +127,7 @@ export const useWriterFlowStore = defineStore("writerFlow", {
       this.actionId = `approve-final:${chapterId}`;
       this.error = "";
       try {
-        const result = await approveProjectChapterFinal(projectId, chapterId);
+        const result = await approveProjectChapterFinal(projectId, chapterId, payload);
         this.dashboard = snapshotPayload({
           ...(this.dashboard || {}),
           project: result?.project || this.project,
@@ -135,6 +136,7 @@ export const useWriterFlowStore = defineStore("writerFlow", {
           next_action: result?.project?.status === "completed" ? "completed" : "run_current_chapter",
         });
         this.runStatus = null;
+        this.lastApprovalNote = snapshotPayload(result?.approval_note || null);
         this.lastActionMessage = result?.next_chapter_id ? "Chapter approved. Next chapter is ready." : "Project completed.";
         return result;
       } catch (error) {

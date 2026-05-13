@@ -177,7 +177,7 @@ def approve_project_chapter_final(
         method="POST",
         path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
         payload={"project_id": project_id, "chapter_id": chapter_id, **body},
-        action=lambda: ProjectChapterFlowService(session).approve_final(project_id, chapter_id),
+        action=lambda: ProjectChapterFlowService(session).approve_final(project_id, chapter_id, body, actor_ref=actor_ref),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}

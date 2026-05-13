@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { CheckCircle2, FileText, PlayCircle, RefreshCw, ShieldAlert, WandSparkles } from "lucide-vue-next";
 
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
@@ -18,6 +18,7 @@ const WRITER_FLOW_SCOPE = "writer-flow:main";
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
+const approvalNotes = ref("");
 
 let pollTimer = null;
 
@@ -111,10 +112,15 @@ async function approveFinal() {
     runningMessage: "正在批准本章并推进项目...",
     successMessage: () => store.lastActionMessage || "本章已批准。",
     nextStep: () => store.nextAction === "completed" ? "项目主线已完成。" : "下一章已经准备好，可以继续起草。",
-    target: () => ({ view: "writer-room", label: "进入写作房间", target: store.project?.current_chapter_id || "" }),
-    action: () => store.approveCurrentChapterFinal(),
+    target: () => ({ view: "writer-flow", label: "回到写作总控", target: store.project?.project_id || "" }),
+    action: () => store.approveCurrentChapterFinal({ revision_notes: approvalNotes.value.trim() }),
   });
+  approvalNotes.value = "";
   stopPolling();
+}
+
+function openSystemConfig() {
+  router.navigate('config', { target: { panel: "llm" } });
 }
 
 function startPolling() {
@@ -170,7 +176,10 @@ watch(() => router.routeContext.value?.target, (target) => {
 
     <template v-else>
       <aside v-if="offlineBanner" class="writer-flow-banner" data-testid="writer-flow-offline-banner">
-        当前是离线演示模式，不会生成真实正文。启用模型后再开始章节起草。
+        <span>当前是离线演示模式，不会生成真实正文。启用模型后再开始章节起草。</span>
+        <button type="button" class="ghost" data-testid="writer-flow-config-action" @click="openSystemConfig">
+          打开系统配置
+        </button>
       </aside>
 
       <section class="writer-flow-hero">
@@ -220,7 +229,7 @@ watch(() => router.routeContext.value?.target, (target) => {
               <span class="eyebrow">终稿审阅</span>
               <h3>{{ reviewPacket?.body_source || "等待正文" }}</h3>
             </div>
-            <button type="button" class="ghost" @click="router.navigate('writer-room', { target: { focus: 'chapter', target: currentChapter?.chapter_id || '' } })">小修</button>
+            <button type="button" class="ghost" @click="router.navigate('writer-room', { target: { focus: 'chapter', target: currentChapter?.chapter_id || '' } })">需要小修</button>
           </div>
           <p v-if="reviewPacket?.body" class="writer-flow-body-preview">{{ reviewPacket.body }}</p>
           <p v-else class="muted">{{ reviewPacket?.body_empty_reason || "章节起草完成后会在这里显示正文。" }}</p>
@@ -229,6 +238,15 @@ watch(() => router.routeContext.value?.target, (target) => {
             <span>{{ reviewPacket?.completion_status || "pending" }}</span>
             <span v-if="reviewPacket?.missing_scene_ids?.length">{{ reviewPacket.missing_scene_ids.length }} 场缺失</span>
           </div>
+          <label class="writer-flow-approval-notes" data-testid="writer-flow-approval-notes">
+            <span>批准备注 / 后续小修提醒</span>
+            <textarea
+              v-model="approvalNotes"
+              class="control-input"
+              :disabled="nextAction !== 'approve_chapter_final'"
+              placeholder="可选：记录批准时的保留意见、下一章需要延续的张力，或稍后小修提醒。"
+            />
+          </label>
         </article>
       </section>
 
@@ -263,6 +281,10 @@ watch(() => router.routeContext.value?.target, (target) => {
 }
 
 .writer-flow-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   border-color: rgba(154, 91, 31, 0.28);
   background: #fff7e8;
   color: #76511d;
@@ -337,6 +359,22 @@ watch(() => router.routeContext.value?.target, (target) => {
   overflow: auto;
   white-space: pre-wrap;
   line-height: 1.7;
+}
+
+.writer-flow-approval-notes {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.writer-flow-approval-notes span {
+  color: #445b52;
+  font-weight: 700;
+}
+
+.writer-flow-approval-notes textarea {
+  min-height: 86px;
+  resize: vertical;
 }
 
 .writer-flow-error {

@@ -681,8 +681,8 @@ def human_review_event_action(event_id: str, payload: dict, request: Request, se
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/human-review-events/{event_id}/actions",
-        payload={"event_id": event_id, "action": action_name},
-        action=lambda: HumanReviewManager(session).run_action(event_id, action_name, actor_ref=actor_ref),
+        payload={"event_id": event_id, **payload},
+        action=lambda: HumanReviewManager(session).run_action(event_id, action_name, actor_ref=actor_ref, payload=payload),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}

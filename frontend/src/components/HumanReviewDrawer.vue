@@ -35,6 +35,7 @@ const ACTION_LABELS = {
   retry_verify: "重试校验",
   release_review: "发布审核",
   inspect: "查看详情",
+  accept_soft_risk: "接受软风险",
   approve_review: "批准审核",
 };
 

@@ -63,6 +63,18 @@ describe("writer flow command center", () => {
     expect(source).toContain('view: "writer-flow"');
     expect(source).toContain('label: "进入写作总控"');
     expect(source).toContain(":on-navigate");
+    expect(source).toContain('data-testid="snowflake-structure-handoff"');
+    expect(source).toContain('testId: "snowflake-handoff-writer-flow"');
+    expect(source).toContain(':data-testid="structureHandoff.testId"');
+  });
+
+  it("offline chapter runs expose a system config exit while keeping generation disabled", () => {
+    const source = readSource("src/views/WriterFlowView.vue");
+
+    expect(source).toContain('data-testid="writer-flow-offline-banner"');
+    expect(source).toContain('data-testid="writer-flow-config-action"');
+    expect(source).toContain("router.navigate('config'");
+    expect(source).toContain("disabled: offlineBanner.value");
   });
 
   it("store drives dashboard, run-job polling, and final approval from next_action", async () => {
@@ -128,10 +140,12 @@ describe("writer flow command center", () => {
         });
       }
       if (url.endsWith("/api/v1/projects/PRJ_FLOW/chapters/PRJ_FLOW_CH01/approve-final") && method === "POST") {
+        expect(JSON.parse(options.body)).toEqual({ revision_notes: "Keep the second scene tense." });
         return okEnvelope({
           project: { ...project, status: "completed", current_chapter_id: null, approved_chapter_ids: ["PRJ_FLOW_CH01"] },
           next_chapter_id: null,
           approved_chapter_id: "PRJ_FLOW_CH01",
+          approval_note: { revision_notes: "Keep the second scene tense." },
         });
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -149,11 +163,12 @@ describe("writer flow command center", () => {
       next_action: "approve_chapter_final",
     });
     expect(store.reviewPacket.body).toBe("final chapter body");
-    await store.approveCurrentChapterFinal();
+    await store.approveCurrentChapterFinal({ revision_notes: "Keep the second scene tense." });
 
     expect(store.selectedProjectId).toBe("PRJ_FLOW");
     expect(run.job_id).toBe("chapter_run_PRJ_FLOW_CH01");
     expect(status.progress_pct).toBe(100);
     expect(store.project.status).toBe("completed");
+    expect(store.lastApprovalNote.revision_notes).toBe("Keep the second scene tense.");
   });
 });

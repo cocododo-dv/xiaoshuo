@@ -208,7 +208,16 @@ class Orchestrator:
             }
 
         final_row_id = versioned_scene_artifact_id("final_scene", scene_id, bundle)
+        soft_risk_acceptance_event_id = self._soft_risk_acceptance_event_id(soft_qc)
         carry_notes_json = self._carry_notes_from_report(soft_qc.qc_report_id) if soft_qc.branch == "waive" else []
+        if soft_risk_acceptance_event_id:
+            carry_notes_json.append(
+                {
+                    "kind": "soft_risk_acceptance",
+                    "human_review_event_id": soft_risk_acceptance_event_id,
+                    "qc_report_id": soft_qc.qc_report_id,
+                }
+            )
         self.session.add(
             FinalScene(
                 row_id=final_row_id,
@@ -223,6 +232,13 @@ class Orchestrator:
         )
         self.session.flush()
         state.current_final_scene_row_id = final_row_id
+        finalize_details = {
+            "source_style_draft_row_id": final_generation.row_id,
+            "source_qc_report_id": soft_qc.qc_report_id,
+            "final_generation_llm_call_id": final_generation.llm_call_id,
+        }
+        if soft_risk_acceptance_event_id:
+            finalize_details["soft_risk_acceptance_event_id"] = soft_risk_acceptance_event_id
         self.session.add(
             AttemptTracker(
                 scene_id=scene_id,
@@ -230,11 +246,7 @@ class Orchestrator:
                 step="finalize",
                 status="completed",
                 source_bundle_id=bundle["bundle_id"],
-                details_json={
-                    "source_style_draft_row_id": final_generation.row_id,
-                    "source_qc_report_id": soft_qc.qc_report_id,
-                    "final_generation_llm_call_id": final_generation.llm_call_id,
-                },
+                details_json=finalize_details,
             )
         )
         self.session.flush()
@@ -327,6 +339,15 @@ class Orchestrator:
                     }
                 )
         return carry_notes
+
+    @staticmethod
+    def _soft_risk_acceptance_event_id(soft_qc) -> str | None:
+        stop_reason = str(getattr(soft_qc, "stop_reason", "") or "")
+        prefix = "accepted_soft_risk:"
+        if not stop_reason.startswith(prefix):
+            return None
+        event_id = stop_reason[len(prefix) :].strip()
+        return event_id or None
 
     @staticmethod
     def _near_final_rewrite_brief(near_final: dict[str, Any]) -> list[str]:

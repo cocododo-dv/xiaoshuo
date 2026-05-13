@@ -14,6 +14,7 @@ from novel_system.db.models import (
     FinalScene,
     HumanReviewEvent,
     LlmCall,
+    OperationLog,
     QcReport,
     RelationProfile,
     SceneCard,
@@ -1336,6 +1337,125 @@ def test_generation_originated_human_review_event_matches_existing_inbox_shape(c
     assert item["details_json"]["trigger_reason"] == "repeat_issue_key_limit"
     assert item["details_json"]["recommended_action"] == "human_review_required"
     assert item["details_json"]["replay_context"]["source_bundle_id"] == "bundle_CH100_SC01"
+
+
+def test_soft_generation_review_can_accept_soft_risk_with_audit_reason(client, session) -> None:
+    _seed_scene(session)
+    event = HumanReviewManager(session).create_generation_blocker_event(
+        scene_id="CH100_SC01",
+        chapter_id="CH100",
+        object_ref="draft_style_CH100_SC01",
+        target_type="scene_draft",
+        target_id="draft_style_CH100_SC01",
+        target_ref="scene_draft:draft_style_CH100_SC01",
+        failure_reason="Soft QC requested human review for a prose-risk waiver.",
+        trigger_reason="soft_qc_requested_human_review",
+        recommended_action="human_review_required",
+        replay_context={
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "source_bundle_id": "bundle_CH100_SC01",
+            "source_draft_row_id": "draft_style_CH100_SC01",
+            "current_qc_report_id": "qc_report_soft_001",
+            "source_draft_content_hash": "hash_soft_001",
+        },
+        allow_soft_risk_acceptance=True,
+    )
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/human-review-events/{event.event_id}/actions",
+        json={"action": "accept_soft_risk", "reason": "Author accepts this soft prose risk for pacing."},
+        headers={"X-Idempotency-Key": "accept-soft-risk", "X-Operator-Ref": "author.duwei"},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    stored = session.get(HumanReviewEvent, event.event_id)
+    session.refresh(stored)
+    assert data["status"] == "resolved"
+    assert stored.status == "resolved"
+    assert stored.details_json["soft_risk_acceptance"]["reason"] == "Author accepts this soft prose risk for pacing."
+    assert stored.details_json["soft_risk_acceptance"]["qc_report_id"] == "qc_report_soft_001"
+    assert stored.details_json["last_actor_ref"] == "author.duwei"
+
+    log = session.execute(
+        select(OperationLog).where(
+            OperationLog.event_type == "human_review_action",
+            OperationLog.object_type == "human_review_event",
+            OperationLog.object_ref == event.event_id,
+        )
+    ).scalar_one()
+    assert log.payload_json["action"] == "accept_soft_risk"
+    assert log.payload_json["resolution_reason"] == "Author accepted soft QC risk."
+
+
+def test_hard_generation_review_does_not_allow_soft_risk_acceptance(client, session) -> None:
+    _seed_scene(session)
+    event = HumanReviewManager(session).create_generation_blocker_event(
+        scene_id="CH100_SC01",
+        chapter_id="CH100",
+        object_ref="draft_neutral_CH100_SC01",
+        target_type="scene_draft",
+        target_id="draft_neutral_CH100_SC01",
+        target_ref="scene_draft:draft_neutral_CH100_SC01",
+        failure_reason="Hard QC found a missing required constraint.",
+        trigger_reason="invalid_hard_qc_payload",
+        recommended_action="human_review_required",
+        replay_context={"current_qc_report_id": "qc_report_hard_001"},
+    )
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/human-review-events/{event.event_id}/actions",
+        json={"action": "accept_soft_risk", "reason": "Try to bypass hard QC."},
+        headers={"X-Idempotency-Key": "reject-hard-soft-risk"},
+    )
+
+    assert response.status_code == 409
+    assert session.get(HumanReviewEvent, event.event_id).status == "needs_followup"
+
+
+def test_accepted_soft_risk_lets_matching_soft_qc_rerun_continue_with_audit(session) -> None:
+    _seed_scene(session)
+    soft_block_payload = _base_soft_qc_payload(
+        resolution_code="soft_block_human",
+        next_action="human_review_required",
+        issues=[{"issue_key": "cadence_flat", "message": "The rhythm is still too even."}],
+        rewrite_brief=["Accept this only if pacing matters more than cadence polish."],
+    )
+    first_run = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
+        soft_qc_payloads=[soft_block_payload],
+    )
+
+    blocked = first_run.run_scene("CH100_SC01")
+    event_id = blocked["current_human_review_event_id"]
+    HumanReviewManager(session).run_action(
+        event_id,
+        "accept_soft_risk",
+        actor_ref="author.duwei",
+        payload={"reason": "Pacing is more important than this soft cadence risk."},
+    )
+    session.commit()
+
+    second_run = _make_orchestrator(
+        session,
+        hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
+        soft_qc_payloads=[soft_block_payload],
+    )
+    result = second_run.run_scene("CH100_SC01")
+    session.commit()
+
+    assert result["scene_status"] == "archived"
+    assert result["soft_qc"]["branch"] == "waive"
+    finalize = session.execute(
+        select(AttemptTracker)
+        .where(AttemptTracker.scene_id == "CH100_SC01", AttemptTracker.step == "finalize")
+        .order_by(AttemptTracker.attempt_id.desc())
+    ).scalars().first()
+    assert finalize.details_json["soft_risk_acceptance_event_id"] == event_id
 
 
 def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(session) -> None:

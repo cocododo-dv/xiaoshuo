@@ -150,6 +150,6 @@ export function fetchHumanReviewEvents(filters = {}) {
   ).then((payload) => normalizeListPayload(payload, CURSOR_PAGINATION_DEFAULT_LIMIT));
 }
 
-export function actOnHumanReviewEvent(eventId, action) {
-  return apiPost(`/api/v1/human-review-events/${eventId}/actions`, { action });
+export function actOnHumanReviewEvent(eventId, action, payload = {}) {
+  return apiPost(`/api/v1/human-review-events/${eventId}/actions`, { action, ...(payload || {}) });
 }

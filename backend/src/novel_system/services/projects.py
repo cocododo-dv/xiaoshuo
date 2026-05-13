@@ -13,6 +13,7 @@ from novel_system.db.models import (
     ChapterGoal,
     ChapterRunJob,
     ChapterState,
+    OperationLog,
     OutlinePlan,
     ReferenceProfile,
     SceneCard,
@@ -640,11 +641,15 @@ class ProjectChapterFlowService:
             "_start_worker": should_start_worker and run_payload.get("status") == "pending",
         }
 
-    def approve_final(self, project_id: str, chapter_id: str) -> dict[str, Any]:
+    def approve_final(self, project_id: str, chapter_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
+        body = payload or {}
         project = ProjectService(self.session).require_project(project_id)
         self._require_project_chapter(project, chapter_id)
         if project.current_chapter_id != chapter_id:
             raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter final can be approved")
+        revision_notes = str(body.get("revision_notes") or "").strip()
+        if len(revision_notes) > 2000:
+            raise DomainError("CHAPTER_APPROVAL_NOTES_TOO_LONG", "revision_notes must be 2000 characters or fewer", status_code=400)
 
         approved = list(project.approved_chapter_ids_json or [])
         if chapter_id not in approved:
@@ -658,11 +663,30 @@ class ProjectChapterFlowService:
         else:
             project.current_chapter_id = None
             project.status = PROJECT_STATUS_COMPLETED
+        approval_note = {
+            "revision_notes": revision_notes,
+            "actor_ref": actor_ref or "operator",
+        }
+        self.session.add(
+            OperationLog(
+                event_type="chapter_final_approval",
+                object_type="chapter",
+                object_ref=chapter_id,
+                payload_json={
+                    "project_id": project.project_id,
+                    "chapter_id": chapter_id,
+                    "next_chapter_id": project.current_chapter_id,
+                    "project_status": project.status,
+                    **approval_note,
+                },
+            )
+        )
         self.session.flush()
         return {
             "project": project_payload(project),
             "next_chapter_id": project.current_chapter_id,
             "approved_chapter_id": chapter_id,
+            "approval_note": approval_note,
         }
 
     def review_packet(self, project: StoryProject, chapter_id: str | None) -> dict[str, Any] | None:

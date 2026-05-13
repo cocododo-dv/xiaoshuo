@@ -414,11 +414,11 @@ export const useReviewInboxStore = defineStore("reviewInbox", {
         this.actionId = "";
       }
     },
-    async actOnHumanReviewEvent(eventId, action) {
+    async actOnHumanReviewEvent(eventId, action, payload = {}) {
       this.actionId = `${eventId}:${action}`;
       this.error = "";
       try {
-        const result = await actOnHumanReviewEvent(eventId, action);
+        const result = await actOnHumanReviewEvent(eventId, action, payload);
         this.lastActionResult = result;
         await this.load({ resetReview: true, resetHumanReview: true, force: true });
         return `已对 ${eventId} 执行动作 ${action}（${result.status || "已更新"}）`;

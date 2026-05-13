@@ -305,13 +305,22 @@ async function release(reviewId) {
 }
 
 async function handleHumanReviewAction({ eventId, action }) {
+  const payload = {};
+  if (action === "accept_soft_risk") {
+    const reason = String(globalThis.window?.prompt?.("请写明接受这个软风险的理由，系统会记录到审计日志。") || "").trim();
+    if (!reason) {
+      emit("notice", "接受软风险需要写明理由。");
+      return;
+    }
+    payload.reason = reason;
+  }
   const result = await runFlowAction({
     scopeKey: humanReviewReceiptScope(eventId),
     actionLabel: "处理人工审核",
     runningMessage: "正在执行恢复/人工审核动作...",
     successMessage: (message) => message || "人工审核动作已完成。",
     nextStep: () => "下一步：打开关联目标或刷新列表，继续处理后续项。",
-    action: () => reviewInbox.actOnHumanReviewEvent(eventId, action),
+    action: () => reviewInbox.actOnHumanReviewEvent(eventId, action, payload),
   });
   if (result) {
     indexConsole.recordRecoveryAction(reviewInbox.lastActionResult);

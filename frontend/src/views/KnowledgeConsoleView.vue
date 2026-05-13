@@ -197,6 +197,7 @@ const ACTION_LABELS = {
   release_review: "发布审核",
   retry_request: "重试请求",
   inspect: "查看详情",
+  accept_soft_risk: "接受软风险",
 };
 const REFERENCE_SOURCES = new Set(["reference_book_learning", "reference_profile_apply"]);
 
@@ -645,13 +646,22 @@ async function runRelease(reviewId) {
 }
 
 async function runHumanReviewAction(eventId, action) {
+  const payload = {};
+  if (action === "accept_soft_risk") {
+    const reason = String(globalThis.window?.prompt?.("请写明接受这个软风险的理由，系统会记录到审计日志。") || "").trim();
+    if (!reason) {
+      emit("notice", "接受软风险需要写明理由。");
+      return;
+    }
+    payload.reason = reason;
+  }
   await runFlowAction({
     scopeKey: KNOWLEDGE_WORKFLOW_SCOPE,
     actionLabel: "处理人工审核",
     runningMessage: "正在执行人工审核后续动作...",
     successMessage: (message) => message || "人工审核动作已完成。",
     nextStep: () => "下一步：打开目标活动或继续处理关联审核。",
-    action: () => knowledgeConsole.actOnHumanReviewEvent(eventId, action),
+    action: () => knowledgeConsole.actOnHumanReviewEvent(eventId, action, payload),
   });
 }
 

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from novel_system.db.models import (
     ChapterMemory,
     ChapterGoal,
     ChapterRunJob,
     FinalScene,
     LlmCall,
+    OperationLog,
     ReferenceBook,
     ReferenceLearningRun,
     ReferenceProfile,
@@ -318,14 +321,26 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
 
     approve_response = client.post(
         f"/api/v1/projects/{project['project_id']}/chapters/{first_chapter_id}/approve-final",
-        json={},
+        json={"revision_notes": "Keep the second scene tense on the next pass."},
         headers={"X-Idempotency-Key": "approve-project-chapter-1"},
     )
     assert approve_response.status_code == 200
-    next_project = approve_response.json()["data"]["project"]
+    approve_payload = approve_response.json()["data"]
+    next_project = approve_payload["project"]
     assert next_project["status"] == "chapter_ready"
     assert next_project["current_chapter_id"].endswith("_CH02")
     assert next_project["approved_chapter_ids"] == [first_chapter_id]
+    assert approve_payload["approval_note"]["revision_notes"] == "Keep the second scene tense on the next pass."
+
+    approval_log = session.execute(
+        select(OperationLog).where(
+            OperationLog.event_type == "chapter_final_approval",
+            OperationLog.object_type == "chapter",
+            OperationLog.object_ref == first_chapter_id,
+        )
+    ).scalar_one()
+    assert approval_log.payload_json["revision_notes"] == "Keep the second scene tense on the next pass."
+    assert approval_log.payload_json["project_id"] == project["project_id"]
 
 
 def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(client, session) -> None:
