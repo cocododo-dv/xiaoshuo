@@ -19,6 +19,13 @@ export const WRITER_PATH_STATUS_LABELS = {
 
 const REVIEW_DECISION_STATUSES = new Set(["pending", "waiting_review", "needs_author"]);
 const HUMAN_REVIEW_DONE_STATUSES = new Set(["resolved", "dismissed", "completed", "approved"]);
+const STRUCTURE_APPROVED_PROJECT_STATUSES = new Set([
+  "chapter_ready",
+  "chapter_running",
+  "chapter_blocked",
+  "chapter_final_review",
+  "completed",
+]);
 
 function activeActionLabel(actionId) {
   return actionId ? "处理中" : "";
@@ -28,18 +35,41 @@ function currentStepLabel(snowflake) {
   return snowflake.currentStep?.label || snowflake.currentStep?.step_key || "当前雪花步骤";
 }
 
-function snowflakeItem(meta, activeView, snowflake) {
+function snowflakeWorkflowState(snowflake, writerFlow) {
+  const gateStatus = String(snowflake.materializationGate?.status || "").toLowerCase();
+  const planStatus = String(snowflake.latestPlan?.status || snowflake.workspace?.latest_plan?.status || "").toLowerCase();
+  const projectStatus = String(
+    snowflake.project?.status
+      || snowflake.workspace?.project?.status
+      || writerFlow.project?.status
+      || writerFlow.dashboard?.project?.status
+      || "",
+  ).toLowerCase();
+
+  if (planStatus === "approved" || STRUCTURE_APPROVED_PROJECT_STATUSES.has(projectStatus)) {
+    return "structure_approved";
+  }
+  if (planStatus === "pending_review") {
+    return "outline_pending_review";
+  }
+  if (snowflake.readyToMaterialize || ["ready", "approved", "done"].includes(gateStatus)) {
+    return "can_materialize";
+  }
+  return "in_steps";
+}
+
+function snowflakeItem(meta, activeView, snowflake, writerFlow) {
   const hasProject = Boolean(snowflake.selectedProjectId || snowflake.project?.project_id);
   const stepCount = snowflake.steps?.length || 0;
   const doneCount = (snowflake.steps || []).filter((step) => step.gate_satisfied).length;
-  const gateStatus = String(snowflake.materializationGate?.status || "").toLowerCase();
-  const structureReady = Boolean(snowflake.readyToMaterialize || ["ready", "approved", "done"].includes(gateStatus));
   const isLoaded = Boolean(snowflake.loaded || snowflake.workspace || hasProject);
+  const workflowState = snowflakeWorkflowState(snowflake, writerFlow);
 
   let status = "active";
   let summary = `继续推进 ${currentStepLabel(snowflake)}。`;
   let nextAction = meta.writerNextAction || "继续确认当前雪花步骤。";
   let countLabel = stepCount ? `${doneCount}/${stepCount}` : "待推进";
+  let primaryTarget = meta.id;
 
   if (snowflake.actionId) {
     status = "running";
@@ -56,11 +86,22 @@ function snowflakeItem(meta, activeView, snowflake) {
     summary = `${currentStepLabel(snowflake)} 有未保存内容。`;
     nextAction = "先保存或确认当前步骤，再切到下一环。";
     countLabel = "未保存";
-  } else if (structureReady) {
+  } else if (workflowState === "structure_approved") {
     status = "done";
-    summary = "雪花结构已准备好进入结构确认或正文写作。";
-    nextAction = "进入写作房间，开始打磨正文。";
-    countLabel = "可物化";
+    summary = "章节结构已确认，写作主线已经交给写作总控。";
+    nextAction = "进入写作总控，启动当前章节起草或查看终稿审阅。";
+    countLabel = "结构已确认";
+    primaryTarget = "writer-flow";
+  } else if (workflowState === "outline_pending_review") {
+    status = "active";
+    summary = "章节结构草案已整理好，正在等待作者确认。";
+    nextAction = "检查章节计划并确认结构，确认后进入写作总控。";
+    countLabel = "待确认";
+  } else if (workflowState === "can_materialize") {
+    status = "active";
+    summary = "雪花步骤已具备整理条件，还没有生成章节结构草案。";
+    nextAction = "整理成章节结构，再检查并确认。";
+    countLabel = "可整理";
   } else if (!isLoaded) {
     status = "todo";
     summary = "雪花工作台尚未加载项目状态。";
@@ -68,7 +109,7 @@ function snowflakeItem(meta, activeView, snowflake) {
     countLabel = "未加载";
   }
 
-  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded });
+  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded, primaryTarget });
 }
 
 function writerRoomItem(meta, activeView, room) {
@@ -250,6 +291,7 @@ function buildItem(meta, activeView, state) {
     viewId: meta.id,
     label: meta.writerLabel || meta.stepLabel || meta.label,
     isActive: activeView === meta.id,
+    primaryTarget: meta.id,
     ...state,
   };
 }
@@ -265,7 +307,7 @@ export function useWriterPathProgress() {
   const items = computed(() => {
     const activeView = router.activeView.value;
     return [
-      snowflakeItem(router.viewMeta("snowflake-workbench"), activeView, snowflake),
+      snowflakeItem(router.viewMeta("snowflake-workbench"), activeView, snowflake, writerFlow),
       writerFlowItem(router.viewMeta("writer-flow"), activeView, writerFlow),
       writerRoomItem(router.viewMeta("writer-room"), activeView, room),
       referenceItem(router.viewMeta("reference"), activeView, reference),
@@ -281,7 +323,7 @@ export function useWriterPathProgress() {
   );
 
   function navigateToItem(itemOrViewId) {
-    const viewId = typeof itemOrViewId === "string" ? itemOrViewId : itemOrViewId?.viewId;
+    const viewId = typeof itemOrViewId === "string" ? itemOrViewId : itemOrViewId?.primaryTarget || itemOrViewId?.viewId;
     if (viewId) {
       router.navigate(viewId);
     }

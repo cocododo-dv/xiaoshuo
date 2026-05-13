@@ -167,6 +167,55 @@ describe("writer path progress", () => {
     expect(freshById.review.status).toBe("todo");
   });
 
+  it("distinguishes materialization, outline review, and approved structure handoff states", async () => {
+    const { useWriterPathProgress } = await import("../src/composables/useWriterPathProgress.js");
+    const snowflake = useSnowflakeWorkbenchStore();
+    const writerFlow = useWriterFlowStore();
+
+    snowflake.selectedProjectId = "PRJ_HANDOFF";
+    snowflake.project = { project_id: "PRJ_HANDOFF", status: "outline_draft" };
+    snowflake.loaded = true;
+    snowflake.workspace = {
+      project: { project_id: "PRJ_HANDOFF", status: "outline_draft" },
+      ready_to_materialize: true,
+      latest_plan: null,
+      materialization_gate: { status: "ready", items: [] },
+      steps: [{ step_key: "scene_details", label: "Scene details", gate_satisfied: true }],
+    };
+
+    const progress = useWriterPathProgress();
+    let snowflakeItem = progress.items.value.find((item) => item.viewId === "snowflake-workbench");
+    expect(snowflakeItem).toEqual(expect.objectContaining({
+      status: "active",
+      primaryTarget: "snowflake-workbench",
+    }));
+
+    snowflake.workspace.latest_plan = { plan_id: "PLAN_1", status: "pending_review", plan_json: { chapters: [] } };
+    snowflakeItem = progress.items.value.find((item) => item.viewId === "snowflake-workbench");
+    expect(snowflakeItem).toEqual(expect.objectContaining({
+      status: "active",
+      primaryTarget: "snowflake-workbench",
+    }));
+
+    snowflake.workspace.latest_plan = { plan_id: "PLAN_1", status: "approved", plan_json: { chapters: [] } };
+    snowflake.project = { project_id: "PRJ_HANDOFF", status: "chapter_ready", current_chapter_id: "PRJ_HANDOFF_CH01" };
+    snowflake.workspace.project = snowflake.project;
+    writerFlow.applyDashboard({
+      project: snowflake.project,
+      current_chapter: { chapter_id: "PRJ_HANDOFF_CH01" },
+      next_action: "run_current_chapter",
+    });
+
+    snowflakeItem = progress.items.value.find((item) => item.viewId === "snowflake-workbench");
+    expect(snowflakeItem).toEqual(expect.objectContaining({
+      status: "done",
+      primaryTarget: "writer-flow",
+    }));
+
+    progress.navigateToItem(snowflakeItem);
+    expect(useShellRouter().activeView.value).toBe("writer-flow");
+  });
+
   it("renders accessible task buttons and navigates through the writer path", async () => {
     const { default: WriterPathProgress } = await import("../src/components/WriterPathProgress.vue");
     const router = useShellRouter();

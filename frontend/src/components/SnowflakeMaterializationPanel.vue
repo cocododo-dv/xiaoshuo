@@ -19,6 +19,44 @@ const { receipt, runFlowAction } = useFlowActionFeedback({
 const readyToMaterialize = computed(() => store.readyToMaterialize);
 const materializationGate = computed(() => store.materializationGate);
 const latestPlan = computed(() => store.latestPlan);
+const chapterFlowReady = computed(() =>
+  ["chapter_ready", "chapter_running", "chapter_blocked", "chapter_final_review", "completed"]
+    .includes(String(store.project?.status || "").toLowerCase()),
+);
+const structureHandoff = computed(() => {
+  const planStatus = String(latestPlan.value?.status || "").toLowerCase();
+  if (planStatus === "approved" || chapterFlowReady.value) {
+    return {
+      title: "章节结构已确认",
+      body: "下一步在写作总控里启动当前章、查看运行进度，或处理终稿审阅。",
+      actionLabel: "进入写作总控",
+      testId: "snowflake-handoff-writer-flow",
+      disabled: false,
+      run: openWriterFlow,
+    };
+  }
+  if (planStatus === "pending_review") {
+    return {
+      title: "章节结构草案待确认",
+      body: "先检查章节目标和场景拆分，确认后系统会进入章节写作主线。",
+      actionLabel: "确认结构",
+      testId: "snowflake-handoff-approve-outline",
+      disabled: store.actionId === "approve-outline",
+      run: approveOutline,
+    };
+  }
+  if (readyToMaterialize.value) {
+    return {
+      title: "雪花结构可以整理",
+      body: "把已确认的雪花步骤和场景规划整理成章节结构草案，再由作者确认。",
+      actionLabel: "整理成章节结构",
+      testId: "snowflake-handoff-materialize",
+      disabled: materializationGate.value.status === "blocked" || store.actionId === "materialize-outline",
+      run: materializeOutline,
+    };
+  }
+  return null;
+});
 const gateItems = computed(() => {
   if (Array.isArray(materializationGate.value?.items) && materializationGate.value.items.length) {
     return materializationGate.value.items;
@@ -99,6 +137,15 @@ async function approveOutline() {
   });
 }
 
+function openWriterFlow() {
+  router.navigate("writer-flow", {
+    target: {
+      focus: "story_project",
+      target: store.selectedProjectId || store.project?.project_id || "",
+    },
+  });
+}
+
 function handleReceiptNavigate(target) {
   if (!target?.view) {
     return;
@@ -145,6 +192,24 @@ function handleReceiptNavigate(target) {
       </div>
     </div>
     <FlowActionReceipt :receipt="receipt(SNOWFLAKE_STRUCTURE_SCOPE)" :on-navigate="handleReceiptNavigate" />
+
+    <div v-if="structureHandoff" class="snowflake-structure-handoff" data-testid="snowflake-structure-handoff">
+      <div>
+        <span class="eyebrow">下一步</span>
+        <strong>{{ structureHandoff.title }}</strong>
+        <p class="muted">{{ structureHandoff.body }}</p>
+      </div>
+      <button
+        type="button"
+        class="primary action-btn"
+        :data-testid="structureHandoff.testId"
+        :disabled="structureHandoff.disabled"
+        @click="structureHandoff.run"
+      >
+        <Check :size="16" />
+        <span>{{ structureHandoff.actionLabel }}</span>
+      </button>
+    </div>
 
     <div class="materialization-gate" :class="materializationGate.status">
       <div>

@@ -330,6 +330,7 @@ onBeforeUnmount(() => {
 .snowflake-workbench-view .snowflake-progress-panel,
 .snowflake-workbench-view .snowflake-step-state-strip,
 .snowflake-workbench-view .snowflake-guidance-card,
+.snowflake-workbench-view .snowflake-structure-handoff,
 .snowflake-workbench-view .materialization-gate {
   display: grid;
   gap: 10px;
@@ -346,6 +347,17 @@ onBeforeUnmount(() => {
 .snowflake-workbench-view .snowflake-progress-panel {
   grid-template-columns: minmax(150px, auto) minmax(120px, 1fr) auto;
   align-items: center;
+}
+
+.snowflake-workbench-view .snowflake-structure-handoff {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border-color: rgba(47, 111, 98, 0.24);
+  background: var(--snowflake-moss-soft);
+}
+
+.snowflake-workbench-view .snowflake-structure-handoff p {
+  margin: 4px 0 0;
 }
 
 .snowflake-workbench-view .snowflake-draft-recovery {
@@ -365,6 +377,28 @@ onBeforeUnmount(() => {
   background: var(--snowflake-warning-soft);
   color: var(--snowflake-warning);
   padding: 10px 12px;
+}
+
+.snowflake-workbench-view .snowflake-stale-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(159, 63, 50, 0.22);
+  border-radius: 8px;
+  background: var(--snowflake-danger-soft);
+  color: var(--snowflake-danger);
+  padding: 12px;
+}
+
+.snowflake-workbench-view .snowflake-stale-note.collapsed {
+  border-color: rgba(140, 103, 43, 0.18);
+  background: var(--snowflake-warning-soft);
+  color: var(--snowflake-warning);
+}
+
+.snowflake-workbench-view .snowflake-stale-note p {
+  margin: 4px 0 0;
 }
 
 .snowflake-workbench-view .snowflake-progress-track {
