@@ -28,6 +28,8 @@ const currentStepIndex = computed(() =>
 );
 const readyToMaterialize = computed(() => store.readyToMaterialize);
 const currentStepDirty = computed(() => store.currentStepDirty);
+const currentStepStale = computed(() => currentStep.value?.artifact?.status === "stale");
+const currentStepStaleDismissed = computed(() => currentStepStale.value && store.isStaleStepDismissed(currentStep.value));
 const completedStepCount = computed(() => steps.value.filter((s) => s.gate_satisfied).length);
 const totalStepCount = computed(() => steps.value.length || 0);
 const progressPercent = computed(() => {
@@ -156,6 +158,14 @@ function requestSkipCurrentStep() {
   skipDialogOpen.value = true;
 }
 
+function dismissCurrentStepStale() {
+  store.dismissStaleStep(currentStep.value);
+}
+
+function restoreCurrentStepStale() {
+  store.restoreStaleStep(currentStep.value);
+}
+
 function closeSkipDialog() {
   skipDialogOpen.value = false;
   restoreSkipFocus();
@@ -249,6 +259,23 @@ function updateSceneCrucible(fieldKey, index, value) {
       <span class="badge">{{ currentStep ? `当前：${currentStep.label}` : "雪花步骤已完成" }}</span>
       <span class="badge" :class="{ active: currentStepDirty }">{{ currentStepDirty ? "未保存" : "已保存" }}</span>
       <span class="badge">{{ readyToMaterialize ? "可做准备度检查" : "继续补齐并确认" }}</span>
+    </div>
+
+    <div v-if="currentStepStale" class="snowflake-stale-note" :class="{ collapsed: currentStepStaleDismissed }">
+      <template v-if="!currentStepStaleDismissed">
+        <div>
+          <span class="eyebrow">上游影响</span>
+          <strong>这个步骤受前面已修改内容影响，建议复核。</strong>
+          <p class="muted">{{ currentStep.artifact?.stale_reason || "上游内容已更新，这里的判断或文本可能需要同步调整。" }}</p>
+        </div>
+        <button type="button" class="ghost mini-btn" data-testid="snowflake-stale-dismiss" @click="dismissCurrentStepStale">
+          我知道，暂时收起
+        </button>
+      </template>
+      <template v-else>
+        <span data-testid="snowflake-stale-collapsed">已收起上游影响提醒，风险标记仍保留。</span>
+        <button type="button" class="ghost mini-btn" @click="restoreCurrentStepStale">重新展开提醒</button>
+      </template>
     </div>
 
     <div class="snowflake-progress-panel" data-testid="snowflake-progress-panel">

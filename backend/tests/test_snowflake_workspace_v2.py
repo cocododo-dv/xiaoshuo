@@ -974,15 +974,17 @@ def test_workspace_v2_computes_rule_first_scene_diagnostics_and_blocks_auto_rewr
 
     assert rewrite_item["status"] == ""
     assert rewrite_item["recommended_status"] == "rewrite"
-    assert rewrite_item["effective_status"] == "rewrite"
-    assert rewrite_item["blocking"] is True
+    assert rewrite_item["triage_source"] == "auto_diagnosis"
+    assert rewrite_item["effective_status"] == "unreviewed"
+    assert rewrite_item["blocking"] is False
     assert rewrite_item["score"] < 40
     assert rewrite_item["missing_fields"] == ["crucible", "reaction", "dilemma", "decision"]
     assert "scene_core_empty" in rewrite_item["pressure_flags"]
     assert rewrite_item["fix_steps"]
 
     assert maybe_item["recommended_status"] == "maybe"
-    assert maybe_item["effective_status"] == "maybe"
+    assert maybe_item["triage_source"] == "auto_diagnosis"
+    assert maybe_item["effective_status"] == "unreviewed"
     assert maybe_item["blocking"] is False
     assert maybe_item["score"] < 100
     assert maybe_item["missing_fields"] == ["setback"]
@@ -990,7 +992,7 @@ def test_workspace_v2_computes_rule_first_scene_diagnostics_and_blocks_auto_rewr
     gate = diagnosed["materialization_gate"]
     assert gate["status"] == "blocked"
     assert any(broken_scene["scene_id"] in blocker for blocker in gate["blockers"])
-    assert any("被标为废除重写，需先重建" in blocker for blocker in gate["blockers"])
+    assert any(item["kind"] == "triage_confirmation_required" for item in gate["items"])
     assert all("marked rewrite" not in blocker for blocker in gate["blockers"])
 
     materialize_response = client.post(

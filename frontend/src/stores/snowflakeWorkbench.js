@@ -79,6 +79,17 @@ function localDraftKey(projectId, stepKey) {
   return `${projectId || "project"}::${stepKey || "step"}`;
 }
 
+function staleStepKey(projectId, step) {
+  const artifact = step?.artifact || {};
+  return [
+    projectId || "project",
+    step?.step_key || "step",
+    artifact.artifact_id || "artifact",
+    artifact.updated_at || artifact.created_at || "",
+    artifact.stale_reason || artifact.status || "",
+  ].join("::");
+}
+
 function normalizeObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -160,6 +171,7 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
     actionId: "",
     error: "",
     lastActionMessage: "",
+    dismissedStaleStepKeys: {},
   }),
   getters: {
     steps: (state) => state.workspace?.steps || [],
@@ -194,6 +206,10 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
       const preferredStepKey =
         state.selectedStepKey || state.workspace?.current_step_key || state.workspace?.steps?.[0]?.step_key || "";
       return Boolean(preferredStepKey && state.dirtyStepKeys?.[preferredStepKey]);
+    },
+    isStaleStepDismissed: (state) => (step) => {
+      const projectId = state.selectedProjectId || projectIdOf(state.project) || projectIdOf(state.workspace?.project);
+      return Boolean(step?.artifact?.status === "stale" && state.dismissedStaleStepKeys?.[staleStepKey(projectId, step)]);
     },
     hasUnsavedStepDrafts: (state) => Object.values(state.dirtyStepKeys || {}).some(Boolean),
   },
@@ -351,6 +367,29 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
     },
     setTriageFilter(filter) {
       this.triageFilter = String(filter || "all");
+    },
+    dismissStaleStep(step = this.currentStep) {
+      if (!step?.step_key || step?.artifact?.status !== "stale") {
+        return;
+      }
+      const projectId = this._activeProjectId();
+      this.dismissedStaleStepKeys = {
+        ...(this.dismissedStaleStepKeys || {}),
+        [staleStepKey(projectId, step)]: true,
+      };
+    },
+    restoreStaleStep(step = this.currentStep) {
+      if (!step?.step_key) {
+        return;
+      }
+      const projectId = this._activeProjectId();
+      const key = staleStepKey(projectId, step);
+      if (!this.dismissedStaleStepKeys?.[key]) {
+        return;
+      }
+      const next = { ...(this.dismissedStaleStepKeys || {}) };
+      delete next[key];
+      this.dismissedStaleStepKeys = next;
     },
     _markStepDirty(stepKey = this.currentStep?.step_key) {
       if (!stepKey) {

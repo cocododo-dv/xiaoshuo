@@ -601,13 +601,14 @@ class SnowflakeWorkspaceService:
                     "manual_status": "",
                     "notes": "",
                     "recommended_status": diagnosis["recommended_status"],
-                    "effective_status": diagnosis["recommended_status"],
+                    "effective_status": "unreviewed",
+                    "triage_source": "auto_diagnosis",
                     "score": diagnosis["score"],
                     "pressure_flags": diagnosis["pressure_flags"],
                     "missing_fields": diagnosis["missing_fields"],
                     "fix_steps": diagnosis["fix_steps"],
                     "repair_patch": {},
-                    "blocking": diagnosis["recommended_status"] == "rewrite",
+                    "blocking": False,
                     "manual_override": False,
                 }
             )
@@ -679,6 +680,7 @@ class SnowflakeWorkspaceService:
             "notes": row.notes or "",
             "recommended_status": row.recommended_status or "",
             "effective_status": row.effective_status or row.manual_status or row.recommended_status or "",
+            "triage_source": "author_saved",
             "score": row.score,
             "pressure_flags": list(row.pressure_flags_json or []),
             "missing_fields": list(row.missing_fields_json or []),
@@ -824,9 +826,26 @@ class SnowflakeWorkspaceService:
             scene_id = str(item.get("scene_id") or "").strip()
             status = str(item.get("effective_status") or item.get("status") or "").strip().lower()
             recommended_status = str(item.get("recommended_status") or "").strip().lower()
+            triage_source = str(item.get("triage_source") or "").strip().lower()
             scene_display = f"「{scene_label}」"
             if scene_id and scene_id != scene_label:
                 scene_display = f"「{scene_label}」（{scene_id}）"
+            if triage_source == "auto_diagnosis" and status == "unreviewed":
+                if recommended_status == "rewrite":
+                    add_scene_item(
+                        severity="blocker",
+                        kind="triage_confirmation_required",
+                        message=f"{scene_display} 系统建议重写，请先确认急救判断。",
+                        item=item,
+                    )
+                elif recommended_status == "maybe":
+                    add_scene_item(
+                        severity="warning",
+                        kind="triage_unreviewed_maybe",
+                        message=f"{scene_display} 系统建议复核修改，整理前请先确认急救判断。",
+                        item=item,
+                    )
+                continue
             if status == "rewrite":
                 add_scene_item(
                     severity="blocker",

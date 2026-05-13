@@ -219,6 +219,36 @@ describe("snowflake workspace store", () => {
     vi.restoreAllMocks();
   });
 
+  it("collapses stale step warnings in session state without changing the workspace gate", async () => {
+    const { useSnowflakeWorkbenchStore } = await import("../src/stores/snowflakeWorkbench");
+    const store = useSnowflakeWorkbenchStore();
+    const staleWorkspace = {
+      ...workspace,
+      project,
+      materialization_gate: { status: "blocked", blockers: ["still blocked"], warnings: [], items: [] },
+      steps: [
+        {
+          ...workspace.steps[0],
+          artifact: {
+            artifact_id: "ART_STALE",
+            status: "stale",
+            stale_reason: "upstream step changed",
+            updated_at: "2026-05-13T00:00:00Z",
+          },
+        },
+      ],
+    };
+
+    store.applyWorkspace(staleWorkspace);
+    expect(store.isStaleStepDismissed(store.steps[0])).toBe(false);
+
+    store.dismissStaleStep(store.steps[0]);
+
+    expect(store.isStaleStepDismissed(store.steps[0])).toBe(true);
+    expect(store.materializationGate.status).toBe("blocked");
+    expect(store.materializationGate.blockers).toEqual(["still blocked"]);
+  });
+
   it("creates a workspace project and drives step save and approval through structured drafts", async () => {
     const savedWorkspace = {
       ...workspace,
@@ -858,6 +888,8 @@ describe("snowflake workbench UI source", () => {
     expect(source).toContain("SNOWFLAKE_STEP_SCOPE");
     expect(source).toContain("SNOWFLAKE_PROJECT_SCOPE");
     expect(source).toContain('data-testid="snowflake-step-state-strip"');
+    expect(source).toContain('data-testid="snowflake-stale-dismiss"');
+    expect(source).toContain('data-testid="snowflake-stale-collapsed"');
     expect(source).toContain("未保存");
     expect(source).toContain("下一步：继续确认下一层雪花");
     expect(source).toContain("panelTrigger");
