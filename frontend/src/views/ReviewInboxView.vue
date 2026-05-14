@@ -304,10 +304,9 @@ async function release(reviewId) {
   }
 }
 
-async function handleHumanReviewAction({ eventId, action }) {
-  const payload = {};
+async function handleHumanReviewAction({ eventId, action, payload = {} }) {
   if (action === "accept_soft_risk") {
-    const reason = String(globalThis.window?.prompt?.("请写明接受这个软风险的理由，系统会记录到审计日志。") || "").trim();
+    const reason = String(payload.reason || "").trim();
     if (!reason) {
       emit("notice", "接受软风险需要写明理由。");
       return;

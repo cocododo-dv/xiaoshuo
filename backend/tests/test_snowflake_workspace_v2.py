@@ -5,6 +5,7 @@ import json
 from sqlalchemy import select
 
 from novel_system.db.models import (
+    AuthorDraft,
     LlmCall,
     OutlinePlan,
     SceneCard,
@@ -170,6 +171,98 @@ def test_workspace_v2_creates_snowflake_project_and_exposes_structured_steps(cli
     assert workspace["scene_board"] == {"chapters": [], "scenes": []}
 
 
+def test_workspace_v2_required_steps_are_not_skippable_even_with_reason(client) -> None:
+    project = _create_project(client, key="required-skip-honesty")
+
+    workspace_response = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace")
+    workspace = workspace_response.json()["data"]
+    assert workspace["quality_policy"]["hard_required_steps"] == [
+        "book_brief",
+        "one_sentence_summary",
+        "one_paragraph_summary",
+        "scene_list",
+        "scene_details",
+    ]
+    assert "all_steps_skippable_with_reason" not in workspace["quality_policy"]
+    book_brief = next(step for step in workspace["steps"] if step["step_key"] == "book_brief")
+    assert book_brief["can_skip"] is False
+
+    skip_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief/generate",
+        json={"skip": True, "skip_reason": "I want to decide this later."},
+    )
+
+    assert skip_response.status_code == 400
+    assert skip_response.json()["error"]["code"] == "SNOWFLAKE_STEP_NOT_SKIPPABLE"
+
+
+def test_discovery_draft_extracts_project_structure_into_pending_snowflake_steps(client, session) -> None:
+    project = _create_project(client, key="discovery-draft")
+
+    ensure_response = client.post(f"/api/v1/projects/{project['project_id']}/discovery-draft/ensure")
+
+    assert ensure_response.status_code == 200, ensure_response.text
+    draft = ensure_response.json()["data"]["draft"]
+    assert draft["object_type"] == "project"
+    assert draft["object_id"] == project["project_id"]
+    assert draft["source_text_ref"] == f"project_discovery:{project['project_id']}:blank"
+    assert draft["content"] == ""
+
+    saved_response = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={
+            "content": (
+                "Audience: mystery readers who want emotional cost.\n"
+                "One sentence: A cartographer exposes a buried railway crime and risks her family.\n"
+                "Scenes:\n"
+                "1. She finds a sealed map in the station wall.\n"
+                "2. She trades the map for a witness's safety."
+            ),
+            "base_revision_no": draft["revision_no"],
+        },
+    )
+    assert saved_response.status_code == 200
+    draft = saved_response.json()["data"]["draft"]
+
+    extract_response = client.post(f"/api/v1/author-drafts/{draft['draft_id']}/structure-extract")
+
+    assert extract_response.status_code == 200, extract_response.text
+    candidate = extract_response.json()["data"]["candidate"]
+    assert candidate["object_type"] == "project"
+    assert set(candidate["candidate_brief"]["snowflake_steps"]) >= {
+        "book_brief",
+        "one_sentence_summary",
+        "one_paragraph_summary",
+        "scene_list",
+        "scene_details",
+    }
+
+    apply_response = client.post(
+        f"/api/v1/author-structure-candidates/{candidate['candidate_id']}/apply-to-snowflake"
+    )
+
+    assert apply_response.status_code == 200, apply_response.text
+    applied = apply_response.json()["data"]
+    assert applied["candidate"]["status"] == "accepted"
+    assert sorted(applied["imported_step_keys"]) == [
+        "book_brief",
+        "one_paragraph_summary",
+        "one_sentence_summary",
+        "scene_details",
+        "scene_list",
+    ]
+    session.expire_all()
+    assert session.get(AuthorDraft, draft["draft_id"]).object_type == "project"
+    runs = (
+        session.query(SnowflakeStepRun)
+        .filter(SnowflakeStepRun.project_id == project["project_id"])
+        .order_by(SnowflakeStepRun.step_key.asc())
+        .all()
+    )
+    assert {run.step_key for run in runs} >= set(applied["imported_step_keys"])
+    assert all(run.status == "pending_review" for run in runs)
+
+
 def test_workspace_v2_uses_structured_scene_plans_and_applies_triage_repair(client, session) -> None:
     project = _create_project(client, key="structured-scene-plans")
     for step_key in [
@@ -181,10 +274,10 @@ def test_workspace_v2_uses_structured_scene_plans_and_applies_triage_repair(clie
         "character_synopses",
         "long_synopsis",
         "character_bibles",
-        "scene_list",
-        "scene_details",
     ]:
         _approve_generated_step(client, project["project_id"], step_key)
+    _approve_generated_step(client, project["project_id"], "scene_list")
+    _approve_generated_step(client, project["project_id"], "scene_details")
 
     session.expire_all()
     assert (
@@ -416,10 +509,10 @@ def test_workspace_v2_persists_scene_triage_and_approves_materialized_outline(cl
         "character_synopses",
         "long_synopsis",
         "character_bibles",
-        "scene_list",
-        "scene_details",
     ]:
         _approve_generated_step(client, project["project_id"], step_key)
+    _approve_generated_step(client, project["project_id"], "scene_list")
+    _approve_generated_step(client, project["project_id"], "scene_details")
 
     workspace_response = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace")
     workspace = workspace_response.json()["data"]
@@ -1228,8 +1321,6 @@ def test_workspace_v2_allows_optional_skips_but_blocks_skipped_materialization_s
         "character_synopses",
         "long_synopsis",
         "character_bibles",
-        "scene_list",
-        "scene_details",
     ]:
         _generate_step(
             client,
@@ -1237,9 +1328,16 @@ def test_workspace_v2_allows_optional_skips_but_blocks_skipped_materialization_s
             step_key,
             {"skip": True, "skip_reason": f"skip for gate test: {step_key}"},
         )
+    required_skip = client.post(
+        f"/api/v2/projects/{hard_project['project_id']}/snowflake-workspace/steps/scene_list/generate",
+        json={"skip": True, "skip_reason": "required steps must be authored"},
+        headers={"X-Idempotency-Key": f"generate-v2-{hard_project['project_id']}-scene-list-required-skip"},
+    )
+    assert required_skip.status_code == 400
+    assert required_skip.json()["error"]["code"] == "SNOWFLAKE_STEP_NOT_SKIPPABLE"
 
     hard_workspace = client.get(f"/api/v2/projects/{hard_project['project_id']}/snowflake-workspace").json()["data"]
-    assert hard_workspace["current_step_key"] is None
+    assert hard_workspace["current_step_key"] == "scene_list"
     assert hard_workspace["materialization_gate"]["status"] == "blocked"
     assert any("场景列表" in blocker for blocker in hard_workspace["materialization_gate"]["blockers"])
     assert all("scene_list" not in blocker for blocker in hard_workspace["materialization_gate"]["blockers"])

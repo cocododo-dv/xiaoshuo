@@ -19,6 +19,11 @@ const workbenchMode = computed(() => store.workbenchMode);
 const sceneBoard = computed(() => store.sceneBoard);
 const completedStepCount = computed(() => store.steps.filter((s) => s.gate_satisfied).length);
 const totalStepCount = computed(() => store.steps.length || 0);
+const discoveryCandidateSteps = computed(() => {
+  const brief = store.discoveryStructureCandidate?.candidate_brief || {};
+  const steps = brief.snowflake_steps || store.discoveryStructureCandidate?.snowflake_steps || {};
+  return Object.entries(steps || {}).filter(([, value]) => value && typeof value === "object");
+});
 const triageStats = computed(() => {
   const items = store.triageDrafts || [];
   const effectiveStatus = (item) => item.effective_status || item.status || "";
@@ -30,6 +35,26 @@ const triageStats = computed(() => {
 
 function setWorkbenchMode(mode) {
   store.setWorkbenchMode(mode);
+}
+
+async function ensureDiscoveryDraft() {
+  await store.ensureDiscoveryDraft();
+  emit("notice", { type: "success", message: "自由草稿已准备好。" });
+}
+
+async function saveDiscoveryDraft() {
+  await store.saveDiscoveryDraft();
+  emit("notice", { type: "success", message: "自由草稿已保存。" });
+}
+
+async function extractDiscoveryStructure() {
+  await store.extractDiscoveryStructure();
+  emit("notice", { type: "success", message: "结构候选已生成，可先预览再写入雪花。" });
+}
+
+async function applyDiscoveryStructure() {
+  await store.applyDiscoveryStructure();
+  emit("notice", { type: "success", message: "候选已写入雪花待审步骤。" });
 }
 
 function handleBeforeUnload(event) {
@@ -61,6 +86,72 @@ onBeforeUnmount(() => {
     <div class="snowflake-workbench-shell">
       <main class="snowflake-workbench-main">
         <SnowflakeProjectPanel ref="projectPanel" @notice="emit('notice', $event)" />
+
+        <section
+          v-if="store.project?.project_id"
+          class="snowflake-discovery-draft"
+          data-testid="snowflake-discovery-draft"
+        >
+          <div class="panel-head">
+            <div>
+              <span class="eyebrow">Discovery draft</span>
+              <h2>自由草稿</h2>
+              <p class="muted">先写正文、想法或散乱素材，再提取成可审阅的雪花步骤。</p>
+            </div>
+            <button
+              type="button"
+              class="mini-btn"
+              :disabled="store.actionId === 'discovery-ensure'"
+              @click="ensureDiscoveryDraft"
+            >
+              打开草稿
+            </button>
+          </div>
+
+          <textarea
+            class="control-input discovery-textarea"
+            :value="store.discoveryDraftContent"
+            placeholder="把你想先写的内容放在这里。可以是整章草稿、场景碎片、人物动机或世界观笔记。"
+            @input="store.setDiscoveryDraftContent($event.target.value)"
+          />
+
+          <div class="action-row discovery-actions">
+            <button
+              type="button"
+              class="mini-btn"
+              :disabled="!store.discoveryDraft || store.actionId === 'discovery-save'"
+              @click="saveDiscoveryDraft"
+            >
+              保存
+            </button>
+            <button
+              type="button"
+              class="mini-btn"
+              :disabled="!store.discoveryDraft || store.actionId === 'discovery-extract'"
+              @click="extractDiscoveryStructure"
+            >
+              提取结构
+            </button>
+            <button
+              type="button"
+              class="action-btn primary"
+              :disabled="!store.discoveryStructureCandidate || store.actionId === 'discovery-apply'"
+              @click="applyDiscoveryStructure"
+            >
+              写入待审雪花步骤
+            </button>
+          </div>
+
+          <div v-if="discoveryCandidateSteps.length" class="discovery-preview">
+            <strong>将写入这些待审步骤</strong>
+            <ul>
+              <li v-for="[stepKey, stepDraft] in discoveryCandidateSteps" :key="stepKey">
+                <span>{{ stepKey }}</span>
+                <small>{{ Object.keys(stepDraft || {}).join(" / ") }}</small>
+              </li>
+            </ul>
+          </div>
+        </section>
 
         <p v-if="store.recoveredDraftNotice" class="snowflake-draft-recovery" data-testid="snowflake-draft-recovery">
           {{ store.recoveredDraftNotice }}
@@ -160,6 +251,7 @@ onBeforeUnmount(() => {
 }
 
 .snowflake-workbench-view .snowflake-project-launcher,
+.snowflake-workbench-view .snowflake-discovery-draft,
 .snowflake-workbench-view .snowflake-assistant-panel,
 .snowflake-workbench-view .snowflake-workbench-stage,
 .snowflake-workbench-view .snowflake-scene-board,
@@ -221,6 +313,49 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+}
+
+.snowflake-workbench-view .snowflake-discovery-draft {
+  display: grid;
+  gap: 12px;
+}
+
+.snowflake-workbench-view .discovery-textarea {
+  min-height: 180px;
+}
+
+.snowflake-workbench-view .discovery-actions {
+  flex-wrap: wrap;
+}
+
+.snowflake-workbench-view .discovery-preview {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--snowflake-line);
+  border-radius: 8px;
+  background: var(--snowflake-paper-strong);
+  padding: 12px;
+}
+
+.snowflake-workbench-view .discovery-preview ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.snowflake-workbench-view .discovery-preview li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--snowflake-line);
+  padding-top: 6px;
+}
+
+.snowflake-workbench-view .discovery-preview small {
+  color: var(--snowflake-muted);
+  text-align: right;
 }
 
 .snowflake-workbench-view .snowflake-project-launcher > div:first-child {

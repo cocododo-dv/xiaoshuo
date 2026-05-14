@@ -400,6 +400,14 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         max_output_tokens=2200,
     ),
     LLMNodeSpec(
+        "author_proposal_generate",
+        "Author proposal generate",
+        "writer_review",
+        template_name="author_proposal_generate",
+        temperature=0.45,
+        max_output_tokens=2600,
+    ),
+    LLMNodeSpec(
         "writer_reference_application_review",
         "Writer reference application review",
         "evaluation",

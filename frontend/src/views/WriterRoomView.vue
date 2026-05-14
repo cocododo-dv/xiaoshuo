@@ -14,7 +14,7 @@ import { useWriterRoomStore } from "../stores/writerRoom";
 const emit = defineEmits(["notice"]);
 
 const room = useWriterRoomStore();
-const { focusTarget, navigate, settleFocusView } = useShellRouter();
+const { focusTarget, navigate, routeContext, settleFocusView } = useShellRouter();
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
@@ -81,6 +81,7 @@ const proposalCards = computed(() => room.proposalCards.length ? room.proposalCa
 const longformCards = computed(() => room.longformCards.length ? room.longformCards : room.contextPressure);
 const proposalCount = computed(() => proposalCards.value.filter((proposal) => proposal.status !== "rejected").length);
 const diffPreview = computed(() => room.proposalDiff || null);
+const returnContext = computed(() => routeContext.value?.returnTo ? routeContext.value : null);
 
 function proposalTitle(proposal) {
   return proposal.display_kind || proposal.title || proposal.summary || proposal.proposal_type || proposal.proposal_kind || "可采纳改法";
@@ -251,6 +252,15 @@ onActivated(() => loadInitial());
       </template>
 
       <FlowActionReceipt :receipt="receipt(WRITER_DRAFT_SCOPE)" />
+      <button
+        v-if="returnContext"
+        type="button"
+        class="ghost writer-room-return"
+        data-testid="writer-room-return-to-flow"
+        @click="navigate(returnContext.returnTo, { target: { target: returnContext.returnTarget || room.target?.project_id || room.chapter?.project_id || '' } })"
+      >
+        {{ returnContext.returnLabel || "返回" }}
+      </button>
       <div class="writer-room-context-strip" data-testid="writer-room-context-strip" aria-live="polite">
         <span class="badge">{{ room.selectedSceneId ? "场景小修" : "章节小修" }}</span>
         <strong>{{ title }}</strong>
@@ -463,6 +473,10 @@ onActivated(() => loadInitial());
   border: 1px solid rgba(47, 111, 98, 0.16);
   border-radius: 8px;
   background: rgba(237, 247, 242, 0.76);
+}
+
+.writer-room-return {
+  justify-self: start;
 }
 
 .writer-room-context-strip strong {

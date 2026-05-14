@@ -34,6 +34,14 @@ export function ensureBlankAuthorDraft(objectType, objectId) {
   );
 }
 
+export function fetchProjectDiscoveryDraft(projectId) {
+  return apiGet(`/api/v1/projects/${encodeURIComponent(projectId)}/discovery-draft/current`);
+}
+
+export function ensureProjectDiscoveryDraft(projectId) {
+  return apiPost(`/api/v1/projects/${encodeURIComponent(projectId)}/discovery-draft/ensure`);
+}
+
 export function deriveAuthorDraftFromGeneration(draftId) {
   return apiPost(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/derive-from-generation`);
 }
@@ -86,6 +94,13 @@ export function extractAuthorDraftStructure(draftId, payload = {}) {
 
 export function applyAuthorStructureCandidate(candidateId, payload = {}) {
   return apiPost(`/api/v1/author-structure-candidates/${encodeURIComponent(candidateId)}/apply`, payload);
+}
+
+export function applyAuthorStructureCandidateToSnowflake(candidateId, payload = {}) {
+  return apiPost(
+    `/api/v1/author-structure-candidates/${encodeURIComponent(candidateId)}/apply-to-snowflake`,
+    payload,
+  );
 }
 
 export function rejectAuthorStructureCandidate(candidateId, payload = {}) {

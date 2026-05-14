@@ -245,8 +245,27 @@ describe("snowflake workspace store", () => {
     store.dismissStaleStep(store.steps[0]);
 
     expect(store.isStaleStepDismissed(store.steps[0])).toBe(true);
+    expect(sessionStorage.getItem("snowflake-stale-dismissed:PRJ_WS::book_brief::ART_STALE::2026-05-13T00:00:00Z::upstream step changed")).toBe("1");
     expect(store.materializationGate.status).toBe("blocked");
     expect(store.materializationGate.blockers).toEqual(["still blocked"]);
+  });
+
+  it("exposes project discovery draft api helpers and snowflake workbench controls", async () => {
+    globalThis.fetch = vi.fn(async () => okEnvelope({}));
+
+    await api.ensureProjectDiscoveryDraft("PRJ_WS");
+    await api.fetchProjectDiscoveryDraft("PRJ_WS");
+    await api.applyAuthorStructureCandidateToSnowflake("author_structure_project_PRJ_WS");
+
+    const urls = globalThis.fetch.mock.calls.map(([url]) => String(url));
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_WS/discovery-draft/ensure");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_WS/discovery-draft/current");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-structure-candidates/author_structure_project_PRJ_WS/apply-to-snowflake");
+
+    const source = readSnowflakeViewSource();
+    expect(source).toContain('data-testid="snowflake-discovery-draft"');
+    expect(source).toContain("ensureDiscoveryDraft");
+    expect(source).toContain("applyDiscoveryStructure");
   });
 
   it("creates a workspace project and drives step save and approval through structured drafts", async () => {

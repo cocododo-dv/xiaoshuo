@@ -172,6 +172,7 @@ class SnowflakePlannerService:
             raise DomainError("SNOWFLAKE_ARTIFACT_NOT_APPROVABLE", "artifact cannot be approved")
 
         latest_by_step = self._latest_by_step(project_id)
+        previous_artifact = self._latest_approved_artifact(project_id, artifact.step_key, exclude_artifact_id=artifact.artifact_id)
         self._require_previous_gates(artifact.step_key, latest_by_step, allow_self=artifact.artifact_id)
         self._supersede_same_step(artifact)
 
@@ -179,9 +180,14 @@ class SnowflakePlannerService:
         artifact.approved_at = utcnow()
         self._mark_downstream_stale(artifact)
         self._sync_characters(artifact)
-        ProjectRuntimeInvalidationService(self.session).invalidate_for_snowflake_step(project_id, artifact.step_key)
+        impact = ProjectRuntimeInvalidationService(self.session).invalidate_for_snowflake_step(
+            project_id,
+            artifact.step_key,
+            previous_payload=previous_artifact.artifact_json if previous_artifact is not None else None,
+            current_payload=artifact.artifact_json,
+        )
         self.session.flush()
-        return {"artifact": artifact_payload(artifact), "state": self.state(project_id)}
+        return {"artifact": artifact_payload(artifact), "state": self.state(project_id), "impact": impact}
 
     def materialize_outline_plan(self, project_id: str) -> dict[str, Any]:
         project = ProjectService(self.session).require_project(project_id)
@@ -373,6 +379,24 @@ class SnowflakePlannerService:
         if artifact is None or artifact.project_id != project_id:
             raise DomainError("SNOWFLAKE_ARTIFACT_NOT_FOUND", "snowflake artifact not found", status_code=404)
         return artifact
+
+    def _latest_approved_artifact(
+        self,
+        project_id: str,
+        step_key: str,
+        *,
+        exclude_artifact_id: str,
+    ) -> SnowflakeArtifact | None:
+        return self.session.execute(
+            select(SnowflakeArtifact)
+            .where(
+                SnowflakeArtifact.project_id == project_id,
+                SnowflakeArtifact.step_key == step_key,
+                SnowflakeArtifact.artifact_id != exclude_artifact_id,
+                SnowflakeArtifact.status.in_(["approved", "skipped"]),
+            )
+            .order_by(SnowflakeArtifact.version.desc(), SnowflakeArtifact.created_at.desc())
+        ).scalars().first()
 
     def _supersede_same_step(self, artifact: SnowflakeArtifact) -> None:
         rows = self.session.execute(

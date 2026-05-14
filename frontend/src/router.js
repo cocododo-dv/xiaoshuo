@@ -9,6 +9,9 @@ const routeContext = ref({
   panel: "",
   target: "",
   focus: "",
+  returnTo: "",
+  returnTarget: "",
+  returnLabel: "",
 });
 const focusTarget = ref({
   target_type: null,
@@ -30,6 +33,9 @@ function cleanRouteContext(value = {}) {
     panel: String(value.panel || "").trim(),
     target: String(value.target || value.target_id || value.target_ref || "").trim(),
     focus: String(value.focus || value.target_type || "").trim(),
+    returnTo: String(value.returnTo || value.return_to || "").trim(),
+    returnTarget: String(value.returnTarget || value.return_target || "").trim(),
+    returnLabel: String(value.returnLabel || value.return_label || "").trim(),
   };
 }
 
@@ -365,6 +371,9 @@ export function useShellRouter() {
       panel: params.get("panel") || "",
       target: params.get("target") || "",
       focus: params.get("focus") || "",
+      returnTo: params.get("returnTo") || "",
+      returnTarget: params.get("returnTarget") || "",
+      returnLabel: params.get("returnLabel") || "",
     });
     ensureVisited(nextView);
     activeView.value = nextView;

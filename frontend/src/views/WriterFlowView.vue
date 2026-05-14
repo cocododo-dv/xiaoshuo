@@ -19,6 +19,7 @@ const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
 const approvalNotes = ref("");
+const pollingActive = ref(false);
 
 let pollTimer = null;
 
@@ -37,6 +38,9 @@ const nextAction = computed(() => store.nextAction);
 const mainAction = computed(() => actionFor(nextAction.value));
 const progressWidth = computed(() => `${Math.min(100, Math.max(0, Number(runStatus.value?.progress_pct || 0)))}%`);
 const offlineBanner = computed(() => store.runtime?.llm_enabled === false);
+const isPolling = computed(() => pollingActive.value);
+const approvalNotesCount = computed(() => approvalNotes.value.length);
+const approvalNotesTooLong = computed(() => approvalNotesCount.value > 2000);
 
 function actionFor(action) {
   if (action === "run_current_chapter") {
@@ -45,7 +49,7 @@ function actionFor(action) {
       icon: PlayCircle,
       disabled: offlineBanner.value,
       run: startRunJob,
-      hint: offlineBanner.value ? "当前是离线模式，启用模型后才能生成真实正文。" : "启动后台章节起草，并在这里查看进度。",
+      hint: offlineBanner.value ? "当前是离线 fallback，只做流程演示，不会生成真实正文；启用模型后再起草。" : "启动后台章节起草，并在这里查看进度。",
     };
   }
   if (action === "view_chapter_progress") {
@@ -55,9 +59,11 @@ function actionFor(action) {
     return {
       label: "批准本章",
       icon: CheckCircle2,
-      disabled: !reviewPacket.value?.body,
+      disabled: !reviewPacket.value?.body || approvalNotesTooLong.value,
       run: approveFinal,
-      hint: reviewPacket.value?.body ? "确认正文后推进到下一章。" : "终稿审阅没有正文，先回到运行状态排查。",
+      hint: approvalNotesTooLong.value
+        ? "批准备注需控制在 2000 字以内。"
+        : reviewPacket.value?.body ? "确认正文后推进到下一章。" : "终稿审阅没有正文，先回到运行状态排查。",
     };
   }
   if (action === "resolve_blocker" || action === "resolve_backtrack_items") {
@@ -106,14 +112,19 @@ async function refreshProgress() {
 }
 
 async function approveFinal() {
+  const note = approvalNotes.value.trim();
   await runFlowAction({
     scopeKey: WRITER_FLOW_SCOPE,
     actionLabel: "批准本章",
     runningMessage: "正在批准本章并推进项目...",
-    successMessage: () => store.lastActionMessage || "本章已批准。",
+    successMessage: () => {
+      const savedNote = store.lastApprovalNote?.revision_notes || note;
+      const noteText = savedNote ? ` 备注已记录：${savedNote.slice(0, 80)}` : "";
+      return `${store.lastActionMessage || "本章已批准。"}${noteText}`;
+    },
     nextStep: () => store.nextAction === "completed" ? "项目主线已完成。" : "下一章已经准备好，可以继续起草。",
     target: () => ({ view: "writer-flow", label: "回到写作总控", target: store.project?.project_id || "" }),
-    action: () => store.approveCurrentChapterFinal({ revision_notes: approvalNotes.value.trim() }),
+    action: () => store.approveCurrentChapterFinal({ revision_notes: note }),
   });
   approvalNotes.value = "";
   stopPolling();
@@ -128,6 +139,7 @@ function startPolling() {
   if (!store.project?.current_chapter_id) {
     return;
   }
+  pollingActive.value = true;
   pollTimer = window.setInterval(() => {
     if (!store.project?.current_chapter_id) {
       stopPolling();
@@ -148,6 +160,7 @@ function stopPolling() {
     window.clearInterval(pollTimer);
     pollTimer = null;
   }
+  pollingActive.value = false;
 }
 
 onMounted(async () => {
@@ -176,7 +189,7 @@ watch(() => router.routeContext.value?.target, (target) => {
 
     <template v-else>
       <aside v-if="offlineBanner" class="writer-flow-banner" data-testid="writer-flow-offline-banner">
-        <span>当前是离线演示模式，不会生成真实正文。启用模型后再开始章节起草。</span>
+        <span>当前是离线 fallback 演示模式，不会生成真实正文或真实 AI 修改；启用模型后再开始章节起草。</span>
         <button type="button" class="ghost" data-testid="writer-flow-config-action" @click="openSystemConfig">
           打开系统配置
         </button>
@@ -215,6 +228,9 @@ watch(() => router.routeContext.value?.target, (target) => {
             <button type="button" class="ghost" @click="loadProject()">刷新</button>
           </div>
           <div class="progress-track"><span :style="{ width: progressWidth }"></span></div>
+          <p v-if="isPolling" class="writer-flow-polling" data-testid="writer-flow-polling-status">
+            正在跟进后台起草进度...
+          </p>
           <dl>
             <div><dt>场景</dt><dd>{{ runStatus?.completed_count || 0 }}/{{ runStatus?.scene_count || currentChapter?.scenes?.length || 0 }}</dd></div>
             <div><dt>当前</dt><dd>{{ runStatus?.current_scene_id || currentChapter?.chapter_id || "-" }}</dd></div>
@@ -229,7 +245,21 @@ watch(() => router.routeContext.value?.target, (target) => {
               <span class="eyebrow">终稿审阅</span>
               <h3>{{ reviewPacket?.body_source || "等待正文" }}</h3>
             </div>
-            <button type="button" class="ghost" @click="router.navigate('writer-room', { target: { focus: 'chapter', target: currentChapter?.chapter_id || '' } })">需要小修</button>
+            <button
+              type="button"
+              class="ghost"
+              @click="router.navigate('writer-room', {
+                target: {
+                  focus: 'chapter',
+                  target: currentChapter?.chapter_id || '',
+                  returnTo: 'writer-flow',
+                  returnTarget: project?.project_id || '',
+                  returnLabel: '返回批准',
+                },
+              })"
+            >
+              需要小修
+            </button>
           </div>
           <p v-if="reviewPacket?.body" class="writer-flow-body-preview">{{ reviewPacket.body }}</p>
           <p v-else class="muted">{{ reviewPacket?.body_empty_reason || "章节起草完成后会在这里显示正文。" }}</p>
@@ -239,7 +269,7 @@ watch(() => router.routeContext.value?.target, (target) => {
             <span v-if="reviewPacket?.missing_scene_ids?.length">{{ reviewPacket.missing_scene_ids.length }} 场缺失</span>
           </div>
           <label class="writer-flow-approval-notes" data-testid="writer-flow-approval-notes">
-            <span>批准备注 / 后续小修提醒</span>
+            <span :class="{ over: approvalNotesTooLong }">批准备注 / 后续小修提醒 {{ approvalNotesCount }}/2000</span>
             <textarea
               v-model="approvalNotes"
               class="control-input"
@@ -372,6 +402,10 @@ watch(() => router.routeContext.value?.target, (target) => {
   font-weight: 700;
 }
 
+.writer-flow-approval-notes span.over {
+  color: #9a3d31;
+}
+
 .writer-flow-approval-notes textarea {
   min-height: 86px;
   resize: vertical;
@@ -379,6 +413,12 @@ watch(() => router.routeContext.value?.target, (target) => {
 
 .writer-flow-error {
   color: #9a3d31;
+}
+
+.writer-flow-polling {
+  margin: -4px 0 12px;
+  color: #287c72;
+  font-weight: 700;
 }
 
 .badge-row,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from novel_system.db.models import (
     OutlinePlan,
     QcReport,
@@ -10,6 +12,7 @@ from novel_system.db.models import (
     SnowflakeArtifact,
     StoryCharacter,
 )
+from novel_system.services.project_runtime_invalidation import SnowflakeImpactAnalyzer
 
 
 def _create_project(client, *, planning_mode: str | None = "snowflake", key: str = "snowflake") -> dict:
@@ -274,7 +277,35 @@ def test_reapproving_snowflake_scene_details_marks_runtime_contracts_and_current
     state.current_qc_report_id = "qc_runtime_stale"
     session.commit()
 
-    replacement = _generate_step(client, project["project_id"], "scene_details", {"force_new": True})
+    latest_scene_details = (
+        session.query(SnowflakeArtifact)
+        .filter(
+            SnowflakeArtifact.project_id == project["project_id"],
+            SnowflakeArtifact.step_key == "scene_details",
+            SnowflakeArtifact.status == "approved",
+        )
+        .order_by(SnowflakeArtifact.version.desc())
+        .first()
+    )
+    edited_payload = {
+        **(latest_scene_details.artifact_json or {}),
+        "scenes": [dict(scene) for scene in latest_scene_details.artifact_json["scenes"]],
+    }
+    replacement_response = client.post(
+        f"/api/v1/projects/{project['project_id']}/snowflake/steps/scene_details/generate",
+        json={"force_new": True},
+        headers={"X-Idempotency-Key": f"runtime-stale-replacement-{uuid.uuid4().hex}"},
+    )
+    assert replacement_response.status_code == 200, replacement_response.text
+    replacement = replacement_response.json()["data"]["artifact"]
+    edited_payload["scenes"][0]["scene_id"] = first_scene_id
+    edited_payload["scenes"][0]["summary"] = f"Runtime invalidation change {replacement['artifact_id']}"
+    update_response = client.patch(
+        f"/api/v1/projects/{project['project_id']}/snowflake/artifacts/{replacement['artifact_id']}",
+        json={"artifact_json": edited_payload},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["data"]["artifact"]["artifact_json"]["scenes"][0]["summary"].startswith("Runtime invalidation change")
     _approve_artifact(client, project["project_id"], replacement["artifact_id"])
 
     session.expire_all()
@@ -286,3 +317,130 @@ def test_reapproving_snowflake_scene_details_marks_runtime_contracts_and_current
     assert state.scene_status == "needs_replan"
     assert state.current_neutral_draft_row_id is None
     assert state.current_qc_report_id is None
+
+
+def test_reapproving_one_scene_detail_only_invalidates_that_scene_runtime(client, session) -> None:
+    project = _create_project(client, key="runtime-stale-scoped")
+    _approve_required_snowflake(client, project["project_id"])
+
+    materialize_response = client.post(
+        f"/api/v1/projects/{project['project_id']}/snowflake/materialize-outline-plan",
+        json={},
+        headers={"X-Idempotency-Key": "runtime-stale-scoped-materialize"},
+    )
+    plan = materialize_response.json()["data"]["plan"]
+    approve_response = client.post(
+        f"/api/v1/projects/{project['project_id']}/outline-plan/{plan['plan_id']}/approve",
+        json={},
+        headers={"X-Idempotency-Key": "runtime-stale-scoped-approve-plan"},
+    )
+    assert approve_response.status_code == 200
+
+    scenes = plan["plan_json"]["chapters"][0]["scenes"][:2]
+    assert len(scenes) == 2
+    contract_ids: dict[str, str] = {}
+    for index, scene in enumerate(scenes, start=1):
+        scene_id = scene["scene_id"]
+        contract_response = client.post(
+            f"/api/v1/scenes/{scene_id}/execution-contract",
+            headers={"X-Idempotency-Key": f"runtime-stale-scoped-contract-{index}"},
+        )
+        assert contract_response.status_code == 200
+        contract_ids[scene_id] = contract_response.json()["data"]["contract"]["contract_id"]
+        session.add(
+            SceneDraft(
+                row_id=f"scene_draft_runtime_stale_scoped_{index}",
+                scene_id=scene_id,
+                chapter_id=scene["chapter_id"],
+                stage="neutral_draft",
+                content=f"old draft {index}",
+                source_bundle_id=f"bundle_runtime_stale_scoped_{index}",
+                source_bundle_hash=f"hash_runtime_stale_scoped_{index}",
+            )
+        )
+        session.add(
+            QcReport(
+                qc_report_id=f"qc_runtime_stale_scoped_{index}",
+                scene_id=scene_id,
+                chapter_id=scene["chapter_id"],
+                qc_type="soft_qc",
+                source_draft_row_id=f"scene_draft_runtime_stale_scoped_{index}",
+                source_bundle_id=f"bundle_runtime_stale_scoped_{index}",
+                resolution_code="soft_pass",
+                pass_flag=1,
+                next_action="pass",
+                issues_json=[],
+                rewrite_brief_json=[],
+            )
+        )
+        state = session.get(SceneRunState, scene_id)
+        assert state is not None
+        state.scene_status = "archived"
+        state.current_neutral_draft_row_id = f"scene_draft_runtime_stale_scoped_{index}"
+        state.current_qc_report_id = f"qc_runtime_stale_scoped_{index}"
+    session.commit()
+
+    latest_scene_details = (
+        session.query(SnowflakeArtifact)
+        .filter(
+            SnowflakeArtifact.project_id == project["project_id"],
+            SnowflakeArtifact.step_key == "scene_details",
+            SnowflakeArtifact.status == "approved",
+        )
+        .order_by(SnowflakeArtifact.version.desc())
+        .first()
+    )
+    edited_payload = {
+        **(latest_scene_details.artifact_json or {}),
+        "scenes": [dict(scene) for scene in latest_scene_details.artifact_json["scenes"]],
+    }
+    changed_scene_id = scenes[0]["scene_id"]
+    unchanged_scene_id = scenes[1]["scene_id"]
+    edited_payload["scenes"][0]["scene_id"] = changed_scene_id
+    edited_payload["scenes"][1]["scene_id"] = unchanged_scene_id
+
+    replacement_response = client.post(
+        f"/api/v1/projects/{project['project_id']}/snowflake/steps/scene_details/generate",
+        json={"force_new": True},
+        headers={"X-Idempotency-Key": f"runtime-stale-scoped-replacement-{uuid.uuid4().hex}"},
+    )
+    assert replacement_response.status_code == 200, replacement_response.text
+    replacement = replacement_response.json()["data"]["artifact"]
+    edited_payload["scenes"][0]["summary"] = f"Scoped runtime invalidation {replacement['artifact_id']}"
+    update_response = client.patch(
+        f"/api/v1/projects/{project['project_id']}/snowflake/artifacts/{replacement['artifact_id']}",
+        json={"artifact_json": edited_payload},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["data"]["artifact"]["artifact_json"]["scenes"][0]["summary"].startswith("Scoped runtime invalidation")
+    direct_impact = SnowflakeImpactAnalyzer(session).analyze(
+        project["project_id"],
+        "scene_details",
+        previous_payload=latest_scene_details.artifact_json,
+        current_payload=update_response.json()["data"]["artifact"]["artifact_json"],
+    )
+    assert direct_impact["affected_count"] == 1, direct_impact
+    approve_response = client.post(
+        f"/api/v1/projects/{project['project_id']}/snowflake/artifacts/{replacement['artifact_id']}/approve",
+        json={},
+        headers={"X-Idempotency-Key": f"approve-{replacement['artifact_id']}"},
+    )
+    assert approve_response.status_code == 200, approve_response.text
+    approve_payload = approve_response.json()["data"]
+
+    session.expire_all()
+    assert approve_payload["impact"]["affected_count"] == 1, (
+        approve_payload["impact"],
+        changed_scene_id,
+        [row.scene_id for row in session.query(SceneCard).filter(SceneCard.project_id == project["project_id"]).all()],
+    )
+    assert changed_scene_id in approve_payload["impact"]["affected_scene_ids"]
+    assert session.get(SceneExecutionContract, contract_ids[changed_scene_id]).status == "stale"
+    assert session.get(SceneDraft, "scene_draft_runtime_stale_scoped_1").status == "stale"
+    assert session.get(QcReport, "qc_runtime_stale_scoped_1").status == "stale"
+    assert session.get(SceneRunState, changed_scene_id).scene_status == "needs_replan"
+
+    assert session.get(SceneExecutionContract, contract_ids[unchanged_scene_id]).status == "active"
+    assert session.get(SceneDraft, "scene_draft_runtime_stale_scoped_2").status != "stale"
+    assert session.get(QcReport, "qc_runtime_stale_scoped_2").status != "stale"
+    assert session.get(SceneRunState, unchanged_scene_id).scene_status == "archived"

@@ -3,7 +3,11 @@ import { defineStore } from "pinia";
 import {
   approveSnowflakeWorkspaceOutline,
   approveSnowflakeWorkspaceStep,
+  applyAuthorStructureCandidateToSnowflake,
   createSnowflakeWorkspaceProject,
+  ensureProjectDiscoveryDraft,
+  extractAuthorDraftStructure,
+  fetchProjectDiscoveryDraft,
   fetchSnowflakeWorkspace,
   fetchSnowflakeWorkspaceProjects,
   generateSnowflakeWorkspaceStep,
@@ -12,6 +16,7 @@ import {
   requestSnowflakeSceneTriageSuggestions,
   requestSnowflakeWorkspaceAssistant,
   saveSnowflakeSceneTriage,
+  saveAuthorDraft,
   updateSnowflakeWorkspaceScene,
   updateSnowflakeWorkspaceStep,
 } from "../lib/api";
@@ -88,6 +93,37 @@ function staleStepKey(projectId, step) {
     artifact.updated_at || artifact.created_at || "",
     artifact.stale_reason || artifact.status || "",
   ].join("::");
+}
+
+function staleSessionStorageKey(projectId, step) {
+  return `snowflake-stale-dismissed:${staleStepKey(projectId, step)}`;
+}
+
+function readDismissedStaleStep(projectId, step) {
+  if (typeof sessionStorage === "undefined") {
+    return false;
+  }
+  try {
+    return sessionStorage.getItem(staleSessionStorageKey(projectId, step)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeDismissedStaleStep(projectId, step, value) {
+  if (typeof sessionStorage === "undefined") {
+    return;
+  }
+  try {
+    const key = staleSessionStorageKey(projectId, step);
+    if (value) {
+      sessionStorage.setItem(key, "1");
+    } else {
+      sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Session persistence is a convenience; keep the in-memory state authoritative.
+  }
 }
 
 function normalizeObject(value) {
@@ -172,6 +208,11 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
     error: "",
     lastActionMessage: "",
     dismissedStaleStepKeys: {},
+    discoveryDraft: null,
+    discoveryDraftContent: "",
+    discoveryDraftSavedContent: "",
+    discoveryStructureCandidate: null,
+    discoveryImportedStepKeys: [],
   }),
   getters: {
     steps: (state) => state.workspace?.steps || [],
@@ -209,9 +250,17 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
     },
     isStaleStepDismissed: (state) => (step) => {
       const projectId = state.selectedProjectId || projectIdOf(state.project) || projectIdOf(state.workspace?.project);
-      return Boolean(step?.artifact?.status === "stale" && state.dismissedStaleStepKeys?.[staleStepKey(projectId, step)]);
+      return Boolean(
+        step?.artifact?.status === "stale"
+        && (
+          state.dismissedStaleStepKeys?.[staleStepKey(projectId, step)]
+          || readDismissedStaleStep(projectId, step)
+        ),
+      );
     },
     hasUnsavedStepDrafts: (state) => Object.values(state.dirtyStepKeys || {}).some(Boolean),
+    discoveryDraftDirty: (state) =>
+      String(state.discoveryDraftContent || "") !== String(state.discoveryDraftSavedContent || ""),
   },
   actions: {
     resetDraft() {
@@ -311,6 +360,11 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
         this.assistantReplies = [];
         this.dirtyStepKeys = {};
         this.recoveredDraftNotice = "";
+        this.discoveryDraft = null;
+        this.discoveryDraftContent = "";
+        this.discoveryDraftSavedContent = "";
+        this.discoveryStructureCandidate = null;
+        this.discoveryImportedStepKeys = [];
         return null;
       }
       const restoredDirtyStepKeys = this._restoreLocalDrafts(nextWorkspace);
@@ -377,6 +431,7 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
         ...(this.dismissedStaleStepKeys || {}),
         [staleStepKey(projectId, step)]: true,
       };
+      writeDismissedStaleStep(projectId, step, true);
     },
     restoreStaleStep(step = this.currentStep) {
       if (!step?.step_key) {
@@ -390,6 +445,7 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
       const next = { ...(this.dismissedStaleStepKeys || {}) };
       delete next[key];
       this.dismissedStaleStepKeys = next;
+      writeDismissedStaleStep(projectId, step, false);
     },
     _markStepDirty(stepKey = this.currentStep?.step_key) {
       if (!stepKey) {
@@ -521,6 +577,126 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
     async selectProject(projectId) {
       this.selectedProjectId = projectId || "";
       return this.loadWorkspace(this.selectedProjectId);
+    },
+    _applyDiscoveryDraft(result = {}) {
+      const draft = clonePayload(result?.draft || result || null);
+      this.discoveryDraft = draft;
+      this.discoveryDraftContent = draft?.content || "";
+      this.discoveryDraftSavedContent = this.discoveryDraftContent;
+      this.discoveryStructureCandidate = clonePayload(result?.latest_structure_candidate || null);
+      return this.discoveryDraft;
+    },
+    async loadDiscoveryDraft(projectId = this._activeProjectId()) {
+      if (!projectId) {
+        return null;
+      }
+      this.actionId = "discovery-load";
+      this.error = "";
+      try {
+        const result = await fetchProjectDiscoveryDraft(projectId);
+        return this._applyDiscoveryDraft(result);
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async ensureDiscoveryDraft(projectId = this._activeProjectId()) {
+      if (!projectId) {
+        throw new Error("Please select a project before opening the discovery draft.");
+      }
+      this.actionId = "discovery-ensure";
+      this.error = "";
+      try {
+        const result = await ensureProjectDiscoveryDraft(projectId);
+        return this._applyDiscoveryDraft(result);
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    setDiscoveryDraftContent(value) {
+      this.discoveryDraftContent = String(value || "");
+    },
+    async saveDiscoveryDraft() {
+      const draft = this.discoveryDraft || (await this.ensureDiscoveryDraft());
+      if (!draft?.draft_id) {
+        return null;
+      }
+      this.actionId = "discovery-save";
+      this.error = "";
+      try {
+        const result = await saveAuthorDraft(draft.draft_id, {
+          content: this.discoveryDraftContent,
+          base_revision_no: draft.revision_no,
+          note: "saved from snowflake discovery draft",
+        });
+        this.discoveryDraft = clonePayload(result?.draft || null);
+        this.discoveryDraftContent = this.discoveryDraft?.content || "";
+        this.discoveryDraftSavedContent = this.discoveryDraftContent;
+        this.lastActionMessage = "自由草稿已保存。";
+        return this.discoveryDraft;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async extractDiscoveryStructure(payload = {}) {
+      const draft = this.discoveryDraft || (await this.ensureDiscoveryDraft());
+      if (!draft?.draft_id) {
+        return null;
+      }
+      if (this.discoveryDraftDirty) {
+        await this.saveDiscoveryDraft();
+      }
+      this.actionId = "discovery-extract";
+      this.error = "";
+      try {
+        const result = await extractAuthorDraftStructure(draft.draft_id, {
+          mode: "project_snowflake",
+          ...(payload || {}),
+        });
+        this.discoveryStructureCandidate = clonePayload(result?.candidate || result || null);
+        this.lastActionMessage = "已提取为待确认的雪花候选。";
+        return this.discoveryStructureCandidate;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async applyDiscoveryStructure(payload = {}) {
+      const candidateId =
+        payload.candidate_id
+        || this.discoveryStructureCandidate?.candidate_id
+        || this.discoveryStructureCandidate?.structure_candidate_id
+        || "";
+      if (!candidateId) {
+        throw new Error("Please extract a discovery structure candidate first.");
+      }
+      this.actionId = "discovery-apply";
+      this.error = "";
+      try {
+        const result = await applyAuthorStructureCandidateToSnowflake(candidateId, payload);
+        if (result?.workspace) {
+          this.applyWorkspace(result.workspace, { preferCurrent: false });
+        }
+        this.discoveryImportedStepKeys = clonePayload(result?.imported_step_keys || []);
+        this.discoveryStructureCandidate = clonePayload(result?.candidate || this.discoveryStructureCandidate);
+        this.lastActionMessage = "自由草稿候选已写入雪花待审步骤。";
+        return result;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
     },
     async createProject(override = null) {
       const payload = {

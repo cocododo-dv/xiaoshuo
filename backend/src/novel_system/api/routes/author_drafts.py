@@ -68,7 +68,6 @@ def get_author_draft_proposal_diff(
     session: Session = Depends(get_session),
 ):
     result = AuthorDraftService(session).proposal_diff(draft_id, proposal_id)
-    session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
@@ -183,5 +182,32 @@ def reject_author_structure_candidate(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result = AuthorDraftService(session).reject_structure_candidate(candidate_id, payload or {}, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v1/projects/{project_id}/discovery-draft/current")
+def get_project_discovery_draft(project_id: str, request: Request, session: Session = Depends(get_session)):
+    payload = AuthorDraftService(session).current("project", project_id)
+    return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/projects/{project_id}/discovery-draft/ensure")
+def ensure_project_discovery_draft(project_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    payload = AuthorDraftService(session).ensure_blank("project", project_id, actor_ref=actor_ref)
+    session.commit()
+    return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-structure-candidates/{candidate_id}/apply-to-snowflake")
+def apply_author_structure_candidate_to_snowflake(
+    candidate_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).apply_project_structure_to_snowflake(candidate_id, payload or {}, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))

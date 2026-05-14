@@ -20,6 +20,7 @@ from novel_system.db.models import (
     PassagePatchCandidate,
     SceneCard,
     SceneRunState,
+    StoryProject,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.errors import DomainError
@@ -27,6 +28,7 @@ from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.writer_review import (
     empty_chapter_writer_brief,
     empty_scene_writer_brief,
@@ -270,8 +272,6 @@ class AuthorDraftService:
         before_text = draft.content or ""
         after_text = _apply_proposal_to_content(before_text, proposal, _apply_mode_for_proposal(proposal))
         merge_status = "clean" if _proposal_hash_matches(proposal, before_text) else "conflict"
-        proposal.merge_status = merge_status
-        self.session.flush()
         return {
             "draft_id": draft.draft_id,
             "proposal_id": proposal.proposal_id,
@@ -454,12 +454,22 @@ class AuthorDraftService:
         source_evaluation_id: str | None,
         actor_ref: str,
     ) -> AuthorDraftProposal:
-        generated_content = _proposal_content(draft, target=target, proposal_type=proposal_type, instruction=instruction)
-        proposal_content = (
-            _apply_patch_preview(draft.content or "", target_range or {}, replacement_text)
-            if replacement_text
-            else generated_content
-        )
+        source_llm_call_id = None
+        generated_rationale: str | None = None
+        if replacement_text:
+            proposal_content = _apply_patch_preview(draft.content or "", target_range or {}, replacement_text)
+        else:
+            generated = self._generate_proposal_content(
+                draft,
+                target=target,
+                proposal_type=proposal_type,
+                instruction=instruction,
+                proposal_kind=proposal_kind,
+                target_range=target_range,
+            )
+            proposal_content = generated["content"]
+            generated_rationale = generated.get("rationale")
+            source_llm_call_id = generated.get("source_llm_call_id")
         proposal = AuthorDraftProposal(
             proposal_id=f"author_draft_proposal_{draft.object_type}_{draft.object_id}_{uuid.uuid4().hex[:10]}",
             draft_id=draft.draft_id,
@@ -468,8 +478,8 @@ class AuthorDraftService:
             proposal_type=proposal_type,
             proposal_source=proposal_source,
             content=proposal_content,
-            rationale=_proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction),
-            source_llm_call_id=None,
+            rationale=generated_rationale or _proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction),
+            source_llm_call_id=source_llm_call_id,
             target_range_json=target_range,
             before_text_hash=_text_hash(draft.content or ""),
             replacement_text=replacement_text,
@@ -481,6 +491,70 @@ class AuthorDraftService:
         )
         self.session.add(proposal)
         return proposal
+
+    def _generate_proposal_content(
+        self,
+        draft: AuthorDraft,
+        *,
+        target: dict[str, Any],
+        proposal_type: str,
+        instruction: str | None,
+        proposal_kind: str,
+        target_range: dict[str, Any] | None,
+    ) -> dict[str, str | None]:
+        preference_summary = self._proposal_preference_summary(draft, target)
+        target_for_prompt = {
+            **target,
+            "author_preference_summary": preference_summary,
+            "proposal_instruction": instruction or "",
+        }
+        snapshot = _proposal_generate_snapshot(
+            draft,
+            target=target_for_prompt,
+            proposal_type=proposal_type,
+            proposal_kind=proposal_kind,
+            instruction=instruction,
+            target_range=target_range,
+            preference_summary=preference_summary,
+        )
+        prompt = PromptBuilder().build(snapshot, "author_proposal_generate")
+        bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        runner = LLMNodeRunner(self.session)
+        try:
+            node_result = runner.run(
+                scene_id=target.get("scene_id") or target.get("project_id") or draft.object_id,
+                chapter_id=target.get("chapter_id") or target.get("project_id") or draft.object_id,
+                bundle_id=f"author_draft:{draft.draft_id}:proposal:{proposal_type}",
+                bundle_hash=bundle_hash,
+                node_id="author_proposal_generate",
+                step="author_proposal_generate",
+                prompt=prompt,
+                user_prompt=_proposal_generate_user_prompt(prompt["user_prompt"], draft=draft, target=target_for_prompt),
+                offline_client_factory=lambda: OfflineAuthorProposalClient(
+                    draft=draft,
+                    target=target_for_prompt,
+                    proposal_type=proposal_type,
+                    instruction=instruction,
+                ),
+                source_draft_row_id=draft.draft_id,
+                source_draft_content=draft.content,
+            )
+        except LLMNodeExecutionError as exc:
+            raise DomainError(
+                "AUTHOR_PROPOSAL_GENERATE_FAILED",
+                f"author proposal generation failed: {exc.message}",
+                status_code=502,
+                details={"llm_call_id": exc.llm_call_id, "error_code": exc.error_code},
+            ) from exc
+        normalized = _normalize_proposal_payload(
+            node_result.response.structured_output,
+            draft=draft,
+            target=target,
+            proposal_type=proposal_type,
+            instruction=instruction,
+        )
+        normalized["source_llm_call_id"] = node_result.llm_call_id
+        return normalized
 
     def apply_patch_option(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -580,7 +654,7 @@ class AuthorDraftService:
             aggregate = self._chapter_aggregate(scene.chapter_id)
             if aggregate is not None:
                 aggregate_ref = f"chapter_memory:{aggregate.row_id}"
-        else:
+        elif draft.object_type == "chapter":
             aggregate = self._chapter_aggregate(draft.object_id)
             if aggregate is not None:
                 aggregate_ref = f"chapter_memory:{aggregate.row_id}"
@@ -700,6 +774,12 @@ class AuthorDraftService:
         if candidate.status != "candidate":
             raise DomainError("AUTHOR_STRUCTURE_CANDIDATE_CLOSED", "structure candidate is not open", status_code=409)
         note = _optional_text(payload or {}, "note")
+        if candidate.object_type == "project":
+            raise DomainError(
+                "AUTHOR_STRUCTURE_PROJECT_APPLY_REQUIRES_SNOWFLAKE",
+                "project structure candidates must be applied through apply-to-snowflake",
+                status_code=400,
+            )
         if candidate.object_type == "scene":
             scene = self.lifecycle.require_active_scene(candidate.object_id)
             current = normalize_scene_writer_brief(scene.writer_brief_json)
@@ -713,6 +793,38 @@ class AuthorDraftService:
         candidate.author_decision_note = note or candidate.author_decision_note
         self.session.flush()
         return {"candidate": self.serialize_structure_candidate(candidate)}
+
+    def apply_project_structure_to_snowflake(
+        self,
+        candidate_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        candidate = self._require_structure_candidate(candidate_id)
+        if candidate.status != "candidate":
+            raise DomainError("AUTHOR_STRUCTURE_CANDIDATE_CLOSED", "structure candidate is not open", status_code=409)
+        if candidate.object_type != "project":
+            raise DomainError(
+                "AUTHOR_STRUCTURE_CANDIDATE_NOT_PROJECT",
+                "only project structure candidates can be applied to snowflake",
+                status_code=400,
+            )
+        brief = candidate.candidate_brief_json or {}
+        step_drafts = brief.get("snowflake_steps") if isinstance(brief, dict) else None
+        if not isinstance(step_drafts, dict) or not step_drafts:
+            raise DomainError("AUTHOR_STRUCTURE_PROJECT_EMPTY", "project structure candidate has no snowflake steps", status_code=409)
+        result = SnowflakeWorkspaceService(self.session).import_discovery_steps(candidate.object_id, step_drafts, actor_ref=actor_ref)
+        candidate.status = "accepted"
+        candidate.author_decision = "accepted"
+        candidate.author_decision_note = _optional_text(payload or {}, "note") or candidate.author_decision_note
+        self.session.flush()
+        return {
+            "candidate": self.serialize_structure_candidate(candidate),
+            "imported_step_keys": result["imported_step_keys"],
+            "step_runs": result["step_runs"],
+            "workspace": result["workspace"],
+        }
 
     def reject_structure_candidate(
         self,
@@ -813,13 +925,17 @@ class AuthorDraftService:
         }
 
     def _require_target(self, object_type: str, object_id: str) -> None:
+        if object_type == "project":
+            if self.session.get(StoryProject, object_id) is None:
+                raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+            return
         if object_type == "chapter":
             self.lifecycle.require_active_chapter(object_id)
             return
         if object_type == "scene":
             self.lifecycle.require_active_scene(object_id)
             return
-        raise DomainError("AUTHOR_DRAFT_TARGET_INVALID", "object_type must be scene or chapter", status_code=400)
+        raise DomainError("AUTHOR_DRAFT_TARGET_INVALID", "object_type must be scene, chapter, or project", status_code=400)
 
     def _current_row(self, object_type: str, object_id: str) -> AuthorDraft | None:
         return self.session.execute(
@@ -851,6 +967,35 @@ class AuthorDraftService:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_DRAFT_MISMATCH", "proposal belongs to a different author draft", status_code=409)
         if draft.object_type != proposal.object_type or draft.object_id != proposal.object_id:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_TARGET_MISMATCH", "proposal target does not match author draft", status_code=409)
+
+    def _proposal_preference_summary(self, draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
+        scope_candidates: list[tuple[str, str]] = []
+        project_id = str(target.get("project_id") or "").strip()
+        chapter_id = str(target.get("chapter_id") or "").strip()
+        if project_id:
+            scope_candidates.append(("project", project_id))
+        if chapter_id:
+            scope_candidates.append(("chapter", chapter_id))
+        scope_candidates.append(("global", "global"))
+
+        merged: dict[str, Any] = {}
+        for scope_type, scope_ref_id in reversed(scope_candidates):
+            profile = self.session.execute(
+                select(AuthorPreferenceProfile)
+                .where(
+                    AuthorPreferenceProfile.scope_type == scope_type,
+                    AuthorPreferenceProfile.scope_ref_id == scope_ref_id,
+                )
+                .order_by(AuthorPreferenceProfile.updated_at.desc(), AuthorPreferenceProfile.profile_id.desc())
+            ).scalars().first()
+            if profile is None:
+                continue
+            summary = profile.summary_json or {}
+            if isinstance(summary, dict):
+                merged.update(summary)
+                merged["scope_type"] = scope_type
+                merged["scope_ref_id"] = scope_ref_id
+        return merged
 
     def _refresh_proposal_preference_profile(
         self,
@@ -907,11 +1052,17 @@ class AuthorDraftService:
         return profile
 
     def _source_for_target(self, object_type: str, object_id: str) -> dict[str, str]:
+        if object_type == "project":
+            self._require_target(object_type, object_id)
+            raise DomainError("AUTHOR_DRAFT_SOURCE_MISSING", "project discovery draft has no runtime source", status_code=409)
         if object_type == "scene":
             return self._scene_source(object_id)
         return self._chapter_source(object_id)
 
     def _blank_source_for_target(self, object_type: str, object_id: str) -> dict[str, str]:
+        if object_type == "project":
+            self._require_target(object_type, object_id)
+            return {"source_text_ref": f"project_discovery:{object_id}:blank", "content": ""}
         if object_type == "chapter":
             self.lifecycle.require_active_chapter(object_id)
             return {"source_text_ref": f"author_blank:chapter:{object_id}", "content": ""}
@@ -995,12 +1146,36 @@ class AuthorDraftService:
         return event
 
     def _target_payload(self, object_type: str, object_id: str) -> dict[str, Any]:
+        if object_type == "project":
+            project = self.session.get(StoryProject, object_id)
+            if project is None:
+                raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+            return {
+                "object_type": "project",
+                "object_id": project.project_id,
+                "project_id": project.project_id,
+                "chapter_id": None,
+                "scene_id": None,
+                "project": {
+                    "title": project.title,
+                    "genre": project.genre or "",
+                    "target_chapter_count": project.target_chapter_count,
+                    "target_word_count": project.target_word_count,
+                    "outline_text": project.outline_text or "",
+                    "planning_mode": project.planning_mode,
+                },
+                "chapter_goal": "",
+                "chapter_writer_brief": {},
+                "scene_card": {},
+                "current_writer_brief": {},
+            }
         if object_type == "scene":
             scene = self.lifecycle.require_active_scene(object_id)
             chapter = self.lifecycle.require_active_chapter(scene.chapter_id)
             return {
                 "object_type": "scene",
                 "object_id": scene.scene_id,
+                "project_id": chapter.project_id,
                 "chapter_id": scene.chapter_id,
                 "scene_id": scene.scene_id,
                 "chapter_goal": chapter.chapter_goal or "",
@@ -1018,6 +1193,7 @@ class AuthorDraftService:
         return {
             "object_type": "chapter",
             "object_id": chapter.chapter_id,
+            "project_id": chapter.project_id,
             "chapter_id": chapter.chapter_id,
             "scene_id": None,
             "chapter_goal": chapter.chapter_goal or "",
@@ -1051,6 +1227,8 @@ def _source_layer(source_text_ref: str | None) -> str:
     value = str(source_text_ref or "")
     if value.startswith("author_blank:") or value.endswith(":blank"):
         return "author_blank"
+    if value.startswith("project_discovery:"):
+        return "project_discovery"
     if value.startswith("final_scene:"):
         return "ai_draft"
     if value.startswith("chapter_memory:") or value.startswith("chapter_assembled:"):
@@ -1186,6 +1364,93 @@ def _apply_proposal_to_content(current: str, proposal: AuthorDraftProposal, appl
     return _apply_proposal_content(current, proposal.replacement_text or proposal.content or "", apply_mode)
 
 
+def _proposal_generate_snapshot(
+    draft: AuthorDraft,
+    *,
+    target: dict[str, Any],
+    proposal_type: str,
+    proposal_kind: str,
+    instruction: str | None,
+    target_range: dict[str, Any] | None,
+    preference_summary: dict[str, Any],
+) -> dict[str, Any]:
+    inline_digests = {
+        "author_draft": draft.content or "",
+        "target_metadata": json.dumps(target, ensure_ascii=False, sort_keys=True),
+        "proposal_request": json.dumps(
+            {
+                "proposal_type": proposal_type,
+                "proposal_kind": proposal_kind,
+                "instruction": instruction or "",
+                "target_range": target_range or {},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        "author_preference_summary": json.dumps(preference_summary or {}, ensure_ascii=False, sort_keys=True),
+    }
+    return {
+        "contract_version": "AUTHOR_PROPOSAL_GENERATE_SOURCE_v1",
+        "stage_allowlist_name": "author_proposal_generate",
+        "scene_id": target.get("scene_id") or "",
+        "chapter_id": target.get("chapter_id") or "",
+        "source_version_refs": {
+            "source_draft_id": draft.draft_id,
+            "object_type": draft.object_type,
+            "object_id": draft.object_id,
+            "proposal_type": proposal_type,
+        },
+        "resolved_ref_ids": {},
+        "ordered_injections": [
+            {"slot": "author_draft", "ref_id": draft.draft_id, "digest_key": "author_draft"},
+            {"slot": "target_metadata", "ref_id": draft.object_id, "digest_key": "target_metadata"},
+            {"slot": "proposal_request", "ref_id": proposal_type, "digest_key": "proposal_request"},
+            {"slot": "author_preference_summary", "ref_id": "author_preferences", "digest_key": "author_preference_summary"},
+        ],
+        "inline_digests": inline_digests,
+    }
+
+
+def _proposal_generate_user_prompt(base_prompt: str, *, draft: AuthorDraft, target: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            base_prompt,
+            "",
+            "## Author Draft Target",
+            f"Object Type: {draft.object_type}",
+            f"Object ID: {draft.object_id}",
+            f"Project ID: {target.get('project_id') or ''}",
+            f"Chapter ID: {target.get('chapter_id') or ''}",
+            f"Scene ID: {target.get('scene_id') or ''}",
+            "",
+            "## Current Author Draft",
+            draft.content or "",
+            "",
+            "## Current Metadata",
+            json.dumps(target, ensure_ascii=False, sort_keys=True),
+        ]
+    )
+
+
+def _normalize_proposal_payload(
+    payload: Any,
+    *,
+    draft: AuthorDraft,
+    target: dict[str, Any],
+    proposal_type: str,
+    instruction: str | None,
+) -> dict[str, str | None]:
+    if not isinstance(payload, dict):
+        payload = {}
+    content = str(payload.get("content") or payload.get("proposal") or "").strip()
+    if not content:
+        content = _proposal_content(draft, target=target, proposal_type=proposal_type, instruction=instruction)
+    rationale = str(payload.get("rationale") or "").strip()
+    if not rationale:
+        rationale = _proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction)
+    return {"content": content, "rationale": rationale, "source_llm_call_id": None}
+
+
 def _proposal_content(
     draft: AuthorDraft,
     *,
@@ -1261,7 +1526,7 @@ def _proposal_content(
                 "",
                 "候选片段：",
                 f"{seed}",
-                "许望没有接话，只问：你现在护住的是证据，还是那个人？",
+                "对方没有接话，只用一个反问把关系压力推回到当下选择。",
             ]
         ).strip()
     if proposal_type == "language_pass":
@@ -1298,7 +1563,7 @@ def _proposal_content(
                 "",
                 "候选稿：",
                 f"{seed}",
-                "她没有解释前史。盐钟第三次响起时，她把录音带按进掌心，像按住一个还会呼吸的名字。",
+                "人物没有解释前史，只把关键物件握紧；这个动作让沉默本身变成选择。",
             ]
         ).strip()
     if proposal_type in {"whole_draft", "scene_draft", "chapter_draft"}:
@@ -1409,6 +1674,47 @@ def _serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
     }
 
 
+class OfflineAuthorProposalClient:
+    def __init__(
+        self,
+        *,
+        draft: AuthorDraft,
+        target: dict[str, Any],
+        proposal_type: str,
+        instruction: str | None,
+    ) -> None:
+        self.draft = draft
+        self.target = target
+        self.proposal_type = proposal_type
+        self.instruction = instruction
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        payload = {
+            "content": _proposal_content(
+                self.draft,
+                target=self.target,
+                proposal_type=self.proposal_type,
+                instruction=self.instruction,
+            ),
+            "rationale": _proposal_rationale(
+                target=self.target,
+                proposal_type=self.proposal_type,
+                instruction=self.instruction,
+            ),
+        }
+        return LLMResponse(
+            request_id=f"offline_author_proposal_{uuid.uuid4().hex[:8]}",
+            provider="offline_deterministic",
+            model=request.model,
+            text=json.dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format=request.response_format,
+            raw_response={"id": "offline_author_proposal_generate"},
+            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            finish_reason="offline_fallback",
+        )
+
+
 class OfflineAuthorStructureExtractClient:
     def __init__(self, *, draft: AuthorDraft, target: dict[str, Any]) -> None:
         self.draft = draft
@@ -1466,6 +1772,16 @@ def _structure_extract_snapshot(draft: AuthorDraft, target: dict[str, Any]) -> d
     if target.get("object_type") == "scene":
         inline_digests["scene_card"] = json.dumps(target.get("scene_card") or {}, ensure_ascii=False, sort_keys=True)
         inline_digests["chapter_writer_brief"] = json.dumps(target.get("chapter_writer_brief") or {}, ensure_ascii=False, sort_keys=True)
+    if target.get("object_type") == "project":
+        inline_digests["project"] = json.dumps(target.get("project") or {}, ensure_ascii=False, sort_keys=True)
+    ordered_injections = [
+        {"slot": "author_draft", "ref_id": draft.draft_id, "digest_key": "scene_summary"},
+        {"slot": "chapter_goal", "ref_id": target.get("chapter_id") or "", "digest_key": "chapter_goal"},
+    ]
+    if target.get("object_type") == "scene":
+        ordered_injections.append({"slot": "scene_card", "ref_id": target.get("scene_id") or "", "digest_key": "scene_card"})
+    if target.get("object_type") == "project":
+        ordered_injections.append({"slot": "project", "ref_id": target.get("project_id") or "", "digest_key": "project"})
     return {
         "contract_version": "AUTHOR_STRUCTURE_EXTRACT_SOURCE_v1",
         "stage_allowlist_name": "author_structure_extract",
@@ -1477,11 +1793,7 @@ def _structure_extract_snapshot(draft: AuthorDraft, target: dict[str, Any]) -> d
             "object_id": draft.object_id,
         },
         "resolved_ref_ids": {},
-        "ordered_injections": [
-            {"slot": "author_draft", "ref_id": draft.draft_id, "digest_key": "scene_summary"},
-            {"slot": "chapter_goal", "ref_id": target.get("chapter_id") or "", "digest_key": "chapter_goal"},
-            {"slot": "scene_card", "ref_id": target.get("scene_id") or "", "digest_key": "scene_card"},
-        ],
+        "ordered_injections": ordered_injections,
         "inline_digests": inline_digests,
     }
 
@@ -1494,6 +1806,7 @@ def _structure_extract_user_prompt(base_prompt: str, *, draft: AuthorDraft, targ
             "## Author Draft Target",
             f"Object Type: {draft.object_type}",
             f"Object ID: {draft.object_id}",
+            f"Project ID: {target.get('project_id') or ''}",
             f"Chapter ID: {target.get('chapter_id') or ''}",
             f"Scene ID: {target.get('scene_id') or ''}",
             "",
@@ -1509,6 +1822,22 @@ def _structure_extract_user_prompt(base_prompt: str, *, draft: AuthorDraft, targ
 def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         payload = _offline_structure_payload(draft, target)
+    if draft.object_type == "project":
+        raw_steps = payload.get("snowflake_steps")
+        if not isinstance(raw_steps, dict):
+            raw_steps = payload.get("candidate_brief", {}).get("snowflake_steps") if isinstance(payload.get("candidate_brief"), dict) else None
+        if not isinstance(raw_steps, dict):
+            raw_steps = _offline_structure_payload(draft, target)["candidate_brief"]["snowflake_steps"]
+        allowed = {"book_brief", "one_sentence_summary", "one_paragraph_summary", "scene_list", "scene_details"}
+        snowflake_steps = {key: value for key, value in raw_steps.items() if key in allowed and isinstance(value, dict)}
+        notes = payload.get("uncertainty_notes")
+        uncertainty_notes = [str(item).strip() for item in notes if str(item).strip()] if isinstance(notes, list) else []
+        rationale = payload.get("rationale")
+        return {
+            "candidate_brief": {"snowflake_steps": snowflake_steps},
+            "uncertainty_notes": uncertainty_notes,
+            "rationale": str(rationale).strip() if isinstance(rationale, str) and rationale.strip() else "Extracted project discovery draft into snowflake candidate steps.",
+        }
     raw_brief = payload.get("candidate_brief")
     if not isinstance(raw_brief, dict):
         raw_brief = payload.get("scene_writer_brief") if draft.object_type == "scene" else payload.get("chapter_writer_brief")
@@ -1530,6 +1859,9 @@ def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: di
 
 def _offline_structure_payload(draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
     text = (draft.content or "").strip()
+    if draft.object_type == "project":
+        first_line = _first_sentence(text) or "Project discovery draft needs an editable structure."
+        return _offline_project_structure_payload(draft, target, text=text, first_line=first_line)
     first_line = _first_sentence(text) or str(target.get("chapter_goal") or "作者稿已有一个需要澄清的戏剧方向")
     if draft.object_type == "scene":
         scene_card = target.get("scene_card") if isinstance(target.get("scene_card"), dict) else {}
@@ -1570,6 +1902,104 @@ def _offline_structure_payload(draft: AuthorDraft, target: dict[str, Any]) -> di
         "uncertainty_notes": ["离线提取无法判断作者长期主题，请人工确认。"],
         "rationale": "从作者稿反推章节承诺、推进和结尾问题。",
     }
+
+
+def _offline_project_structure_payload(
+    draft: AuthorDraft,
+    target: dict[str, Any],
+    *,
+    text: str,
+    first_line: str,
+) -> dict[str, Any]:
+    project = target.get("project") if isinstance(target.get("project"), dict) else {}
+    lines = [line.strip(" -\t") for line in text.splitlines() if line.strip()]
+    one_sentence = _line_after_prefix(lines, "one sentence") or first_line
+    audience = _line_after_prefix(lines, "audience") or str(project.get("genre") or "Readers who want a story with clear pressure and emotional cost.")
+    scene_lines = _numbered_lines(lines) or [one_sentence]
+    project_id = str(target.get("project_id") or draft.object_id)
+    scene_list = [
+        {
+            "scene_id": f"{project_id}_DISCOVERY_SC{index:02d}",
+            "chapter_id": f"{project_id}_DISCOVERY_CH01",
+            "scene_seq": index,
+            "summary": summary,
+            "chapter_role": "Discovery draft scene candidate",
+            "pov_character_id": "",
+            "onstage_chars": [],
+            "location": "",
+            "hook": summary,
+        }
+        for index, summary in enumerate(scene_lines[:8], start=1)
+    ]
+    scene_details = [
+        {
+            **scene,
+            "primary_form": "proactive" if index % 2 else "reactive",
+            "goal": scene["summary"],
+            "conflict": "The scene needs a visible obstacle and cost.",
+            "setback": "The outcome should leave a new consequence.",
+            "reaction": "The character absorbs the cost of the previous beat.",
+            "dilemma": "Each option should cost something.",
+            "decision": "The decision should launch the next scene.",
+        }
+        for index, scene in enumerate(scene_list, start=1)
+    ]
+    steps = {
+        "book_brief": {
+            "category": str(project.get("genre") or ""),
+            "target_reader": audience,
+            "story_kind": "A story discovered from the author's free draft.",
+            "delight_reason": "The draft already points toward pressure, cost, and curiosity.",
+            "genre_promise": one_sentence,
+            "expected_reader_emotion": "Curiosity and pressure.",
+            "safety_rules": [
+                "Only use material supplied by the author draft.",
+                "Treat extracted structure as editable candidate notes.",
+            ],
+        },
+        "one_sentence_summary": {"summary": one_sentence},
+        "one_paragraph_summary": {
+            "sentences": _five_sentences(one_sentence, scene_lines),
+            "three_act_check": {
+                "first_disaster": scene_lines[0] if scene_lines else "",
+                "second_disaster": scene_lines[1] if len(scene_lines) > 1 else "",
+                "third_disaster": scene_lines[2] if len(scene_lines) > 2 else "",
+                "ending": scene_lines[-1] if scene_lines else "",
+            },
+            "moral_premise": "",
+        },
+        "scene_list": {"scenes": scene_list},
+        "scene_details": {"scenes": scene_details},
+    }
+    return {
+        "candidate_brief": {"snowflake_steps": steps},
+        "uncertainty_notes": ["Offline extraction is a draft interpretation; review each snowflake step before approval."],
+        "rationale": "Converted the project discovery draft into editable snowflake step candidates without approving them.",
+    }
+
+
+def _line_after_prefix(lines: list[str], prefix: str) -> str:
+    prefix_lower = prefix.lower()
+    for line in lines:
+        if line.lower().startswith(prefix_lower):
+            return line.split(":", 1)[1].strip() if ":" in line else line
+    return ""
+
+
+def _numbered_lines(lines: list[str]) -> list[str]:
+    results: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in {".", ")"}:
+            results.append(stripped[2:].strip())
+    return results
+
+
+def _five_sentences(one_sentence: str, scenes: list[str]) -> list[str]:
+    values = [one_sentence, *scenes[:4]]
+    while len(values) < 5:
+        values.append(one_sentence)
+    return values[:5]
 
 
 def _merge_briefs(current: dict[str, str], candidate: dict[str, Any]) -> dict[str, str]:
@@ -1614,8 +2044,17 @@ def _infer_stakes(text: str) -> str:
     return "选择会改变人物关系和后续行动空间。"
 
 
+def _candidate_image_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for raw in str(text or "").replace("\n", " ").split():
+        cleaned = raw.strip("，。！？；：、,.!?;:\"'()[]【】")
+        if 1 < len(cleaned) <= 8 and cleaned not in tokens:
+            tokens.append(cleaned)
+    return tokens[:8]
+
+
 def _image_anchor(text: str) -> str:
-    for token in ("录音带", "证据袋", "门", "盐钟", "档案", "袖口", "船坞"):
+    for token in _candidate_image_tokens(text):
         if token in text:
             return token
-    return "一个被人物反复触碰的物件"
+    return "一个被人物反复触碰、能承载代价的物件"

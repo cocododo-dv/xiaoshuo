@@ -220,6 +220,15 @@ describe("writer room shell", () => {
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-draft-proposals/proposal_wrfe100_patch/reject");
   });
 
+  it("uses inherited author drafts for normal writer room ensure and keeps an explicit blank path available", () => {
+    const storeSource = readSource("src/stores/writerRoom.js");
+
+    expect(storeSource).toContain("ensureAuthorDraft");
+    expect(storeSource).toContain("ensureBlankDraft");
+    expect(storeSource).toContain("await ensureAuthorDraft(this.objectType, this.objectId)");
+    expect(storeSource).toContain("await ensureBlankAuthorDraft(this.objectType, this.objectId)");
+  });
+
   it("hydrates writer room payload and applies proposals through diff-first flow", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       const requestUrl = String(url);

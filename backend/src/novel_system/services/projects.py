@@ -13,6 +13,7 @@ from novel_system.db.models import (
     ChapterGoal,
     ChapterRunJob,
     ChapterState,
+    FinalScene,
     OperationLog,
     OutlinePlan,
     ReferenceProfile,
@@ -689,6 +690,76 @@ class ProjectChapterFlowService:
             "approval_note": approval_note,
         }
 
+    def final_review(self, project_id: str, chapter_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
+        body = payload or {}
+        decision = str(body.get("decision") or "").strip() or "approve"
+        scene_decisions = body.get("scene_decisions") if isinstance(body.get("scene_decisions"), list) else []
+        revision_notes = str(body.get("revision_notes") or "").strip()
+        if len(revision_notes) > 2000:
+            raise DomainError("CHAPTER_APPROVAL_NOTES_TOO_LONG", "revision_notes must be 2000 characters or fewer", status_code=400)
+        project = ProjectService(self.session).require_project(project_id)
+        self._require_project_chapter(project, chapter_id)
+        if project.current_chapter_id != chapter_id:
+            raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter final can be reviewed")
+
+        requested_revisions = [
+            item for item in scene_decisions if isinstance(item, dict) and str(item.get("decision") or "").strip() in {"request_revision", "request_scene_revision"}
+        ]
+        if not requested_revisions and decision in {"approve", "approve_final", "approved"}:
+            return self.approve_final(project_id, chapter_id, {"revision_notes": revision_notes}, actor_ref=actor_ref)
+        if not requested_revisions and decision not in {"request_revision", "request_scene_revision", "request_chapter_revision"}:
+            raise DomainError("CHAPTER_FINAL_REVIEW_DECISION_INVALID", "final review decision is invalid", status_code=400)
+
+        backtracks = ProjectBacktrackService(self.session)
+        created_items = []
+        for item in requested_revisions or [{"scene_id": None, "note": revision_notes or "Chapter needs revision before approval."}]:
+            scene_id = str(item.get("scene_id") or "").strip() or None
+            if scene_id:
+                scene = self.session.get(SceneCard, scene_id)
+                if scene is None or scene.chapter_id != chapter_id:
+                    raise DomainError("PROJECT_REVIEW_SCENE_NOT_FOUND", "scene does not belong to the reviewed chapter", status_code=404)
+            note = str(item.get("note") or revision_notes or "Scene needs revision before chapter approval.").strip()
+            created_items.append(
+                backtracks.ensure_item(
+                    project_id=project.project_id,
+                    chapter_id=chapter_id,
+                    scene_id=scene_id,
+                    scope="chapter_final_review_scene" if scene_id else "chapter_final_review",
+                    target_ref=scene_id or chapter_id,
+                    problem_summary=note,
+                    recommended_fix=note,
+                    reason_codes=["chapter_final_review"],
+                    created_by=actor_ref or "chapter_final_review",
+                )
+            )
+        project.status = PROJECT_STATUS_CHAPTER_BLOCKED
+        self.session.add(
+            OperationLog(
+                event_type="chapter_final_revision_request",
+                object_type="chapter",
+                object_ref=chapter_id,
+                payload_json={
+                    "project_id": project.project_id,
+                    "chapter_id": chapter_id,
+                    "decision": decision,
+                    "revision_notes": revision_notes,
+                    "scene_decisions": scene_decisions,
+                    "backtrack_item_ids": [item.item_id for item in created_items],
+                    "actor_ref": actor_ref or "operator",
+                },
+            )
+        )
+        self.session.flush()
+        return {
+            "project": project_payload(project),
+            "review_decision": {
+                "decision": decision,
+                "revision_notes": revision_notes,
+                "actor_ref": actor_ref or "operator",
+            },
+            "backtrack_items": [ProjectBacktrackService.serialize(item) for item in created_items],
+        }
+
     def review_packet(self, project: StoryProject, chapter_id: str | None) -> dict[str, Any] | None:
         if not chapter_id or project.status != PROJECT_STATUS_CHAPTER_FINAL_REVIEW:
             return None
@@ -730,6 +801,7 @@ class ProjectChapterFlowService:
             "missing_scene_ids": missing_scene_ids,
             "aggregate_row_id": aggregate_row_id,
             "source_safety_scan": manuscript.get("source_safety_scan"),
+            "scene_reviews": self._scene_reviews(chapter.chapter_id),
             "issues_summary": issues_summary,
             "run_status": latest_job.status if latest_job else "idle",
             "reference_safety": list(REFERENCE_SAFETY_RULES),
@@ -739,6 +811,31 @@ class ProjectChapterFlowService:
                 "deepdesk_object_id": chapter.chapter_id,
             },
         }
+
+    def _scene_reviews(self, chapter_id: str) -> list[dict[str, Any]]:
+        scenes = self.session.execute(
+            select(SceneCard)
+            .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
+            .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+        ).scalars().all()
+        reviews: list[dict[str, Any]] = []
+        for scene in scenes:
+            state = self.session.get(SceneRunState, scene.scene_id)
+            final_row = self.session.get(FinalScene, state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
+            body = final_row.content if final_row is not None else ""
+            excerpt = " ".join(str(body or "").split())
+            reviews.append(
+                {
+                    "scene_id": scene.scene_id,
+                    "scene_seq": scene.scene_seq,
+                    "title": scene.scene_goal or scene.hook or scene.scene_id,
+                    "body_excerpt": excerpt[:240],
+                    "char_count": len(body or ""),
+                    "issues_summary": [],
+                    "current_decision": "pending",
+                }
+            )
+        return reviews
 
     def _require_project_chapter(self, project: StoryProject, chapter_id: str) -> ChapterGoal:
         chapter = self.session.get(ChapterGoal, chapter_id)

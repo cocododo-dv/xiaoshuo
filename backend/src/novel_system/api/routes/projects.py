@@ -184,6 +184,29 @@ def approve_project_chapter_final(
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
+@router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/final-review")
+def review_project_chapter_final(
+    project_id: str,
+    chapter_id: str,
+    payload: dict[str, Any] | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload or {}
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/final-review",
+        payload={"project_id": project_id, "chapter_id": chapter_id, **body},
+        action=lambda: ProjectChapterFlowService(session).final_review(project_id, chapter_id, body, actor_ref=actor_ref),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
 @router.post("/api/v1/projects/{project_id}/reference-profiles")
 def attach_reference_profile(
     project_id: str,

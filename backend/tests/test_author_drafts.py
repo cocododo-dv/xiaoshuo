@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
@@ -15,6 +17,7 @@ from novel_system.db.models import (
     SceneCard,
     SceneRunState,
 )
+from novel_system.services.llm_client import LLMResponse
 
 
 def _create_chapter(client, chapter_id: str, *, planned_scene_count: int = 2) -> None:
@@ -216,6 +219,95 @@ def test_generate_apply_and_reject_author_draft_proposals_without_overwriting_ru
     assert rejected["author_decision_note"] == "太直白，暂不采用。"
     session.expire_all()
     assert session.get(AuthorDraft, draft["draft_id"]).content == proposal["content"]
+
+
+def test_generate_author_draft_proposal_uses_llm_call_and_preference_context(client, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    captured: dict[str, object] = {}
+
+    def fake_generate(self, request):  # noqa: ANN001
+        captured["messages"] = request.messages
+        payload = {
+            "content": "LLM proposal keeps the author's scene but raises the visible cost.",
+            "rationale": "It follows the user's instruction and avoids the rejected pattern.",
+        }
+        return LLMResponse(
+            request_id="resp_author_proposal",
+            provider="fake-provider",
+            model=request.model,
+            text=json.dumps(payload),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={"id": "resp_author_proposal"},
+            usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    _create_chapter(client, "AD260", planned_scene_count=1)
+    _create_scene(client, "AD260_SC01", chapter_id="AD260", scene_seq=1, is_chapter_last=1)
+    _finalize_scene(session, "AD260_SC01", "AD260", "Runtime final should not be overwritten.")
+    session.add(
+        AuthorPreferenceProfile(
+            profile_id="author_pref_global_global_proposals",
+            scope_type="global",
+            scope_ref_id="global",
+            status="draft",
+            runtime_eligible=0,
+            summary_json={
+                "rejected_ai_traces": ["too generic"],
+                "accepted_by_type": {"passage_candidate": 1},
+            },
+            source_patch_ids_json=[],
+        )
+    )
+    session.commit()
+    draft = client.post("/api/v1/author-drafts/scene/AD260_SC01/ensure-blank").json()["data"]["draft"]
+
+    response = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/proposals/generate",
+        json={"proposal_type": "passage_candidate", "instruction": "Make the choice cost visible."},
+    )
+
+    assert response.status_code == 200, response.text
+    proposal = response.json()["data"]["proposal"]
+    assert proposal["content"] == "LLM proposal keeps the author's scene but raises the visible cost."
+    assert proposal["rationale"] == "It follows the user's instruction and avoids the rejected pattern."
+    assert proposal["source_llm_call_id"]
+    assert all(token not in proposal["content"] for token in ["录音带", "证据袋", "盐钟", "船坞"])
+    prompt_text = json.dumps(captured["messages"], ensure_ascii=False)
+    assert "too generic" in prompt_text
+    assert "Make the choice cost visible." in prompt_text
+
+    session.expire_all()
+    stored_call = session.get(LlmCall, proposal["source_llm_call_id"])
+    assert stored_call is not None
+    assert stored_call.node_id == "author_proposal_generate"
+    assert stored_call.scene_id == "AD260_SC01"
+
+
+def test_author_draft_proposal_diff_get_does_not_persist_merge_status(client, session) -> None:
+    _create_chapter(client, "AD265", planned_scene_count=1)
+    _create_scene(client, "AD265_SC01", chapter_id="AD265", scene_seq=1, is_chapter_last=1)
+    _finalize_scene(session, "AD265_SC01", "AD265", "Original author draft.")
+    draft = client.post("/api/v1/author-drafts/scene/AD265_SC01/ensure").json()["data"]["draft"]
+    proposal = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/proposals/generate",
+        json={
+            "proposal_type": "passage_candidate",
+            "proposal_kind": "local_patch",
+            "target_range": {"unit": "text", "source_excerpt": "Original"},
+            "replacement_text": "Revised",
+        },
+    ).json()["data"]["proposal"]
+
+    diff_response = client.get(f"/api/v1/author-drafts/{draft['draft_id']}/proposals/{proposal['proposal_id']}/diff")
+
+    assert diff_response.status_code == 200
+    assert diff_response.json()["data"]["merge_status"] == "clean"
+    session.expire_all()
+    stored = session.get(AuthorDraftProposal, proposal["proposal_id"])
+    assert stored.merge_status == "pending"
 
 
 def test_generate_triaged_author_draft_proposals_and_records_decision_telemetry(client, session) -> None:

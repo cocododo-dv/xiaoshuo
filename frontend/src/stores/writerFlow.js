@@ -1,9 +1,9 @@
 import { defineStore } from "pinia";
 
 import {
-  approveProjectChapterFinal,
   fetchChapterRunStatus,
   fetchProjectDashboard,
+  reviewProjectChapterFinal,
   runProjectChapterJob,
 } from "../lib/api";
 import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
@@ -127,7 +127,10 @@ export const useWriterFlowStore = defineStore("writerFlow", {
       this.actionId = `approve-final:${chapterId}`;
       this.error = "";
       try {
-        const result = await approveProjectChapterFinal(projectId, chapterId, payload);
+        const result = await reviewProjectChapterFinal(projectId, chapterId, {
+          decision: "approve",
+          ...(payload || {}),
+        });
         this.dashboard = snapshotPayload({
           ...(this.dashboard || {}),
           project: result?.project || this.project,
@@ -138,6 +141,35 @@ export const useWriterFlowStore = defineStore("writerFlow", {
         this.runStatus = null;
         this.lastApprovalNote = snapshotPayload(result?.approval_note || null);
         this.lastActionMessage = result?.next_chapter_id ? "Chapter approved. Next chapter is ready." : "Project completed.";
+        return result;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async requestCurrentChapterRevision(payload = {}) {
+      const projectId = this.selectedProjectId || projectIdOf(this.project);
+      const chapterId = currentChapterId(this) || this.reviewPacket?.chapter_id;
+      if (!projectId || !chapterId) {
+        throw new Error("No chapter is waiting for final review.");
+      }
+      this.actionId = `final-review-revision:${chapterId}`;
+      this.error = "";
+      try {
+        const result = await reviewProjectChapterFinal(projectId, chapterId, {
+          decision: "request_revision",
+          ...(payload || {}),
+        });
+        this.dashboard = snapshotPayload({
+          ...(this.dashboard || {}),
+          project: result?.project || this.project,
+          backtrack_items: result?.backtrack_items || this.backtrackItems,
+          review_packet: result?.review_packet || this.reviewPacket,
+          next_action: result?.next_action || "resolve_backtrack_items",
+        });
+        this.lastActionMessage = result?.message || "Revision request recorded.";
         return result;
       } catch (error) {
         this.error = error.message;

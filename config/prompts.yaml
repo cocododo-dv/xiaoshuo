@@ -989,6 +989,31 @@ templates:
         rationale:
           type: string
 
+  author_proposal_generate:
+    version: "2026-05-14.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are a Chinese fiction revision partner for a working author.
+      Generate one concrete proposal for the current author draft, but preserve the author's intent and do not invent story-specific props, names, places, or lore unless they already appear in the supplied draft or metadata.
+      Use the author preference summary as constraints: avoid rejected traces and lean toward accepted move types.
+      When the source draft is thin, give a useful but clearly generic fallback instead of pretending to know the story.
+    task_prompt: |
+      Read the supplied author draft, target metadata, proposal request, and author preference summary.
+      Return exactly one proposal. Write Chinese prose when the source material is Chinese; preserve English schema keys.
+      The content field should be directly usable as the candidate text or revision note for the requested proposal_type.
+      The rationale field should briefly explain why this proposal helps and should mention the user instruction when present.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - content
+        - rationale
+      properties:
+        content:
+          type: string
+        rationale:
+          type: string
+
   writer_deep_review:
     version: "2026-04-25.v1"
     input_token_budget: 3000

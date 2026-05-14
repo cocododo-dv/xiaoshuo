@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 
 import {
   applyAuthorDraftScopedProposal,
+  ensureAuthorDraft,
   ensureBlankAuthorDraft,
   fetchAuthorDraftProposalDiff,
   fetchChapters,
@@ -73,6 +74,17 @@ function proposalCardFromProposal(proposal = {}) {
     excerpt: proposal.excerpt || proposal.replacement_text || proposal.content || "",
     target_range: proposal.target_range || null,
     source_evaluation_id: proposal.source_evaluation_id || "",
+  };
+}
+
+function draftFromEnsureResult(result = {}, primaryText = {}) {
+  const draft = snapshotPayload(result.draft || null);
+  const content = draft?.content || primaryText?.content || "";
+  return {
+    draft,
+    content,
+    proposals: snapshotPayloadList(result.open_draft_proposals || []),
+    authorPreferenceSummary: snapshotPayload(result.author_preference_summary || {}),
   };
 }
 
@@ -238,13 +250,41 @@ export const useWriterRoomStore = defineStore("writerRoom", {
       this.actionId = "draft-ensure";
       this.error = "";
       try {
-        const result = await ensureBlankAuthorDraft(this.objectType, this.objectId);
-        this.draft = snapshotPayload(result.draft || null);
-        this.draftContent = this.draft?.content || this.primaryText?.content || "";
+        const result = await ensureAuthorDraft(this.objectType, this.objectId);
+        const normalized = draftFromEnsureResult(result, this.primaryText);
+        this.draft = normalized.draft;
+        this.draftContent = normalized.content;
         this.draftSavedContent = this.draftContent;
-        this.proposals = snapshotPayloadList(result.open_draft_proposals || this.proposals);
+        this.proposals = normalized.proposals.length ? normalized.proposals : snapshotPayloadList(this.proposals);
         this.proposalCards = snapshotPayloadList(this.proposals.map((proposal) => proposalCardFromProposal(proposal)));
-        this.authorPreferenceSummary = snapshotPayload(result.author_preference_summary || this.authorPreferenceSummary);
+        this.authorPreferenceSummary = Object.keys(normalized.authorPreferenceSummary).length
+          ? normalized.authorPreferenceSummary
+          : snapshotPayload(this.authorPreferenceSummary);
+        return this.draft;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async ensureBlankDraft() {
+      if (!this.objectId) {
+        return null;
+      }
+      this.actionId = "draft-ensure-blank";
+      this.error = "";
+      try {
+        const result = await ensureBlankAuthorDraft(this.objectType, this.objectId);
+        const normalized = draftFromEnsureResult(result, { content: "" });
+        this.draft = normalized.draft;
+        this.draftContent = normalized.draft?.content || "";
+        this.draftSavedContent = this.draftContent;
+        this.proposals = normalized.proposals.length ? normalized.proposals : snapshotPayloadList(this.proposals);
+        this.proposalCards = snapshotPayloadList(this.proposals.map((proposal) => proposalCardFromProposal(proposal)));
+        this.authorPreferenceSummary = Object.keys(normalized.authorPreferenceSummary).length
+          ? normalized.authorPreferenceSummary
+          : snapshotPayload(this.authorPreferenceSummary);
         return this.draft;
       } catch (error) {
         this.error = error.message;

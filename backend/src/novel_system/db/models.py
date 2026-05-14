@@ -702,7 +702,7 @@ class WorkProfile(Base):
 class AuthorDraft(Base):
     __tablename__ = "author_drafts"
     __table_args__ = (
-        CheckConstraint("object_type IN ('scene','chapter')", name="ck_author_drafts_object_type"),
+        CheckConstraint("object_type IN ('scene','chapter','project')", name="ck_author_drafts_object_type"),
         CheckConstraint("status IN ('current','superseded','archived')", name="ck_author_drafts_status"),
     )
 
@@ -722,7 +722,7 @@ class AuthorDraft(Base):
 class AuthorDraftProposal(Base):
     __tablename__ = "author_draft_proposals"
     __table_args__ = (
-        CheckConstraint("object_type IN ('scene','chapter')", name="ck_author_draft_proposals_object_type"),
+        CheckConstraint("object_type IN ('scene','chapter','project')", name="ck_author_draft_proposals_object_type"),
         CheckConstraint(
             "status IN ('candidate','accepted','rejected','superseded')",
             name="ck_author_draft_proposals_status",
@@ -780,7 +780,7 @@ class AuthorDraftEvent(Base):
 class AuthorStructureCandidate(Base):
     __tablename__ = "author_structure_candidates"
     __table_args__ = (
-        CheckConstraint("object_type IN ('scene','chapter')", name="ck_author_structure_candidates_object_type"),
+        CheckConstraint("object_type IN ('scene','chapter','project')", name="ck_author_structure_candidates_object_type"),
         CheckConstraint(
             "status IN ('candidate','accepted','rejected','superseded')",
             name="ck_author_structure_candidates_status",

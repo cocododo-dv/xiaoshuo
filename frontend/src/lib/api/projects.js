@@ -84,6 +84,13 @@ export function approveProjectChapterFinal(projectId, chapterId, payload = {}) {
   );
 }
 
+export function reviewProjectChapterFinal(projectId, chapterId, payload = {}) {
+  return apiPost(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/final-review`,
+    payload,
+  );
+}
+
 export function attachProjectReferenceProfile(projectId, profileId) {
   return apiPost(`/api/v1/projects/${encodeURIComponent(projectId)}/reference-profiles`, {
     profile_id: profileId,

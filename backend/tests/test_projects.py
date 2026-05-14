@@ -11,6 +11,7 @@ from novel_system.db.models import (
     FinalScene,
     LlmCall,
     OperationLog,
+    ProjectBacktrackItem,
     ReferenceBook,
     ReferenceLearningRun,
     ReferenceProfile,
@@ -413,6 +414,86 @@ def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(clien
     assert packet["missing_scene_ids"] == []
     assert packet["aggregate_row_id"] == "chapter_memory_final"
     assert "source_safety_scan" in packet
+
+
+def test_project_final_review_can_request_scene_revision_without_advancing_chapter(client, session) -> None:
+    project = _create_project(client, target_chapter_count=1, key="scene-revision-review")
+    plan = _generate_plan(client, project["project_id"])
+    approved = _approve_plan(client, project["project_id"], plan["plan_id"])
+    chapter_id = approved["project"]["current_chapter_id"]
+    scenes = (
+        session.query(SceneCard)
+        .filter(SceneCard.chapter_id == chapter_id)
+        .order_by(SceneCard.scene_seq)
+        .all()
+    )
+    assert scenes
+    first_scene = scenes[0]
+    for index, scene in enumerate(scenes, start=1):
+        final_row_id = f"final_review_{scene.scene_id}"
+        session.add(
+            FinalScene(
+                row_id=final_row_id,
+                scene_id=scene.scene_id,
+                chapter_id=chapter_id,
+                content=f"final scene {index} body",
+                source_bundle_id=f"bundle_review_{index}",
+                source_bundle_hash=f"hash_review_{index}",
+            )
+        )
+        state = session.get(SceneRunState, scene.scene_id)
+        assert state is not None
+        state.current_final_scene_row_id = final_row_id
+        state.scene_status = "archived"
+    session.add(
+        ChapterRunJob(
+            job_id=f"review_job_{chapter_id}",
+            chapter_id=chapter_id,
+            status="completed",
+            job_type="chapter_run_full",
+            payload_json={},
+            result_summary_json={"latest_error": None},
+        )
+    )
+    db_project = session.get(StoryProject, project["project_id"])
+    assert db_project is not None
+    db_project.status = "chapter_final_review"
+    session.commit()
+
+    dashboard_response = client.get(f"/api/v1/projects/{project['project_id']}/dashboard")
+    assert dashboard_response.status_code == 200
+    packet = dashboard_response.json()["data"]["review_packet"]
+    assert packet["scene_reviews"][0]["scene_id"] == first_scene.scene_id
+    assert packet["scene_reviews"][0]["body_excerpt"].startswith("final scene 1")
+
+    response = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/final-review",
+        json={
+            "decision": "request_scene_revision",
+            "revision_notes": "The first scene needs a visible cost before approval.",
+            "scene_decisions": [
+                {
+                    "scene_id": first_scene.scene_id,
+                    "decision": "request_revision",
+                    "note": "Add a consequence the protagonist cannot undo.",
+                }
+            ],
+        },
+        headers={"X-Idempotency-Key": "final-review-scene-revision"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()["data"]
+    assert payload["project"]["status"] == "chapter_blocked"
+    assert payload["project"]["current_chapter_id"] == chapter_id
+    assert payload["review_decision"]["decision"] == "request_scene_revision"
+    assert payload["backtrack_items"][0]["scene_id"] == first_scene.scene_id
+    session.expire_all()
+    db_project = session.get(StoryProject, project["project_id"])
+    assert db_project.current_chapter_id == chapter_id
+    assert db_project.approved_chapter_ids_json == []
+    backtrack = session.query(ProjectBacktrackItem).filter_by(scene_id=first_scene.scene_id, status="pending").one()
+    assert backtrack.problem_summary == "Add a consequence the protagonist cannot undo."
 
 
 def test_project_review_packet_reports_empty_body_reason(client, session) -> None:

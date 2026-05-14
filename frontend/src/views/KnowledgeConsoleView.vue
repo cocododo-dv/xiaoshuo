@@ -62,6 +62,7 @@ const draft = reactive({
 });
 const riskAcknowledgements = reactive({});
 const riskReasons = reactive({});
+const humanReviewReasons = reactive({});
 
 const selectedEntryKey = computed(() =>
   knowledgeConsole.selectedObjectType && knowledgeConsole.selectedLineageKey
@@ -645,10 +646,9 @@ async function runRelease(reviewId) {
   });
 }
 
-async function runHumanReviewAction(eventId, action) {
-  const payload = {};
+async function runHumanReviewAction(eventId, action, payload = {}) {
   if (action === "accept_soft_risk") {
-    const reason = String(globalThis.window?.prompt?.("请写明接受这个软风险的理由，系统会记录到审计日志。") || "").trim();
+    const reason = String(payload.reason || humanReviewReasons[eventId] || "").trim();
     if (!reason) {
       emit("notice", "接受软风险需要写明理由。");
       return;
@@ -1186,6 +1186,18 @@ watch(
                         <span>{{ row.statusLabel }}</span>
                       </p>
                       <p class="muted">{{ row.defaultActionLabel }}</p>
+                      <label
+                        v-if="row.actions.some((action) => action.action === 'accept_soft_risk')"
+                        class="soft-risk-reason"
+                      >
+                        <span>接受理由</span>
+                        <input
+                          v-model="humanReviewReasons[row.eventId]"
+                          type="text"
+                          :data-testid="`knowledge-human-review-reason-${row.eventId}`"
+                          placeholder="说明为什么可以接受这个软风险"
+                        />
+                      </label>
                       <div class="card-actions">
                         <button class="ghost" @click="openHumanReviewEvent(row.event)">
                           打开审核收件箱
@@ -1195,8 +1207,8 @@ watch(
                           :key="action.key"
                           class="ghost"
                           :data-testid="`knowledge-human-review-action-${row.eventId}-${action.action}`"
-                          :disabled="Boolean(knowledgeConsole.actionId)"
-                          @click="runHumanReviewAction(row.eventId, action.action)"
+                          :disabled="Boolean(knowledgeConsole.actionId) || (action.action === 'accept_soft_risk' && !String(humanReviewReasons[row.eventId] || '').trim())"
+                          @click="runHumanReviewAction(row.eventId, action.action, action.action === 'accept_soft_risk' ? { reason: humanReviewReasons[row.eventId] } : {})"
                         >
                           {{ action.label }}
                         </button>

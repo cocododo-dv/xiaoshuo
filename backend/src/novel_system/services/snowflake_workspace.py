@@ -21,6 +21,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService, outline_plan_payload, project_payload
+from novel_system.services.project_runtime_invalidation import ProjectRuntimeInvalidationService
 from novel_system.services.snowflake_planner import GATE_STATUSES, SnowflakePlannerService
 from novel_system.services.snowflake_steps import (
     MATERIALIZATION_REQUIREMENTS,
@@ -204,6 +205,61 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace, "step_run": self._step_run_payload(run)}
 
+    def import_discovery_steps(
+        self,
+        project_id: str,
+        step_drafts: dict[str, Any],
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        del actor_ref
+        project = self._require_snowflake_project(project_id)
+        allowed_order = [
+            "book_brief",
+            "one_sentence_summary",
+            "one_paragraph_summary",
+            "scene_list",
+            "scene_details",
+        ]
+        latest_by_step = self._latest_by_step(project.project_id)
+        imported_runs: list[SnowflakeStepRun] = []
+        for step_key in allowed_order:
+            raw_draft = step_drafts.get(step_key)
+            if not isinstance(raw_draft, dict):
+                continue
+            self._require_step(step_key)
+            draft = merge_step_draft(step_key, raw_draft, latest_by_step=latest_by_step)
+            latest = latest_by_step.get(step_key)
+            if latest is not None and latest.status == "pending_review":
+                run = latest
+                run.draft_json = draft
+                run.input_refs_json = self._input_refs(step_key, latest_by_step)
+                run.health_json = self._step_health(step_key, draft, "pending_review", generation_source="author_discovery")
+                run.stale_reason = None
+            else:
+                run = SnowflakeStepRun(
+                    step_run_id=f"snowflake_step_run_{project.project_id}_{step_key}_{uuid.uuid4().hex[:10]}",
+                    project_id=project.project_id,
+                    step_key=step_key,
+                    version=self._next_step_version(project.project_id, step_key),
+                    status="pending_review",
+                    draft_json=draft,
+                    health_json=self._step_health(step_key, draft, "pending_review", generation_source="author_discovery"),
+                    input_refs_json=self._input_refs(step_key, latest_by_step),
+                )
+                self.session.add(run)
+            self.session.flush()
+            self._sync_structured_step_data(project, step_key, draft, run)
+            latest_by_step[step_key] = run
+            imported_runs.append(run)
+        self.session.flush()
+        workspace = self.workspace(project.project_id)
+        return {
+            "imported_step_keys": [run.step_key for run in imported_runs],
+            "step_runs": [self._step_run_payload(run) for run in imported_runs],
+            "workspace": workspace,
+        }
+
     def approve_step(self, project_id: str, step_key: str) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         latest_by_step = self._latest_by_step(project.project_id)
@@ -217,15 +273,37 @@ class SnowflakeWorkspaceService:
             raise DomainError("SNOWFLAKE_STEP_RUN_NOT_APPROVABLE", "step run cannot be approved in its current status", status_code=409)
 
         self._require_previous_gates(step_key, latest_by_step, allow_self=run.step_run_id)
+        previous_run = self._latest_approved_step_run(project.project_id, step_key, exclude_step_run_id=run.step_run_id)
         self._supersede_same_step(run)
         run.status = "approved"
         run.approved_at = utcnow()
         run.health_json = self._step_health(step_key, run.draft_json or {}, "approved", generation_source=(run.health_json or {}).get("generation_source"))
         self._sync_structured_step_data(project, step_key, run.draft_json or {}, run, approved=True)
-        self._mark_downstream_stale(run)
+        downstream_impact = self._mark_downstream_stale(run)
+        runtime_impact = (
+            ProjectRuntimeInvalidationService(self.session).invalidate_for_snowflake_step(
+                project.project_id,
+                step_key,
+                previous_payload=previous_run.draft_json if previous_run is not None else None,
+                current_payload=run.draft_json or {},
+            )
+            if previous_run is not None
+            else {
+                "step_key": step_key,
+                "scope": "none",
+                "broad": False,
+                "affected_count": 0,
+                "affected_scene_ids": [],
+                "summary": "First approval has no stale runtime scope.",
+            }
+        )
         self.session.flush()
         workspace = self.workspace(project.project_id)
-        return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
+        return {
+            "step": self._step_from_workspace(workspace, step_key),
+            "workspace": workspace,
+            "impact": self._combine_approval_impact(step_key, downstream_impact, runtime_impact),
+        }
 
     def request_assistant(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -535,6 +613,24 @@ class SnowflakeWorkspaceService:
             .order_by(SnowflakeStepRun.version.desc())
         ).scalar()
         return int(latest or 0) + 1
+
+    def _latest_approved_step_run(
+        self,
+        project_id: str,
+        step_key: str,
+        *,
+        exclude_step_run_id: str,
+    ) -> SnowflakeStepRun | None:
+        return self.session.execute(
+            select(SnowflakeStepRun)
+            .where(
+                SnowflakeStepRun.project_id == project_id,
+                SnowflakeStepRun.step_key == step_key,
+                SnowflakeStepRun.step_run_id != exclude_step_run_id,
+                SnowflakeStepRun.status.in_(["approved", "skipped"]),
+            )
+            .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.created_at.desc())
+        ).scalars().first()
 
     def _next_plan_version(self, project_id: str) -> int:
         latest = self.session.execute(
@@ -1055,12 +1151,20 @@ class SnowflakeWorkspaceService:
         for row in rows:
             row.status = "superseded"
 
-    def _mark_downstream_stale(self, run: SnowflakeStepRun) -> None:
+    def _mark_downstream_stale(self, run: SnowflakeStepRun) -> dict[str, Any]:
         step_index = STEP_ORDER[run.step_key]
         downstream_keys = [step["step_key"] for step in list_step_definitions()[step_index + 1 :]]
         if not downstream_keys:
-            return
+            return {
+                "step_key": run.step_key,
+                "affected_count": 0,
+                "affected_step_run_ids": [],
+                "affected_scene_plan_ids": [],
+                "summary": "No downstream snowflake steps are affected.",
+            }
         reason = f"{run.step_key} was revised in version {run.version}; review dependent snowflake work."
+        affected_step_run_ids: list[str] = []
+        affected_scene_plan_ids: list[str] = []
         rows = self.session.execute(
             select(SnowflakeStepRun).where(
                 SnowflakeStepRun.project_id == run.project_id,
@@ -1071,13 +1175,44 @@ class SnowflakeWorkspaceService:
         for row in rows:
             row.status = "stale"
             row.stale_reason = reason
+            affected_step_run_ids.append(row.step_run_id)
             self._record_revision_link(run, affected_kind="step_run", affected_id=row.step_run_id, reason=reason)
 
         if any(STEP_ORDER[key] >= STEP_ORDER["scene_list"] for key in downstream_keys):
             for scene in self._scene_plans(run.project_id):
                 scene.status = "stale"
                 scene.stale_reason = reason
+                affected_scene_plan_ids.append(scene.scene_plan_id)
                 self._record_revision_link(run, affected_kind="scene_plan", affected_id=scene.scene_plan_id, reason=reason)
+        return {
+            "step_key": run.step_key,
+            "affected_count": len(affected_step_run_ids) + len(affected_scene_plan_ids),
+            "affected_step_run_ids": affected_step_run_ids,
+            "affected_scene_plan_ids": affected_scene_plan_ids,
+            "summary": reason if affected_step_run_ids or affected_scene_plan_ids else "No downstream snowflake artifacts are affected.",
+        }
+
+    @staticmethod
+    def _combine_approval_impact(
+        step_key: str,
+        downstream_impact: dict[str, Any],
+        runtime_impact: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "step_key": step_key,
+            "affected_count": int(downstream_impact.get("affected_count") or 0)
+            + int(runtime_impact.get("affected_count") or 0),
+            "downstream": downstream_impact,
+            "runtime": runtime_impact,
+            "summary": "; ".join(
+                part
+                for part in [
+                    str(downstream_impact.get("summary") or "").strip(),
+                    str(runtime_impact.get("summary") or "").strip(),
+                ]
+                if part
+            ),
+        }
 
     def _record_revision_link(self, run: SnowflakeStepRun, *, affected_kind: str, affected_id: str, reason: str) -> None:
         existing = self.session.execute(

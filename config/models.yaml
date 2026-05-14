@@ -208,6 +208,12 @@ task_routing:
     temperature: 0.2
     max_output_tokens: 2200
     response_format: json_object
+  author_proposal_generate:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.45
+    max_output_tokens: 2600
+    response_format: json_object
   writer_reference_application_review:
     provider: openai_compatible
     model: gpt-5-mini

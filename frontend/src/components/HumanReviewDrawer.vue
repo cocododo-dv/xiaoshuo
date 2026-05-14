@@ -28,6 +28,7 @@ const emit = defineEmits(["action", "open-target"]);
 
 const expandedDetails = reactive({});
 const expandedHistory = reactive({});
+const softRiskReasons = reactive({});
 const { isAdvancedMode } = useUiMode();
 
 const ACTION_LABELS = {
@@ -282,6 +283,20 @@ function humanReviewRow(item) {
 function formattedDetails(item) {
   return JSON.stringify(item.details_json || {}, null, 2);
 }
+
+function actionPayload(row, action) {
+  if (action !== "accept_soft_risk") {
+    return {};
+  }
+  return { reason: String(softRiskReasons[row.eventId] || "").trim() };
+}
+
+function actionDisabled(row, action) {
+  if (props.actionId === `${row.eventId}:${action}`) {
+    return true;
+  }
+  return action === "accept_soft_risk" && !String(softRiskReasons[row.eventId] || "").trim();
+}
 </script>
 
 <template>
@@ -426,12 +441,25 @@ function formattedDetails(item) {
           </div>
 
           <div v-if="props.interactive && row.actions.length" class="card-actions">
+            <label
+              v-for="action in row.actions.filter((item) => item.action === 'accept_soft_risk')"
+              :key="`${action.actionId}:reason`"
+              class="soft-risk-reason"
+            >
+              <span>接受理由</span>
+              <input
+                v-model="softRiskReasons[row.eventId]"
+                type="text"
+                :data-testid="`human-review-reason-${row.eventId}`"
+                placeholder="说明为什么可以接受这个软风险"
+              />
+            </label>
             <button
               v-for="action in row.actions"
               :key="action.actionId"
-              :disabled="props.actionId === action.actionId"
+              :disabled="actionDisabled(row, action.action)"
               :data-testid="`human-review-action-${row.eventId}-${action.action}`"
-              @click="emit('action', { eventId: row.eventId, action: action.action })"
+              @click="emit('action', { eventId: row.eventId, action: action.action, payload: actionPayload(row, action.action) })"
             >
               {{ props.actionId === action.actionId ? "处理中..." : action.label }}
             </button>

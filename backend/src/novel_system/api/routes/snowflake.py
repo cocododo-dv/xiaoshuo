@@ -49,8 +49,10 @@ def update_snowflake_artifact(
     request: Request,
     session: Session = Depends(get_session),
 ):
+    result = SnowflakePlannerService(session).update_artifact(project_id, artifact_id, payload)
+    session.commit()
     return ok(
-        SnowflakePlannerService(session).update_artifact(project_id, artifact_id, payload),
+        result,
         req_id=getattr(request.state, "request_id", None),
     )
 

@@ -73,8 +73,25 @@ describe("writer flow command center", () => {
 
     expect(source).toContain('data-testid="writer-flow-offline-banner"');
     expect(source).toContain('data-testid="writer-flow-config-action"');
+    expect(source).toContain("离线 fallback");
     expect(source).toContain("router.navigate('config'");
     expect(source).toContain("disabled: offlineBanner.value");
+  });
+
+  it("keeps final review, polling, note count, and writer-room return context visible", () => {
+    const viewSource = readSource("src/views/WriterFlowView.vue");
+    const roomSource = readSource("src/views/WriterRoomView.vue");
+    const apiSource = readSource("src/lib/api/projects.js");
+
+    expect(apiSource).toContain("reviewProjectChapterFinal");
+    expect(apiSource).toContain("/final-review");
+    expect(viewSource).toContain("isPolling");
+    expect(viewSource).toContain('data-testid="writer-flow-polling-status"');
+    expect(viewSource).toContain("approvalNotesCount");
+    expect(viewSource).toContain("approvalNotesTooLong");
+    expect(viewSource).toContain("returnTo: 'writer-flow'");
+    expect(viewSource).toContain("returnLabel: '返回批准'");
+    expect(roomSource).toContain('data-testid="writer-room-return-to-flow"');
   });
 
   it("store drives dashboard, run-job polling, and final approval from next_action", async () => {
@@ -139,8 +156,11 @@ describe("writer flow command center", () => {
           progress_pct: 100,
         });
       }
-      if (url.endsWith("/api/v1/projects/PRJ_FLOW/chapters/PRJ_FLOW_CH01/approve-final") && method === "POST") {
-        expect(JSON.parse(options.body)).toEqual({ revision_notes: "Keep the second scene tense." });
+      if (url.endsWith("/api/v1/projects/PRJ_FLOW/chapters/PRJ_FLOW_CH01/final-review") && method === "POST") {
+        expect(JSON.parse(options.body)).toEqual({
+          decision: "approve",
+          revision_notes: "Keep the second scene tense.",
+        });
         return okEnvelope({
           project: { ...project, status: "completed", current_chapter_id: null, approved_chapter_ids: ["PRJ_FLOW_CH01"] },
           next_chapter_id: null,

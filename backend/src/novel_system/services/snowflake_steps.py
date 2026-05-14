@@ -21,7 +21,7 @@ MATERIALIZATION_WARNING_STEPS = [
 ]
 QUALITY_POLICY = {
     "flow_mode": "coach_flexible",
-    "all_steps_skippable_with_reason": True,
+    "optional_steps_skippable_with_reason": True,
     "hard_gate": "materialization",
     "hard_required_steps": MATERIALIZATION_REQUIRED_STEPS,
     "warning_only_steps": MATERIALIZATION_WARNING_STEPS,
@@ -395,8 +395,9 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
 ]
 
 for _step_definition in SNOWFLAKE_STEP_CATALOG:
-    _step_definition["skippable"] = True
-    _step_definition["required_for_materialization"] = _step_definition["step_key"] in MATERIALIZATION_REQUIRED_STEPS
+    _required_for_materialization = _step_definition["step_key"] in MATERIALIZATION_REQUIRED_STEPS
+    _step_definition["required_for_materialization"] = _required_for_materialization
+    _step_definition["skippable"] = not _required_for_materialization
 
 STEP_ORDER = {step["step_key"]: index for index, step in enumerate(SNOWFLAKE_STEP_CATALOG)}
 
