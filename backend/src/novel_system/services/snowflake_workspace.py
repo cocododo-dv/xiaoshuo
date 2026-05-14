@@ -205,6 +205,59 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace, "step_run": self._step_run_payload(run)}
 
+    def step_history(self, project_id: str, step_key: str, *, include_draft: bool = False) -> dict[str, Any]:
+        project = self._require_snowflake_project(project_id)
+        self._require_step(step_key)
+        rows = self.session.execute(
+            select(SnowflakeStepRun)
+            .where(SnowflakeStepRun.project_id == project.project_id, SnowflakeStepRun.step_key == step_key)
+            .order_by(SnowflakeStepRun.version.desc(), SnowflakeStepRun.updated_at.desc(), SnowflakeStepRun.created_at.desc())
+        ).scalars().all()
+        return {
+            "project_id": project.project_id,
+            "step_key": step_key,
+            "items": [self._step_run_history_payload(row, include_draft=include_draft) for row in rows],
+        }
+
+    def restore_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        project = self._require_snowflake_project(project_id)
+        body = payload or {}
+        self._require_step(step_key)
+        source_run_id = str(body.get("step_run_id") or "").strip()
+        if not source_run_id:
+            raise DomainError("SNOWFLAKE_STEP_RUN_REQUIRED", "step_run_id is required", status_code=400)
+        source_run = self.session.get(SnowflakeStepRun, source_run_id)
+        if source_run is None or source_run.project_id != project.project_id or source_run.step_key != step_key:
+            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "snowflake step run does not belong to this project step", status_code=404)
+        latest_by_step = self._latest_by_step(project.project_id)
+        self._require_previous_gates(step_key, latest_by_step)
+        draft = deepcopy(source_run.draft_json or {})
+        refs = self._input_refs(step_key, latest_by_step)
+        refs["restored_from_step_run_id"] = source_run.step_run_id
+        run = SnowflakeStepRun(
+            step_run_id=f"snowflake_step_run_{project.project_id}_{step_key}_{uuid.uuid4().hex[:10]}",
+            project_id=project.project_id,
+            step_key=step_key,
+            version=self._next_step_version(project.project_id, step_key),
+            status="pending_review",
+            draft_json=draft,
+            health_json=self._step_health(step_key, draft, "pending_review", generation_source="history_restore"),
+            input_refs_json=refs,
+        )
+        self.session.add(run)
+        self.session.flush()
+        self._sync_structured_step_data(project, step_key, draft, run)
+        self.session.flush()
+        workspace = self.workspace(project.project_id)
+        step_run = self._step_run_payload(run) or {}
+        step_run["restored_from_step_run_id"] = source_run.step_run_id
+        return {
+            "step": self._step_from_workspace(workspace, step_key),
+            "workspace": workspace,
+            "step_run": step_run,
+            "restored_from": self._step_run_history_payload(source_run, include_draft=False),
+        }
+
     def import_discovery_steps(
         self,
         project_id: str,
@@ -218,6 +271,8 @@ class SnowflakeWorkspaceService:
             "book_brief",
             "one_sentence_summary",
             "one_paragraph_summary",
+            "character_sheets",
+            "character_synopses",
             "scene_list",
             "scene_details",
         ]
@@ -228,8 +283,10 @@ class SnowflakeWorkspaceService:
             if not isinstance(raw_draft, dict):
                 continue
             self._require_step(step_key)
-            draft = merge_step_draft(step_key, raw_draft, latest_by_step=latest_by_step)
             latest = latest_by_step.get(step_key)
+            if step_key in {"character_sheets", "character_synopses", "character_bibles"}:
+                raw_draft = self._merge_character_import_draft(latest.draft_json if latest else {}, raw_draft)
+            draft = merge_step_draft(step_key, raw_draft, latest_by_step=latest_by_step)
             if latest is not None and latest.status == "pending_review":
                 run = latest
                 run.draft_json = draft
@@ -1294,6 +1351,57 @@ class SnowflakeWorkspaceService:
         }
 
     @staticmethod
+    def _step_run_history_payload(run: SnowflakeStepRun, *, include_draft: bool = False) -> dict[str, Any]:
+        payload = {
+            "step_run_id": run.step_run_id,
+            "version": run.version,
+            "status": run.status,
+            "created_at": run.created_at,
+            "updated_at": run.updated_at,
+            "approved_at": run.approved_at,
+            "stale_reason": run.stale_reason,
+            "generation_source": str((run.health_json or {}).get("generation_source") or ""),
+            "draft_summary": _draft_summary(run.draft_json or {}),
+        }
+        if include_draft:
+            payload["draft"] = deepcopy(run.draft_json or {})
+        return payload
+
+    @staticmethod
+    def _merge_character_import_draft(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
+        existing_characters = existing.get("characters") if isinstance(existing, dict) else None
+        incoming_characters = incoming.get("characters") if isinstance(incoming, dict) else None
+        if not isinstance(existing_characters, list) or not isinstance(incoming_characters, list):
+            return deepcopy(incoming)
+        existing_by_id: dict[str, dict[str, Any]] = {}
+        merged_characters: list[dict[str, Any]] = []
+        for item in existing_characters:
+            if not isinstance(item, dict):
+                continue
+            cloned = deepcopy(item)
+            identity = _character_identity(cloned)
+            if identity:
+                existing_by_id[identity] = cloned
+            merged_characters.append(cloned)
+        for item in incoming_characters:
+            if not isinstance(item, dict):
+                continue
+            identity = _character_identity(item)
+            if not identity or identity not in existing_by_id:
+                cloned = deepcopy(item)
+                merged_characters.append(cloned)
+                if identity:
+                    existing_by_id[identity] = cloned
+                continue
+            merged_item = _merge_preserving_existing(existing_by_id[identity], item)
+            existing_by_id[identity].clear()
+            existing_by_id[identity].update(merged_item)
+        return {
+            **deepcopy(incoming),
+            "characters": merged_characters,
+        }
+
+    @staticmethod
     def _step_from_workspace(workspace: dict[str, Any], step_key: str) -> dict[str, Any]:
         for step in workspace.get("steps") or []:
             if step.get("step_key") == step_key:
@@ -1338,6 +1446,60 @@ def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
             merged[key] = _merge_dicts(merged[key], value)
         else:
             merged[key] = deepcopy(value)
+    return merged
+
+
+def _draft_summary(value: Any, *, limit: int = 180) -> str:
+    pieces: list[str] = []
+
+    def visit(item: Any) -> None:
+        if len(" ".join(pieces)) >= limit:
+            return
+        if isinstance(item, str):
+            text = " ".join(item.split())
+            if text:
+                pieces.append(text)
+            return
+        if isinstance(item, list):
+            for child in item[:8]:
+                visit(child)
+            return
+        if isinstance(item, dict):
+            for child in item.values():
+                visit(child)
+
+    visit(value)
+    summary = " ".join(pieces)
+    return summary[:limit].rstrip()
+
+
+def _character_identity(item: dict[str, Any]) -> str:
+    return str(item.get("character_id") or item.get("display_name") or item.get("name") or "").strip()
+
+
+def _has_meaningful_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
+
+
+def _merge_preserving_existing(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(existing)
+    for key, value in incoming.items():
+        if not _has_meaningful_value(value):
+            continue
+        current = merged.get(key)
+        if not _has_meaningful_value(current):
+            merged[key] = deepcopy(value)
+            continue
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_preserving_existing(current, value)
+        elif isinstance(current, list) and isinstance(value, list):
+            merged[key] = current or deepcopy(value)
     return merged
 
 

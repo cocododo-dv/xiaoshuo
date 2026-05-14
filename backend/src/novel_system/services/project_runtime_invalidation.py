@@ -281,8 +281,8 @@ class ProjectRuntimeInvalidationService:
                 scene_id=None,
                 scope=scope,
                 target_ref=f"snowflake:{step_key}",
-                problem_summary=f"Snowflake step {step_key} was reapproved, so downstream runtime artifacts are stale.",
-                recommended_fix="Review the updated snowflake output, regenerate execution contracts, and rerun the affected scenes.",
+                problem_summary=f"雪花步骤 {step_key} 已重新确认，下游章节和场景需要复核。",
+                recommended_fix="先查看新的雪花内容，再重新生成执行契约并重跑受影响场景。",
                 reason_codes=["snowflake_reapproved", step_key],
                 created_by="snowflake_planner",
             )
@@ -294,8 +294,8 @@ class ProjectRuntimeInvalidationService:
                     scene_id=scene.scene_id,
                     scope="scene",
                     target_ref=f"snowflake:{step_key}:{scene.scene_id}",
-                    problem_summary=f"Snowflake step {step_key} changed scene {scene.scene_id}.",
-                    recommended_fix="Review the updated scene plan, regenerate its execution contract, and rerun this scene.",
+                    problem_summary=f"雪花步骤 {step_key} 改动影响了场景 {scene.scene_id}。",
+                    recommended_fix="复核新的场景规划，重新生成该场执行契约，并重跑这一场。",
                     reason_codes=["snowflake_reapproved", step_key, "scoped_scene"],
                     created_by="snowflake_planner",
                 )

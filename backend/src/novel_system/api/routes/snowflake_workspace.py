@@ -75,6 +75,33 @@ def update_workspace_step(
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.get("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/history")
+def get_workspace_step_history(
+    project_id: str,
+    step_key: str,
+    request: Request,
+    include_draft: bool = False,
+    session: Session = Depends(get_session),
+):
+    return ok(
+        SnowflakeWorkspaceService(session).step_history(project_id, step_key, include_draft=include_draft),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/restore")
+def restore_workspace_step(
+    project_id: str,
+    step_key: str,
+    payload: dict[str, Any] | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    result = SnowflakeWorkspaceService(session).restore_step(project_id, step_key, payload or {})
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve")
 def approve_workspace_step(
     project_id: str,

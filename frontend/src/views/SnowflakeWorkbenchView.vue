@@ -465,6 +465,8 @@ onBeforeUnmount(() => {
 .snowflake-workbench-view .snowflake-progress-panel,
 .snowflake-workbench-view .snowflake-step-state-strip,
 .snowflake-workbench-view .snowflake-guidance-card,
+.snowflake-workbench-view .snowflake-discovery-context,
+.snowflake-workbench-view .snowflake-step-history,
 .snowflake-workbench-view .snowflake-structure-handoff,
 .snowflake-workbench-view .materialization-gate {
   display: grid;
@@ -512,6 +514,35 @@ onBeforeUnmount(() => {
   background: var(--snowflake-warning-soft);
   color: var(--snowflake-warning);
   padding: 10px 12px;
+}
+
+.snowflake-workbench-view .snowflake-discovery-context {
+  margin-top: 10px;
+  background: var(--snowflake-moss-soft);
+}
+
+.snowflake-workbench-view .snowflake-discovery-context summary {
+  cursor: pointer;
+  color: var(--snowflake-heading);
+  font-weight: 800;
+}
+
+.snowflake-workbench-view .snowflake-discovery-context p,
+.snowflake-workbench-view .history-version-row p {
+  margin: 0;
+}
+
+.snowflake-workbench-view .snowflake-step-history {
+  background: var(--snowflake-paper);
+}
+
+.snowflake-workbench-view .history-version-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid var(--snowflake-line);
+  padding-top: 10px;
 }
 
 .snowflake-workbench-view .snowflake-stale-note {

@@ -10,12 +10,14 @@ from novel_system.db.models import (
     OutlinePlan,
     SceneCard,
     SnowflakeArtifact,
+    SnowflakeCharacterPlan,
     SnowflakeRevisionLink,
     SnowflakeScenePlan,
     SnowflakeSceneTriageItem,
     SnowflakeStepRun,
 )
 from novel_system.services.llm_client import LLMResponse
+from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 
 
 def _create_project(
@@ -261,6 +263,150 @@ def test_discovery_draft_extracts_project_structure_into_pending_snowflake_steps
     )
     assert {run.step_key for run in runs} >= set(applied["imported_step_keys"])
     assert all(run.status == "pending_review" for run in runs)
+
+
+def test_workspace_v2_step_history_and_restore_keep_author_approval_gate(client, session) -> None:
+    project = _create_project(client, key="history-restore")
+
+    first_response = client.patch(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
+        json={
+            "draft": {
+                "category": "Urban Mystery",
+                "target_reader": "Readers who want old cases and family cost.",
+                "story_kind": "A mystery about choosing truth over comfort.",
+            }
+        },
+    )
+    assert first_response.status_code == 200, first_response.text
+    first_run_id = first_response.json()["data"]["step"]["artifact"]["step_run_id"]
+    _approve_step(client, project["project_id"], "book_brief")
+
+    second_response = client.patch(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
+        json={
+            "draft": {
+                "category": "Noir Mystery",
+                "target_reader": "Readers who want harder-edged city pressure.",
+                "story_kind": "A noir mystery with escalating public cost.",
+            }
+        },
+    )
+    assert second_response.status_code == 200, second_response.text
+
+    history_response = client.get(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief/history"
+    )
+    assert history_response.status_code == 200, history_response.text
+    history = history_response.json()["data"]
+    assert [item["version"] for item in history["items"]] == [2, 1]
+    assert history["items"][0]["draft_summary"]
+    assert "draft" not in history["items"][0]
+
+    detail_response = client.get(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief/history?include_draft=true"
+    )
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()["data"]
+    assert detail["items"][1]["draft"]["category"] == "Urban Mystery"
+
+    restore_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief/restore",
+        json={"step_run_id": first_run_id},
+    )
+    assert restore_response.status_code == 200, restore_response.text
+    restored = restore_response.json()["data"]
+    assert restored["step"]["artifact"]["status"] == "pending_review"
+    assert restored["step"]["artifact"]["version"] == 3
+    assert restored["step"]["draft"]["category"] == "Urban Mystery"
+    assert restored["step_run"]["restored_from_step_run_id"] == first_run_id
+
+    session.expire_all()
+    runs = (
+        session.query(SnowflakeStepRun)
+        .filter(SnowflakeStepRun.project_id == project["project_id"], SnowflakeStepRun.step_key == "book_brief")
+        .order_by(SnowflakeStepRun.version.asc())
+        .all()
+    )
+    assert [run.status for run in runs] == ["approved", "pending_review", "pending_review"]
+    assert session.query(SnowflakeRevisionLink).filter_by(project_id=project["project_id"]).count() == 0
+
+
+def test_workspace_v2_step_history_restore_rejects_cross_project_runs(client) -> None:
+    first_project = _create_project(client, key="history-cross-a")
+    second_project = _create_project(client, key="history-cross-b")
+    second_run = _generate_step(client, second_project["project_id"], "book_brief")["step"]["artifact"]["step_run_id"]
+
+    response = client.post(
+        f"/api/v2/projects/{first_project['project_id']}/snowflake-workspace/steps/book_brief/restore",
+        json={"step_run_id": second_run},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "SNOWFLAKE_STEP_RUN_NOT_FOUND"
+
+
+def test_discovery_import_accepts_character_steps_and_merges_by_character_id(client, session) -> None:
+    project = _create_project(client, key="discovery-character-import")
+    service = SnowflakeWorkspaceService(session)
+
+    first = service.import_discovery_steps(
+        project["project_id"],
+        {
+            "character_sheets": {
+                "characters": [
+                    {
+                        "character_id": "MARA",
+                        "display_name": "Mara Vale",
+                        "role": "protagonist",
+                        "goal": "Expose the rail crime.",
+                    }
+                ]
+            }
+        },
+    )
+    second = service.import_discovery_steps(
+        project["project_id"],
+        {
+            "character_sheets": {
+                "characters": [
+                    {
+                        "character_id": "MARA",
+                        "display_name": "Mara Vale",
+                        "ambition": "Clear her father's name.",
+                    }
+                ]
+            },
+            "character_synopses": {
+                "characters": [
+                    {
+                        "character_id": "MARA",
+                        "display_name": "Mara Vale",
+                        "synopsis": "She learned to distrust official stories.",
+                    }
+                ]
+            },
+        },
+    )
+    session.commit()
+
+    assert first["imported_step_keys"] == ["character_sheets"]
+    assert second["imported_step_keys"] == ["character_sheets", "character_synopses"]
+    latest_sheet = (
+        session.query(SnowflakeStepRun)
+        .filter(SnowflakeStepRun.project_id == project["project_id"], SnowflakeStepRun.step_key == "character_sheets")
+        .order_by(SnowflakeStepRun.version.desc())
+        .first()
+    )
+    assert latest_sheet is not None
+    character = latest_sheet.draft_json["characters"][0]
+    assert character["character_id"] == "MARA"
+    assert character["role"] == "protagonist"
+    assert character["ambition"] == "Clear her father's name."
+    plan = session.get(SnowflakeCharacterPlan, f"snowflake_character_plan_{project['project_id']}_MARA")
+    assert plan is not None
+    assert plan.summary_json["role"] == "protagonist"
+    assert plan.synopsis_json["synopsis"].startswith("She learned")
 
 
 def test_workspace_v2_uses_structured_scene_plans_and_applies_triage_repair(client, session) -> None:

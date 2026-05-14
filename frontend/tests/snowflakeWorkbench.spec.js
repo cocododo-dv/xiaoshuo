@@ -164,6 +164,8 @@ describe("snowflake workspace v2 api helpers", () => {
     await api.generateSnowflakeWorkspaceStep("PRJ_WS", "book_brief");
     await api.updateSnowflakeWorkspaceStep("PRJ_WS", "book_brief", { draft: { category: "Urban Mystery" } });
     await api.approveSnowflakeWorkspaceStep("PRJ_WS", "book_brief");
+    await api.fetchSnowflakeStepHistory("PRJ_WS", "book_brief");
+    await api.restoreSnowflakeWorkspaceStep("PRJ_WS", "book_brief", { step_run_id: "RUN_OLD" });
     await api.requestSnowflakeWorkspaceAssistant("PRJ_WS", { step_key: "book_brief", message: "Narrow the reader." });
     await api.requestSnowflakeSceneTriageSuggestions("PRJ_WS", { draft_override: { scenes: [] } });
     await api.saveSnowflakeSceneTriage("PRJ_WS", { items: [] });
@@ -179,6 +181,8 @@ describe("snowflake workspace v2 api helpers", () => {
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/generate", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief", "PATCH"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/approve", "POST"]);
+    expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/history", "GET"]);
+    expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/restore", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/assistant", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/scene-triage/suggest", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/scene-triage", "POST"]);
@@ -219,7 +223,7 @@ describe("snowflake workspace store", () => {
     vi.restoreAllMocks();
   });
 
-  it("collapses stale step warnings in session state without changing the workspace gate", async () => {
+  it("collapses stale step warnings in persistent local state without changing the workspace gate", async () => {
     const { useSnowflakeWorkbenchStore } = await import("../src/stores/snowflakeWorkbench");
     const store = useSnowflakeWorkbenchStore();
     const staleWorkspace = {
@@ -245,9 +249,78 @@ describe("snowflake workspace store", () => {
     store.dismissStaleStep(store.steps[0]);
 
     expect(store.isStaleStepDismissed(store.steps[0])).toBe(true);
-    expect(sessionStorage.getItem("snowflake-stale-dismissed:PRJ_WS::book_brief::ART_STALE::2026-05-13T00:00:00Z::upstream step changed")).toBe("1");
+    expect(localStorage.getItem("snowflake-stale-dismissed:PRJ_WS::book_brief::ART_STALE::2026-05-13T00:00:00Z::upstream step changed")).toBe("1");
+    expect(sessionStorage.getItem("snowflake-stale-dismissed:PRJ_WS::book_brief::ART_STALE::2026-05-13T00:00:00Z::upstream step changed")).toBeNull();
     expect(store.materializationGate.status).toBe("blocked");
     expect(store.materializationGate.blockers).toEqual(["still blocked"]);
+  });
+
+  it("loads snowflake step history, restores an old draft as pending review, and keeps discovery context as assistant input", async () => {
+    const history = {
+      step_key: "book_brief",
+      items: [
+        {
+          step_run_id: "RUN_OLD",
+          version: 1,
+          status: "approved",
+          draft_summary: "Readers who want family cost.",
+          generation_source: "author",
+        },
+      ],
+    };
+    const restoredWorkspace = {
+      ...workspace,
+      steps: [
+        {
+          ...workspace.steps[0],
+          artifact: { step_run_id: "RUN_RESTORED", status: "pending_review", version: 2 },
+          draft: {
+            category: "Urban Mystery",
+            target_reader: "Readers who want family cost.",
+          },
+        },
+        workspace.steps[1],
+      ],
+    };
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      const method = options.method || "GET";
+      if (url.endsWith("/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/history") && method === "GET") {
+        return okEnvelope(history);
+      }
+      if (url.endsWith("/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/restore") && method === "POST") {
+        expect(JSON.parse(options.body)).toEqual({ step_run_id: "RUN_OLD" });
+        return okEnvelope({ step: restoredWorkspace.steps[0], workspace: restoredWorkspace });
+      }
+      if (url.endsWith("/api/v2/projects/PRJ_WS/snowflake-workspace/assistant") && method === "POST") {
+        const body = JSON.parse(options.body);
+        expect(body.discovery_draft_excerpt).toContain("sealed map in the station wall");
+        expect(body.message).toContain("自由草稿");
+        expect(body.draft_override).toEqual(restoredWorkspace.steps[0].draft);
+        return okEnvelope({
+          step_key: "book_brief",
+          reply: "Use the discovery draft as emotional pressure.",
+          suggestions: [],
+          source: "fallback",
+          llm_call_id: null,
+          assistant_history: [],
+        });
+      }
+      throw new Error(`Unexpected fetch ${method} ${url}`);
+    });
+
+    const { useSnowflakeWorkbenchStore } = await import("../src/stores/snowflakeWorkbench");
+    const store = useSnowflakeWorkbenchStore();
+    store.applyWorkspace(workspace);
+    store.discoveryDraftContent = "She finds a sealed map in the station wall, then bargains for a witness.";
+
+    await store.loadCurrentStepHistory();
+    await store.restoreStepFromHistory("RUN_OLD");
+    await store.requestAssistantFromDiscoveryDraft();
+
+    expect(store.stepHistory.items[0].step_run_id).toBe("RUN_OLD");
+    expect(store.currentStep.artifact.step_run_id).toBe("RUN_RESTORED");
+    expect(store.currentStep.artifact.status).toBe("pending_review");
   });
 
   it("exposes project discovery draft api helpers and snowflake workbench controls", async () => {
@@ -266,6 +339,11 @@ describe("snowflake workspace store", () => {
     expect(source).toContain('data-testid="snowflake-discovery-draft"');
     expect(source).toContain("ensureDiscoveryDraft");
     expect(source).toContain("applyDiscoveryStructure");
+    expect(source).toContain('data-testid="snowflake-discovery-context"');
+    expect(source).toContain('data-testid="snowflake-discovery-assistant"');
+    expect(source).toContain('data-testid="snowflake-step-history"');
+    expect(source).toContain("loadCurrentStepHistory");
+    expect(source).toContain("restoreStepFromHistory");
   });
 
   it("creates a workspace project and drives step save and approval through structured drafts", async () => {

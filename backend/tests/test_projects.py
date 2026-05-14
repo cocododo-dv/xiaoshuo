@@ -412,6 +412,13 @@ def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(clien
     assert packet["completion_status"] == "complete"
     assert packet["comparison_status"] == "aggregate_differs_current"
     assert packet["missing_scene_ids"] == []
+    assert packet["scene_coverage"]["completed_count"] == len(scenes)
+    assert packet["scene_coverage"]["total_count"] == len(scenes)
+    assert packet["scene_coverage"]["percent"] == 100
+    assert packet["missing_scene_labels"] == []
+    assert packet["target_word_count_band"]["target"] == 120000
+    assert packet["target_word_count_band"]["min"] == 102000
+    assert packet["target_word_count_band"]["max"] == 138000
     assert packet["aggregate_row_id"] == "chapter_memory_final"
     assert "source_safety_scan" in packet
 
@@ -525,6 +532,10 @@ def test_project_review_packet_reports_empty_body_reason(client, session) -> Non
     assert packet["body_empty_reason"] == "no_generated_scenes"
     assert packet["completion_status"] == "empty"
     assert packet["missing_scene_ids"]
+    assert packet["scene_coverage"]["completed_count"] == 0
+    assert packet["scene_coverage"]["total_count"] == len(packet["scene_reviews"])
+    assert packet["missing_scene_labels"]
+    assert packet["missing_scene_labels"][0].startswith("第 1 场：")
 
 
 def test_project_chapter_run_job_blocks_when_llm_disabled(client, monkeypatch) -> None:

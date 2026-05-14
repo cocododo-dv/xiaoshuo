@@ -78,6 +78,54 @@ describe("writer flow command center", () => {
     expect(source).toContain("disabled: offlineBanner.value");
   });
 
+  it("translates writer-flow machine states into author-facing copy", async () => {
+    const {
+      backtrackScopeLabel,
+      bodyEmptyReasonLabel,
+      bodySourceLabel,
+      chapterListLabel,
+      completionStatusLabel,
+      latestErrorLabel,
+      nextActionLabel,
+      runStatusLabel,
+      sceneDisplayLabel,
+    } = await import("../src/lib/writerFlowDisplay");
+
+    expect(sceneDisplayLabel({
+      chapter_id: "PRJ_FLOW_CH01",
+      scenes: [
+        { scene_id: "PRJ_FLOW_CH01_SC01", scene_seq: 1, scene_goal: "Open with the map." },
+        { scene_id: "PRJ_FLOW_CH01_SC02", scene_seq: 2, title: "Witness bargain" },
+      ],
+    }, "PRJ_FLOW_CH01_SC02")).toBe("第 2 场：Witness bargain");
+    expect(chapterListLabel({ chapter_id: "PRJ_FLOW_CH02" }, 1)).toBe("第 2 章");
+    expect(bodyEmptyReasonLabel("no_generated_scenes")).toBe("还没有场景完成生成");
+    expect(bodyEmptyReasonLabel("manuscript_body_empty")).toBe("正文汇总为空，请检查运行状态");
+    expect(bodySourceLabel("llm")).toBe("");
+    expect(bodySourceLabel("fallback")).toBe("离线演示正文");
+    expect(completionStatusLabel("partial")).toBe("部分场景已完成");
+    expect(nextActionLabel("resolve_backtrack_items")).toContain("返工");
+    expect(runStatusLabel("failed", "approve_chapter_final")).toBe("起草失败，需要查看原因");
+    expect(latestErrorLabel({ message: "chapter run is blocked by pending replanning work" })).toContain("返工");
+    expect(backtrackScopeLabel({ scope: "scene", chapter_id: "CH01", scene_id: "SC02" })).toBe("场景 SC02");
+  });
+
+  it("renders writer-facing review coverage, scene list, and backtrack controls without raw ids as primary copy", () => {
+    const source = readSource("src/views/WriterFlowView.vue");
+
+    expect(source).toContain("writerFlowDisplay");
+    expect(source).toContain('data-testid="writer-flow-scene-reviews"');
+    expect(source).toContain('data-testid="writer-flow-backtrack-banner"');
+    expect(source).toContain("missingSceneLabels");
+    expect(source).toContain("targetWordCountLabel");
+    expect(source).toContain("openBacktrackItem");
+    expect(source).toContain("openWriterRoomForScene");
+    expect(source).toContain("sceneDisplayLabel");
+    expect(source).toContain("pollIntervalMs");
+    expect(source).not.toContain("runStatus?.current_scene_id || currentChapter?.chapter_id");
+    expect(source).not.toContain("reviewPacket?.body_empty_reason ||");
+  });
+
   it("keeps final review, polling, note count, and writer-room return context visible", () => {
     const viewSource = readSource("src/views/WriterFlowView.vue");
     const roomSource = readSource("src/views/WriterRoomView.vue");

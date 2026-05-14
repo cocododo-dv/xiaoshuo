@@ -8,6 +8,7 @@ import {
   ensureProjectDiscoveryDraft,
   extractAuthorDraftStructure,
   fetchProjectDiscoveryDraft,
+  fetchSnowflakeStepHistory,
   fetchSnowflakeWorkspace,
   fetchSnowflakeWorkspaceProjects,
   generateSnowflakeWorkspaceStep,
@@ -15,6 +16,7 @@ import {
   applySnowflakeSceneTriageRepair,
   requestSnowflakeSceneTriageSuggestions,
   requestSnowflakeWorkspaceAssistant,
+  restoreSnowflakeWorkspaceStep,
   saveSnowflakeSceneTriage,
   saveAuthorDraft,
   updateSnowflakeWorkspaceScene,
@@ -36,6 +38,14 @@ function clonePayload(value) {
     return value;
   }
   return JSON.parse(JSON.stringify(value));
+}
+
+function textExcerpt(value, limit = 1800) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) {
+    return text;
+  }
+  return `${text.slice(0, limit).trim()}...`;
 }
 
 const LOCAL_STEP_DRAFTS_KEY = "novel-system:snowflake-step-drafts:v1";
@@ -95,34 +105,34 @@ function staleStepKey(projectId, step) {
   ].join("::");
 }
 
-function staleSessionStorageKey(projectId, step) {
+function staleStorageKey(projectId, step) {
   return `snowflake-stale-dismissed:${staleStepKey(projectId, step)}`;
 }
 
 function readDismissedStaleStep(projectId, step) {
-  if (typeof sessionStorage === "undefined") {
+  if (typeof localStorage === "undefined") {
     return false;
   }
   try {
-    return sessionStorage.getItem(staleSessionStorageKey(projectId, step)) === "1";
+    return localStorage.getItem(staleStorageKey(projectId, step)) === "1";
   } catch {
     return false;
   }
 }
 
 function writeDismissedStaleStep(projectId, step, value) {
-  if (typeof sessionStorage === "undefined") {
+  if (typeof localStorage === "undefined") {
     return;
   }
   try {
-    const key = staleSessionStorageKey(projectId, step);
+    const key = staleStorageKey(projectId, step);
     if (value) {
-      sessionStorage.setItem(key, "1");
+      localStorage.setItem(key, "1");
     } else {
-      sessionStorage.removeItem(key);
+      localStorage.removeItem(key);
     }
   } catch {
-    // Session persistence is a convenience; keep the in-memory state authoritative.
+    // Local persistence is a convenience; keep the in-memory state authoritative.
   }
 }
 
@@ -195,6 +205,7 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
     project: null,
     workspace: null,
     assistantReplies: [],
+    stepHistory: null,
     triageDrafts: [],
     workbenchMode: "planning",
     selectedTriageSceneId: "",
@@ -356,6 +367,7 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
       if (!nextWorkspace) {
         this.workspace = null;
         this.project = null;
+        this.stepHistory = null;
         this.triageDrafts = [];
         this.assistantReplies = [];
         this.dirtyStepKeys = {};
@@ -800,6 +812,63 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
       } finally {
         this.actionId = "";
       }
+    },
+    async loadCurrentStepHistory({ includeDraft = false } = {}) {
+      const projectId = this.selectedProjectId || projectIdOf(this.project);
+      const stepKey = this.currentStep?.step_key;
+      if (!projectId || !stepKey) {
+        throw new Error("请先选择一个雪花步骤");
+      }
+      this.actionId = `history:${stepKey}`;
+      this.error = "";
+      try {
+        const result = await fetchSnowflakeStepHistory(projectId, stepKey, { includeDraft });
+        this.stepHistory = clonePayload(result || { step_key: stepKey, items: [] });
+        return this.stepHistory;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async restoreStepFromHistory(stepRunId) {
+      const projectId = this.selectedProjectId || projectIdOf(this.project);
+      const stepKey = this.currentStep?.step_key;
+      if (!projectId || !stepKey) {
+        throw new Error("请先选择一个雪花步骤");
+      }
+      if (!stepRunId) {
+        throw new Error("请选择要恢复的历史版本");
+      }
+      this.actionId = `restore:${stepKey}`;
+      this.error = "";
+      try {
+        const result = await restoreSnowflakeWorkspaceStep(projectId, stepKey, { step_run_id: stepRunId });
+        if (result?.workspace) {
+          this.applyWorkspace(result.workspace, { preferCurrent: false });
+          this.selectedStepKey = stepKey;
+          this._markStepClean(stepKey);
+        }
+        this.lastActionMessage = "历史草稿已恢复为新的待审版本，请检查后再确认。";
+        await this.loadCurrentStepHistory();
+        return result;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async requestAssistantFromDiscoveryDraft() {
+      const excerpt = textExcerpt(this.discoveryDraftContent || this.discoveryDraft?.content || "");
+      if (!excerpt) {
+        throw new Error("自由草稿为空，先写一点人物、场景或故事想法。");
+      }
+      return this.requestAssistant({
+        message: `请参考下面的自由草稿，为当前雪花步骤补一版可编辑草稿；只给建议和候选补稿，不要替我确认。\n\n自由草稿摘录：\n${excerpt}`,
+        discovery_draft_excerpt: excerpt,
+      });
     },
     async requestAssistant(input) {
       const projectId = this.selectedProjectId || projectIdOf(this.project);

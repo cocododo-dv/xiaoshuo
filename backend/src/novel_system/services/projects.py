@@ -789,6 +789,7 @@ class ProjectChapterFlowService:
         body_empty_reason = None
         if not body:
             body_empty_reason = "no_generated_scenes" if completion_status == "empty" else "manuscript_body_empty"
+        scene_reviews = self._scene_reviews(chapter.chapter_id)
         return {
             "chapter_id": chapter.chapter_id,
             "chapter_goal": chapter.chapter_goal,
@@ -799,9 +800,12 @@ class ProjectChapterFlowService:
             "completion_status": completion_status,
             "comparison_status": manuscript.get("comparison_status"),
             "missing_scene_ids": missing_scene_ids,
+            "missing_scene_labels": self._missing_scene_labels(missing_scene_ids, scene_reviews),
+            "scene_coverage": self._scene_coverage(scene_reviews),
+            "target_word_count_band": self._target_word_count_band(project),
             "aggregate_row_id": aggregate_row_id,
             "source_safety_scan": manuscript.get("source_safety_scan"),
-            "scene_reviews": self._scene_reviews(chapter.chapter_id),
+            "scene_reviews": scene_reviews,
             "issues_summary": issues_summary,
             "run_status": latest_job.status if latest_job else "idle",
             "reference_safety": list(REFERENCE_SAFETY_RULES),
@@ -831,11 +835,59 @@ class ProjectChapterFlowService:
                     "title": scene.scene_goal or scene.hook or scene.scene_id,
                     "body_excerpt": excerpt[:240],
                     "char_count": len(body or ""),
+                    "missing": not bool(body),
                     "issues_summary": [],
                     "current_decision": "pending",
                 }
             )
         return reviews
+
+    @staticmethod
+    def _scene_coverage(scene_reviews: list[dict[str, Any]]) -> dict[str, Any]:
+        total = len(scene_reviews)
+        completed = sum(1 for item in scene_reviews if int(item.get("char_count") or 0) > 0)
+        return {
+            "completed_count": completed,
+            "total_count": total,
+            "percent": round((completed / total) * 100) if total else 0,
+        }
+
+    @staticmethod
+    def _missing_scene_labels(missing_scene_ids: list[str], scene_reviews: list[dict[str, Any]]) -> list[str]:
+        by_id = {str(item.get("scene_id") or ""): item for item in scene_reviews}
+        missing_ids = {str(item or "") for item in missing_scene_ids if str(item or "")}
+        for item in scene_reviews:
+            if item.get("missing"):
+                scene_id = str(item.get("scene_id") or "")
+                if scene_id:
+                    missing_ids.add(scene_id)
+        labels: list[str] = []
+        for scene_id in sorted(missing_ids):
+            item = by_id.get(scene_id)
+            if item is None:
+                labels.append(scene_id)
+                continue
+            seq = item.get("scene_seq")
+            title = str(item.get("title") or scene_id).strip() or scene_id
+            prefix = f"第 {seq} 场" if seq else "场景"
+            labels.append(f"{prefix}：{title}")
+        return labels
+
+    @staticmethod
+    def _target_word_count_band(project: StoryProject) -> dict[str, Any] | None:
+        target_word_count = int(project.target_word_count or 0)
+        target_chapter_count = int(project.target_chapter_count or 0)
+        if target_word_count <= 0 or target_chapter_count <= 0:
+            return None
+        per_chapter = max(1, round(target_word_count / target_chapter_count))
+        lower = max(1, round(per_chapter * 0.85))
+        upper = max(lower, round(per_chapter * 1.15))
+        return {
+            "target": per_chapter,
+            "min": lower,
+            "max": upper,
+            "label": f"{lower}-{upper} 字",
+        }
 
     def _require_project_chapter(self, project: StoryProject, chapter_id: str) -> ChapterGoal:
         chapter = self.session.get(ChapterGoal, chapter_id)

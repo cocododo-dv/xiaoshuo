@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from "vue";
-import { Check, Plus, Save, SkipForward, WandSparkles } from "lucide-vue-next";
+import { Check, History, Plus, RotateCcw, Save, SkipForward, WandSparkles } from "lucide-vue-next";
 
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import SnowflakeSkipStepDialog from "./SnowflakeSkipStepDialog.vue";
@@ -30,6 +30,13 @@ const readyToMaterialize = computed(() => store.readyToMaterialize);
 const currentStepDirty = computed(() => store.currentStepDirty);
 const currentStepStale = computed(() => currentStep.value?.artifact?.status === "stale");
 const currentStepStaleDismissed = computed(() => currentStepStale.value && store.isStaleStepDismissed(currentStep.value));
+const currentStepHistory = computed(() =>
+  store.stepHistory?.step_key === currentStep.value?.step_key ? (store.stepHistory?.items || []) : [],
+);
+const discoveryExcerpt = computed(() => {
+  const text = String(store.discoveryDraftContent || store.discoveryDraft?.content || "").replace(/\s+/g, " ").trim();
+  return text.length > 420 ? `${text.slice(0, 420).trim()}...` : text;
+});
 const completedStepCount = computed(() => steps.value.filter((s) => s.gate_satisfied).length);
 const totalStepCount = computed(() => steps.value.length || 0);
 const progressPercent = computed(() => {
@@ -185,6 +192,41 @@ async function askAssistantForSkippedDraft() {
   });
 }
 
+async function openCurrentStepHistory() {
+  if (!currentStep.value) return;
+  await runFlowAction({
+    scopeKey: SNOWFLAKE_STEP_SCOPE,
+    actionLabel: "查看历史",
+    runningMessage: "正在读取这个雪花步骤的历史版本...",
+    successMessage: () => "历史版本已更新。",
+    nextStep: () => "可以预览摘要；恢复旧版会生成新的待审草稿，不会直接确认。",
+    action: () => store.loadCurrentStepHistory(),
+  });
+}
+
+async function restoreHistoryItem(item) {
+  if (!item?.step_run_id) return;
+  await runFlowAction({
+    scopeKey: SNOWFLAKE_STEP_SCOPE,
+    actionLabel: "恢复历史草稿",
+    runningMessage: "正在把历史版本恢复为新的待审草稿...",
+    successMessage: () => store.lastActionMessage || "历史草稿已恢复为待审版本。",
+    nextStep: () => "下一步：检查恢复出的草稿，必要时编辑，然后再确认。",
+    action: () => store.restoreStepFromHistory(item.step_run_id),
+  });
+}
+
+async function askAssistantWithDiscoveryDraft() {
+  await runFlowAction({
+    scopeKey: SNOWFLAKE_STEP_SCOPE,
+    actionLabel: "参考自由草稿补稿",
+    runningMessage: "正在把自由草稿作为上下文交给助手...",
+    successMessage: () => store.lastActionMessage || "助手已根据自由草稿给出补稿建议。",
+    nextStep: () => "下一步：检查助手候选，满意后手动保存并确认。",
+    action: () => store.requestAssistantFromDiscoveryDraft(),
+  });
+}
+
 function selectStep(stepKey) { store.selectStep(stepKey); }
 function updateSimpleField(key, value) { store.updateDraftField(key, value); }
 function updateSentence(key, index, value) { store.updateDraftArrayItem(key, index, value); }
@@ -237,6 +279,9 @@ function updateSceneCrucible(fieldKey, index, value) {
         </button>
         <button ref="skipButton" type="button" class="ghost action-btn" :disabled="!currentStep?.can_skip || store.actionId === `generate:${currentStep?.step_key}`" @click="requestSkipCurrentStep">
           <SkipForward :size="16" /><span>跳过</span>
+        </button>
+        <button type="button" class="ghost action-btn" data-testid="snowflake-step-history-trigger" :disabled="!currentStep || store.actionId === `history:${currentStep?.step_key}`" @click="openCurrentStepHistory">
+          <History :size="16" /><span>历史</span>
         </button>
         <button type="button" class="ghost action-btn" :disabled="!currentStep || store.actionId === `save:${currentStep?.step_key}`" @click="saveCurrentStep">
           <Save :size="16" /><span>{{ currentStepDirty ? "保存修改" : "保存步骤" }}</span>
@@ -322,7 +367,34 @@ function updateSceneCrucible(fieldKey, index, value) {
             <p v-if="currentStepUsesFallback" class="snowflake-offline-demo-note" data-testid="snowflake-offline-demo-note">
               当前内容来自离线演示，不代表真实模型生成；启用模型后再用于正文生产。
             </p>
+            <details v-if="discoveryExcerpt" class="snowflake-discovery-context" data-testid="snowflake-discovery-context">
+              <summary>自由草稿摘录</summary>
+              <p>{{ discoveryExcerpt }}</p>
+              <button type="button" class="ghost action-btn" data-testid="snowflake-discovery-assistant" @click="askAssistantWithDiscoveryDraft">
+                <WandSparkles :size="16" /><span>参考自由草稿补本步草稿</span>
+              </button>
+            </details>
           </div>
+
+          <section v-if="currentStepHistory.length" class="snowflake-step-history" data-testid="snowflake-step-history">
+            <div class="collection-head">
+              <div>
+                <span class="eyebrow">历史版本</span>
+                <strong>{{ currentStep.label }}</strong>
+              </div>
+              <button type="button" class="ghost mini-btn" @click="openCurrentStepHistory">刷新</button>
+            </div>
+            <article v-for="item in currentStepHistory" :key="item.step_run_id" class="history-version-row">
+              <div>
+                <strong>v{{ item.version }} · {{ artifactStatusLabel(item.status) }}</strong>
+                <p class="muted">{{ item.draft_summary || "这一版没有可读摘要。" }}</p>
+                <small>{{ item.generation_source || "author" }} · {{ item.updated_at || item.created_at }}</small>
+              </div>
+              <button type="button" class="ghost mini-btn" @click="restoreHistoryItem(item)">
+                <RotateCcw :size="14" /><span>恢复</span>
+              </button>
+            </article>
+          </section>
 
           <SnowflakeStepGuideCard
             class="snowflake-guidance-card"

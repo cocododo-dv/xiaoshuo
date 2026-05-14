@@ -5,6 +5,19 @@ import { CheckCircle2, FileText, PlayCircle, RefreshCw, ShieldAlert, WandSparkle
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import {
+  backtrackScopeLabel,
+  bodyEmptyReasonLabel,
+  bodySourceLabel,
+  chapterListLabel,
+  completionStatusLabel,
+  latestErrorLabel,
+  missingSceneLabels as packetMissingSceneLabels,
+  nextActionLabel,
+  runStatusLabel,
+  sceneDisplayLabel,
+  targetWordCountLabel as formatTargetWordCount,
+} from "../lib/writerFlowDisplay";
 import { useShellRouter } from "../router";
 import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
 import { useWriterFlowStore } from "../stores/writerFlow";
@@ -22,6 +35,8 @@ const approvalNotes = ref("");
 const pollingActive = ref(false);
 
 let pollTimer = null;
+let pollInFlight = false;
+const pollIntervalMs = 7000;
 
 const contextProjectId = computed(() => {
   const target = router.routeContext.value?.target || "";
@@ -41,6 +56,26 @@ const offlineBanner = computed(() => store.runtime?.llm_enabled === false);
 const isPolling = computed(() => pollingActive.value);
 const approvalNotesCount = computed(() => approvalNotes.value.length);
 const approvalNotesTooLong = computed(() => approvalNotesCount.value > 2000);
+const runStatusText = computed(() => runStatusLabel(runStatus.value?.status, nextAction.value));
+const runSourceText = computed(() => bodySourceLabel(runStatus.value?.source || ""));
+const reviewBodySourceText = computed(() => bodySourceLabel(reviewPacket.value?.body_source || ""));
+const reviewEmptyText = computed(() => bodyEmptyReasonLabel(reviewPacket.value?.body_empty_reason));
+const completionStatusText = computed(() => completionStatusLabel(reviewPacket.value?.completion_status));
+const currentSceneText = computed(() => sceneDisplayLabel(currentChapter.value, runStatus.value?.current_scene_id));
+const sceneReviews = computed(() => reviewPacket.value?.scene_reviews || []);
+const sceneCoverage = computed(() => reviewPacket.value?.scene_coverage || {
+  completed_count: sceneReviews.value.filter((item) => Number(item?.char_count || 0) > 0).length,
+  total_count: sceneReviews.value.length,
+  percent: sceneReviews.value.length
+    ? Math.round((sceneReviews.value.filter((item) => Number(item?.char_count || 0) > 0).length / sceneReviews.value.length) * 100)
+    : 0,
+});
+const missingSceneLabels = computed(() => packetMissingSceneLabels(reviewPacket.value));
+const targetWordCountLabel = computed(() => formatTargetWordCount(reviewPacket.value?.target_word_count_band));
+const visibleBacktrackItems = computed(() => (store.backtrackItems || []).filter((item) => item?.status !== "resolved").slice(0, 3));
+const shouldShowBacktrackBanner = computed(() =>
+  ["resolve_blocker", "resolve_backtrack_items"].includes(nextAction.value) && visibleBacktrackItems.value.length > 0,
+);
 
 function actionFor(action) {
   if (action === "run_current_chapter") {
@@ -134,25 +169,74 @@ function openSystemConfig() {
   router.navigate('config', { target: { panel: "llm" } });
 }
 
+function openWriterRoomForChapter() {
+  router.navigate("writer-room", {
+    target: {
+      focus: "chapter",
+      target: currentChapter.value?.chapter_id || "",
+      returnTo: 'writer-flow',
+      returnTarget: project.value?.project_id || "",
+      returnLabel: '返回批准',
+    },
+  });
+}
+
+function openWriterRoomForScene(sceneReview) {
+  router.navigate("writer-room", {
+    target: {
+      focus: "scene",
+      target: sceneReview?.scene_id || "",
+      chapter_id: currentChapter.value?.chapter_id || "",
+      returnTo: 'writer-flow',
+      returnTarget: project.value?.project_id || "",
+      returnLabel: '返回批准',
+    },
+  });
+}
+
+function openBacktrackItem(item) {
+  router.navigate("review", {
+    target: {
+      project_id: project.value?.project_id || "",
+      backtrack_id: item?.item_id || item?.backtrack_id || "",
+      target_ref: item?.target_ref || "",
+      chapter_id: item?.chapter_id || "",
+      scene_id: item?.scene_id || "",
+    },
+  });
+}
+
+function chapterGoalSummary(chapter) {
+  return chapter?.chapter_goal || chapter?.title || "这一章还没有目标摘要";
+}
+
 function startPolling() {
   stopPolling();
   if (!store.project?.current_chapter_id) {
     return;
   }
   pollingActive.value = true;
-  pollTimer = window.setInterval(() => {
+  pollTimer = window.setInterval(async () => {
     if (!store.project?.current_chapter_id) {
       stopPolling();
       return;
     }
-    store.refreshRunStatus().catch((error) => {
+    if (pollInFlight) {
+      return;
+    }
+    pollInFlight = true;
+    try {
+      await store.refreshRunStatus();
+      if (!store.isRunning) {
+        stopPolling();
+      }
+    } catch (error) {
       emit("notice", error.message);
       stopPolling();
-    });
-    if (!store.isRunning) {
-      stopPolling();
+    } finally {
+      pollInFlight = false;
     }
-  }, 1600);
+  }, pollIntervalMs);
 }
 
 function stopPolling() {
@@ -218,12 +302,34 @@ watch(() => router.routeContext.value?.target, (target) => {
 
       <FlowActionReceipt :receipt="receipt(WRITER_FLOW_SCOPE)" :on-navigate="handleReceiptNavigate" />
 
+      <section v-if="shouldShowBacktrackBanner" class="writer-flow-backtrack-banner" data-testid="writer-flow-backtrack-banner">
+        <div class="panel-head">
+          <div>
+            <span class="eyebrow">{{ nextActionLabel(nextAction) }}</span>
+            <h3>先处理这些影响，再继续写</h3>
+          </div>
+          <button type="button" class="ghost" @click="router.navigate('review', { target: { project_id: project?.project_id || '' } })">
+            打开审阅中心
+          </button>
+        </div>
+        <ul>
+          <li v-for="item in visibleBacktrackItems" :key="item.item_id || item.target_ref">
+            <div>
+              <strong>{{ item.problem_summary || "有一处内容需要复核" }}</strong>
+              <p>{{ item.recommended_fix || "先确认影响范围，再决定是否重跑或小修。" }}</p>
+              <small>{{ backtrackScopeLabel(item) }}</small>
+            </div>
+            <button type="button" class="ghost mini" @click="openBacktrackItem(item)">去处理</button>
+          </li>
+        </ul>
+      </section>
+
       <section class="writer-flow-grid">
         <article class="writer-flow-panel" data-testid="writer-flow-progress-panel">
           <div class="panel-head">
             <div>
               <span class="eyebrow">运行进度</span>
-              <h3>{{ runStatus?.status || nextAction }}</h3>
+              <h3>{{ runStatusText }}</h3>
             </div>
             <button type="button" class="ghost" @click="loadProject()">刷新</button>
           </div>
@@ -233,40 +339,46 @@ watch(() => router.routeContext.value?.target, (target) => {
           </p>
           <dl>
             <div><dt>场景</dt><dd>{{ runStatus?.completed_count || 0 }}/{{ runStatus?.scene_count || currentChapter?.scenes?.length || 0 }}</dd></div>
-            <div><dt>当前</dt><dd>{{ runStatus?.current_scene_id || currentChapter?.chapter_id || "-" }}</dd></div>
-            <div><dt>来源</dt><dd>{{ runStatus?.source || reviewPacket?.body_source || "llm" }}</dd></div>
+            <div><dt>当前</dt><dd>{{ currentSceneText }}</dd></div>
+            <div v-if="runSourceText"><dt>来源</dt><dd>{{ runSourceText }}</dd></div>
           </dl>
-          <p v-if="runStatus?.latest_error" class="writer-flow-error">{{ runStatus.latest_error.message }}</p>
+          <p v-if="runStatus?.latest_error" class="writer-flow-error">{{ latestErrorLabel(runStatus.latest_error) }}</p>
         </article>
 
         <article class="writer-flow-panel" data-testid="writer-flow-review-panel">
           <div class="panel-head">
             <div>
               <span class="eyebrow">终稿审阅</span>
-              <h3>{{ reviewPacket?.body_source || "等待正文" }}</h3>
+              <h3>{{ reviewBodySourceText || "等待正文" }}</h3>
             </div>
-            <button
-              type="button"
-              class="ghost"
-              @click="router.navigate('writer-room', {
-                target: {
-                  focus: 'chapter',
-                  target: currentChapter?.chapter_id || '',
-                  returnTo: 'writer-flow',
-                  returnTarget: project?.project_id || '',
-                  returnLabel: '返回批准',
-                },
-              })"
-            >
+            <button type="button" class="ghost" @click="openWriterRoomForChapter">
               需要小修
             </button>
           </div>
           <p v-if="reviewPacket?.body" class="writer-flow-body-preview">{{ reviewPacket.body }}</p>
-          <p v-else class="muted">{{ reviewPacket?.body_empty_reason || "章节起草完成后会在这里显示正文。" }}</p>
+          <p v-else class="muted">{{ reviewEmptyText }}</p>
           <div class="badge-row">
             <span>{{ reviewPacket?.char_count || 0 }} 字符</span>
-            <span>{{ reviewPacket?.completion_status || "pending" }}</span>
-            <span v-if="reviewPacket?.missing_scene_ids?.length">{{ reviewPacket.missing_scene_ids.length }} 场缺失</span>
+            <span>{{ completionStatusText }}</span>
+            <span v-if="sceneCoverage.total_count">已完成 {{ sceneCoverage.completed_count }}/{{ sceneCoverage.total_count }} 场</span>
+            <span v-if="targetWordCountLabel">预计 {{ targetWordCountLabel }}</span>
+          </div>
+          <div v-if="missingSceneLabels.length" class="writer-flow-missing-scenes" data-testid="writer-flow-missing-scenes">
+            <strong>缺失场景</strong>
+            <ul>
+              <li v-for="label in missingSceneLabels" :key="label">{{ label }}</li>
+            </ul>
+          </div>
+          <div v-if="sceneReviews.length" class="writer-flow-scene-reviews" data-testid="writer-flow-scene-reviews">
+            <article v-for="scene in sceneReviews" :key="scene.scene_id" :class="{ missing: scene.missing }">
+              <div>
+                <span>第 {{ scene.scene_seq || "-" }} 场</span>
+                <strong>{{ scene.title || scene.scene_id }}</strong>
+                <small>{{ scene.char_count || 0 }} 字符</small>
+              </div>
+              <p>{{ scene.body_excerpt || "这一场还没有可审阅正文。" }}</p>
+              <button type="button" class="ghost mini" @click="openWriterRoomForScene(scene)">小修</button>
+            </article>
           </div>
           <label class="writer-flow-approval-notes" data-testid="writer-flow-approval-notes">
             <span :class="{ over: approvalNotesTooLong }">批准备注 / 后续小修提醒 {{ approvalNotesCount }}/2000</span>
@@ -274,16 +386,16 @@ watch(() => router.routeContext.value?.target, (target) => {
               v-model="approvalNotes"
               class="control-input"
               :disabled="nextAction !== 'approve_chapter_final'"
-              placeholder="可选：记录批准时的保留意见、下一章需要延续的张力，或稍后小修提醒。"
+              placeholder="可选：这一章节奏是否顺、有没有缺失场景、下一章要延续什么张力、后续小修要记住什么。"
             />
           </label>
         </article>
       </section>
 
       <section class="writer-flow-chapters" data-testid="writer-flow-chapter-list">
-        <article v-for="chapter in store.chapters" :key="chapter.chapter_id" :class="{ active: chapter.chapter_id === project.current_chapter_id }">
-          <strong>{{ chapter.chapter_id }}</strong>
-          <p>{{ chapter.chapter_goal }}</p>
+        <article v-for="(chapter, index) in store.chapters" :key="chapter.chapter_id" :class="{ active: chapter.chapter_id === project.current_chapter_id }">
+          <strong>{{ chapterListLabel(chapter, index) }}</strong>
+          <p>{{ chapterGoalSummary(chapter) }}</p>
           <small>{{ chapter.scenes?.length || 0 }} 场景</small>
         </article>
       </section>
@@ -302,6 +414,7 @@ watch(() => router.routeContext.value?.target, (target) => {
 .writer-flow-hero,
 .writer-flow-panel,
 .writer-flow-chapters article,
+.writer-flow-backtrack-banner,
 .writer-flow-banner {
   border: 1px solid rgba(43, 95, 88, 0.16);
   border-radius: 8px;
@@ -415,6 +528,32 @@ watch(() => router.routeContext.value?.target, (target) => {
   color: #9a3d31;
 }
 
+.writer-flow-backtrack-banner {
+  border-color: rgba(154, 61, 49, 0.24);
+  background: #fff9f5;
+}
+
+.writer-flow-backtrack-banner ul,
+.writer-flow-missing-scenes ul {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+
+.writer-flow-backtrack-banner li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid rgba(154, 61, 49, 0.12);
+  padding: 10px 0 0;
+}
+
+.writer-flow-backtrack-banner p,
+.writer-flow-scene-reviews p {
+  margin: 4px 0;
+}
+
 .writer-flow-polling {
   margin: -4px 0 12px;
   color: #287c72;
@@ -434,6 +573,43 @@ watch(() => router.routeContext.value?.target, (target) => {
   padding: 4px 8px;
   background: #eef7f3;
   font-size: 12px;
+}
+
+.writer-flow-missing-scenes {
+  margin-top: 12px;
+  border-left: 3px solid #b35c38;
+  padding-left: 10px;
+  color: #6c3828;
+}
+
+.writer-flow-scene-reviews {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.writer-flow-scene-reviews article {
+  border: 1px solid rgba(40, 124, 114, 0.16);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfefb;
+}
+
+.writer-flow-scene-reviews article.missing {
+  border-color: rgba(179, 92, 56, 0.3);
+  background: #fff9f5;
+}
+
+.writer-flow-scene-reviews article > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.writer-flow-view button.mini {
+  min-height: 30px;
+  padding: 3px 8px;
 }
 
 .writer-flow-chapters {

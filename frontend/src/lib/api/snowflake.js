@@ -33,6 +33,20 @@ export function approveSnowflakeWorkspaceStep(projectId, stepKey, payload = {}) 
   );
 }
 
+export function fetchSnowflakeStepHistory(projectId, stepKey, { includeDraft = false } = {}) {
+  const query = includeDraft ? "?include_draft=true" : "";
+  return apiGet(
+    `/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/steps/${encodeURIComponent(stepKey)}/history${query}`,
+  );
+}
+
+export function restoreSnowflakeWorkspaceStep(projectId, stepKey, payload = {}) {
+  return apiPost(
+    `/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/steps/${encodeURIComponent(stepKey)}/restore`,
+    payload,
+  );
+}
+
 export function requestSnowflakeWorkspaceAssistant(projectId, payload = {}) {
   return apiPost(`/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/assistant`, payload);
 }
