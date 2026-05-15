@@ -272,32 +272,47 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
             self.session = db_session
 
         def run_full(self, chapter_id: str) -> dict:
-            scenes = (
-                self.session.query(SceneCard)
-                .filter(SceneCard.chapter_id == chapter_id)
-                .order_by(SceneCard.scene_seq)
-                .all()
-            )
-            result = {
-                "chapter_id": chapter_id,
-                "status": "completed",
-                "current_scene_id": scenes[-1].scene_id if scenes else None,
-                "completed_scene_ids": [scene.scene_id for scene in scenes],
-                "blocked_scene_id": None,
-                "latest_error": None,
-            }
-            self.session.add(
-                ChapterRunJob(
-                    job_id=f"fake_job_{chapter_id}",
-                    chapter_id=chapter_id,
-                    status="completed",
-                    job_type="chapter_full",
-                    payload_json=result,
-                    result_summary_json={"near_final_ready": True},
+                scenes = (
+                    self.session.query(SceneCard)
+                    .filter(SceneCard.chapter_id == chapter_id)
+                    .order_by(SceneCard.scene_seq)
+                    .all()
                 )
-            )
-            self.session.flush()
-            return result
+                for scene in scenes:
+                    final_row_id = f"fake_final_{scene.scene_id}"
+                    self.session.add(
+                        FinalScene(
+                            row_id=final_row_id,
+                            scene_id=scene.scene_id,
+                            chapter_id=chapter_id,
+                            source_bundle_id=f"fake_bundle_{scene.scene_id}",
+                            source_bundle_hash=f"fake_hash_{scene.scene_id}",
+                            content=f"Final body for {scene.scene_id}.",
+                        )
+                    )
+                    state = self.session.get(SceneRunState, scene.scene_id)
+                    if state is not None:
+                        state.current_final_scene_row_id = final_row_id
+                result = {
+                    "chapter_id": chapter_id,
+                    "status": "completed",
+                    "current_scene_id": scenes[-1].scene_id if scenes else None,
+                    "completed_scene_ids": [scene.scene_id for scene in scenes],
+                    "blocked_scene_id": None,
+                    "latest_error": None,
+                }
+                self.session.add(
+                    ChapterRunJob(
+                        job_id=f"fake_job_{chapter_id}",
+                        chapter_id=chapter_id,
+                        status="completed",
+                        job_type="chapter_full",
+                        payload_json=result,
+                        result_summary_json={"near_final_ready": True},
+                    )
+                )
+                self.session.flush()
+                return result
 
     monkeypatch.setattr("novel_system.services.projects.ChapterRunnerService", FakeChapterRunnerService)
     project = _create_project(client, target_chapter_count=2)
@@ -318,7 +333,16 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
 
     dashboard_response = client.get(f"/api/v1/projects/{project['project_id']}/dashboard")
     assert dashboard_response.status_code == 200
-    assert dashboard_response.json()["data"]["next_action"] == "approve_chapter_final"
+    dashboard_payload = dashboard_response.json()["data"]
+    assert dashboard_payload["next_action"] == "approve_chapter_final"
+    body_hash = dashboard_payload["review_packet"]["body_hash"]
+
+    read_response = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{first_chapter_id}/read-confirm",
+        json={"note": "Read in full before approving."},
+    )
+    assert read_response.status_code == 200
+    assert read_response.json()["data"]["body_hash"] == body_hash
 
     approve_response = client.post(
         f"/api/v1/projects/{project['project_id']}/chapters/{first_chapter_id}/approve-final",
@@ -342,6 +366,107 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
     ).scalar_one()
     assert approval_log.payload_json["revision_notes"] == "Keep the second scene tense on the next pass."
     assert approval_log.payload_json["project_id"] == project["project_id"]
+
+
+def test_project_chapter_final_requires_current_read_confirmation(client, session) -> None:
+    project = _create_project(client, target_chapter_count=1, key="read-confirm")
+    plan = _generate_plan(client, project["project_id"])
+    approved = _approve_plan(client, project["project_id"], plan["plan_id"])
+    chapter_id = approved["project"]["current_chapter_id"]
+    scene = session.query(SceneCard).filter(SceneCard.chapter_id == chapter_id).first()
+    assert scene is not None
+    final_row = FinalScene(
+        row_id=f"final_{scene.scene_id}",
+        scene_id=scene.scene_id,
+        chapter_id=chapter_id,
+        source_bundle_id="bundle_read_confirm",
+        source_bundle_hash="hash_read_confirm",
+        content="第一版正文，需要通读后才能批准。",
+    )
+    session.add(final_row)
+    state = session.get(SceneRunState, scene.scene_id)
+    assert state is not None
+    state.current_final_scene_row_id = final_row.row_id
+    session.add(
+        ChapterRunJob(
+            job_id=f"read_confirm_job_{chapter_id}",
+            chapter_id=chapter_id,
+            status="completed",
+            job_type="chapter_run_full",
+            payload_json={},
+            result_summary_json={"latest_error": None},
+        )
+    )
+    db_project = session.get(StoryProject, project["project_id"])
+    assert db_project is not None
+    db_project.status = "chapter_final_review"
+    session.commit()
+
+    dashboard_response = client.get(f"/api/v1/projects/{project['project_id']}/dashboard")
+    assert dashboard_response.status_code == 200
+    packet = dashboard_response.json()["data"]["review_packet"]
+    assert packet["body"].startswith("第一版正文")
+    assert packet["body_hash"]
+    assert packet["read_confirmation"] is None
+
+    approve_response = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/approve-final",
+        json={},
+        headers={"X-Idempotency-Key": "approve-without-read-confirm"},
+    )
+    assert approve_response.status_code == 409
+    assert approve_response.json()["error"]["code"] == "CHAPTER_FINAL_READ_CONFIRM_REQUIRED"
+
+    confirm_response = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/read-confirm",
+        json={"note": "Read full chapter."},
+        headers={"X-Operator-Ref": "author-c"},
+    )
+    assert confirm_response.status_code == 200, confirm_response.text
+    confirmed = confirm_response.json()["data"]
+    assert confirmed["chapter_id"] == chapter_id
+    assert confirmed["body_hash"] == packet["body_hash"]
+    assert confirmed["confirmed_by"] == "author-c"
+
+    dashboard_after_confirm = client.get(f"/api/v1/projects/{project['project_id']}/dashboard").json()["data"]
+    assert dashboard_after_confirm["review_packet"]["read_confirmation"]["body_hash"] == packet["body_hash"]
+
+    final_row.content = "第二版正文已经变化，旧阅读确认不能批准。"
+    session.commit()
+    changed_packet = client.get(f"/api/v1/projects/{project['project_id']}/dashboard").json()["data"]["review_packet"]
+    assert changed_packet["body_hash"] != packet["body_hash"]
+    assert changed_packet["read_confirmation"] is None
+
+    changed_approve = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/approve-final",
+        json={},
+        headers={"X-Idempotency-Key": "approve-stale-read-confirm"},
+    )
+    assert changed_approve.status_code == 409
+    assert changed_approve.json()["error"]["code"] == "CHAPTER_FINAL_READ_CONFIRM_REQUIRED"
+
+    confirm_changed = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/read-confirm",
+        json={"note": "Read changed body."},
+        headers={"X-Operator-Ref": "author-c"},
+    )
+    assert confirm_changed.status_code == 200
+
+    approve_after_confirm = client.post(
+        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/approve-final",
+        json={"revision_notes": "Ready after reading."},
+        headers={"X-Idempotency-Key": "approve-after-read-confirm"},
+    )
+    assert approve_after_confirm.status_code == 200, approve_after_confirm.text
+    assert approve_after_confirm.json()["data"]["project"]["status"] == "completed"
+
+    read_log = (
+        session.query(OperationLog)
+        .filter_by(event_type="chapter_final_read_confirmed", object_type="chapter", object_ref=chapter_id)
+        .order_by(OperationLog.operation_id.desc())
+        .first()
+    )
+    assert read_log.payload_json["confirmed_by"] == "author-c"
 
 
 def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(client, session) -> None:

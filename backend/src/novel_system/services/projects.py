@@ -651,6 +651,7 @@ class ProjectChapterFlowService:
         revision_notes = str(body.get("revision_notes") or "").strip()
         if len(revision_notes) > 2000:
             raise DomainError("CHAPTER_APPROVAL_NOTES_TOO_LONG", "revision_notes must be 2000 characters or fewer", status_code=400)
+        read_confirmation = self._require_current_read_confirmation(project, chapter_id)
 
         approved = list(project.approved_chapter_ids_json or [])
         if chapter_id not in approved:
@@ -667,6 +668,9 @@ class ProjectChapterFlowService:
         approval_note = {
             "revision_notes": revision_notes,
             "actor_ref": actor_ref or "operator",
+            "body_hash": read_confirmation.get("body_hash"),
+            "read_confirmed_at": read_confirmation.get("confirmed_at"),
+            "read_confirmed_by": read_confirmation.get("confirmed_by"),
         }
         self.session.add(
             OperationLog(
@@ -689,6 +693,45 @@ class ProjectChapterFlowService:
             "approved_chapter_id": chapter_id,
             "approval_note": approval_note,
         }
+
+    def confirm_read(self, project_id: str, chapter_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
+        body = payload or {}
+        project = ProjectService(self.session).require_project(project_id)
+        self._require_project_chapter(project, chapter_id)
+        if project.current_chapter_id != chapter_id:
+            raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter final can be confirmed", status_code=409)
+        packet = self.review_packet(project, chapter_id)
+        if not packet or not packet.get("body_hash"):
+            raise DomainError(
+                "CHAPTER_FINAL_READ_CONFIRM_UNAVAILABLE",
+                "current chapter body is not available for read confirmation",
+                status_code=409,
+            )
+        note = str(body.get("note") or "").strip()
+        if len(note) > 1000:
+            raise DomainError("CHAPTER_READ_CONFIRM_NOTE_TOO_LONG", "note must be 1000 characters or fewer", status_code=400)
+        confirmed_at = utcnow()
+        confirmed_by = actor_ref or "operator"
+        confirmation = {
+            "project_id": project.project_id,
+            "chapter_id": chapter_id,
+            "body_hash": packet["body_hash"],
+            "char_count": int(packet.get("char_count") or 0),
+            "body_source": packet.get("body_source"),
+            "confirmed_at": confirmed_at,
+            "confirmed_by": confirmed_by,
+            "note": note,
+        }
+        self.session.add(
+            OperationLog(
+                event_type="chapter_final_read_confirmed",
+                object_type="chapter",
+                object_ref=chapter_id,
+                payload_json=confirmation,
+            )
+        )
+        self.session.flush()
+        return confirmation
 
     def final_review(self, project_id: str, chapter_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
         body = payload or {}
@@ -789,11 +832,15 @@ class ProjectChapterFlowService:
         body_empty_reason = None
         if not body:
             body_empty_reason = "no_generated_scenes" if completion_status == "empty" else "manuscript_body_empty"
+        body_hash = self._chapter_body_hash(body) if body else ""
+        read_confirmation = self._latest_read_confirmation(project.project_id, chapter.chapter_id, body_hash) if body_hash else None
         scene_reviews = self._scene_reviews(chapter.chapter_id)
         return {
             "chapter_id": chapter.chapter_id,
             "chapter_goal": chapter.chapter_goal,
             "body": body,
+            "body_hash": body_hash,
+            "read_confirmation": read_confirmation,
             "body_source": body_source,
             "char_count": char_count,
             "body_empty_reason": body_empty_reason,
@@ -815,6 +862,51 @@ class ProjectChapterFlowService:
                 "deepdesk_object_id": chapter.chapter_id,
             },
         }
+
+    def _require_current_read_confirmation(self, project: StoryProject, chapter_id: str) -> dict[str, Any]:
+        packet = self.review_packet(project, chapter_id)
+        body_hash = str((packet or {}).get("body_hash") or "")
+        confirmation = (packet or {}).get("read_confirmation")
+        if not body_hash or not confirmation:
+            raise DomainError(
+                "CHAPTER_FINAL_READ_CONFIRM_REQUIRED",
+                "read and confirm the current chapter body before approving final",
+                status_code=409,
+                details={"chapter_id": chapter_id, "body_hash": body_hash},
+            )
+        return confirmation
+
+    @staticmethod
+    def _chapter_body_hash(body: str) -> str:
+        return hashlib.sha256(str(body or "").encode("utf-8")).hexdigest()
+
+    def _latest_read_confirmation(self, project_id: str, chapter_id: str, body_hash: str) -> dict[str, Any] | None:
+        if not body_hash:
+            return None
+        rows = self.session.execute(
+            select(OperationLog)
+            .where(
+                OperationLog.event_type == "chapter_final_read_confirmed",
+                OperationLog.object_type == "chapter",
+                OperationLog.object_ref == chapter_id,
+            )
+            .order_by(OperationLog.created_at.desc(), OperationLog.operation_id.desc())
+        ).scalars().all()
+        for row in rows:
+            payload = dict(row.payload_json or {})
+            if payload.get("project_id") != project_id or payload.get("chapter_id") != chapter_id:
+                continue
+            if payload.get("body_hash") != body_hash:
+                continue
+            return {
+                "chapter_id": chapter_id,
+                "body_hash": body_hash,
+                "confirmed_at": payload.get("confirmed_at") or row.created_at,
+                "confirmed_by": payload.get("confirmed_by") or payload.get("actor_ref") or "operator",
+                "note": payload.get("note") or "",
+                "operation_id": row.operation_id,
+            }
+        return None
 
     def _scene_reviews(self, chapter_id: str) -> list[dict[str, Any]]:
         scenes = self.session.execute(

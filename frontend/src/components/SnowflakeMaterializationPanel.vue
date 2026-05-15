@@ -109,6 +109,19 @@ function goToGateItem(item) {
   emit("notice", "请按提示补齐后再整理章节结构。");
 }
 
+async function acceptGateStaleScene(item) {
+  const scenePlanId = item?.scene_plan_id || item?.primary_action?.scene_plan_id || "";
+  if (!scenePlanId) return;
+  await runFlowAction({
+    scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
+    actionLabel: "复核场景规划",
+    runningMessage: "正在记录场景复核结果...",
+    successMessage: () => store.lastActionMessage || "场景规划已复核，当前版本仍有效。",
+    nextStep: () => "下一步：继续整理成章节结构。",
+    action: () => store.acceptStaleScenes([scenePlanId], { note: "reviewed in materialization gate" }),
+  });
+}
+
 async function materializeOutline() {
   await runFlowAction({
     scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
@@ -226,6 +239,16 @@ function handleReceiptNavigate(target) {
           <p>{{ item.message }}</p>
           <button type="button" class="ghost mini-btn" @click="goToGateItem(item)">
             {{ item.primary_action?.label || "去处理" }}
+          </button>
+          <button
+            v-if="item.kind === 'stale_scene_plan'"
+            type="button"
+            class="ghost mini-btn"
+            data-testid="snowflake-scene-stale-accept"
+            :disabled="store.actionId === 'accept-stale-scenes'"
+            @click="acceptGateStaleScene(item)"
+          >
+            复核后仍有效
           </button>
         </article>
       </div>

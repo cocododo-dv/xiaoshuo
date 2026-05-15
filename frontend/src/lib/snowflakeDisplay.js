@@ -69,7 +69,7 @@ const ARTIFACT_STATUS_LABELS = {
   draft: "草稿",
   pending_review: "待确认",
   approved: "已确认",
-  stale: "需回修",
+  stale: "需复核",
   skipped: "已跳过",
 };
 
@@ -94,11 +94,11 @@ export function diagnosticLabel(value) {
 
 export function sourceLabel(value) {
   const key = String(value || "").toLowerCase();
+  if (!key || key === "fallback") {
+    return "离线演示内容";
+  }
   if (key === "llm") {
     return "模型建议";
-  }
-  if (key === "fallback") {
-    return "本地建议";
   }
   return key || "本地建议";
 }

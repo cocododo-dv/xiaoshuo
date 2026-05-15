@@ -397,7 +397,7 @@ onActivated(() => initialize(false));
               <div v-else class="snowflake-current">
                 <span class="eyebrow">当前步骤</span>
                 <h3>雪花规划已完成</h3>
-                <p class="muted">可以把已确认的场景列表和场景规划物化为结构计划。</p>
+                <p class="muted">可以把已确认的场景列表和场景规划整理为结构计划。</p>
               </div>
 
               <textarea

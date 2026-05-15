@@ -532,6 +532,33 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
+.snowflake-workbench-view .triage-bulk-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.snowflake-workbench-view .triage-origin-badge {
+  border: 1px solid var(--snowflake-line);
+  border-radius: 999px;
+  background: var(--snowflake-paper);
+  color: var(--snowflake-muted);
+  padding: 3px 7px;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.snowflake-workbench-view .triage-origin-badge.manual {
+  border-color: rgba(47, 111, 98, 0.28);
+  color: var(--snowflake-moss-deep);
+}
+
+.snowflake-workbench-view .triage-origin-badge.override {
+  border-color: rgba(140, 103, 43, 0.32);
+  background: var(--snowflake-warning-soft);
+  color: var(--snowflake-warning);
+}
+
 .snowflake-workbench-view .snowflake-step-history {
   background: var(--snowflake-paper);
 }

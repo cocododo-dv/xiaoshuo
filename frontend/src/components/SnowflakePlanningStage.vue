@@ -29,6 +29,7 @@ const currentStepIndex = computed(() =>
 const readyToMaterialize = computed(() => store.readyToMaterialize);
 const currentStepDirty = computed(() => store.currentStepDirty);
 const currentStepStale = computed(() => currentStep.value?.artifact?.status === "stale");
+const currentStepStaleAccepted = computed(() => Boolean(currentStep.value?.stale_accepted_at || currentStep.value?.artifact?.stale_accepted_at));
 const currentStepStaleDismissed = computed(() => currentStepStale.value && store.isStaleStepDismissed(currentStep.value));
 const currentStepHistory = computed(() =>
   store.stepHistory?.step_key === currentStep.value?.step_key ? (store.stepHistory?.items || []) : [],
@@ -154,7 +155,7 @@ async function skipCurrentStep(reason) {
     actionLabel: "跳过步骤",
     runningMessage: "正在记录跳过原因...",
     successMessage: () => store.lastActionMessage || "已跳过当前步骤。",
-    nextStep: () => "下一步：继续确认下一层雪花；物化前会再次提示跳过风险。",
+    nextStep: () => "下一步：继续确认下一层雪花；整理章节结构前会再次提示跳过风险。",
     action: () => store.skipCurrentStep(reason),
   });
   restoreSkipFocus();
@@ -171,6 +172,18 @@ function dismissCurrentStepStale() {
 
 function restoreCurrentStepStale() {
   store.restoreStaleStep(currentStep.value);
+}
+
+async function acceptCurrentStepStale() {
+  if (!currentStep.value?.step_key) return;
+  await runFlowAction({
+    scopeKey: SNOWFLAKE_STEP_SCOPE,
+    actionLabel: "复核需复核步骤",
+    runningMessage: "正在记录复核结果...",
+    successMessage: () => store.lastActionMessage || "已复核，当前内容仍可继续使用。",
+    nextStep: () => "下一步：继续确认后续步骤，或整理成章节结构。",
+    action: () => store.acceptStaleStep(currentStep.value, { note: "reviewed in snowflake workbench" }),
+  });
 }
 
 function closeSkipDialog() {
@@ -313,6 +326,16 @@ function updateSceneCrucible(fieldKey, index, value) {
           <strong>这个步骤受前面已修改内容影响，建议复核。</strong>
           <p class="muted">{{ currentStep.artifact?.stale_reason || "上游内容已更新，这里的判断或文本可能需要同步调整。" }}</p>
         </div>
+        <button
+          v-if="!currentStepStaleAccepted"
+          type="button"
+          class="ghost mini-btn"
+          data-testid="snowflake-stale-accept"
+          :disabled="store.actionId === `accept-stale:${currentStep?.step_key}`"
+          @click="acceptCurrentStepStale"
+        >
+          复核后仍有效
+        </button>
         <button type="button" class="ghost mini-btn" data-testid="snowflake-stale-dismiss" @click="dismissCurrentStepStale">
           我知道，暂时收起
         </button>

@@ -193,7 +193,7 @@ describe("snowflake project dashboard store", () => {
 
     expect(materialized.plan_id).toBe("PLAN_SNOW");
     expect(store.latestPlan.plan_json.source).toBe("snowflake_method");
-    expect(store.lastActionMessage).toBe("雪花规划已物化为结构计划，等待确认。");
+    expect(store.lastActionMessage).toBe("雪花规划已整理为结构计划，等待确认。");
   });
 });
 

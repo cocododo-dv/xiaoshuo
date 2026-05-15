@@ -48,6 +48,18 @@ function triageStatusClass(item) {
   return triageStatusOf(item) || "empty";
 }
 
+function triageSourceLabel(item) {
+  if (item?.manual_override) return "人工覆盖";
+  if (item?.manual_status || item?.status) return "人工标记";
+  return "AI 建议";
+}
+
+function triageSourceClass(item) {
+  if (item?.manual_override) return "override";
+  if (item?.manual_status || item?.status) return "manual";
+  return "ai";
+}
+
 function scoreLabel(item) {
   return typeof item?.score === "number" ? `${item.score}` : "--";
 }
@@ -92,6 +104,22 @@ async function persistSceneTriage() {
     successMessage: () => store.lastActionMessage || "场景急救结果已保存。",
     nextStep: () => "下一步：修复阻塞场景，再回到规划页整理章节结构。",
     action: () => store.saveSceneTriage(),
+  });
+}
+
+async function bulkMarkTriage(status) {
+  const count = filteredTriageItems.value.length;
+  if (!count) return;
+  const label = triageStatusLabel(status);
+  const confirmed = typeof window === "undefined" || window.confirm(`将当前筛选的 ${count} 个场景全部标为「${label}」？`);
+  if (!confirmed) return;
+  await runFlowAction({
+    scopeKey: SNOWFLAKE_TRIAGE_SCOPE,
+    actionLabel: "批量保存场景急救",
+    runningMessage: "正在批量保存场景急救判断...",
+    successMessage: () => store.lastActionMessage || "场景急救批量标记已保存。",
+    nextStep: () => "下一步：只打开少数仍需修改的场景做局部返工。",
+    action: () => store.bulkMarkTriage(status, "filtered"),
   });
 }
 
@@ -157,6 +185,18 @@ async function requestSelectedSceneAssistant() {
       <button type="button" class="mini-btn" :class="{ active: store.triageFilter === 'manual' }" @click="store.setTriageFilter('manual')">人工标记</button>
     </div>
 
+    <div class="triage-bulk-row" data-testid="snowflake-triage-bulk-actions">
+      <button type="button" class="mini-btn" :disabled="!filteredTriageItems.length || store.actionId === 'scene-triage'" @click="bulkMarkTriage('pass')">
+        当前筛选全部标为合格
+      </button>
+      <button type="button" class="mini-btn" :disabled="!filteredTriageItems.length || store.actionId === 'scene-triage'" @click="bulkMarkTriage('maybe')">
+        当前筛选全部标为需修改
+      </button>
+      <button type="button" class="mini-btn danger" :disabled="!filteredTriageItems.length || store.actionId === 'scene-triage'" @click="bulkMarkTriage('rewrite')">
+        当前筛选全部标为废除重写
+      </button>
+    </div>
+
     <div v-if="triageDrafts.length" class="triage-workbench-grid">
       <div class="triage-queue" data-testid="snowflake-triage-queue">
         <button
@@ -174,6 +214,9 @@ async function requestSelectedSceneAssistant() {
           <span class="triage-score">{{ scoreLabel(item) }}</span>
           <span class="triage-badge" :class="triageStatusClass(item)">
             {{ triageStatusLabel(triageStatusOf(item)) }}
+          </span>
+          <span class="triage-origin-badge" :class="triageSourceClass(item)">
+            {{ triageSourceLabel(item) }}
           </span>
         </button>
         <p v-if="!filteredTriageItems.length" class="muted">当前筛选下没有场景。</p>

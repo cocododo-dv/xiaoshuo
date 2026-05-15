@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 
 import {
+  confirmProjectChapterRead,
   fetchChapterRunStatus,
   fetchProjectDashboard,
   reviewProjectChapterFinal,
@@ -141,6 +142,33 @@ export const useWriterFlowStore = defineStore("writerFlow", {
         this.runStatus = null;
         this.lastApprovalNote = snapshotPayload(result?.approval_note || null);
         this.lastActionMessage = result?.next_chapter_id ? "Chapter approved. Next chapter is ready." : "Project completed.";
+        return result;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async confirmCurrentChapterRead(payload = {}) {
+      const projectId = this.selectedProjectId || projectIdOf(this.project);
+      const chapterId = currentChapterId(this) || this.reviewPacket?.chapter_id;
+      if (!projectId || !chapterId) {
+        throw new Error("No chapter is waiting for read confirmation.");
+      }
+      this.actionId = `read-confirm:${chapterId}`;
+      this.error = "";
+      try {
+        const result = await confirmProjectChapterRead(projectId, chapterId, payload);
+        this.dashboard = snapshotPayload({
+          ...(this.dashboard || {}),
+          review_packet: {
+            ...(this.reviewPacket || {}),
+            body_hash: result?.body_hash || this.reviewPacket?.body_hash || "",
+            read_confirmation: result || null,
+          },
+        });
+        this.lastActionMessage = "已确认通读当前正文。";
         return result;
       } catch (error) {
         this.error = error.message;

@@ -33,6 +33,7 @@ const { receipt, runFlowAction } = useFlowActionFeedback({
 });
 const approvalNotes = ref("");
 const pollingActive = ref(false);
+const readDrawerOpen = ref(false);
 
 let pollTimer = null;
 let pollInFlight = false;
@@ -59,6 +60,10 @@ const approvalNotesTooLong = computed(() => approvalNotesCount.value > 2000);
 const runStatusText = computed(() => runStatusLabel(runStatus.value?.status, nextAction.value));
 const runSourceText = computed(() => bodySourceLabel(runStatus.value?.source || ""));
 const reviewBodySourceText = computed(() => bodySourceLabel(reviewPacket.value?.body_source || ""));
+const reviewBodyHash = computed(() => String(reviewPacket.value?.body_hash || ""));
+const reviewReadConfirmed = computed(() =>
+  Boolean(reviewBodyHash.value && reviewPacket.value?.read_confirmation?.body_hash === reviewBodyHash.value),
+);
 const reviewEmptyText = computed(() => bodyEmptyReasonLabel(reviewPacket.value?.body_empty_reason));
 const completionStatusText = computed(() => completionStatusLabel(reviewPacket.value?.completion_status));
 const currentSceneText = computed(() => sceneDisplayLabel(currentChapter.value, runStatus.value?.current_scene_id));
@@ -84,7 +89,7 @@ function actionFor(action) {
       icon: PlayCircle,
       disabled: offlineBanner.value,
       run: startRunJob,
-      hint: offlineBanner.value ? "当前是离线 fallback，只做流程演示，不会生成真实正文；启用模型后再起草。" : "启动后台章节起草，并在这里查看进度。",
+      hint: offlineBanner.value ? "当前是离线演示内容，只做流程演示，不会生成真实正文；启用模型后再起草。" : "启动后台章节起草，并在这里查看进度。",
     };
   }
   if (action === "view_chapter_progress") {
@@ -94,11 +99,12 @@ function actionFor(action) {
     return {
       label: "批准本章",
       icon: CheckCircle2,
-      disabled: !reviewPacket.value?.body || approvalNotesTooLong.value,
+      disabled: !reviewPacket.value?.body || !reviewReadConfirmed.value || approvalNotesTooLong.value,
       run: approveFinal,
       hint: approvalNotesTooLong.value
         ? "批准备注需控制在 2000 字以内。"
-        : reviewPacket.value?.body ? "确认正文后推进到下一章。" : "终稿审阅没有正文，先回到运行状态排查。",
+        : !reviewPacket.value?.body ? "终稿审阅没有正文，先回到运行状态排查。"
+          : reviewReadConfirmed.value ? "确认正文后推进到下一章。" : "批准前先通读全文并确认当前正文。",
     };
   }
   if (action === "resolve_blocker" || action === "resolve_backtrack_items") {
@@ -163,6 +169,18 @@ async function approveFinal() {
   });
   approvalNotes.value = "";
   stopPolling();
+}
+
+async function confirmFullRead() {
+  await runFlowAction({
+    scopeKey: WRITER_FLOW_SCOPE,
+    actionLabel: "确认通读全文",
+    runningMessage: "正在记录阅读确认...",
+    successMessage: () => store.lastActionMessage || "已确认通读当前正文。",
+    nextStep: () => "下一步：可以批准本章，或回到小修入口处理局部问题。",
+    action: () => store.confirmCurrentChapterRead({ note: "confirmed from writer flow full reader" }),
+  });
+  readDrawerOpen.value = false;
 }
 
 function openSystemConfig() {
@@ -273,7 +291,7 @@ watch(() => router.routeContext.value?.target, (target) => {
 
     <template v-else>
       <aside v-if="offlineBanner" class="writer-flow-banner" data-testid="writer-flow-offline-banner">
-        <span>当前是离线 fallback 演示模式，不会生成真实正文或真实 AI 修改；启用模型后再开始章节起草。</span>
+        <span>当前是离线演示内容模式，不会生成真实正文或真实 AI 修改；启用模型后再开始章节起草。</span>
         <button type="button" class="ghost" data-testid="writer-flow-config-action" @click="openSystemConfig">
           打开系统配置
         </button>
@@ -357,6 +375,14 @@ watch(() => router.routeContext.value?.target, (target) => {
           </div>
           <p v-if="reviewPacket?.body" class="writer-flow-body-preview">{{ reviewPacket.body }}</p>
           <p v-else class="muted">{{ reviewEmptyText }}</p>
+          <div v-if="reviewPacket?.body" class="writer-flow-read-actions" data-testid="writer-flow-read-actions">
+            <button type="button" class="ghost" data-testid="writer-flow-read-full" @click="readDrawerOpen = true">
+              通读全文
+            </button>
+            <span :class="{ confirmed: reviewReadConfirmed }" data-testid="writer-flow-read-confirmation">
+              {{ reviewReadConfirmed ? "已确认通读当前正文" : "批准前需通读确认" }}
+            </span>
+          </div>
           <div class="badge-row">
             <span>{{ reviewPacket?.char_count || 0 }} 字符</span>
             <span>{{ completionStatusText }}</span>
@@ -399,6 +425,31 @@ watch(() => router.routeContext.value?.target, (target) => {
           <small>{{ chapter.scenes?.length || 0 }} 场景</small>
         </article>
       </section>
+
+      <div v-if="readDrawerOpen" class="writer-flow-reader-backdrop" data-testid="writer-flow-read-drawer">
+        <article class="writer-flow-reader">
+          <div class="panel-head">
+            <div>
+              <span class="eyebrow">全文审阅</span>
+              <h3>{{ currentChapter?.chapter_goal || "当前章节" }}</h3>
+            </div>
+            <button type="button" class="ghost" @click="readDrawerOpen = false">关闭</button>
+          </div>
+          <pre>{{ reviewPacket?.body || "" }}</pre>
+          <div class="writer-flow-reader-actions">
+            <span>{{ reviewPacket?.char_count || 0 }} 字符</span>
+            <button
+              type="button"
+              class="primary"
+              data-testid="writer-flow-read-confirm"
+              :disabled="!reviewPacket?.body || store.actionId?.startsWith('read-confirm:')"
+              @click="confirmFullRead"
+            >
+              我已通读，确认可批准
+            </button>
+          </div>
+        </article>
+      </div>
     </template>
   </section>
 </template>
@@ -502,6 +553,56 @@ watch(() => router.routeContext.value?.target, (target) => {
   overflow: auto;
   white-space: pre-wrap;
   line-height: 1.7;
+}
+
+.writer-flow-read-actions,
+.writer-flow-reader-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.writer-flow-read-actions span {
+  color: #8c672b;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.writer-flow-read-actions span.confirmed {
+  color: #2f6f62;
+}
+
+.writer-flow-reader-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(19, 31, 28, 0.34);
+  padding: 18px;
+}
+
+.writer-flow-reader {
+  display: grid;
+  gap: 14px;
+  width: min(920px, 100%);
+  max-height: min(86vh, 900px);
+  overflow: auto;
+  border: 1px solid rgba(43, 95, 88, 0.18);
+  border-radius: 8px;
+  background: #fffefa;
+  box-shadow: 0 28px 70px rgba(20, 35, 31, 0.28);
+  padding: 18px;
+}
+
+.writer-flow-reader pre {
+  margin: 0;
+  white-space: pre-wrap;
+  color: #1f2f2b;
+  font: inherit;
+  line-height: 1.8;
 }
 
 .writer-flow-approval-notes {

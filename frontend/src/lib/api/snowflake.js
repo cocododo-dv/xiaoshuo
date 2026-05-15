@@ -33,6 +33,13 @@ export function approveSnowflakeWorkspaceStep(projectId, stepKey, payload = {}) 
   );
 }
 
+export function acceptSnowflakeWorkspaceStepStale(projectId, stepKey, payload = {}) {
+  return apiPost(
+    `/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/steps/${encodeURIComponent(stepKey)}/accept-stale`,
+    payload,
+  );
+}
+
 export function fetchSnowflakeStepHistory(projectId, stepKey, { includeDraft = false } = {}) {
   const query = includeDraft ? "?include_draft=true" : "";
   return apiGet(
@@ -67,6 +74,10 @@ export function updateSnowflakeWorkspaceScene(projectId, scenePlanId, payload = 
     `/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/scenes/${encodeURIComponent(scenePlanId)}`,
     payload,
   );
+}
+
+export function acceptSnowflakeWorkspaceScenesStale(projectId, payload = {}) {
+  return apiPost(`/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/scenes/accept-stale`, payload);
 }
 
 export function applySnowflakeSceneTriageRepair(projectId, triageId, payload = {}) {

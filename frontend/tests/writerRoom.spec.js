@@ -190,6 +190,13 @@ describe("writer room shell", () => {
     expect(viewSource).toContain("FlowActionReceipt");
     expect(viewSource).toContain("WRITER_DRAFT_SCOPE");
     expect(viewSource).toContain("WRITER_PROPOSAL_SCOPE");
+    expect(viewSource).toContain("scheduleAutoSave");
+    expect(viewSource).toContain("window.setTimeout");
+    expect(viewSource).toContain("1500");
+    expect(viewSource).toContain("保存中...");
+    expect(viewSource).toContain("已自动保存");
+    expect(viewSource).toContain("保存失败");
+    expect(viewSource).toContain("beforeunload");
     expect(viewSource).toContain('data-testid="writer-room-context-strip"');
     expect(viewSource).toContain("下一步：比较候选或继续小修正文");
     expect(viewSource).toContain("正文已保存");

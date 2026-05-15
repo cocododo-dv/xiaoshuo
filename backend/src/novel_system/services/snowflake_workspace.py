@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
+    OperationLog,
     OutlinePlan,
     SnowflakeAssistantTurn,
     SnowflakeCharacterPlan,
@@ -103,11 +104,12 @@ class SnowflakeWorkspaceService:
         project = self._require_snowflake_project(project_id)
         latest_by_step = self._latest_by_step(project_id)
         current_step_key = self._current_step_key(latest_by_step)
-        scene_board = self._scene_board(project_id)
+        scene_plans = self._scene_plans(project_id)
+        scene_board = self._scene_board(project_id, scene_plans=scene_plans)
         triage_items = self._triage_items(project_id)
         latest_plan = self._latest_plan(project_id)
         steps = [self._workspace_step(step, latest_by_step, project_id=project_id) for step in list_step_definitions()]
-        gate = self._materialization_gate(latest_by_step, triage_items)
+        gate = self._materialization_gate(latest_by_step, triage_items, scene_plans)
         return {
             "project": project_payload(project),
             "method_version": SNOWFLAKE_METHOD_VERSION,
@@ -186,6 +188,9 @@ class SnowflakeWorkspaceService:
             run.input_refs_json = self._input_refs(step_key, latest_by_step)
             run.health_json = self._step_health(step_key, draft, "pending_review", generation_source="author")
             run.stale_reason = None
+            run.stale_accepted_at = None
+            run.stale_accepted_by = None
+            run.stale_accepted_note = None
         else:
             run = SnowflakeStepRun(
                 step_run_id=f"snowflake_step_run_{project.project_id}_{step_key}_{uuid.uuid4().hex[:10]}",
@@ -293,6 +298,9 @@ class SnowflakeWorkspaceService:
                 run.input_refs_json = self._input_refs(step_key, latest_by_step)
                 run.health_json = self._step_health(step_key, draft, "pending_review", generation_source="author_discovery")
                 run.stale_reason = None
+                run.stale_accepted_at = None
+                run.stale_accepted_by = None
+                run.stale_accepted_note = None
             else:
                 run = SnowflakeStepRun(
                     step_run_id=f"snowflake_step_run_{project.project_id}_{step_key}_{uuid.uuid4().hex[:10]}",
@@ -361,6 +369,39 @@ class SnowflakeWorkspaceService:
             "workspace": workspace,
             "impact": self._combine_approval_impact(step_key, downstream_impact, runtime_impact),
         }
+
+    def accept_stale_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
+        project = self._require_snowflake_project(project_id)
+        self._require_step(step_key)
+        run = self._latest_by_step(project.project_id).get(step_key)
+        if run is None:
+            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "no draft exists for this snowflake step", status_code=404)
+        if run.status != "stale":
+            raise DomainError("SNOWFLAKE_STEP_NOT_STALE", "only stale snowflake steps can be accepted as still valid", status_code=409)
+        body = payload or {}
+        note = str(body.get("note") or "").strip() or None
+        accepted_at = utcnow()
+        run.stale_accepted_at = accepted_at
+        run.stale_accepted_by = actor_ref or "operator"
+        run.stale_accepted_note = note
+        self.session.add(
+            OperationLog(
+                event_type="snowflake_step_stale_accepted",
+                object_type="snowflake_step_run",
+                object_ref=run.step_run_id,
+                payload_json={
+                    "project_id": project.project_id,
+                    "step_key": step_key,
+                    "accepted_at": accepted_at,
+                    "accepted_by": actor_ref or "operator",
+                    "note": note or "",
+                    "stale_reason": run.stale_reason or "",
+                },
+            )
+        )
+        self.session.flush()
+        workspace = self.workspace(project.project_id)
+        return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
 
     def request_assistant(self, project_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -490,13 +531,57 @@ class SnowflakeWorkspaceService:
         self.session.flush()
         return {"triage": self._triage_payload(row), "scene": _scene_plan_payload(scene), "workspace": self.workspace(project.project_id)}
 
+    def accept_stale_scenes(self, project_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
+        project = self._require_snowflake_project(project_id)
+        body = payload or {}
+        requested_ids = [str(item or "").strip() for item in body.get("scene_plan_ids") or [] if str(item or "").strip()]
+        scenes = self._scene_plans(project.project_id)
+        if requested_ids:
+            requested = set(requested_ids)
+            scenes = [scene for scene in scenes if scene.scene_plan_id in requested]
+        if not scenes:
+            raise DomainError("SNOWFLAKE_STALE_SCENES_NOT_FOUND", "no matching scene plans found", status_code=404)
+        note = str(body.get("note") or "").strip() or None
+        accepted_at = utcnow()
+        accepted: list[dict[str, Any]] = []
+        for scene in scenes:
+            if scene.status != "stale":
+                continue
+            scene.stale_accepted_at = accepted_at
+            scene.stale_accepted_by = actor_ref or "operator"
+            scene.stale_accepted_note = note
+            accepted.append(_scene_plan_payload(scene))
+            self.session.add(
+                OperationLog(
+                    event_type="snowflake_scene_stale_accepted",
+                    object_type="snowflake_scene_plan",
+                    object_ref=scene.scene_plan_id,
+                    payload_json={
+                        "project_id": project.project_id,
+                        "scene_id": scene.scene_id,
+                        "scene_plan_id": scene.scene_plan_id,
+                        "accepted_at": accepted_at,
+                        "accepted_by": actor_ref or "operator",
+                        "note": note or "",
+                        "stale_reason": scene.stale_reason or "",
+                    },
+                )
+            )
+        if not accepted:
+            raise DomainError("SNOWFLAKE_SCENES_NOT_STALE", "no matching stale scene plans found", status_code=409)
+        self.session.flush()
+        return {"accepted_scenes": accepted, "workspace": self.workspace(project.project_id)}
+
     def update_scene_plan(self, project_id: str, scene_plan_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         scene = self.session.get(SnowflakeScenePlan, scene_plan_id)
         if scene is None or scene.project_id != project.project_id:
             raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "scene plan not found", status_code=404)
         self._apply_scene_patch(scene, _sanitize_scene_patch(payload or {}))
-        scene.status = "draft" if scene.status == "approved" else scene.status
+        scene.status = "draft" if scene.status in {"approved", "stale"} else scene.status
+        scene.stale_accepted_at = None
+        scene.stale_accepted_by = None
+        scene.stale_accepted_note = None
         scene.diagnosis_json = diagnose_scene_detail(_scene_plan_payload(scene))
         self.session.flush()
         return {"scene": _scene_plan_payload(scene), "workspace": self.workspace(project.project_id)}
@@ -579,6 +664,9 @@ class SnowflakeWorkspaceService:
             "version": run.version if run is not None else 0,
             "health": deepcopy(run.health_json or {}) if run is not None else {},
             "stale_reason": run.stale_reason if run is not None else "",
+            "stale_accepted_at": run.stale_accepted_at if run is not None else None,
+            "stale_accepted_by": run.stale_accepted_by if run is not None else "",
+            "stale_accepted_note": run.stale_accepted_note if run is not None else "",
             "can_skip": bool(step.get("skippable")),
             "can_backtrack": run is not None and run.status in {"approved", "skipped", "stale"},
             "guidance": step_guidance(step["step_key"]),
@@ -610,7 +698,11 @@ class SnowflakeWorkspaceService:
     @staticmethod
     def _gate_satisfied(step_key: str, latest_by_step: dict[str, SnowflakeStepRun]) -> bool:
         run = latest_by_step.get(step_key)
-        return run is not None and run.status in STRUCTURED_GATE_STATUSES
+        if run is None:
+            return False
+        if run.status in STRUCTURED_GATE_STATUSES:
+            return True
+        return run.status == "stale" and bool(run.stale_accepted_at)
 
     def _current_step_key(self, latest_by_step: dict[str, SnowflakeStepRun]) -> str | None:
         for step in list_step_definitions():
@@ -634,7 +726,7 @@ class SnowflakeWorkspaceService:
             run = latest_by_step.get(step["step_key"])
             if allow_self and run is not None and run.step_run_id == allow_self:
                 continue
-            if run is None or run.status not in STRUCTURED_GATE_STATUSES:
+            if not self._gate_satisfied(step["step_key"], latest_by_step):
                 raise DomainError(
                     "SNOWFLAKE_PREVIOUS_STEP_REQUIRED",
                     "previous snowflake steps must be approved first",
@@ -659,7 +751,7 @@ class SnowflakeWorkspaceService:
         refs: dict[str, Any] = {}
         for step in list_step_definitions()[:step_index]:
             run = latest_by_step.get(step["step_key"])
-            if run is not None and run.status in STRUCTURED_GATE_STATUSES:
+            if run is not None and self._gate_satisfied(step["step_key"], latest_by_step):
                 refs[step["step_key"]] = run.step_run_id
         return refs
 
@@ -711,8 +803,8 @@ class SnowflakeWorkspaceService:
             .order_by(SnowflakeScenePlan.chapter_id.asc(), SnowflakeScenePlan.scene_seq.asc(), SnowflakeScenePlan.scene_id.asc())
         ).scalars().all()
 
-    def _scene_board(self, project_id: str) -> dict[str, Any]:
-        scenes = [_scene_plan_payload(scene) for scene in self._scene_plans(project_id)]
+    def _scene_board(self, project_id: str, *, scene_plans: list[SnowflakeScenePlan] | None = None) -> dict[str, Any]:
+        scenes = [_scene_plan_payload(scene) for scene in (scene_plans if scene_plans is not None else self._scene_plans(project_id))]
         chapters_by_id: dict[str, dict[str, Any]] = {}
         for scene in scenes:
             chapter_id = scene["chapter_id"]
@@ -844,7 +936,11 @@ class SnowflakeWorkspaceService:
         }
 
     @staticmethod
-    def _materialization_gate(latest_by_step: dict[str, SnowflakeStepRun], triage_items: list[dict[str, Any]]) -> dict[str, Any]:
+    def _materialization_gate(
+        latest_by_step: dict[str, SnowflakeStepRun],
+        triage_items: list[dict[str, Any]],
+        scene_plans: list[SnowflakeScenePlan] | None = None,
+    ) -> dict[str, Any]:
         blockers: list[str] = []
         warnings: list[str] = []
         items: list[dict[str, Any]] = []
@@ -923,13 +1019,20 @@ class SnowflakeWorkspaceService:
                 continue
             if run.status == "skipped":
                 add_step_item(
-                    severity="blocker",
+                    severity="warning",
                     kind="skipped_required_step",
-                    message=f"{step_label} 是整理章节结构前必需步骤，不能跳过。",
+                    message=f"{step_label} 已跳过；可以继续整理，但建议在生成章节前复核这一层是否仍需要补齐。",
                     step_key=step_key,
                 )
                 continue
-            if run.status not in STRUCTURED_GATE_STATUSES:
+            if run.status == "stale" and run.stale_accepted_at:
+                add_step_item(
+                    severity="warning",
+                    kind="accepted_stale_required_step",
+                    message=f"{step_label} was marked stale, but the current draft was reviewed and accepted.",
+                    step_key=step_key,
+                )
+            if run.status not in STRUCTURED_GATE_STATUSES and not (run.status == "stale" and run.stale_accepted_at):
                 add_step_item(
                     severity="blocker",
                     kind="unapproved_required_step",
@@ -967,6 +1070,14 @@ class SnowflakeWorkspaceService:
                     step_key=step_key,
                 )
                 continue
+            if run.status == "stale" and run.stale_accepted_at:
+                add_step_item(
+                    severity="warning",
+                    kind="accepted_stale_optional_step",
+                    message=f"{step_label} was marked stale, but the current draft was reviewed and accepted.",
+                    step_key=step_key,
+                )
+                continue
             if run.status not in STRUCTURED_GATE_STATUSES:
                 add_step_item(
                     severity="warning",
@@ -974,6 +1085,26 @@ class SnowflakeWorkspaceService:
                     message=f"{step_label} 尚未确认；可以继续整理，但后续可能需要回修。",
                     step_key=step_key,
                 )
+        for scene in scene_plans or []:
+            if scene.status != "stale":
+                continue
+            scene_label = str(scene.title or scene.summary or scene.scene_id or "scene").strip()
+            item = _scene_plan_payload(scene)
+            if scene.stale_accepted_at:
+                add_scene_item(
+                    severity="warning",
+                    kind="accepted_stale_scene_plan",
+                    message=f"{scene_label} was marked stale, but the current scene plan was reviewed and accepted.",
+                    item=item,
+                )
+                continue
+            add_scene_item(
+                severity="blocker",
+                kind="stale_scene_plan",
+                message=f"{scene_label} needs review before the chapter structure is materialized.",
+                item=item,
+            )
+
         for item in triage_items:
             scene_label = str(item.get("title") or item.get("scene_id") or "scene").strip()
             scene_id = str(item.get("scene_id") or "").strip()
@@ -1129,6 +1260,9 @@ class SnowflakeWorkspaceService:
             plan.source_step_run_id = run.step_run_id
             plan.status = "approved" if approved else "draft"
             plan.stale_reason = None
+            plan.stale_accepted_at = None
+            plan.stale_accepted_by = None
+            plan.stale_accepted_note = None
             self._apply_scene_patch(plan, _sanitize_scene_patch(item))
             if created and not plan.title:
                 plan.title = str(item.get("title") or item.get("summary") or f"场景 {index:02d}").strip()
@@ -1232,6 +1366,9 @@ class SnowflakeWorkspaceService:
         for row in rows:
             row.status = "stale"
             row.stale_reason = reason
+            row.stale_accepted_at = None
+            row.stale_accepted_by = None
+            row.stale_accepted_note = None
             affected_step_run_ids.append(row.step_run_id)
             self._record_revision_link(run, affected_kind="step_run", affected_id=row.step_run_id, reason=reason)
 
@@ -1239,6 +1376,9 @@ class SnowflakeWorkspaceService:
             for scene in self._scene_plans(run.project_id):
                 scene.status = "stale"
                 scene.stale_reason = reason
+                scene.stale_accepted_at = None
+                scene.stale_accepted_by = None
+                scene.stale_accepted_note = None
                 affected_scene_plan_ids.append(scene.scene_plan_id)
                 self._record_revision_link(run, affected_kind="scene_plan", affected_id=scene.scene_plan_id, reason=reason)
         return {
@@ -1346,6 +1486,10 @@ class SnowflakeWorkspaceService:
             "diagnosis_json": deepcopy(run.health_json or {}),
             "llm_call_id": run.llm_call_id,
             "approved_at": run.approved_at,
+            "stale_reason": run.stale_reason,
+            "stale_accepted_at": run.stale_accepted_at,
+            "stale_accepted_by": run.stale_accepted_by,
+            "stale_accepted_note": run.stale_accepted_note,
             "created_at": run.created_at,
             "updated_at": run.updated_at,
         }
@@ -1360,6 +1504,9 @@ class SnowflakeWorkspaceService:
             "updated_at": run.updated_at,
             "approved_at": run.approved_at,
             "stale_reason": run.stale_reason,
+            "stale_accepted_at": run.stale_accepted_at,
+            "stale_accepted_by": run.stale_accepted_by,
+            "stale_accepted_note": run.stale_accepted_note,
             "generation_source": str((run.health_json or {}).get("generation_source") or ""),
             "draft_summary": _draft_summary(run.draft_json or {}),
         }
@@ -1534,6 +1681,9 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "target_length_band": scene.target_length_band or "",
         "status": scene.status,
         "stale_reason": scene.stale_reason or "",
+        "stale_accepted_at": scene.stale_accepted_at,
+        "stale_accepted_by": scene.stale_accepted_by or "",
+        "stale_accepted_note": scene.stale_accepted_note or "",
         "diagnosis": deepcopy(scene.diagnosis_json or {}),
     }
 

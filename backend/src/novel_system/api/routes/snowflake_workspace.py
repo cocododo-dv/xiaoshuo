@@ -115,6 +115,20 @@ def approve_workspace_step(
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/accept-stale")
+def accept_workspace_stale_step(
+    project_id: str,
+    step_key: str,
+    payload: dict[str, Any] | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = SnowflakeWorkspaceService(session).accept_stale_step(project_id, step_key, payload or {}, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/assistant")
 def request_workspace_assistant(
     project_id: str,
@@ -147,6 +161,19 @@ def save_workspace_scene_triage(
     session: Session = Depends(get_session),
 ):
     result = SnowflakeWorkspaceService(session).save_scene_triage(project_id, payload or {})
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v2/projects/{project_id}/snowflake-workspace/scenes/accept-stale")
+def accept_workspace_stale_scenes(
+    project_id: str,
+    payload: dict[str, Any] | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = SnowflakeWorkspaceService(session).accept_stale_scenes(project_id, payload or {}, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 

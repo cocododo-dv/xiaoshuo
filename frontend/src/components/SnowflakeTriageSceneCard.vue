@@ -104,7 +104,7 @@ function joinLines(value) {
       <span>推荐：{{ statusLabel(item.recommended_status) }}</span>
       <span>生效：{{ statusLabel(status) }}</span>
       <span v-if="item.manual_override">人工覆盖自动诊断</span>
-      <span v-if="item.blocking">阻止物化</span>
+      <span v-if="item.blocking">阻止整理结构</span>
     </div>
 
     <div class="triage-tag-row" v-if="item.pressure_flags?.length">

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from novel_system.db.models import (
     AuthorDraft,
     LlmCall,
+    OperationLog,
     OutlinePlan,
     SceneCard,
     SnowflakeArtifact,
@@ -642,6 +643,112 @@ def test_workspace_v2_marks_downstream_steps_stale_after_upstream_regeneration(c
     assert workspace["current_step_key"] == "one_sentence_summary"
     stale_step = next(step for step in workspace["steps"] if step["step_key"] == "one_sentence_summary")
     assert stale_step["artifact"]["status"] == "stale"
+
+
+def test_workspace_v2_accepts_stale_step_with_audit_trail(client, session) -> None:
+    project = _create_project(client, key="accept-stale-step")
+    _approve_generated_step(client, project["project_id"], "book_brief")
+    _approve_generated_step(client, project["project_id"], "one_sentence_summary")
+
+    _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    stale_workspace = _approve_step(client, project["project_id"], "book_brief")["workspace"]
+    stale_step = next(step for step in stale_workspace["steps"] if step["step_key"] == "one_sentence_summary")
+    assert stale_step["status"] == "stale"
+    assert stale_workspace["current_step_key"] == "one_sentence_summary"
+
+    response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/one_sentence_summary/accept-stale",
+        json={"note": "The one-sentence promise still matches the revised audience."},
+        headers={"X-Operator-Ref": "author-a"},
+    )
+
+    assert response.status_code == 200, response.text
+    workspace = response.json()["data"]["workspace"]
+    accepted_step = next(step for step in workspace["steps"] if step["step_key"] == "one_sentence_summary")
+    assert accepted_step["status"] == "stale"
+    assert accepted_step["stale_accepted_at"]
+    assert accepted_step["stale_accepted_by"] == "author-a"
+    assert accepted_step["gate_satisfied"] is True
+    assert workspace["current_step_key"] == "one_paragraph_summary"
+
+    session.expire_all()
+    stale_run = (
+        session.query(SnowflakeStepRun)
+        .filter(
+            SnowflakeStepRun.project_id == project["project_id"],
+            SnowflakeStepRun.step_key == "one_sentence_summary",
+            SnowflakeStepRun.status == "stale",
+        )
+        .one()
+    )
+    assert stale_run.stale_accepted_by == "author-a"
+    log = (
+        session.query(OperationLog)
+        .filter_by(event_type="snowflake_step_stale_accepted", object_type="snowflake_step_run", object_ref=stale_run.step_run_id)
+        .one()
+    )
+    assert log.payload_json["note"] == "The one-sentence promise still matches the revised audience."
+
+
+def test_workspace_v2_accepts_stale_scenes_for_materialization(client, session) -> None:
+    project = _create_project(client, key="accept-stale-scenes")
+    for step_key in [
+        "book_brief",
+        "one_sentence_summary",
+        "one_paragraph_summary",
+        "character_sheets",
+        "short_synopsis",
+        "character_synopses",
+        "long_synopsis",
+        "character_bibles",
+        "scene_list",
+        "scene_details",
+    ]:
+        _approve_generated_step(client, project["project_id"], step_key)
+
+    scene_plans = (
+        session.query(SnowflakeScenePlan)
+        .filter(SnowflakeScenePlan.project_id == project["project_id"])
+        .order_by(SnowflakeScenePlan.scene_plan_id.asc())
+        .all()
+    )
+    assert scene_plans
+    for scene in scene_plans:
+        scene.status = "stale"
+        scene.stale_reason = "book_brief was revised; review dependent scene work."
+    session.commit()
+
+    blocked = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
+    assert blocked["materialization_gate"]["status"] == "blocked"
+
+    accept_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/scenes/accept-stale",
+        json={"scene_plan_ids": [scene.scene_plan_id for scene in scene_plans], "note": "Reviewed after premise update."},
+        headers={"X-Operator-Ref": "author-b"},
+    )
+    assert accept_response.status_code == 200, accept_response.text
+    accepted_workspace = accept_response.json()["data"]["workspace"]
+    assert accepted_workspace["materialization_gate"]["status"] != "blocked"
+    accepted_scene = accepted_workspace["scene_board"]["scenes"][0]
+    assert accepted_scene["status"] == "stale"
+    assert accepted_scene["stale_accepted_at"]
+    assert accepted_scene["stale_accepted_by"] == "author-b"
+
+    materialize_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/materialize",
+        json={},
+        headers={"X-Idempotency-Key": "materialize-accepted-stale-scenes"},
+    )
+    assert materialize_response.status_code == 200, materialize_response.text
+    assert materialize_response.json()["data"]["plan"]["status"] == "pending_review"
+
+    session.expire_all()
+    logs = (
+        session.query(OperationLog)
+        .filter(OperationLog.event_type == "snowflake_scene_stale_accepted", OperationLog.object_type == "snowflake_scene_plan")
+        .all()
+    )
+    assert len(logs) == len(scene_plans)
 
 
 def test_workspace_v2_persists_scene_triage_and_approves_materialized_outline(client, session) -> None:

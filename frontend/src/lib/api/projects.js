@@ -84,6 +84,13 @@ export function approveProjectChapterFinal(projectId, chapterId, payload = {}) {
   );
 }
 
+export function confirmProjectChapterRead(projectId, chapterId, payload = {}) {
+  return apiPost(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/read-confirm`,
+    payload,
+  );
+}
+
 export function reviewProjectChapterFinal(projectId, chapterId, payload = {}) {
   return apiPost(
     `/api/v1/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapterId)}/final-review`,

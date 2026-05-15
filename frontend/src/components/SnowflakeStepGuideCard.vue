@@ -150,7 +150,7 @@ function toggleSection(section) {
         <span class="eyebrow">当前任务</span>
         <p class="step-guide-description">{{ step.description }}</p>
       </div>
-      <strong v-if="step.guidance?.required_for_materialization" class="required-chip">物化必需</strong>
+      <strong v-if="step.guidance?.required_for_materialization" class="required-chip">整理前必需</strong>
     </section>
 
     <div class="step-guide-status">

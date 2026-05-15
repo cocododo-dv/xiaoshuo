@@ -164,12 +164,14 @@ describe("snowflake workspace v2 api helpers", () => {
     await api.generateSnowflakeWorkspaceStep("PRJ_WS", "book_brief");
     await api.updateSnowflakeWorkspaceStep("PRJ_WS", "book_brief", { draft: { category: "Urban Mystery" } });
     await api.approveSnowflakeWorkspaceStep("PRJ_WS", "book_brief");
+    await api.acceptSnowflakeWorkspaceStepStale("PRJ_WS", "book_brief", { note: "still good" });
     await api.fetchSnowflakeStepHistory("PRJ_WS", "book_brief");
     await api.restoreSnowflakeWorkspaceStep("PRJ_WS", "book_brief", { step_run_id: "RUN_OLD" });
     await api.requestSnowflakeWorkspaceAssistant("PRJ_WS", { step_key: "book_brief", message: "Narrow the reader." });
     await api.requestSnowflakeSceneTriageSuggestions("PRJ_WS", { draft_override: { scenes: [] } });
     await api.saveSnowflakeSceneTriage("PRJ_WS", { items: [] });
     await api.updateSnowflakeWorkspaceScene("PRJ_WS", "SCENE_PLAN_1", { setback: "Cost rises." });
+    await api.acceptSnowflakeWorkspaceScenesStale("PRJ_WS", { scene_plan_ids: ["SCENE_PLAN_1"] });
     await api.applySnowflakeSceneTriageRepair("PRJ_WS", "TRIAGE_1");
     await api.materializeSnowflakeWorkspace("PRJ_WS");
     await api.approveSnowflakeWorkspaceOutline("PRJ_WS");
@@ -181,12 +183,14 @@ describe("snowflake workspace v2 api helpers", () => {
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/generate", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief", "PATCH"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/approve", "POST"]);
+    expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/accept-stale", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/history", "GET"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/restore", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/assistant", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/scene-triage/suggest", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/scene-triage", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/scenes/SCENE_PLAN_1", "PATCH"]);
+    expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/scenes/accept-stale", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/scene-triage/TRIAGE_1/apply", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/materialize", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/outline/approve", "POST"]);
@@ -208,7 +212,7 @@ describe("snowflake display labels", () => {
     expect(fieldLabel("target_reader")).toBe("目标读者");
     expect(diagnosticLabel("missing_setback")).toBe("缺少挫折");
     expect(diagnosticLabel("weak_conflict_escalation")).toBe("冲突升级不足");
-    expect(sourceLabel("fallback")).toBe("本地建议");
+    expect(sourceLabel("fallback")).toBe("离线演示内容");
     expect(sourceLabel("llm")).toBe("模型建议");
     expect(sceneFormLabel("reactive")).toBe("反应场景");
     expect(stepKeyLabel("scene_details")).toBe("场景规划");
@@ -253,6 +257,87 @@ describe("snowflake workspace store", () => {
     expect(sessionStorage.getItem("snowflake-stale-dismissed:PRJ_WS::book_brief::ART_STALE::2026-05-13T00:00:00Z::upstream step changed")).toBeNull();
     expect(store.materializationGate.status).toBe("blocked");
     expect(store.materializationGate.blockers).toEqual(["still blocked"]);
+  });
+
+  it("bulk marks filtered triage and accepts stale workspace items", async () => {
+    const { useSnowflakeWorkbenchStore } = await import("../src/stores/snowflakeWorkbench");
+    const store = useSnowflakeWorkbenchStore();
+    const staleWorkspace = {
+      ...workspace,
+      project,
+      current_step_key: "book_brief",
+      scene_board: {
+        chapters: [],
+        scenes: [{ scene_plan_id: "SCENE_PLAN_1", scene_id: "SC01", title: "Witness", status: "stale" }],
+      },
+      triage_items: [
+        {
+          scene_plan_id: "SCENE_PLAN_1",
+          scene_id: "SC01",
+          title: "Witness",
+          recommended_status: "rewrite",
+          effective_status: "rewrite",
+        },
+        {
+          scene_plan_id: "SCENE_PLAN_2",
+          scene_id: "SC02",
+          title: "Aftermath",
+          recommended_status: "maybe",
+          effective_status: "maybe",
+        },
+      ],
+      steps: [
+        {
+          ...workspace.steps[0],
+          artifact: { artifact_id: "ART_STALE", status: "stale", stale_reason: "upstream changed" },
+        },
+      ],
+    };
+    const acceptedWorkspace = {
+      ...staleWorkspace,
+      steps: [
+        {
+          ...staleWorkspace.steps[0],
+          stale_accepted_at: "2026-05-15T00:00:00Z",
+          artifact: { ...staleWorkspace.steps[0].artifact, stale_accepted_at: "2026-05-15T00:00:00Z" },
+        },
+      ],
+      scene_board: {
+        chapters: [],
+        scenes: [{ scene_plan_id: "SCENE_PLAN_1", scene_id: "SC01", title: "Witness", status: "stale", stale_accepted_at: "2026-05-15T00:00:00Z" }],
+      },
+    };
+
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      const method = options.method || "GET";
+      if (url.endsWith("/api/v2/projects/PRJ_WS/snowflake-workspace/scene-triage") && method === "POST") {
+        const body = JSON.parse(options.body);
+        expect(body.items.find((item) => item.scene_plan_id === "SCENE_PLAN_1")).toEqual(expect.objectContaining({
+          manual_status: "pass",
+          effective_status: "pass",
+          manual_override: true,
+        }));
+        return okEnvelope({ items: body.items, workspace: { ...staleWorkspace, triage_items: body.items } });
+      }
+      if (url.endsWith("/api/v2/projects/PRJ_WS/snowflake-workspace/steps/book_brief/accept-stale") && method === "POST") {
+        return okEnvelope({ step: acceptedWorkspace.steps[0], workspace: acceptedWorkspace });
+      }
+      if (url.endsWith("/api/v2/projects/PRJ_WS/snowflake-workspace/scenes/accept-stale") && method === "POST") {
+        expect(JSON.parse(options.body).scene_plan_ids).toEqual(["SCENE_PLAN_1"]);
+        return okEnvelope({ accepted_scenes: acceptedWorkspace.scene_board.scenes, workspace: acceptedWorkspace });
+      }
+      throw new Error(`Unexpected fetch ${method} ${url}`);
+    });
+
+    store.applyWorkspace(staleWorkspace);
+    store.setTriageFilter("rewrite");
+    await store.bulkMarkTriage("pass", "filtered");
+    expect(store.triageDrafts.find((item) => item.scene_plan_id === "SCENE_PLAN_1").manual_status).toBe("pass");
+    await store.acceptStaleStep(store.steps[0]);
+    await store.acceptStaleScenes(["SCENE_PLAN_1"]);
+
+    expect(store.steps[0].stale_accepted_at).toBe("2026-05-15T00:00:00Z");
+    expect(store.staleScenePlanIds).toEqual([]);
   });
 
   it("loads snowflake step history, restores an old draft as pending review, and keeps discovery context as assistant input", async () => {
@@ -1290,7 +1375,7 @@ describe("snowflake reference fusion components", () => {
       expect(wrapper.el.textContent).not.toContain("收窄目标读者。");
       expect(wrapper.el.textContent).not.toContain("缺少目标读者");
       expect(wrapper.el.textContent).not.toContain("能否继续扩展成可写场景？");
-      expect(wrapper.el.textContent).toContain("物化必需");
+      expect(wrapper.el.textContent).toContain("整理前必需");
 
       wrapper.el.querySelector('[data-testid="snowflake-guide-toggle-checklist"]')?.dispatchEvent(new MouseEvent("click"));
       await nextTick();

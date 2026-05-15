@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onActivated, onMounted, ref } from "vue";
+import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowRight, Check, Eye, FileText, RefreshCw, Save, Sparkles, X } from "lucide-vue-next";
 
 import CompactEntitySelect from "../components/CompactEntitySelect.vue";
@@ -30,6 +30,7 @@ const proposalModeOptions = [
   { value: "near_final", label: "近终稿" },
 ];
 const proposalInstruction = ref("");
+const autoSaveState = ref("idle");
 const chapters = computed(() => room.navigation?.chapters || []);
 const scenes = computed(() => room.navigation?.scenes || []);
 const chapterChoiceState = computed(() =>
@@ -82,6 +83,70 @@ const longformCards = computed(() => room.longformCards.length ? room.longformCa
 const proposalCount = computed(() => proposalCards.value.filter((proposal) => proposal.status !== "rejected").length);
 const diffPreview = computed(() => room.proposalDiff || null);
 const returnContext = computed(() => routeContext.value?.returnTo ? routeContext.value : null);
+const draftStatusLabel = computed(() => {
+  if (autoSaveState.value === "saving") return "保存中...";
+  if (autoSaveState.value === "saved" && !room.draftDirty) return "已自动保存";
+  if (autoSaveState.value === "error") return "保存失败";
+  return draftStatus.value;
+});
+let autoSaveTimer = null;
+let autoSavePromise = null;
+
+function clearAutoSaveTimer() {
+  if (autoSaveTimer) {
+    window.clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+  }
+}
+
+function scheduleAutoSave() {
+  clearAutoSaveTimer();
+  if (!room.draft?.draft_id || !room.draftDirty) {
+    if (!room.draftDirty && autoSaveState.value !== "saving") {
+      autoSaveState.value = "idle";
+    }
+    return;
+  }
+  autoSaveState.value = "dirty";
+  autoSaveTimer = window.setTimeout(() => {
+    runAutoSave().catch(() => {});
+  }, 1500);
+}
+
+async function runAutoSave() {
+  if (!room.draft?.draft_id || !room.draftDirty) {
+    return room.draft;
+  }
+  if (autoSavePromise) {
+    return autoSavePromise;
+  }
+  autoSaveState.value = "saving";
+  autoSavePromise = room.saveDraft({ note: "auto-saved from writer room" })
+    .then((draft) => {
+      autoSaveState.value = "saved";
+      return draft;
+    })
+    .catch((error) => {
+      autoSaveState.value = "error";
+      emit("notice", "保存失败");
+      throw error;
+    })
+    .finally(() => {
+      autoSavePromise = null;
+      if (room.draftDirty) {
+        scheduleAutoSave();
+      }
+    });
+  return autoSavePromise;
+}
+
+function handleBeforeUnload(event) {
+  if (!room.draftDirty) {
+    return;
+  }
+  event.preventDefault();
+  event.returnValue = "";
+}
 
 function proposalTitle(proposal) {
   return proposal.display_kind || proposal.title || proposal.summary || proposal.proposal_type || proposal.proposal_kind || "可采纳改法";
@@ -166,6 +231,7 @@ async function selectScene(value) {
 }
 
 async function saveDraft() {
+  clearAutoSaveTimer();
   await runFlowAction({
     scopeKey: WRITER_DRAFT_SCOPE,
     actionLabel: "保存正文",
@@ -174,6 +240,7 @@ async function saveDraft() {
     nextStep: () => "下一步：比较候选或继续小修正文。",
     action: () => room.saveDraft(),
   });
+  autoSaveState.value = "saved";
 }
 
 async function previewProposal(proposal) {
@@ -227,8 +294,28 @@ async function rejectProposal(proposal) {
   });
 }
 
-onMounted(() => loadInitial());
+watch(() => room.draftContent, scheduleAutoSave);
+watch(() => room.draftDirty, (dirty) => {
+  if (dirty) {
+    scheduleAutoSave();
+  } else if (autoSaveState.value !== "saving") {
+    clearAutoSaveTimer();
+  }
+});
+
+onMounted(() => {
+  loadInitial();
+  if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", handleBeforeUnload);
+  }
+});
 onActivated(() => loadInitial());
+onBeforeUnmount(() => {
+  clearAutoSaveTimer();
+  if (typeof window !== "undefined") {
+    window.removeEventListener("beforeunload", handleBeforeUnload);
+  }
+});
 </script>
 
 <template>
@@ -264,7 +351,7 @@ onActivated(() => loadInitial());
       <div class="writer-room-context-strip" data-testid="writer-room-context-strip" aria-live="polite">
         <span class="badge">{{ room.selectedSceneId ? "场景小修" : "章节小修" }}</span>
         <strong>{{ title }}</strong>
-        <span class="badge" :class="{ active: room.draftDirty }">{{ draftStatus }}</span>
+        <span class="badge" :class="{ active: room.draftDirty || autoSaveState === 'saving', danger: autoSaveState === 'error' }">{{ draftStatusLabel }}</span>
       </div>
 
       <div class="writer-room-grid">
@@ -323,7 +410,7 @@ onActivated(() => loadInitial());
               <span class="eyebrow">Author Draft</span>
               <h3>正文</h3>
             </div>
-            <span class="badge" :class="{ active: room.draftDirty }">{{ draftStatus }}</span>
+            <span class="badge" :class="{ active: room.draftDirty || autoSaveState === 'saving', danger: autoSaveState === 'error' }">{{ draftStatusLabel }}</span>
           </div>
 
           <textarea

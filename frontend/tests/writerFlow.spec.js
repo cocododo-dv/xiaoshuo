@@ -73,7 +73,7 @@ describe("writer flow command center", () => {
 
     expect(source).toContain('data-testid="writer-flow-offline-banner"');
     expect(source).toContain('data-testid="writer-flow-config-action"');
-    expect(source).toContain("离线 fallback");
+    expect(source).toContain("离线演示内容");
     expect(source).toContain("router.navigate('config'");
     expect(source).toContain("disabled: offlineBanner.value");
   });
@@ -133,6 +133,11 @@ describe("writer flow command center", () => {
 
     expect(apiSource).toContain("reviewProjectChapterFinal");
     expect(apiSource).toContain("/final-review");
+    expect(apiSource).toContain("confirmProjectChapterRead");
+    expect(apiSource).toContain("/read-confirm");
+    expect(viewSource).toContain('data-testid="writer-flow-read-drawer"');
+    expect(viewSource).toContain('data-testid="writer-flow-read-confirm"');
+    expect(viewSource).toContain("reviewReadConfirmed");
     expect(viewSource).toContain("isPolling");
     expect(viewSource).toContain('data-testid="writer-flow-polling-status"');
     expect(viewSource).toContain("approvalNotesCount");
@@ -161,6 +166,8 @@ describe("writer flow command center", () => {
       chapter_id: "PRJ_FLOW_CH01",
       body: "final chapter body",
       body_source: "assembled",
+      body_hash: "hash-final-body",
+      read_confirmation: null,
       char_count: 18,
       body_empty_reason: null,
       completion_status: "complete",
@@ -204,6 +211,14 @@ describe("writer flow command center", () => {
           progress_pct: 100,
         });
       }
+      if (url.endsWith("/api/v1/projects/PRJ_FLOW/chapters/PRJ_FLOW_CH01/read-confirm") && method === "POST") {
+        return okEnvelope({
+          chapter_id: "PRJ_FLOW_CH01",
+          body_hash: "hash-final-body",
+          confirmed_by: "operator",
+          confirmed_at: "2026-05-15T00:00:00Z",
+        });
+      }
       if (url.endsWith("/api/v1/projects/PRJ_FLOW/chapters/PRJ_FLOW_CH01/final-review") && method === "POST") {
         expect(JSON.parse(options.body)).toEqual({
           decision: "approve",
@@ -231,6 +246,8 @@ describe("writer flow command center", () => {
       next_action: "approve_chapter_final",
     });
     expect(store.reviewPacket.body).toBe("final chapter body");
+    await store.confirmCurrentChapterRead();
+    expect(store.reviewPacket.read_confirmation.body_hash).toBe("hash-final-body");
     await store.approveCurrentChapterFinal({ revision_notes: "Keep the second scene tense." });
 
     expect(store.selectedProjectId).toBe("PRJ_FLOW");

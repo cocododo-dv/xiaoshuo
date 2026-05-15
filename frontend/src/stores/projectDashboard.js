@@ -320,7 +320,7 @@ export const useProjectDashboardStore = defineStore("projectDashboard", {
           review_packet: null,
           next_action: "approve_outline_plan",
         });
-        this.lastActionMessage = "雪花规划已物化为结构计划，等待确认。";
+        this.lastActionMessage = "雪花规划已整理为结构计划，等待确认。";
         return result?.plan || null;
       } catch (error) {
         this.error = error.message;

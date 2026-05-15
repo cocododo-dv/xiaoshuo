@@ -1,6 +1,8 @@
 import { defineStore } from "pinia";
 
 import {
+  acceptSnowflakeWorkspaceScenesStale,
+  acceptSnowflakeWorkspaceStepStale,
   approveSnowflakeWorkspaceOutline,
   approveSnowflakeWorkspaceStep,
   applyAuthorStructureCandidateToSnowflake,
@@ -249,6 +251,10 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
       }
       return items.filter((item) => String(item?.effective_status || item?.status || "").toLowerCase() === filter);
     },
+    staleScenePlanIds: (state) => (state.workspace?.scene_board?.scenes || [])
+      .filter((scene) => scene?.status === "stale" && !scene?.stale_accepted_at)
+      .map((scene) => scene.scene_plan_id)
+      .filter(Boolean),
     latestPlan: (state) => state.workspace?.latest_plan || null,
     materializationGate: (state) =>
       state.workspace?.materialization_gate || { status: "blocked", blockers: ["雪花步骤尚未完成。"], warnings: [] },
@@ -961,6 +967,84 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
         this.triageDrafts = clonePayload(result?.items || []);
         this.lastActionMessage = "场景急救标记已保存。";
         return result?.items || [];
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async bulkMarkTriage(status, scope = "filtered") {
+      const normalizedStatus = ["pass", "maybe", "rewrite"].includes(String(status || "").toLowerCase())
+        ? String(status || "").toLowerCase()
+        : "";
+      if (!normalizedStatus) {
+        throw new Error("Unknown scene triage status.");
+      }
+      const sourceItems = scope === "all" ? (this.triageDrafts || []) : (this.filteredTriageItems || []);
+      const targetIds = new Set(sourceItems.map((item) => item?.scene_plan_id || item?.scene_id).filter(Boolean));
+      if (!targetIds.size) {
+        return [];
+      }
+      const nextItems = (this.triageDrafts || []).map((item) => {
+        const identity = item?.scene_plan_id || item?.scene_id;
+        if (!targetIds.has(identity)) {
+          return item;
+        }
+        const recommended = String(item?.recommended_status || "").toLowerCase();
+        return {
+          ...item,
+          status: normalizedStatus,
+          manual_status: normalizedStatus,
+          effective_status: normalizedStatus,
+          manual_override: Boolean(recommended && recommended !== normalizedStatus),
+          triage_source: "author_saved",
+        };
+      });
+      this.triageDrafts = clonePayload(nextItems);
+      return this.saveSceneTriage(this.triageDrafts);
+    },
+    async acceptStaleStep(step = this.currentStep, payload = {}) {
+      const projectId = this.selectedProjectId || projectIdOf(this.project);
+      const stepKey = step?.step_key || this.currentStep?.step_key;
+      if (!projectId || !stepKey) {
+        throw new Error("No stale snowflake step is selected.");
+      }
+      this.actionId = `accept-stale:${stepKey}`;
+      this.error = "";
+      try {
+        const result = await acceptSnowflakeWorkspaceStepStale(projectId, stepKey, payload);
+        if (result?.workspace) {
+          this.applyWorkspace(result.workspace, { preferCurrent: false });
+          this.selectedStepKey = stepKey;
+        }
+        this.lastActionMessage = "已复核，当前内容仍可继续使用。";
+        return result?.step || null;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async acceptStaleScenes(scenePlanIds = this.staleScenePlanIds, payload = {}) {
+      const projectId = this.selectedProjectId || projectIdOf(this.project);
+      const ids = (Array.isArray(scenePlanIds) ? scenePlanIds : [scenePlanIds]).filter(Boolean);
+      if (!projectId || !ids.length) {
+        throw new Error("No stale scene plans are selected.");
+      }
+      this.actionId = "accept-stale-scenes";
+      this.error = "";
+      try {
+        const result = await acceptSnowflakeWorkspaceScenesStale(projectId, {
+          scene_plan_ids: ids,
+          ...(payload || {}),
+        });
+        if (result?.workspace) {
+          this.applyWorkspace(result.workspace, { preferCurrent: false });
+        }
+        this.lastActionMessage = "已复核场景规划，当前版本仍可继续整理成章节结构。";
+        return result?.accepted_scenes || [];
       } catch (error) {
         this.error = error.message;
         throw error;

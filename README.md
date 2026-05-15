@@ -79,7 +79,7 @@ v1 不一次性生成整本书，只做逐章推进。
 - `POST /api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final`
 - `POST /api/v1/projects/{project_id}/reference-profiles`
 
-`写作总控` 现在是普通作者模式的结构确认后入口：雪花结构批准后进入项目 dashboard，按 `next_action` 启动后台章节起草、轮询运行进度、展示终稿审阅正文并批准当前章。LLM 未启用时，章节起草会被明确阻止，除非显式选择离线演示；离线演示内容会标记为 fallback，不当作真实正文来源。
+`写作总控` 现在是普通作者模式的结构确认后入口：雪花结构批准后进入项目 dashboard，按 `next_action` 启动后台章节起草、轮询运行进度、展示终稿审阅正文并批准当前章。LLM 未启用时，章节起草会被明确阻止，除非显式选择离线演示；离线演示内容会明确标记为演示来源，不当作真实正文来源。
 
 后端新增：
 
