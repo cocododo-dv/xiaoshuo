@@ -91,6 +91,10 @@ export function materializeSnowflakeWorkspace(projectId, payload = {}) {
   return apiPost(`/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/materialize`, payload);
 }
 
+export function resyncSnowflakeWorkspace(projectId, payload = {}) {
+  return apiPost(`/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/resync`, payload);
+}
+
 export function approveSnowflakeWorkspaceOutline(projectId, payload = {}) {
   return apiPost(`/api/v2/projects/${encodeURIComponent(projectId)}/snowflake-workspace/outline/approve`, payload);
 }

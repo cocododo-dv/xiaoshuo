@@ -36,6 +36,16 @@ const ERROR_MESSAGE_LABELS = [
   [/llm disabled/i, "当前未启用真实模型，不能生成正式正文。"],
 ];
 
+const ERROR_CODE_LABELS = {
+  CHAPTER_RUN_SCENE_INCOMPLETE: "当前场景没有生成可审阅正文。",
+  CHAPTER_RUN_SCENE_NEEDS_REWRITE: "当前场景停在质检返修，还没有形成可审阅终稿。",
+  CHAPTER_RUN_HUMAN_REVIEW_REQUIRED: "有场景需要人工审核后才能继续。",
+  CHAPTER_RUN_BACKTRACK_REQUIRED: "有返工项待处理，处理后才能继续起草。",
+  LLM_DISABLED_FOR_CHAPTER_RUN: "当前未启用真实模型，不能生成正式正文。",
+  LLM_ROUTE_NOT_CONFIGURED: "模型路由还没有配置，请先到系统配置里绑定 provider 和模型。",
+  CONTINUITY_BUDGET_EXCEEDED: "连续性上下文太重，建议拆分场景或降低本轮上下文后再跑。",
+};
+
 export function runStatusLabel(status, nextAction = "") {
   const normalized = String(status || "").trim();
   if (RUN_STATUS_LABELS[normalized]) {
@@ -97,6 +107,10 @@ export function chapterListLabel(chapter, index = 0) {
 }
 
 export function latestErrorLabel(error) {
+  const code = typeof error === "object" ? String(error?.code || "").trim() : "";
+  if (code && ERROR_CODE_LABELS[code]) {
+    return ERROR_CODE_LABELS[code];
+  }
   const message = typeof error === "string" ? error : String(error?.message || "");
   for (const [pattern, label] of ERROR_MESSAGE_LABELS) {
     if (pattern.test(message)) {

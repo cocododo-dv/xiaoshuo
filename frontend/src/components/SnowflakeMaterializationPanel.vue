@@ -1,6 +1,6 @@
 ﻿<script setup>
 import { computed } from "vue";
-import { Check, WandSparkles } from "lucide-vue-next";
+import { Check, RefreshCw, WandSparkles } from "lucide-vue-next";
 
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
@@ -20,6 +20,8 @@ const { receipt, runFlowAction } = useFlowActionFeedback({
 const readyToMaterialize = computed(() => store.readyToMaterialize);
 const materializationGate = computed(() => store.materializationGate);
 const latestPlan = computed(() => store.latestPlan);
+const pendingResyncCount = computed(() => store.pendingResyncCount);
+const pendingResyncScenes = computed(() => store.pendingResyncScenes);
 const chapterFlowReady = computed(() =>
   ["chapter_ready", "chapter_running", "chapter_blocked", "chapter_final_review", "completed"]
     .includes(String(store.project?.status || "").toLowerCase()),
@@ -120,6 +122,28 @@ function goToGateItem(item) {
   emit("notice", "请按提示补齐后再整理章节结构。");
 }
 
+async function previewResync() {
+  await runFlowAction({
+    scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
+    actionLabel: "预览同步",
+    runningMessage: "正在对比雪花规划和已物化场景...",
+    successMessage: () => store.lastActionMessage || "同步差异已预览。",
+    nextStep: () => "下一步：确认后只同步结构卡和写作 brief。",
+    action: () => store.previewResync(),
+  });
+}
+
+async function resyncScenes() {
+  await runFlowAction({
+    scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
+    actionLabel: "同步场景规划",
+    runningMessage: "正在把雪花规划同步到结构卡...",
+    successMessage: () => store.lastActionMessage || "场景规划已同步到结构卡。",
+    nextStep: () => "终稿、作者草稿和模型调用记录不会被覆盖。",
+    action: () => store.resyncScenes(),
+  });
+}
+
 async function acceptGateStaleScene(item) {
   const scenePlanId = item?.scene_plan_id || item?.primary_action?.scene_plan_id || "";
   if (!scenePlanId) return;
@@ -216,6 +240,27 @@ function handleReceiptNavigate(target) {
       </div>
     </div>
     <FlowActionReceipt :receipt="receipt(SNOWFLAKE_STRUCTURE_SCOPE)" :on-navigate="handleReceiptNavigate" />
+
+    <div v-if="pendingResyncCount" class="snowflake-resync-panel" data-testid="snowflake-resync-panel">
+      <div>
+        <span class="eyebrow">物化后同步</span>
+        <strong>{{ pendingResyncCount }} 个已物化场景可能需要同步</strong>
+        <p class="muted">只更新 SceneCard / ChapterGoal 和 writer_brief_json，不覆盖作者草稿、终稿、审核历史和 LLM 调用记录。</p>
+      </div>
+      <div class="action-row">
+        <button type="button" class="ghost action-btn" :disabled="store.actionId === 'preview-resync'" @click="previewResync">
+          <RefreshCw :size="16" />
+          <span>预览差异</span>
+        </button>
+        <button type="button" class="primary action-btn" :disabled="store.actionId === 'resync-scenes'" @click="resyncScenes">
+          <Check :size="16" />
+          <span>同步选中</span>
+        </button>
+      </div>
+      <ul>
+        <li v-for="scene in pendingResyncScenes.slice(0, 3)" :key="scene.scene_plan_id">{{ scene.title || scene.scene_id }}</li>
+      </ul>
+    </div>
 
     <div v-if="structureHandoff" class="snowflake-structure-handoff" data-testid="snowflake-structure-handoff">
       <div>

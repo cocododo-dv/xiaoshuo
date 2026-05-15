@@ -19,6 +19,7 @@ import {
   applySnowflakeSceneTriageRepair,
   requestSnowflakeSceneTriageSuggestions,
   requestSnowflakeWorkspaceAssistant,
+  resyncSnowflakeWorkspace,
   restoreSnowflakeWorkspaceStep,
   saveSnowflakeSceneTriage,
   saveAuthorDraft,
@@ -267,6 +268,8 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
     latestPlan: (state) => state.workspace?.latest_plan || null,
     materializationGate: (state) =>
       state.workspace?.materialization_gate || { status: "blocked", blockers: ["雪花步骤尚未完成。"], warnings: [] },
+    pendingResyncScenes: (state) => state.workspace?.resync_status?.pending_scenes || [],
+    pendingResyncCount: (state) => Number(state.workspace?.resync_status?.pending_count || 0),
     readyToMaterialize: (state) => Boolean(state.workspace?.ready_to_materialize),
     canCreate: (state) => Boolean(String(state.draft.outline_text || "").trim()),
     currentStepDirty(state) {
@@ -1200,6 +1203,50 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
         this.applyWorkspace(result?.workspace, { preferCurrent: false });
         this.lastActionMessage = "结构已确认，可以进入章节运行。";
         return result?.plan || null;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async previewResync(scenePlanIds = null) {
+      const projectId = this.selectedProjectId || projectIdOf(this.project);
+      if (!projectId) {
+        throw new Error("请先选择项目");
+      }
+      const pendingIds = Array.isArray(scenePlanIds) ? scenePlanIds : this.pendingResyncScenes.map((scene) => scene.scene_plan_id);
+      this.actionId = "preview-resync";
+      this.error = "";
+      try {
+        const result = await resyncSnowflakeWorkspace(projectId, {
+          scene_plan_ids: pendingIds.filter(Boolean),
+          dry_run: true,
+        });
+        this.lastActionMessage = "已预览可同步的雪花变更。";
+        return result;
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async resyncScenes(scenePlanIds = null) {
+      const projectId = this.selectedProjectId || projectIdOf(this.project);
+      if (!projectId) {
+        throw new Error("请先选择项目");
+      }
+      const pendingIds = Array.isArray(scenePlanIds) ? scenePlanIds : this.pendingResyncScenes.map((scene) => scene.scene_plan_id);
+      this.actionId = "resync-scenes";
+      this.error = "";
+      try {
+        const result = await resyncSnowflakeWorkspace(projectId, {
+          scene_plan_ids: pendingIds.filter(Boolean),
+        });
+        this.applyWorkspace(result?.workspace, { preferCurrent: false });
+        this.lastActionMessage = "已把选中的雪花规划同步到结构卡。";
+        return result;
       } catch (error) {
         this.error = error.message;
         throw error;

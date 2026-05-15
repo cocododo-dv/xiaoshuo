@@ -24,6 +24,7 @@ class StoryProject(Base):
     outline_text: Mapped[str] = mapped_column(Text)
     planning_mode: Mapped[str] = mapped_column(String, default="outline_driven")
     snowflake_schema_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    snowflake_workflow_mode: Mapped[str] = mapped_column(String, default="strict")
     status: Mapped[str] = mapped_column(String, default="outline_draft")
     active_outline_plan_id: Mapped[str | None] = mapped_column(String, nullable=True)
     current_chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)

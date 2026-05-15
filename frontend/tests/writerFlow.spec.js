@@ -107,7 +107,27 @@ describe("writer flow command center", () => {
     expect(nextActionLabel("resolve_backtrack_items")).toContain("返工");
     expect(runStatusLabel("failed", "approve_chapter_final")).toBe("起草失败，需要查看原因");
     expect(latestErrorLabel({ message: "chapter run is blocked by pending replanning work" })).toContain("返工");
+    expect(latestErrorLabel({ code: "CHAPTER_RUN_SCENE_INCOMPLETE", message: "did not produce a final scene" })).toBe("当前场景没有生成可审阅正文。");
+    expect(latestErrorLabel({ code: "LLM_ROUTE_NOT_CONFIGURED", message: "route missing" })).toContain("模型路由");
+    expect(latestErrorLabel({ code: "CONTINUITY_BUDGET_EXCEEDED", message: "too much context" })).toContain("上下文");
     expect(backtrackScopeLabel({ scope: "scene", chapter_id: "CH01", scene_id: "SC02" })).toBe("场景 SC02");
+  });
+
+  it("renders LLM readiness guidance and author action routing when a run is blocked", () => {
+    const source = readSource("src/views/WriterFlowView.vue");
+    const storeSource = readSource("src/stores/writerFlow.js");
+    const feedbackSource = readSource("src/composables/useFlowActionFeedback.js");
+
+    expect(source).toContain('data-testid="writer-flow-readiness-card"');
+    expect(source).toContain("readinessSteps");
+    expect(source).toContain("authorAction");
+    expect(source).toContain('data-testid="writer-flow-author-action"');
+    expect(source).toContain("openAuthorAction");
+    expect(source).toContain("去系统配置");
+    expect(source).toContain("去场景工作台");
+    expect(storeSource).toContain("lastAuthorAction");
+    expect(storeSource).toContain("latest_error?.author_action");
+    expect(feedbackSource).toContain("author_action");
   });
 
   it("renders writer-facing review coverage, scene list, and backtrack controls without raw ids as primary copy", () => {

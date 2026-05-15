@@ -228,6 +228,35 @@ def test_execution_contract_blocks_scene_run_when_required_fields_cannot_be_deri
     assert run_response.json()["error"]["code"] == "SCENE_EXECUTION_CONTRACT_BLOCKED"
 
 
+def test_scene_triage_backtrack_uses_author_language_for_missing_contract_fields(client, session) -> None:
+    _seed_project(session)
+    scene = session.get(SceneCard, SCENE_ID)
+    assert scene is not None
+    scene.writer_brief_json = {
+        "scene_form": "proactive",
+        "character_desire": "尽快行动",
+    }
+    session.commit()
+
+    contract_response = client.post(f"/api/v1/scenes/{SCENE_ID}/execution-contract", headers=_headers("execution-author-language"))
+    assert contract_response.status_code == 200
+    contract = contract_response.json()["data"]["contract"]
+    assert contract["status"] == "blocked"
+    assert "scene_crucible" in contract["missing_fields"]
+
+    triage_response = client.post(f"/api/v1/scenes/{SCENE_ID}/triage", headers=_headers("triage-author-language"))
+
+    assert triage_response.status_code == 200
+    triage = triage_response.json()["data"]["triage"]
+    assert triage["decision"] == "no"
+    backtrack = session.get(ProjectBacktrackItem, triage["backtrack_item_id"])
+    assert backtrack is not None
+    assert "坩埚/场景压力" in backtrack.problem_summary
+    assert "冲突推进" in backtrack.problem_summary
+    assert "scene_crucible" not in backtrack.problem_summary
+    assert "setback_or_victory" not in backtrack.recommended_fix
+
+
 def test_scene_triage_returns_yes_maybe_and_no_and_manages_backtrack_items(client, session) -> None:
     _seed_project(session)
     contract = client.post(f"/api/v1/scenes/{SCENE_ID}/execution-contract", headers=_headers("execution-triage")).json()["data"]["contract"]

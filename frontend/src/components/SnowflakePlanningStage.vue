@@ -22,6 +22,9 @@ const { receipt, runFlowAction } = useFlowActionFeedback({
 const project = computed(() => store.project);
 const steps = computed(() => store.steps);
 const currentStep = computed(() => store.currentStep);
+const workflowMode = computed(() => project.value?.snowflake_workflow_mode || "strict");
+const approvalBlockers = computed(() => currentStep.value?.approval_blockers || []);
+const canConfirm = computed(() => currentStep.value?.can_confirm !== false);
 const currentStepUsesFallback = computed(() => String(currentStep.value?.last_generation_source || "").toLowerCase() === "fallback");
 const currentStepIndex = computed(() =>
   steps.value.findIndex((s) => s.step_key === currentStep.value?.step_key),
@@ -285,6 +288,9 @@ function updateSceneCrucible(fieldKey, index, value) {
           <span v-else-if="readyToMaterialize"> / 雪花已完成，等待整理成章节结构</span>
           <span v-if="currentStepDirty"> / 未保存</span>
         </p>
+        <span class="badge" data-testid="snowflake-workflow-mode">
+          {{ workflowMode === "explore" ? "探索式草稿" : "严格顺序" }}
+        </span>
       </div>
       <div class="action-row">
         <button type="button" class="ghost action-btn" :disabled="!currentStep || store.actionId === `generate:${currentStep?.step_key}`" @click="generateCurrentStep">
@@ -305,6 +311,10 @@ function updateSceneCrucible(fieldKey, index, value) {
       </div>
     </div>
     <FlowActionReceipt :receipt="receipt(SNOWFLAKE_STEP_SCOPE)" />
+    <div v-if="currentStep && !canConfirm" class="snowflake-approval-blockers" data-testid="snowflake-approval-blockers">
+      <strong>可以继续写草稿；确认前还差上游判断。</strong>
+      <span v-for="blocker in approvalBlockers" :key="blocker.step_key">{{ blocker.label }}</span>
+    </div>
     <SnowflakeSkipStepDialog
       :open="skipDialogOpen"
       :step="currentStep"

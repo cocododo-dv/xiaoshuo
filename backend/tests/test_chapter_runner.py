@@ -183,6 +183,14 @@ def test_chapter_run_full_blocks_on_human_review_and_resume_retries_blocked_scen
     assert blocked["latest_error"] == {
         "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
         "message": "scene requires human review before chapter run can continue",
+        "author_action": {
+            "title": "场景需要人工审核",
+            "message": "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
+            "target_view": "review",
+            "target_ref": "human_review_event:review_CH900_SC01",
+            "primary_button_label": "去待处理建议",
+            "evidence_summary": ["场景：CH900_SC01", "审核：review_CH900_SC01"],
+        },
     }
     session.add(
         HumanReviewEvent(
@@ -239,8 +247,16 @@ def test_chapter_run_full_blocks_when_scene_finishes_without_final_scene(client,
     assert data["completed_scene_ids"] == []
     assert data["blocked_scene_id"] == "CH900_SC01"
     assert data["latest_error"] == {
-        "code": "CHAPTER_RUN_SCENE_INCOMPLETE",
-        "message": "scene run did not produce a final scene",
+        "code": "CHAPTER_RUN_SCENE_NEEDS_REWRITE",
+        "message": "当前场景停在硬质检返修，还没有形成可审阅终稿。",
+        "author_action": {
+            "title": "场景需要补修",
+            "message": "这一场没有形成可审阅终稿，请先回到场景工作台处理返修，再继续章节起草。",
+            "target_view": "workbench",
+            "target_ref": "scene_card:CH900_SC01",
+            "primary_button_label": "去场景工作台",
+            "evidence_summary": ["场景：CH900_SC01", "状态：hard_qc_partial_rewrite_required"],
+        },
     }
     assert shared["calls"] == ["CH900_SC01"]
 
@@ -292,6 +308,14 @@ def test_chapter_run_full_stays_blocked_until_human_review_resolves(client, sess
     assert resumed["latest_error"] == {
         "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
         "message": "scene requires human review before chapter run can continue",
+        "author_action": {
+            "title": "场景需要人工审核",
+            "message": "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
+            "target_view": "review",
+            "target_ref": "human_review_event:review_CH900_SC01",
+            "primary_button_label": "去待处理建议",
+            "evidence_summary": ["场景：CH900_SC01", "审核：review_CH900_SC01"],
+        },
     }
     assert resumed["completed_scene_ids"] == []
     assert shared["calls"] == []
@@ -374,6 +398,14 @@ def test_chapter_run_full_persists_completed_scenes_when_blocked_by_backfill_and
     assert blocked["latest_error"] == {
         "code": "CHAPTER_RUN_BACKFILL_PENDING",
         "message": "chapter run is blocked by pending staged backfill",
+        "author_action": {
+            "title": "章节有待回填内容",
+            "message": "当前章节还有标记内容等待回填，先处理这些占位，再继续章节起草。",
+            "target_view": "workbench",
+            "target_ref": "chapter:CH900",
+            "primary_button_label": "去场景工作台",
+            "evidence_summary": ["章节：CH900", "状态：待回填"],
+        },
     }
 
     status_response = client.get("/api/v1/chapters/CH900/run-status")

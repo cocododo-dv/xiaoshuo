@@ -163,6 +163,22 @@ const publicReviewImpactSummary = computed(() => ({
 }));
 const styleProfileSummary = computed(() => styleProfileSummaryFromReviewItem(props.item));
 const styleProfileRisk = computed(() => styleProfileRiskFromReviewItem(props.item));
+const referenceSafeTags = computed(() => {
+  const safeSummary = payload.value.safe_summary || payload.value.profile_safe_summary || payload.value.style_profile?.safe_summary || {};
+  const tags = Array.isArray(safeSummary.abstract_tags) ? safeSummary.abstract_tags : [];
+  if (tags.length) {
+    return tags.slice(0, 6);
+  }
+  const values = [
+    ...(Array.isArray(payload.value.style_rules) ? payload.value.style_rules : []),
+    ...(Array.isArray(payload.value.structure_rules) ? payload.value.structure_rules : []),
+    ...(Array.isArray(payload.value.safety_rules) ? payload.value.safety_rules : []),
+  ];
+  return values.slice(0, 6).map((summary, index) => ({
+    label: index < 2 ? "节奏" : index < 4 ? "结构" : "安全提示",
+    summary: String(summary || "").slice(0, 120),
+  })).filter((item) => item.summary);
+});
 const requiresRiskConfirmation = computed(() => styleProfileRisk.value?.severity === "high");
 const riskReasonNormalized = computed(() => riskReason.value.trim());
 const canApproveReview = computed(
@@ -303,6 +319,13 @@ watch(
       :summary="styleProfileSummary"
       test-id="review-style-profile-summary"
     />
+    <div v-if="isReferenceSource && referenceSafeTags.length" class="review-reference-safe-summary" data-testid="review-reference-safe-summary">
+      <strong>参考画像安全摘要</strong>
+      <span v-for="tag in referenceSafeTags" :key="`${tag.label}:${tag.summary}`">
+        {{ tag.label }}：{{ tag.summary }}
+      </span>
+      <small>只展示抽象节奏、结构和安全提示，不展示源书长文本。</small>
+    </div>
     <StyleProfileRiskWarning
       :risk="styleProfileRisk"
       test-id="review-style-profile-risk-warning"

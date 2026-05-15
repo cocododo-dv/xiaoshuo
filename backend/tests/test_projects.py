@@ -262,6 +262,13 @@ def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(cl
             "title": "抽象风格画像",
             "status": "ready",
             "profile_json": {"rhythm": ["短句推进"], "forbidden_copy_rules": ["不复制原文表达"]},
+            "safe_summary": {
+                "abstract_tags": [
+                    {"label": "节奏", "summary": "短句推进"},
+                    {"label": "安全提示", "summary": "不复制原文表达"},
+                ],
+                "safety_note": "仅使用抽象节奏、结构和安全规则；不展示或复制参考书原文。",
+            },
         }
     ]
 
@@ -677,7 +684,24 @@ def test_project_chapter_run_job_blocks_when_llm_disabled(client, monkeypatch) -
     )
 
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "LLM_DISABLED_FOR_CHAPTER_RUN"
+    error = response.json()["error"]
+    assert error["code"] == "LLM_DISABLED_FOR_CHAPTER_RUN"
+    assert error["details"]["author_action"] == {
+        "title": "需要先启用真实模型",
+        "message": "当前还没有可用的 LLM 运行配置。配置 provider、密钥/地址并测试通过后，再开始章节起草。",
+        "target_view": "config",
+        "target_ref": "system_config:llm",
+        "primary_button_label": "去系统配置",
+        "evidence_summary": ["llm_enabled=false", "generation_mode=offline_disabled"],
+    }
+
+    dashboard_response = client.get(f"/api/v1/projects/{project['project_id']}/dashboard")
+    assert dashboard_response.status_code == 200
+    runtime = dashboard_response.json()["data"]["runtime"]
+    assert runtime["llm_enabled"] is False
+    assert runtime["provider_ready"] is False
+    assert "missing_routes" in runtime
+    assert runtime["next_setup_action"]["target_view"] == "config"
 
 
 def test_project_chapter_run_job_reuses_existing_running_job(client, session, monkeypatch) -> None:

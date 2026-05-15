@@ -27,6 +27,7 @@ export const useWriterFlowStore = defineStore("writerFlow", {
     error: "",
     lastActionMessage: "",
     lastApprovalNote: null,
+    lastAuthorAction: null,
     loaded: false,
   }),
   getters: {
@@ -38,6 +39,12 @@ export const useWriterFlowStore = defineStore("writerFlow", {
     backtrackItems: (state) => state.dashboard?.backtrack_items || [],
     nextAction: (state) => state.dashboard?.next_action || "select_project",
     runtime: (state) => state.dashboard?.runtime || { llm_enabled: null, generation_mode: "unknown" },
+    authorAction: (state) =>
+      state.runStatus?.latest_error?.author_action
+      || state.dashboard?.run?.latest_error?.author_action
+      || state.lastAuthorAction
+      || state.dashboard?.runtime?.next_setup_action
+      || null,
     hasOfflineGuard: (state) => state.dashboard?.runtime?.llm_enabled === false,
     progressPercent: (state) => Number(state.runStatus?.progress_pct ?? state.dashboard?.run?.progress_pct ?? 0),
     isRunning: (state) => ["pending", "running", "queued"].includes(String(state.runStatus?.status || "").toLowerCase()),
@@ -53,6 +60,7 @@ export const useWriterFlowStore = defineStore("writerFlow", {
     },
     applyRunStatus(payload = {}) {
       this.runStatus = snapshotPayload(payload || null);
+      this.lastAuthorAction = this.runStatus?.latest_error?.author_action || this.lastAuthorAction;
       return this.runStatus;
     },
     async loadProject(projectId = this.selectedProjectId) {
@@ -75,6 +83,7 @@ export const useWriterFlowStore = defineStore("writerFlow", {
         return dashboard;
       } catch (error) {
         this.error = error.message;
+        this.lastAuthorAction = error.details?.author_action || null;
         throw error;
       } finally {
         this.loading = false;
@@ -102,6 +111,7 @@ export const useWriterFlowStore = defineStore("writerFlow", {
         return result?.run || null;
       } catch (error) {
         this.error = error.message;
+        this.lastAuthorAction = error.details?.author_action || null;
         throw error;
       } finally {
         this.actionId = "";

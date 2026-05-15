@@ -16,6 +16,7 @@ from novel_system.db.models import (
     FinalScene,
     OperationLog,
     OutlinePlan,
+    QcReport,
     ReferenceProfile,
     SceneCard,
     SceneRunState,
@@ -25,11 +26,13 @@ from novel_system.db.models import (
 from novel_system.db.session import SessionLocal
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from novel_system.services.chapter_runner import ChapterRunnerService
+from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.project_backtracks import ProjectBacktrackService
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.system_config import SystemConfigService
 from novel_system.services.snowflake_steps import SNOWFLAKE_METHOD_VERSION
 from novel_system.settings import get_settings
 
@@ -70,6 +73,10 @@ class ProjectService:
             outline_text=outline_text,
             planning_mode=planning_mode,
             snowflake_schema_version=SNOWFLAKE_METHOD_VERSION if planning_mode == "snowflake" else None,
+            snowflake_workflow_mode=_snowflake_workflow_mode(
+                payload.get("snowflake_workflow_mode"),
+                default="explore" if planning_mode == "snowflake" else "strict",
+            ),
             status=PROJECT_STATUS_OUTLINE_DRAFT,
             approved_chapter_ids_json=[],
             reference_profile_ids_json=[],
@@ -102,10 +109,7 @@ class ProjectService:
             "backtrack_items": backtrack_items,
             "review_packet": ProjectChapterFlowService(self.session).review_packet(project, project.current_chapter_id),
             "next_action": self._next_action(project, latest_plan, backtrack_items=backtrack_items),
-            "runtime": {
-                "llm_enabled": bool(get_settings().llm_enabled),
-                "generation_mode": "live" if get_settings().llm_enabled else "offline_disabled",
-            },
+            "runtime": self._runtime_readiness(),
         }
 
     def attach_reference_profile(self, project_id: str, profile_id: str) -> dict[str, Any]:
@@ -300,6 +304,41 @@ class ProjectService:
         if latest_plan and latest_plan.status == PLAN_STATUS_PENDING_REVIEW:
             return "approve_outline_plan"
         return "generate_outline_plan"
+
+    def _runtime_readiness(self) -> dict[str, Any]:
+        settings = get_settings()
+        generation_mode = "live" if settings.llm_enabled else "offline_disabled"
+        missing_routes: list[str] = []
+        provider_ready = False
+        try:
+            overview = SystemConfigService(self.session).llm_overview()
+            readiness = overview.get("readiness") or {}
+            provider_ready = bool(settings.llm_enabled and int(readiness.get("active_provider_count") or 0) > 0)
+            missing_routes = [
+                str(item)
+                for item in (overview.get("missing_active_routes") or [])
+                if str(item).strip()
+            ]
+            for item in overview.get("blocked_routes") or []:
+                if isinstance(item, dict) and item.get("node_id"):
+                    missing_routes.append(str(item["node_id"]))
+        except Exception:  # pragma: no cover - readiness should not block dashboard loading
+            provider_ready = bool(settings.llm_enabled)
+        missing_routes = list(dict.fromkeys(missing_routes))
+        next_setup_action = None
+        if not settings.llm_enabled or not provider_ready or missing_routes:
+            next_setup_action = llm_setup_action(
+                llm_enabled=bool(settings.llm_enabled),
+                generation_mode=generation_mode,
+                missing_routes=[],
+            )
+        return {
+            "llm_enabled": bool(settings.llm_enabled),
+            "generation_mode": generation_mode,
+            "provider_ready": provider_ready,
+            "missing_routes": missing_routes,
+            "next_setup_action": next_setup_action,
+        }
 
     def _next_project_id(self) -> str:
         while True:
@@ -614,7 +653,14 @@ class ProjectChapterFlowService:
                 "LLM_DISABLED_FOR_CHAPTER_RUN",
                 "LLM is disabled; enable a live model before starting chapter generation, or explicitly run an offline demo.",
                 status_code=409,
-                details={"retryable": False, "generation_mode": "offline_disabled"},
+                details={
+                    "retryable": False,
+                    "generation_mode": "offline_disabled",
+                    "author_action": llm_setup_action(
+                        llm_enabled=False,
+                        generation_mode="offline_disabled",
+                    ),
+                },
             )
 
         run_payload, should_start_worker = ChapterRunnerService(self.session).prepare_full_run(
@@ -856,6 +902,11 @@ class ProjectChapterFlowService:
             "issues_summary": issues_summary,
             "run_status": latest_job.status if latest_job else "idle",
             "reference_safety": list(REFERENCE_SAFETY_RULES),
+            "reference_profile_summaries": [
+                profile.get("safe_summary")
+                for profile in ProjectService(self.session)._reference_profile_payloads(project)
+                if profile.get("safe_summary")
+            ],
             "small_revision_entry": {
                 "writer_room_object_type": "chapter",
                 "writer_room_object_id": chapter.chapter_id,
@@ -918,6 +969,8 @@ class ProjectChapterFlowService:
         for scene in scenes:
             state = self.session.get(SceneRunState, scene.scene_id)
             final_row = self.session.get(FinalScene, state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
+            qc_report = self._latest_scene_qc_report(scene.scene_id)
+            qc_issues = _qc_issue_summaries(qc_report)
             body = final_row.content if final_row is not None else ""
             excerpt = " ".join(str(body or "").split())
             reviews.append(
@@ -928,11 +981,26 @@ class ProjectChapterFlowService:
                     "body_excerpt": excerpt[:240],
                     "char_count": len(body or ""),
                     "missing": not bool(body),
-                    "issues_summary": [],
+                    "issues_summary": qc_issues,
+                    "evidence_summary": [issue.get("evidence") for issue in qc_issues if issue.get("evidence")],
+                    "suggested_actions": [issue.get("suggested_action") for issue in qc_issues if issue.get("suggested_action")],
+                    "qc_summary": {
+                        "qc_report_id": qc_report.qc_report_id if qc_report is not None else None,
+                        "status": qc_report.status if qc_report is not None else "",
+                        "next_action": qc_report.next_action if qc_report is not None else "",
+                        "issue_count": len(qc_issues),
+                    },
                     "current_decision": "pending",
                 }
             )
         return reviews
+
+    def _latest_scene_qc_report(self, scene_id: str) -> QcReport | None:
+        return self.session.execute(
+            select(QcReport)
+            .where(QcReport.scene_id == scene_id)
+            .order_by(QcReport.created_at.desc(), QcReport.qc_report_id.desc())
+        ).scalars().first()
 
     @staticmethod
     def _scene_coverage(scene_reviews: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1085,6 +1153,7 @@ def project_payload(project: StoryProject) -> dict[str, Any]:
         "outline_text": project.outline_text,
         "planning_mode": getattr(project, "planning_mode", "outline_driven") or "outline_driven",
         "snowflake_schema_version": getattr(project, "snowflake_schema_version", None),
+        "snowflake_workflow_mode": getattr(project, "snowflake_workflow_mode", "strict") or "strict",
         "status": project.status,
         "active_outline_plan_id": project.active_outline_plan_id,
         "current_chapter_id": project.current_chapter_id,
@@ -1147,12 +1216,56 @@ def scene_payload(scene: SceneCard) -> dict[str, Any]:
 
 
 def reference_profile_payload(profile: ReferenceProfile) -> dict[str, Any]:
+    safe_summary = _reference_profile_safe_summary(profile.profile_json or {})
     return {
         "profile_id": profile.profile_id,
         "title": profile.title,
         "status": profile.status,
         "profile_json": profile.profile_json or {},
+        "safe_summary": safe_summary,
     }
+
+
+def _reference_profile_safe_summary(profile_json: dict[str, Any]) -> dict[str, Any]:
+    tags = []
+    for label, keys in (
+        ("节奏", ("rhythm", "pacing", "style_rules")),
+        ("结构", ("structure_patterns", "structure_techniques", "structure_rules")),
+        ("安全提示", ("safety_rules", "forbidden_copy_rules", "safety_constraints")),
+    ):
+        values: list[str] = []
+        for key in keys:
+            values.extend(_string_list(profile_json.get(key)))
+        if values:
+            tags.append({"label": label, "summary": values[0][:120]})
+    return {
+        "abstract_tags": tags[:6],
+        "safety_note": "仅使用抽象节奏、结构和安全规则；不展示或复制参考书原文。",
+    }
+
+
+def _qc_issue_summaries(report: QcReport | None, *, limit: int = 3) -> list[dict[str, str]]:
+    if report is None:
+        return []
+    items: list[dict[str, str]] = []
+    for issue in list(report.issues_json or [])[:limit]:
+        if not isinstance(issue, dict):
+            continue
+        evidence = ""
+        spans = issue.get("evidence_spans") if isinstance(issue.get("evidence_spans"), list) else []
+        if spans:
+            first = spans[0]
+            if isinstance(first, dict):
+                evidence = str(first.get("text") or first.get("excerpt") or first.get("snippet") or "").strip()
+        items.append(
+            {
+                "issue": str(issue.get("message") or issue.get("issue") or issue.get("dimension") or "质检提示").strip(),
+                "evidence": evidence[:180],
+                "suggested_action": str(issue.get("recommendation") or issue.get("next_action") or report.next_action or "先回到场景工作台处理。").strip(),
+                "qc_report_id": report.qc_report_id,
+            }
+        )
+    return items
 
 
 def _outline_points(outline_text: str, chapter_count: int) -> list[str]:
@@ -1210,6 +1323,13 @@ def _planning_mode(value: Any) -> str:
     if mode == "snowflake":
         return "snowflake"
     return "outline_driven"
+
+
+def _snowflake_workflow_mode(value: Any, *, default: str = "strict") -> str:
+    mode = str(value or default).strip().lower()
+    if mode in {"strict", "explore"}:
+        return mode
+    return default
 
 
 def _string_list(value: Any) -> list[str]:

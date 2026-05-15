@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from novel_system.db.models import (
     AuthorDraft,
+    FinalScene,
     LlmCall,
     OperationLog,
     OutlinePlan,
@@ -77,6 +78,7 @@ def _approve_generated_step(client, project_id: str, step_key: str) -> None:
 def test_workspace_v2_creates_snowflake_project_and_exposes_structured_steps(client) -> None:
     project = _create_project(client)
     assert project["planning_mode"] == "snowflake"
+    assert project["snowflake_workflow_mode"] == "explore"
 
     response = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace")
     assert response.status_code == 200
@@ -102,6 +104,8 @@ def test_workspace_v2_creates_snowflake_project_and_exposes_structured_steps(cli
     ]
     first_step = workspace["steps"][0]
     assert first_step["label"] == "读者定位"
+    assert first_step["can_confirm"] is False
+    assert first_step["approval_blockers"] == []
     assert first_step["english_label"] == "Target Audience"
     assert first_step["phase"] == "基础准备"
     assert first_step["description"] == "明确你的小说类型和目标读者群体。你写作的核心目标是取悦你的读者——先知道为谁写，再决定写什么。"
@@ -119,6 +123,9 @@ def test_workspace_v2_creates_snowflake_project_and_exposes_structured_steps(cli
     assert first_step["guidance"]["rubric"]
     assert first_step["guidance"]["required_for_materialization"] is True
     one_sentence_step = next(step for step in workspace["steps"] if step["step_key"] == "one_sentence_summary")
+    assert one_sentence_step["can_confirm"] is False
+    assert one_sentence_step["approval_blockers"][0]["step_key"] == "book_brief"
+    assert one_sentence_step["approval_blockers"][0]["label"] == "读者定位"
     one_sentence_guidance_text = json.dumps(one_sentence_step["guidance"], ensure_ascii=False)
     assert "在一句因果句里保留主角、目标、阻力和代价。" in one_sentence_step["guidance"]["checklist"]
     assert "场景可写性" in one_sentence_step["guidance"]["rubric"]
@@ -172,6 +179,88 @@ def test_workspace_v2_creates_snowflake_project_and_exposes_structured_steps(cli
     assert first_gate_item["primary_action"]["type"] == "jump_to_step"
     assert first_gate_item["primary_action"]["label"]
     assert workspace["scene_board"] == {"chapters": [], "scenes": []}
+
+
+def test_workspace_v2_explore_mode_allows_later_drafts_but_confirmation_stays_gated(client, session) -> None:
+    project = _create_project(client, key="explore-draft-gates")
+    scene_details_patch = {
+        "draft": {
+            "scenes": [
+                {
+                    "scene_id": f"{project['project_id']}_CH01_SC01",
+                    "chapter_id": f"{project['project_id']}_CH01",
+                    "chapter_title": "第一章",
+                    "chapter_goal": "主角必须决定是否公开录音。",
+                    "scene_seq": 1,
+                    "title": "录音袋",
+                    "summary": "她把录音袋推到桌沿。",
+                    "primary_form": "proactive",
+                    "scene_crucible": "证据一公开，幸存者就会暴露。",
+                    "goal": "确认录音是否足够公开。",
+                    "conflict": "盟友要求她先保护幸存者。",
+                    "setback": "她只能拆开证据，失去完整公开机会。",
+                    "hook": "门外有人听见了录音。",
+                }
+            ]
+        }
+    }
+
+    save_response = client.patch(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_details",
+        json=scene_details_patch,
+    )
+
+    assert save_response.status_code == 200, save_response.text
+    workspace = save_response.json()["data"]["workspace"]
+    assert workspace["project"]["snowflake_workflow_mode"] == "explore"
+    scene_step = next(step for step in workspace["steps"] if step["step_key"] == "scene_details")
+    assert scene_step["artifact"]["status"] == "pending_review"
+    assert scene_step["draft"]["scenes"][0]["scene_crucible"] == "证据一公开，幸存者就会暴露。"
+    assert scene_step["can_confirm"] is False
+    assert scene_step["approval_blockers"][0]["step_key"] == "book_brief"
+
+    approve_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_details/approve",
+        json={},
+        headers={"X-Idempotency-Key": "approve-explore-scene-details-too-early"},
+    )
+    assert approve_response.status_code == 409
+    error = approve_response.json()["error"]
+    assert error["code"] == "SNOWFLAKE_PREVIOUS_STEP_REQUIRED"
+    assert error["details"]["author_action"]["target_view"] == "snowflake-workbench"
+    assert error["details"]["author_action"]["primary_button_label"] == "去补读者定位"
+
+    session.expire_all()
+    run = session.execute(
+        select(SnowflakeStepRun).where(
+            SnowflakeStepRun.project_id == project["project_id"],
+            SnowflakeStepRun.step_key == "scene_details",
+        )
+    ).scalars().one()
+    assert run.status == "pending_review"
+
+    strict_response = client.post(
+        "/api/v2/projects",
+        json={
+            "title": "Strict Snowflake",
+            "genre": "Mystery",
+            "target_chapter_count": 1,
+            "target_word_count": 50000,
+            "outline_text": "A strict project should still gate draft saves.",
+            "snowflake_workflow_mode": "strict",
+        },
+        headers={"X-Idempotency-Key": "create-v2-strict-mode"},
+    )
+    assert strict_response.status_code == 200
+    strict_project = strict_response.json()["data"]["project"]
+    assert strict_project["snowflake_workflow_mode"] == "strict"
+
+    strict_save = client.patch(
+        f"/api/v2/projects/{strict_project['project_id']}/snowflake-workspace/steps/scene_details",
+        json=scene_details_patch,
+    )
+    assert strict_save.status_code == 409
+    assert strict_save.json()["error"]["code"] == "SNOWFLAKE_PREVIOUS_STEP_REQUIRED"
 
 
 def test_workspace_v2_required_steps_are_not_skippable_even_with_reason(client) -> None:
@@ -818,6 +907,123 @@ def test_workspace_v2_persists_scene_triage_and_approves_materialized_outline(cl
     assert scene is not None
     assert scene.writer_brief_json["source"] == "snowflake_method"
     assert scene.writer_brief_json["scene_crucible"]
+
+
+def test_workspace_v2_resync_previews_and_updates_materialized_scene_cards_without_overwriting_drafts(
+    client,
+    session,
+) -> None:
+    project = _create_project(client, key="selective-resync")
+    for step_key in [
+        "book_brief",
+        "one_sentence_summary",
+        "one_paragraph_summary",
+        "character_sheets",
+        "short_synopsis",
+        "character_synopses",
+        "long_synopsis",
+        "character_bibles",
+        "scene_list",
+        "scene_details",
+    ]:
+        _approve_generated_step(client, project["project_id"], step_key)
+    materialize_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/materialize",
+        json={},
+        headers={"X-Idempotency-Key": "materialize-resync"},
+    )
+    assert materialize_response.status_code == 200, materialize_response.text
+    approve_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/outline/approve",
+        json={},
+        headers={"X-Idempotency-Key": "approve-resync-outline"},
+    )
+    assert approve_response.status_code == 200, approve_response.text
+
+    session.expire_all()
+    scene_plan = session.execute(
+        select(SnowflakeScenePlan)
+        .where(SnowflakeScenePlan.project_id == project["project_id"])
+        .order_by(SnowflakeScenePlan.scene_plan_id.asc())
+    ).scalars().first()
+    assert scene_plan is not None
+    scene = session.get(SceneCard, scene_plan.scene_id)
+    assert scene is not None
+    original_goal = scene.scene_goal
+    session.add(
+        FinalScene(
+            row_id="final_scene_resync_keep",
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            content="作者已经批准的终稿不能被雪花同步覆盖。",
+            status="approved",
+            source_bundle_id="bundle_resync_keep",
+            source_bundle_hash="hash_resync_keep",
+        )
+    )
+    session.add(
+        AuthorDraft(
+            draft_id="author_draft_resync_keep",
+            object_type="scene",
+            object_id=scene.scene_id,
+            source_text_ref="final_scene:final_scene_resync_keep",
+            content="作者正在小修的草稿也不能被覆盖。",
+            revision_no=3,
+            status="current",
+        )
+    )
+    session.add(
+        LlmCall(
+            llm_call_id="llm_call_resync_keep",
+            project_id=project["project_id"],
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            node_id="scene_finalize",
+            response_payload_summary={"kept": True},
+        )
+    )
+    scene_plan.summary = "她把新证据袋推到桌沿。"
+    scene_plan.scene_crucible = "只要她现在公开，新证人就会被找到。"
+    scene_plan.goal = "逼盟友承认证据来源。"
+    scene_plan.conflict = "盟友用幸存者安全反压她。"
+    scene_plan.setback = "她保住证人，却暂时失去完整录音。"
+    scene_plan.hook = "第二个录音袋出现在门缝。"
+    session.commit()
+
+    preview_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/resync",
+        json={"scene_plan_ids": [scene_plan.scene_plan_id], "dry_run": True},
+    )
+    assert preview_response.status_code == 200, preview_response.text
+    preview = preview_response.json()["data"]
+    assert preview["dry_run"] is True
+    assert preview["results"][0]["scene_id"] == scene.scene_id
+    assert "scene_goal" in preview["results"][0]["diff"]
+
+    session.expire_all()
+    assert session.get(SceneCard, scene.scene_id).scene_goal == original_goal
+
+    sync_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/resync",
+        json={"scene_plan_ids": [scene_plan.scene_plan_id]},
+        headers={"X-Operator-Ref": "author-resync"},
+    )
+    assert sync_response.status_code == 200, sync_response.text
+    synced = sync_response.json()["data"]
+    assert synced["dry_run"] is False
+    assert synced["results"][0]["synced"] is True
+    assert synced["affected_runtime"]["final_scene_count"] == 1
+    assert synced["affected_runtime"]["author_draft_count"] == 1
+    assert synced["affected_runtime"]["llm_call_count"] == 1
+
+    session.expire_all()
+    scene = session.get(SceneCard, scene_plan.scene_id)
+    assert scene.scene_goal == "她把新证据袋推到桌沿。"
+    assert scene.writer_brief_json["scene_plan_id"] == scene_plan.scene_plan_id
+    assert scene.writer_brief_json["scene_crucible"] == "只要她现在公开，新证人就会被找到。"
+    assert session.get(FinalScene, "final_scene_resync_keep").content == "作者已经批准的终稿不能被雪花同步覆盖。"
+    assert session.get(AuthorDraft, "author_draft_resync_keep").content == "作者正在小修的草稿也不能被覆盖。"
+    assert session.get(LlmCall, "llm_call_resync_keep").response_payload_summary == {"kept": True}
 
 
 def test_workspace_v2_step_generation_uses_llm_and_persists_project_scoped_call(client, session, monkeypatch) -> None:

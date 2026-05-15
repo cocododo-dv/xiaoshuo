@@ -291,10 +291,21 @@ describe("writer room shell", () => {
     expect(store.draftContent).toBe("first chapter text");
   });
 
-  it("asks for a rejection reason in the writer room view instead of hard-coding one", () => {
+  it("uses an in-app rejection dialog and readable diff viewer instead of browser prompt", () => {
     const viewSource = readSource("src/views/WriterRoomView.vue");
+    const diffSource = readSource("src/components/DiffViewer.vue");
 
-    expect(viewSource).toContain("window.prompt");
+    expect(viewSource).toContain("rejectDialog");
+    expect(viewSource).toContain("pendingRejectProposal");
+    expect(viewSource).toContain('data-testid="writer-room-reject-dialog"');
+    expect(viewSource).toContain("DiffViewer");
+    expect(viewSource).not.toContain("window.prompt");
+    expect(viewSource).not.toContain("<pre>{{ diffPreview.before_text || \"\" }}</pre>");
+    expect(viewSource).not.toContain("<pre>{{ diffPreview.after_text || \"\" }}</pre>");
+    expect(diffSource).toContain('data-testid="diff-viewer-before"');
+    expect(diffSource).toContain('data-testid="diff-viewer-after"');
+    expect(diffSource).toContain("diff-line-added");
+    expect(diffSource).toContain("diff-line-removed");
     expect(viewSource).toContain("preference_remembered");
     expect(viewSource).not.toContain("作者在写作房间拒绝此改法。");
   });

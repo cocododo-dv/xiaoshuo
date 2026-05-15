@@ -9,12 +9,14 @@ function errorMessage(error, actionLabel) {
 }
 
 function errorTrace(error = {}) {
+  const author_action = error.details?.author_action || error.author_action || null;
   return {
     requestId: error.requestId || error.request_id || null,
     clientRequestId: error.clientRequestId || error.client_request_id || null,
     code: error.code || null,
     httpStatus: error.status ?? null,
     details: error.details || {},
+    author_action,
     retryable: Boolean(error.retryable || error.details?.retryable),
   };
 }
@@ -144,6 +146,13 @@ export function useFlowActionFeedback({ emitNotice } = {}) {
       const trace = errorTrace(error);
       const canRetry = Boolean(retryable || trace.retryable);
       const actions = [];
+      const actionTarget = trace.author_action
+        ? {
+          view: trace.author_action.target_view,
+          label: trace.author_action.primary_button_label,
+          target: trace.author_action.target_ref,
+        }
+        : null;
       if (canRetry && typeof onRetry === "function") {
         actions.push({
           label: "重试",
@@ -154,8 +163,8 @@ export function useFlowActionFeedback({ emitNotice } = {}) {
         status: "error",
         actionLabel,
         message,
-        nextStep: resolveValue(failureNextStep, error) || "检查输入后可重试。",
-        target: null,
+        nextStep: trace.author_action?.message || resolveValue(failureNextStep, error) || "检查输入后可重试。",
+        target: actionTarget,
         phaseLabel,
         startedAt,
         elapsedMs: Date.now() - startedAt,

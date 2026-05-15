@@ -488,28 +488,45 @@ def _scope_from_reasons(reason_codes: list[str]) -> str:
     return "scene_detail"
 
 
+FIELD_LABELS = {
+    "scene_crucible": "坩埚/场景压力",
+    "crucible": "坩埚/场景压力",
+    "conflict": "冲突推进",
+    "setback_or_victory": "挫折/胜负变化",
+    "setback": "挫折",
+    "goal": "场景目标",
+    "reaction": "反应",
+    "dilemma": "困境",
+    "decision": "决定",
+}
+
+
+def _field_labels(fields: list[str]) -> list[str]:
+    return [FIELD_LABELS.get(str(field), str(field)) for field in fields]
+
+
 def _problem_summary(contract: SceneExecutionContract, latest_qc: QcReport | None, reason_codes: list[str]) -> str:
     if contract.status == "blocked":
-        missing = ", ".join(contract.missing_fields_json or [])
-        return f"Scene execution contract is missing required fields: {missing}."
+        missing = "、".join(_field_labels(contract.missing_fields_json or []))
+        return f"场景执行契约还缺少作者可判断的关键项：{missing}。"
     if contract.status == "stale":
-        return "Scene execution contract is stale because upstream snowflake planning changed."
+        return "上游雪花规划已经变化，当前场景执行契约需要刷新。"
     if latest_qc is not None and latest_qc.issues_json:
         first_issue = latest_qc.issues_json[0]
         if isinstance(first_issue, dict) and first_issue.get("message"):
             return str(first_issue["message"])
-    return f"Scene needs replanning because triage returned no: {', '.join(reason_codes)}."
+    return f"场景急救判断为需要重做：{'、'.join(reason_codes)}。"
 
 
 def _recommended_fix(scope: str, contract: SceneExecutionContract, latest_qc: QcReport | None) -> str:
     if contract.status == "blocked":
-        missing = ", ".join(contract.missing_fields_json or [])
-        return f"Return to scene_details and fill the missing contract fields: {missing}."
+        missing = "、".join(_field_labels(contract.missing_fields_json or []))
+        return f"回到场景规划，把这些项补成可写判断：{missing}。"
     if contract.status == "stale":
-        return "Review the updated snowflake step, regenerate the execution contract, and rerun drafting from the refreshed plan."
+        return "复核更新后的雪花步骤，重新生成场景执行契约，再从刷新后的规划起草。"
     if scope == "character":
-        return "Return to character_sheets or character_bibles and align the scene choice with the character's goal, values, and pressure."
-    return "Return to scene_details, redesign the scene crucible and the action logic, then regenerate the execution contract before drafting again."
+        return "回到角色摘要或角色全档案，让场景选择重新贴合角色目标、价值观和压力。"
+    return "回到场景规划，重设坩埚/场景压力和行动逻辑，再生成执行契约。"
 
 
 def _first_text(*values: Any) -> str:

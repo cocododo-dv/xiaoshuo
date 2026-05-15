@@ -227,6 +227,23 @@ def materialize_workspace_outline(
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
+@router.post("/api/v2/projects/{project_id}/snowflake-workspace/resync")
+def resync_workspace_scenes(
+    project_id: str,
+    payload: dict[str, Any] | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = SnowflakeWorkspaceService(session).resync_materialized_scenes(
+        project_id,
+        payload or {},
+        actor_ref=actor_ref,
+    )
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/outline/approve")
 def approve_workspace_outline(
     project_id: str,

@@ -10,10 +10,12 @@ import SnowflakeSceneBoard from "../components/SnowflakeSceneBoard.vue";
 import SnowflakeTriagePanel from "../components/SnowflakeTriagePanel.vue";
 import { useShellRouter } from "../router";
 import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
+import { useSystemConfigStore } from "../stores/systemConfig";
 
 const emit = defineEmits(["notice"]);
 
 const store = useSnowflakeWorkbenchStore();
+const systemConfig = useSystemConfigStore();
 const router = useShellRouter();
 const projectPanel = ref(null);
 
@@ -34,6 +36,21 @@ const triageStats = computed(() => {
     maybe: items.filter((item) => effectiveStatus(item) === "maybe").length,
   };
 });
+const llmReady = computed(() => Boolean(systemConfig.llm?.readiness?.ready));
+const llmReadinessSteps = computed(() => [
+  {
+    label: "选择 provider",
+    done: Boolean(systemConfig.configDashboardSummary.providerCount),
+  },
+  {
+    label: "填写 key/地址",
+    done: !systemConfig.configDashboardSummary.needsProvider && !systemConfig.configDashboardSummary.needsRouteProviders,
+  },
+  {
+    label: "测试并激活",
+    done: llmReady.value,
+  },
+]);
 
 function setWorkbenchMode(mode) {
   store.setWorkbenchMode(mode);
@@ -83,6 +100,7 @@ function handleBeforeUnload(event) {
 
 onMounted(() => {
   projectPanel.value?.initialize(false);
+  systemConfig.loadLlmConfig().catch(() => {});
   if (typeof window !== "undefined") {
     window.addEventListener("beforeunload", handleBeforeUnload);
   }
@@ -102,6 +120,20 @@ onBeforeUnmount(() => {
     <div class="snowflake-workbench-shell">
       <main class="snowflake-workbench-main">
         <SnowflakeProjectPanel ref="projectPanel" @notice="emit('notice', $event)" />
+
+        <section class="snowflake-llm-readiness" data-testid="snowflake-llm-readiness-card">
+          <div>
+            <span class="eyebrow">模型准备度</span>
+            <h2>{{ llmReady ? "真实模型可用" : "补完模型配置后再让助手起草" }}</h2>
+            <p class="muted">选择 provider、填写 key/地址、测试并激活；离线演示只保留为高级测试逃生口。</p>
+          </div>
+          <ol>
+            <li v-for="step in llmReadinessSteps" :key="step.label" :class="{ done: step.done }">{{ step.label }}</li>
+          </ol>
+          <button type="button" class="mini-btn" @click="router.navigate('config', { target: { panel: 'llm' } })">
+            去系统配置
+          </button>
+        </section>
 
         <section
           v-if="store.project?.project_id"
@@ -276,6 +308,7 @@ onBeforeUnmount(() => {
 }
 
 .snowflake-workbench-view .snowflake-project-launcher,
+.snowflake-workbench-view .snowflake-llm-readiness,
 .snowflake-workbench-view .snowflake-discovery-draft,
 .snowflake-workbench-view .snowflake-assistant-panel,
 .snowflake-workbench-view .snowflake-workbench-stage,
@@ -338,6 +371,38 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+}
+
+.snowflake-workbench-view .snowflake-llm-readiness {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-color: rgba(140, 103, 43, 0.22);
+  background: #fffaf0;
+}
+
+.snowflake-workbench-view .snowflake-llm-readiness ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.snowflake-workbench-view .snowflake-llm-readiness li {
+  border: 1px solid rgba(47, 111, 98, 0.18);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #fffef8;
+  color: var(--snowflake-muted);
+  font-size: 12px;
+}
+
+.snowflake-workbench-view .snowflake-llm-readiness li.done {
+  background: var(--snowflake-moss-soft);
+  color: var(--snowflake-moss-deep);
 }
 
 .snowflake-workbench-view .snowflake-discovery-draft {

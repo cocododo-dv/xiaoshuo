@@ -60,6 +60,7 @@ EXPECTED_STORY_PROJECT_COLUMNS = {
     "outline_text",
     "planning_mode",
     "snowflake_schema_version",
+    "snowflake_workflow_mode",
     "status",
     "active_outline_plan_id",
     "current_chapter_id",
@@ -363,7 +364,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-        assert version_row == ("20260515_0034",)
+        assert version_row == ("20260515_0035",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -520,7 +521,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260515_0034",)
+    assert version_row == ("20260515_0035",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names

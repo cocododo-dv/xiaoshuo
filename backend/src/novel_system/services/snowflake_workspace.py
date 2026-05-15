@@ -8,8 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
+    AuthorDraft,
+    ChapterGoal,
+    FinalScene,
+    LlmCall,
     OperationLog,
     OutlinePlan,
+    SceneCard,
     SnowflakeAssistantTurn,
     SnowflakeCharacterPlan,
     SnowflakeRevisionLink,
@@ -20,6 +25,7 @@ from novel_system.db.models import (
     StoryProject,
     utcnow,
 )
+from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService, outline_plan_payload, project_payload
 from novel_system.services.project_runtime_invalidation import ProjectRuntimeInvalidationService
@@ -93,7 +99,7 @@ class SnowflakeWorkspaceService:
         }
 
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._projects.create({**(payload or {}), "planning_mode": "snowflake"})
+        result = self._projects.create({**(payload or {}), "planning_mode": "snowflake", "snowflake_workflow_mode": (payload or {}).get("snowflake_workflow_mode") or "explore"})
         project = result["project"]
         return {
             "project": project,
@@ -122,6 +128,7 @@ class SnowflakeWorkspaceService:
             "triage_items": triage_items,
             "assistant_history": self._assistant_history(project_id),
             "materialization_gate": gate,
+            "resync_status": self._resync_status(project.project_id, scene_plans),
             "steps": steps,
         }
 
@@ -130,7 +137,8 @@ class SnowflakeWorkspaceService:
         body = payload or {}
         self._require_step(step_key)
         latest_by_step = self._latest_by_step(project.project_id)
-        self._require_previous_gates(step_key, latest_by_step)
+        if self._draft_gate_mode(project) == "strict":
+            self._require_previous_gates(step_key, latest_by_step)
 
         if body.get("skip"):
             draft = self._skip_draft(step_key, body)
@@ -178,7 +186,8 @@ class SnowflakeWorkspaceService:
         body = payload or {}
         self._require_step(step_key)
         latest_by_step = self._latest_by_step(project.project_id)
-        self._require_previous_gates(step_key, latest_by_step)
+        if self._draft_gate_mode(project) == "strict":
+            self._require_previous_gates(step_key, latest_by_step)
         draft = merge_step_draft(step_key, body.get("draft") or {}, latest_by_step=latest_by_step)
         latest = latest_by_step.get(step_key)
 
@@ -235,7 +244,8 @@ class SnowflakeWorkspaceService:
         if source_run is None or source_run.project_id != project.project_id or source_run.step_key != step_key:
             raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "snowflake step run does not belong to this project step", status_code=404)
         latest_by_step = self._latest_by_step(project.project_id)
-        self._require_previous_gates(step_key, latest_by_step)
+        if self._draft_gate_mode(project) == "strict":
+            self._require_previous_gates(step_key, latest_by_step)
         draft = deepcopy(source_run.draft_json or {})
         refs = self._input_refs(step_key, latest_by_step)
         refs["restored_from_step_run_id"] = source_run.step_run_id
@@ -640,6 +650,101 @@ class SnowflakeWorkspaceService:
             "created_scene_count": result.get("created_scene_count", 0),
         }
 
+    def resync_materialized_scenes(
+        self,
+        project_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        project = self._require_snowflake_project(project_id)
+        body = payload or {}
+        dry_run = bool(body.get("dry_run", False))
+        requested_plan_ids = {
+            str(item or "").strip()
+            for item in body.get("scene_plan_ids") or []
+            if str(item or "").strip()
+        }
+        requested_scene_ids = {
+            str(item or "").strip()
+            for item in body.get("scene_ids") or []
+            if str(item or "").strip()
+        }
+        plans = self._scene_plans(project.project_id)
+        if requested_plan_ids:
+            plans = [plan for plan in plans if plan.scene_plan_id in requested_plan_ids]
+        if requested_scene_ids:
+            plans = [plan for plan in plans if plan.scene_id in requested_scene_ids]
+        if not plans:
+            raise DomainError("SNOWFLAKE_RESYNC_SCENES_NOT_FOUND", "no matching scene plans found", status_code=404)
+
+        results: list[dict[str, Any]] = []
+        affected_scene_ids: list[str] = []
+        for plan in plans:
+            scene = self.session.get(SceneCard, plan.scene_id)
+            if scene is None or scene.project_id != project.project_id:
+                results.append(
+                    {
+                        "scene_plan_id": plan.scene_plan_id,
+                        "scene_id": plan.scene_id,
+                        "synced": False,
+                        "reason": "scene_not_materialized",
+                        "diff": {},
+                    }
+                )
+                continue
+            chapter = self.session.get(ChapterGoal, scene.chapter_id)
+            scene_patch = self._scene_card_resync_patch(plan, scene)
+            diff = self._scene_card_diff(scene, scene_patch)
+            if diff:
+                affected_scene_ids.append(scene.scene_id)
+            if not dry_run and diff:
+                self._apply_scene_card_resync(scene, scene_patch)
+                if chapter is not None:
+                    chapter.writer_brief_json = {
+                        **dict(chapter.writer_brief_json or {}),
+                        "source": "snowflake_resync",
+                        "project_id": project.project_id,
+                        "chapter_id": plan.chapter_id,
+                        "chapter_goal": plan.chapter_goal or chapter.chapter_goal,
+                    }
+                    if plan.chapter_goal:
+                        chapter.chapter_goal = plan.chapter_goal
+                self.session.add(
+                    OperationLog(
+                        event_type="snowflake_scene_resynced",
+                        object_type="scene_card",
+                        object_ref=scene.scene_id,
+                        payload_json={
+                            "project_id": project.project_id,
+                            "scene_id": scene.scene_id,
+                            "scene_plan_id": plan.scene_plan_id,
+                            "dry_run": False,
+                            "diff_fields": sorted(diff.keys()),
+                            "actor_ref": actor_ref or "operator",
+                        },
+                    )
+                )
+            results.append(
+                {
+                    "scene_plan_id": plan.scene_plan_id,
+                    "scene_id": scene.scene_id,
+                    "synced": bool(diff) and not dry_run,
+                    "reason": "changed" if diff else "already_current",
+                    "diff": diff,
+                }
+            )
+
+        if not dry_run:
+            self.session.flush()
+        affected_runtime = self._affected_runtime_summary(project.project_id, affected_scene_ids)
+        return {
+            "dry_run": dry_run,
+            "results": results,
+            "affected_runtime": affected_runtime,
+            "workspace": self.workspace(project.project_id),
+        }
+
     def _require_snowflake_project(self, project_id: str) -> StoryProject:
         project = self._projects.require_project(project_id)
         if str(getattr(project, "planning_mode", "") or "") != "snowflake":
@@ -654,6 +759,7 @@ class SnowflakeWorkspaceService:
         run = latest_by_step.get(step["step_key"])
         draft = self._draft_for_step(step["step_key"], run, latest_by_step, project_id=project_id)
         status = run.status if run is not None else "draft"
+        approval_blockers = self._previous_gate_blockers(step["step_key"], latest_by_step)
         return {
             "step_key": step["step_key"],
             "label": step["label"],
@@ -668,6 +774,8 @@ class SnowflakeWorkspaceService:
             "stale_accepted_by": run.stale_accepted_by if run is not None else "",
             "stale_accepted_note": run.stale_accepted_note if run is not None else "",
             "can_skip": bool(step.get("skippable")),
+            "can_confirm": bool(run is not None and run.status == "pending_review" and not approval_blockers),
+            "approval_blockers": approval_blockers,
             "can_backtrack": run is not None and run.status in {"approved", "skipped", "stale"},
             "guidance": step_guidance(step["step_key"]),
             "gate_satisfied": self._gate_satisfied(step["step_key"], latest_by_step),
@@ -710,6 +818,11 @@ class SnowflakeWorkspaceService:
                 return step["step_key"]
         return None
 
+    @staticmethod
+    def _draft_gate_mode(project: StoryProject) -> str:
+        mode = str(getattr(project, "snowflake_workflow_mode", "strict") or "strict").strip().lower()
+        return "explore" if mode == "explore" else "strict"
+
     def _require_step(self, step_key: str) -> None:
         if step_key not in STEP_ORDER:
             raise DomainError("SNOWFLAKE_STEP_NOT_FOUND", "unknown snowflake step", status_code=404)
@@ -722,16 +835,42 @@ class SnowflakeWorkspaceService:
         allow_self: str | None = None,
     ) -> None:
         step_index = STEP_ORDER[step_key]
+        blockers = []
         for step in list_step_definitions()[:step_index]:
             run = latest_by_step.get(step["step_key"])
             if allow_self and run is not None and run.step_run_id == allow_self:
                 continue
             if not self._gate_satisfied(step["step_key"], latest_by_step):
-                raise DomainError(
-                    "SNOWFLAKE_PREVIOUS_STEP_REQUIRED",
-                    "previous snowflake steps must be approved first",
-                    status_code=409,
-                )
+                blockers.append({"step_key": step["step_key"], "label": step["label"]})
+        if blockers:
+            first = blockers[0]
+            raise DomainError(
+                "SNOWFLAKE_PREVIOUS_STEP_REQUIRED",
+                "previous snowflake steps must be approved first",
+                status_code=409,
+                details={
+                    "missing_previous_steps": blockers,
+                    "author_action": author_action(
+                        f"还差{first['label']}",
+                        f"先确认「{first['label']}」，再确认当前雪花步骤。你可以继续写草稿，但确认和物化仍会守住依赖。",
+                        target_view="snowflake-workbench",
+                        target_ref=f"snowflake_step:{first['step_key']}",
+                        primary_button_label=f"去补{first['label']}",
+                        evidence_summary=[f"缺少上游步骤：{first['label']}"],
+                    ),
+                },
+            )
+
+    def _previous_gate_blockers(
+        self,
+        step_key: str,
+        latest_by_step: dict[str, SnowflakeStepRun],
+    ) -> list[dict[str, str]]:
+        blockers: list[dict[str, str]] = []
+        for step in list_step_definitions()[: STEP_ORDER[step_key]]:
+            if not self._gate_satisfied(step["step_key"], latest_by_step):
+                blockers.append({"step_key": step["step_key"], "label": step["label"]})
+        return blockers
 
     def _latest_by_step(self, project_id: str) -> dict[str, SnowflakeStepRun]:
         rows = self.session.execute(
@@ -819,6 +958,102 @@ class SnowflakeWorkspaceService:
             )
             chapter["scene_count"] += 1
         return {"chapters": list(chapters_by_id.values()), "scenes": scenes}
+
+    def _resync_status(self, project_id: str, scene_plans: list[SnowflakeScenePlan]) -> dict[str, Any]:
+        pending: list[dict[str, Any]] = []
+        for plan in scene_plans:
+            scene = self.session.get(SceneCard, plan.scene_id)
+            if scene is None or scene.project_id != project_id:
+                continue
+            diff = self._scene_card_diff(scene, self._scene_card_resync_patch(plan, scene))
+            if not diff:
+                continue
+            pending.append(
+                {
+                    "scene_plan_id": plan.scene_plan_id,
+                    "scene_id": plan.scene_id,
+                    "title": plan.title or plan.summary or plan.scene_id,
+                    "changed_fields": sorted(diff.keys()),
+                }
+            )
+        return {
+            "pending_count": len(pending),
+            "pending_scene_plan_ids": [item["scene_plan_id"] for item in pending],
+            "pending_scenes": pending,
+        }
+
+    @staticmethod
+    def _scene_card_resync_patch(plan: SnowflakeScenePlan, scene: SceneCard) -> dict[str, Any]:
+        brief = {
+            **dict(scene.writer_brief_json or {}),
+            "source": "snowflake_resync",
+            "scene_plan_id": plan.scene_plan_id,
+            "project_id": plan.project_id,
+            "chapter_id": plan.chapter_id,
+            "scene_id": plan.scene_id,
+            "chapter_goal": plan.chapter_goal,
+            "scene_crucible": plan.scene_crucible,
+            "goal": plan.goal,
+            "conflict": plan.conflict,
+            "setback": plan.setback,
+            "reaction": plan.reaction,
+            "dilemma": plan.dilemma,
+            "decision": plan.decision,
+            "primary_form": plan.scene_type,
+        }
+        beats = list(plan.beats_json or [])
+        if not beats:
+            beats = [
+                item
+                for item in [plan.goal, plan.conflict, plan.setback or plan.decision, plan.hook]
+                if str(item or "").strip()
+            ]
+        return {
+            "scene_goal": plan.summary or plan.goal or scene.scene_goal,
+            "beats_json": beats or list(scene.beats_json or []),
+            "must_include_text": plan.must_include_text or scene.must_include_text,
+            "exit_change": plan.exit_change or plan.setback or plan.decision or scene.exit_change,
+            "hook": plan.hook or scene.hook,
+            "target_length_band": plan.target_length_band or scene.target_length_band,
+            "scene_type": plan.scene_type or scene.scene_type,
+            "pov_character_id": plan.pov_character_id or scene.pov_character_id,
+            "onstage_chars_json": list(plan.onstage_chars_json or scene.onstage_chars_json or []),
+            "location": plan.location or scene.location,
+            "writer_brief_json": brief,
+        }
+
+    @staticmethod
+    def _scene_card_diff(scene: SceneCard, patch: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        diff: dict[str, dict[str, Any]] = {}
+        for field, after in patch.items():
+            before = getattr(scene, field)
+            if before != after:
+                diff[field] = {"before": before, "after": after}
+        return diff
+
+    @staticmethod
+    def _apply_scene_card_resync(scene: SceneCard, patch: dict[str, Any]) -> None:
+        for field, value in patch.items():
+            setattr(scene, field, value)
+
+    def _affected_runtime_summary(self, project_id: str, scene_ids: list[str]) -> dict[str, int]:
+        unique_scene_ids = list(dict.fromkeys(scene_ids))
+        if not unique_scene_ids:
+            return {"final_scene_count": 0, "author_draft_count": 0, "llm_call_count": 0}
+        final_scene_count = self.session.query(FinalScene).filter(FinalScene.scene_id.in_(unique_scene_ids)).count()
+        author_draft_count = self.session.query(AuthorDraft).filter(
+            AuthorDraft.object_type == "scene",
+            AuthorDraft.object_id.in_(unique_scene_ids),
+        ).count()
+        llm_call_count = self.session.query(LlmCall).filter(
+            LlmCall.project_id == project_id,
+            LlmCall.scene_id.in_(unique_scene_ids),
+        ).count()
+        return {
+            "final_scene_count": final_scene_count,
+            "author_draft_count": author_draft_count,
+            "llm_call_count": llm_call_count,
+        }
 
     def _triage_items(self, project_id: str) -> list[dict[str, Any]]:
         stored = {

@@ -77,6 +77,7 @@ const project = {
   title: "Rain City Signal",
   status: "outline_draft",
   planning_mode: "snowflake",
+  snowflake_workflow_mode: "explore",
   outline_text: "A cold case drags the heroine back home.",
   current_chapter_id: null,
 };
@@ -103,6 +104,8 @@ const workspace = {
       },
       completeness: { filled_count: 0, total_count: 2, missing_fields: ["category", "target_reader"] },
       gate_satisfied: false,
+      can_confirm: false,
+      approval_blockers: [],
       artifact: null,
       last_generation_source: null,
       last_llm_call_id: null,
@@ -137,6 +140,8 @@ const workspace = {
       },
       completeness: { filled_count: 0, total_count: 1, missing_fields: ["summary"] },
       gate_satisfied: false,
+      can_confirm: false,
+      approval_blockers: [{ step_key: "book_brief", label: "读者定位" }],
       artifact: null,
       last_generation_source: null,
       last_llm_call_id: null,
@@ -175,6 +180,7 @@ describe("snowflake workspace v2 api helpers", () => {
     await api.applySnowflakeSceneTriageRepair("PRJ_WS", "TRIAGE_1");
     await api.materializeSnowflakeWorkspace("PRJ_WS");
     await api.approveSnowflakeWorkspaceOutline("PRJ_WS");
+    await api.resyncSnowflakeWorkspace("PRJ_WS", { scene_plan_ids: ["SCENE_PLAN_1"], dry_run: true });
 
     const calls = globalThis.fetch.mock.calls.map(([url, options = {}]) => [url, options.method || "GET"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects", "GET"]);
@@ -194,6 +200,23 @@ describe("snowflake workspace v2 api helpers", () => {
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/scene-triage/TRIAGE_1/apply", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/materialize", "POST"]);
     expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/outline/approve", "POST"]);
+    expect(calls).toContainEqual(["http://127.0.0.1:8000/api/v2/projects/PRJ_WS/snowflake-workspace/resync", "POST"]);
+  });
+
+  it("surfaces exploration-mode gates and selective resync controls", () => {
+    const source = readSnowflakeViewSource();
+    const storeSource = readSource("src/stores/snowflakeWorkbench.js");
+
+    expect(source).toContain("snowflake_workflow_mode");
+    expect(source).toContain('data-testid="snowflake-workflow-mode"');
+    expect(source).toContain("approval_blockers");
+    expect(source).toContain("can_confirm");
+    expect(source).toContain('data-testid="snowflake-resync-panel"');
+    expect(source).toContain("pendingResyncCount");
+    expect(source).toContain("previewResync");
+    expect(source).toContain("resyncScenes");
+    expect(storeSource).toContain("resyncSnowflakeWorkspace");
+    expect(storeSource).toContain("pendingResyncScenes");
   });
 });
 

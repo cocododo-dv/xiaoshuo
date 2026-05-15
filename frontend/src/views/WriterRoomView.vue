@@ -3,6 +3,7 @@ import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from "v
 import { ArrowRight, Check, Eye, FileText, RefreshCw, Save, Sparkles, X } from "lucide-vue-next";
 
 import CompactEntitySelect from "../components/CompactEntitySelect.vue";
+import DiffViewer from "../components/DiffViewer.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
@@ -31,6 +32,9 @@ const proposalModeOptions = [
 ];
 const proposalInstruction = ref("");
 const autoSaveState = ref("idle");
+const rejectDialog = ref(false);
+const pendingRejectProposal = ref(null);
+const rejectNote = ref("");
 const chapters = computed(() => room.navigation?.chapters || []);
 const scenes = computed(() => room.navigation?.scenes || []);
 const chapterChoiceState = computed(() =>
@@ -283,11 +287,27 @@ async function generateProposalSet() {
   });
 }
 
-async function rejectProposal(proposal) {
-  const note = typeof window === "undefined"
-    ? ""
-    : (window.prompt("为什么不采用这个改法？可留空，系统会把原因当作写作偏好参考。", "") || "");
+function rejectProposal(proposal) {
+  pendingRejectProposal.value = proposal;
+  rejectNote.value = "";
+  rejectDialog.value = true;
+}
+
+function closeRejectDialog() {
+  rejectDialog.value = false;
+  pendingRejectProposal.value = null;
+  rejectNote.value = "";
+}
+
+async function confirmRejectProposal() {
+  const proposal = pendingRejectProposal.value;
+  if (!proposal) {
+    closeRejectDialog();
+    return;
+  }
+  const note = rejectNote.value || "";
   const preference_remembered = note.trim();
+  closeRejectDialog();
   await runFlowAction({
     scopeKey: WRITER_PROPOSAL_SCOPE,
     actionLabel: "放弃改法",
@@ -516,10 +536,11 @@ onBeforeUnmount(() => {
               <h3>差异预览</h3>
               <span class="badge">{{ diffPreview.merge_status || "clean" }}</span>
             </div>
-            <div class="writer-room-diff-grid">
-              <pre>{{ diffPreview.before_text || "" }}</pre>
-              <pre>{{ diffPreview.after_text || "" }}</pre>
-            </div>
+            <DiffViewer
+              :before-text="diffPreview.before_text || ''"
+              :after-text="diffPreview.after_text || ''"
+              :status="diffPreview.merge_status || 'clean'"
+            />
           </section>
 
           <section class="writer-room-pressure">
@@ -538,6 +559,33 @@ onBeforeUnmount(() => {
         </aside>
       </div>
     </PanelShell>
+
+    <div v-if="rejectDialog" class="writer-room-modal-backdrop" data-testid="writer-room-reject-dialog" role="dialog" aria-modal="true">
+      <article class="writer-room-reject-modal">
+        <div class="writer-room-section-head">
+          <div>
+            <span class="eyebrow">放弃改法</span>
+            <h3>{{ proposalTitle(pendingRejectProposal) }}</h3>
+          </div>
+          <button type="button" class="ghost" @click="closeRejectDialog">关闭</button>
+        </div>
+        <p class="muted">可以留空；如果写一点原因，系统会把它记成后续改法的偏好线索。</p>
+        <textarea
+          v-model="rejectNote"
+          class="writer-room-reject-note"
+          placeholder="例：太直白、解释过多、削弱人物选择压力"
+          @keydown.ctrl.enter.prevent="confirmRejectProposal"
+          @keydown.meta.enter.prevent="confirmRejectProposal"
+        />
+        <div class="card-actions">
+          <button type="button" class="ghost" @click="closeRejectDialog">取消</button>
+          <button type="button" @click="confirmRejectProposal">
+            <X :size="15" />
+            放弃并记录
+          </button>
+        </div>
+      </article>
+    </div>
   </section>
 </template>
 
@@ -727,23 +775,36 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
-.writer-room-diff-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.6rem;
-}
-
-.writer-room-diff-grid pre {
-  max-height: 14rem;
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  line-height: 1.55;
-}
-
 .badge.active {
   border-color: rgba(143, 47, 38, 0.24);
   background: rgba(143, 47, 38, 0.1);
+}
+
+.writer-room-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(23, 34, 31, 0.34);
+}
+
+.writer-room-reject-modal {
+  display: grid;
+  gap: 12px;
+  width: min(520px, 100%);
+  border: 1px solid rgba(47, 111, 98, 0.2);
+  border-radius: 8px;
+  background: #fffefa;
+  box-shadow: 0 28px 70px rgba(20, 35, 31, 0.28);
+  padding: 18px;
+}
+
+.writer-room-reject-note {
+  min-height: 110px;
+  resize: vertical;
+  line-height: 1.6;
 }
 
 @media (max-width: 1320px) {
@@ -755,9 +816,6 @@ onBeforeUnmount(() => {
     max-height: none;
   }
 
-  .writer-room-diff-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 640px) {

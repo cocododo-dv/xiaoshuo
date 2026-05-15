@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState, utcnow
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.author_actions import author_action
 from novel_system.services.project_backtracks import ProjectBacktrackService
 from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.orchestrator import Orchestrator
@@ -66,10 +67,7 @@ class ChapterRunnerService:
                 self._mark_blocked(
                     job,
                     blocked_scene_id=next_scene_id,
-                    latest_error={
-                        "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
-                        "message": "scene requires human review before chapter run can continue",
-                    },
+                    latest_error=self._human_review_error(next_scene_id, result),
                 )
                 self.session.flush()
                 return self._serialize_job(job)
@@ -288,7 +286,7 @@ class ChapterRunnerService:
             latest_error=None,
         )
 
-    def _mark_blocked(self, job: ChapterRunJob, *, blocked_scene_id: str | None, latest_error: dict[str, str]) -> None:
+    def _mark_blocked(self, job: ChapterRunJob, *, blocked_scene_id: str | None, latest_error: dict[str, Any]) -> None:
         job.status = JOB_STATUS_BLOCKED
         job.error_code = latest_error["code"]
         job.error_text = latest_error["message"]
@@ -338,7 +336,7 @@ class ChapterRunnerService:
             latest_error={"code": error_code, "message": error_text},
         )
 
-    def _chapter_gate_error(self, chapter_id: str, *, scene_id: str | None = None) -> dict[str, str] | None:
+    def _chapter_gate_error(self, chapter_id: str, *, scene_id: str | None = None) -> dict[str, Any] | None:
         human_review_error = self._scene_human_review_error(scene_id)
         if human_review_error is not None:
             return human_review_error
@@ -352,6 +350,14 @@ class ChapterRunnerService:
             return {
                 "code": "CHAPTER_RUN_BACKTRACK_REQUIRED",
                 "message": f"chapter run is blocked by pending replanning work: {first_item.scope}",
+                "author_action": author_action(
+                    "章节需要先处理返工",
+                    "当前章节还有待处理返工项。处理完这些结构问题后，章节起草会继续。",
+                    target_view="review",
+                    target_ref=f"backtrack_item:{first_item.item_id}",
+                    primary_button_label="去待处理建议",
+                    evidence_summary=[f"章节：{chapter_id}", f"范围：{first_item.scope}"],
+                ),
             }
         chapter_state = ChapterRuntimeService(self.session).chapter_state_payload(chapter_id)
         manual_hold_reason = chapter_state.get("manual_hold_reason")
@@ -359,21 +365,45 @@ class ChapterRunnerService:
             return {
                 "code": "CHAPTER_RUN_MANUAL_HOLD",
                 "message": "chapter run is blocked by manual hold",
+                "author_action": author_action(
+                    "章节被手动暂停",
+                    "当前章节处于人工暂停状态，请先解除暂停或处理暂停原因。",
+                    target_view="workbench",
+                    target_ref=f"chapter:{chapter_id}",
+                    primary_button_label="去场景工作台",
+                    evidence_summary=[f"章节：{chapter_id}", f"原因：{manual_hold_reason.strip()}"],
+                ),
             }
         if chapter_state.get("chapter_backfill_pending_count", 0):
             return {
                 "code": "CHAPTER_RUN_BACKFILL_PENDING",
                 "message": "chapter run is blocked by pending staged backfill",
+                "author_action": author_action(
+                    "章节有待回填内容",
+                    "当前章节还有标记内容等待回填，先处理这些占位，再继续章节起草。",
+                    target_view="workbench",
+                    target_ref=f"chapter:{chapter_id}",
+                    primary_button_label="去场景工作台",
+                    evidence_summary=[f"章节：{chapter_id}", "状态：待回填"],
+                ),
             }
         aggregate_block_reason = chapter_state.get("aggregate_block_reason")
         if aggregate_block_reason and aggregate_block_reason != "none":
             return {
                 "code": "CHAPTER_RUN_AGGREGATE_BLOCKED",
                 "message": f"chapter run is blocked by aggregate gate: {aggregate_block_reason}",
+                "author_action": author_action(
+                    "章节汇总暂时被阻塞",
+                    "章节汇总门还没有放行，请先检查当前章节的场景完成度和回填状态。",
+                    target_view="workbench",
+                    target_ref=f"chapter:{chapter_id}",
+                    primary_button_label="去场景工作台",
+                    evidence_summary=[f"章节：{chapter_id}", f"阻塞：{aggregate_block_reason}"],
+                ),
             }
         return None
 
-    def _scene_human_review_error(self, scene_id: str | None) -> dict[str, str] | None:
+    def _scene_human_review_error(self, scene_id: str | None) -> dict[str, Any] | None:
         if not scene_id:
             return None
         scene_state = self.session.get(SceneRunState, scene_id)
@@ -381,10 +411,7 @@ class ChapterRunnerService:
             return None
         event = self.session.get(HumanReviewEvent, scene_state.current_human_review_event_id)
         if event is None or event.status != "resolved":
-            return {
-                "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
-                "message": "scene requires human review before chapter run can continue",
-            }
+            return self._human_review_error(scene_id, {"current_human_review_event_id": scene_state.current_human_review_event_id})
         return None
 
     def _next_scene_id(self, job: ChapterRunJob, scene_ids: list[str]) -> str | None:
@@ -412,20 +439,92 @@ class ChapterRunnerService:
             return True
         return bool(result.get("current_human_review_event_id"))
 
-    def _scene_incomplete_error(self, scene_id: str, result: dict[str, Any] | None) -> dict[str, str] | None:
+    def _human_review_error(self, scene_id: str, result: dict[str, Any] | None) -> dict[str, Any]:
+        event_id = str((result or {}).get("current_human_review_event_id") or "").strip()
+        if not event_id:
+            state = self.session.get(SceneRunState, scene_id)
+            event_id = str(state.current_human_review_event_id or "").strip() if state is not None else ""
+        target_ref = f"human_review_event:{event_id}" if event_id else f"scene_card:{scene_id}"
+        evidence = [f"场景：{scene_id}"]
+        if event_id:
+            evidence.append(f"审核：{event_id}")
+        return {
+            "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
+            "message": "scene requires human review before chapter run can continue",
+            "author_action": author_action(
+                "场景需要人工审核",
+                "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
+                target_view="review",
+                target_ref=target_ref,
+                primary_button_label="去待处理建议",
+                evidence_summary=evidence,
+            ),
+        }
+
+    def _scene_incomplete_error(self, scene_id: str, result: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(result, dict):
-            return {
-                "code": "CHAPTER_RUN_SCENE_INCOMPLETE",
-                "message": "scene run did not produce a final scene",
-            }
+            return self._generic_scene_incomplete_error(scene_id)
         if result.get("current_final_scene_row_id"):
             return None
         state = self.session.get(SceneRunState, scene_id)
         if state is not None and state.current_final_scene_row_id:
             return None
+        error_code = str(result.get("error_code") or result.get("code") or "").strip()
+        scene_status = str(result.get("scene_status") or (state.scene_status if state is not None else "") or "").strip()
+        if error_code == "LLM_ROUTE_NOT_CONFIGURED":
+            return {
+                "code": "LLM_ROUTE_NOT_CONFIGURED",
+                "message": "model route is not configured for scene generation",
+                "author_action": author_action(
+                    "需要配置模型路由",
+                    "当前场景起草找不到可用的模型路由。请先到系统配置完成 provider、模型和路由设置。",
+                    target_view="config",
+                    target_ref="system_config:llm",
+                    primary_button_label="去系统配置",
+                    evidence_summary=[f"场景：{scene_id}", "错误：LLM_ROUTE_NOT_CONFIGURED"],
+                ),
+            }
+        if error_code == "CONTINUITY_BUDGET_EXCEEDED":
+            return {
+                "code": "CONTINUITY_BUDGET_EXCEEDED",
+                "message": "continuity context budget was exceeded",
+                "author_action": author_action(
+                    "上下文太重，需要拆分",
+                    "这一场承载的信息过多，建议拆分场景或降低连续性上下文后再跑。",
+                    target_view="snowflake-workbench",
+                    target_ref=f"scene_card:{scene_id}",
+                    primary_button_label="拆分场景",
+                    evidence_summary=[f"场景：{scene_id}", "错误：CONTINUITY_BUDGET_EXCEEDED"],
+                ),
+            }
+        if scene_status in {"hard_qc_partial_rewrite_required", "hard_qc_full_rewrite_required", "near_final_revision_required"}:
+            return {
+                "code": "CHAPTER_RUN_SCENE_NEEDS_REWRITE",
+                "message": "当前场景停在硬质检返修，还没有形成可审阅终稿。",
+                "author_action": author_action(
+                    "场景需要补修",
+                    "这一场没有形成可审阅终稿，请先回到场景工作台处理返修，再继续章节起草。",
+                    target_view="workbench",
+                    target_ref=f"scene_card:{scene_id}",
+                    primary_button_label="去场景工作台",
+                    evidence_summary=[f"场景：{scene_id}", f"状态：{scene_status}"],
+                ),
+            }
+        return self._generic_scene_incomplete_error(scene_id)
+
+    @staticmethod
+    def _generic_scene_incomplete_error(scene_id: str) -> dict[str, Any]:
         return {
             "code": "CHAPTER_RUN_SCENE_INCOMPLETE",
             "message": "scene run did not produce a final scene",
+            "author_action": author_action(
+                "场景还没有可审阅正文",
+                "当前场景没有生成可审阅终稿。请先回到场景工作台检查缺字段、返修或运行失败原因。",
+                target_view="workbench",
+                target_ref=f"scene_card:{scene_id}",
+                primary_button_label="去场景工作台",
+                evidence_summary=[f"场景：{scene_id}"],
+            ),
         }
 
     @staticmethod

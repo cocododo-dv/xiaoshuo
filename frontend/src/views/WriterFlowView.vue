@@ -54,6 +54,27 @@ const nextAction = computed(() => store.nextAction);
 const mainAction = computed(() => actionFor(nextAction.value));
 const progressWidth = computed(() => `${Math.min(100, Math.max(0, Number(runStatus.value?.progress_pct || 0)))}%`);
 const offlineBanner = computed(() => store.runtime?.llm_enabled === false);
+const readinessSteps = computed(() => [
+  {
+    label: "选择 provider",
+    done: Boolean(store.runtime?.provider_ready),
+  },
+  {
+    label: "填写 key/地址",
+    done: Boolean(store.runtime?.provider_ready),
+  },
+  {
+    label: "测试并激活",
+    done: Boolean(store.runtime?.llm_enabled && store.runtime?.provider_ready && !(store.runtime?.missing_routes || []).length),
+  },
+]);
+const authorAction = computed(() => store.authorAction || runStatus.value?.latest_error?.author_action || null);
+const authorActionEvidence = computed(() => authorAction.value?.evidence_summary || []);
+const referenceRuleTags = computed(() => {
+  const fromProfiles = (store.referenceProfiles || []).flatMap((profile) => profile?.safe_summary?.abstract_tags || []);
+  const safety = (reviewPacket.value?.reference_safety || []).map((summary) => ({ label: "安全提示", summary }));
+  return [...fromProfiles, ...safety].filter((item) => item?.summary).slice(0, 6);
+});
 const isPolling = computed(() => pollingActive.value);
 const approvalNotesCount = computed(() => approvalNotes.value.length);
 const approvalNotesTooLong = computed(() => approvalNotesCount.value > 2000);
@@ -187,6 +208,29 @@ function openSystemConfig() {
   router.navigate('config', { target: { panel: "llm" } });
 }
 
+function openAuthorAction(action = authorAction.value) {
+  if (!action?.target_view) {
+    return;
+  }
+  if (action.target_view === "config") {
+    router.navigate("config", { target: { panel: "llm", target: action.target_ref || "" } });
+    return;
+  }
+  if (action.target_view === "workbench") {
+    router.navigate("workbench", { target: { target: action.target_ref || "", project_id: project.value?.project_id || "" } });
+    return;
+  }
+  if (action.target_view === "snowflake-workbench") {
+    router.navigate("snowflake-workbench", { target: { target: action.target_ref || "", project_id: project.value?.project_id || "" } });
+    return;
+  }
+  if (action.target_view === "review") {
+    router.navigate("review", { target: { target_ref: action.target_ref || "", project_id: project.value?.project_id || "" } });
+    return;
+  }
+  router.navigate(action.target_view, { target: { target: action.target_ref || "", project_id: project.value?.project_id || "" } });
+}
+
 function openWriterRoomForChapter() {
   router.navigate("writer-room", {
     target: {
@@ -297,6 +341,20 @@ watch(() => router.routeContext.value?.target, (target) => {
         </button>
       </aside>
 
+      <section class="writer-flow-readiness-card" data-testid="writer-flow-readiness-card">
+        <div>
+          <span class="eyebrow">模型准备度</span>
+          <h3>{{ store.runtime?.llm_enabled ? "真实模型已启用" : "启用真实模型后再起草" }}</h3>
+          <p class="muted">
+            {{ store.runtime?.llm_enabled ? "章节正文会走真实模型路由。" : "主按钮会保持禁用，离线演示只作为高级测试逃生口。" }}
+          </p>
+        </div>
+        <ol>
+          <li v-for="step in readinessSteps" :key="step.label" :class="{ done: step.done }">{{ step.label }}</li>
+        </ol>
+        <button type="button" class="ghost" @click="openSystemConfig">去系统配置</button>
+      </section>
+
       <section class="writer-flow-hero">
         <div>
           <span class="eyebrow">当前项目</span>
@@ -319,6 +377,33 @@ watch(() => router.routeContext.value?.target, (target) => {
       </section>
 
       <FlowActionReceipt :receipt="receipt(WRITER_FLOW_SCOPE)" :on-navigate="handleReceiptNavigate" />
+
+      <section v-if="authorAction" class="writer-flow-author-action" data-testid="writer-flow-author-action">
+        <div>
+          <span class="eyebrow">下一步行动</span>
+          <h3>{{ authorAction.title || "先处理阻塞项" }}</h3>
+          <p>{{ authorAction.message || latestErrorLabel(runStatus?.latest_error) }}</p>
+          <ul v-if="authorActionEvidence.length">
+            <li v-for="item in authorActionEvidence" :key="item">{{ item }}</li>
+          </ul>
+        </div>
+        <div class="writer-flow-author-actions">
+          <button type="button" class="primary" @click="openAuthorAction(authorAction)">
+            {{ authorAction.primary_button_label || "去处理" }}
+          </button>
+          <button type="button" class="ghost" @click="openSystemConfig">去系统配置</button>
+          <button type="button" class="ghost" @click="router.navigate('workbench')">去场景工作台</button>
+        </div>
+      </section>
+
+      <section v-if="referenceRuleTags.length" class="writer-flow-reference-rules" data-testid="writer-flow-reference-rules">
+        <span class="eyebrow">本次写作使用的画像 / 规则 / 安全提示</span>
+        <div>
+          <span v-for="item in referenceRuleTags" :key="`${item.label}:${item.summary}`">
+            <strong>{{ item.label }}：</strong>{{ item.summary }}
+          </span>
+        </div>
+      </section>
 
       <section v-if="shouldShowBacktrackBanner" class="writer-flow-backtrack-banner" data-testid="writer-flow-backtrack-banner">
         <div class="panel-head">
@@ -403,6 +488,11 @@ watch(() => router.routeContext.value?.target, (target) => {
                 <small>{{ scene.char_count || 0 }} 字符</small>
               </div>
               <p>{{ scene.body_excerpt || "这一场还没有可审阅正文。" }}</p>
+              <div v-if="scene.issues_summary?.length" class="writer-flow-qc-evidence" data-testid="writer-flow-qc-evidence">
+                <strong>{{ scene.issues_summary[0].issue }}</strong>
+                <small v-if="scene.issues_summary[0].evidence">证据：{{ scene.issues_summary[0].evidence }}</small>
+                <small v-if="scene.issues_summary[0].suggested_action">建议：{{ scene.issues_summary[0].suggested_action }}</small>
+              </div>
               <button type="button" class="ghost mini" @click="openWriterRoomForScene(scene)">小修</button>
             </article>
           </div>
@@ -466,6 +556,9 @@ watch(() => router.routeContext.value?.target, (target) => {
 .writer-flow-panel,
 .writer-flow-chapters article,
 .writer-flow-backtrack-banner,
+.writer-flow-readiness-card,
+.writer-flow-author-action,
+.writer-flow-reference-rules,
 .writer-flow-banner {
   border: 1px solid rgba(43, 95, 88, 0.16);
   border-radius: 8px;
@@ -482,6 +575,72 @@ watch(() => router.routeContext.value?.target, (target) => {
   border-color: rgba(154, 91, 31, 0.28);
   background: #fff7e8;
   color: #76511d;
+}
+
+.writer-flow-readiness-card,
+.writer-flow-author-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.writer-flow-readiness-card ol,
+.writer-flow-author-action ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.writer-flow-readiness-card li,
+.writer-flow-author-action li {
+  border: 1px solid rgba(40, 124, 114, 0.18);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eef7f3;
+  color: #33544c;
+  font-size: 12px;
+}
+
+.writer-flow-readiness-card li.done {
+  background: #e6f7eb;
+  color: #246551;
+}
+
+.writer-flow-author-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.writer-flow-reference-rules {
+  display: grid;
+  gap: 10px;
+}
+
+.writer-flow-reference-rules div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.writer-flow-reference-rules span,
+.writer-flow-qc-evidence {
+  border: 1px solid rgba(40, 124, 114, 0.16);
+  border-radius: 8px;
+  background: #f5fbf7;
+  padding: 7px 9px;
+  color: #34544c;
+}
+
+.writer-flow-qc-evidence {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
 }
 
 .writer-flow-hero,
@@ -752,6 +911,8 @@ watch(() => router.routeContext.value?.target, (target) => {
 
 @media (max-width: 820px) {
   .writer-flow-hero,
+  .writer-flow-readiness-card,
+  .writer-flow-author-action,
   .panel-head {
     align-items: stretch;
     flex-direction: column;
