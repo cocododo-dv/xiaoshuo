@@ -15,6 +15,7 @@ import {
   fetchSnowflakeWorkspaceProjects,
   generateSnowflakeWorkspaceStep,
   materializeSnowflakeWorkspace,
+  openProjectChapterDraft,
   applySnowflakeSceneTriageRepair,
   requestSnowflakeSceneTriageSuggestions,
   requestSnowflakeWorkspaceAssistant,
@@ -48,6 +49,14 @@ function textExcerpt(value, limit = 1800) {
     return text;
   }
   return `${text.slice(0, limit).trim()}...`;
+}
+
+function firstLine(value, fallback = "") {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    || fallback;
 }
 
 const LOCAL_STEP_DRAFTS_KEY = "novel-system:snowflake-step-drafts:v1";
@@ -715,6 +724,66 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
       } finally {
         this.actionId = "";
       }
+    },
+    async openDiscoveryChapterDraft(payload = {}) {
+      const projectId = this._activeProjectId();
+      if (!projectId) {
+        throw new Error("Please select a project before opening a chapter draft.");
+      }
+      const draft = this.discoveryDraft || (await this.ensureDiscoveryDraft(projectId));
+      if (!draft?.draft_id) {
+        return null;
+      }
+      if (this.discoveryDraftDirty) {
+        await this.saveDiscoveryDraft();
+      }
+      const content = this.discoveryDraftContent || this.discoveryDraft?.content || "";
+      this.actionId = "discovery-open-chapter";
+      this.error = "";
+      try {
+        const result = await openProjectChapterDraft(projectId, {
+          initial_content: content,
+          chapter_goal: firstLine(content, this.project?.title || "Writer-first chapter"),
+          source: "discovery",
+          source_ref: `project_discovery:${projectId}`,
+          writer_brief_json: {
+            origin: "discovery_draft",
+            source_draft_id: draft.draft_id,
+            excerpt: textExcerpt(content, 800),
+          },
+          ...(payload || {}),
+        });
+        this.lastActionMessage = "WriterRoom chapter draft is ready.";
+        return clonePayload(result || null);
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.actionId = "";
+      }
+    },
+    async openSceneChapterDraft(scene = {}) {
+      const projectId = this._activeProjectId();
+      if (!projectId) {
+        throw new Error("Please select a project before opening a scene chapter draft.");
+      }
+      const result = await openProjectChapterDraft(projectId, {
+        chapter_id: scene.chapter_id || "",
+        chapter_goal: scene.chapter_goal || scene.summary || scene.title || "",
+        source: "snowflake_scene",
+        source_ref: scene.scene_plan_id || scene.scene_id || "",
+        writer_brief_json: {
+          origin: "snowflake_scene",
+          scene_plan_id: scene.scene_plan_id || "",
+          scene_id: scene.scene_id || "",
+          summary: scene.summary || scene.title || "",
+          goal: scene.goal || scene.scene_goal || "",
+          conflict: scene.conflict || scene.scene_crucible || "",
+          hook: scene.hook || "",
+        },
+      });
+      this.lastActionMessage = "WriterRoom chapter draft is ready.";
+      return clonePayload(result || null);
     },
     async createProject(override = null) {
       const payload = {

@@ -8,11 +8,13 @@ import SnowflakePlanningStage from "../components/SnowflakePlanningStage.vue";
 import SnowflakeProjectPanel from "../components/SnowflakeProjectPanel.vue";
 import SnowflakeSceneBoard from "../components/SnowflakeSceneBoard.vue";
 import SnowflakeTriagePanel from "../components/SnowflakeTriagePanel.vue";
+import { useShellRouter } from "../router";
 import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
 
 const emit = defineEmits(["notice"]);
 
 const store = useSnowflakeWorkbenchStore();
+const router = useShellRouter();
 const projectPanel = ref(null);
 
 const workbenchMode = computed(() => store.workbenchMode);
@@ -55,6 +57,20 @@ async function extractDiscoveryStructure() {
 async function applyDiscoveryStructure() {
   await store.applyDiscoveryStructure();
   emit("notice", { type: "success", message: "候选已写入雪花待审步骤。" });
+}
+
+async function openDiscoveryChapterDraft() {
+  const payload = await store.openDiscoveryChapterDraft();
+  const chapterId = payload?.target?.chapter_id || payload?.target?.object_id || payload?.chapter?.chapter_id || "";
+  if (chapterId) {
+    router.navigate("writer-room", {
+      target: {
+        focus: "chapter_goal",
+        target: chapterId,
+      },
+    });
+  }
+  emit("notice", { type: "success", message: "已转入章节草稿，可以继续写正文。" });
 }
 
 function handleBeforeUnload(event) {
@@ -131,6 +147,15 @@ onBeforeUnmount(() => {
               @click="extractDiscoveryStructure"
             >
               提取结构
+            </button>
+            <button
+              type="button"
+              class="action-btn"
+              data-testid="snowflake-discovery-open-chapter-draft"
+              :disabled="!store.discoveryDraft || store.actionId === 'discovery-open-chapter'"
+              @click="openDiscoveryChapterDraft"
+            >
+              继续写正文
             </button>
             <button
               type="button"

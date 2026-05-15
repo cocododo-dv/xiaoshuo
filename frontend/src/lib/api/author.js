@@ -18,6 +18,10 @@ export function fetchWriterRoom(objectType, objectId) {
   );
 }
 
+export function openProjectChapterDraft(projectId, payload = {}) {
+  return apiPost(`/api/v1/projects/${encodeURIComponent(projectId)}/chapter-drafts/open`, payload);
+}
+
 export function fetchAuthorDraftEvents(draftId) {
   return apiGet(`/api/v1/author-drafts/${encodeURIComponent(draftId)}/events`);
 }

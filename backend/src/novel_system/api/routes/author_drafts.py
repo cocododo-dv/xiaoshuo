@@ -200,6 +200,19 @@ def ensure_project_discovery_draft(project_id: str, request: Request, session: S
     return ok(payload, req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v1/projects/{project_id}/chapter-drafts/open")
+def open_project_chapter_draft(
+    project_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result = AuthorDraftService(session).open_chapter_draft(project_id, payload or {}, actor_ref=actor_ref)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v1/author-structure-candidates/{candidate_id}/apply-to-snowflake")
 def apply_author_structure_candidate_to_snowflake(
     candidate_id: str,

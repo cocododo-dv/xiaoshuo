@@ -14,6 +14,7 @@ from novel_system.db.models import (
     AuthorDraftProposal,
     AuthorPreferenceProfile,
     AuthorStructureCandidate,
+    ChapterGoal,
     ChapterMemory,
     ChapterState,
     FinalScene,
@@ -106,6 +107,83 @@ class AuthorDraftService:
         draft = self._create_draft_row(object_type, object_id, source=source, actor_ref=actor_ref)
         return self._draft_response(draft)
 
+    def open_chapter_draft(
+        self,
+        project_id: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        body = payload or {}
+        project = self.session.get(StoryProject, project_id)
+        if project is None:
+            raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
+
+        chapter_id = _optional_text(body, "chapter_id")
+        chapter = self._ensure_author_first_chapter(project, chapter_id, body)
+        current = self._current_row("chapter", chapter.chapter_id)
+        if current is None:
+            source = {
+                "source_text_ref": _author_first_source_ref(chapter.chapter_id, body),
+                "content": _optional_text(body, "initial_content") or "",
+            }
+            current = self._create_draft_row(
+                "chapter",
+                chapter.chapter_id,
+                source=source,
+                actor_ref="author_first_open",
+                event_payload={
+                    "origin": "author_first_open",
+                    "source": _optional_text(body, "source") or "author_first_open",
+                    "source_ref": _optional_text(body, "source_ref") or "",
+                    "writer_brief_json": body.get("writer_brief_json") if isinstance(body.get("writer_brief_json"), dict) else {},
+                    "opened_by": actor_ref or "",
+                },
+            )
+        if not project.current_chapter_id:
+            project.current_chapter_id = chapter.chapter_id
+        self.session.flush()
+
+        from novel_system.services.writer_room import WriterRoomService
+
+        return WriterRoomService(self.session).room("chapter", chapter.chapter_id)
+
+    def _ensure_author_first_chapter(
+        self,
+        project: StoryProject,
+        chapter_id: str | None,
+        payload: dict[str, Any],
+    ) -> ChapterGoal:
+        if chapter_id:
+            chapter = self.session.get(ChapterGoal, chapter_id)
+            if chapter is None:
+                raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+            if chapter.trashed_flag == 1:
+                raise DomainError("CHAPTER_TRASHED", "chapter is currently in author trash", status_code=409)
+            if chapter.project_id and chapter.project_id != project.project_id:
+                raise DomainError(
+                    "CHAPTER_PROJECT_MISMATCH",
+                    "chapter belongs to a different project",
+                    status_code=409,
+                    details={"chapter_project_id": chapter.project_id, "project_id": project.project_id},
+                )
+            if not chapter.project_id:
+                chapter.project_id = project.project_id
+            return chapter
+
+        next_id = _next_author_first_chapter_id(self.session, project.project_id)
+        brief = payload.get("writer_brief_json") if isinstance(payload.get("writer_brief_json"), dict) else {}
+        chapter = ChapterGoal(
+            chapter_id=next_id,
+            project_id=project.project_id,
+            planned_scene_count=0,
+            chapter_goal=_optional_text(payload, "chapter_goal") or project.title or next_id,
+            writer_brief_json={**normalize_chapter_writer_brief(brief), **brief},
+        )
+        self.session.add(chapter)
+        self.session.flush()
+        return chapter
+
     def _create_draft_row(
         self,
         object_type: str,
@@ -113,6 +191,7 @@ class AuthorDraftService:
         *,
         source: dict[str, str],
         actor_ref: str,
+        event_payload: dict[str, Any] | None = None,
     ) -> AuthorDraft:
         draft = AuthorDraft(
             draft_id=f"author_draft_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
@@ -131,7 +210,7 @@ class AuthorDraftService:
             draft,
             event_type="created",
             actor_ref=actor_ref,
-            payload={"source_text_ref": source["source_text_ref"]},
+            payload={"source_text_ref": source["source_text_ref"], **(event_payload or {})},
         )
         self.session.flush()
         return draft
@@ -995,7 +1074,7 @@ class AuthorDraftService:
                 merged.update(summary)
                 merged["scope_type"] = scope_type
                 merged["scope_ref_id"] = scope_ref_id
-        return merged
+        return _safe_preference_summary_for_prompt(merged)
 
     def _refresh_proposal_preference_profile(
         self,
@@ -1045,6 +1124,20 @@ class AuthorDraftService:
         if proposal.status == "rejected" and rejected_trace:
             traces.append(rejected_trace)
         summary["rejected_ai_traces"] = _unique_tail(traces, limit=20)
+        if proposal.status == "rejected":
+            signal = _safe_preference_signal(
+                note=proposal.author_decision_note,
+                decision_reason=decision_reason,
+                proposal_type=proposal.proposal_type,
+                proposal_id=proposal.proposal_id,
+            )
+            if signal:
+                signals = [row for row in summary.get("preference_signals", []) if isinstance(row, dict)]
+                signals.append(signal)
+                summary["preference_signals"] = signals[-30:]
+                hints = [str(item) for item in summary.get("safe_preference_hints", []) if str(item).strip()]
+                hints.extend(str(label) for label in signal.get("labels", []) if str(label).strip())
+                summary["safe_preference_hints"] = _unique_tail(hints, limit=20)
         profile.status = "draft"
         profile.runtime_eligible = 0
         profile.summary_json = summary
@@ -1614,9 +1707,126 @@ def _proposal_rationale(*, target: dict[str, Any], proposal_type: str, instructi
     return f"Generated as a comparable {proposal_type} proposal from the current author draft target: {focus}"
 
 
+def _safe_preference_signal(
+    *,
+    note: str | None,
+    decision_reason: str | None,
+    proposal_type: str,
+    proposal_id: str,
+) -> dict[str, Any] | None:
+    text = f"{note or ''} {decision_reason or ''}".lower()
+    labels: list[str] = []
+    if any(token in text for token in ("exposition", "explain", "explains", "backstory", "info dump", "telling")):
+        labels.append("avoid_exposition")
+    if any(token in text for token in ("dialogue", "dialog", "conversation", "speech")):
+        labels.append("avoid_dialogue_style")
+    if any(token in text for token in ("tone", "formal", "flat", "generic", "ai voice", "model voice")):
+        labels.append("avoid_tone")
+    if any(token in text for token in ("pacing", "pace", "slow", "drag", "rushed", "too fast")):
+        labels.append("avoid_pacing")
+    if any(token in text for token in ("voice", "keep voice", "author voice", "character voice")):
+        labels.append("prefer_voice")
+    if any(token in text for token in ("structure", "arc", "beat", "setup", "payoff")):
+        labels.append("prefer_structure")
+    if not labels and text.strip():
+        labels.append("other_safe_note")
+    labels = _unique_tail(labels, limit=20)
+    if not labels:
+        return None
+    return {
+        "source_proposal_id": proposal_id,
+        "proposal_type": proposal_type,
+        "labels": labels,
+        "safe_summary": "; ".join(labels),
+    }
+
+
+def _safe_preference_summary_for_prompt(summary: dict[str, Any]) -> dict[str, Any]:
+    if not summary:
+        return {}
+    safe: dict[str, Any] = {}
+    for key in (
+        "accepted_proposal_count",
+        "rejected_proposal_count",
+        "accepted_by_type",
+        "rejected_by_type",
+        "scope_type",
+        "scope_ref_id",
+    ):
+        if key in summary:
+            safe[key] = summary[key]
+
+    signals = []
+    source_signals = summary.get("preference_signals", [])
+    for row in source_signals if isinstance(source_signals, list) else []:
+        if not isinstance(row, dict):
+            continue
+        labels = [str(label) for label in row.get("labels", []) if str(label).strip()]
+        if labels:
+            signals.append(
+                {
+                    "source_proposal_id": str(row.get("source_proposal_id") or ""),
+                    "proposal_type": str(row.get("proposal_type") or ""),
+                    "labels": labels[:8],
+                    "safe_summary": "; ".join(labels[:8]),
+                }
+            )
+    if signals:
+        safe["preference_signals"] = signals[-20:]
+
+    hints = [str(item) for item in summary.get("safe_preference_hints", []) if str(item).strip()]
+    if hints:
+        safe["safe_preference_hints"] = _unique_tail(hints, limit=20)
+
+    traces = []
+    source_traces = summary.get("rejected_ai_traces", [])
+    for trace in source_traces if isinstance(source_traces, list) else []:
+        sanitized = _safe_trace_for_prompt(trace)
+        if sanitized:
+            traces.append(sanitized)
+    if traces:
+        safe["rejected_ai_traces"] = _unique_tail(traces, limit=20)
+    return safe
+
+
+def _safe_trace_for_prompt(value: Any) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    lowered = text.lower()
+    blocked = ("ignore previous", "ignore all", "system prompt", "developer message", "tool call", "execute ")
+    if any(marker in lowered for marker in blocked):
+        return ""
+    return text[:120]
+
+
 def _short_excerpt(text: str, *, limit: int = 160) -> str:
     compact = " ".join(str(text or "").split())
     return compact if len(compact) <= limit else f"{compact[:limit].rstrip()}..."
+
+
+def _next_author_first_chapter_id(session: Session, project_id: str) -> str:
+    prefix = f"{project_id}_CH"
+    rows = session.execute(
+        select(ChapterGoal.chapter_id).where(ChapterGoal.chapter_id.like(f"{prefix}%"))
+    ).scalars().all()
+    used: set[int] = set()
+    for row_id in rows:
+        suffix = str(row_id or "")[len(prefix) :]
+        if suffix.isdigit():
+            used.add(int(suffix))
+    index = 1
+    while index in used:
+        index += 1
+    return f"{prefix}{index:03d}"
+
+
+def _author_first_source_ref(chapter_id: str, payload: dict[str, Any]) -> str:
+    source = _optional_text(payload, "source") or "author_first_open"
+    source_ref = _optional_text(payload, "source_ref")
+    if source_ref:
+        return f"{source}:{source_ref}"
+    return f"{source}:chapter:{chapter_id}"
 
 
 def _decision_counts_by_type(decisions: list[dict[str, Any]], decision: str) -> dict[str, int]:

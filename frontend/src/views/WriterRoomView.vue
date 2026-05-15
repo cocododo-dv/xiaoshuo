@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowRight, Check, Eye, FileText, RefreshCw, Save, Sparkles, X } from "lucide-vue-next";
 
@@ -284,13 +284,17 @@ async function generateProposalSet() {
 }
 
 async function rejectProposal(proposal) {
+  const note = typeof window === "undefined"
+    ? ""
+    : (window.prompt("为什么不采用这个改法？可留空，系统会把原因当作写作偏好参考。", "") || "");
+  const preference_remembered = note.trim();
   await runFlowAction({
     scopeKey: WRITER_PROPOSAL_SCOPE,
     actionLabel: "放弃改法",
     runningMessage: "正在记录作者决定...",
-    successMessage: () => "已标记为不采纳。",
+    successMessage: () => preference_remembered ? "已标记为不采纳，写作偏好已记录。 preference_remembered" : "已标记为不采纳。",
     nextStep: () => "下一步：继续比较其它候选或回到正文。",
-    action: () => room.rejectProposal(proposal, { note: "作者在写作房间拒绝此改法。" }),
+    action: () => room.rejectProposal(proposal, { note }),
   });
 }
 
@@ -800,3 +804,4 @@ onBeforeUnmount(() => {
   }
 }
 </style>
+

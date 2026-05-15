@@ -1,9 +1,10 @@
-<script setup>
+﻿<script setup>
 import { computed } from "vue";
 import { Check, WandSparkles } from "lucide-vue-next";
 
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { snowflakeGateStatusLabel } from "../lib/labels";
 import { useShellRouter } from "../router";
 import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
 
@@ -78,32 +79,42 @@ const gateItems = computed(() => {
 });
 
 function gateStatusLabel(status) {
-  if (status === "blocked") {
-    return "还差几处才能整理";
-  }
-  if (status === "warning") {
-    return "可以整理，但有提醒";
-  }
-  return "可以整理成章节结构";
+  return snowflakeGateStatusLabel(status);
+}
+
+function gateItemTargetsScene(item) {
+  const action = item?.primary_action || {};
+  const actionType = String(action.type || "").toLowerCase();
+  const kind = String(item?.kind || "").toLowerCase();
+  return Boolean(
+    item?.scene_id
+    || item?.scene_plan_id
+    || action.scene_id
+    || action.scene_plan_id
+    || action.panel === "triage"
+    || actionType.includes("triage")
+    || kind.includes("scene")
+    || kind.includes("triage")
+  );
+}
+
+function gateItemTargetsStep(item) {
+  const action = item?.primary_action || {};
+  return Boolean(item?.step_key || action.step_key);
 }
 
 function goToGateItem(item) {
   const action = item?.primary_action || {};
-  if (item?.step_key || action.step_key) {
-    store.setWorkbenchMode("planning");
-    store.selectStep(item.step_key || action.step_key);
-    emit("notice", "已跳到对应雪花步骤。");
-    return;
-  }
-  if (item?.scene_id || item?.scene_plan_id || action.scene_id || action.scene_plan_id) {
+  if (gateItemTargetsScene(item)) {
     store.setWorkbenchMode("triage");
     store.selectTriageScene(item.scene_id || action.scene_id || "");
     emit("notice", "已打开对应场景急救项。");
     return;
   }
-  if (action.panel === "triage") {
-    store.setWorkbenchMode("triage");
-    emit("notice", "已打开场景急救。");
+  if (gateItemTargetsStep(item)) {
+    store.setWorkbenchMode("planning");
+    store.selectStep(item.step_key || action.step_key);
+    emit("notice", "已跳到对应雪花步骤。");
     return;
   }
   emit("notice", "请按提示补齐后再整理章节结构。");
@@ -265,3 +276,4 @@ function handleReceiptNavigate(target) {
     <p v-else class="muted">雪花十步确认后，可以把场景结构整理到章节计划里。</p>
   </section>
 </template>
+

@@ -206,6 +206,11 @@ describe("writer room shell", () => {
     globalThis.fetch = vi.fn(async () => okEnvelope({}));
 
     await api.fetchWriterRoom("scene", "WRFE100_SC01");
+    await api.openProjectChapterDraft("PRJ_WRFE", {
+      chapter_id: "WRFE100",
+      initial_content: "first chapter text",
+      source: "discovery",
+    });
     await api.fetchAuthorDraftProposalDiff("author_draft_scene_WRFE100_SC01", "proposal_wrfe100_patch");
     await api.applyAuthorDraftScopedProposal("author_draft_scene_WRFE100_SC01", {
       proposal_id: "proposal_wrfe100_patch",
@@ -219,6 +224,7 @@ describe("writer room shell", () => {
 
     const urls = globalThis.fetch.mock.calls.map(([url]) => String(url));
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/writer-room/scene/WRFE100_SC01");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_WRFE/chapter-drafts/open");
     expect(urls).toContain(
       "http://127.0.0.1:8000/api/v1/author-drafts/author_draft_scene_WRFE100_SC01/proposals/proposal_wrfe100_patch/diff",
     );
@@ -232,8 +238,65 @@ describe("writer room shell", () => {
 
     expect(storeSource).toContain("ensureAuthorDraft");
     expect(storeSource).toContain("ensureBlankDraft");
+    expect(storeSource).toContain("openProjectChapterDraft");
+    expect(storeSource).toContain("openChapterDraft");
     expect(storeSource).toContain("await ensureAuthorDraft(this.objectType, this.objectId)");
     expect(storeSource).toContain("await ensureBlankAuthorDraft(this.objectType, this.objectId)");
+  });
+
+  it("opens a project chapter draft as the writer-first room payload", async () => {
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/projects/PRJ_WRFE/chapter-drafts/open")) {
+        const body = JSON.parse(options.body || "{}");
+        expect(body.initial_content).toBe("first chapter text");
+        return okEnvelope({
+          ...writerRoomPayload(),
+          target: {
+            object_type: "chapter",
+            object_id: "WRFE100",
+            chapter_id: "WRFE100",
+            scene_id: null,
+          },
+          scene_card: null,
+          draft: {
+            ...writerRoomPayload().draft,
+            draft_id: "author_draft_chapter_WRFE100",
+            object_type: "chapter",
+            object_id: "WRFE100",
+            content: "first chapter text",
+          },
+          primary_text: {
+            source: "author_draft",
+            source_ref: "author_draft:author_draft_chapter_WRFE100",
+            content: "first chapter text",
+            revision_no: 1,
+          },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${requestUrl}`);
+    });
+
+    const { useWriterRoomStore } = await import("../src/stores/writerRoom.js");
+    const store = useWriterRoomStore();
+
+    await store.openChapterDraft("PRJ_WRFE", {
+      chapter_id: "WRFE100",
+      initial_content: "first chapter text",
+    });
+
+    expect(store.objectType).toBe("chapter");
+    expect(store.objectId).toBe("WRFE100");
+    expect(store.draft.draft_id).toBe("author_draft_chapter_WRFE100");
+    expect(store.draftContent).toBe("first chapter text");
+  });
+
+  it("asks for a rejection reason in the writer room view instead of hard-coding one", () => {
+    const viewSource = readSource("src/views/WriterRoomView.vue");
+
+    expect(viewSource).toContain("window.prompt");
+    expect(viewSource).toContain("preference_remembered");
+    expect(viewSource).not.toContain("作者在写作房间拒绝此改法。");
   });
 
   it("hydrates writer room payload and applies proposals through diff-first flow", async () => {

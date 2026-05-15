@@ -413,22 +413,99 @@ describe("snowflake workspace store", () => {
 
     await api.ensureProjectDiscoveryDraft("PRJ_WS");
     await api.fetchProjectDiscoveryDraft("PRJ_WS");
+    await api.openProjectChapterDraft("PRJ_WS", {
+      initial_content: "She starts with the rain station.",
+      source: "discovery",
+    });
     await api.applyAuthorStructureCandidateToSnowflake("author_structure_project_PRJ_WS");
 
     const urls = globalThis.fetch.mock.calls.map(([url]) => String(url));
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_WS/discovery-draft/ensure");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_WS/discovery-draft/current");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v1/projects/PRJ_WS/chapter-drafts/open");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/author-structure-candidates/author_structure_project_PRJ_WS/apply-to-snowflake");
 
     const source = readSnowflakeViewSource();
     expect(source).toContain('data-testid="snowflake-discovery-draft"');
     expect(source).toContain("ensureDiscoveryDraft");
+    expect(source).toContain("openDiscoveryChapterDraft");
+    expect(source).toContain('data-testid="snowflake-discovery-open-chapter-draft"');
     expect(source).toContain("applyDiscoveryStructure");
     expect(source).toContain('data-testid="snowflake-discovery-context"');
     expect(source).toContain('data-testid="snowflake-discovery-assistant"');
     expect(source).toContain('data-testid="snowflake-step-history"');
     expect(source).toContain("loadCurrentStepHistory");
     expect(source).toContain("restoreStepFromHistory");
+  });
+
+  it("opens the discovery draft directly as a chapter writer-room payload", async () => {
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      const requestUrl = String(url);
+      const method = options.method || "GET";
+      if (requestUrl.endsWith("/api/v1/author-drafts/discovery_draft_PRJ_WS")) {
+        const body = JSON.parse(options.body || "{}");
+        expect(method).toBe("PATCH");
+        expect(body.content).toBe("She starts with the rain station.");
+        return okEnvelope({
+          draft: {
+            draft_id: "discovery_draft_PRJ_WS",
+            object_type: "project",
+            object_id: "PRJ_WS",
+            content: "She starts with the rain station.",
+            revision_no: 2,
+          },
+        });
+      }
+      if (requestUrl.endsWith("/api/v1/projects/PRJ_WS/chapter-drafts/open")) {
+        const body = JSON.parse(options.body || "{}");
+        expect(method).toBe("POST");
+        expect(body.initial_content).toBe("She starts with the rain station.");
+        expect(body.source).toBe("discovery");
+        expect(body.source_ref).toBe("project_discovery:PRJ_WS");
+        return okEnvelope({
+          target: { object_type: "chapter", object_id: "PRJ_WS_CH001", chapter_id: "PRJ_WS_CH001", scene_id: null },
+          navigation: { selected_chapter_id: "PRJ_WS_CH001", selected_scene_id: null, chapters: [], scenes: [] },
+          chapter: { chapter_id: "PRJ_WS_CH001", chapter_goal: "She starts with the rain station." },
+          scene_card: null,
+          draft: {
+            draft_id: "author_draft_chapter_PRJ_WS_CH001",
+            object_type: "chapter",
+            object_id: "PRJ_WS_CH001",
+            content: "She starts with the rain station.",
+            revision_no: 1,
+          },
+          primary_text: { source: "author_draft", content: "She starts with the rain station.", revision_no: 1 },
+        });
+      }
+      throw new Error(`Unexpected fetch ${method} ${requestUrl}`);
+    });
+
+    const { useSnowflakeWorkbenchStore } = await import("../src/stores/snowflakeWorkbench");
+    const store = useSnowflakeWorkbenchStore();
+    store.applyWorkspace(workspace);
+    store.discoveryDraft = {
+      draft_id: "discovery_draft_PRJ_WS",
+      object_type: "project",
+      object_id: "PRJ_WS",
+      content: "Old text.",
+      revision_no: 1,
+    };
+    store.discoveryDraftSavedContent = "Old text.";
+    store.discoveryDraftContent = "She starts with the rain station.";
+
+    const roomPayload = await store.openDiscoveryChapterDraft();
+
+    expect(roomPayload.target.object_id).toBe("PRJ_WS_CH001");
+    expect(store.discoveryDraft.revision_no).toBe(2);
+    expect(store.lastActionMessage).toContain("WriterRoom");
+  });
+
+  it("routes scene gate items before snowflake step keys when both are present", () => {
+    const source = readSource("src/components/SnowflakeMaterializationPanel.vue");
+
+    expect(source).toContain("gateItemTargetsScene");
+    expect(source).toContain("gateItemTargetsStep");
+    expect(source.indexOf("if (gateItemTargetsScene")).toBeLessThan(source.indexOf("if (gateItemTargetsStep"));
   });
 
   it("creates a workspace project and drives step save and approval through structured drafts", async () => {

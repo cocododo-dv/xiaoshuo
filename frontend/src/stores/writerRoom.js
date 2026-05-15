@@ -8,6 +8,7 @@ import {
   fetchChapters,
   fetchWriterRoom,
   generateAuthorDraftProposalSet,
+  openProjectChapterDraft,
   rejectAuthorDraftProposal,
   saveAuthorDraft as saveAuthorDraftApi,
 } from "../lib/api";
@@ -198,6 +199,22 @@ export const useWriterRoomStore = defineStore("writerRoom", {
       try {
         const payload = await fetchWriterRoom(objectType, objectId);
         return this.applyPayload(payload || {});
+      } catch (error) {
+        this.error = error.message;
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async openChapterDraft(projectId, payload = {}) {
+      if (!projectId) {
+        throw new Error("Project is required before opening a chapter draft.");
+      }
+      this.loading = true;
+      this.error = "";
+      try {
+        const result = await openProjectChapterDraft(projectId, payload || {});
+        return this.applyPayload(result || {});
       } catch (error) {
         this.error = error.message;
         throw error;

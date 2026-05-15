@@ -5,11 +5,13 @@ import { Save, WandSparkles } from "lucide-vue-next";
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import SnowflakeTriageSceneCard from "./SnowflakeTriageSceneCard.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { useShellRouter } from "../router";
 import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
 
 const emit = defineEmits(["notice"]);
 
 const store = useSnowflakeWorkbenchStore();
+const router = useShellRouter();
 const SNOWFLAKE_TRIAGE_SCOPE = "snowflake:triage";
 const { receipt, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
@@ -141,6 +143,19 @@ async function requestSelectedSceneAssistant() {
   emit("notice", `请求助手分析场景「${label}」...`);
   await store.requestAssistant(`请检查选中场景「${label}」的坩埚、结构节点、挫折/决定和下一场驱动力。`);
 }
+async function openSceneChapterDraft(item) {
+  const payload = await store.openSceneChapterDraft(item || {});
+  const chapterId = payload?.target?.chapter_id || payload?.target?.object_id || payload?.chapter?.chapter_id || "";
+  if (chapterId) {
+    router.navigate("writer-room", {
+      target: {
+        focus: "chapter_goal",
+        target: chapterId,
+      },
+    });
+  }
+  emit("notice", "已打开章节草稿，可以写这一幕。");
+}
 </script>
 
 <template>
@@ -217,6 +232,17 @@ async function requestSelectedSceneAssistant() {
           </span>
           <span class="triage-origin-badge" :class="triageSourceClass(item)">
             {{ triageSourceLabel(item) }}
+          </span>
+          <span
+            v-if="triageStatusOf(item) === 'pass'"
+            role="button"
+            tabindex="0"
+            class="mini-btn"
+            data-testid="snowflake-triage-open-scene-draft"
+            @click.stop="openSceneChapterDraft(item)"
+            @keydown.enter.stop.prevent="openSceneChapterDraft(item)"
+          >
+            写这一幕
           </span>
         </button>
         <p v-if="!filteredTriageItems.length" class="muted">当前筛选下没有场景。</p>
