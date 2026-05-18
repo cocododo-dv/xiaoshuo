@@ -22,7 +22,7 @@ describe("literary quality engine console", () => {
     const appSource = readSource("src/App.vue");
 
     expect(routerSource).toContain('id: "quality"');
-    expect(routerSource).toContain('groupId: "daily"');
+    expect(routerSource).toContain('stage: "toolbox"');
     expect(routerSource).toContain('nextViews: ["deepdesk", "review", "workbench"]');
     expect(appSource).toContain("quality: defineAsyncComponent");
     expect(appSource).toContain("./views/LiteraryQualityView.vue");

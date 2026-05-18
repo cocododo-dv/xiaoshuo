@@ -10,10 +10,10 @@ import { useWriterRoomStore } from "../stores/writerRoom";
 export const WRITER_PATH_VIEW_IDS = ["snowflake-workbench", "writer-flow", "writer-room", "reference", "review"];
 
 export const WRITER_PATH_STATUS_LABELS = {
-  todo: "未开始",
-  active: "进行中",
-  running: "处理中",
-  blocked: "待处理",
+  todo: "还没开始",
+  active: "正在进行",
+  running: "系统处理中",
+  blocked: "需要你来",
   done: "已完成",
 };
 
@@ -67,7 +67,7 @@ function snowflakeItem(meta, activeView, snowflake, writerFlow) {
 
   let status = "active";
   let summary = `继续推进 ${currentStepLabel(snowflake)}。`;
-  let nextAction = meta.writerNextAction || "继续确认当前雪花步骤。";
+  let nextAction = "继续推进当前这一步，把故事想清楚。";
   let countLabel = stepCount ? `${doneCount}/${stepCount}` : "待推进";
   let primaryTarget = meta.id;
 
@@ -120,7 +120,7 @@ function writerRoomItem(meta, activeView, room) {
 
   let status = "todo";
   let summary = "写作房间尚未打开。";
-  let nextAction = meta.writerNextAction || "打开写作房间，保存正文并比较候选。";
+  let nextAction = "打开写作房间，保存正文并比较候选。";
   let countLabel = "未加载";
 
   if (room.actionId) {
@@ -162,7 +162,7 @@ function writerFlowItem(meta, activeView, flow) {
 
   let status = "todo";
   let summary = "写作总控尚未打开。";
-  let nextActionText = meta.writerNextAction || "打开写作总控，继续当前项目的下一步。";
+  let nextActionText = "打开写作总控，继续当前项目的下一步。";
   let countLabel = "未加载";
 
   if (flow.actionId) {
@@ -214,8 +214,9 @@ function referenceItem(meta, activeView, reference) {
 
   let status = "todo";
   let summary = "还没有导入参考书。";
-  let nextAction = meta.writerNextAction || "导入或继续分析参考书。";
+  let nextAction = "导入或继续分析参考书。";
   let countLabel = "未导入";
+  let primaryTarget;
 
   if (reference.actionId) {
     status = "running";
@@ -234,6 +235,7 @@ function referenceItem(meta, activeView, reference) {
     summary = "参考画像已创建应用审核项。";
     nextAction = "去待处理建议确认应用结果。";
     countLabel = "已送审";
+    primaryTarget = "review";
   } else if (readyProfiles.length > 0) {
     status = "done";
     summary = "已有安全可用的参考画像。";
@@ -246,7 +248,7 @@ function referenceItem(meta, activeView, reference) {
     countLabel = reference.currentRun ? "分析中" : "可学习";
   }
 
-  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded });
+  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded, primaryTarget });
 }
 
 function reviewItem(meta, activeView, review) {
@@ -261,8 +263,9 @@ function reviewItem(meta, activeView, review) {
 
   let status = "todo";
   let summary = "待处理建议尚未加载。";
-  let nextAction = meta.writerNextAction || "打开待处理建议处理待决策项。";
+  let nextAction = "打开待处理建议处理待决策项。";
   let countLabel = "未加载";
+  let primaryTarget;
 
   if (review.actionId) {
     status = "running";
@@ -281,18 +284,20 @@ function reviewItem(meta, activeView, review) {
     summary = "当前没有阻塞作家主路径的审核项。";
     nextAction = "回到写作房间继续正文。";
     countLabel = "已清空";
+    primaryTarget = "writer-room";
   }
 
-  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded });
+  return buildItem(meta, activeView, { status, summary, nextAction, countLabel, isLoaded, primaryTarget });
 }
 
 function buildItem(meta, activeView, state) {
+  const { primaryTarget, ...rest } = state;
   return {
     viewId: meta.id,
     label: meta.writerLabel || meta.stepLabel || meta.label,
     isActive: activeView === meta.id,
-    primaryTarget: meta.id,
-    ...state,
+    primaryTarget: primaryTarget || meta.id,
+    ...rest,
   };
 }
 
@@ -322,6 +327,18 @@ export function useWriterPathProgress() {
     || null,
   );
 
+  // First not-done phase. Linear by construction so the breadcrumb can never
+  // show a later phase "done" while an earlier one is still active.
+  const journeyPhase = computed(() => {
+    const snowflakeDone = items.value[0]?.status === "done";
+    const flowDone = items.value[1]?.status === "done";
+    const roomDone = items.value[2]?.status === "done";
+    if (!snowflakeDone) return "构思";
+    if (!flowDone) return "起草";
+    if (!roomDone) return "打磨";
+    return "打磨";
+  });
+
   function navigateToItem(itemOrViewId) {
     const viewId = typeof itemOrViewId === "string" ? itemOrViewId : itemOrViewId?.primaryTarget || itemOrViewId?.viewId;
     if (viewId) {
@@ -332,6 +349,7 @@ export function useWriterPathProgress() {
   return {
     items,
     activeItem,
+    journeyPhase,
     navigateToItem,
   };
 }

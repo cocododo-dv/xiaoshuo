@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, onMounted, reactive, ref, watch } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
@@ -587,7 +588,7 @@ onActivated(() => {
               回收所选章节
             </button>
           </div>
-          <div v-if="!items.length" class="empty">还没有活跃章节。</div>
+          <BaseEmptyState v-if="!items.length" description="还没有活跃章节。" />
           <div v-else class="readable-list manuscript-chapter-list" data-testid="manuscript-chapter-list">
             <article
               v-for="item in items"
@@ -856,7 +857,7 @@ onActivated(() => {
                 <p class="muted receipt-copy">按场景列出证据摘录和修订方向。</p>
               </div>
             </div>
-            <div v-if="!editorialSceneReviews.length" class="empty">还没有场景级作家诊断。</div>
+            <BaseEmptyState v-if="!editorialSceneReviews.length" description="还没有场景级作家诊断。" />
             <article
               v-for="item in editorialSceneReviews"
               :key="item.scene_id"

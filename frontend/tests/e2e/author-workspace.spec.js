@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 test("creates and edits author source-of-truth before handing a scene off to the workbench", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.author.e2e" });
+  await switchToAdvancedMode(page);
 
   await page.getByTestId("nav-author").click();
   const authorWorkspaceView = page.getByTestId("author-workspace-view");
@@ -15,10 +16,12 @@ test("creates and edits author source-of-truth before handing a scene off to the
   await page.getByTestId("author-chapter-id").fill("CH300");
   await page.getByTestId("author-chapter-scene-count").fill("2");
   await page.getByTestId("author-chapter-goal").fill("作者工作台初始章节目标");
-  await page.getByLabel("主线推进").fill("Updated push");
-  await page.getByLabel("情绪目标").fill("Updated emotion");
-  await page.getByLabel("结尾效果").fill("Updated ending");
-  await page.getByLabel("禁止包含").fill("Updated must not");
+  // The drama-card writer-brief block reuses these visible labels, so scope to
+  // the first match — the main chapter-form field precedes it in the DOM.
+  await page.getByLabel("主线推进").first().fill("Updated push");
+  await page.getByLabel("情绪目标").first().fill("Updated emotion");
+  await page.getByLabel("结尾效果").first().fill("Updated ending");
+  await page.getByLabel("禁止包含").first().fill("Updated must not");
   await page.getByTestId("author-save-chapter-button").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已保存章节 CH300");
 

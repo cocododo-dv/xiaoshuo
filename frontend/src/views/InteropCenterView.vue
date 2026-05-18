@@ -1,6 +1,7 @@
 <script setup>
 import { computed, reactive } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import LazySection from "../components/LazySection.vue";
 import PanelShell from "../components/PanelShell.vue";
@@ -322,7 +323,7 @@ function openBundleScene() {
               <pre class="json-block">{{ formatJsonPayload(activeEnvelope) }}</pre>
             </LazySection>
           </div>
-          <div v-else class="empty">先预览或加载工作表，再查看归一化后的结果信封。</div>
+          <BaseEmptyState v-else description="先预览或加载工作表，再查看归一化后的结果信封。" />
 
           <article
             v-if="interopCenter.activeMode.startsWith('replay') && activeArtifactReceipt"

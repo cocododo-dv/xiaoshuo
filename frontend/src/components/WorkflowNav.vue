@@ -65,7 +65,18 @@ const ICONS = {
 const groupMap = computed(() => Object.fromEntries(props.groups.map((group) => [group.id, group])));
 const visibleViews = computed(() => {
   if (isAdvancedMode.value) {
-    return props.views;
+    const stageOrder = props.groups.map((group) => group.id);
+    const rank = (view) => {
+      const idx = stageOrder.indexOf(view.stage);
+      return idx === -1 ? stageOrder.length : idx;
+    };
+    return props.views
+      .map((view, index) => ({ view, index }))
+      .sort((left, right) => {
+        const delta = rank(left.view) - rank(right.view);
+        return delta !== 0 ? delta : left.index - right.index;
+      })
+      .map((entry) => entry.view);
   }
   return props.views
     .filter((view) => view.writerPrimary || view.id === props.activeView)
@@ -76,8 +87,8 @@ const orderedRows = computed(() =>
     const previous = visibleViews.value[index - 1];
     return {
       view,
-      group: groupMap.value[view.groupId] || { label: view.group, description: "" },
-      showGroup: !previous || previous.groupId !== view.groupId,
+      group: groupMap.value[view.stage] || { label: view.stage, description: "" },
+      showGroup: isAdvancedMode.value && (!previous || previous.stage !== view.stage),
     };
   }),
 );
@@ -88,6 +99,16 @@ function iconFor(view) {
 
 function labelFor(view) {
   return !isAdvancedMode.value && view.writerLabel ? view.writerLabel : view.label;
+}
+
+function isOptionalView(view) {
+  return view.writerCriticalPath === false;
+}
+
+function writerIndex(view) {
+  if (isAdvancedMode.value) return 0;
+  if (!view.writerCriticalPath) return 0;
+  return view.writerOrder || 0;
 }
 </script>
 
@@ -125,19 +146,21 @@ function labelFor(view) {
         <button
           type="button"
           class="workflow-nav-btn"
-          :class="{ active: activeView === row.view.id }"
+          :class="{ active: activeView === row.view.id, optional: !isAdvancedMode && isOptionalView(row.view), numbered: !collapsed && !isAdvancedMode && !!writerIndex(row.view) }"
           :aria-current="activeView === row.view.id ? 'page' : undefined"
           :aria-label="collapsed ? labelFor(row.view) : undefined"
           :data-testid="`nav-${row.view.id}`"
           :title="collapsed ? labelFor(row.view) : undefined"
           @click="emit('navigate', row.view.id)"
         >
+          <span v-if="!collapsed && !isAdvancedMode && writerIndex(row.view)" class="workflow-nav-number">{{ writerIndex(row.view) }}</span>
           <span class="workflow-nav-icon" aria-hidden="true">
             <component :is="iconFor(row.view)" :size="17" />
           </span>
           <span v-if="!collapsed" class="workflow-nav-copy">
             <strong>{{ labelFor(row.view) }}</strong>
             <small v-if="isAdvancedMode">{{ row.view.legacyLabel }}</small>
+            <small v-else-if="isOptionalView(row.view) && row.view.id === 'reference'">随时可做</small>
             <span
               v-if="isAdvancedMode"
               class="workflow-nav-route"

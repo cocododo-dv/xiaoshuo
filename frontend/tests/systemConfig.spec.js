@@ -1361,7 +1361,7 @@ describe("system config shell registration", () => {
 
     expect(appSource).toContain("SystemConfigView");
     expect(routerSource).toContain('id: "config"');
-    expect(routerSource).toContain('label: "1 配置环境"');
+    expect(routerSource).toContain('label: "配置环境"');
     expect(routerSource).toContain('legacyLabel: "系统配置"');
     expect(existsSync(new URL("../src/stores/systemConfig.js", import.meta.url))).toBe(true);
     expect(existsSync(new URL("../src/views/SystemConfigView.vue", import.meta.url))).toBe(true);

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, onDeactivated, reactive, ref, watch } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import LazySection from "../components/LazySection.vue";
 import ProgressiveList from "../components/ProgressiveList.vue";
@@ -909,7 +910,7 @@ watch(
 
           <div v-if="knowledgeConsole.loading" class="empty">正在加载知识目录...</div>
           <div v-else-if="knowledgeConsole.error" class="empty">{{ knowledgeConsole.error }}</div>
-          <div v-else-if="!catalogItems.length" class="empty">当前筛选下没有匹配的知识行或候选项。</div>
+          <BaseEmptyState v-else-if="!catalogItems.length" description="当前筛选下没有匹配的知识行或候选项。" />
           <VirtualList
             v-else
             class="knowledge-list"
@@ -975,9 +976,11 @@ watch(
             <span v-if="knowledgeConsole.detail" class="badge">{{ formatItemType(knowledgeConsole.detail.object_type) }}</span>
           </div>
 
-          <div v-if="!knowledgeConsole.detail" class="empty" data-testid="knowledge-detail-empty">
-            先选择一条血缘，再查看版本历史和运行时引用。
-          </div>
+          <BaseEmptyState
+            v-if="!knowledgeConsole.detail"
+            data-testid="knowledge-detail-empty"
+            description="先选择一条血缘，再查看版本历史和运行时引用。"
+          />
           <template v-else>
             <div class="history-stack" data-testid="knowledge-impact-summary">
               <p class="history-title">生效范围与证据</p>

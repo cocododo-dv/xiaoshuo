@@ -15,7 +15,7 @@ async function waitForIndexSectionContent(section, virtualListTestId) {
         return true;
       }
 
-      const emptyState = section.locator(".empty").first();
+      const emptyState = section.locator(".empty, .base-empty").first();
       if ((await emptyState.count()) === 0) {
         return false;
       }
@@ -236,7 +236,7 @@ test("loads index activity sections and target-group items only after explicit e
       )
       .toBe(true);
   } else {
-    await expect(targetGroupsSection.locator(".empty")).toBeVisible();
+    await expect(targetGroupsSection.locator(".empty, .base-empty")).toBeVisible();
   }
 });
 
@@ -277,7 +277,7 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
       await expect(targetGroupsSection.locator("[data-testid^='target-activity-item-']").first()).toBeVisible();
     }
   } else {
-    await expect(targetGroupsSection.locator(".empty")).toBeVisible();
+    await expect(targetGroupsSection.locator(".empty, .base-empty")).toBeVisible();
   }
 
   await waitForIndexSectionContent(systemRuntimeSection, "index-system-runtime-virtual-list");
@@ -290,7 +290,7 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
     await runtimeList.dispatchEvent("scroll");
     await expect(systemRuntimeSection.locator("[data-activity-key^='system_runtime:']").first()).toBeVisible();
   } else {
-    await expect(systemRuntimeSection.locator(".empty")).toBeVisible();
+    await expect(systemRuntimeSection.locator(".empty, .base-empty")).toBeVisible();
   }
 
   await waitForIndexSectionContent(operatorActionSection, "index-operator-action-virtual-list");
@@ -303,7 +303,7 @@ test("keeps scroll-heavy list surfaces interactive after expansion across review
     await operatorList.dispatchEvent("scroll");
     await expect(operatorActionSection.locator("[data-activity-key^='operator_action:']").first()).toBeVisible();
   } else {
-    await expect(operatorActionSection.locator(".empty")).toBeVisible();
+    await expect(operatorActionSection.locator(".empty, .base-empty")).toBeVisible();
   }
 
   await page.getByTestId("nav-author").click();

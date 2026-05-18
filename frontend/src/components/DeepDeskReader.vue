@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from "vue";
 
+import BaseEmptyState from "./base/BaseEmptyState.vue";
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { compactEntityOptions, formatChapterChoice, formatSceneChoice } from "../lib/readableRefs";
@@ -218,7 +219,7 @@ async function createPatchCandidate() {
             <span class="muted">{{ item.dimension || item.card_type || item.source }}</span>
           </li>
         </ol>
-        <div v-else class="empty">No daily focus yet.</div>
+        <BaseEmptyState v-else description="No daily focus yet." />
       </article>
     </section>
 
@@ -227,7 +228,7 @@ async function createPatchCandidate() {
         <div><h4>下一步改稿动作</h4><p class="muted receipt-copy">把诊断翻译成作者今天能下手的一处局部动作。</p></div>
         <span class="badge">{{ dailyFocus.length }} actions</span>
       </div>
-      <div v-if="!dailyFocus.length" class="empty">还没有可执行动作。</div>
+      <BaseEmptyState v-if="!dailyFocus.length" description="还没有可执行动作。" />
       <div v-else class="author-action-grid">
         <article v-for="item in dailyFocus" :key="`action-${item.source}-${item.dimension}-${focusTitle(item)}`" class="author-action-card">
           <strong>{{ focusTitle(item) }}</strong>
@@ -254,7 +255,7 @@ async function createPatchCandidate() {
         </button>
         <span class="muted">提案进入右侧账本，只有应用后才成为作者稿新版本。</span>
       </div>
-      <div v-if="!draftProposals.length" class="empty">还没有 AI 草稿提案。</div>
+      <BaseEmptyState v-if="!draftProposals.length" description="还没有 AI 草稿提案。" />
       <article v-for="proposal in draftProposals" :key="proposal.proposal_id" class="draft-proposal-row">
         <div class="receipt-head compact">
           <div><strong>{{ proposalTypeLabel(proposal.proposal_type) }}</strong><p class="muted">{{ proposal.rationale || proposal.proposal_id }}</p></div>
@@ -298,7 +299,7 @@ async function createPatchCandidate() {
         <div><h4>作者稿时间线</h4><p class="muted receipt-copy">版本、候选插入、拒绝和结构提取会留在作者稿账本里。</p></div>
         <span class="badge">{{ draftEvents.length }} 条</span>
       </div>
-      <div v-if="!draftEvents.length" class="empty">暂无作者稿事件。</div>
+      <BaseEmptyState v-if="!draftEvents.length" description="暂无作者稿事件。" />
       <ol v-else class="draft-event-list">
         <li v-for="event in draftEvents" :key="event.event_id || `${event.event_type}-${event.created_at}`">
           <strong>{{ eventTypeLabel(event.event_type) }}</strong>
@@ -319,7 +320,7 @@ async function createPatchCandidate() {
         <span class="muted">AI 理解只进入候选审核，不自动成为权威设定。</span>
       </div>
       <FlowActionReceipt :receipt="receipt(STRUCTURE_SCOPE)" />
-      <div v-if="!structureCandidates.length" class="empty">还没有结构候选。写一段作者稿后，可以先让系统反向理解它。</div>
+      <BaseEmptyState v-if="!structureCandidates.length" description="还没有结构候选。写一段作者稿后，可以先让系统反向理解它。" />
       <article v-for="candidate in structureCandidates" :key="candidate.candidate_id" class="deep-structure-row">
         <div class="receipt-head compact">
           <div><strong>结构候选</strong><p class="muted">{{ candidate.source_text_ref }}</p></div>

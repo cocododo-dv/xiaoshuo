@@ -1211,8 +1211,8 @@ describe("snowflake workbench UI source", () => {
     expect(source).not.toContain("call:");
     expect(source).not.toContain(">Repair Patch<");
     expect(source).toContain("场景板");
-    expect(source).toContain("场景急救");
-    expect(source).toContain("准备度检查");
+    expect(source).toContain("场景体检");
+    expect(source).toContain("进入写作前");
     expect(source).toContain("常驻助手");
   });
 
@@ -1381,12 +1381,12 @@ describe("snowflake reference fusion components", () => {
       expect(wrapper.el.textContent).not.toContain("【主动场景】");
       expect(wrapper.el.querySelector('[data-testid="snowflake-guide-toggle-instruction"]')?.getAttribute("aria-expanded")).toBe("false");
       expect(wrapper.el.querySelector('[data-testid="snowflake-pressure-diagnostic"]')).not.toBeNull();
-      expect(wrapper.el.textContent).toContain("结构压力 62");
+      expect(wrapper.el.textContent).toContain("结构强度 62");
       expect(wrapper.el.textContent).not.toContain("冲突升级不足");
       expect(wrapper.el.textContent).not.toContain("让冲突升级成多轮尝试和受阻。");
       expect(wrapper.el.textContent).toContain("待补：挫折、决定");
       expect(wrapper.el.textContent).toContain("上一步");
-      expect(wrapper.el.textContent).toContain("进入场景急救");
+      expect(wrapper.el.textContent).toContain("进入场景体检");
 
       wrapper.el.querySelector('[data-testid="snowflake-guide-toggle-instruction"]')?.dispatchEvent(new MouseEvent("click"));
       await nextTick();
@@ -1524,7 +1524,7 @@ describe("snowflake reference fusion components", () => {
       expect(wrapper.el.textContent).toContain("目标");
       expect(wrapper.el.textContent).toContain("冲突");
       expect(wrapper.el.textContent).toContain("挫折");
-      expect(wrapper.el.textContent).toContain("急救步骤");
+      expect(wrapper.el.textContent).toContain("修复步骤");
       expect(wrapper.el.textContent).toContain("修复补丁");
       expect(wrapper.el.textContent).toContain("缺少挫折");
       expect(wrapper.el.textContent).not.toContain("missing_setback");

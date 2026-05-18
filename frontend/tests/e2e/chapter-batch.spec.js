@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 const API_BASE = `http://127.0.0.1:${process.env.PLAYWRIGHT_BACKEND_PORT || "8000"}`;
 const OPERATOR_REF = "ops.chapter-batch.e2e";
@@ -108,6 +108,7 @@ test("launches a chapter batch run, shows where it stopped, and resumes from per
 
   await page.goto("/");
   await configureConnection(page, { apiBase: API_BASE, operatorRef: OPERATOR_REF });
+  await switchToAdvancedMode(page);
   await page.getByTestId("nav-author").click();
   await page.getByTestId("author-chapter-select-CH910").click();
 

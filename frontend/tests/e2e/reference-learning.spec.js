@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const fixturePath = path.resolve(scriptDir, "fixtures", "reference-learning.md");
@@ -94,14 +94,23 @@ test("learns a reference book through review decisions and applies it to a chapt
     await page.getByTestId(`review-release-${reviewId}`).click();
   }
 
+  // The scene workbench is an advanced-only (toolbox) surface. The reference
+  // import and review flow above intentionally stays in writer mode so the
+  // review card keeps its guided reference instead of the raw review id.
+  await switchToAdvancedMode(page);
   await page.getByTestId("nav-workbench").click();
   await page.getByTestId("scene-id-input").fill("CH001_SC02");
   await page.getByTestId("scene-load-button").click();
   await page.getByTestId("run-full-scene-button").click();
   await expect(page.getByTestId("scene-run-receipt")).toContainText("bundle_CH001_SC02");
-  await page.getByTestId("scene-toggle-bundle-provenance").click();
-
+  // Advanced mode auto-expands the bundle-provenance LazySection; only toggle
+  // it open when its content ("构包溯源") is not already shown, otherwise the
+  // click would collapse the provenance card.
   const workbench = page.getByTestId("scene-workbench-view");
+  if (!(await workbench.getByText("构包溯源").isVisible().catch(() => false))) {
+    await page.getByTestId("scene-toggle-bundle-provenance").click();
+  }
+
   await expect(workbench).toContainText("STYLE_FEATURE_CONTRACT_v1");
   await expect(workbench).toContainText("叙事结构");
   await expect(workbench).toContainText("从意象片段提炼章节钩子结构");

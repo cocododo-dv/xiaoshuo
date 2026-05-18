@@ -68,12 +68,12 @@ async function saveDiscoveryDraft() {
 
 async function extractDiscoveryStructure() {
   await store.extractDiscoveryStructure();
-  emit("notice", { type: "success", message: "结构候选已生成，可先预览再写入雪花。" });
+  emit("notice", { type: "success", message: "结构已提取，可先预览再写入。" });
 }
 
 async function applyDiscoveryStructure() {
   await store.applyDiscoveryStructure();
-  emit("notice", { type: "success", message: "候选已写入雪花待审步骤。" });
+  emit("notice", { type: "success", message: "已写入等你确认的步骤。" });
 }
 
 async function openDiscoveryChapterDraft() {
@@ -123,9 +123,9 @@ onBeforeUnmount(() => {
 
         <section class="snowflake-llm-readiness" data-testid="snowflake-llm-readiness-card">
           <div>
-            <span class="eyebrow">模型准备度</span>
-            <h2>{{ llmReady ? "真实模型可用" : "补完模型配置后再让助手起草" }}</h2>
-            <p class="muted">选择 provider、填写 key/地址、测试并激活；离线演示只保留为高级测试逃生口。</p>
+            <span class="eyebrow">AI 助手</span>
+            <h2>{{ llmReady ? "AI 助手已就绪" : "先配置 AI 助手，才能帮你起草" }}</h2>
+            <p class="muted">选好服务、填写密钥、测试通过后，AI 就可以帮你生成草稿了。</p>
           </div>
           <ol>
             <li v-for="step in llmReadinessSteps" :key="step.label" :class="{ done: step.done }">{{ step.label }}</li>
@@ -142,8 +142,8 @@ onBeforeUnmount(() => {
         >
           <div class="panel-head">
             <div>
-              <span class="eyebrow">Discovery draft</span>
-              <h2>自由草稿</h2>
+              <span class="eyebrow">自由草稿</span>
+              <h2>先写起来</h2>
               <p class="muted">先写正文、想法或散乱素材，再提取成可审阅的雪花步骤。</p>
             </div>
             <button
@@ -195,12 +195,12 @@ onBeforeUnmount(() => {
               :disabled="!store.discoveryStructureCandidate || store.actionId === 'discovery-apply'"
               @click="applyDiscoveryStructure"
             >
-              写入待审雪花步骤
+              写入等你确认的步骤
             </button>
           </div>
 
           <div v-if="discoveryCandidateSteps.length" class="discovery-preview">
-            <strong>将写入这些待审步骤</strong>
+            <strong>将写入这些等你确认的步骤</strong>
             <ul>
               <li v-for="[stepKey, stepDraft] in discoveryCandidateSteps" :key="stepKey">
                 <span>{{ stepKey }}</span>
@@ -232,8 +232,8 @@ onBeforeUnmount(() => {
             data-testid="snowflake-mode-triage"
             @click="setWorkbenchMode('triage')"
           >
-            <span>急救</span>
-            <small>{{ triageStats.blocking }} 阻塞 · {{ triageStats.maybe }} 待修</small>
+            <span>场景体检</span>
+            <small>{{ triageStats.blocking }} 必须修 · {{ triageStats.maybe }} 建议改</small>
           </button>
         </div>
 
@@ -328,8 +328,10 @@ onBeforeUnmount(() => {
 .snowflake-workbench-view .collection-head,
 .snowflake-workbench-view .assistant-card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .snowflake-workbench-view .panel-head,
@@ -357,6 +359,27 @@ onBeforeUnmount(() => {
 .snowflake-workbench-view .scene-board-table {
   display: grid;
   gap: 12px;
+}
+
+.snowflake-workbench-view .outline-result {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.snowflake-workbench-view .outline-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  min-width: 0;
+}
+
+.snowflake-workbench-view .outline-summary > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .snowflake-workbench-view .scene-board-layout {
@@ -721,7 +744,7 @@ onBeforeUnmount(() => {
   color: var(--snowflake-moss-deep);
   font-size: 0.86rem;
   font-weight: 800;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .snowflake-workbench-view .scene-dynamics-grid {
@@ -1223,7 +1246,7 @@ onBeforeUnmount(() => {
 
 .snowflake-workbench-view .eyebrow {
   font-size: 0.78rem;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--snowflake-muted);
 }
@@ -1298,6 +1321,7 @@ onBeforeUnmount(() => {
 
   .snowflake-workbench-view .snowflake-stage-head,
   .snowflake-workbench-view .snowflake-stage-actions,
+  .snowflake-workbench-view .snowflake-llm-readiness,
   .snowflake-workbench-view .snowflake-mode-switch,
   .snowflake-workbench-view .snowflake-triage-handoff,
   .snowflake-workbench-view .triage-filter-row,
@@ -1308,7 +1332,18 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
+  .snowflake-workbench-view .snowflake-llm-readiness {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .snowflake-workbench-view .snowflake-llm-readiness h2 {
+    font-size: 1.45rem;
+    line-height: 1.18;
+  }
+
   .snowflake-workbench-view .snowflake-stage-actions button,
+  .snowflake-workbench-view .snowflake-llm-readiness button,
   .snowflake-workbench-view .snowflake-mode-switch button,
   .snowflake-workbench-view .triage-filter-row button,
   .snowflake-workbench-view .assistant-quick-actions button {

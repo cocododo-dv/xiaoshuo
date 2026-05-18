@@ -90,9 +90,9 @@ function updateSelectedTriageListField(key, value) {
 async function requestSceneTriageSuggestions() {
   await runFlowAction({
     scopeKey: SNOWFLAKE_TRIAGE_SCOPE,
-    actionLabel: "生成急救建议",
+    actionLabel: "生成体检建议",
     runningMessage: "正在检查场景压力和缺口...",
-    successMessage: () => store.lastActionMessage || "场景急救建议已生成。",
+    successMessage: () => store.lastActionMessage || "场景体检建议已生成。",
     nextStep: () => "下一步：逐场标记合格、需修改或废除重写。",
     action: () => store.requestSceneTriageSuggestions(),
   });
@@ -101,9 +101,9 @@ async function requestSceneTriageSuggestions() {
 async function persistSceneTriage() {
   await runFlowAction({
     scopeKey: SNOWFLAKE_TRIAGE_SCOPE,
-    actionLabel: "保存急救结果",
-    runningMessage: "正在保存场景急救判断...",
-    successMessage: () => store.lastActionMessage || "场景急救结果已保存。",
+    actionLabel: "保存体检结果",
+    runningMessage: "正在保存场景体检判断...",
+    successMessage: () => store.lastActionMessage || "场景体检结果已保存。",
     nextStep: () => "下一步：修复阻塞场景，再回到规划页整理章节结构。",
     action: () => store.saveSceneTriage(),
   });
@@ -117,9 +117,9 @@ async function bulkMarkTriage(status) {
   if (!confirmed) return;
   await runFlowAction({
     scopeKey: SNOWFLAKE_TRIAGE_SCOPE,
-    actionLabel: "批量保存场景急救",
-    runningMessage: "正在批量保存场景急救判断...",
-    successMessage: () => store.lastActionMessage || "场景急救批量标记已保存。",
+    actionLabel: "批量保存场景体检",
+    runningMessage: "正在批量保存场景体检判断...",
+    successMessage: () => store.lastActionMessage || "场景体检批量标记已保存。",
     nextStep: () => "下一步：只打开少数仍需修改的场景做局部返工。",
     action: () => store.bulkMarkTriage(status, "filtered"),
   });
@@ -129,10 +129,10 @@ async function applyTriageRepair(item) {
   if (!item?.triage_id) return;
   await runFlowAction({
     scopeKey: SNOWFLAKE_TRIAGE_SCOPE,
-    actionLabel: "应用急救补丁",
+    actionLabel: "应用修复建议",
     runningMessage: "正在把补丁写回场景规划...",
-    successMessage: () => store.lastActionMessage || "急救补丁已应用。",
-    nextStep: () => "下一步：复查这一场，然后保存急救结果。",
+    successMessage: () => store.lastActionMessage || "修复建议已应用。",
+    nextStep: () => "下一步：复查这一场，然后保存结果。",
     action: () => store.applyTriageRepair(item.triage_id),
   });
 }
@@ -162,8 +162,8 @@ async function openSceneChapterDraft(item) {
   <section class="snowflake-scene-triage" data-testid="snowflake-scene-triage">
     <div class="panel-head">
       <div>
-        <span class="eyebrow">场景急救</span>
-        <h2>场景急救室</h2>
+        <span class="eyebrow">场景体检</span>
+        <h2>场景体检</h2>
         <p class="muted">
           共 {{ triageStats.total }} 场 · 合格 {{ triageStats.pass }} · 需修改 {{ triageStats.maybe }} · 废除重写
           {{ triageStats.rewrite }} · 阻塞 {{ triageStats.blocking }}
@@ -177,7 +177,7 @@ async function openSceneChapterDraft(item) {
           @click="requestSceneTriageSuggestions"
         >
           <WandSparkles :size="16" />
-          <span>生成急救建议</span>
+          <span>生成体检建议</span>
         </button>
         <button
           type="button"
@@ -186,7 +186,7 @@ async function openSceneChapterDraft(item) {
           @click="persistSceneTriage"
         >
           <Save :size="16" />
-          <span>保存急救结果</span>
+          <span>保存体检结果</span>
         </button>
       </div>
     </div>
@@ -258,6 +258,6 @@ async function openSceneChapterDraft(item) {
         @ask-assistant="requestSelectedSceneAssistant"
       />
     </div>
-    <p v-else class="muted">完成 `scene_details` 后，场景急救会在这里汇总。</p>
+    <p v-else class="muted">完成 `scene_details` 后，场景体检会在这里汇总。</p>
   </section>
 </template>

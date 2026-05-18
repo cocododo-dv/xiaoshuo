@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Default addresses: frontend `http://127.0.0.1:5173`, backend `http://127.0.0.1:8000`. If the backend port is in use, the script picks the next available one and writes it to `.codex-run/backend.url`.
 
 ### Backend (Python 3.12 / FastAPI)
-Located in `backend/`. Activate the venv first: `.\.venv\Scripts\Activate.ps1` (Windows) or `source .venv/bin/activate` (Linux/WSL).
+Located in `backend/`. Two venvs exist: `.venv` (Windows native) and `.venv-wsl` (Linux/WSL). Activate the appropriate one first: `.\.venv\Scripts\Activate.ps1` (Windows) or `source .venv-wsl/bin/activate` (WSL).
 
 ```powershell
 cd backend
@@ -101,13 +101,25 @@ FastAPI application (`api/app.py`) with one router per domain area (`api/routes/
 - `SnowflakeCharacterPlan` — per-character snowflake data
 - `ChapterGoal` / `SceneCard` — materialized chapter/scene production units (created by structure materialization)
 
-**LLM task routing** is declared in `config/models.yaml` (task name → provider/model/temperature). Prompt templates live in `config/prompts.yaml`. Runtime LLM config can also be stored in the DB (via `SystemConfigSnapshot`) and applied on top of env vars by `settings.py:get_settings()`.
+**Configuration** lives in the project-root `config/` directory (not inside `backend/`):
+- `config/models.yaml` — model profiles (`local_fast`, `quality_strong`, `dual_track`) and task routing (task name → provider/model/temperature/response_format)
+- `config/prompts.yaml` — prompt templates with `system_prompt`, `task_prompt`, `structured_schema`, and `input_token_budget`
+- `config/allowlists.yaml` / `config/hash_contract.yaml` / `config/writer_rubrics.yaml` — domain policy files
+- `config/evals/` — evaluation datasets for literary quality scoring
 
-**Request middleware**: every request gets `request.state.request_id` (a hex prefix) and `request.state.operator_ref` (from `X-Operator-Ref` header or `"operator"`). Mutating frontend calls pass this header for audit trails.
+Runtime LLM config can also be stored in the DB (via `SystemConfigSnapshot`) and applied on top of env vars by `settings.py:get_settings()`.
+
+**LLM node registry** (`services/llm_node_registry.py`) defines the catalog of all LLM-calling nodes as `LLMNodeSpec` dataclasses (node_id, model, temperature, reasoning_level, api_mode). The system config UI routes each node to a specific provider at runtime. `config/models.yaml` provides task-level defaults; DB-stored routes override them.
+
+**Response envelope**: all API responses use `{ok: bool, data: ..., error: {code, message, details}, request_id}` (see `api/response.py`). Frontend `client.js` parses this envelope and throws `ApiRequestError` with structured fields on failure.
+
+**Request middleware**: every request gets `request.state.request_id` (a hex prefix) and `request.state.operator_ref` (from `X-Operator-Ref` header or `"operator"`). Mutating frontend calls pass `X-Idempotency-Key` and `X-Operator-Ref` headers for idempotency and audit trails.
+
+**Author-action pattern** (`services/author_actions.py`): when the backend detects a missing prerequisite (e.g., LLM not configured, step incomplete), it returns an `author_action` dict that tells the frontend which view to navigate to and what button to show. This avoids hard-blocking the user while still guiding them.
 
 ### Frontend (`frontend/src/`)
 
-Vue 3 SPA. Navigation is managed by `router.js` (a custom SPA router, not Vue Router), with view state in individual Pinia stores under `stores/`. The API layer lives in `lib/api/` (domain modules re-exported via `lib/api/index.js`). Each module reads the backend base URL from `localStorage` (key `novel-system-api-base`) and falls back to `VITE_NOVEL_SYSTEM_API_BASE` or `http://127.0.0.1:8000`.
+Vue 3 SPA. Navigation is managed by `router.js` (a custom SPA router, not Vue Router) which defines `workflowGroups` (journey stages: shape/draft/polish/inform/decide/toolbox) and a flat view list with metadata like `writerPrimary`, `writerOrder`, `nextViews`, and `cacheMode`. View state lives in individual Pinia stores under `stores/` (one store per major view). The API layer lives in `lib/api/` (domain modules re-exported via `lib/api/index.js`). `lib/api/client.js` handles the response envelope, idempotency keys, operator-ref headers, and `ApiRequestError` normalization. Each module reads the backend base URL from `localStorage` (key `novel-system-api-base`) and falls back to `VITE_NOVEL_SYSTEM_API_BASE` or `http://127.0.0.1:8000`.
 
 **Primary writer views** (in `views/`):
 - `SnowflakeWorkbenchView.vue` — main entry; 10-step snowflake generation, scene triage, structure materialization and confirmation
@@ -129,3 +141,5 @@ The `UiModeSwitch` component switches between `作家` (writer) and `高级` (ad
 - **Vector Backend Split**: Windows tests always use `memory` backend; real ChromaDB only runs in Linux/WSL and is gated by the `chroma_integration` pytest marker. `conftest.py` applies this automatically.
 - **Reference Learning**: Imports books as `ReferenceBook` → segments → style findings → `ReferenceProfile`. Profiles are abstract (rhythm, syntax, structure); the system must never copy source text, characters, or plot.
 - **Dual-stack Pagination**: API responses support both `page`/`page_size` (offset) and `cursor`/`limit` (cursor-based) patterns via `services/pagination.py`.
+- **Test Isolation**: `conftest.py` auto-creates an isolated SQLite DB per test in `tmp_path`, resets the engine, and auto-skips `chroma_integration`-marked tests on Windows. No shared test state between tests.
+- **Snowflake Assistant Turns**: `SnowflakeWorkspaceAssistantService` stores conversational coaching turns per step, enabling LLM-guided iterative refinement of snowflake drafts without losing context.

@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
 
+import BaseEmptyState from "./base/BaseEmptyState.vue";
 import CompactEntitySelect from "./CompactEntitySelect.vue";
 import { compactEntityOptions, formatChapterChoice, formatSceneChoice } from "../lib/readableRefs";
 import { useWriterDeepDeskStore } from "../stores/writerDeepDesk";
@@ -63,7 +64,7 @@ async function selectScene(value) {
     <p v-if="chapterChoiceState.hiddenCount" class="muted receipt-copy">
       已折叠 {{ chapterChoiceState.hiddenCount }} 条同名历史 QA 章节。
     </p>
-    <div v-if="!visibleChapters.length" class="empty">还没有可阅读章节。</div>
+    <BaseEmptyState v-if="!visibleChapters.length" description="还没有可阅读章节。" />
     <div v-else class="readable-list deep-chapter-list">
       <button
         v-for="chapter in visibleChapters"

@@ -1,10 +1,13 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 test("runs chapter runtime ops end to end inside the scene workbench", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.chapter.e2e" });
+  await switchToAdvancedMode(page);
+  await page.getByTestId("nav-workbench").click();
+  await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
 
   await page.getByTestId("scene-id-input").fill("CH200_SC01");
   await page.getByTestId("scene-load-button").click();

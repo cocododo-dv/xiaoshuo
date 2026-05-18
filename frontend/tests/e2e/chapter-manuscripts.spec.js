@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 const CHAPTER_ID = "CHME2E";
 
@@ -214,6 +214,7 @@ test("opens chapter manuscript center, syncs aggregate, and refreshes after tras
 
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.manuscript.e2e" });
+  await switchToAdvancedMode(page);
   await page.getByTestId("nav-manuscripts").click();
 
   await expect(page.getByTestId("chapter-manuscript-view")).toBeVisible();

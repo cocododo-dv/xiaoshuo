@@ -2,7 +2,7 @@
 import { computed } from "vue";
 
 import { useUiMode } from "../composables/useUiMode";
-import { useShellRouter } from "../router";
+import { useShellRouter, workflowGroups } from "../router";
 
 const props = defineProps({
   viewId: {
@@ -19,17 +19,15 @@ const { navigate, viewMeta } = useShellRouter();
 const { isAdvancedMode } = useUiMode();
 
 const meta = computed(() => viewMeta(props.viewId));
+const stageLabel = computed(() => {
+  const stage = workflowGroups.find((group) => group.id === meta.value.stage);
+  return stage?.label || meta.value.stage || "";
+});
 const nextViews = computed(() =>
   (meta.value.nextViews || [])
     .map((viewId) => viewMeta(viewId))
     .filter(Boolean),
 );
-const writerBriefItems = computed(() => [
-  { label: "当前目标", value: meta.value.writerGoal },
-  { label: "完成信号", value: meta.value.writerDoneSignal },
-  { label: "下一步", value: meta.value.writerNextAction },
-].filter((item) => item.value));
-const hasWriterBrief = computed(() => !isAdvancedMode.value && writerBriefItems.value.length > 0);
 </script>
 
 <template>
@@ -37,7 +35,7 @@ const hasWriterBrief = computed(() => !isAdvancedMode.value && writerBriefItems.
     <div class="workflow-page-copy">
       <div class="workflow-step-kicker">
         <span>{{ meta.label }}</span>
-        <span>{{ kicker || meta.group }}</span>
+        <span>{{ kicker || stageLabel }}</span>
       </div>
       <h1>{{ meta.stepLabel }}</h1>
       <p v-if="isAdvancedMode">
@@ -45,35 +43,25 @@ const hasWriterBrief = computed(() => !isAdvancedMode.value && writerBriefItems.
         <span v-if="meta.description"> / {{ meta.description }}</span>
       </p>
       <p v-else>{{ meta.description }}</p>
-      <div
-        v-if="hasWriterBrief"
-        class="workflow-writer-brief"
-        :data-testid="`workflow-writer-brief-${viewId}`"
+      <dl
+        v-if="!isAdvancedMode && (meta.writerGoal || meta.writerDoneSignal)"
+        class="workflow-writer-aim"
+        :data-testid="`workflow-writer-aim-${viewId}`"
       >
-        <div v-for="item in writerBriefItems" :key="item.label" class="workflow-writer-brief-item">
-          <span>{{ item.label }}</span>
-          <strong>{{ item.value }}</strong>
-        </div>
-      </div>
+        <div v-if="meta.writerGoal"><dt>目标</dt><dd>{{ meta.writerGoal }}</dd></div>
+        <div v-if="meta.writerDoneSignal"><dt>完成信号</dt><dd>{{ meta.writerDoneSignal }}</dd></div>
+      </dl>
       <div
-        v-else-if="!isAdvancedMode"
-        class="workflow-guided-brief"
-        :data-testid="`workflow-guided-brief-${viewId}`"
-      >
-        <span>当前目标</span>
-        <strong>{{ meta.description }}</strong>
-      </div>
-      <div
-        v-else
+        v-if="isAdvancedMode"
         class="workflow-advanced-meta"
         :data-testid="`workflow-advanced-meta-${viewId}`"
       >
         <span>view: {{ meta.id }}</span>
         <span>cache: {{ meta.cacheMode || "none" }}</span>
-        <span>group: {{ meta.groupId || meta.group }}</span>
+        <span>stage: {{ meta.stage }}</span>
       </div>
     </div>
-    <div v-if="nextViews.length" class="workflow-next">
+    <div v-if="isAdvancedMode && nextViews.length" class="workflow-next">
       <span>常见下一步</span>
       <div class="workflow-next-actions">
         <button

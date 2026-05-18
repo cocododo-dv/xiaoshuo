@@ -26,10 +26,10 @@ export function snowflakeActionLabel(value, fallback = "") {
 
 export function snowflakeGateStatusLabel(status) {
   if (status === "blocked") {
-    return "还差几处才能整理";
+    return "还有几处需要补齐";
   }
   if (status === "warning") {
-    return "可以整理，但有提醒";
+    return "可以继续，建议留意";
   }
-  return "可以整理成章节结构";
+  return "一切就绪";
 }

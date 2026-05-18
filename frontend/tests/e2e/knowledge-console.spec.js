@@ -1,10 +1,19 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
+
+// Advanced mode auto-expands every LazySection, so a blind toggle click would
+// collapse the panel. Open it only when its content is not already visible.
+async function ensureLazySectionOpen(page, toggleTestId, contentLocator) {
+  if (!(await contentLocator.isVisible().catch(() => false))) {
+    await page.getByTestId(toggleTestId).click();
+  }
+}
 
 test("creates knowledge candidates and carries them through review, index, and provenance", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.knowledge.e2e" });
+  await switchToAdvancedMode(page);
 
   await page.getByTestId("nav-knowledge").click();
   await expect(page.getByTestId("knowledge-console-view")).toBeVisible();
@@ -17,7 +26,11 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-create-button").click();
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
   await expect(page.getByTestId("knowledge-detail-lineage")).toContainText("STYLE_KNOWLEDGE_E2E");
-  await page.getByTestId("knowledge-toggle-reviews").click();
+  await ensureLazySectionOpen(
+    page,
+    "knowledge-toggle-reviews",
+    page.getByTestId("knowledge-reviews-progressive-list"),
+  );
   await expect(page.getByTestId("knowledge-reviews-progressive-list")).toBeVisible();
   await page.getByTestId("knowledge-approve-review-review_knowledge_style_rule").click();
   await expect(page.getByTestId("notice-stack")).toContainText("已批准 review_knowledge_style_rule，操作员 ops.knowledge.e2e");
@@ -32,7 +45,11 @@ test("creates knowledge candidates and carries them through review, index, and p
   );
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
   await expect(page.getByTestId("knowledge-detail-lineage")).toContainText("STYLE_KNOWLEDGE_E2E");
-  await page.getByTestId("knowledge-toggle-review-refs").click();
+  await ensureLazySectionOpen(
+    page,
+    "knowledge-toggle-review-refs",
+    page.getByTestId("knowledge-review-refs-progressive-list"),
+  );
   await expect(page.getByTestId("knowledge-review-refs-progressive-list")).toBeVisible();
   await expect(page.getByTestId("knowledge-open-review-ref-review_knowledge_style_rule")).toBeVisible();
 
@@ -43,7 +60,11 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-scope-ref-filter").fill("global");
   await page.getByTestId("knowledge-refresh-button").click();
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
-  await page.getByTestId("knowledge-toggle-review-refs").click();
+  await ensureLazySectionOpen(
+    page,
+    "knowledge-toggle-review-refs",
+    page.getByTestId("knowledge-open-review-ref-review_knowledge_style_rule"),
+  );
   await page.getByTestId("knowledge-open-review-ref-review_knowledge_style_rule").click();
   await expect(page.getByTestId("review-card-review_knowledge_style_rule")).toHaveClass(/focused-card/);
   await page.getByTestId("nav-knowledge").click();
@@ -79,7 +100,7 @@ test("creates knowledge candidates and carries them through review, index, and p
   const runReceiptText = (await runReceipt.textContent()) || "";
   const bundleId = runReceiptText.match(/bundle_CH001_SC02_v\d+/)?.[0];
   expect(bundleId).toBeTruthy();
-  await page.getByTestId("scene-toggle-bundle-provenance").click();
+  await ensureLazySectionOpen(page, "scene-toggle-bundle-provenance", workbench.getByText("构包溯源"));
   await expect(workbench).toContainText("构包溯源");
   await expect(workbench).toContainText("风格规则集");
   await expect(workbench).toContainText("校准句");
@@ -93,7 +114,11 @@ test("creates knowledge candidates and carries them through review, index, and p
   await page.getByTestId("knowledge-status-filter").selectOption("active");
   await page.getByTestId("knowledge-refresh-button").click();
   await page.getByTestId("knowledge-view-detail-style_rule-STYLE_KNOWLEDGE_E2E").click();
-  await page.getByTestId("knowledge-toggle-bundle-refs").click();
+  await ensureLazySectionOpen(
+    page,
+    "knowledge-toggle-bundle-refs",
+    page.getByTestId("knowledge-bundle-refs-progressive-list"),
+  );
   await expect(page.getByTestId("knowledge-bundle-refs-progressive-list")).toBeVisible();
   await page.getByTestId(`knowledge-open-bundle-ref-${bundleId}`).click();
   await expect(page.getByTestId("scene-id-input")).toHaveValue("CH001_SC02");

@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { Check, RefreshCw, WandSparkles } from "lucide-vue-next";
 
+import BaseBadge from "./base/BaseBadge.vue";
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { snowflakeGateStatusLabel } from "../lib/labels";
@@ -22,6 +23,16 @@ const materializationGate = computed(() => store.materializationGate);
 const latestPlan = computed(() => store.latestPlan);
 const pendingResyncCount = computed(() => store.pendingResyncCount);
 const pendingResyncScenes = computed(() => store.pendingResyncScenes);
+const planChapters = computed(() => latestPlan.value?.plan_json?.chapters || []);
+const structureSummary = computed(() => {
+  const chapters = planChapters.value;
+  if (!chapters.length) {
+    return null;
+  }
+  const sceneTotal = chapters.reduce((sum, chapter) => sum + (chapter.scenes?.length || 0), 0);
+  const approved = String(latestPlan.value?.status || "").toLowerCase() === "approved";
+  return { chapterCount: chapters.length, sceneTotal, approved };
+});
 const chapterFlowReady = computed(() =>
   ["chapter_ready", "chapter_running", "chapter_blocked", "chapter_final_review", "completed"]
     .includes(String(store.project?.status || "").toLowerCase()),
@@ -30,8 +41,8 @@ const structureHandoff = computed(() => {
   const planStatus = String(latestPlan.value?.status || "").toLowerCase();
   if (planStatus === "approved" || chapterFlowReady.value) {
     return {
-      title: "章节结构已确认",
-      body: "下一步在写作总控里启动当前章、查看运行进度，或处理终稿审阅。",
+      title: "结构已确认，去写作总控继续",
+      body: "在写作总控里启动或继续当前章节，查看进度并处理终稿审阅。",
       actionLabel: "进入写作总控",
       testId: "snowflake-handoff-writer-flow",
       disabled: false,
@@ -40,9 +51,9 @@ const structureHandoff = computed(() => {
   }
   if (planStatus === "pending_review") {
     return {
-      title: "章节结构草案待确认",
-      body: "先检查章节目标和场景拆分，确认后系统会进入章节写作主线。",
-      actionLabel: "确认结构",
+      title: "章节大纲待你确认",
+      body: "先检查每章的目标和场景拆分，确认后就可以开始写了。",
+      actionLabel: "确认，开始写",
       testId: "snowflake-handoff-approve-outline",
       disabled: store.actionId === "approve-outline",
       run: approveOutline,
@@ -50,9 +61,9 @@ const structureHandoff = computed(() => {
   }
   if (readyToMaterialize.value) {
     return {
-      title: "雪花结构可以整理",
-      body: "把已确认的雪花步骤和场景规划整理成章节结构草案，再由作者确认。",
-      actionLabel: "整理成章节结构",
+      title: "构思已完成，可以生成章节大纲了",
+      body: "把你确认的构思和场景规划生成章节大纲，再由你检查确认。",
+      actionLabel: "从构思生成大纲",
       testId: "snowflake-handoff-materialize",
       disabled: materializationGate.value.status === "blocked" || store.actionId === "materialize-outline",
       run: materializeOutline,
@@ -110,7 +121,7 @@ function goToGateItem(item) {
   if (gateItemTargetsScene(item)) {
     store.setWorkbenchMode("triage");
     store.selectTriageScene(item.scene_id || action.scene_id || "");
-    emit("notice", "已打开对应场景急救项。");
+    emit("notice", "已打开对应场景。");
     return;
   }
   if (gateItemTargetsStep(item)) {
@@ -125,10 +136,10 @@ function goToGateItem(item) {
 async function previewResync() {
   await runFlowAction({
     scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
-    actionLabel: "预览同步",
-    runningMessage: "正在对比雪花规划和已物化场景...",
-    successMessage: () => store.lastActionMessage || "同步差异已预览。",
-    nextStep: () => "下一步：确认后只同步结构卡和写作 brief。",
+    actionLabel: "预览差异",
+    runningMessage: "正在对比构思和已有章节...",
+    successMessage: () => store.lastActionMessage || "差异已预览。",
+    nextStep: () => "下一步：确认后更新章节描述，正文不会被改动。",
     action: () => store.previewResync(),
   });
 }
@@ -136,10 +147,10 @@ async function previewResync() {
 async function resyncScenes() {
   await runFlowAction({
     scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
-    actionLabel: "同步场景规划",
-    runningMessage: "正在把雪花规划同步到结构卡...",
-    successMessage: () => store.lastActionMessage || "场景规划已同步到结构卡。",
-    nextStep: () => "终稿、作者草稿和模型调用记录不会被覆盖。",
+    actionLabel: "更新章节描述",
+    runningMessage: "正在用最新构思更新章节描述...",
+    successMessage: () => store.lastActionMessage || "章节描述已更新。",
+    nextStep: () => "你写的正文、终稿和审核记录不会被改动。",
     action: () => store.resyncScenes(),
   });
 }
@@ -149,10 +160,10 @@ async function acceptGateStaleScene(item) {
   if (!scenePlanId) return;
   await runFlowAction({
     scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
-    actionLabel: "复核场景规划",
-    runningMessage: "正在记录场景复核结果...",
-    successMessage: () => store.lastActionMessage || "场景规划已复核，当前版本仍有效。",
-    nextStep: () => "下一步：继续整理成章节结构。",
+    actionLabel: "确认场景仍有效",
+    runningMessage: "正在记录确认结果...",
+    successMessage: () => store.lastActionMessage || "已确认，当前版本仍有效。",
+    nextStep: () => "下一步：继续生成章节大纲。",
     action: () => store.acceptStaleScenes([scenePlanId], { note: "reviewed in materialization gate" }),
   });
 }
@@ -160,10 +171,10 @@ async function acceptGateStaleScene(item) {
 async function materializeOutline() {
   await runFlowAction({
     scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
-    actionLabel: "整理章节结构",
-    runningMessage: "正在把雪花和场景规划整理成章节结构草案...",
-    successMessage: () => store.lastActionMessage || "章节结构草案已生成。",
-    nextStep: () => "下一步：检查章节计划，然后确认结构。",
+    actionLabel: "生成章节大纲",
+    runningMessage: "正在从你的构思生成章节大纲...",
+    successMessage: () => store.lastActionMessage || "章节大纲已生成。",
+    nextStep: () => "下一步：检查每章的目标，然后确认开始写。",
     action: () => store.materializeOutline(),
   });
 }
@@ -171,10 +182,10 @@ async function materializeOutline() {
 async function approveOutline() {
   await runFlowAction({
     scopeKey: SNOWFLAKE_STRUCTURE_SCOPE,
-    actionLabel: "确认结构",
-    runningMessage: "正在确认章节结构...",
-    successMessage: () => store.lastActionMessage || "结构已确认。",
-    nextStep: () => "下一步：进入写作总控，开始当前章节起草或查看阻塞项。",
+    actionLabel: "确认大纲",
+    runningMessage: "正在确认章节大纲...",
+    successMessage: () => store.lastActionMessage || "大纲已确认，可以开始写了。",
+    nextStep: () => "下一步：开始写第一章。",
     target: (result) => ({
       view: "writer-flow",
       label: "进入写作总控",
@@ -211,8 +222,8 @@ function handleReceiptNavigate(target) {
   <section class="snowflake-outline-approve" data-testid="snowflake-outline-approve">
     <div class="panel-head">
       <div>
-        <span class="eyebrow">准备度检查</span>
-        <h2>整理章节结构</h2>
+        <span class="eyebrow">进入写作前</span>
+        <h2>生成章节大纲</h2>
       </div>
       <div class="action-row">
         <button
@@ -226,7 +237,7 @@ function handleReceiptNavigate(target) {
           @click="materializeOutline"
         >
           <WandSparkles :size="16" />
-          <span>整理成章节结构</span>
+          <span>从构思生成大纲</span>
         </button>
         <button
           type="button"
@@ -235,7 +246,7 @@ function handleReceiptNavigate(target) {
           @click="approveOutline"
         >
           <Check :size="16" />
-          <span>确认结构</span>
+          <span>确认，开始写</span>
         </button>
       </div>
     </div>
@@ -243,9 +254,9 @@ function handleReceiptNavigate(target) {
 
     <div v-if="pendingResyncCount" class="snowflake-resync-panel" data-testid="snowflake-resync-panel">
       <div>
-        <span class="eyebrow">物化后同步</span>
-        <strong>{{ pendingResyncCount }} 个已物化场景可能需要同步</strong>
-        <p class="muted">只更新 SceneCard / ChapterGoal 和 writer_brief_json，不覆盖作者草稿、终稿、审核历史和 LLM 调用记录。</p>
+        <span class="eyebrow">规划有更新</span>
+        <strong>{{ pendingResyncCount }} 个章节的描述可以跟着更新</strong>
+        <p class="muted">只更新章节描述和场景目标，你写的正文不会被改动。</p>
       </div>
       <div class="action-row">
         <button type="button" class="ghost action-btn" :disabled="store.actionId === 'preview-resync'" @click="previewResync">
@@ -282,7 +293,7 @@ function handleReceiptNavigate(target) {
 
     <div class="materialization-gate" :class="materializationGate.status">
       <div>
-        <span class="eyebrow">准备度检查</span>
+        <span class="eyebrow">进入写作前</span>
         <strong>{{ gateStatusLabel(materializationGate.status) }}</strong>
       </div>
       <div v-if="gateItems.length" class="gate-action-list" data-testid="materialization-gate-items">
@@ -308,17 +319,36 @@ function handleReceiptNavigate(target) {
           </button>
         </article>
       </div>
-      <p v-if="materializationGate.status === 'ready'" class="muted">雪花步骤和场景急救没有阻塞项。</p>
+      <p v-if="materializationGate.status === 'ready'" class="muted">一切就绪。</p>
     </div>
 
-    <div v-if="latestPlan?.plan_json?.chapters?.length" class="outline-grid">
-      <article v-for="chapter in latestPlan.plan_json.chapters" :key="chapter.chapter_id" class="outline-card">
-        <strong>{{ chapter.title || chapter.chapter_id }}</strong>
-        <p>{{ chapter.chapter_goal }}</p>
-        <small>{{ chapter.scenes?.length || 0 }} 场景</small>
-      </article>
+    <div v-if="structureSummary" class="outline-result">
+      <div class="outline-summary" data-testid="snowflake-structure-summary">
+        <div>
+          <span class="eyebrow">{{ structureSummary.approved ? "已确认的章节结构" : "结构草案预览" }}</span>
+          <strong>共 {{ structureSummary.chapterCount }} 章 · {{ structureSummary.sceneTotal }} 个场景</strong>
+          <p class="muted">
+            {{ structureSummary.approved
+              ? "结构已确认，可在写作总控里逐章起草。"
+              : "这是整理出的草案，逐章检查目标和场景拆分，确认后才会进入章节写作主线。" }}
+          </p>
+        </div>
+        <BaseBadge :tone="structureSummary.approved ? 'success' : 'info'">
+          {{ structureSummary.approved ? "已确认" : "待你确认" }}
+        </BaseBadge>
+      </div>
+      <div class="outline-grid">
+        <article v-for="chapter in planChapters" :key="chapter.chapter_id" class="outline-card">
+          <strong>{{ chapter.title || chapter.chapter_id }}</strong>
+          <p>{{ chapter.chapter_goal }}</p>
+          <BaseBadge tone="neutral">{{ chapter.scenes?.length || 0 }} 场景</BaseBadge>
+        </article>
+      </div>
     </div>
-    <p v-else class="muted">雪花十步确认后，可以把场景结构整理到章节计划里。</p>
+    <p v-else-if="readyToMaterialize" class="muted" data-testid="snowflake-materialize-expectation">
+      点「从构思生成大纲」后，系统会把你确认的构思生成章节大纲。生成后会列出每一章，你可以逐章检查，再点「确认，开始写」才会真正进入写作。
+    </p>
+    <p v-else class="muted">完成十步构思后，就可以生成章节大纲了。</p>
   </section>
 </template>
 

@@ -1017,7 +1017,7 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
           ...(input || {}),
         });
         this.triageDrafts = clonePayload(result?.items || []);
-        this.lastActionMessage = "场景急救建议已更新。";
+        this.lastActionMessage = "场景体检建议已更新。";
         return result;
       } catch (error) {
         this.error = error.message;
@@ -1037,7 +1037,7 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
         const result = await saveSnowflakeSceneTriage(projectId, { items });
         this.applyWorkspace(result?.workspace, { preferCurrent: false });
         this.triageDrafts = clonePayload(result?.items || []);
-        this.lastActionMessage = "场景急救标记已保存。";
+        this.lastActionMessage = "场景体检标记已保存。";
         return result?.items || [];
       } catch (error) {
         this.error = error.message;
@@ -1148,14 +1148,14 @@ export const useSnowflakeWorkbenchStore = defineStore("snowflakeWorkbench", {
       const projectId = this.selectedProjectId || projectIdOf(this.project);
       const normalizedTriageId = String(triageId || "").trim();
       if (!projectId || !normalizedTriageId) {
-        throw new Error("请选择要应用的急救修复");
+        throw new Error("请选择要应用的修复");
       }
       this.actionId = `triage-apply:${normalizedTriageId}`;
       this.error = "";
       try {
         const result = await applySnowflakeSceneTriageRepair(projectId, normalizedTriageId);
         this.applyWorkspace(result?.workspace, { preferCurrent: false });
-        this.lastActionMessage = "急救修复已应用到场景计划。";
+        this.lastActionMessage = "修复已应用到场景计划。";
         return result?.scene || null;
       } catch (error) {
         this.error = error.message;

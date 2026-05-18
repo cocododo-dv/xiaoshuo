@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, onDeactivated, ref, watch } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import CursorPager from "../components/CursorPager.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import HumanReviewDrawer from "../components/HumanReviewDrawer.vue";
@@ -513,7 +514,7 @@ watch(
             </div>
             <span class="badge">审核项 · {{ reviewItemsSummary }}</span>
           </div>
-          <div v-if="!reviewInbox.items.length" class="empty">当前没有待处理审核项。</div>
+          <BaseEmptyState v-if="!reviewInbox.items.length" description="当前没有待处理审核项。" />
           <VirtualList
             v-else
             class="review-list"

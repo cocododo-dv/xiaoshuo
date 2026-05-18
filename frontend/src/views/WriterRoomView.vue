@@ -2,6 +2,8 @@
 import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowRight, Check, Eye, FileText, RefreshCw, Save, Sparkles, X } from "lucide-vue-next";
 
+import BaseBadge from "../components/base/BaseBadge.vue";
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import CompactEntitySelect from "../components/CompactEntitySelect.vue";
 import DiffViewer from "../components/DiffViewer.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
@@ -28,7 +30,7 @@ const proposalModeOptions = [
   { value: "dialogue", label: "对白" },
   { value: "language", label: "语言" },
   { value: "continuation", label: "续写" },
-  { value: "near_final", label: "近终稿" },
+  { value: "near_final", label: "精修" },
 ];
 const proposalInstruction = ref("");
 const autoSaveState = ref("idle");
@@ -81,7 +83,21 @@ const draftStatus = computed(() => {
   const dirty = room.draftDirty ? "有未保存修改" : "已保存";
   return `${dirty} / 第 ${room.draft.revision_no || 0} 版`;
 });
-const keepAdvice = computed(() => room.keepAdvice || room.diagnosis?.keep || "先保留最有张力的一处，再动刀。");
+const PRIMARY_SOURCE_LABELS = {
+  author_draft: "你之前写的草稿",
+  runtime_final_scene: "AI 运行终稿",
+  chapter_assembled: "AI 章节拼接稿",
+  chapter_memory_final: "AI 最终聚合稿",
+  runtime: "AI 运行稿",
+};
+const primarySourceLabel = computed(() => {
+  const source = String(room.primaryText?.source || "").toLowerCase();
+  if (!source || source === "empty") {
+    return "";
+  }
+  return PRIMARY_SOURCE_LABELS[source] || "AI 运行稿";
+});
+const keepAdvice = computed(() => room.keepAdvice || room.diagnosis?.keep || "找到正文里最好的一处，其余围绕它修改。");
 const proposalCards = computed(() => room.proposalCards.length ? room.proposalCards : room.proposals);
 const longformCards = computed(() => room.longformCards.length ? room.longformCards : room.contextPressure);
 const proposalCount = computed(() => proposalCards.value.filter((proposal) => proposal.status !== "rejected").length);
@@ -153,7 +169,7 @@ function handleBeforeUnload(event) {
 }
 
 function proposalTitle(proposal) {
-  return proposal.display_kind || proposal.title || proposal.summary || proposal.proposal_type || proposal.proposal_kind || "可采纳改法";
+  return proposal.display_kind || proposal.title || proposal.summary || proposal.proposal_type || proposal.proposal_kind || "改法建议";
 }
 
 function proposalExcerpt(proposal) {
@@ -161,7 +177,7 @@ function proposalExcerpt(proposal) {
 }
 
 function pressureTitle(card) {
-  return card.title || card.card_type || "长篇压力";
+  return card.title || card.card_type || "全书节奏";
 }
 
 function pressureSummary(card) {
@@ -169,7 +185,7 @@ function pressureSummary(card) {
   if (typeof recommendation === "string") {
     return recommendation;
   }
-  return recommendation.summary || recommendation.action || card.summary || card.issue || "先确认这一处是否会影响后续章节。";
+  return recommendation.summary || recommendation.action || card.summary || card.issue || "留意这一处对后续章节的影响。";
 }
 
 function focusTargetLoad() {
@@ -344,12 +360,12 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="writer-room-view" data-testid="writer-room-view">
-    <WorkflowPageHeader view-id="writer-room" kicker="正文优先" />
+    <WorkflowPageHeader view-id="writer-room" kicker="你的正文" />
 
     <PanelShell
-      eyebrow="Writing Room"
+      eyebrow="写作房间"
       title="写作房间"
-      description="先写正文，再看诊断和改法；运行证据留在高级页面里。"
+      description="先写正文，再看诊断和改法建议。"
     >
       <template #actions>
         <button type="button" class="ghost" :disabled="room.loading" @click="loadInitial({ force: true })">
@@ -431,11 +447,17 @@ onBeforeUnmount(() => {
         <main class="writer-room-editor">
           <div class="writer-room-editor-head">
             <div>
-              <span class="eyebrow">Author Draft</span>
+              <span class="eyebrow">你的正文</span>
               <h3>正文</h3>
             </div>
             <span class="badge" :class="{ active: room.draftDirty || autoSaveState === 'saving', danger: autoSaveState === 'error' }">{{ draftStatusLabel }}</span>
           </div>
+
+          <p class="writer-room-provenance" data-testid="writer-room-provenance">
+            <BaseBadge tone="accent">正在编辑：作者草稿</BaseBadge>
+            <BaseBadge v-if="primarySourceLabel" tone="neutral">底稿来源：{{ primarySourceLabel }}</BaseBadge>
+            <span class="writer-room-provenance-note">本章最终稿以你确认的作者草稿为准，运行稿只是起点。</span>
+          </p>
 
           <textarea
             v-model="draftContent"
@@ -449,8 +471,8 @@ onBeforeUnmount(() => {
           <section class="writer-room-focus">
             <div class="writer-room-section-head">
               <div>
-                <span class="eyebrow">Focus</span>
-                <h3>最该改的一处</h3>
+                <span class="eyebrow">关键建议</span>
+                <h3>最值得改的地方</h3>
               </div>
             </div>
             <p v-if="room.topIssue" class="writer-room-main-advice">{{ room.topIssue.issue }}</p>
@@ -465,8 +487,8 @@ onBeforeUnmount(() => {
           <section class="writer-room-proposals">
             <div class="writer-room-section-head">
               <div>
-                <span class="eyebrow">Proposals</span>
-                <h3>可采纳改法</h3>
+                <span class="eyebrow">改法建议</span>
+                <h3>改法建议</h3>
               </div>
               <span class="badge">{{ proposalCount }} 条</span>
             </div>
@@ -498,7 +520,7 @@ onBeforeUnmount(() => {
             </div>
             <FlowActionReceipt compact :receipt="receipt(WRITER_PROPOSAL_SCOPE)" />
 
-            <div v-if="!proposalCards.length" class="empty">还没有候选改法。</div>
+            <BaseEmptyState v-if="!proposalCards.length" description="还没有候选改法。" />
             <article v-for="proposal in proposalCards" :key="proposal.proposal_id" class="writer-room-proposal">
               <div class="writer-room-proposal-head">
                 <strong>{{ proposalTitle(proposal) }}</strong>
@@ -546,11 +568,11 @@ onBeforeUnmount(() => {
           <section class="writer-room-pressure">
             <div class="writer-room-section-head">
               <div>
-                <span class="eyebrow">Longform</span>
-                <h3>后续压力</h3>
+                <span class="eyebrow">全书节奏</span>
+                <h3>全书节奏</h3>
               </div>
             </div>
-            <div v-if="!longformCards.length" class="empty">暂无高优先级长篇提醒。</div>
+            <BaseEmptyState v-if="!longformCards.length" description="暂无高优先级长篇提醒。" />
             <article v-for="card in longformCards" :key="card.card_id || card.title" class="writer-room-pressure-row">
               <strong>{{ pressureTitle(card) }}</strong>
               <p>{{ pressureSummary(card) }}</p>
@@ -697,6 +719,22 @@ onBeforeUnmount(() => {
 .writer-room-proposal-head {
   justify-content: space-between;
   min-width: 0;
+}
+
+.writer-room-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.55rem;
+  margin: 0 0 0.6rem;
+  min-width: 0;
+}
+
+.writer-room-provenance-note {
+  color: var(--surface-muted, rgba(33, 26, 21, 0.72));
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .writer-room-editor-head > div,

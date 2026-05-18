@@ -2,6 +2,7 @@
 import { computed, onActivated, onDeactivated, ref, watch } from "vue";
 
 import AttemptTimeline from "../components/AttemptTimeline.vue";
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import BundleProvenanceCard from "../components/BundleProvenanceCard.vue";
 import CursorPager from "../components/CursorPager.vue";
 import EvidenceDisclosure from "../components/EvidenceDisclosure.vue";
@@ -1146,9 +1147,11 @@ onDeactivated(() => {
           <button class="ghost" type="button" @click="openAuthorWorkspace">回到作者工作台</button>
         </div>
       </div>
-      <div v-else class="empty" data-testid="scene-workbench-empty">
-        从作者工作台选择场景，或输入场景 ID 加载。
-      </div>
+      <BaseEmptyState
+        v-else
+        data-testid="scene-workbench-empty"
+        description="从作者工作台选择场景，或输入场景 ID 加载。"
+      />
     </PanelShell>
 
     <PanelShell eyebrow="尝试时间线" title="执行轨迹">

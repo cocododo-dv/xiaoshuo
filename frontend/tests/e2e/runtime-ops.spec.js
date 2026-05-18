@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 async function openIndexAdvancedEvidence(page) {
   const mode = await page.evaluate(() => window.localStorage.getItem("novel-system:ui-mode"));
@@ -23,6 +23,9 @@ async function openIndexAdvancedEvidence(page) {
 test("runs the runtime-ops seeded flow end to end", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.runtime.e2e" });
+  await switchToAdvancedMode(page);
+  await page.getByTestId("nav-workbench").click();
+  await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
 
   await page.getByTestId("scene-id-input").fill("CH001_SC01");
   await page.getByTestId("scene-load-button").click();

@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
 
+import BaseEmptyState from "./base/BaseEmptyState.vue";
 import { buildBundleProvenance } from "../lib/bundleProvenance";
 
 const props = defineProps({
@@ -29,7 +30,7 @@ function formatVersion(version) {
       <span v-if="provenance.available" class="badge">快照已就绪</span>
     </div>
 
-    <div v-if="!provenance.available" class="empty">先运行一次场景，才能捕获可追踪的构包快照。</div>
+    <BaseEmptyState v-if="!provenance.available" description="先运行一次场景，才能捕获可追踪的构包快照。" />
     <div v-else class="provenance-grid">
       <section class="provenance-section">
         <div class="provenance-label">可追踪来源</div>
@@ -62,7 +63,7 @@ function formatVersion(version) {
             <p class="source-digest">{{ source.digest }}</p>
           </article>
         </div>
-        <p v-else class="empty">当前这个构包里只有基础章节和场景引用。</p>
+        <BaseEmptyState v-else description="当前这个构包里只有基础章节和场景引用。" />
       </section>
 
       <section class="provenance-section">

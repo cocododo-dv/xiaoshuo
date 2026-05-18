@@ -19,6 +19,13 @@ backend/novel_system.db
 frontend/dist/
 frontend/node_modules/
 frontend/test-results/
+frontend/e2e-*.txt
+
+# Per-developer local Claude permission config; must not be shared.
+.claude/settings.local.json
+
+# Playwright run artifacts (repo root and any nested location).
+test-results/
 .codex-run/
 .playwright-cli/
 .playwright-mcp/

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 const WORKSHEET_YAML = `
 bundle_id: bundle_interop_e2e
@@ -42,9 +42,15 @@ snapshot:
 test("previews, imports, exports, and replays worksheet bundles from the interop center", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.interop.e2e" });
+  await switchToAdvancedMode(page);
 
   await page.getByTestId("nav-interop").click();
   await expect(page.getByTestId("interop-center-view")).toBeVisible();
+  // The preview summary deliberately hides hash-contract details outside
+  // advanced mode. Return to writer mode so the writer-vs-advanced contrast
+  // exercised below (preview hides BSHASH_v1, then advanced reveals it) still
+  // covers that gating after the advanced-only nav reach.
+  await page.getByTestId("ui-mode-writer").click();
 
   await page.getByTestId("interop-worksheet-input").fill(WORKSHEET_YAML);
   await page.getByTestId("interop-preview-button").click();

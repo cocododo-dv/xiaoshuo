@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
 
+import BaseEmptyState from "./base/BaseEmptyState.vue";
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useWriterDeepDeskStore } from "../stores/writerDeepDesk";
@@ -68,7 +69,7 @@ async function rejectCandidate(candidate) {
       </div>
       <span class="badge">{{ candidates.length }} 条</span>
     </div>
-    <div v-if="!candidates.length" class="empty">还没有局部候选。</div>
+    <BaseEmptyState v-if="!candidates.length" description="还没有局部候选。" />
     <article v-for="candidate in candidates" :key="candidate.patch_id" class="deep-candidate-row">
       <div class="receipt-head compact">
         <div>

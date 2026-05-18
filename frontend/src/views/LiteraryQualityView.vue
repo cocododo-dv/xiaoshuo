@@ -2,6 +2,7 @@
 import { ArrowRight, FlaskConical, Play, RefreshCcw, Search } from "lucide-vue-next";
 import { computed, onActivated, onMounted, ref } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { formatChapterChoice, formatReadableTargetRef, formatSceneChoice } from "../lib/readableRefs";
@@ -468,7 +469,7 @@ onActivated(() => {
 
         <div v-if="quality.loading" class="empty">正在巡检稿件...</div>
         <div v-else-if="quality.error" class="empty">{{ quality.error }}</div>
-        <div v-else-if="!items.length" class="empty">暂无可巡检稿件。</div>
+        <BaseEmptyState v-else-if="!items.length" description="暂无可巡检稿件。" />
         <section v-else class="quality-card-list" data-testid="quality-overview-items">
           <article
             v-for="item in items"
@@ -654,7 +655,7 @@ onActivated(() => {
             </article>
           </section>
         </section>
-        <div v-else class="empty">输入章 ID 后运行复审。</div>
+        <BaseEmptyState v-else description="输入章 ID 后运行复审。" />
       </div>
 
       <div v-else-if="activeTab === 'benchmark'" class="quality-benchmark" data-testid="quality-eval-report">
@@ -679,7 +680,7 @@ onActivated(() => {
 
         <div v-if="quality.evalLoading" class="empty">正在运行文学基准评测...</div>
         <div v-else-if="quality.evalError" class="empty">{{ quality.evalError }}</div>
-        <div v-else-if="!report" class="empty">暂无评测报告。</div>
+        <BaseEmptyState v-else-if="!report" description="暂无评测报告。" />
         <section v-else class="quality-eval-layout">
           <div class="quality-summary-grid">
             <article class="paper mini">

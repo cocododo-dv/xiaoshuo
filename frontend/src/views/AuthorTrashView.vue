@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, ref, watch } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import DangerConfirm from "../components/DangerConfirm.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
@@ -230,7 +231,7 @@ onActivated(() => {
 
       <div v-if="authorTrash.loading" class="empty">正在加载作者回收站...</div>
       <div v-else-if="authorTrash.error" class="empty">{{ authorTrash.error }}</div>
-      <div v-else-if="!hasTrash" class="empty" data-testid="author-trash-empty">作者回收站为空。</div>
+      <BaseEmptyState v-else-if="!hasTrash" data-testid="author-trash-empty" description="作者回收站为空。" />
       <div v-else class="trash-layout">
         <article class="paper trash-section">
           <div class="receipt-head">
@@ -260,7 +261,7 @@ onActivated(() => {
           </div>
           <FlowActionReceipt compact :receipt="receipt(TRASH_CHAPTER_SCOPE)" />
 
-          <div v-if="!chapters.length" class="empty">当前没有已回收章节。</div>
+          <BaseEmptyState v-if="!chapters.length" description="当前没有已回收章节。" />
           <VirtualList
             v-else
             class="trash-list"
@@ -340,7 +341,7 @@ onActivated(() => {
           </div>
           <FlowActionReceipt compact :receipt="receipt(TRASH_SCENE_SCOPE)" />
 
-          <div v-if="!scenes.length" class="empty">当前没有已回收场景。</div>
+          <BaseEmptyState v-if="!scenes.length" description="当前没有已回收场景。" />
           <VirtualList
             v-else
             class="trash-list"

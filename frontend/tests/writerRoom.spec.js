@@ -156,12 +156,12 @@ describe("writer room shell", () => {
     expect(router.views[0]).toEqual(expect.objectContaining({
       id: "snowflake-workbench",
       writerPrimary: true,
-      writerLabel: "雪花工作台",
+      writerLabel: "想清楚故事",
     }));
     expect(router.viewMeta("writer-room")).toEqual(expect.objectContaining({
       id: "writer-room",
       writerPrimary: true,
-      writerLabel: "小修写作",
+      writerLabel: "打磨正文",
       legacyLabel: "文本优先工作台",
     }));
     expect(router.viewMeta("writer-room").nextViews).toEqual(["snowflake-workbench", "deepdesk", "manuscripts"]);

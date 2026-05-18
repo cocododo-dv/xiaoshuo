@@ -54,19 +54,37 @@ async function openView(page, viewId, testId) {
 }
 
 async function expectNoHorizontalScroll(page) {
-  const overflow = await page.evaluate(() => {
+  const result = await page.evaluate(() => {
     const root = document.documentElement;
     const stage = document.querySelector(".stage");
     const view = document.querySelector(".view-frame");
-    return {
+    const overflow = {
       document: root.scrollWidth - root.clientWidth,
       body: document.body.scrollWidth - root.clientWidth,
       stage: stage ? stage.scrollWidth - stage.clientWidth : 0,
       view: view ? view.scrollWidth - view.clientWidth : 0,
     };
+    const limit = root.clientWidth + 1;
+    const offenders = [];
+    for (const el of document.querySelectorAll("body *")) {
+      const rect = el.getBoundingClientRect();
+      if (rect.right > limit || rect.width > limit) {
+        offenders.push({
+          tag: el.tagName.toLowerCase(),
+          cls: el.className && typeof el.className === "string" ? el.className : "",
+          testid: el.getAttribute("data-testid") || "",
+          right: Math.round(rect.right),
+          width: Math.round(rect.width),
+        });
+      }
+    }
+    return { overflow, offenders: offenders.slice(0, 8), clientWidth: root.clientWidth };
   });
 
-  expect(Math.max(...Object.values(overflow))).toBeLessThanOrEqual(1);
+  expect(
+    Math.max(...Object.values(result.overflow)),
+    `overflow=${JSON.stringify(result.overflow)} clientWidth=${result.clientWidth} offenders=${JSON.stringify(result.offenders)}`,
+  ).toBeLessThanOrEqual(1);
 }
 
 test("writer primary path stays navigable and avoids horizontal overflow across key viewports", async ({ page }) => {
@@ -78,19 +96,21 @@ test("writer primary path stays navigable and avoids horizontal overflow across 
     await configureConnection(page, { operatorRef: "ops.writer-primary-path.e2e" });
     await page.reload();
 
-    await expect(page.getByTestId("workflow-writer-brief-snowflake-workbench")).toBeVisible();
     await expect(page.getByTestId("writer-path-progress")).toBeVisible();
     await expect(page.getByTestId("writer-path-active-summary")).toHaveAttribute("role", "status");
 
+    const guidanceCta = page.getByTestId("writer-path-go");
+    await expect(guidanceCta).toBeVisible();
+    await expect(guidanceCta).toBeEnabled();
+    expect((await guidanceCta.innerText()).trim().length).toBeGreaterThan(0);
+
     for (const [viewId, testId] of VIEW_TARGETS) {
       await openView(page, viewId, testId);
-      await expect(page.getByTestId(`writer-path-item-${viewId}`)).toHaveAttribute("aria-current", "step");
       await expectNoHorizontalScroll(page);
     }
 
-    await page.getByTestId("writer-path-item-reference").click();
+    await page.getByTestId("journey-optional-reference").click();
     await expect(page.getByTestId("reference-learning-view")).toBeVisible();
-    await expect(page.getByTestId("writer-path-item-reference")).toHaveAttribute("aria-current", "step");
     await expectNoHorizontalScroll(page);
   }
 });

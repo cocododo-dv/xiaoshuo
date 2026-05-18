@@ -2,6 +2,7 @@
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, reactive, ref, watch } from "vue";
 
 import ActivitySectionCard from "../components/ActivitySectionCard.vue";
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import AliasScopeCard from "../components/AliasScopeCard.vue";
 import CursorPager from "../components/CursorPager.vue";
 import EvidenceDisclosure from "../components/EvidenceDisclosure.vue";
@@ -657,7 +658,7 @@ onBeforeUnmount(() => {
           <p v-if="isAdvancedMode" class="muted" data-testid="index-target-filter-technical-ref">
             支持 target_ref、review_id、job_id 等原始引用筛选。
           </p>
-          <div v-if="!indexConsole.aliasScopes.length" class="empty">还没有别名范围。</div>
+          <BaseEmptyState v-if="!indexConsole.aliasScopes.length" description="还没有别名范围。" />
           <div v-else class="alias-grid">
             <AliasScopeCard v-for="item in indexConsole.aliasScopes" :key="item.alias_scope" :item="item" />
           </div>
@@ -719,7 +720,7 @@ onBeforeUnmount(() => {
           toggle-test-id="index-toggle-recovery-timeline"
           @toggle="toggleSection('recovery_timeline')"
         >
-          <div v-if="!indexConsole.recoveryTimelineItems.length" class="empty">当前没有恢复活动。</div>
+          <BaseEmptyState v-if="!indexConsole.recoveryTimelineItems.length" description="当前没有恢复活动。" />
           <template v-else>
             <VirtualList
               class="receipt-list"
@@ -804,7 +805,7 @@ onBeforeUnmount(() => {
           toggle-test-id="index-toggle-system-runtime"
           @toggle="toggleSection('system_runtime')"
         >
-          <div v-if="!indexConsole.systemRuntimeTimelineItems.length" class="empty">当前没有系统活动。</div>
+          <BaseEmptyState v-if="!indexConsole.systemRuntimeTimelineItems.length" description="当前没有系统活动。" />
           <template v-else>
             <VirtualList
               class="receipt-list"
@@ -864,7 +865,7 @@ onBeforeUnmount(() => {
           toggle-test-id="index-toggle-operator-action"
           @toggle="toggleSection('operator_action')"
         >
-          <div v-if="!indexConsole.operatorActionTimelineItems.length" class="empty">当前没有人工操作记录。</div>
+          <BaseEmptyState v-if="!indexConsole.operatorActionTimelineItems.length" description="当前没有人工操作记录。" />
           <template v-else>
             <VirtualList
               class="receipt-list"
@@ -924,7 +925,7 @@ onBeforeUnmount(() => {
           toggle-test-id="index-toggle-target-groups"
           @toggle="toggleSection('target_groups')"
         >
-          <div v-if="!prioritizedTargetGroups.length" class="empty">当前没有目标活动摘要。</div>
+          <BaseEmptyState v-if="!prioritizedTargetGroups.length" description="当前没有目标活动摘要。" />
           <template v-else>
             <VirtualList
               class="receipt-list target-group-list"
@@ -972,7 +973,7 @@ onBeforeUnmount(() => {
     </PanelShell>
 
     <PanelShell eyebrow="任务" title="重建索引与校验">
-      <div v-if="!indexConsole.jobs.length" class="empty">当前没有排队中的索引任务。</div>
+      <BaseEmptyState v-if="!indexConsole.jobs.length" description="当前没有排队中的索引任务。" />
       <VirtualList
         v-else
         class="job-table"

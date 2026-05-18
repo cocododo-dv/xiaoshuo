@@ -44,7 +44,7 @@ const structureFields = computed(() => {
     { key: "setback", label: "挫折", hint: "结尾比开场更糟，留下开放循环。" },
   ];
 });
-const repairGuideTitle = computed(() => (status.value === "rewrite" ? "废除指南" : "急救步骤"));
+const repairGuideTitle = computed(() => (status.value === "rewrite" ? "废除指南" : "修复步骤"));
 const repairGuideItems = computed(() => {
   if (status.value === "rewrite") {
     return [
@@ -140,7 +140,7 @@ function joinLines(value) {
     </label>
 
     <label class="triage-repair-field">
-      <span>急救备注</span>
+      <span>修复备注</span>
       <textarea
         class="control-input"
         :value="item.notes || ''"
@@ -161,7 +161,7 @@ function joinLines(value) {
         />
       </label>
       <label class="triage-repair-field">
-        <span>急救步骤</span>
+        <span>修复步骤</span>
         <textarea
           class="control-input compact-textarea"
           :value="joinLines(item.fix_steps)"

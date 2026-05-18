@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import EvidenceDisclosure from "../components/EvidenceDisclosure.vue";
@@ -681,7 +682,7 @@ function selectConfigSection(sectionId) {
           </form>
 
           <div class="llm-provider-list">
-            <div v-if="!providerRows.length" class="empty">还没有配置模型接入。</div>
+            <BaseEmptyState v-if="!providerRows.length" description="还没有配置模型接入。" />
             <div
               v-for="provider in providerRows"
               v-else
@@ -1113,7 +1114,7 @@ function selectConfigSection(sectionId) {
       </PanelShell>
 
       <PanelShell eyebrow="History" title="版本历史" description="草稿、激活和回滚入口。">
-        <div v-if="!categoryHistory.length" class="empty">当前类别还没有数据库快照。</div>
+        <BaseEmptyState v-if="!categoryHistory.length" description="当前类别还没有数据库快照。" />
         <div v-else class="config-history-list">
           <div v-for="snapshot in categoryHistory" :key="snapshot.snapshot_id" class="config-history-row">
             <div>

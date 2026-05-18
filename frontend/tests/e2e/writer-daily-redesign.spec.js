@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 const CHAPTER_ID = "CHWD_E2E";
 const SCENE_ID = `${CHAPTER_ID}_SC01`;
@@ -229,6 +229,14 @@ test("runs the daily writer cockpit proposal, revision, local candidate, and inl
   await page.route(`**/api/v1/scenes/${SCENE_ID}/deep-review`, async (route) => {
     await fulfill(route, deepReviewPayload(patchCandidate ? [patchCandidate] : []));
   });
+  await page.route(`**/api/v1/scenes/${SCENE_ID}/quality-state`, async (route) => {
+    await fulfill(route, {
+      scene_id: SCENE_ID,
+      contract: null,
+      promotion: { eligible: false, blockers: [] },
+      latest_run: null,
+    });
+  });
   await page.route(`**/api/v1/chapters/${CHAPTER_ID}/deep-review`, async (route) => {
     await fulfill(route, deepReviewPayload([]));
   });
@@ -296,6 +304,8 @@ test("runs the daily writer cockpit proposal, revision, local candidate, and inl
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.writer-daily.e2e" });
   await page.reload();
+  await switchToAdvancedMode(page);
+  await page.getByTestId("nav-deepdesk").click();
 
   await expect(page.getByTestId("writer-deep-desk")).toBeVisible();
   await page.getByTestId("draft-mode-scene").click();

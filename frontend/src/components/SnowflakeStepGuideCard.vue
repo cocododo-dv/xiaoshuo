@@ -105,15 +105,15 @@ function selectStep(step) {
 
 function pressureStatusLabel(status) {
   if (status === "pass") {
-    return "可继续";
+    return "通过";
   }
   if (status === "rewrite") {
-    return "需重构";
+    return "需要重写";
   }
   if (status === "maybe") {
-    return "需加压";
+    return "可以更强";
   }
-  return "待诊断";
+  return "还没检查";
 }
 
 function isExpanded(section) {
@@ -242,9 +242,9 @@ function toggleSection(section) {
     >
       <div class="step-guide-pressure-head">
         <div>
-          <span class="eyebrow">结构压力诊断</span>
+          <span class="eyebrow">结构强度</span>
           <strong>
-            结构压力
+            结构强度
             <template v-if="pressureDiagnostic.score !== null">{{ pressureDiagnostic.score }}</template>
             <small>{{ pressureStatusLabel(pressureDiagnostic.status) }}</small>
           </strong>
@@ -271,7 +271,7 @@ function toggleSection(section) {
           缺口：{{ pressureDiagnostic.flags.slice(0, 3).map(diagnosticLabel).join("、") }}
         </p>
         <p v-if="pressureDiagnostic.hardBlockers.length">
-          硬阻断：{{ pressureDiagnostic.hardBlockers.slice(0, 3).map(diagnosticLabel).join("、") }}
+          必须先修：{{ pressureDiagnostic.hardBlockers.slice(0, 3).map(diagnosticLabel).join("、") }}
         </p>
         <ol v-if="pressureDiagnostic.fixSteps.length">
           <li v-for="item in pressureDiagnostic.fixSteps.slice(0, 2)" :key="item">{{ item }}</li>
@@ -301,7 +301,7 @@ function toggleSection(section) {
         @click="emit('go-triage')"
       >
         <Crosshair :size="14" />
-        <span>进入场景急救</span>
+        <span>进入场景体检</span>
       </button>
       <button
         v-else

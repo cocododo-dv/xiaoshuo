@@ -32,7 +32,7 @@ async function persistScenePlanField(scene, key, value) {
     actionLabel: "保存场景字段",
     runningMessage: "正在保存场景规划字段...",
     successMessage: () => store.lastActionMessage || "场景字段已保存。",
-    nextStep: () => "下一步：继续补齐场景结构，或进入急救检查。",
+    nextStep: () => "下一步：继续补齐场景结构，或进入场景体检。",
     notify: false,
     action: () => store.updateScenePlan(scene.scene_plan_id, { [key]: value }),
   });

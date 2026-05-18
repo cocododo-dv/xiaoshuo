@@ -56,17 +56,17 @@ describe("workflow-driven shell metadata", () => {
 
     expect(router.viewMeta("workbench")).toEqual(
       expect.objectContaining({
-        label: "3 运行场景",
+        label: "运行场景",
         stepLabel: "运行场景",
         legacyLabel: "场景工作台",
-        group: "运行与审核",
+        stage: "toolbox",
         icon: "PlayCircle",
         nextViews: ["review", "manuscripts"],
       }),
     );
     expect(router.viewMeta("config")).toEqual(
       expect.objectContaining({
-        label: "1 配置环境",
+        label: "配置环境",
         stepLabel: "配置环境",
         legacyLabel: "系统配置",
       }),
@@ -87,11 +87,14 @@ describe("workflow-driven shell metadata", () => {
     const router = useShellRouter();
 
     expect(router.workflowGroups.map((group) => group.id)).toEqual([
-      "daily",
-      "production",
-      "advanced",
+      "shape",
+      "draft",
+      "polish",
+      "inform",
+      "decide",
+      "toolbox",
     ]);
-    expect(router.views.every((view) => view.label && view.legacyLabel && view.stepLabel && view.group && view.icon)).toBe(true);
+    expect(router.views.every((view) => view.label && view.legacyLabel && view.stepLabel && view.stage && view.icon)).toBe(true);
     expect(router.views.every((view) => Array.isArray(view.nextViews))).toBe(true);
     expect(router.views
       .filter((view) => view.writerPrimary)
@@ -108,7 +111,6 @@ describe("workflow-driven shell metadata", () => {
       .forEach((view) => {
         expect(view.writerGoal, `${view.id} writerGoal`).toBeTruthy();
         expect(view.writerDoneSignal, `${view.id} writerDoneSignal`).toBeTruthy();
-        expect(view.writerNextAction, `${view.id} writerNextAction`).toBeTruthy();
       });
   });
 
@@ -200,6 +202,10 @@ describe("writer and advanced UI modes", () => {
       "src/components/UiModeSwitch.vue",
       "src/components/EvidenceDisclosure.vue",
       "src/components/DangerConfirm.vue",
+      "src/components/base/BaseEmptyState.vue",
+      "src/components/base/BaseTooltip.vue",
+      "src/components/base/BaseButton.vue",
+      "src/components/base/BaseBadge.vue",
     ];
 
     expectedFiles.forEach((file) => {
@@ -223,12 +229,12 @@ describe("writer and advanced UI modes", () => {
     });
 
     try {
-      expect(wrapper.el.textContent).toContain("雪花工作台");
-      expect(wrapper.el.textContent).toContain("小修写作");
-      expect(wrapper.el.textContent).toContain("参考书学习");
-      expect(wrapper.el.textContent).toContain("待处理建议");
-      expect(wrapper.el.textContent).not.toContain("章节编排");
-      expect(wrapper.el.textContent).not.toContain("长篇雷达");
+      expect(wrapper.el.textContent).toContain("想清楚故事");
+      expect(wrapper.el.textContent).toContain("写出这一章");
+      expect(wrapper.el.textContent).toContain("打磨正文");
+      expect(wrapper.el.textContent).toContain("学参考书");
+      expect(wrapper.el.textContent).toContain("等你确认");
+      expect(wrapper.el.textContent).not.toContain("编排章节");
       expect(wrapper.el.textContent).not.toContain("文学质检");
       expect(wrapper.el.textContent).not.toContain("场景工作台");
       expect(wrapper.el.querySelector('[data-testid="nav-workbench-route"]')).toBeNull();
@@ -322,6 +328,40 @@ describe("writer and advanced UI modes", () => {
     }
   });
 
+  it("collapses the writer rail to an icon-only column without step numbers", async () => {
+    const { useUiMode } = await import("../src/composables/useUiMode.js");
+    const { default: WorkflowNav } = await import("../src/components/WorkflowNav.vue");
+    const router = useShellRouter();
+    const mode = useUiMode();
+
+    router.reset();
+    mode.setUiMode("writer");
+
+    const wrapper = mountComponent(WorkflowNav, {
+      views: router.views,
+      groups: router.workflowGroups,
+      activeView: router.activeView.value,
+      collapsed: true,
+    });
+
+    try {
+      const snowflakeButton = wrapper.el.querySelector('[data-testid="nav-snowflake-workbench"]');
+
+      expect(snowflakeButton).not.toBeNull();
+      // The writer step number must not render in the collapsed icon rail.
+      expect(wrapper.el.querySelector(".workflow-nav-number")).toBeNull();
+      expect(snowflakeButton.querySelector(".workflow-nav-copy")).toBeNull();
+
+      const styleSource = readSource("src/styles/app.css");
+      // The collapsed single-column grid must out-specify the writer 3-column grid.
+      expect(styleSource).toMatch(
+        /\.ui-mode-writer \.workflow-nav\.collapsed \.workflow-nav-btn[\s\S]*?grid-template-columns:\s*1fr/,
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("declares persisted shell rail collapse state and responsive styles", () => {
     const appSource = readSource("src/App.vue");
     const styleSource = readSource("src/styles/app.css");
@@ -346,7 +386,7 @@ describe("writer and advanced UI modes", () => {
     expect(componentSource).toContain('data-testid="writer-path-progress"');
     expect(componentSource).toContain('data-testid="writer-path-active-summary"');
     expect(styleSource).toContain(".writer-path-progress");
-    expect(styleSource).toMatch(/@media \(max-width:\s*768px\)[\s\S]*\.writer-path-list/);
+    expect(componentSource).toMatch(/@media \(max-width:\s*768px\)[\s\S]*\.journey-breadcrumb/);
   });
 
   it("keeps page headers outcome-first in guided mode and metadata-rich in advanced mode", async () => {
@@ -361,8 +401,8 @@ describe("writer and advanced UI modes", () => {
     const wrapper = mountComponent(WorkflowPageHeader, { viewId: "workbench" });
 
     try {
-      expect(wrapper.el.querySelector('[data-testid="workflow-guided-brief-workbench"]')).not.toBeNull();
       expect(wrapper.el.querySelector('[data-testid="workflow-advanced-meta-workbench"]')).toBeNull();
+      expect(wrapper.el.textContent).toContain(router.viewMeta("workbench").description);
 
       mode.setUiMode("advanced");
       await nextTick();
@@ -370,13 +410,12 @@ describe("writer and advanced UI modes", () => {
       const advancedMeta = wrapper.el.querySelector('[data-testid="workflow-advanced-meta-workbench"]');
       expect(advancedMeta?.textContent).toContain("view: workbench");
       expect(advancedMeta?.textContent).toContain("cache: light");
-      expect(wrapper.el.querySelector('[data-testid="workflow-guided-brief-workbench"]')).toBeNull();
     } finally {
       wrapper.unmount();
     }
   });
 
-  it("renders writer path goal, done signal, and next action in writer mode headers", async () => {
+  it("renders writer path goal and done signal in writer mode headers, leaving next action to the guidance card", async () => {
     const { useUiMode } = await import("../src/composables/useUiMode.js");
     const { default: WorkflowPageHeader } = await import("../src/components/WorkflowPageHeader.vue");
     const router = useShellRouter();
@@ -388,20 +427,21 @@ describe("writer and advanced UI modes", () => {
     const wrapper = mountComponent(WorkflowPageHeader, { viewId: "snowflake-workbench" });
 
     try {
-      const writerBrief = wrapper.el.querySelector('[data-testid="workflow-writer-brief-snowflake-workbench"]');
-
-      expect(writerBrief).not.toBeNull();
-      expect(writerBrief.textContent).toContain("当前目标");
-      expect(writerBrief.textContent).toContain(router.viewMeta("snowflake-workbench").writerGoal);
-      expect(writerBrief.textContent).toContain("完成信号");
-      expect(writerBrief.textContent).toContain(router.viewMeta("snowflake-workbench").writerDoneSignal);
-      expect(writerBrief.textContent).toContain("下一步");
-      expect(writerBrief.textContent).toContain(router.viewMeta("snowflake-workbench").writerNextAction);
+      // Writer mode shows description plus a compact 目标/完成信号 line; next
+      // action stays in the guidance card. Advanced metadata stays hidden.
+      const meta = router.viewMeta("snowflake-workbench");
+      expect(wrapper.el.textContent).toContain(meta.description);
+      const aim = wrapper.el.querySelector('[data-testid="workflow-writer-aim-snowflake-workbench"]');
+      expect(aim).not.toBeNull();
+      expect(aim.textContent).toContain(meta.writerGoal);
+      expect(aim.textContent).toContain(meta.writerDoneSignal);
+      expect(wrapper.el.querySelector('[data-testid="workflow-advanced-meta-snowflake-workbench"]')).toBeNull();
+      expect(meta.writerNextAction).toBeUndefined();
 
       mode.setUiMode("advanced");
       await nextTick();
 
-      expect(wrapper.el.querySelector('[data-testid="workflow-writer-brief-snowflake-workbench"]')).toBeNull();
+      expect(wrapper.el.querySelector('[data-testid="workflow-writer-aim-snowflake-workbench"]')).toBeNull();
       expect(wrapper.el.querySelector('[data-testid="workflow-advanced-meta-snowflake-workbench"]')).not.toBeNull();
     } finally {
       wrapper.unmount();

@@ -290,7 +290,7 @@ describe("reference learning shell registration", () => {
     expect(existsSync(REFERENCE_STORE_PATH)).toBe(true);
     expect(appSource).toContain("ReferenceLearningView");
     expect(routerSource).toContain('id: "reference"');
-    expect(routerSource).toContain('label: "10 学习参考"');
+    expect(routerSource).toContain('label: "学习参考"');
     expect(routerSource).toContain('legacyLabel: "参考书学习"');
   });
 });

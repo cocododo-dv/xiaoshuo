@@ -1,6 +1,7 @@
 <script setup>
 import { reactive } from "vue";
 
+import BaseEmptyState from "./base/BaseEmptyState.vue";
 import ProgressiveList from "./ProgressiveList.vue";
 import { useUiMode } from "../composables/useUiMode";
 import { formatGuidedTargetRef, formatReadableTargetRef } from "../lib/readableRefs";
@@ -301,7 +302,7 @@ function actionDisabled(row, action) {
 
 <template>
   <div class="drawer-body">
-    <div v-if="!props.items.length" class="empty">当前没有待处理的人工作业事件。</div>
+    <BaseEmptyState v-if="!props.items.length" description="当前没有待处理的人工作业事件。" />
 
     <ProgressiveList
       :items="props.items"

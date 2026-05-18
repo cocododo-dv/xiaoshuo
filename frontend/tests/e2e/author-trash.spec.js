@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 test("moves author records through trash, blocks ambiguous chapter delete, restores scenes, and purges clean chapters", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.author.trash.e2e" });
+  await switchToAdvancedMode(page);
 
   await page.getByTestId("nav-author").click();
   const authorWorkspaceView = page.getByTestId("author-workspace-view");

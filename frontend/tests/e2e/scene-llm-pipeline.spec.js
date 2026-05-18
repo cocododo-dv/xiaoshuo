@@ -1,10 +1,13 @@
 import { expect, test } from "@playwright/test";
 
-import { configureConnection } from "./helpers.js";
+import { configureConnection, switchToAdvancedMode } from "./helpers.js";
 
 test("runs a deterministic scene llm pipeline from generation evidence through archive", async ({ page }) => {
   await page.goto("/");
   await configureConnection(page, { operatorRef: "ops.scene-llm.e2e" });
+  await switchToAdvancedMode(page);
+  await page.getByTestId("nav-workbench").click();
+  await expect(page.getByTestId("scene-workbench-view")).toBeVisible();
 
   await page.getByTestId("scene-id-input").fill("CH001_SC01");
   await page.getByTestId("scene-load-button").click();

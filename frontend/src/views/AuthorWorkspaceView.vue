@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, reactive, ref, watch } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import VirtualList from "../components/VirtualList.vue";
@@ -604,7 +605,7 @@ onActivated(() => {
           </div>
           <FlowActionReceipt compact :receipt="receipt(AUTHOR_CHAPTER_SCOPE)" />
 
-          <div v-if="!visibleChapters.length" class="empty">当前还没有活跃章节。</div>
+          <BaseEmptyState v-if="!visibleChapters.length" description="当前还没有活跃章节。" />
           <VirtualList
             v-else
             class="author-list"
@@ -799,7 +800,7 @@ onActivated(() => {
           <FlowActionReceipt compact :receipt="receipt(AUTHOR_ORDER_SCOPE)" />
           <FlowActionReceipt compact :receipt="receipt(AUTHOR_SCENE_SCOPE)" />
 
-          <div v-if="!authorWorkspace.selectedChapterId" class="empty">请先选择或新建章节，再编辑场景。</div>
+          <BaseEmptyState v-if="!authorWorkspace.selectedChapterId" description="请先选择或新建章节，再编辑场景。" />
           <template v-else>
             <VirtualList
               class="author-scene-list"

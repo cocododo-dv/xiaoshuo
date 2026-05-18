@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
 
+import BaseEmptyState from "./base/BaseEmptyState.vue";
 import FlowActionReceipt from "./FlowActionReceipt.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useWriterDeepDeskStore } from "../stores/writerDeepDesk";
@@ -175,7 +176,7 @@ async function rollbackAutoRewrite() {
           <dd>{{ row.value || "待补足" }}</dd>
         </template>
       </dl>
-      <div v-else class="empty">当前场景还没有质量契约。</div>
+      <BaseEmptyState v-else description="当前场景还没有质量契约。" />
     </section>
 
     <section class="scene-auto-rewrite-panel" data-testid="scene-auto-rewrite-run">
@@ -237,7 +238,7 @@ async function rollbackAutoRewrite() {
         </div>
         <span class="badge">{{ inlineQualitySpanFindings.length }} 条</span>
       </div>
-      <div v-if="!inlineQualitySpanFindings.length" class="empty">暂未扫描当前作者稿。</div>
+      <BaseEmptyState v-if="!inlineQualitySpanFindings.length" description="暂未扫描当前作者稿。" />
       <article v-for="span in inlineQualitySpanFindings" :key="`${span.dimension}-${span.start}-${span.end}`" class="deep-finding">
         <div class="receipt-head compact">
           <strong>{{ severityLabel(span.severity) }} / {{ span.dimension }}</strong>
@@ -256,7 +257,7 @@ async function rollbackAutoRewrite() {
         </div>
         <span class="badge">{{ longformPressure.length }} 条</span>
       </div>
-      <div v-if="!longformPressure.length" class="empty">暂无高优先级长篇压力。</div>
+      <BaseEmptyState v-if="!longformPressure.length" description="暂无高优先级长篇压力。" />
       <article v-for="card in longformPressure" :key="card.card_id" class="deep-pressure-row">
         <div class="receipt-head compact">
           <strong>{{ longformCardTypeLabel(card.card_type) }}</strong>
@@ -267,7 +268,7 @@ async function rollbackAutoRewrite() {
     </section>
 
     <section class="deep-review-findings" data-testid="deep-review-findings">
-      <div v-if="!findings.length" class="empty">还没有深改批注。</div>
+      <BaseEmptyState v-if="!findings.length" description="还没有深改批注。" />
       <article v-for="finding in findings" :key="`${finding.lens}-${finding.dimension}-${finding.issue}`" class="deep-finding" :class="`severity-${finding.severity}`">
         <div class="receipt-head compact">
           <strong>{{ severityLabel(finding.severity) }} / {{ finding.dimension }}</strong>
@@ -282,7 +283,7 @@ async function rollbackAutoRewrite() {
 
     <section class="deep-lenses">
       <h4>Lens</h4>
-      <div v-if="!lensEvaluations.length" class="empty">暂无 lens 结果。</div>
+      <BaseEmptyState v-if="!lensEvaluations.length" description="暂无 lens 结果。" />
       <article v-for="lens in lensEvaluations" :key="lens.evaluation_id" class="deep-lens-row">
         <span>{{ lensLabel(lens.lens) }}</span>
         <strong>{{ scoreLabel(lens.overall_score) }}</strong>

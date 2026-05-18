@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { CheckCircle2, FileText, PlayCircle, RefreshCw, ShieldAlert, WandSparkles } from "lucide-vue-next";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
@@ -327,11 +328,15 @@ watch(() => router.routeContext.value?.target, (target) => {
   <section class="writer-flow-view" data-testid="writer-flow-view">
     <WorkflowPageHeader view-id="writer-flow" kicker="Flow" />
 
-    <div v-if="!project" class="writer-flow-empty">
-      <h2>选择一个雪花项目继续</h2>
-      <p>确认章节结构后，这里会接住当前章的起草、审阅和批准。</p>
-      <button type="button" @click="router.navigate('snowflake-workbench')">回到雪花工作台</button>
-    </div>
+    <BaseEmptyState
+      v-if="!project"
+      title="选择一个雪花项目继续"
+      description="确认章节结构后，这里会接住当前章的起草、审阅和批准。"
+    >
+      <template #action>
+        <button type="button" @click="router.navigate('snowflake-workbench')">回到雪花工作台</button>
+      </template>
+    </BaseEmptyState>
 
     <template v-else>
       <aside v-if="offlineBanner" class="writer-flow-banner" data-testid="writer-flow-offline-banner">
@@ -551,7 +556,6 @@ watch(() => router.routeContext.value?.target, (target) => {
   color: #22332f;
 }
 
-.writer-flow-empty,
 .writer-flow-hero,
 .writer-flow-panel,
 .writer-flow-chapters article,

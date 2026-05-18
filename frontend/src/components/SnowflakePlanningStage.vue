@@ -145,7 +145,7 @@ async function approveCurrentStep() {
     actionLabel: "确认步骤",
     runningMessage: currentStepDirty.value ? "正在先保存修改，再确认步骤..." : "正在确认当前雪花步骤...",
     successMessage: () => store.lastActionMessage || "雪花步骤已确认。",
-    nextStep: () => "下一步：继续确认下一层雪花，或在场景规划后进入急救。",
+    nextStep: () => "下一步：继续确认下一步，或在场景规划后进入场景体检。",
     action: () => store.approveCurrentStep(),
   });
 }
@@ -608,11 +608,11 @@ function updateSceneCrucible(fieldKey, index, value) {
           <div v-if="['scene_list', 'scene_details'].includes(currentStep.step_key)" class="snowflake-triage-handoff" data-testid="snowflake-triage-handoff">
             <div>
               <span class="eyebrow">下一步</span>
-              <strong>完成场景列表和场景规划后，进入场景急救。</strong>
-              <p class="muted">用合格、需修改、废除重写三类先筛薄弱场景，再决定是否整理成章节结构。</p>
+              <strong>完成场景列表和场景规划后，进入场景体检。</strong>
+              <p class="muted">检查每一场的强度，筛出薄弱场景修复后再生成章节大纲。</p>
             </div>
             <button type="button" class="primary action-btn" @click="$emit('go-triage')">
-              <WandSparkles :size="16" /><span>进入场景急救</span>
+              <WandSparkles :size="16" /><span>进入场景体检</span>
             </button>
           </div>
         </template>

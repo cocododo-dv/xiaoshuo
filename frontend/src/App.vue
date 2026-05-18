@@ -99,7 +99,7 @@ function toggleRailCollapsed() {
       <div class="brand">
         <div class="eyebrow">Snowflake First</div>
         <h1>雪花写作工作台</h1>
-        <p>把十步雪花、场景急救、结构确认和小修审核串成一条更清晰的作者主路径。</p>
+        <p>把构思、起草、打磨和确认收拢成一张安静的作者桌面。</p>
       </div>
 
       <UiModeSwitch />
@@ -114,7 +114,15 @@ function toggleRailCollapsed() {
 
     <main class="stage">
       <TransitionGroup name="notice-fade" tag="div" class="notice-stack stage-notices shell-notices" data-testid="notice-stack">
-        <div v-for="notice in notices" :key="notice.id" class="notice">
+        <div
+          v-for="notice in notices"
+          :key="notice.id"
+          class="notice"
+          :class="`notice-${notice.level || 'info'}`"
+          :role="notice.level === 'error' ? 'alert' : 'status'"
+          :aria-live="notice.level === 'error' ? 'assertive' : 'polite'"
+        >
+          <span v-if="notice.kicker" class="notice-kicker">{{ notice.kicker }}</span>
           {{ notice.message }}
         </div>
       </TransitionGroup>

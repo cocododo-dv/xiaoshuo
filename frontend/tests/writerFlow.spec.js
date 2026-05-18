@@ -50,7 +50,7 @@ describe("writer flow command center", () => {
     expect(router.viewMeta("writer-flow")).toEqual(expect.objectContaining({
       writerPrimary: true,
       writerOrder: 2,
-      writerLabel: "写作总控",
+      writerLabel: "写出这一章",
     }));
     expect(routerSource).toContain('id: "writer-flow"');
     expect(appSource).toContain('"writer-flow": defineAsyncComponent');

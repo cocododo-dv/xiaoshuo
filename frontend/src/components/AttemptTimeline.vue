@@ -1,4 +1,6 @@
 <script setup>
+import BaseEmptyState from "./base/BaseEmptyState.vue";
+
 defineProps({
   items: {
     type: Array,
@@ -21,7 +23,7 @@ function formatStatus(status) {
 
 <template>
   <div class="timeline" data-testid="attempt-timeline">
-    <div v-if="!items.length" class="empty">还没有执行尝试记录。</div>
+    <BaseEmptyState v-if="!items.length" description="还没有执行尝试记录。" />
     <div v-for="item in items" :key="item.attempt_id || item.step" class="attempt">
       <div class="attempt-step">{{ item.step }}</div>
       <div class="attempt-body">

@@ -482,19 +482,19 @@ describe("vue shell", () => {
     expect(source).toContain("WorkflowNav");
     expect(source).toContain("UiModeSwitch");
     expect(routerSource).toContain('id: "workbench"');
-    expect(routerSource).toContain('label: "3 运行场景"');
+    expect(routerSource).toContain('label: "运行场景"');
     expect(routerSource).toContain('legacyLabel: "场景工作台"');
     expect(routerSource).toContain('id: "review"');
-    expect(routerSource).toContain('label: "4 处理审核"');
+    expect(routerSource).toContain('label: "处理审核"');
     expect(routerSource).toContain('legacyLabel: "审核收件箱"');
     expect(routerSource).toContain('id: "longform"');
-    expect(routerSource).toContain('label: "6 长篇控制"');
+    expect(routerSource).toContain('label: "长篇控制"');
     expect(routerSource).toContain('legacyLabel: "长篇控制塔"');
     expect(routerSource).toContain('id: "index"');
-    expect(routerSource).toContain('label: "8 发布索引"');
+    expect(routerSource).toContain('label: "发布索引"');
     expect(routerSource).toContain('legacyLabel: "索引控制台"');
     expect(routerSource).toContain('id: "knowledge"');
-    expect(routerSource).toContain('label: "9 沉淀知识"');
+    expect(routerSource).toContain('label: "沉淀知识"');
     expect(routerSource).toContain('legacyLabel: "知识控制台"');
     expect(routerSource).toContain('cacheMode: "light"');
     expect(routerSource).not.toContain("chromeTitle");
@@ -517,7 +517,7 @@ describe("vue shell", () => {
     expect(source).toContain("InteropCenterView");
     expect(source).toContain("activeView === 'interop'");
     expect(routerSource).toContain('id: "interop"');
-    expect(routerSource).toContain('label: "11 导入导出"');
+    expect(routerSource).toContain('label: "导入导出"');
     expect(routerSource).toContain('legacyLabel: "互操作中心"');
   });
 });
@@ -628,7 +628,7 @@ describe("shell router", () => {
     const source = readFileSync(new URL("../src/router.js", import.meta.url), "utf8");
 
     expect(source).toContain('id: "interop"');
-    expect(source).toContain('label: "11 导入导出"');
+    expect(source).toContain('label: "导入导出"');
     expect(source).toContain('legacyLabel: "互操作中心"');
     expect(source).toContain('if (targetType === "knowledge_entry")');
     expect(source).toContain('return "knowledge"');

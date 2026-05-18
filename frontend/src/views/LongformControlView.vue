@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, onMounted, ref } from "vue";
 
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { formatChapterChoice, formatReadableTargetRef, formatSceneChoice } from "../lib/readableRefs";
@@ -278,7 +279,7 @@ onActivated(() => {
             </div>
             <span class="badge">{{ summary.critical_debt_count || 0 }} 关键</span>
           </div>
-          <div v-if="!debtRadar.length" class="empty">当前没有开放债务。</div>
+          <BaseEmptyState v-if="!debtRadar.length" description="当前没有开放债务。" />
           <div v-else class="longform-card-grid readable-grid">
             <article v-for="debt in debtRadar" :key="debt.promise_ref" class="longform-card">
               <div class="receipt-head compact">
@@ -317,7 +318,7 @@ onActivated(() => {
               <p class="muted receipt-copy">把仪表盘指标转成可处理的编辑动作；发布指导后仍需在审核收件箱批准。</p>
             </div>
           </div>
-          <div v-if="!cards.length" class="empty">暂无诊断卡。点击“生成诊断卡”开始结构巡检。</div>
+          <BaseEmptyState v-if="!cards.length" description="暂无诊断卡。点击“生成诊断卡”开始结构巡检。" />
           <div v-else class="longform-card-grid readable-grid">
             <article v-for="card in cards" :key="card.card_id" class="longform-card">
               <div class="receipt-head compact">
@@ -523,7 +524,7 @@ onActivated(() => {
               <p class="muted receipt-copy">缺终稿、聚合过期、人工复核和 LLM 异常集中查看。</p>
             </div>
           </div>
-          <div v-if="!continuityAlerts.length" class="empty">当前没有连续性告警。</div>
+          <BaseEmptyState v-if="!continuityAlerts.length" description="当前没有连续性告警。" />
           <div v-else class="longform-alert-list">
             <button
               v-for="alert in continuityAlerts"
