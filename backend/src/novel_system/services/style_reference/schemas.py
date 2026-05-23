@@ -177,11 +177,16 @@ class InputAssessmentLevel(str, Enum):
 
 
 class CloudPolicy(str, Enum):
-    """沿用仓库现有 cloud_policy 三档,不改语义。"""
+    """沿用 services/reference_learning.py:36 SUPPORTED_CLOUD_POLICIES 的三档,
+    与旧路由、旧前端、跨模块 mock 测试字面值一致。
 
+    Hotfix(PR-1 回归):v1.1 设计文档 §附录 B 写的 (local_only / hybrid / cloud_full)
+    与代码事实不符;按全局纪律 A 以代码事实为准,登记到 v1.2 修订清单第 6 条。
+    """
+
+    ALLOW_FULL_CLOUD = "allow_full_cloud"
+    SEGMENTS_ONLY = "segments_only"
     LOCAL_ONLY = "local_only"
-    HYBRID = "hybrid"
-    CLOUD_FULL = "cloud_full"
 
 
 # ---------------------------------------------------------------------------
