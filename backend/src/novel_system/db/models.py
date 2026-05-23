@@ -3,7 +3,18 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, Computed, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Computed,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from novel_system.db.base import Base
@@ -1492,4 +1503,277 @@ class SystemSecret(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Style Reference (v1.1) — 11 张表
+# 参见 plans/style-reference-v1-1-fancy-shannon.md 与
+# 《风格参考模块重构执行手册 v1.1》§4。
+# ---------------------------------------------------------------------------
+
+
+class StyleReferenceBook(Base):
+    __tablename__ = "style_reference_books"
+    __table_args__ = (
+        UniqueConstraint("text_checksum", name="uq_style_reference_books_text_checksum"),
+        Index("ix_style_reference_books_status_updated_at", "status", "updated_at"),
+    )
+
+    book_id: Mapped[str] = mapped_column(String, primary_key=True)
+    title: Mapped[str] = mapped_column(String)
+    author_label: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_kind: Mapped[str] = mapped_column(String)
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cloud_policy: Mapped[str] = mapped_column(String)
+    text_checksum: Mapped[str] = mapped_column(String)
+    total_chars: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    stats_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleReferenceParagraph(Base):
+    __tablename__ = "style_reference_paragraphs"
+    __table_args__ = (
+        Index(
+            "ix_style_reference_paragraphs_book_type",
+            "book_id",
+            "paragraph_type",
+        ),
+        Index(
+            "ix_style_reference_paragraphs_book_index",
+            "book_id",
+            "paragraph_index",
+        ),
+    )
+
+    paragraph_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("style_reference_books.book_id"))
+    paragraph_index: Mapped[int] = mapped_column(Integer)
+    paragraph_type: Mapped[str] = mapped_column(String)
+    start_offset: Mapped[int] = mapped_column(Integer)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    char_count: Mapped[int] = mapped_column(Integer)
+    classifier_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class StyleReferenceRun(Base):
+    __tablename__ = "style_reference_runs"
+    __table_args__ = (
+        Index("ix_style_reference_runs_book_status", "book_id", "status"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("style_reference_books.book_id"))
+    status: Mapped[str] = mapped_column(String, default="pending")
+    phase: Mapped[str] = mapped_column(String, default="ingest")
+    coverage_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleReferenceExtraction(Base):
+    __tablename__ = "style_reference_extractions"
+    __table_args__ = (
+        Index(
+            "ix_style_reference_extractions_book_layer_sub",
+            "book_id",
+            "layer",
+            "sub_dimension",
+        ),
+        Index(
+            "ix_style_reference_extractions_run_status",
+            "run_id",
+            "status",
+        ),
+    )
+
+    extraction_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("style_reference_books.book_id"))
+    run_id: Mapped[str] = mapped_column(ForeignKey("style_reference_runs.run_id"))
+    layer: Mapped[str] = mapped_column(String)
+    sub_dimension: Mapped[str] = mapped_column(String)
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    raw_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    validation_errors_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    purpose: Mapped[str] = mapped_column(String, default="extract")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleReferenceQuote(Base):
+    __tablename__ = "style_reference_quotes"
+    __table_args__ = (
+        Index("ix_style_reference_quotes_book", "book_id"),
+    )
+
+    quote_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("style_reference_books.book_id"))
+    # paragraph_id 可空:支持 anchor_kind=counter_example 的合成 quote 不指向真实段落
+    paragraph_id: Mapped[str | None] = mapped_column(
+        ForeignKey("style_reference_paragraphs.paragraph_id"), nullable=True
+    )
+    span_start: Mapped[int] = mapped_column(Integer)
+    span_end: Mapped[int] = mapped_column(Integer)
+    quote_text: Mapped[str] = mapped_column(Text)
+    illustrates_dims: Mapped[list[str]] = mapped_column(JSON, default=list)
+    extracted_features: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class StyleReferenceFinding(Base):
+    __tablename__ = "style_reference_findings"
+    __table_args__ = (
+        Index(
+            "ix_style_reference_findings_book_sub_kind",
+            "book_id",
+            "sub_dimension",
+            "finding_kind",
+        ),
+        UniqueConstraint("review_id", name="uq_style_reference_findings_review_id"),
+        UniqueConstraint(
+            "extraction_id",
+            "sub_dimension",
+            "finding_kind",
+            name="uq_style_reference_findings_extract_sub_kind",
+        ),
+    )
+
+    finding_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("style_reference_books.book_id"))
+    run_id: Mapped[str] = mapped_column(ForeignKey("style_reference_runs.run_id"))
+    extraction_id: Mapped[str] = mapped_column(
+        ForeignKey("style_reference_extractions.extraction_id")
+    )
+    sub_dimension: Mapped[str] = mapped_column(String)
+    finding_kind: Mapped[str] = mapped_column(String)
+    statement: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[str] = mapped_column(String, default="medium")
+    status: Mapped[str] = mapped_column(String, default="pending")
+    review_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleReferenceEvidence(Base):
+    __tablename__ = "style_reference_evidences"
+    __table_args__ = (
+        UniqueConstraint(
+            "finding_id",
+            "quote_id",
+            name="uq_style_reference_evidences_finding_quote",
+        ),
+    )
+
+    evidence_id: Mapped[str] = mapped_column(String, primary_key=True)
+    finding_id: Mapped[str] = mapped_column(ForeignKey("style_reference_findings.finding_id"))
+    quote_id: Mapped[str] = mapped_column(ForeignKey("style_reference_quotes.quote_id"))
+    anchor_kind: Mapped[str] = mapped_column(String)
+    is_synthetic: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class StyleReferenceProfile(Base):
+    __tablename__ = "style_reference_profiles"
+    __table_args__ = (
+        Index(
+            "ix_style_reference_profiles_book_status",
+            "book_id",
+            "status",
+        ),
+        Index("ix_style_reference_profiles_version_tag", "version_tag"),
+    )
+
+    profile_id: Mapped[str] = mapped_column(String, primary_key=True)
+    book_id: Mapped[str] = mapped_column(ForeignKey("style_reference_books.book_id"))
+    run_id: Mapped[str] = mapped_column(ForeignKey("style_reference_runs.run_id"))
+    title: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    profile_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    coverage_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_finding_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    version_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleReferenceInjectionBinding(Base):
+    __tablename__ = "style_reference_injection_bindings"
+    __table_args__ = (
+        Index(
+            "ix_style_reference_injection_bindings_profile_scope_ref",
+            "profile_id",
+            "scope",
+            "scope_ref_id",
+        ),
+        Index(
+            "ix_style_reference_injection_bindings_task_type",
+            "task_type",
+        ),
+    )
+
+    binding_id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("style_reference_profiles.profile_id"))
+    scope: Mapped[str] = mapped_column(String)
+    scope_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    task_type: Mapped[str] = mapped_column(String)
+    strategy: Mapped[str] = mapped_column(String)
+    config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String, default="active")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleReferenceValidationReport(Base):
+    __tablename__ = "style_reference_validation_reports"
+    __table_args__ = (
+        Index(
+            "ix_style_reference_validation_reports_profile_target",
+            "profile_id",
+            "target_ref_id",
+        ),
+        Index(
+            "ix_style_reference_validation_reports_verdict",
+            "verdict",
+        ),
+    )
+
+    report_id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("style_reference_profiles.profile_id"))
+    target_kind: Mapped[str] = mapped_column(String)
+    target_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    verdict: Mapped[str] = mapped_column(String)
+    quantitative_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    semantic_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    plagiarism_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    forbidden_hits_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    mode_executed: Mapped[str] = mapped_column(String, default="async_full")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class StyleReferenceBannedTerm(Base):
+    __tablename__ = "style_reference_banned_terms"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "term",
+            "scope",
+            name="uq_style_reference_banned_terms_profile_term_scope",
+        ),
+    )
+
+    term_id: Mapped[str] = mapped_column(String, primary_key=True)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("style_reference_profiles.profile_id"))
+    term: Mapped[str] = mapped_column(String)
+    replacement_hint: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str] = mapped_column(String)
+    scope: Mapped[str] = mapped_column(String, default="generation")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)

@@ -1,0 +1,391 @@
+"""11 张 style_reference_* 表的 ORM CRUD。
+
+PR-1 提供最小可用 CRUD,后续 PR 在此基础上扩展查询。
+所有方法操作 session 但不 commit;由调用方在 service / route 层统一提交。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from novel_system.db.models import (
+    StyleReferenceBannedTerm,
+    StyleReferenceBook,
+    StyleReferenceEvidence,
+    StyleReferenceExtraction,
+    StyleReferenceFinding,
+    StyleReferenceInjectionBinding,
+    StyleReferenceParagraph,
+    StyleReferenceProfile,
+    StyleReferenceQuote,
+    StyleReferenceRun,
+    StyleReferenceValidationReport,
+)
+
+
+class StyleReferenceRepository:
+    """11 张 style_reference_* 表的统一仓储。
+
+    用法::
+
+        repo = StyleReferenceRepository(session)
+        book = repo.create_book(book_id="sr_book_1", title="鲁迅短篇集", ...)
+        repo.session.commit()
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    # ------------------------------------------------------------------ books
+    def create_book(self, **kwargs: Any) -> StyleReferenceBook:
+        row = StyleReferenceBook(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_book(self, book_id: str) -> StyleReferenceBook | None:
+        return self.session.get(StyleReferenceBook, book_id)
+
+    def list_books(self, *, status: str | None = None) -> list[StyleReferenceBook]:
+        stmt = select(StyleReferenceBook)
+        if status is not None:
+            stmt = stmt.where(StyleReferenceBook.status == status)
+        return list(self.session.scalars(stmt).all())
+
+    def delete_book(self, book_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceBook).where(StyleReferenceBook.book_id == book_id)
+        )
+        return int(result.rowcount or 0)
+
+    # ------------------------------------------------------------- paragraphs
+    def create_paragraph(self, **kwargs: Any) -> StyleReferenceParagraph:
+        row = StyleReferenceParagraph(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_paragraph(self, paragraph_id: str) -> StyleReferenceParagraph | None:
+        return self.session.get(StyleReferenceParagraph, paragraph_id)
+
+    def list_paragraphs(
+        self,
+        book_id: str,
+        *,
+        paragraph_type: str | None = None,
+    ) -> list[StyleReferenceParagraph]:
+        stmt = (
+            select(StyleReferenceParagraph)
+            .where(StyleReferenceParagraph.book_id == book_id)
+            .order_by(StyleReferenceParagraph.paragraph_index)
+        )
+        if paragraph_type is not None:
+            stmt = stmt.where(StyleReferenceParagraph.paragraph_type == paragraph_type)
+        return list(self.session.scalars(stmt).all())
+
+    def delete_paragraphs_for_book(self, book_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceParagraph).where(StyleReferenceParagraph.book_id == book_id)
+        )
+        return int(result.rowcount or 0)
+
+    # ----------------------------------------------------------------- runs
+    def create_run(self, **kwargs: Any) -> StyleReferenceRun:
+        row = StyleReferenceRun(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_run(self, run_id: str) -> StyleReferenceRun | None:
+        return self.session.get(StyleReferenceRun, run_id)
+
+    def list_runs(
+        self,
+        *,
+        book_id: str | None = None,
+        status: str | None = None,
+    ) -> list[StyleReferenceRun]:
+        stmt = select(StyleReferenceRun)
+        if book_id is not None:
+            stmt = stmt.where(StyleReferenceRun.book_id == book_id)
+        if status is not None:
+            stmt = stmt.where(StyleReferenceRun.status == status)
+        return list(self.session.scalars(stmt).all())
+
+    def update_run(self, run_id: str, **updates: Any) -> StyleReferenceRun | None:
+        run = self.get_run(run_id)
+        if run is None:
+            return None
+        for key, value in updates.items():
+            setattr(run, key, value)
+        self.session.flush()
+        return run
+
+    def delete_run(self, run_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceRun).where(StyleReferenceRun.run_id == run_id)
+        )
+        return int(result.rowcount or 0)
+
+    # ----------------------------------------------------------- extractions
+    def create_extraction(self, **kwargs: Any) -> StyleReferenceExtraction:
+        row = StyleReferenceExtraction(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_extraction(self, extraction_id: str) -> StyleReferenceExtraction | None:
+        return self.session.get(StyleReferenceExtraction, extraction_id)
+
+    def list_extractions(
+        self,
+        *,
+        book_id: str | None = None,
+        run_id: str | None = None,
+        layer: str | None = None,
+        sub_dimension: str | None = None,
+    ) -> list[StyleReferenceExtraction]:
+        stmt = select(StyleReferenceExtraction)
+        if book_id is not None:
+            stmt = stmt.where(StyleReferenceExtraction.book_id == book_id)
+        if run_id is not None:
+            stmt = stmt.where(StyleReferenceExtraction.run_id == run_id)
+        if layer is not None:
+            stmt = stmt.where(StyleReferenceExtraction.layer == layer)
+        if sub_dimension is not None:
+            stmt = stmt.where(StyleReferenceExtraction.sub_dimension == sub_dimension)
+        return list(self.session.scalars(stmt).all())
+
+    def update_extraction(self, extraction_id: str, **updates: Any) -> StyleReferenceExtraction | None:
+        row = self.get_extraction(extraction_id)
+        if row is None:
+            return None
+        for key, value in updates.items():
+            setattr(row, key, value)
+        self.session.flush()
+        return row
+
+    def delete_extraction(self, extraction_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceExtraction).where(
+                StyleReferenceExtraction.extraction_id == extraction_id
+            )
+        )
+        return int(result.rowcount or 0)
+
+    # --------------------------------------------------------------- quotes
+    def create_quote(self, **kwargs: Any) -> StyleReferenceQuote:
+        row = StyleReferenceQuote(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_quote(self, quote_id: str) -> StyleReferenceQuote | None:
+        return self.session.get(StyleReferenceQuote, quote_id)
+
+    def list_quotes(self, book_id: str) -> list[StyleReferenceQuote]:
+        stmt = select(StyleReferenceQuote).where(StyleReferenceQuote.book_id == book_id)
+        return list(self.session.scalars(stmt).all())
+
+    def delete_quote(self, quote_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceQuote).where(StyleReferenceQuote.quote_id == quote_id)
+        )
+        return int(result.rowcount or 0)
+
+    # ------------------------------------------------------------ evidences
+    def create_evidence(self, **kwargs: Any) -> StyleReferenceEvidence:
+        row = StyleReferenceEvidence(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_evidences(self, finding_id: str) -> list[StyleReferenceEvidence]:
+        stmt = select(StyleReferenceEvidence).where(
+            StyleReferenceEvidence.finding_id == finding_id
+        )
+        return list(self.session.scalars(stmt).all())
+
+    def delete_evidence(self, evidence_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceEvidence).where(
+                StyleReferenceEvidence.evidence_id == evidence_id
+            )
+        )
+        return int(result.rowcount or 0)
+
+    # ------------------------------------------------------------- findings
+    def create_finding(self, **kwargs: Any) -> StyleReferenceFinding:
+        row = StyleReferenceFinding(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_finding(self, finding_id: str) -> StyleReferenceFinding | None:
+        return self.session.get(StyleReferenceFinding, finding_id)
+
+    def list_findings(
+        self,
+        *,
+        book_id: str | None = None,
+        run_id: str | None = None,
+        sub_dimension: str | None = None,
+        finding_kind: str | None = None,
+        status: str | None = None,
+    ) -> list[StyleReferenceFinding]:
+        stmt = select(StyleReferenceFinding)
+        if book_id is not None:
+            stmt = stmt.where(StyleReferenceFinding.book_id == book_id)
+        if run_id is not None:
+            stmt = stmt.where(StyleReferenceFinding.run_id == run_id)
+        if sub_dimension is not None:
+            stmt = stmt.where(StyleReferenceFinding.sub_dimension == sub_dimension)
+        if finding_kind is not None:
+            stmt = stmt.where(StyleReferenceFinding.finding_kind == finding_kind)
+        if status is not None:
+            stmt = stmt.where(StyleReferenceFinding.status == status)
+        return list(self.session.scalars(stmt).all())
+
+    def update_finding(self, finding_id: str, **updates: Any) -> StyleReferenceFinding | None:
+        row = self.get_finding(finding_id)
+        if row is None:
+            return None
+        for key, value in updates.items():
+            setattr(row, key, value)
+        self.session.flush()
+        return row
+
+    def delete_finding(self, finding_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceFinding).where(StyleReferenceFinding.finding_id == finding_id)
+        )
+        return int(result.rowcount or 0)
+
+    # ------------------------------------------------------------- profiles
+    def create_profile(self, **kwargs: Any) -> StyleReferenceProfile:
+        row = StyleReferenceProfile(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_profile(self, profile_id: str) -> StyleReferenceProfile | None:
+        return self.session.get(StyleReferenceProfile, profile_id)
+
+    def list_profiles(
+        self,
+        *,
+        book_id: str | None = None,
+        status: str | None = None,
+    ) -> list[StyleReferenceProfile]:
+        stmt = select(StyleReferenceProfile)
+        if book_id is not None:
+            stmt = stmt.where(StyleReferenceProfile.book_id == book_id)
+        if status is not None:
+            stmt = stmt.where(StyleReferenceProfile.status == status)
+        return list(self.session.scalars(stmt).all())
+
+    def update_profile(self, profile_id: str, **updates: Any) -> StyleReferenceProfile | None:
+        row = self.get_profile(profile_id)
+        if row is None:
+            return None
+        for key, value in updates.items():
+            setattr(row, key, value)
+        self.session.flush()
+        return row
+
+    def delete_profile(self, profile_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceProfile).where(StyleReferenceProfile.profile_id == profile_id)
+        )
+        return int(result.rowcount or 0)
+
+    # ---------------------------------------------------- injection bindings
+    def create_binding(self, **kwargs: Any) -> StyleReferenceInjectionBinding:
+        row = StyleReferenceInjectionBinding(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_binding(self, binding_id: str) -> StyleReferenceInjectionBinding | None:
+        return self.session.get(StyleReferenceInjectionBinding, binding_id)
+
+    def list_bindings(
+        self,
+        *,
+        profile_id: str | None = None,
+        task_type: str | None = None,
+    ) -> list[StyleReferenceInjectionBinding]:
+        stmt = select(StyleReferenceInjectionBinding)
+        if profile_id is not None:
+            stmt = stmt.where(StyleReferenceInjectionBinding.profile_id == profile_id)
+        if task_type is not None:
+            stmt = stmt.where(StyleReferenceInjectionBinding.task_type == task_type)
+        return list(self.session.scalars(stmt).all())
+
+    def delete_binding(self, binding_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceInjectionBinding).where(
+                StyleReferenceInjectionBinding.binding_id == binding_id
+            )
+        )
+        return int(result.rowcount or 0)
+
+    # -------------------------------------------------- validation reports
+    def create_validation_report(self, **kwargs: Any) -> StyleReferenceValidationReport:
+        row = StyleReferenceValidationReport(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def get_validation_report(self, report_id: str) -> StyleReferenceValidationReport | None:
+        return self.session.get(StyleReferenceValidationReport, report_id)
+
+    def list_validation_reports(
+        self,
+        *,
+        profile_id: str | None = None,
+        verdict: str | None = None,
+    ) -> list[StyleReferenceValidationReport]:
+        stmt = select(StyleReferenceValidationReport)
+        if profile_id is not None:
+            stmt = stmt.where(StyleReferenceValidationReport.profile_id == profile_id)
+        if verdict is not None:
+            stmt = stmt.where(StyleReferenceValidationReport.verdict == verdict)
+        return list(self.session.scalars(stmt).all())
+
+    def delete_validation_report(self, report_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceValidationReport).where(
+                StyleReferenceValidationReport.report_id == report_id
+            )
+        )
+        return int(result.rowcount or 0)
+
+    # ---------------------------------------------------------- banned terms
+    def create_banned_term(self, **kwargs: Any) -> StyleReferenceBannedTerm:
+        row = StyleReferenceBannedTerm(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_banned_terms(
+        self,
+        profile_id: str,
+        *,
+        scope: str | None = None,
+    ) -> list[StyleReferenceBannedTerm]:
+        stmt = select(StyleReferenceBannedTerm).where(
+            StyleReferenceBannedTerm.profile_id == profile_id
+        )
+        if scope is not None:
+            stmt = stmt.where(StyleReferenceBannedTerm.scope == scope)
+        return list(self.session.scalars(stmt).all())
+
+    def delete_banned_term(self, term_id: str) -> int:
+        result = self.session.execute(
+            delete(StyleReferenceBannedTerm).where(StyleReferenceBannedTerm.term_id == term_id)
+        )
+        return int(result.rowcount or 0)
