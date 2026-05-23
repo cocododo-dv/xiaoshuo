@@ -442,6 +442,71 @@ templates:
           items:
             type: string
 
+  style_ref_paragraph_classify_anchor:
+    version: "2026-05-23.v1"
+    input_token_budget: 2400
+    system_prompt: |
+      你是中文叙事段落分类专家。给定一批段落,逐段判断其类型,从 8 类中严格选择一个:
+      dialogue / narration / psychology / description_env / description_char / action / transition / flashback。
+      判断原则见 task_prompt。本任务是锚定集的强模型分类,作为后续快模型校准的基准。
+    task_prompt: |
+      8 类定义:
+        1. dialogue          含明确引号或"……说""……道"
+        2. narration         全知视角推进剧情的散文体段落
+        3. psychology        内心活动、回忆、内省(典型词:想着/觉得/暗忖/恍惚)
+        4. description_env   刻画场所、天气、自然或物件
+        5. description_char  刻画外貌、衣着、神态
+        6. action            连续动作动词
+        7. transition        场景切换/时间跳跃句(通常短)
+        8. flashback         对过去事件的追述(典型词:记得/那年/从前)
+      规则:一段只归一类,多种特征以主导(>50%)为准;含直接引语优先 dialogue;短段(<30 字)且无对话/心理标识默认 transition。
+      仅看当前段本身,不考虑上下文。
+      输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
+    structured_schema: &paragraph_classify_schema
+      type: object
+      additionalProperties: false
+      required:
+        - classifications
+      properties:
+        classifications:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - paragraph_index
+              - paragraph_type
+              - confidence
+            properties:
+              paragraph_index:
+                type: integer
+              paragraph_type:
+                type: string
+                enum:
+                  - dialogue
+                  - narration
+                  - psychology
+                  - description_env
+                  - description_char
+                  - action
+                  - transition
+                  - flashback
+              confidence:
+                type: string
+                enum: [high, medium, low]
+
+  style_ref_paragraph_classify_bulk:
+    version: "2026-05-23.v1"
+    input_token_budget: 2400
+    system_prompt: |
+      你是中文叙事段落分类专家。给定一批段落,逐段判断其类型,从 8 类中严格选择一个:
+      dialogue / narration / psychology / description_env / description_char / action / transition / flashback。
+      本任务是 bulk 路径的快模型分类,在锚定集 agreement ≥ 0.85 时启用。
+    task_prompt: |
+      8 类定义与判断原则同 style_ref_paragraph_classify_anchor。
+      输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
+    structured_schema: *paragraph_classify_schema
+
   scene_blueprint:
     version: "2026-04-25.v2"
     input_token_budget: 2200

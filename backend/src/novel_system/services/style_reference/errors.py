@@ -55,3 +55,22 @@ class LegacyBackupMissingError(StyleReferenceError):
             "`python -m novel_system.tools.reset_style_reference --backup`",
         )
         self.backup_dir = backup_dir
+
+
+class DuplicateBookError(StyleReferenceError):
+    """同 text_checksum 的 book 已存在(避免重复导入)。"""
+
+    def __init__(self, book_id: str, checksum: str) -> None:
+        super().__init__(
+            f"book with checksum {checksum[:12]!r} already exists as {book_id!r}",
+        )
+        self.book_id = book_id
+        self.checksum = checksum
+
+
+class EmptyBookError(StyleReferenceError):
+    """书籍文本在清洗 / 段落切分后为空。"""
+
+    def __init__(self, stage: str) -> None:
+        super().__init__(f"book text became empty after {stage}")
+        self.stage = stage

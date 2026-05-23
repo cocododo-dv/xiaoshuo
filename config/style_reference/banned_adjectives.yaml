@@ -1,0 +1,17 @@
+# Style Reference v1.1 禁用空泛形容词词表
+# 来源:《风格参考模块重构执行手册 v1.1》§A.4 / §6.7
+#
+# TODO(PR-3): extractor 校验装饰器会校验 finding.statement 是否命中此表
+# 任一命中 → raise BannedAdjectiveError(已在 errors.py 定义,PR-1 落地)
+
+- 文笔优美
+- 画面感强
+- 叙事流畅
+- 意境深远
+- 笔触细腻
+- 情感真挚
+- 文采斐然
+- 韵味无穷
+- 行云流水
+- 跃然纸上
+- 入木三分

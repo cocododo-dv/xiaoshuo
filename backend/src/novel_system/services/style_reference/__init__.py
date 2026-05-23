@@ -16,10 +16,25 @@ from novel_system.services.style_reference.dimensions import (
 )
 from novel_system.services.style_reference.errors import (
     BannedAdjectiveError,
+    DuplicateBookError,
+    EmptyBookError,
     EvidenceShortError,
     EvidenceSpanError,
     LegacyBackupMissingError,
     StyleReferenceError,
+)
+from novel_system.services.style_reference.ingest import IngestResult, IngestService, assess_input_size
+from novel_system.services.style_reference.metrics import (
+    METRIC_NAMES,
+    MetricName,
+    MetricsEngine,
+    ParagraphRecord,
+)
+from novel_system.services.style_reference.segmentation import (
+    ParagraphClassification,
+    SegmentationLLMError,
+    SegmentationResult,
+    classify_paragraphs,
 )
 from novel_system.services.style_reference.schemas import (
     AnchorKind,
@@ -84,6 +99,19 @@ __all__ = [
     "EvidenceShortError",
     "EvidenceSpanError",
     "LegacyBackupMissingError",
+    "DuplicateBookError",
+    "EmptyBookError",
+    "IngestService",
+    "IngestResult",
+    "assess_input_size",
+    "MetricsEngine",
+    "ParagraphRecord",
+    "MetricName",
+    "METRIC_NAMES",
+    "classify_paragraphs",
+    "ParagraphClassification",
+    "SegmentationResult",
+    "SegmentationLLMError",
     "StyleReferenceBookRow",
     "StyleReferenceParagraphRow",
     "StyleReferenceExtractionRow",

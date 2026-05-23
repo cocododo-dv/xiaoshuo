@@ -1,0 +1,26 @@
+# Style Reference v1.1 输入量门槛
+# 每层的输入量门槛: (skip 下限, low 下限, high 下限)
+# 来源:《风格参考模块重构执行手册 v1.1》§6.4 / §A.2
+#
+# 语义:
+# - total_chars < skip   → "skip"(该层完全跳过抽取,不消耗 LLM 调用)
+# - skip ≤ total_chars < low → "low"
+# - low ≤ total_chars < high → "medium"
+# - high ≤ total_chars       → "high"
+
+language:
+  skip: 10000
+  low: 30000
+  high: 50000
+narrative:
+  skip: 20000
+  low: 50000
+  high: 80000
+scene:
+  skip: 10000
+  low: 30000
+  high: 50000
+theme:
+  skip: 30000
+  low: 80000
+  high: 150000

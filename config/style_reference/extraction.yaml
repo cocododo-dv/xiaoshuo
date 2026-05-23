@@ -1,0 +1,25 @@
+# Style Reference v1.1 抽样与重试策略
+# 来源:《风格参考模块重构执行手册 v1.1》§A.3
+#
+# PR-2 实际消费:metrics / observations 两段
+# PR-3 实际消费:retry / forbidden_pattern_target_count / observation_target_count
+
+metrics:
+  use_all_paragraphs: true        # MetricsEngine 用全文计算单值与方差
+
+observations:
+  samples_per_sub_dimension:
+    language: 25
+    narrative: 20
+    scene: 25
+    theme: 15
+  stratified_sampling: true       # 按 paragraph_type 分层抽样
+  min_samples_per_type: 3         # 每种 type 至少抽 3 段
+
+# 以下为 PR-3 用,本 PR 仅占位
+retry:
+  max_targeted_retries: 2         # 第一级:单 observation 定向补抽
+  max_full_retries: 1             # 第二级:整 sub_dim 重抽
+
+forbidden_pattern_target_count: [0, 3]   # 每 sub_dim 期望产出 0-3 条
+observation_target_count: [3, 8]         # 每 sub_dim 期望产出 3-8 条
