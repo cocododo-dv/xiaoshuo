@@ -1638,11 +1638,14 @@ class StyleReferenceFinding(Base):
             "finding_kind",
         ),
         UniqueConstraint("review_id", name="uq_style_reference_findings_review_id"),
+        # PR-3 hotfix 0038:UNIQUE 复合 4 列(原 3 列与 §6.5 0-8 条 obs 输出矛盾)
+        # 详见 plans/style-reference-v1-1-fancy-shannon.md §"v1.2 文档修订清单 #8"
         UniqueConstraint(
             "extraction_id",
             "sub_dimension",
             "finding_kind",
-            name="uq_style_reference_findings_extract_sub_kind",
+            "statement_hash",
+            name="uq_style_reference_findings_extract_sub_kind_hash",
         ),
     )
 
@@ -1655,6 +1658,9 @@ class StyleReferenceFinding(Base):
     sub_dimension: Mapped[str] = mapped_column(String)
     finding_kind: Mapped[str] = mapped_column(String)
     statement: Mapped[str] = mapped_column(Text)
+    # PR-3 hotfix 0038:statement 的 SHA256[:16],用于 UNIQUE 复合;应用层 / repository
+    # 在 create_finding 时自动填充
+    statement_hash: Mapped[str] = mapped_column(String)
     confidence: Mapped[str] = mapped_column(String, default="medium")
     status: Mapped[str] = mapped_column(String, default="pending")
     review_id: Mapped[str | None] = mapped_column(String, nullable=True)

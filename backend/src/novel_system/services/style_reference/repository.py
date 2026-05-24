@@ -6,10 +6,20 @@ PR-1 提供最小可用 CRUD,后续 PR 在此基础上扩展查询。
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+
+
+def _compute_statement_hash(statement: str) -> str:
+    """统一 statement → SHA256[:16] 计算,供 UNIQUE 复合 4 列约束使用。
+
+    PR-3 hotfix 0038:同 (extraction_id, sub_dim, finding_kind, statement_hash)
+    唯一,允许同 sub_dim 同 kind 多条不同 statement 的 finding。
+    """
+    return hashlib.sha256((statement or "").strip().encode("utf-8")).hexdigest()[:16]
 
 from novel_system.db.models import (
     StyleReferenceBannedTerm,
@@ -219,6 +229,14 @@ class StyleReferenceRepository:
 
     # ------------------------------------------------------------- findings
     def create_finding(self, **kwargs: Any) -> StyleReferenceFinding:
+        """创建 finding 行。
+
+        若 caller 未传 statement_hash,自动从 statement 计算 SHA256[:16] 填入;
+        若 caller 显式传值则尊重 caller 选择(便于测试构造冲突场景)。
+        """
+        if "statement_hash" not in kwargs:
+            statement = kwargs.get("statement", "")
+            kwargs["statement_hash"] = _compute_statement_hash(statement)
         row = StyleReferenceFinding(**kwargs)
         self.session.add(row)
         self.session.flush()

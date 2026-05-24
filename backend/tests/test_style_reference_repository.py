@@ -106,7 +106,8 @@ def test_run_extraction_finding_chain_and_unique_constraint(
     # commit so the next IntegrityError + rollback only undoes the duplicate insert
     repo.session.commit()
 
-    # UNIQUE(extraction_id, sub_dimension, finding_kind) 必须在同 kind 下拦截
+    # PR-3 hotfix 0038:UNIQUE(extraction_id, sub_dim, kind, statement_hash) — 同
+    # statement_hash 才拒(相同 statement 重复)
     with pytest.raises(IntegrityError):
         with repo.session.begin_nested():
             repo.create_finding(
@@ -116,10 +117,24 @@ def test_run_extraction_finding_chain_and_unique_constraint(
                 extraction_id="sr_ext_1",
                 sub_dimension="language.rhetoric",
                 finding_kind="observation",
-                statement="另一条同 kind 应被拒",
+                statement="鲁迅在 rhetoric 上偏好白描",  # 与 sr_find_1 完全一致 → hash 相同
                 confidence="medium",
                 status="pending",
             )
+
+    # 同 sub_dim 同 kind 但 statement 不同 → 应允许并存(PR-3 hotfix 行为)
+    repo.create_finding(
+        finding_id="sr_find_3",
+        book_id="sr_book_1",
+        run_id="sr_run_1",
+        extraction_id="sr_ext_1",
+        sub_dimension="language.rhetoric",
+        finding_kind="observation",
+        statement="鲁迅善用反讽性短句",  # 与 sr_find_1 不同 → hash 不同
+        confidence="high",
+        status="pending",
+    )
+
     # 不同 kind 可并存(observation + forbidden_pattern)
     repo.create_finding(
         finding_id="sr_find_2",
@@ -134,6 +149,11 @@ def test_run_extraction_finding_chain_and_unique_constraint(
     )
     findings = repo.list_findings(book_id="sr_book_1", sub_dimension="language.rhetoric")
     assert {f.finding_kind for f in findings} == {"observation", "forbidden_pattern"}
+    # 3 条 finding:2 个 observation(不同 statement) + 1 个 forbidden_pattern
+    assert len(findings) == 3
+    # statement_hash 自动填且与 statement 一致
+    for f in findings:
+        assert f.statement_hash, "statement_hash 必须由 repository 自动填充"
 
 
 def test_quote_paragraph_id_nullable_for_counter_example(

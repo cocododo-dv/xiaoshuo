@@ -20,6 +20,7 @@ from alembic.config import Config
 REVISION_BASE = "20260515_0035"
 REVISION_DROP_LEGACY = "20260523_0036"
 REVISION_NEW_SCHEMA = "20260523_0037"
+REVISION_FINDINGS_HASH = "20260523_0038"
 
 NEW_TABLES = [
     "style_reference_books",
@@ -109,6 +110,22 @@ def _list_indexes(db_url: str, table_name: str) -> set[str]:
         engine.dispose()
 
 
+def _list_columns(db_url: str, table_name: str) -> set[str]:
+    engine = sa.create_engine(db_url)
+    try:
+        return {col["name"] for col in sa.inspect(engine).get_columns(table_name)}
+    finally:
+        engine.dispose()
+
+
+def _list_unique_constraints(db_url: str, table_name: str) -> list[dict]:
+    engine = sa.create_engine(db_url)
+    try:
+        return sa.inspect(engine).get_unique_constraints(table_name)
+    finally:
+        engine.dispose()
+
+
 def test_upgrade_creates_eleven_new_tables(
     isolated_database: Path,
     fake_backup: Path,
@@ -155,6 +172,53 @@ def test_upgrade_without_backup_raises(
     cfg = _alembic_config(db_url)
     with pytest.raises(RuntimeError, match=r"backups/style_reference_legacy_"):
         command.upgrade(cfg, "head")
+
+
+def test_findings_statement_hash_column_present(
+    isolated_database: Path,
+    fake_backup: Path,
+) -> None:
+    """0038 hotfix:findings 表必须有 statement_hash 列。"""
+    db_url = f"sqlite:///{isolated_database}"
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "head")
+    columns = _list_columns(db_url, "style_reference_findings")
+    assert "statement_hash" in columns, "0038 应为 findings 添加 statement_hash 列"
+
+
+def test_findings_unique_constraint_includes_statement_hash(
+    isolated_database: Path,
+    fake_backup: Path,
+) -> None:
+    """0038 hotfix:UNIQUE 复合 4 列 (extraction_id, sub_dim, finding_kind, statement_hash)。"""
+    db_url = f"sqlite:///{isolated_database}"
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "head")
+
+    uniques = _list_unique_constraints(db_url, "style_reference_findings")
+    # 应找到名为 ..._extract_sub_kind_hash 的约束
+    matching = [u for u in uniques if "statement_hash" in (u.get("column_names") or [])]
+    assert matching, f"UNIQUE 应含 statement_hash 列;实际:{uniques}"
+    target = matching[0]
+    assert set(target["column_names"]) == {
+        "extraction_id",
+        "sub_dimension",
+        "finding_kind",
+        "statement_hash",
+    }
+
+
+def test_downgrade_0038_removes_statement_hash(
+    isolated_database: Path,
+    fake_backup: Path,
+) -> None:
+    """0038 downgrade 后 statement_hash 列消失,旧 UNIQUE 3 列恢复。"""
+    db_url = f"sqlite:///{isolated_database}"
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, REVISION_NEW_SCHEMA)
+    columns = _list_columns(db_url, "style_reference_findings")
+    assert "statement_hash" not in columns
 
 
 def test_downgrade_drops_new_tables_then_recreates_legacy(
