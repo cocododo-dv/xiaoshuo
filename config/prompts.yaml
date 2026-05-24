@@ -636,6 +636,78 @@ templates:
           type: array
           items: *extract_evidence_schema
 
+  style_ref_synthesize_profile:
+    version: "2026-05-23.v1"
+    input_token_budget: 3500
+    system_prompt: |
+      你是中文叙事风格 Profile 聚合专家。给定一本书的 8 sub_dim findings 摘要
+      (observations + forbidden_patterns)与硬指标 baseline,聚合为一份 StyleProfile,
+      包含:
+        - profile_title:简短(<20 字)的画像标题
+        - narrative_summary:80-200 字的整体风格简述
+        - style_features:可迁移的语言层 / 节奏层写作机制(短句,可直接作 style_rule 用)
+        - narrative_patterns:可迁移的叙事 / 场景层模式
+        - banned_replication_rules:禁止复制的具体表达 / 模式(基于 forbidden_patterns 聚合)
+        - calibration_guidance:校准提示句(每条针对一个常见漂移,作 calibration_line 用)
+      约束:
+      - 输出字段全部为短句陈述(<120 字),不要复述 evidence
+      - 严禁空泛形容词("文笔优美""画面感强")
+      - 严禁照抄原文(banned_replication_rules 描述模式而非引用)
+    task_prompt: |
+      输入 payload 含 book_title / sub_dimensions / metrics_baseline / sample_quotes。
+      请按 schema 输出 profile;style_features / narrative_patterns /
+      banned_replication_rules / calibration_guidance 每个数组 4-10 条。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - profile_title
+        - narrative_summary
+        - style_features
+        - narrative_patterns
+        - banned_replication_rules
+      properties:
+        profile_title:
+          type: string
+        narrative_summary:
+          type: string
+        style_features:
+          type: array
+          items: {type: string}
+        narrative_patterns:
+          type: array
+          items: {type: string}
+        banned_replication_rules:
+          type: array
+          items: {type: string}
+        calibration_guidance:
+          type: array
+          items: {type: string}
+
+  style_ref_preview_generate:
+    version: "2026-05-23.v1"
+    input_token_budget: 1500
+    system_prompt: |
+      你是中文叙事写作示例生成助手。给定一份 StyleProfile 摘要与一个 paragraph_type
+      (dialogue / description_env / psychology 三选一),生成一段 ≤500 字的示例
+      中文文本,体现该 profile 的语言与叙事特征。
+      约束:
+      - 严禁照抄 seed_quote(只作为风格参考,不直接复用句子)
+      - 严禁使用空泛形容词("文笔优美""画面感强")
+      - 段落自包含,不依赖未给出的上下文
+    task_prompt: |
+      输入 payload 含 profile_summary / paragraph_type / seed_quote / style_features。
+      请返回 sample_text(≤500 字中文)与 paragraph_type。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [sample_text]
+      properties:
+        sample_text:
+          type: string
+        paragraph_type:
+          type: string
+
   scene_blueprint:
     version: "2026-04-25.v2"
     input_token_budget: 2200

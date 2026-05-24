@@ -29,6 +29,7 @@ from novel_system.api.routes import (
     snowflake,
     snowflake_workspace,
     style_profile,
+    style_reference,
     system_config,
     work_profile,
     writer_room,
@@ -139,4 +140,5 @@ def create_app() -> FastAPI:
     app.include_router(literary_eval.router)
     app.include_router(literary_quality.router)
     app.include_router(style_profile.router)
+    app.include_router(style_reference.router)
     return app

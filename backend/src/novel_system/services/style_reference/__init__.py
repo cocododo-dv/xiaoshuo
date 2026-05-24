@@ -32,7 +32,18 @@ from novel_system.services.style_reference.extractors import (
     NarrativeExtractor,
 )
 from novel_system.services.style_reference.ingest import IngestResult, IngestService, assess_input_size
+from novel_system.services.style_reference.materialization import (
+    MaterializationService,
+    MaterializeResult,
+)
+from novel_system.services.style_reference.preview import PreviewService
+from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
 from novel_system.services.style_reference.run_orchestrator import RunOrchestrator, RunResult
+from novel_system.services.style_reference.validation import (
+    run_sync_validate,
+    check_plagiarism,
+    check_forbidden_local,
+)
 from novel_system.services.style_reference.metrics import (
     METRIC_NAMES,
     MetricName,
@@ -81,6 +92,14 @@ from novel_system.services.style_reference.schemas import (
     ValidationMode,
     ValidationTargetKind,
     ValidationVerdict,
+    ProfileSubDimensionSummary,
+    SynthesizedProfile,
+    PlagiarismHit,
+    PlagiarismReport,
+    ForbiddenHit,
+    ValidationReport,
+    PreviewGeneratedSample,
+    PreviewSampleResult,
 )
 
 __all__ = [
@@ -119,6 +138,14 @@ __all__ = [
     "ExtractionFindingInput",
     "ExtractionOutput",
     "SupplementEvidenceOutput",
+    "ProfileSubDimensionSummary",
+    "SynthesizedProfile",
+    "PlagiarismHit",
+    "PlagiarismReport",
+    "ForbiddenHit",
+    "ValidationReport",
+    "PreviewGeneratedSample",
+    "PreviewSampleResult",
     "IngestService",
     "IngestResult",
     "assess_input_size",
@@ -129,6 +156,13 @@ __all__ = [
     "ExtractionRunResult",
     "RunOrchestrator",
     "RunResult",
+    "ProfileSynthesizer",
+    "MaterializationService",
+    "MaterializeResult",
+    "PreviewService",
+    "run_sync_validate",
+    "check_plagiarism",
+    "check_forbidden_local",
     "MetricsEngine",
     "ParagraphRecord",
     "MetricName",

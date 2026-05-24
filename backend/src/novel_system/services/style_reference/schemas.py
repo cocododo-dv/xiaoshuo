@@ -417,3 +417,105 @@ class SupplementEvidenceOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     additional_evidence: list[ExtractionEvidenceInput] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# PR-4 契约:synthesize / validation 简化版 / preview
+# ---------------------------------------------------------------------------
+
+
+class ProfileSubDimensionSummary(BaseModel):
+    """profile.profile_json.sub_dimensions[sub_dim_path] 的结构。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
+    observation_count: int = 0
+    forbidden_pattern_count: int = 0
+    quote_count: int = 0
+
+
+class SynthesizedProfile(BaseModel):
+    """`style_ref_synthesize_profile` LLM 节点返回结构。
+
+    与 PR-1 落地的 StyleReferenceProfile.profile_json 字段对齐;PR-4
+    profile_synthesizer 在外层补充 metrics_baseline / scene_samples_index /
+    sub_dimensions(从 findings + stats_json 聚合,非 LLM 产出)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_title: str = Field(min_length=1)
+    narrative_summary: str = Field(min_length=1)
+    style_features: list[str] = Field(default_factory=list)
+    narrative_patterns: list[str] = Field(default_factory=list)
+    banned_replication_rules: list[str] = Field(default_factory=list)
+    calibration_guidance: list[str] = Field(default_factory=list)
+
+
+# --- Validation 简化版(PR-4 范围;PR-7 加完整 quantitative / semantic)
+
+
+class PlagiarismHit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    matched_text: str
+    position: int  # generated_text 中匹配起点
+    matched_length: int
+
+
+class PlagiarismReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool
+    hits: list[PlagiarismHit] = Field(default_factory=list)
+    ngram_size: int = 8
+    threshold_chars: int = 12
+
+
+class ForbiddenHit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pattern_statement: str
+    matched_excerpt: str
+    severity: str = "error"
+
+
+class ValidationReport(BaseModel):
+    """sync_only 简化版 ValidationReport(PR-4)。
+
+    PR-7 加完整字段:quantitative / semantic / auto_rewrite 等。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: ValidationVerdict
+    mode_executed: ValidationMode = ValidationMode.SYNC_ONLY
+    quantitative_json: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_json: list[dict[str, Any]] = Field(default_factory=list)
+    plagiarism_json: dict[str, Any] = Field(default_factory=dict)
+    forbidden_hits_json: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# --- Preview
+
+
+class PreviewGeneratedSample(BaseModel):
+    """`style_ref_preview_generate` LLM 节点返回结构。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_text: str = Field(min_length=1)
+    paragraph_type: str | None = None
+
+
+class PreviewSampleResult(BaseModel):
+    """Preview endpoint 单条返回。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paragraph_type: str
+    sample_text: str
+    report_id: str | None = None
+    verdict: str | None = None
+    error: str | None = None
