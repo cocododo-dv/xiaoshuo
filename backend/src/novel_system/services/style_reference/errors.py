@@ -74,3 +74,19 @@ class EmptyBookError(StyleReferenceError):
     def __init__(self, stage: str) -> None:
         super().__init__(f"book text became empty after {stage}")
         self.stage = stage
+
+
+class LLMRequiredError(StyleReferenceError):
+    """操作需要启用 LLM 但当前 NOVEL_SYSTEM_LLM_ENABLED=false。
+
+    extractor / synthesize 等语义抽取操作必须有 LLM;UI 应捕获此异常并提示用户
+    在 SystemConfig 启用 LLM provider。
+    """
+
+    def __init__(self, operation: str) -> None:
+        super().__init__(
+            f"operation {operation!r} requires NOVEL_SYSTEM_LLM_ENABLED=true; "
+            "see SystemConfig to enable LLM provider",
+        )
+        self.operation = operation
+        self.next_action = "enable_llm_provider_in_system_config"

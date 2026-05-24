@@ -507,6 +507,135 @@ templates:
       输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
     structured_schema: *paragraph_classify_schema
 
+  style_ref_extract_language:
+    version: "2026-05-23.v1"
+    input_token_budget: 3000
+    system_prompt: |
+      你是中文叙事风格抽取专家。给定一个 sub_dimension(如 language.rhetoric)
+      与一批段落,产出该 sub_dimension 下的:
+        - 0-8 条 observations(正向特征)
+        - 0-3 条 forbidden_patterns(反向禁忌)
+      下列硬指标已对全文计算完毕,你提取的 observation 必须与之一致;
+      若你的描述与硬指标矛盾,以硬指标为准重新组织语言。
+      约束:
+      - 每条 observation / forbidden_pattern 必须 ≥ 2 evidence;每条 evidence 引用
+        paragraph_id + span + 原文 quote(quote 必须是段落原句,不允许改写)
+      - 严禁使用空泛形容词(如"文笔优美""画面感强""叙事流畅"等),要用具体、可
+        被验证的写作机制描述
+      - forbidden_pattern 描述作者明确不会用的写作模式(反向写作习惯);evidence 可以是
+        paragraph_quote / author_avoidance(统计反推)/ counter_example(LLM 合成反例)
+    task_prompt: |
+      输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
+      请按 schema 输出 observations 与 forbidden_patterns。
+      若你不确定某条 observation 是否成立(evidence 不足或不典型),请不要输出。
+      宁可输出更少的高质量条目,也不要凑数。
+    structured_schema: &extract_output_schema
+      type: object
+      additionalProperties: false
+      required:
+        - observations
+        - forbidden_patterns
+      properties:
+        observations:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            additionalProperties: false
+            required: [statement, finding_kind, evidence, sub_dimension]
+            properties:
+              statement:
+                type: string
+              confidence:
+                type: string
+                enum: [high, medium, low]
+              finding_kind:
+                type: string
+                enum: [observation]
+              sub_dimension:
+                type: string
+              evidence:
+                type: array
+                minItems: 2
+                items: &extract_evidence_schema
+                  type: object
+                  additionalProperties: false
+                  required: [quote]
+                  properties:
+                    paragraph_id:
+                      type: string
+                    span:
+                      type: array
+                      items: {type: integer}
+                      minItems: 2
+                      maxItems: 2
+                    quote:
+                      type: string
+                    illustrates_dims:
+                      type: array
+                      items: {type: string}
+                    anchor_kind:
+                      type: string
+                      enum: [paragraph_quote, author_avoidance, counter_example]
+                    note:
+                      type: string
+                    is_synthetic:
+                      type: integer
+        forbidden_patterns:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required: [statement, finding_kind, evidence, sub_dimension]
+            properties:
+              statement: {type: string}
+              confidence:
+                type: string
+                enum: [high, medium, low]
+              finding_kind:
+                type: string
+                enum: [forbidden_pattern]
+              sub_dimension: {type: string}
+              evidence:
+                type: array
+                minItems: 2
+                items: *extract_evidence_schema
+
+  style_ref_extract_narrative:
+    version: "2026-05-23.v1"
+    input_token_budget: 3000
+    system_prompt: |
+      你是中文叙事风格抽取专家(叙事层)。给定一个 sub_dimension(如
+      narrative.pacing)与一批段落,产出该 sub_dimension 下的 0-8 条
+      observations 与 0-3 条 forbidden_patterns。
+      约束与 style_ref_extract_language 一致;尤其注意叙事层关心视角(perspective)、
+      节奏(pacing)、时间处理(time_handling)、信息密度(information_density)。
+    task_prompt: |
+      输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
+      请按 schema 输出 observations 与 forbidden_patterns。
+      宁可输出更少的高质量条目,也不要凑数。
+    structured_schema: *extract_output_schema
+
+  style_ref_supplement_evidence:
+    version: "2026-05-23.v1"
+    input_token_budget: 2000
+    system_prompt: |
+      你是中文段落证据补抽专家。某条已抽出的 observation 当前 evidence 不足(<2)。
+      在给定的段落池中找出能支撑该 observation 的额外 evidence(quote 必须是段落原句)。
+    task_prompt: |
+      输入 payload 含 finding_statement / finding_kind / sub_dimension /
+      existing_evidence_count / paragraphs。
+      请返回 additional_evidence 列表(≥1 条);若段落池中无合适证据,返回空数组。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [additional_evidence]
+      properties:
+        additional_evidence:
+          type: array
+          items: *extract_evidence_schema
+
   scene_blueprint:
     version: "2026-04-25.v2"
     input_token_budget: 2200

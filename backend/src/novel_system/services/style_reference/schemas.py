@@ -12,7 +12,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from novel_system.services.style_reference.errors import EvidenceShortError
 
 
 # ---------------------------------------------------------------------------
@@ -341,3 +343,77 @@ class StyleReferenceBannedTermRow(_StyleReferenceRowBase):
     scope: BannedTermScope = BannedTermScope.GENERATION
     created_at: str
     updated_at: str
+
+
+# ---------------------------------------------------------------------------
+# PR-3 抽取契约(LLM 响应解析与重试链路使用)
+# ---------------------------------------------------------------------------
+
+
+class ExtractionEvidenceInput(BaseModel):
+    """单条 evidence,LLM 响应中 observations[i].evidence[j] 的解析目标。
+
+    PR-3 §6.5:每条 finding ≥ 2 evidence(在 ExtractionFindingInput 处校验)。
+    `anchor_kind=counter_example` 的合成 evidence 允许 `paragraph_id=None`。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    paragraph_id: str | None = None
+    span: tuple[int, int] | None = None
+    quote: str = Field(min_length=1)
+    illustrates_dims: list[str] = Field(default_factory=list)
+    anchor_kind: AnchorKind = AnchorKind.PARAGRAPH_QUOTE
+    note: str | None = None
+    is_synthetic: int = 0
+
+
+class ExtractionFindingInput(BaseModel):
+    """单条 finding(observation 或 forbidden_pattern)。
+
+    `@model_validator(mode="after")` 强制 evidence ≥ 2;失败 raise
+    `EvidenceShortError`(StyleReferenceError 子类),由 BaseExtractor 捕获并进入
+    两级重试链路(详见 §6.6)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str = Field(min_length=1)
+    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
+    finding_kind: FindingKind
+    evidence: list[ExtractionEvidenceInput] = Field(default_factory=list)
+    sub_dimension: str  # SubDimension.value;在 base.py 注入
+
+    @model_validator(mode="after")
+    def _check_evidence_count(self) -> "ExtractionFindingInput":
+        if len(self.evidence) < 2:
+            raise EvidenceShortError(
+                finding_ref=f"{self.sub_dimension}::{self.statement[:24]}",
+                evidence_count=len(self.evidence),
+            )
+        return self
+
+
+class ExtractionOutput(BaseModel):
+    """LLM 抽取响应 structured_output 的顶层结构。
+
+    §6.5:observations 0-8 条,forbidden_patterns 0-3 条。BaseExtractor 解析
+    LLM 响应时把 structured_output 通过 `ExtractionOutput.model_validate(...)`
+    转入;Pydantic 错误由 BaseExtractor 捕获并按重试链路处理。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    observations: list[ExtractionFindingInput] = Field(default_factory=list, max_length=8)
+    forbidden_patterns: list[ExtractionFindingInput] = Field(default_factory=list, max_length=3)
+
+
+class SupplementEvidenceOutput(BaseModel):
+    """`style_ref_supplement_evidence` LLM 节点返回结构。
+
+    第一级重试调用:为某条 finding 定向补抽 ≥1 条新 evidence。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    additional_evidence: list[ExtractionEvidenceInput] = Field(default_factory=list)

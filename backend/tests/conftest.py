@@ -173,3 +173,151 @@ def fake_paragraph_classifier():
             return "narration"
 
     return FakeLLMClient
+
+
+@pytest.fixture
+def fake_extractor_llm():
+    """PR-3 extractor 测试 LLMClient mock。
+
+    按 request.node_id 分发:
+    - style_ref_extract_language / _narrative → {observations:[], forbidden_patterns:[]}
+    - style_ref_supplement_evidence → {additional_evidence:[]}
+
+    rule:
+    - default:每次返回 3 obs + 1 forbid,每条带 2 evidence(快路径,首次过)
+    - evidence_short:obs 只带 1 evidence,触发重试;supplement 时补 1 条
+    - all_banned:obs.statement 全部命中"文笔优美"(BannedAdjective)
+    - fail_then_pass:第一次 obs 只带 1 evidence,supplement_evidence 调用返回 1 条
+      新 evidence(第一级重试通过)
+    """
+    import json
+    import re
+
+    class _FakeLLMResponse:
+        def __init__(self, structured: dict) -> None:
+            self.structured_output = structured
+            self.text = json.dumps(structured, ensure_ascii=False)
+            self.usage: dict = {}
+            self.finish_reason = "stop"
+            self.request_id = None
+            self.provider = "fake"
+            self.model = "fake"
+            self.raw_response: dict = {}
+            self.response_format = "json_object"
+
+    def _extract_payload(user_msg: str) -> dict:
+        # base.py 拼接约定:`task_prompt + "\n\n" + json.dumps(payload)`,payload
+        # JSON 一定在 user_msg 的尾部。找最后一段 "\n\n{" 即可定位外层 JSON 起点。
+        marker = "\n\n{"
+        marker_pos = user_msg.rfind(marker)
+        if marker_pos < 0:
+            return {}
+        start = marker_pos + len(marker) - 1  # 指向 '{'
+        try:
+            return json.loads(user_msg[start:])
+        except json.JSONDecodeError:
+            return {}
+
+    def _two_evidence_for(p: dict, *, n: int = 2) -> list[dict]:
+        return [
+            {
+                "paragraph_id": p.get("paragraph_id"),
+                "span": [0, min(20, len(p.get("text", "")))],
+                "quote": (p.get("text", "") or "ph_quote")[:20],
+                "illustrates_dims": [],
+                "anchor_kind": "paragraph_quote",
+            }
+            for _ in range(n)
+        ]
+
+    class FakeExtractorLLM:
+        def __init__(self, rule: str = "default") -> None:
+            self.rule = rule
+            self.call_count = 0
+            self.call_log: list[dict] = []
+            self._supplement_call = 0
+
+        def generate(self, request):  # noqa: ANN001
+            self.call_count += 1
+            node_id = getattr(request, "node_id", None) or ""
+            self.call_log.append({"node_id": node_id, "model": getattr(request, "model", None)})
+            user_msg = request.messages[-1]["content"]
+            payload = _extract_payload(user_msg)
+            paragraphs = payload.get("paragraphs") or []
+            sub_dim = payload.get("sub_dimension", "language.rhetoric")
+
+            if node_id == "style_ref_supplement_evidence":
+                self._supplement_call += 1
+                # 返回 1 条新 evidence(使 finding 凑齐 ≥2)
+                if paragraphs:
+                    p = paragraphs[0]
+                    return _FakeLLMResponse(
+                        {
+                            "additional_evidence": [
+                                {
+                                    "paragraph_id": p.get("paragraph_id"),
+                                    "span": [0, min(15, len(p.get("text", "")))],
+                                    "quote": (p.get("text", "") or "supp_quote")[:15],
+                                    "anchor_kind": "paragraph_quote",
+                                    "illustrates_dims": [],
+                                }
+                            ]
+                        }
+                    )
+                return _FakeLLMResponse({"additional_evidence": []})
+
+            # extract_language / extract_narrative
+            if not paragraphs:
+                return _FakeLLMResponse({"observations": [], "forbidden_patterns": []})
+
+            observations: list[dict] = []
+            forbidden: list[dict] = []
+            if self.rule == "all_banned":
+                # statement 全部命中
+                observations = [
+                    {
+                        "statement": "文笔优美,情感真挚",
+                        "confidence": "high",
+                        "finding_kind": "observation",
+                        "sub_dimension": sub_dim,
+                        "evidence": _two_evidence_for(paragraphs[0]),
+                    }
+                ]
+            elif self.rule in ("evidence_short", "fail_then_pass"):
+                # 仅 1 evidence
+                observations = [
+                    {
+                        "statement": f"{sub_dim} obs short A",
+                        "confidence": "medium",
+                        "finding_kind": "observation",
+                        "sub_dimension": sub_dim,
+                        "evidence": _two_evidence_for(paragraphs[0], n=1),
+                    }
+                ]
+            else:
+                # default: 3 obs + 1 forbid,各 2 evidence
+                for i, p in enumerate(paragraphs[:3]):
+                    observations.append(
+                        {
+                            "statement": f"{sub_dim} observation #{i}",
+                            "confidence": "high",
+                            "finding_kind": "observation",
+                            "sub_dimension": sub_dim,
+                            "evidence": _two_evidence_for(p),
+                        }
+                    )
+                if paragraphs:
+                    forbidden.append(
+                        {
+                            "statement": f"{sub_dim} forbidden pattern #0",
+                            "confidence": "medium",
+                            "finding_kind": "forbidden_pattern",
+                            "sub_dimension": sub_dim,
+                            "evidence": _two_evidence_for(paragraphs[0]),
+                        }
+                    )
+            return _FakeLLMResponse(
+                {"observations": observations, "forbidden_patterns": forbidden}
+            )
+
+    return FakeExtractorLLM
