@@ -228,14 +228,20 @@ describe("decision review decluttering", () => {
   });
 
   it("keeps reference candidate reversal controls visible after approval", () => {
-    const viewSource = readFileSync(path.join(SOURCE_ROOT, "src/views/ReferenceLearningView.vue"), "utf8");
-    const styleSource = readFileSync(path.join(SOURCE_ROOT, "src/styles/app.css"), "utf8");
-
-    expect(viewSource).toContain("rejectionHint");
-    expect(viewSource).toContain("reference-reject-button");
-    expect(viewSource).toContain('placeholder="可选原因"');
-    expect(styleSource).toContain(".reference-reject-button");
-    expect(styleSource).toContain(".reference-reject-button.is-reversal");
+    // PR-5 重写后 ReferenceLearningView 把审阅控件下沉到 FindingCard 组件;
+    // FindingCard 在 status=approved 后仍渲染「驳回」与「重置」按钮,等价于
+    // 旧的「reference candidate reversal」语义。
+    const cardSource = readFileSync(
+      path.join(SOURCE_ROOT, "src/components/styleReference/FindingCard.vue"),
+      "utf8",
+    );
+    expect(cardSource).toContain('finding.status !== \'approved\'');
+    expect(cardSource).toContain('finding.status !== \'rejected\'');
+    expect(cardSource).toContain('finding.status !== \'pending\'');
+    // 三个按钮:通过 / 驳回 / 重置
+    expect(cardSource).toContain('通过');
+    expect(cardSource).toContain('驳回');
+    expect(cardSource).toContain('重置');
   });
 
   it("separates human-review and review-item pagination in the inbox source", () => {

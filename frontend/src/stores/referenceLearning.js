@@ -1,27 +1,65 @@
+// referenceLearning store(PR-5 重写)
+// 状态结构对齐后端 /api/v2/style-reference/* 18 端点(PR-4 实装)
+//
+// useWriterPathProgress 契约保留 5 字段(不可改名 / 语义):
+//   - loaded
+//   - books
+//   - profiles
+//   - pendingDecisionCount
+//   - actionId
+//
+// 旧 round-based UI 已删除(advanceRun / approveFinding 旧 flow);新 PR-5
+// 走 RunOrchestrator + 按 sub_dim 分桶的 findings 视图。
+
 import { defineStore } from "pinia";
 
 import {
-  advanceReferenceLearningRun,
-  applyReferenceProfile as applyReferenceProfileRequest,
-  approveReview,
-  fetchReferenceBook,
-  fetchReferenceBooks,
-  fetchReferenceLearningTree,
-  fetchReferenceSegmentExcerpt,
-  importReferenceBookPath,
-  importReferenceBookUpload,
-  rejectReview,
-  startReferenceLearningRun,
-} from "../lib/api";
+  applyStyleReferenceProfile,
+  cancelStyleReferenceRun,
+  deleteStyleReferenceBinding,
+  deleteStyleReferenceBook,
+  fetchStyleReferenceBook,
+  fetchStyleReferenceProfile,
+  fetchStyleReferenceRun,
+  importStyleReferenceBookPath,
+  importStyleReferenceBookUpload,
+  listStyleReferenceBindings,
+  listStyleReferenceBooks,
+  listStyleReferenceProfiles,
+  listStyleReferenceRunFindings,
+  previewStyleReferenceProfile,
+  reclassifyStyleReferenceBook,
+  reviewStyleReferenceFinding,
+  startStyleReferenceRun,
+  synthesizeStyleReferenceProfile,
+} from "../lib/api/styleReference";
 import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
+
+const SUB_DIMS_PHASE_1 = [
+  "language.sentence_structure",
+  "language.vocabulary",
+  "language.rhetoric",
+  "language.punctuation",
+  "narrative.perspective",
+  "narrative.pacing",
+  "narrative.time_handling",
+  "narrative.information_density",
+];
+
+function emptyFindingsBucket() {
+  const bucket = {};
+  for (const dim of SUB_DIMS_PHASE_1) {
+    bucket[dim] = { observations: [], forbidden_patterns: [] };
+  }
+  return bucket;
+}
 
 function defaultPathDraft() {
   return {
     file_path: "",
     title: "",
     author_label: "",
-    cloud_policy: "allow_full_cloud",
-    analysis_focus: "style_structure",
+    cloud_policy: "local_only",
   };
 }
 
@@ -30,427 +68,433 @@ function defaultUploadDraft() {
     file: null,
     title: "",
     author_label: "",
-    cloud_policy: "allow_full_cloud",
-    analysis_focus: "style_structure",
+    cloud_policy: "local_only",
   };
 }
 
-function reviewIdForFinding(finding) {
-  return finding?.review?.review_id || finding?.review_id || "";
+function defaultApplyDraft() {
+  return {
+    scope: "project",
+    scope_ref_id: "",
+    task_type: "scene_generation",
+    strategy: "A",
+  };
 }
 
-function normalizeBookId(payload) {
-  return payload?.book_id || payload?.book?.book_id || "";
-}
-
-function normalizeRun(payload) {
-  return payload?.run || payload || null;
-}
-
-function decisionMessage(status) {
-  return status === "approved" ? "已批准 1 张候选卡。" : "已拒绝 1 张候选卡。";
-}
-
-const STALE_PROFILE_MESSAGE = "参考画像已过期，请继续分析重新生成画像。";
-
-function isStaleProfileError(error) {
-  return error?.code === "REFERENCE_PROFILE_STALE" || /stale|过期|重新生成/.test(error?.message || "");
+function generateActionId(prefix) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export const useReferenceLearningStore = defineStore("referenceLearning", {
   state: () => ({
+    // useWriterPathProgress 契约(保留命名/语义)
+    loaded: false,
     books: [],
-    selectedBookId: "",
-    detail: null,
-    learningTree: null,
-    learningTreeLoading: false,
+    profiles: [],
+    pendingDecisionCount: 0,
+    actionId: null,
+    // useWriterPathProgress 还消费 detail / lastApplicationGuidance
+    detail: null,                       // 历史字段;applyProfile 后更新为 { book, profiles }
+    lastApplicationGuidance: null,      // applyProfile 成功后写入 review_ids / binding_id 等
+
+    // PR-5 新增字段
+    selectedBookId: null,
+    currentBook: null,
     currentRun: null,
-    currentRound: null,
-    loading: false,
-    actionId: "",
-    error: "",
-    lastActionMessage: "",
+    findings: emptyFindingsBucket(),
+    currentProfile: null,
+    bindings: [],
+    previewSamples: [],
+
+    // 表单 drafts
     importMode: "path",
     pathDraft: defaultPathDraft(),
     uploadDraft: defaultUploadDraft(),
-    applyDraft: {
-      scope: "chapter",
-      scope_ref_id: "",
-    },
-    segmentExcerpts: {},
-    segmentExcerptLoading: {},
-    lastApplicationGuidance: null,
-    loaded: false,
+    applyDraft: defaultApplyDraft(),
+
+    // 通用 UI 状态
+    loading: false,
+    error: null,
+    lastActionMessage: null,
     stale: false,
   }),
+
   getters: {
-    selectedBook: (state) => state.books.find((book) => book.book_id === state.selectedBookId) || null,
-    profiles: (state) => state.detail?.profiles || [],
-    coverage: (state) => state.detail?.coverage || state.currentRun?.coverage || {},
-    findings: (state) => state.currentRound?.findings || [],
-    pendingDecisionCount: (state) =>
-      (state.currentRound?.findings || []).filter((finding) => {
-        const status = finding?.review?.status || finding?.status;
-        return status === "pending";
-      }).length,
-    approvedDecisionCount: (state) =>
-      (state.currentRound?.findings || []).filter((finding) => {
-        const status = finding?.review?.status || finding?.status;
-        return status === "approved";
-      }).length,
-    rejectedDecisionCount: (state) =>
-      (state.currentRound?.findings || []).filter((finding) => {
-        const status = finding?.review?.status || finding?.status;
-        return status === "rejected";
-      }).length,
+    selectedBook(state) {
+      return state.currentBook;
+    },
+    coverage(state) {
+      return state.currentRun?.coverage_json ?? {};
+    },
+    approvedDecisionCount(state) {
+      let count = 0;
+      for (const bucket of Object.values(state.findings)) {
+        for (const f of bucket.observations) {
+          if (f.status === "approved") count += 1;
+        }
+        for (const f of bucket.forbidden_patterns) {
+          if (f.status === "approved") count += 1;
+        }
+      }
+      return count;
+    },
+    rejectedDecisionCount(state) {
+      let count = 0;
+      for (const bucket of Object.values(state.findings)) {
+        for (const f of bucket.observations) {
+          if (f.status === "rejected") count += 1;
+        }
+        for (const f of bucket.forbidden_patterns) {
+          if (f.status === "rejected") count += 1;
+        }
+      }
+      return count;
+    },
+    hasReadyProfile(state) {
+      return state.profiles.some((p) => p.status === "active" || p.status === "draft");
+    },
   },
+
   actions: {
     markStale() {
       this.stale = true;
     },
     markFresh() {
-      this.loaded = true;
       this.stale = false;
     },
+
     resetImportDrafts() {
       this.pathDraft = defaultPathDraft();
       this.uploadDraft = defaultUploadDraft();
+      this.error = null;
     },
-    async initialize({ force = false } = {}) {
-      if (this.loaded && !this.stale && !force) {
-        return;
-      }
+
+    _setActionStart(prefix) {
+      this.actionId = generateActionId(prefix);
       this.loading = true;
-      this.error = "";
+      this.error = null;
+    },
+    _setActionEnd(message = null) {
+      this.loading = false;
+      this.actionId = null;
+      if (message) {
+        this.lastActionMessage = message;
+      }
+    },
+    _setActionError(error) {
+      this.loading = false;
+      this.actionId = null;
+      this.error = error?.message || String(error || "未知错误");
+      throw error;
+    },
+
+    async initialize() {
+      if (this.loaded && !this.stale) return;
+      await this.loadBooks();
+      this.loaded = true;
+      this.markFresh();
+    },
+
+    async loadBooks(status = null) {
+      this._setActionStart("load_books");
       try {
-        await this.loadBooks();
-        const nextBookId = this.selectedBookId || this.books[0]?.book_id || "";
-        if (nextBookId) {
-          await this.selectBook(nextBookId);
-        }
-        this.markFresh();
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.loading = false;
+        const data = await listStyleReferenceBooks(status ? { status } : {});
+        this.books = snapshotPayloadList(data?.books ?? []);
+        this._setActionEnd();
+      } catch (err) {
+        this._setActionError(err);
       }
     },
-    async loadBooks() {
-      const payload = await fetchReferenceBooks();
-      this.books = snapshotPayloadList(payload.items || []);
-      if (this.selectedBookId && !this.books.some((book) => book.book_id === this.selectedBookId)) {
-        this.selectedBookId = "";
-      }
-      return this.books;
-    },
+
     async selectBook(bookId) {
       if (!bookId) {
-        this.selectedBookId = "";
-        this.detail = null;
-        this.learningTree = null;
+        this.selectedBookId = null;
+        this.currentBook = null;
         this.currentRun = null;
-        this.currentRound = null;
-        this.segmentExcerpts = {};
-        this.segmentExcerptLoading = {};
-        this.lastApplicationGuidance = null;
-        return null;
+        this.findings = emptyFindingsBucket();
+        this.profiles = [];
+        this.currentProfile = null;
+        this.bindings = [];
+        this.previewSamples = [];
+        return;
       }
-      this.actionId = `select:${bookId}`;
-      this.error = "";
+      this._setActionStart("select_book");
       try {
-        if (bookId !== this.selectedBookId) {
-          this.learningTree = null;
-        }
-        const detail = await fetchReferenceBook(bookId);
+        const detail = await fetchStyleReferenceBook(bookId);
         this.selectedBookId = bookId;
-        this.detail = snapshotPayload(detail);
-        this.currentRun = snapshotPayload(detail.latest_run || null);
-        this.currentRound = snapshotPayload(detail.latest_round || this.currentRound || null);
-        this.segmentExcerpts = {};
-        this.segmentExcerptLoading = {};
-        this.lastApplicationGuidance = null;
-        return this.detail;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.actionId = "";
+        this.currentBook = snapshotPayload(detail?.book ?? null);
+        const profilesPayload = await listStyleReferenceProfiles({ bookId });
+        this.profiles = snapshotPayloadList(profilesPayload?.profiles ?? []);
+        // 找最近的 active / draft profile 作为 currentProfile
+        this.currentProfile = this.profiles.find((p) => p.status === "active")
+          || this.profiles.find((p) => p.status === "draft")
+          || null;
+        // run 与 findings 由调用方按需 loadRun / loadRunFindings
+        this.currentRun = null;
+        this.findings = emptyFindingsBucket();
+        this.previewSamples = [];
+        this.bindings = [];
+        this._setActionEnd();
+      } catch (err) {
+        this._setActionError(err);
       }
     },
-    async loadLearningTree(bookId = this.selectedBookId) {
-      if (!bookId) {
-        this.learningTree = null;
-        return null;
-      }
-      this.learningTreeLoading = true;
-      this.error = "";
+
+    async deleteBook(bookId) {
+      this._setActionStart("delete_book");
       try {
-        const tree = await fetchReferenceLearningTree(bookId);
-        this.learningTree = snapshotPayload(tree);
-        return this.learningTree;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.learningTreeLoading = false;
+        await deleteStyleReferenceBook(bookId);
+        this.books = this.books.filter((b) => b.book_id !== bookId);
+        if (this.selectedBookId === bookId) {
+          await this.selectBook(null);
+        }
+        this._setActionEnd("已删除参考书及其衍生数据。");
+      } catch (err) {
+        this._setActionError(err);
       }
     },
-    async importPath(payload = this.pathDraft) {
-      this.actionId = "import-path";
-      this.error = "";
+
+    async reclassifyBook(bookId) {
+      this._setActionStart("reclassify_book");
       try {
-        const result = await importReferenceBookPath({
-          ...defaultPathDraft(),
-          ...payload,
+        const result = await reclassifyStyleReferenceBook(bookId);
+        this._setActionEnd(`段落重新分类已${result?.status === "reclassify_pending" ? "排队" : "执行"}。`);
+      } catch (err) {
+        this._setActionError(err);
+      }
+    },
+
+    async importPath() {
+      this._setActionStart("import_path");
+      try {
+        const payload = { ...this.pathDraft };
+        const result = await importStyleReferenceBookPath(payload);
+        await this.loadBooks();
+        if (result?.book?.book_id) {
+          await this.selectBook(result.book.book_id);
+        }
+        this.resetImportDrafts();
+        this._setActionEnd("参考书已导入并完成分段。");
+        return result;
+      } catch (err) {
+        this._setActionError(err);
+      }
+    },
+
+    async importUpload() {
+      this._setActionStart("import_upload");
+      try {
+        if (!this.uploadDraft.file) {
+          throw new Error("请先选择要上传的文件。");
+        }
+        const result = await importStyleReferenceBookUpload({
+          file: this.uploadDraft.file,
+          title: this.uploadDraft.title,
+          authorLabel: this.uploadDraft.author_label,
+          cloudPolicy: this.uploadDraft.cloud_policy,
         });
-        const bookId = normalizeBookId(result);
         await this.loadBooks();
-        if (bookId) {
-          await this.selectBook(bookId);
+        if (result?.book?.book_id) {
+          await this.selectBook(result.book.book_id);
         }
-        this.lastActionMessage = `已导入参考书：${result.book?.title || bookId || "未命名"}。下一步：启动学习。`;
+        this.resetImportDrafts();
+        this._setActionEnd("参考书已上传并完成分段。");
         return result;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.actionId = "";
+      } catch (err) {
+        this._setActionError(err);
       }
     },
-    async importUpload(file = this.uploadDraft.file, overrides = {}) {
-      if (!file) {
-        throw new Error("请选择一个 TXT 或 MD 文件");
-      }
-      this.actionId = "import-upload";
-      this.error = "";
-      try {
-        const result = await importReferenceBookUpload({
-          ...defaultUploadDraft(),
-          ...this.uploadDraft,
-          ...overrides,
-          file,
-        });
-        const bookId = normalizeBookId(result);
-        await this.loadBooks();
-        if (bookId) {
-          await this.selectBook(bookId);
-        }
-        this.lastActionMessage = `已导入参考书：${result.book?.title || bookId || "未命名"}。下一步：启动学习。`;
-        return result;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.actionId = "";
-      }
-    },
-    async startRun(payload = { batch_size: 8 }) {
-      const bookId = this.selectedBookId;
-      if (!bookId) {
-        throw new Error("请先选择一本参考书");
-      }
-      this.actionId = "start-run";
-      this.error = "";
-      try {
-        const result = await startReferenceLearningRun(bookId, payload);
-        this.currentRun = snapshotPayload(normalizeRun(result));
-        this.currentRound = null;
-        await this.loadBooks();
-        this.lastActionMessage = "学习任务已启动。下一步：点击「继续分析」生成候选卡。";
-        return result;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.actionId = "";
-      }
-    },
-    async advanceRun() {
-      const bookId = this.selectedBookId;
-      const runId = this.currentRun?.run_id || this.detail?.latest_run?.run_id;
-      if (!bookId || !runId) {
-        throw new Error("请先启动学习任务");
-      }
-      this.actionId = "advance-run";
-      this.error = "";
-      try {
-        const result = await advanceReferenceLearningRun(bookId, runId);
-        if (result.run) {
-          this.currentRun = snapshotPayload(result.run);
-        }
-        if (result.round) {
-          this.currentRound = snapshotPayload(result.round);
-          this.lastActionMessage = `已生成第 ${result.round.round_index || 1} 轮候选卡，请审核 ${
-            result.round.findings?.length || 0
-          } 张卡片。`;
-        }
-        if (result.profile) {
-          this.currentRound = null;
-          this.lastActionMessage = "参考书画像已生成。下一步：选择应用范围，并创建审核项。";
-        }
-        await this.loadBooks();
-        if (bookId) {
-          await this.selectBook(bookId);
-          if (result.round) {
-            this.currentRound = snapshotPayload(result.round);
-          }
-        }
-        return result;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.actionId = "";
-      }
-    },
-    updateFindingDecision(reviewId, status, result = {}) {
-      if (!this.currentRound?.findings?.length) {
+
+    async startRun(layers = ["language", "narrative"]) {
+      if (!this.selectedBookId) {
+        this.error = "请先选择一本参考书。";
         return;
       }
-      const findings = this.currentRound.findings.map((finding) => {
-        if (reviewIdForFinding(finding) !== reviewId) {
-          return finding;
+      this._setActionStart("start_run");
+      try {
+        const result = await startStyleReferenceRun(this.selectedBookId, { layers });
+        if (result?.run_id) {
+          await this.loadRun(result.run_id);
+          await this.loadRunFindings(result.run_id);
         }
-        const review = {
-          ...(finding.review || {}),
-          ...result,
-          review_id: reviewId,
-          status,
-        };
-        return {
-          ...finding,
-          status,
-          review,
-        };
-      });
-      this.currentRound = snapshotPayload({
-        ...this.currentRound,
-        findings,
-      });
-    },
-    async approveFinding(reviewId, payload = {}) {
-      if (!reviewId) {
-        throw new Error("缺少审核项 ID");
-      }
-      this.actionId = `approve:${reviewId}`;
-      this.error = "";
-      try {
-        const result = await approveReview(reviewId, payload);
-        this.updateFindingDecision(reviewId, "approved", result);
-        this.lastActionMessage = decisionMessage("approved", reviewId, result);
+        this._setActionEnd("抽取已完成,可查看 8 sub_dim findings。");
         return result;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.actionId = "";
+      } catch (err) {
+        this._setActionError(err);
       }
     },
-    async rejectFinding(reviewId, reason = "") {
-      if (!reviewId) {
-        throw new Error("缺少审核项 ID");
-      }
-      this.actionId = `reject:${reviewId}`;
-      this.error = "";
+
+    async loadRun(runId) {
       try {
-        const result = await rejectReview(reviewId, reason ? { reason } : {});
-        this.updateFindingDecision(reviewId, "rejected", result);
-        this.lastActionMessage = decisionMessage("rejected", reviewId, result);
-        return result;
-      } catch (error) {
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.actionId = "";
+        const data = await fetchStyleReferenceRun(runId);
+        this.currentRun = snapshotPayload(data?.run ?? null);
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
       }
     },
-    async applyProfile(profileId, payload = this.applyDraft) {
-      const bookId = this.selectedBookId || this.detail?.book?.book_id;
-      if (!bookId || !profileId) {
-        throw new Error("缺少参考书画像");
-      }
-      this.actionId = `apply:${profileId}`;
-      this.error = "";
-      this.lastApplicationGuidance = null;
+
+    async cancelRun(runId) {
+      this._setActionStart("cancel_run");
       try {
-        const result = await applyReferenceProfileRequest(bookId, profileId, {
-          scope: payload.scope || "global",
-          scope_ref_id: payload.scope === "global" ? "global" : payload.scope_ref_id,
-        });
-        const reviewIds = (result.reviews || []).map((review) => review.review_id).filter(Boolean);
-        this.mergeProfileApplicationStatus(profileId, result.application_status || {
-          total: reviewIds.length,
-          pending: reviewIds.length,
-          approved: 0,
-          rejected: 0,
-          review_ids: reviewIds,
-          scope: payload.scope || "global",
-          scope_ref_id: payload.scope === "global" ? "global" : payload.scope_ref_id,
-        });
-        this.lastApplicationGuidance = snapshotPayload(result.application_guidance || null);
-        this.lastActionMessage = `已创建 ${reviewIds.length || 1} 个应用审核项，请到审核收件箱确认。`;
-        return result;
-      } catch (error) {
-        if (isStaleProfileError(error)) {
-          this.error = STALE_PROFILE_MESSAGE;
-          this.lastActionMessage = STALE_PROFILE_MESSAGE;
-          try {
-            await this.selectBook(bookId);
-          } catch {
+        await cancelStyleReferenceRun(runId);
+        if (this.currentRun && this.currentRun.run_id === runId) {
+          this.currentRun = { ...this.currentRun, status: "cancelled" };
+        }
+        this._setActionEnd("已取消抽取。");
+      } catch (err) {
+        this._setActionError(err);
+      }
+    },
+
+    async loadRunFindings(runId, filters = {}) {
+      try {
+        const data = await listStyleReferenceRunFindings(runId, filters);
+        const bucket = emptyFindingsBucket();
+        for (const f of data?.findings ?? []) {
+          const subDim = f.sub_dimension;
+          if (!bucket[subDim]) {
+            bucket[subDim] = { observations: [], forbidden_patterns: [] };
           }
-          this.error = STALE_PROFILE_MESSAGE;
-          throw new Error(STALE_PROFILE_MESSAGE);
+          if (f.finding_kind === "forbidden_pattern") {
+            bucket[subDim].forbidden_patterns.push(snapshotPayload(f));
+          } else {
+            bucket[subDim].observations.push(snapshotPayload(f));
+          }
         }
-        this.error = error.message;
-        throw error;
-      } finally {
-        this.actionId = "";
+        this.findings = bucket;
+        this._recountPendingDecisions();
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
       }
     },
-    mergeProfileApplicationStatus(profileId, applicationStatus) {
-      if (!profileId || !this.detail?.profiles?.length || !applicationStatus) {
-        return;
-      }
-      this.detail = snapshotPayload({
-        ...this.detail,
-        profiles: this.detail.profiles.map((profile) =>
-          profile.profile_id === profileId
-            ? {
-                ...profile,
-                application_status: {
-                  ...(profile.application_status || {}),
-                  ...applicationStatus,
-                },
-              }
-            : profile,
-        ),
-      });
-    },
-    async fetchSegmentExcerpt(segmentId) {
-      const bookId = this.selectedBookId || this.detail?.book?.book_id;
-      if (!bookId || !segmentId) {
-        throw new Error("缺少参考书片段");
-      }
-      if (this.segmentExcerpts[segmentId]) {
-        return this.segmentExcerpts[segmentId];
-      }
-      this.segmentExcerptLoading = {
-        ...this.segmentExcerptLoading,
-        [segmentId]: true,
-      };
+
+    async reviewFinding(findingId, decision, comment = null) {
+      this._setActionStart("review_finding");
       try {
-        const result = await fetchReferenceSegmentExcerpt(bookId, segmentId);
-        this.segmentExcerpts = {
-          ...this.segmentExcerpts,
-          [segmentId]: snapshotPayload(result),
-        };
+        const result = await reviewStyleReferenceFinding(findingId, { decision, comment });
+        // 更新本地 finding.status
+        for (const bucket of Object.values(this.findings)) {
+          for (const list of [bucket.observations, bucket.forbidden_patterns]) {
+            const idx = list.findIndex((f) => f.finding_id === findingId);
+            if (idx >= 0) {
+              list[idx] = {
+                ...list[idx],
+                status: decision,
+                review_id: result?.review_id ?? list[idx].review_id,
+              };
+            }
+          }
+        }
+        this._recountPendingDecisions();
+        this._setActionEnd(`finding 已${decision === "approved" ? "通过" : decision === "rejected" ? "驳回" : "重置为 pending"}。`);
         return result;
-      } finally {
-        this.segmentExcerptLoading = {
-          ...this.segmentExcerptLoading,
-          [segmentId]: false,
-        };
+      } catch (err) {
+        this._setActionError(err);
+      }
+    },
+
+    _recountPendingDecisions() {
+      let pending = 0;
+      for (const bucket of Object.values(this.findings)) {
+        for (const f of bucket.observations) {
+          if (f.status === "pending") pending += 1;
+        }
+        for (const f of bucket.forbidden_patterns) {
+          if (f.status === "pending") pending += 1;
+        }
+      }
+      this.pendingDecisionCount = pending;
+    },
+
+    async synthesizeProfile(runId) {
+      this._setActionStart("synthesize_profile");
+      try {
+        const data = await synthesizeStyleReferenceProfile(runId);
+        const profile = snapshotPayload(data?.profile ?? null);
+        if (profile) {
+          this.currentProfile = profile;
+          // 把新 profile 添加到 list 顶部
+          this.profiles = [profile, ...this.profiles.filter((p) => p.profile_id !== profile.profile_id)];
+        }
+        this._setActionEnd("已聚合为 StyleProfile,可生成 3 段示例预览或应用到项目。");
+        return profile;
+      } catch (err) {
+        this._setActionError(err);
+      }
+    },
+
+    async loadProfile(profileId) {
+      try {
+        const data = await fetchStyleReferenceProfile(profileId);
+        this.currentProfile = snapshotPayload(data?.profile ?? null);
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
+      }
+    },
+
+    async loadProfiles(bookId = null) {
+      try {
+        const data = await listStyleReferenceProfiles(bookId ? { bookId } : {});
+        this.profiles = snapshotPayloadList(data?.profiles ?? []);
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
+      }
+    },
+
+    async previewProfile(profileId) {
+      this._setActionStart("preview_profile");
+      try {
+        const data = await previewStyleReferenceProfile(profileId);
+        this.previewSamples = snapshotPayloadList(data?.samples ?? []);
+        this._setActionEnd(`已生成 ${this.previewSamples.length} 段示例。`);
+        return this.previewSamples;
+      } catch (err) {
+        this._setActionError(err);
+      }
+    },
+
+    async applyProfile(profileId) {
+      this._setActionStart("apply_profile");
+      try {
+        const result = await applyStyleReferenceProfile(profileId, {
+          scope: this.applyDraft.scope,
+          scopeRefId: this.applyDraft.scope_ref_id || null,
+          taskType: this.applyDraft.task_type,
+          strategy: this.applyDraft.strategy,
+        });
+        this.lastApplicationGuidance = result || null;
+        await this.loadBindings(profileId);
+        this._setActionEnd(
+          `已创建 ${result?.review_ids?.length ?? 0} 条审阅项,binding=${result?.binding_id}。前往 ReviewInbox 审批后规则将自动入库。`
+        );
+        return result;
+      } catch (err) {
+        this._setActionError(err);
+      }
+    },
+
+    async loadBindings(profileId) {
+      try {
+        const data = await listStyleReferenceBindings(profileId);
+        this.bindings = snapshotPayloadList(data?.bindings ?? []);
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
+      }
+    },
+
+    async deleteBinding(bindingId) {
+      this._setActionStart("delete_binding");
+      try {
+        await deleteStyleReferenceBinding(bindingId);
+        this.bindings = this.bindings.filter((b) => b.binding_id !== bindingId);
+        this._setActionEnd("绑定已删除。");
+      } catch (err) {
+        this._setActionError(err);
       }
     },
   },

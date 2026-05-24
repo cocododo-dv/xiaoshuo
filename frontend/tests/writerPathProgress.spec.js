@@ -61,10 +61,11 @@ function seedCoreWriterPathDone() {
 
   reference.loaded = false;
   reference.books = [];
+  reference.profiles = [];
   reference.detail = null;
   reference.currentRun = null;
-  reference.currentRound = null;
   reference.lastApplicationGuidance = null;
+  reference.pendingDecisionCount = 0;
 
   review.loaded = false;
   review.items = [];
@@ -108,9 +109,7 @@ describe("writer path progress", () => {
 
     reference.books = [{ book_id: "BOOK_1", title: "Reference" }];
     reference.loaded = true;
-    reference.currentRound = {
-      findings: [{ finding_id: "F1", review: { review_id: "R1", status: "pending" } }],
-    };
+    reference.pendingDecisionCount = 1;
 
     review.loaded = true;
     review.items = [{ review_id: "R2", status: "needs_author" }];
@@ -179,10 +178,7 @@ describe("writer path progress", () => {
 
     reference.loaded = true;
     reference.books = [{ book_id: "BOOK_READY", title: "Reference" }];
-    reference.detail = {
-      book: { book_id: "BOOK_READY" },
-      profiles: [{ profile_id: "PROFILE_READY", status: "ready" }],
-    };
+    reference.profiles = [{ profile_id: "PROFILE_READY", status: "ready" }];
 
     review.loaded = true;
     review.items = [];
@@ -353,18 +349,16 @@ describe("writer path progress", () => {
 
     reference.loaded = true;
     reference.books = [{ book_id: "BOOK_BLOCKED", title: "Reference" }];
-    reference.currentRound = {
-      findings: [{ finding_id: "F1", review: { review_id: "R1", status: "pending" } }],
-    };
+    reference.pendingDecisionCount = 1;
 
     expect(nextStep.status.value).toBe("blocked");
-    expect(nextStep.headline.value).toBe("学参考书");
+    expect(nextStep.headline.value).toBe("学风格");
     expect(nextStep.ctaDisabled.value).toBe(false);
 
-    reference.currentRound = null;
+    reference.pendingDecisionCount = 0;
 
     expect(nextStep.status.value).toBe("active");
-    expect(nextStep.headline.value).toBe("学参考书");
+    expect(nextStep.headline.value).toBe("学风格");
     expect(nextStep.ctaDisabled.value).toBe(false);
   });
 });
@@ -452,9 +446,9 @@ describe("writer path state machine", () => {
         seedCoreComplete(s);
         s.reference.loaded = true;
         s.reference.books = [{ book_id: "BOOK_B", title: "Reference" }];
-        s.reference.currentRound = { findings: [{ finding_id: "F1", review: { review_id: "R1", status: "pending" } }] };
+        s.reference.pendingDecisionCount = 1;
       },
-      expected: { status: "blocked", headline: "学参考书", ctaLabel: "去处理这一步", ctaDisabled: false, primaryTarget: "reference" },
+      expected: { status: "blocked", headline: "学风格", ctaLabel: "去处理这一步", ctaDisabled: false, primaryTarget: "reference" },
     },
     {
       name: "completed core + active optional handoff → routes to review",
@@ -464,7 +458,7 @@ describe("writer path state machine", () => {
         s.reference.books = [{ book_id: "BOOK_A", title: "Reference" }];
         s.reference.lastApplicationGuidance = { reviews: ["RV1"] };
       },
-      expected: { status: "active", headline: "学参考书", ctaLabel: "去这一步", ctaDisabled: false, primaryTarget: "review" },
+      expected: { status: "active", headline: "学风格", ctaLabel: "去这一步", ctaDisabled: false, primaryTarget: "review" },
     },
     {
       name: "deep link into an advanced view → falls back to first core item",

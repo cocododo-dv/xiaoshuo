@@ -232,7 +232,7 @@ describe("writer and advanced UI modes", () => {
       expect(wrapper.el.textContent).toContain("想清楚故事");
       expect(wrapper.el.textContent).toContain("写出这一章");
       expect(wrapper.el.textContent).toContain("打磨正文");
-      expect(wrapper.el.textContent).toContain("学参考书");
+      expect(wrapper.el.textContent).toContain("学风格");
       expect(wrapper.el.textContent).toContain("等你确认");
       expect(wrapper.el.textContent).not.toContain("编排章节");
       expect(wrapper.el.textContent).not.toContain("文学质检");

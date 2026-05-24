@@ -283,3 +283,20 @@ export async function apiPostForm(path, formData) {
     throw normalizeRequestError(error, clientRequestId);
   }
 }
+
+export async function apiDelete(path) {
+  const clientRequestId = buildClientRequestId();
+  try {
+    const response = await fetch(buildUrl(path), {
+      method: "DELETE",
+      headers: {
+        "X-Idempotency-Key": buildIdempotencyKey(path),
+        "X-Operator-Ref": getOperatorRef(),
+        "X-Client-Request-Id": clientRequestId,
+      },
+    });
+    return parseEnvelope(response, clientRequestId);
+  } catch (error) {
+    throw normalizeRequestError(error, clientRequestId);
+  }
+}
