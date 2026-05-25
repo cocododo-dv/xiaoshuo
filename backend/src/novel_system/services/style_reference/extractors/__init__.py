@@ -13,6 +13,8 @@ from novel_system.services.style_reference.extractors.base import (
 )
 from novel_system.services.style_reference.extractors.language import LanguageExtractor
 from novel_system.services.style_reference.extractors.narrative import NarrativeExtractor
+from novel_system.services.style_reference.extractors.scene import SceneExtractor
+from novel_system.services.style_reference.extractors.theme import ThemeExtractor
 
 __all__ = [
     "BaseExtractor",
@@ -20,4 +22,6 @@ __all__ = [
     "ExtractionRunResult",
     "LanguageExtractor",
     "NarrativeExtractor",
+    "SceneExtractor",
+    "ThemeExtractor",
 ]

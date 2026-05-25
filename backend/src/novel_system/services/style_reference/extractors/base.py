@@ -134,6 +134,53 @@ _SUB_DIM_METRIC_SUBSET: dict[SubDimension, tuple[str, ...]] = {
         "transition_ratio",
         "flashback_ratio",
     ),
+    # PR-6:scene 层 metric 锚(强 — 五感/对话/描写比例)
+    SubDimension.SCENE_ENVIRONMENT: (
+        "description_env_ratio",
+        "sensory_visual_per_1k",
+        "sensory_olfactory_per_1k",
+        "sensory_tactile_per_1k",
+    ),
+    SubDimension.SCENE_CHARACTER_PORTRAYAL: (
+        "description_char_ratio",
+        "sensory_visual_per_1k",
+        "metaphor_density_per_1k",
+    ),
+    SubDimension.SCENE_DIALOGUE: (
+        "dialogue_ratio",
+        "question_density_per_1k",
+        "colloquial_marker_ratio",
+        "avg_sentence_length",
+    ),
+    SubDimension.SCENE_SENSORY_PRIORITY: (
+        "sensory_visual_per_1k",
+        "sensory_auditory_per_1k",
+        "sensory_olfactory_per_1k",
+        "sensory_tactile_per_1k",
+        "sensory_gustatory_per_1k",
+    ),
+    # PR-6:theme 层 metric 锚(较弱 — 主题抽象,fallback 到语言/叙事密度类)
+    SubDimension.THEME_EMOTIONAL_TONE: (
+        "punctuation_density_per_1k",
+        "ellipsis_density_per_1k",
+        "colloquial_marker_ratio",
+        "metaphor_density_per_1k",
+    ),
+    SubDimension.THEME_VALUES: (
+        "narration_ratio",
+        "psychology_ratio",
+        "classical_word_ratio",
+    ),
+    SubDimension.THEME_MOTIFS: (
+        "metaphor_density_per_1k",
+        "personification_density_per_1k",
+        "sensory_visual_per_1k",
+    ),
+    SubDimension.THEME_NARRATIVE_PHILOSOPHY: (
+        "narration_ratio",
+        "avg_sentence_length",
+        "classical_word_ratio",
+    ),
     SubDimension.NARRATIVE_INFORMATION_DENSITY: (
         "avg_sentence_length",
         "description_env_ratio",

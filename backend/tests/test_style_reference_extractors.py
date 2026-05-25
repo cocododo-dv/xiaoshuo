@@ -1,4 +1,5 @@
-"""LanguageExtractor + NarrativeExtractor 抽取 happy path 与边界(PR-3)。
+"""LanguageExtractor + NarrativeExtractor + SceneExtractor + ThemeExtractor
+抽取 happy path 与边界(PR-3 + PR-6)。
 
 参见 plans/style-reference-v1-1-fancy-shannon.md §"测试策略"。
 """
@@ -11,6 +12,8 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.extractors import (
     LanguageExtractor,
     NarrativeExtractor,
+    SceneExtractor,
+    ThemeExtractor,
 )
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
@@ -111,6 +114,48 @@ def test_narrative_extractor_happy_path(fake_extractor_llm) -> None:
         findings = repo.list_findings(book_id=book_id)
         # 4 sub_dim * 4 findings = 16
         assert len(findings) == 16
+
+
+def test_scene_extractor_happy_path(fake_extractor_llm) -> None:
+    """PR-6:SceneExtractor 跑 4 sub_dim 各产出 4 findings。"""
+    book_id = _ingest_book("scene_happy")
+    run_id = _make_run(book_id)
+    client = fake_extractor_llm("default")
+
+    with SessionLocal() as session:
+        extractor = SceneExtractor(session, client, run_id=run_id, book_id=book_id)
+        results = extractor.extract_all_sub_dimensions()
+        session.commit()
+
+    assert len(results) == 4, "scene 层 4 sub_dim"
+    expected_sub_dims = {
+        "scene.environment",
+        "scene.character_portrayal",
+        "scene.dialogue",
+        "scene.sensory_priority",
+    }
+    assert {r.sub_dimension.value for r in results} == expected_sub_dims
+
+
+def test_theme_extractor_happy_path(fake_extractor_llm) -> None:
+    """PR-6:ThemeExtractor 跑 4 sub_dim 各产出 4 findings。"""
+    book_id = _ingest_book("theme_happy")
+    run_id = _make_run(book_id)
+    client = fake_extractor_llm("default")
+
+    with SessionLocal() as session:
+        extractor = ThemeExtractor(session, client, run_id=run_id, book_id=book_id)
+        results = extractor.extract_all_sub_dimensions()
+        session.commit()
+
+    assert len(results) == 4, "theme 层 4 sub_dim"
+    expected_sub_dims = {
+        "theme.emotional_tone",
+        "theme.values",
+        "theme.motifs",
+        "theme.narrative_philosophy",
+    }
+    assert {r.sub_dimension.value for r in results} == expected_sub_dims
 
 
 # ---------------------------------------------------------------------------

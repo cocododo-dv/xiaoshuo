@@ -617,6 +617,47 @@ templates:
       宁可输出更少的高质量条目,也不要凑数。
     structured_schema: *extract_output_schema
 
+  style_ref_extract_scene:
+    version: "2026-05-25.v1"
+    input_token_budget: 3000
+    system_prompt: |
+      你是中文叙事场景层风格抽取专家(scene)。给定一个 sub_dimension
+      (如 scene.dialogue)与一批段落,产出该 sub_dimension 下的 0-8 条
+      observations 与 0-3 条 forbidden_patterns。
+      场景层重点:
+      - environment:场所、天气、自然物的呈现机制(空间布局 / 视点切换 / 光影)
+      - character_portrayal:人物外貌、衣着、神态、行为的展示手法
+      - dialogue:对话的密度、长短、轮次、隐喻性、副语言
+      - sensory_priority:五感(视/听/嗅/触/味)的优先级与并置方式
+      约束与 language / narrative 层一致:每条 finding ≥2 evidence;严禁空泛
+      形容词("画面感强""感官丰富"等);forbidden_pattern 描述模式而非引用。
+    task_prompt: |
+      输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
+      请按 schema 输出 observations 与 forbidden_patterns。
+      宁可输出更少的高质量条目,也不要凑数。
+    structured_schema: *extract_output_schema
+
+  style_ref_extract_theme:
+    version: "2026-05-25.v1"
+    input_token_budget: 3000
+    system_prompt: |
+      你是中文叙事主题层风格抽取专家(theme)。给定一个 sub_dimension
+      (如 theme.emotional_tone)与一批段落,产出该 sub_dimension 下的 0-8 条
+      observations 与 0-3 条 forbidden_patterns。
+      主题层重点:
+      - emotional_tone:情绪基调与节奏(克制 / 沸腾 / 灰冷 / 高亢)
+      - values:作品潜在的价值观倾向(集体 vs 个体 / 出世 vs 入世)
+      - motifs:反复出现的意象与母题(雪 / 雾 / 镜 / 牲口 / 钱财)
+      - narrative_philosophy:对人/历史/命运的态度(悲悯 / 嘲讽 / 反讽 / 史诗)
+      约束:theme 层抽象,observation 必须给出"作品如何通过 X 表达 Y"的具体
+      机制,不要泛泛说"作者关心 X";每条 finding ≥2 evidence;严禁空泛
+      形容词("思想深刻""主题宏大"等);forbidden_pattern 描述模式而非引用。
+    task_prompt: |
+      输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
+      请按 schema 输出 observations 与 forbidden_patterns。
+      宁可输出更少的高质量条目,也不要凑数。
+    structured_schema: *extract_output_schema
+
   style_ref_supplement_evidence:
     version: "2026-05-23.v1"
     input_token_budget: 2000

@@ -71,19 +71,13 @@ def test_run_orchestrator_book_not_found(fake_extractor_llm) -> None:
         assert exc_info.value.code == "STYLE_REFERENCE_BOOK_NOT_FOUND"
 
 
-def test_run_orchestrator_layer_not_supported(fake_extractor_llm) -> None:
-    book_id = _ingest("layer_check")
-    with SessionLocal() as session:
-        orch = RunOrchestrator(
-            session, llm_client=fake_extractor_llm("default"), llm_enabled=True
-        )
-        with pytest.raises(DomainError) as exc_info:
-            orch.start_extract_run(book_id, layers=[Layer.SCENE])
-        assert exc_info.value.code == "STYLE_REFERENCE_LAYER_NOT_SUPPORTED"
+# PR-6:scene + theme 已落地,test_run_orchestrator_layer_not_supported 被移除;
+# 错误码 STYLE_REFERENCE_LAYER_NOT_SUPPORTED 保留为后续兜底,但 Phase 2 4 layer
+# 全支持后该路径在生产中不会触发。
 
 
 # ---------------------------------------------------------------------------
-# happy path:8 sub_dim × default → 32 findings,落 4 表
+# happy path:16 sub_dim × default → 64 findings,落 4 表(PR-6 全盘)
 # ---------------------------------------------------------------------------
 
 
@@ -97,8 +91,8 @@ def test_run_orchestrator_happy_path_writes_4_tables(fake_extractor_llm) -> None
         session.commit()
 
     assert result.status == "done"
-    assert set(result.layers) == {"language", "narrative"}
-    assert len(result.sub_dim_results) == 8
+    assert set(result.layers) == {"language", "narrative", "scene", "theme"}
+    assert len(result.sub_dim_results) == 16
 
     # 4 表行数断言
     with SessionLocal() as session:
@@ -115,10 +109,10 @@ def test_run_orchestrator_happy_path_writes_4_tables(fake_extractor_llm) -> None
             select(func.count()).select_from(StyleReferenceEvidence)
         )
 
-    # 8 sub_dim × 1 EXTRACT 行 = 8
-    assert ext_count == 8
-    # 8 sub_dim × (3 obs + 1 forbid) = 32
-    assert find_count == 32
-    # 32 finding × 2 evidence = 64 evidence/quote
-    assert ev_count == 64
-    assert quote_count == 64
+    # 16 sub_dim × 1 EXTRACT 行 = 16
+    assert ext_count == 16
+    # 16 sub_dim × (3 obs + 1 forbid) = 64
+    assert find_count == 64
+    # 64 finding × 2 evidence = 128 evidence/quote
+    assert ev_count == 128
+    assert quote_count == 128

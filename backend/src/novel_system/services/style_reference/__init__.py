@@ -30,6 +30,8 @@ from novel_system.services.style_reference.extractors import (
     ExtractionRunResult,
     LanguageExtractor,
     NarrativeExtractor,
+    SceneExtractor,
+    ThemeExtractor,
 )
 from novel_system.services.style_reference.ingest import IngestResult, IngestService, assess_input_size
 from novel_system.services.style_reference.materialization import (
@@ -152,6 +154,8 @@ __all__ = [
     "BaseExtractor",
     "LanguageExtractor",
     "NarrativeExtractor",
+    "SceneExtractor",
+    "ThemeExtractor",
     "ExtractionRetryPolicy",
     "ExtractionRunResult",
     "RunOrchestrator",

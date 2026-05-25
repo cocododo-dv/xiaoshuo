@@ -35,7 +35,10 @@ import {
 } from "../lib/api/styleReference";
 import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 
-const SUB_DIMS_PHASE_1 = [
+// PR-6:16 sub_dim 全覆盖(language + narrative + scene + theme 各 4)
+// PR-3 / PR-5 阶段仅 language + narrative 有真实数据;PR-6 后 scene + theme
+// 也有数据,DimensionMatrix 16 格全亮(无 UI 改动,数据驱动)。
+const ALL_SUB_DIMS = [
   "language.sentence_structure",
   "language.vocabulary",
   "language.rhetoric",
@@ -44,11 +47,19 @@ const SUB_DIMS_PHASE_1 = [
   "narrative.pacing",
   "narrative.time_handling",
   "narrative.information_density",
+  "scene.environment",
+  "scene.character_portrayal",
+  "scene.dialogue",
+  "scene.sensory_priority",
+  "theme.emotional_tone",
+  "theme.values",
+  "theme.motifs",
+  "theme.narrative_philosophy",
 ];
 
 function emptyFindingsBucket() {
   const bucket = {};
-  for (const dim of SUB_DIMS_PHASE_1) {
+  for (const dim of ALL_SUB_DIMS) {
     bucket[dim] = { observations: [], forbidden_patterns: [] };
   }
   return bucket;

@@ -34,9 +34,12 @@ afterEach(() => {
 });
 
 function emptyFindings() {
+  // PR-6:全 16 sub_dim(scene + theme 也初始化但仍为空)
   const dims = [
     "language.sentence_structure", "language.vocabulary", "language.rhetoric", "language.punctuation",
     "narrative.perspective", "narrative.pacing", "narrative.time_handling", "narrative.information_density",
+    "scene.environment", "scene.character_portrayal", "scene.dialogue", "scene.sensory_priority",
+    "theme.emotional_tone", "theme.values", "theme.motifs", "theme.narrative_philosophy",
   ];
   const result = {};
   for (const d of dims) result[d] = { observations: [], forbidden_patterns: [] };
@@ -66,7 +69,7 @@ describe("DimensionMatrix", () => {
     expect(highCells.length).toBe(1);
   });
 
-  it("scene + theme 的 8 格 disabled,click 不触发 emit", async () => {
+  it("PR-6:全 16 格无数据时都 disabled,click 不触发 emit", async () => {
     const { el, emitted } = mount(DimensionMatrix, { findings: emptyFindings() });
     const disabled = el.querySelectorAll(".cell-disabled");
     expect(disabled.length).toBe(16);  // 全部 skip,因为 emptyFindings 都是空

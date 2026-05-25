@@ -23,6 +23,8 @@ from novel_system.services.style_reference.extractors import (
     ExtractionRunResult,
     LanguageExtractor,
     NarrativeExtractor,
+    SceneExtractor,
+    ThemeExtractor,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import RunPhase, RunStatus
@@ -34,6 +36,8 @@ logger = logging.getLogger(__name__)
 _LAYER_EXTRACTOR_MAP: dict[Layer, type[BaseExtractor]] = {
     Layer.LANGUAGE: LanguageExtractor,
     Layer.NARRATIVE: NarrativeExtractor,
+    Layer.SCENE: SceneExtractor,
+    Layer.THEME: ThemeExtractor,
 }
 
 
@@ -90,7 +94,7 @@ class RunOrchestrator:
                 status_code=404,
             )
 
-        layers = layers or [Layer.LANGUAGE, Layer.NARRATIVE]
+        layers = layers or [Layer.LANGUAGE, Layer.NARRATIVE, Layer.SCENE, Layer.THEME]
         unknown = [layer for layer in layers if layer not in _LAYER_EXTRACTOR_MAP]
         if unknown:
             raise DomainError(

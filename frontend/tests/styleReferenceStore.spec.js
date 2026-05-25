@@ -49,7 +49,7 @@ describe("referenceLearning store — useWriterPathProgress 契约", () => {
     expect(store.actionId).toBeNull();
   });
 
-  it("findings 按 8 sub_dim 分桶", () => {
+  it("findings 按 16 sub_dim 分桶(PR-6 全盘)", () => {
     const store = useReferenceLearningStore();
     expect(Object.keys(store.findings).sort()).toEqual([
       "language.punctuation",
@@ -60,6 +60,14 @@ describe("referenceLearning store — useWriterPathProgress 契约", () => {
       "narrative.pacing",
       "narrative.perspective",
       "narrative.time_handling",
+      "scene.character_portrayal",
+      "scene.dialogue",
+      "scene.environment",
+      "scene.sensory_priority",
+      "theme.emotional_tone",
+      "theme.motifs",
+      "theme.narrative_philosophy",
+      "theme.values",
     ]);
   });
 });
