@@ -749,6 +749,65 @@ templates:
         paragraph_type:
           type: string
 
+  style_ref_validate_semantic:
+    version: "2026-05-25.v1"
+    input_token_budget: 2000
+    system_prompt: |
+      你是中文叙事 critic。给定一段生成文本与目标 StyleProfile 的 style_features /
+      narrative_summary,对若干 dimension(rhythm / tone / motif / pacing / language)
+      给出 0-10 分评分与 explanation。
+
+      硬约束:
+      - explanation **必须用「...」中文弯引号** 引用至少一个生成文本的原句作为证据
+      - 若 explanation 不含「...」引文,系统会自动把 score 截至 4 分
+      - explanation 200 字以内
+      - score 0-10,7+ 视为风格匹配良好;4-6 部分匹配;<4 严重不匹配
+    task_prompt: |
+      输入 payload 含 generated_text / style_features / narrative_summary。
+      请按 schema 输出 dimension_scores 数组(3-5 个 dimension)。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [dimension_scores]
+      properties:
+        dimension_scores:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [dimension, score, explanation]
+            properties:
+              dimension:
+                type: string
+              score:
+                type: number
+              explanation:
+                type: string
+
+  style_ref_validate_forbidden:
+    version: "2026-05-25.v1"
+    input_token_budget: 800
+    system_prompt: |
+      你判断给定生成文本是否触发了某条 forbidden_pattern(作者明确不会用的写作模式)。
+      返回 {triggered, excerpt, reasoning}:
+      - triggered=true 时,excerpt 给出生成文本中命中该模式的原句节选(<60 字)
+      - triggered=false 时,excerpt 为空,reasoning 简述为何不算触发
+      - 仅看是否"模式被采用",不看字面词命中(那是 forbidden_local 的事)
+    task_prompt: |
+      输入 payload 含 generated_text / forbidden_statement / sub_dimension。
+      请按 schema 输出 triggered / excerpt / reasoning。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [triggered]
+      properties:
+        triggered:
+          type: boolean
+        excerpt:
+          type: string
+        reasoning:
+          type: string
+
   scene_blueprint:
     version: "2026-04-25.v2"
     input_token_budget: 2200

@@ -21,17 +21,20 @@ import {
   fetchStyleReferenceBook,
   fetchStyleReferenceProfile,
   fetchStyleReferenceRun,
+  fetchStyleReferenceValidationReport,
   importStyleReferenceBookPath,
   importStyleReferenceBookUpload,
   listStyleReferenceBindings,
   listStyleReferenceBooks,
   listStyleReferenceProfiles,
   listStyleReferenceRunFindings,
+  listStyleReferenceValidationReports,
   previewStyleReferenceProfile,
   reclassifyStyleReferenceBook,
   reviewStyleReferenceFinding,
   startStyleReferenceRun,
   synthesizeStyleReferenceProfile,
+  validateStyleReferenceGenerated,
 } from "../lib/api/styleReference";
 import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 
@@ -116,6 +119,10 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     currentProfile: null,
     bindings: [],
     previewSamples: [],
+
+    // PR-7 validation
+    validationReports: [],
+    currentValidation: null,
 
     // 表单 drafts
     importMode: "path",
@@ -506,6 +513,46 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
         this._setActionEnd("绑定已删除。");
       } catch (err) {
         this._setActionError(err);
+      }
+    },
+
+    // ---- PR-7 validation ----
+
+    async validateGenerated(profileId, payload) {
+      this._setActionStart("validate_generated");
+      try {
+        const data = await validateStyleReferenceGenerated(profileId, payload);
+        this.currentValidation = snapshotPayload(data ?? null);
+        const message = data?.mode_executed === "async_full"
+          ? `已派发后台校验,polling_url=${data?.polling_url}`
+          : "已完成同步校验。";
+        this._setActionEnd(message);
+        return this.currentValidation;
+      } catch (err) {
+        this._setActionError(err);
+      }
+    },
+
+    async loadValidationReport(reportId) {
+      try {
+        const data = await fetchStyleReferenceValidationReport(reportId);
+        const report = snapshotPayload(data?.report ?? null);
+        this.currentValidation = report;
+        return report;
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
+      }
+    },
+
+    async loadValidationReports(profileId, filters = {}) {
+      try {
+        const data = await listStyleReferenceValidationReports(profileId, filters);
+        this.validationReports = snapshotPayloadList(data?.reports ?? []);
+        return this.validationReports;
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
       }
     },
   },

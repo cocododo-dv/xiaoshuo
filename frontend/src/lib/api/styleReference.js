@@ -116,3 +116,30 @@ export function listStyleReferenceBindings(profileId, { taskType } = {}) {
 export function deleteStyleReferenceBinding(bindingId) {
   return apiDelete(`${PREFIX}/bindings/${encodeURIComponent(bindingId)}`);
 }
+
+// --- Validation (PR-7) ---
+
+export function validateStyleReferenceGenerated(profileId, {
+  generatedText,
+  targetKind = "manual",
+  targetRefId = null,
+  mode = "async_full",
+  taskContext = null,
+} = {}) {
+  return apiPost(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/validate`, {
+    generated_text: generatedText,
+    target_kind: targetKind,
+    target_ref_id: targetRefId,
+    mode,
+    task_context: taskContext,
+  });
+}
+
+export function fetchStyleReferenceValidationReport(reportId) {
+  return apiGet(`${PREFIX}/reports/${encodeURIComponent(reportId)}`);
+}
+
+export function listStyleReferenceValidationReports(profileId, { verdict } = {}) {
+  const query = verdict ? `?verdict=${encodeURIComponent(verdict)}` : "";
+  return apiGet(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/reports${query}`);
+}

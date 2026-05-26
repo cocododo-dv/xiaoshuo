@@ -519,3 +519,61 @@ class PreviewSampleResult(BaseModel):
     report_id: str | None = None
     verdict: str | None = None
     error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# PR-7 契约:validate 完整三路 + 双路径
+# ---------------------------------------------------------------------------
+
+
+class QuantitativeReportItem(BaseModel):
+    """单 metric 量化对照(PR-7 §7.2)。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dimension: str  # 与 SubDimension.value 对应,或 "language" / "narrative" 等粗粒度
+    metric: str  # MetricName(metrics.py 26 项之一)
+    target_mean: float
+    target_std: float
+    actual: float
+    tolerance: float
+    passed: bool
+    deviation_ratio: float  # |actual - mean| / tolerance
+
+
+class SemanticReportItem(BaseModel):
+    """单 dimension 语义评分(PR-7 §7;critic LLM)。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dimension: str
+    score: float = Field(ge=0.0, le=10.0)
+    explanation: str
+    quotes_found: bool
+
+
+class ValidateRequest(BaseModel):
+    """`POST /profiles/{profile_id}/validate` body 形态(profile_id 在 path)。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    generated_text: str = Field(min_length=1)
+    target_kind: ValidationTargetKind = ValidationTargetKind.MANUAL
+    target_ref_id: str | None = None
+    mode: ValidationMode = ValidationMode.ASYNC_FULL
+    task_context: dict[str, Any] | None = None
+
+
+class ValidateResponse(BaseModel):
+    """`POST /profiles/{profile_id}/validate` 返回结构。
+
+    sync_only 时 sync_result 填完整 ValidationReport;polling_url 为 None。
+    async_full 时 polling_url 指向 GET /reports/{id},sync_result 为 None。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str
+    mode_executed: ValidationMode
+    sync_result: ValidationReport | None = None
+    polling_url: str | None = None

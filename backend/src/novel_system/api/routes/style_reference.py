@@ -1,7 +1,9 @@
-"""Style Reference v1.1 — Phase 1 路由清单(PR-4)。
+"""Style Reference v1.1 — Phase 1 路由清单(PR-4)+ PR-7 validate / reports。
 
 参见 plans/style-reference-v1-1-fancy-shannon.md §"路由清单"。
-prefix: /api/v2/style-reference,共 18 个端点。不含 inject / validate / reports(PR-7+)。
+prefix: /api/v2/style-reference。
+PR-4 18 端点 + PR-7 3 端点(validate / reports get / reports list)= 21 端点。
+不含 inject(PR-8)。
 """
 
 from __future__ import annotations
@@ -42,7 +44,11 @@ from novel_system.services.style_reference.schemas import (
     InjectionStrategy,
     RunStatus,
     TaskType,
+    ValidateRequest,
+    ValidationMode,
+    ValidationTargetKind,
 )
+from novel_system.services.style_reference.validation import ValidationOrchestrator
 
 router = APIRouter(tags=["style_reference"])
 
@@ -79,6 +85,17 @@ class ApplyProfileRequest(BaseModel):
     scope_ref_id: str | None = None
     task_type: str = "scene_generation"
     strategy: str = "A"
+
+
+class ValidateGeneratedRequest(BaseModel):
+    """`POST /profiles/{id}/validate` body(profile_id 在 path,不在 body)。"""
+
+    model_config = ConfigDict(extra="forbid")
+    generated_text: str
+    target_kind: str = "manual"
+    target_ref_id: str | None = None
+    mode: str = "async_full"
+    task_context: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +216,8 @@ def _get_llm_client_and_enabled():
     实际生产路由调用方应使用 PR-7 之后的统一 LLM client 工厂;PR-4 简化为
     每路由根据 settings 构造。
     """
-    from novel_system.services.llm_client import LLMClient, load_llm_provider_runtime_configs
+    from novel_system.services.llm_client import LLMClient
+    from novel_system.services.system_config import load_llm_provider_runtime_configs
     from novel_system.settings import get_settings
 
     settings = get_settings()
@@ -810,4 +828,100 @@ def delete_binding(
         path_template=f"{PATH_PREFIX}/bindings/{{binding_id}}",
         payload={"binding_id": binding_id},
         action=_do,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PR-7 — Validation endpoints
+# ---------------------------------------------------------------------------
+
+
+def _serialize_validation_report(report) -> dict[str, Any]:
+    return {
+        "report_id": report.report_id,
+        "profile_id": report.profile_id,
+        "target_kind": report.target_kind,
+        "target_ref_id": report.target_ref_id,
+        "verdict": report.verdict,
+        "quantitative_json": report.quantitative_json or [],
+        "semantic_json": report.semantic_json or [],
+        "plagiarism_json": report.plagiarism_json or {},
+        "forbidden_hits_json": report.forbidden_hits_json or [],
+        "mode_executed": report.mode_executed,
+        "created_at": report.created_at,
+    }
+
+
+@router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/validate")
+def validate_profile_generated(
+    profile_id: str,
+    payload: ValidateGeneratedRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """PR-7 §7 — sync_only / async_full 双路径 validation。"""
+    body = payload.model_dump(mode="json")
+
+    def _do() -> dict[str, Any]:
+        try:
+            target_kind = ValidationTargetKind(body.get("target_kind") or "manual")
+            mode = ValidationMode(body.get("mode") or "async_full")
+        except ValueError as exc:
+            raise DomainError(
+                "STYLE_REFERENCE_VALIDATE_PARAM_INVALID",
+                str(exc),
+                status_code=400,
+            ) from exc
+
+        req = ValidateRequest(
+            generated_text=body["generated_text"],
+            target_kind=target_kind,
+            target_ref_id=body.get("target_ref_id"),
+            mode=mode,
+            task_context=body.get("task_context"),
+        )
+        client, enabled = _get_llm_client_and_enabled()
+        orch = ValidationOrchestrator(session, llm_client=client, llm_enabled=enabled)
+        result = orch.validate(profile_id, req)
+        return result.model_dump(mode="json")
+
+    return _with_idem(
+        session,
+        request,
+        method="POST",
+        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/validate",
+        payload={"profile_id": profile_id, **body},
+        action=_do,
+    )
+
+
+@router.get(f"{PATH_PREFIX}/reports/{{report_id}}")
+def get_validation_report(
+    report_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    repo = StyleReferenceRepository(session)
+    report = repo.get_validation_report(report_id)
+    if report is None:
+        raise DomainError(
+            "STYLE_REFERENCE_REPORT_NOT_FOUND",
+            f"validation report {report_id!r} not found",
+            status_code=404,
+        )
+    return ok({"report": _serialize_validation_report(report)}, req_id=_req_id(request))
+
+
+@router.get(f"{PATH_PREFIX}/profiles/{{profile_id}}/reports")
+def list_validation_reports(
+    profile_id: str,
+    request: Request,
+    verdict: str | None = None,
+    session: Session = Depends(get_session),
+):
+    repo = StyleReferenceRepository(session)
+    reports = repo.list_validation_reports(profile_id=profile_id, verdict=verdict)
+    return ok(
+        {"reports": [_serialize_validation_report(r) for r in reports]},
+        req_id=_req_id(request),
     )

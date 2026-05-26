@@ -42,9 +42,13 @@ from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
 from novel_system.services.style_reference.run_orchestrator import RunOrchestrator, RunResult
 from novel_system.services.style_reference.validation import (
-    run_sync_validate,
-    check_plagiarism,
+    ValidationOrchestrator,
     check_forbidden_local,
+    check_forbidden_semantic,
+    check_plagiarism,
+    check_quantitative,
+    check_semantic,
+    run_sync_validate,
 )
 from novel_system.services.style_reference.metrics import (
     METRIC_NAMES,
@@ -102,6 +106,10 @@ from novel_system.services.style_reference.schemas import (
     ValidationReport,
     PreviewGeneratedSample,
     PreviewSampleResult,
+    QuantitativeReportItem,
+    SemanticReportItem,
+    ValidateRequest,
+    ValidateResponse,
 )
 
 __all__ = [
@@ -148,6 +156,10 @@ __all__ = [
     "ValidationReport",
     "PreviewGeneratedSample",
     "PreviewSampleResult",
+    "QuantitativeReportItem",
+    "SemanticReportItem",
+    "ValidateRequest",
+    "ValidateResponse",
     "IngestService",
     "IngestResult",
     "assess_input_size",
@@ -164,9 +176,13 @@ __all__ = [
     "MaterializationService",
     "MaterializeResult",
     "PreviewService",
+    "ValidationOrchestrator",
     "run_sync_validate",
     "check_plagiarism",
     "check_forbidden_local",
+    "check_quantitative",
+    "check_semantic",
+    "check_forbidden_semantic",
     "MetricsEngine",
     "ParagraphRecord",
     "MetricName",
