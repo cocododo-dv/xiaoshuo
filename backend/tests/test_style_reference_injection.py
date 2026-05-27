@@ -241,6 +241,81 @@ def test_project_binding_wins_over_global():
     assert "project 专属要点" in fragments.positive_block
 
 
+def test_mixed_intensity_scales_block_lengths():
+    """PR-9 §"intensity 语义" — intensity 缩放 ratio:0=0.3x / 50=0.9x / 100=1.5x。"""
+    long_features = ["要点" * 600]  # 1200 字,确保 low/mid/hi 都被截断
+    common = {
+        "profile_json": {
+            "narrative_summary": "summary",
+            "style_features": long_features,
+            "banned_replication_rules": ["规则" * 100],
+            "metrics_baseline": {"m1": {"mean": 1.0, "std": 0.1}},
+        },
+        "strategy": "mixed",
+    }
+    proj_low = _seed(
+        seed="low",
+        config_json={"intensity": 0, "include_metric": True},
+        project_id="proj_intensity_low",
+        **common,
+    )
+    proj_mid = _seed(
+        seed="mid",
+        config_json={"intensity": 50, "include_metric": True},
+        project_id="proj_intensity_mid",
+        **common,
+    )
+    proj_hi = _seed(
+        seed="hi",
+        config_json={"intensity": 100, "include_metric": True},
+        project_id="proj_intensity_hi",
+        **common,
+    )
+    with SessionLocal() as session:
+        svc = InjectionService(session)
+        low = svc.fragments_for(proj_low, "scene_generation")
+        mid = svc.fragments_for(proj_mid, "scene_generation")
+        hi = svc.fragments_for(proj_hi, "scene_generation")
+    # positive_block 长度应单调递增:low < mid < hi
+    assert len(low.positive_block) < len(mid.positive_block) < len(hi.positive_block)
+    # forbidden_block 同理(若有内容)
+    assert len(low.forbidden_block) < len(mid.forbidden_block) <= len(hi.forbidden_block)
+    # 高强度上限不会超过 budget * 1.5 余量
+    assert len(hi.positive_block) <= 800 * 0.6 * 1.5 + 5
+
+
+def test_mixed_sub_dimensions_filters_forbidden_findings():
+    """PR-9 §"sub_dim 过滤" — MIXED 时 config["sub_dimensions"] 只取匹配的 forbidden_pattern。"""
+    project_id = _seed(
+        seed="subdim_miss",
+        profile_json={"narrative_summary": "n", "style_features": ["短"]},
+        forbidden_findings=["禁堆叠形容词"],  # sub_dimension=language.vocabulary
+        strategy="mixed",
+        config_json={
+            # 只选 narrative 层 — language 层的 finding 应被过滤掉
+            "sub_dimensions": ["narrative.pacing", "narrative.perspective"],
+        },
+        project_id="proj_subdim_miss",
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
+    # banned_replication_rules 无,findings 因 sub_dim 不匹配被过滤 → forbidden_block 为空
+    assert fragments.forbidden_block == ""
+
+    # 对比:sub_dimensions 含 language.vocabulary 时应保留
+    project_id_2 = _seed(
+        seed="subdim_hit",
+        profile_json={"narrative_summary": "n", "style_features": ["短"]},
+        forbidden_findings=["禁堆叠形容词"],
+        strategy="mixed",
+        config_json={"sub_dimensions": ["language.vocabulary"]},
+        project_id="proj_subdim_hit",
+    )
+    with SessionLocal() as session:
+        fragments2 = InjectionService(session).fragments_for(project_id_2, "scene_generation")
+    assert "禁堆叠形容词" in fragments2.forbidden_block
+
+
 def test_to_system_prompt_prefix_ordering():
     """positive → forbidden → metric_anchor;空 block 跳过。"""
     project_id = _seed(

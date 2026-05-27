@@ -18,6 +18,8 @@ import {
   cancelStyleReferenceRun,
   deleteStyleReferenceBinding,
   deleteStyleReferenceBook,
+  dryrunInjectionPreview,
+  fetchBindingInjectionPreview,
   fetchStyleReferenceBook,
   fetchStyleReferenceProfile,
   fetchStyleReferenceRun,
@@ -86,12 +88,37 @@ function defaultUploadDraft() {
   };
 }
 
+// PR-9 §"sub_dim 全选" — 16 项 4×4 默认全选
+const ALL_SUB_DIMS_FOR_APPLY = Object.freeze([
+  "language.sentence_structure",
+  "language.vocabulary",
+  "language.rhetoric",
+  "language.punctuation",
+  "narrative.perspective",
+  "narrative.pacing",
+  "narrative.time_handling",
+  "narrative.information_density",
+  "scene.environment",
+  "scene.character_portrayal",
+  "scene.dialogue",
+  "scene.sensory_priority",
+  "theme.emotional_tone",
+  "theme.values",
+  "theme.motifs",
+  "theme.narrative_philosophy",
+]);
+
 function defaultApplyDraft() {
   return {
     scope: "project",
     scope_ref_id: "",
     task_type: "scene_generation",
     strategy: "A",
+    intensity: 50,
+    sub_dimensions: [...ALL_SUB_DIMS_FOR_APPLY],
+    include_positive: true,
+    include_forbidden: true,
+    include_metric: false,
   };
 }
 
@@ -123,6 +150,10 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     // PR-7 validation
     validationReports: [],
     currentValidation: null,
+
+    // PR-9 injection preview
+    currentInjectionPreview: null,
+    injectionPreviewLoading: false,
 
     // 表单 drafts
     importMode: "path",
@@ -553,6 +584,45 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
       } catch (err) {
         this.error = err?.message || String(err || "未知错误");
         throw err;
+      }
+    },
+
+    // ---- PR-9 injection preview ----
+
+    async fetchInjectionPreview(bindingId) {
+      this.injectionPreviewLoading = true;
+      try {
+        const data = await fetchBindingInjectionPreview(bindingId);
+        this.currentInjectionPreview = snapshotPayload(data ?? null);
+        return this.currentInjectionPreview;
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
+      } finally {
+        this.injectionPreviewLoading = false;
+      }
+    },
+
+    async dryrunInjectionPreview(profileId, overrides = {}) {
+      this.injectionPreviewLoading = true;
+      try {
+        const draft = this.applyDraft;
+        const data = await dryrunInjectionPreview(profileId, {
+          strategy: overrides.strategy ?? draft.strategy,
+          taskType: overrides.taskType ?? draft.task_type,
+          intensity: overrides.intensity ?? draft.intensity,
+          subDimensions: overrides.subDimensions ?? draft.sub_dimensions,
+          includePositive: overrides.includePositive ?? draft.include_positive,
+          includeForbidden: overrides.includeForbidden ?? draft.include_forbidden,
+          includeMetric: overrides.includeMetric ?? draft.include_metric,
+        });
+        this.currentInjectionPreview = snapshotPayload(data ?? null);
+        return this.currentInjectionPreview;
+      } catch (err) {
+        this.error = err?.message || String(err || "未知错误");
+        throw err;
+      } finally {
+        this.injectionPreviewLoading = false;
       }
     },
   },

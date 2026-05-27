@@ -1,6 +1,28 @@
 <script setup>
-import { reactive, watch } from "vue";
+import { computed, reactive, watch } from "vue";
+
 import BaseButton from "../base/BaseButton.vue";
+import InjectionStrategyPicker from "./InjectionStrategyPicker.vue";
+import InjectionBundlePreview from "./InjectionBundlePreview.vue";
+
+const ALL_SUB_DIMS = Object.freeze([
+  "language.sentence_structure",
+  "language.vocabulary",
+  "language.rhetoric",
+  "language.punctuation",
+  "narrative.perspective",
+  "narrative.pacing",
+  "narrative.time_handling",
+  "narrative.information_density",
+  "scene.environment",
+  "scene.character_portrayal",
+  "scene.dialogue",
+  "scene.sensory_priority",
+  "theme.emotional_tone",
+  "theme.values",
+  "theme.motifs",
+  "theme.narrative_philosophy",
+]);
 
 const props = defineProps({
   open: {
@@ -15,15 +37,29 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  preview: {
+    type: Object,
+    default: null,
+  },
+  previewLoading: {
+    type: Boolean,
+    default: false,
+  },
+  previewError: {
+    type: String,
+    default: "",
+  },
 });
 
-const emit = defineEmits(["close", "submit", "update:draft"]);
+const emit = defineEmits(["close", "submit", "update:draft", "request-preview"]);
 
 const localDraft = reactive({
   scope: "project",
   scope_ref_id: "",
   task_type: "scene_generation",
   strategy: "A",
+  intensity: 50,
+  sub_dimensions: [...ALL_SUB_DIMS],
 });
 
 watch(
@@ -34,17 +70,60 @@ watch(
     localDraft.scope_ref_id = next.scope_ref_id || "";
     localDraft.task_type = next.task_type || "scene_generation";
     localDraft.strategy = next.strategy || "A";
+    localDraft.intensity = Number(next.intensity ?? 50);
+    localDraft.sub_dimensions = Array.isArray(next.sub_dimensions) && next.sub_dimensions.length > 0
+      ? [...next.sub_dimensions]
+      : [...ALL_SUB_DIMS];
   },
   { immediate: true, deep: true },
 );
 
+const strategyConfig = computed({
+  get() {
+    return {
+      strategy: localDraft.strategy,
+      intensity: localDraft.intensity,
+      sub_dimensions: localDraft.sub_dimensions,
+    };
+  },
+  set(value) {
+    localDraft.strategy = value.strategy;
+    localDraft.intensity = Number(value.intensity ?? 50);
+    localDraft.sub_dimensions = Array.isArray(value.sub_dimensions) ? [...value.sub_dimensions] : [];
+    emit("update:draft", snapshot());
+    schedulePreviewFetch();
+  },
+});
+
+let previewTimer = null;
+function schedulePreviewFetch() {
+  if (typeof window === "undefined") return;
+  if (previewTimer) clearTimeout(previewTimer);
+  previewTimer = window.setTimeout(() => {
+    emit("request-preview", snapshot());
+    previewTimer = null;
+  }, 300);
+}
+
+function snapshot() {
+  return {
+    scope: localDraft.scope,
+    scope_ref_id: localDraft.scope_ref_id,
+    task_type: localDraft.task_type,
+    strategy: localDraft.strategy,
+    intensity: localDraft.intensity,
+    sub_dimensions: [...localDraft.sub_dimensions],
+  };
+}
+
 function update(field, value) {
   localDraft[field] = value;
-  emit("update:draft", { ...localDraft });
+  emit("update:draft", snapshot());
+  if (field === "task_type") schedulePreviewFetch();
 }
 
 function submit() {
-  emit("submit", { ...localDraft });
+  emit("submit", snapshot());
 }
 </script>
 
@@ -87,20 +166,21 @@ function submit() {
           </select>
         </label>
 
-        <label class="field">
-          <span class="field-label">注入策略(strategy)</span>
-          <select :value="localDraft.strategy" @change="update('strategy', $event.target.value)">
-            <option value="A">A — System Prompt 注入(PR-8 完整接入)</option>
-            <option value="B">B — Few-shot(PR-8)</option>
-            <option value="C">C — RAG(Phase 3)</option>
-            <option value="mixed">mixed</option>
-          </select>
-        </label>
+        <div class="field">
+          <span class="field-label">注入策略</span>
+          <InjectionStrategyPicker v-model="strategyConfig" />
+        </div>
+
+        <InjectionBundlePreview
+          :preview="preview"
+          :loading="previewLoading"
+          :error="previewError"
+        />
       </div>
 
       <footer class="dialog-actions">
         <BaseButton variant="ghost" @click="emit('close')">取消</BaseButton>
-        <BaseButton variant="primary" :loading="busy" @click="submit">应用</BaseButton>
+        <BaseButton variant="primary" :loading="busy" @click="submit" data-testid="confirm-apply">应用</BaseButton>
       </footer>
     </div>
   </div>
@@ -116,13 +196,15 @@ function submit() {
   z-index: 1000;
 }
 .apply-dialog {
-  width: min(28rem, 92vw);
+  width: min(38rem, 96vw);
+  max-height: 90vh;
   display: grid;
-  gap: 0.8rem;
-  padding: 1.2rem 1.4rem;
+  gap: 0.7rem;
+  padding: 1.1rem 1.3rem;
   border-radius: var(--radius-panel, 10px);
   background: var(--color-panel-solid, #fffdf7);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  overflow: auto;
 }
 .dialog-head { display: flex; justify-content: space-between; align-items: center; }
 .dialog-title { margin: 0; font-weight: 700; font-size: 1rem; }
@@ -133,7 +215,7 @@ function submit() {
   cursor: pointer;
   color: var(--text-muted, rgba(33, 26, 21, 0.55));
 }
-.dialog-body { display: grid; gap: 0.6rem; }
+.dialog-body { display: grid; gap: 0.65rem; }
 .field { display: grid; gap: 0.25rem; font-size: 0.85rem; }
 .field-label { color: var(--text-muted, rgba(33, 26, 21, 0.68)); font-weight: 600; }
 .field input,

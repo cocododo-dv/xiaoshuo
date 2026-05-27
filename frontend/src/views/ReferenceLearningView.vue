@@ -177,6 +177,16 @@ async function applyProfile(draft) {
   });
 }
 
+async function refreshInjectionPreview(draft) {
+  if (!store.currentProfile?.profile_id) return;
+  store.applyDraft = { ...draft };
+  try {
+    await store.dryrunInjectionPreview(store.currentProfile.profile_id, draft);
+  } catch (err) {
+    // 静默降级:preview 失败不阻塞 apply 流程,InjectionBundlePreview 显示 error 即可
+  }
+}
+
 function scrollToSubDim(dimPath) {
   highlightedDim.value = dimPath;
   const el = subDimRefs.value[dimPath];
@@ -509,9 +519,13 @@ function describeSubDim(dimPath) {
       :open="applyDialogOpen"
       :draft="store.applyDraft"
       :busy="store.loading"
+      :preview="store.currentInjectionPreview"
+      :preview-loading="store.injectionPreviewLoading"
+      :preview-error="store.error || ''"
       @close="applyDialogOpen = false"
       @submit="applyProfile"
       @update:draft="(value) => (store.applyDraft = value)"
+      @request-preview="refreshInjectionPreview"
     />
   </main>
 </template>

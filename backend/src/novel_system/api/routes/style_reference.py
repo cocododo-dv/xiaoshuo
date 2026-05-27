@@ -39,8 +39,10 @@ from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.run_orchestrator import RunOrchestrator
+from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.schemas import (
     BindingScope,
+    InjectionPreviewRequest,
     InjectionStrategy,
     RunStatus,
     TaskType,
@@ -923,5 +925,73 @@ def list_validation_reports(
     reports = repo.list_validation_reports(profile_id=profile_id, verdict=verdict)
     return ok(
         {"reports": [_serialize_validation_report(r) for r in reports]},
+        req_id=_req_id(request),
+    )
+
+
+# ---------------------------------------------------------------------------
+# PR-9 — Injection preview endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get(f"{PATH_PREFIX}/bindings/{{binding_id}}/injection-preview")
+def get_binding_injection_preview(
+    binding_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """PR-9 §5.1 — 读已落盘 binding 渲染 fragments + prefix。"""
+    repo = StyleReferenceRepository(session)
+    binding = repo.get_binding(binding_id)
+    if binding is None:
+        raise DomainError(
+            "STYLE_REFERENCE_BINDING_NOT_FOUND",
+            f"binding {binding_id!r} not found",
+            status_code=404,
+        )
+    profile = repo.get_profile(binding.profile_id)
+    if profile is None:
+        raise DomainError(
+            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+            f"profile {binding.profile_id!r} not found",
+            status_code=404,
+        )
+    try:
+        strategy = InjectionStrategy(binding.strategy)
+    except ValueError:
+        strategy = InjectionStrategy.A
+    fragments = InjectionService(session)._render(profile, strategy, binding.config_json or {})
+    return ok(
+        {"fragments": fragments.model_dump(), "prefix": fragments.to_system_prompt_prefix()},
+        req_id=_req_id(request),
+    )
+
+
+@router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/injection-preview")
+def dryrun_injection_preview(
+    profile_id: str,
+    payload: InjectionPreviewRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """PR-9 §5.1 — dryrun:不写盘,直接按入参 strategy/intensity/sub_dimensions 渲染。"""
+    repo = StyleReferenceRepository(session)
+    profile = repo.get_profile(profile_id)
+    if profile is None:
+        raise DomainError(
+            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+            f"profile {profile_id!r} not found",
+            status_code=404,
+        )
+    config: dict[str, Any] = {
+        "intensity": payload.intensity,
+        "sub_dimensions": payload.sub_dimensions,
+        "include_positive": payload.include_positive,
+        "include_forbidden": payload.include_forbidden,
+        "include_metric": payload.include_metric,
+    }
+    fragments = InjectionService(session)._render(profile, payload.strategy, config)
+    return ok(
+        {"fragments": fragments.model_dump(), "prefix": fragments.to_system_prompt_prefix()},
         req_id=_req_id(request),
     )

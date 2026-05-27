@@ -608,3 +608,35 @@ class SystemPromptFragments(BaseModel):
         if not blocks:
             return ""
         return "[STYLE_REFERENCE]\n" + "\n\n".join(blocks) + "\n[/STYLE_REFERENCE]\n\n"
+
+
+# ---------------------------------------------------------------------------
+# PR-9 契约:injection-preview 端点(dryrun + 已落盘 binding)
+# ---------------------------------------------------------------------------
+
+
+class InjectionPreviewRequest(BaseModel):
+    """`POST /profiles/{id}/injection-preview` body — dryrun 模式入参。
+
+    用户在 ApplyDialog 内调整 strategy / intensity / sub_dimensions 时,
+    前端 debounce 拉这个端点,**不写盘** binding。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: InjectionStrategy = InjectionStrategy.A
+    task_type: TaskType = TaskType.SCENE_GENERATION
+    intensity: int = Field(default=50, ge=0, le=100)
+    sub_dimensions: list[str] = Field(default_factory=list)
+    include_positive: bool = True
+    include_forbidden: bool = True
+    include_metric: bool = False
+
+
+class InjectionPreviewResponse(BaseModel):
+    """preview 端点统一返回结构。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fragments: SystemPromptFragments
+    prefix: str

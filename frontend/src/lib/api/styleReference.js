@@ -143,3 +143,29 @@ export function listStyleReferenceValidationReports(profileId, { verdict } = {})
   const query = verdict ? `?verdict=${encodeURIComponent(verdict)}` : "";
   return apiGet(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/reports${query}`);
 }
+
+// --- Injection preview (PR-9) ---
+
+export function fetchBindingInjectionPreview(bindingId) {
+  return apiGet(`${PREFIX}/bindings/${encodeURIComponent(bindingId)}/injection-preview`);
+}
+
+export function dryrunInjectionPreview(profileId, {
+  strategy = "A",
+  taskType = "scene_generation",
+  intensity = 50,
+  subDimensions = [],
+  includePositive = true,
+  includeForbidden = true,
+  includeMetric = false,
+} = {}) {
+  return apiPost(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/injection-preview`, {
+    strategy,
+    task_type: taskType,
+    intensity,
+    sub_dimensions: subDimensions,
+    include_positive: includePositive,
+    include_forbidden: includeForbidden,
+    include_metric: includeMetric,
+  });
+}

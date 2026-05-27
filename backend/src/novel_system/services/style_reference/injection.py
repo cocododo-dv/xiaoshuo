@@ -118,8 +118,10 @@ class InjectionService:
         strategy: InjectionStrategy,
         config: dict[str, Any],
     ) -> SystemPromptFragments:
+        sub_dims_raw = config.get("sub_dimensions")
+        sub_dims = [str(s) for s in sub_dims_raw] if sub_dims_raw else None
         positive = self._render_positive(profile)
-        forbidden = self._render_forbidden(profile)
+        forbidden = self._render_forbidden(profile, sub_dims=sub_dims)
         metric = self._render_metric(profile)
 
         if strategy == InjectionStrategy.B:
@@ -128,12 +130,29 @@ class InjectionService:
             forbidden = self._summarize_forbidden(forbidden, max_chars=200)
             metric = ""
         elif strategy == InjectionStrategy.MIXED:
+            # PR-9 §"intensity 语义" — 0-100 缩放 ratio:0 → 0.3x, 50 → 0.9x, 100 → 1.5x
+            try:
+                intensity = max(0, min(100, int(config.get("intensity", 50))))
+            except (TypeError, ValueError):
+                intensity = 50
+            scale = 0.3 + (intensity / 100.0) * 1.2
+            budget = _load_budget()
+            total = int(budget.get("system_prompt_max_tokens", 800))
+            p_ratio = float(budget.get("positive_block_ratio", 0.6))
+            f_ratio = float(budget.get("forbidden_block_ratio", 0.3))
+            m_ratio = float(budget.get("metric_anchor_block_ratio", 0.1))
             if not config.get("include_positive", True):
                 positive = ""
+            else:
+                positive = _truncate(positive, int(total * p_ratio * scale))
             if not config.get("include_forbidden", True):
                 forbidden = ""
+            else:
+                forbidden = _truncate(forbidden, int(total * f_ratio * scale))
             if not config.get("include_metric", False):
                 metric = ""
+            else:
+                metric = _truncate(metric, int(total * m_ratio * scale))
 
         return SystemPromptFragments(
             positive_block=positive,
@@ -160,13 +179,19 @@ class InjectionService:
             lines.extend(f"- {item}" for item in patterns)
         return "\n".join(lines)
 
-    def _render_forbidden(self, profile) -> str:
+    def _render_forbidden(self, profile, *, sub_dims: list[str] | None = None) -> str:
+        """渲染禁忌模式块。
+
+        ``sub_dims`` 为 None 或空 list 时**全部 16 维**;否则按 sub_dim 过滤
+        finding(banned_replication_rules 在 profile_json 中无 sub_dim 归属,
+        始终保留)。
+        """
         rules = [
             r.strip()
             for r in ((profile.profile_json or {}).get("banned_replication_rules") or [])
             if str(r).strip()
         ]
-        finding_statements = self._collect_forbidden_finding_statements(profile)
+        finding_statements = self._collect_forbidden_finding_statements(profile, sub_dims=sub_dims)
         if not (rules or finding_statements):
             return ""
         lines = ["[禁忌模式]"]
@@ -176,15 +201,24 @@ class InjectionService:
             lines.append(f"- {stmt}")
         return "\n".join(lines)
 
-    def _collect_forbidden_finding_statements(self, profile) -> list[str]:
+    def _collect_forbidden_finding_statements(
+        self,
+        profile,
+        *,
+        sub_dims: list[str] | None = None,
+    ) -> list[str]:
         ids = profile.source_finding_ids_json or []
         statements: list[str] = []
+        sub_dim_filter = set(sub_dims) if sub_dims else None
         for fid in ids:
             row = self.repo.get_finding(fid)
-            if row is not None and row.finding_kind == "forbidden_pattern":
-                stmt = (row.statement or "").strip()
-                if stmt:
-                    statements.append(stmt)
+            if row is None or row.finding_kind != "forbidden_pattern":
+                continue
+            if sub_dim_filter is not None and row.sub_dimension not in sub_dim_filter:
+                continue
+            stmt = (row.statement or "").strip()
+            if stmt:
+                statements.append(stmt)
         return statements
 
     def _render_metric(self, profile) -> str:
