@@ -1,0 +1,9 @@
+# PR-8 §5.1 — Strategy B(预算控制)拼装时使用的预算配置。
+# system_prompt_max_tokens:整 [STYLE_REFERENCE] block 最长汉字数(粗估,~1 字 = 1 token)
+# *_block_ratio:positive / forbidden / metric_anchor 三块各自占总预算的比例
+#
+# 这是任务级常量;InjectionService 在 strategy=B 时按 ratio 切上限,超长截尾保头部。
+system_prompt_max_tokens: 800
+positive_block_ratio: 0.6
+forbidden_block_ratio: 0.3
+metric_anchor_block_ratio: 0.1

@@ -577,3 +577,34 @@ class ValidateResponse(BaseModel):
     mode_executed: ValidationMode
     sync_result: ValidationReport | None = None
     polling_url: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# PR-8 契约:injection 接入(系统提示拼接片段)
+# ---------------------------------------------------------------------------
+
+
+class SystemPromptFragments(BaseModel):
+    """注入到 LLM system_prompt 头部的 3 块文本 + strategy 回填(PR-8 §5.1)。
+
+    InjectionService.fragments_for() 返回此结构;scene_generation 调
+    `to_system_prompt_prefix()` 拿到最终拼接字符串后 prepend 到
+    messages[0]["content"]。所有 block 默认 empty,允许任一为空。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    positive_block: str = ""
+    forbidden_block: str = ""
+    metric_anchor_block: str = ""
+    strategy: InjectionStrategy = InjectionStrategy.A
+
+    def to_system_prompt_prefix(self) -> str:
+        blocks = [
+            block
+            for block in (self.positive_block, self.forbidden_block, self.metric_anchor_block)
+            if block.strip()
+        ]
+        if not blocks:
+            return ""
+        return "[STYLE_REFERENCE]\n" + "\n\n".join(blocks) + "\n[/STYLE_REFERENCE]\n\n"

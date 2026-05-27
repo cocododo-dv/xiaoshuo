@@ -307,6 +307,17 @@ task_routing:
     max_output_tokens: 2200
     response_format: json_object
     model_profile: quality_strong
+  long_form_continuation:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.7
+    max_output_tokens: 4000
+    response_format: json_object
+    model_profile: quality_strong
+    # PR-8 §5.1 — 长文续写时每 N 字符重新拉一次 [STYLE_REFERENCE] block
+    # 注入,防止 LLM 风格漂移。scene_generation / chapter_continuation 调
+    # InjectionService 时按此阈值触发 refresh。
+    refresh_every_chars: 8000
 
 retry_budget:
   hard_partial_max: 2

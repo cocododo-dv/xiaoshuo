@@ -24,6 +24,9 @@ class LLMNodeSpec:
     api_mode: str = "responses"
     model_profile: str | None = None
     fallback_route_ids: tuple[str, ...] = ()
+    # PR-8 §5.1 — 长文续写专用:每 N 字符重新拉取 [STYLE_REFERENCE] 注入,
+    # 防止风格漂移。0 = 不刷新(默认),仅 long_form_continuation 节点启用。
+    refresh_every_chars: int = 0
 
     def catalog_entry(self, order: int) -> dict[str, Any]:
         return {
@@ -42,6 +45,7 @@ class LLMNodeSpec:
             "api_mode": self.api_mode,
             "model_profile": self.model_profile,
             "fallback_route_ids": list(self.fallback_route_ids),
+            "refresh_every_chars": self.refresh_every_chars,
             "order": order,
         }
 
@@ -323,6 +327,17 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         max_output_tokens=5000,
         model_profile="quality_strong",
         fallback_route_ids=("style_patch", "style_draft", "stylize", "neutral_draft"),
+    ),
+    LLMNodeSpec(
+        "long_form_continuation",
+        "Long-form continuation",
+        "scene_generation",
+        template_name="long_form_continuation",
+        temperature=0.7,
+        max_output_tokens=4000,
+        model_profile="quality_strong",
+        refresh_every_chars=8000,
+        fallback_route_ids=("neutral_draft", "style_draft", "stylize"),
     ),
     LLMNodeSpec(
         "hard_qc",

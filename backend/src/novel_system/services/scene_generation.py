@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 import uuid
@@ -24,6 +25,9 @@ from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
 )
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.style_reference.injection import InjectionService
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -171,6 +175,8 @@ class SceneGenerationService:
                 exc=exc,
             )
             raise
+
+        prompt = self._inject_style_reference(prompt, scene, task_type="scene_generation")
 
         try:
             node_result = self._llm_runner.run(
@@ -379,6 +385,8 @@ class SceneGenerationService:
                 source_draft_row_id=source_draft_row_id,
             )
             raise
+
+        prompt = self._inject_style_reference(prompt, scene, task_type="scene_generation")
 
         user_prompt = self._build_style_user_prompt(
             prompt["user_prompt"],
@@ -607,6 +615,38 @@ class SceneGenerationService:
         if self._prompt_builder_instance is None:
             self._prompt_builder_instance = PromptBuilder()
         return self._prompt_builder_instance
+
+    def _inject_style_reference(
+        self,
+        prompt: dict[str, Any] | None,
+        scene: SceneCard | None,
+        *,
+        task_type: str = "scene_generation",
+    ) -> dict[str, Any] | None:
+        """PR-8 §5.1 — 把 active StyleProfile 注入到 prompt["system_prompt"] 头部。
+
+        无 binding / project_id / profile 时 no-op;注入失败时 warn log 降级,
+        不阻断 LLM 生成。
+        """
+        if prompt is None or scene is None:
+            return prompt
+        project_id = getattr(scene, "project_id", None)
+        if not project_id:
+            return prompt
+        try:
+            fragments = InjectionService(self.session).fragments_for(project_id, task_type)
+            prefix = fragments.to_system_prompt_prefix()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "style_reference injection skipped for scene %s task %s: %s",
+                scene.scene_id, task_type, exc,
+            )
+            return prompt
+        if not prefix:
+            return prompt
+        injected = dict(prompt)
+        injected["system_prompt"] = prefix + (prompt.get("system_prompt") or "")
+        return injected
 
     def _record_runner_failure_attempt(
         self,

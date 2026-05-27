@@ -582,6 +582,34 @@ class HardQcEngine:
             payload=payload,
         )
         branch = self._branch_for(payload["next_action"])
+
+        # PR-8 §6.6 — style_reference validation gate(qc pass 时二次裁决)
+        if branch == "continue":
+            style_verdict = self._apply_style_validation_gate(scene, neutral_content)
+            if style_verdict == "partial":
+                branch = "rewrite_partial"
+                qc_report.resolution_code = "style_validation_partial"
+                qc_report.next_action = "partial_rewrite"
+                self.session.flush()
+            elif style_verdict in ("fail", "plagiarism"):
+                qc_report.resolution_code = f"style_validation_{style_verdict}"
+                qc_report.next_action = "human_review_required"
+                self.session.flush()
+                self._apply_issue_tracking(state, payload["issues"])
+                self._apply_branch_counters(state, "human_review_required")
+                self._clear_downstream_outputs(state)
+                return self._escalate_existing_report(
+                    scene=scene,
+                    state=state,
+                    bundle=bundle,
+                    neutral_draft_row_id=neutral_draft_row_id,
+                    qc_report=qc_report,
+                    branch="human_review_required",
+                    failure_reason=f"style_reference validation produced {style_verdict} verdict; human review is required.",
+                    trigger_reason=f"style_validation_{style_verdict}",
+                    llm_call_id=llm_call_id,
+                )
+
         self._apply_issue_tracking(state, payload["issues"])
         self._apply_branch_counters(state, branch)
 
@@ -806,6 +834,62 @@ class HardQcEngine:
         if not isinstance(source_text, str) or not source_text.strip():
             return False
         return _source_field_satisfied(source_text, neutral_content) and _issue_mentions_source(issue_blob, source_text)
+
+    def _apply_style_validation_gate(
+        self, scene: SceneCard, neutral_content: str
+    ) -> str | None:
+        """PR-8 §6.6 — sync_only style validation gate。
+
+        scene 无 project_id / 无 active binding / 调用失败 → 返 None(qc 结论直通)。
+        否则返 "pass" / "partial" / "fail" / "plagiarism"(小写字串)。
+        """
+        from novel_system.services.style_reference.repository import (
+            StyleReferenceRepository,
+        )
+        from novel_system.services.style_reference.schemas import (
+            ValidateRequest,
+            ValidationMode,
+            ValidationTargetKind,
+        )
+        from novel_system.services.style_reference.validation import (
+            ValidationOrchestrator,
+        )
+
+        project_id = getattr(scene, "project_id", None)
+        if not project_id or not neutral_content:
+            return None
+        try:
+            repo = StyleReferenceRepository(self.session)
+            bindings = repo.list_bindings(task_type="scene_generation")
+            active = next(
+                (
+                    b
+                    for b in bindings
+                    if b.status == "active"
+                    and (
+                        (b.scope == "project" and b.scope_ref_id == project_id)
+                        or b.scope == "global"
+                    )
+                ),
+                None,
+            )
+            if active is None:
+                return None
+            orchestrator = ValidationOrchestrator(self.session, llm_enabled=False)
+            response = orchestrator.validate(
+                active.profile_id,
+                ValidateRequest(
+                    generated_text=neutral_content,
+                    target_kind=ValidationTargetKind.SCENE,
+                    target_ref_id=scene.scene_id,
+                    mode=ValidationMode.SYNC_ONLY,
+                ),
+            )
+            if response.sync_result is None:
+                return None
+            return response.sync_result.verdict.value
+        except Exception:  # noqa: BLE001 — gate 不阻塞主流程
+            return None
 
     def _persist_qc_report(
         self,

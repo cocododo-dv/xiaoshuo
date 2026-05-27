@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
 from novel_system.services.prompt_builder import load_prompt_templates
+from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.errors import (
     LLMRequiredError,
     StyleReferenceError,
@@ -153,41 +154,8 @@ class PreviewService:
     # ------------------------------------------------------------------ LLM
 
     def _call_llm(self, payload: dict) -> dict[str, Any]:
+        # PR-8 §"_call_llm 统一" — 复用 _llm_helper.call_llm_node
         try:
-            routing = load_model_routing_config()
-            task_config = getattr(routing, "task_routing", {})[PREVIEW_NODE_ID]
-            template = load_prompt_templates()[PREVIEW_NODE_ID]
-        except KeyError as exc:
-            raise PreviewError(
-                f"task routing / prompt template missing for {PREVIEW_NODE_ID!r}: {exc}"
-            ) from exc
-
-        user_prompt = template.task_prompt + "\n\n" + json.dumps(
-            payload, ensure_ascii=False
-        )
-        request = LLMRequest(
-            model=task_config.model,
-            messages=[
-                {"role": "system", "content": template.system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=task_config.temperature,
-            max_output_tokens=task_config.max_output_tokens,
-            response_format=task_config.response_format,
-            provider=task_config.provider,
-            node_id=PREVIEW_NODE_ID,
-            provider_id=getattr(task_config, "provider_id", None),
-            account_id=getattr(task_config, "account_id", None),
-            reasoning_level=getattr(task_config, "reasoning_level", "medium"),
-            api_mode=getattr(task_config, "api_mode", "responses"),
-            credential_mode=getattr(task_config, "credential_mode", None),
-            provider_options=getattr(task_config, "provider_options", {}),
-            response_schema=template.structured_schema,
-        )
-        try:
-            response = self._llm_client.generate(request)
-        except Exception as exc:  # pylint: disable=broad-except
-            raise PreviewError(
-                f"LLMClient.generate failed for {PREVIEW_NODE_ID!r}: {exc}"
-            ) from exc
-        return getattr(response, "structured_output", None) or {}
+            return call_llm_node(PREVIEW_NODE_ID, payload, self._llm_client)
+        except LLMNodeError as exc:
+            raise PreviewError(str(exc)) from exc

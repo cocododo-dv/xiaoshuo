@@ -34,6 +34,7 @@ from novel_system.services.style_reference.extractors import (
     ThemeExtractor,
 )
 from novel_system.services.style_reference.ingest import IngestResult, IngestService, assess_input_size
+from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.materialization import (
     MaterializationService,
     MaterializeResult,
@@ -108,6 +109,7 @@ from novel_system.services.style_reference.schemas import (
     PreviewSampleResult,
     QuantitativeReportItem,
     SemanticReportItem,
+    SystemPromptFragments,
     ValidateRequest,
     ValidateResponse,
 )
@@ -158,11 +160,13 @@ __all__ = [
     "PreviewSampleResult",
     "QuantitativeReportItem",
     "SemanticReportItem",
+    "SystemPromptFragments",
     "ValidateRequest",
     "ValidateResponse",
     "IngestService",
     "IngestResult",
     "assess_input_size",
+    "InjectionService",
     "BaseExtractor",
     "LanguageExtractor",
     "NarrativeExtractor",
