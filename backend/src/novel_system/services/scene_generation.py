@@ -631,10 +631,14 @@ class SceneGenerationService:
         if prompt is None or scene is None:
             return prompt
         project_id = getattr(scene, "project_id", None)
-        if not project_id:
+        # PR-14 — character scope 用场景主视角 pov_character_id 匹配
+        character_id = getattr(scene, "pov_character_id", None)
+        if not project_id and not character_id:
             return prompt
         try:
-            fragments = InjectionService(self.session).fragments_for(project_id, task_type)
+            fragments = InjectionService(self.session).fragments_for(
+                project_id, task_type, character_id=character_id,
+            )
             prefix = fragments.to_system_prompt_prefix()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(

@@ -118,3 +118,39 @@ def test_gate_swallows_exception_and_returns_none(session) -> None:
         verdict = engine._apply_style_validation_gate(scene, "一段文本")
     # 异常吞掉,gate 返回 None(qc 直通,不阻塞)
     assert verdict is None
+
+
+def _seed_character_binding_with_term(*, seed: str, character_id: str, term: str) -> None:
+    """PR-14 — character scope binding + banned_term(供 gate 命中测试)。"""
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done")
+        repo.create_profile(
+            profile_id=f"sr_profile_{seed}", book_id=f"sr_book_{seed}", run_id=f"sr_run_{seed}",
+            title="t", status="active",
+            profile_json={"narrative_summary": "n"}, coverage_json={}, source_finding_ids_json=[],
+        )
+        repo.create_binding(
+            binding_id=f"sr_bind_{seed}", profile_id=f"sr_profile_{seed}",
+            scope="character", scope_ref_id=character_id,
+            task_type="scene_generation", strategy="A", config_json={}, status="active",
+        )
+        repo.create_banned_term(
+            term_id=f"sr_term_{seed}", profile_id=f"sr_profile_{seed}",
+            scope="generation", term=term, source="manual",
+        )
+        session.commit()
+
+
+def test_gate_character_scope_binding_triggers_verdict(session) -> None:
+    """PR-14 — scene.pov_character_id 命中 character binding,其 banned_term 触发 fail。"""
+    # _make_scene 的 pov_character_id="A";project 无 project binding,靠 character 命中
+    _seed_character_binding_with_term(seed="charg", character_id="A", term="美轮美奂")
+    engine = HardQcEngine(session, llm_client=object())
+    scene = _make_scene("proj_no_project_binding")
+    verdict = engine._apply_style_validation_gate(scene, "这景色真是美轮美奂极了。")
+    assert verdict == "fail"

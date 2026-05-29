@@ -333,3 +333,112 @@ def test_to_system_prompt_prefix_ordering():
     forbid_idx = prefix.index("禁忌模式")
     metric_idx = prefix.index("量化锚点")
     assert pos_idx < forbid_idx < metric_idx
+
+
+# ---------------------------------------------------------------------------
+# PR-14 — character scope binding(优先级单选 character > project > global)
+# ---------------------------------------------------------------------------
+
+
+def _seed_scoped_bindings(
+    *,
+    seed: str,
+    project_id: str,
+    character_id: str,
+    char_feature: str = "角色专属特征",
+    project_feature: str = "项目通用特征",
+    char_status: str = "active",
+    include_character: bool = True,
+) -> None:
+    """落 1 book/run + 2 profile(character / project)+ 对应 2 binding。
+
+    两 profile 的 style_features 不同,便于断言注入命中哪个。
+    """
+    book_id = f"sr_book_{seed}"
+    run_id = f"sr_run_{seed}"
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id=book_id, title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
+        # project profile + binding
+        repo.create_profile(
+            profile_id=f"sr_profile_{seed}_proj", book_id=book_id, run_id=run_id, title="proj",
+            status="active",
+            profile_json={"narrative_summary": "n", "style_features": [project_feature]},
+            coverage_json={}, source_finding_ids_json=[],
+        )
+        repo.create_binding(
+            binding_id=f"sr_bind_{seed}_proj", profile_id=f"sr_profile_{seed}_proj",
+            scope="project", scope_ref_id=project_id,
+            task_type="scene_generation", strategy="A", config_json={}, status="active",
+        )
+        if include_character:
+            repo.create_profile(
+                profile_id=f"sr_profile_{seed}_char", book_id=book_id, run_id=run_id, title="char",
+                status="active",
+                profile_json={"narrative_summary": "n", "style_features": [char_feature]},
+                coverage_json={}, source_finding_ids_json=[],
+            )
+            repo.create_binding(
+                binding_id=f"sr_bind_{seed}_char", profile_id=f"sr_profile_{seed}_char",
+                scope="character", scope_ref_id=character_id,
+                task_type="scene_generation", strategy="A", config_json={}, status=char_status,
+            )
+        session.commit()
+
+
+def test_character_binding_wins_over_project():
+    _seed_scoped_bindings(
+        seed="charwin", project_id="proj_cw", character_id="char_cw",
+        char_feature="角色专属特征CW", project_feature="项目通用特征CW",
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_cw", "scene_generation", character_id="char_cw",
+        )
+    assert "角色专属特征CW" in fragments.positive_block
+    assert "项目通用特征CW" not in fragments.positive_block
+
+
+def test_character_id_mismatch_falls_back_to_project():
+    _seed_scoped_bindings(
+        seed="charmiss", project_id="proj_cm", character_id="char_cm",
+        char_feature="角色专属特征CM", project_feature="项目通用特征CM",
+    )
+    with SessionLocal() as session:
+        # 传一个不匹配任何 character binding 的 character_id
+        fragments = InjectionService(session).fragments_for(
+            "proj_cm", "scene_generation", character_id="char_other",
+        )
+    assert "项目通用特征CM" in fragments.positive_block
+    assert "角色专属特征CM" not in fragments.positive_block
+
+
+def test_character_id_none_skips_character_binding():
+    _seed_scoped_bindings(
+        seed="charnone", project_id="proj_cn", character_id="char_cn",
+        char_feature="角色专属特征CN", project_feature="项目通用特征CN",
+    )
+    with SessionLocal() as session:
+        # character_id=None(默认)→ 跳过 character rank,回落 project
+        fragments = InjectionService(session).fragments_for("proj_cn", "scene_generation")
+    assert "项目通用特征CN" in fragments.positive_block
+    assert "角色专属特征CN" not in fragments.positive_block
+
+
+def test_disabled_character_binding_falls_back_to_project():
+    _seed_scoped_bindings(
+        seed="chardis", project_id="proj_cd", character_id="char_cd",
+        char_feature="角色专属特征CD", project_feature="项目通用特征CD",
+        char_status="disabled",
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_cd", "scene_generation", character_id="char_cd",
+        )
+    # character binding disabled → 不命中,回落 project
+    assert "项目通用特征CD" in fragments.positive_block
+    assert "角色专属特征CD" not in fragments.positive_block

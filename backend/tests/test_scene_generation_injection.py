@@ -120,3 +120,39 @@ def test_long_form_continuation_node_carries_refresh_every_chars() -> None:
     nodes = {spec.node_id: spec for spec in llm_node_specs()}
     assert "long_form_continuation" in nodes
     assert nodes["long_form_continuation"].refresh_every_chars == 8000
+
+
+def _seed_character_binding(*, seed: str, character_id: str, feature: str) -> None:
+    """PR-14 — 落 character scope binding(scope_ref_id=character_id)。"""
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done")
+        repo.create_profile(
+            profile_id=f"sr_profile_{seed}", book_id=f"sr_book_{seed}", run_id=f"sr_run_{seed}",
+            title="t", status="active",
+            profile_json={"narrative_summary": "n", "style_features": [feature]},
+            coverage_json={}, source_finding_ids_json=[],
+        )
+        repo.create_binding(
+            binding_id=f"sr_bind_{seed}", profile_id=f"sr_profile_{seed}",
+            scope="character", scope_ref_id=character_id,
+            task_type="scene_generation", strategy="A", config_json={}, status="active",
+        )
+        session.commit()
+
+
+def test_injection_matches_character_binding_via_pov(session) -> None:
+    """PR-14 — scene.pov_character_id 命中 character binding 时注入该 profile。"""
+    _seed_character_binding(seed="povchar", character_id="CHAR_A", feature="角色专属腔调")
+    service = SceneGenerationService(session, llm_client=object())
+    # scene 的 project 无 binding,但 pov_character_id=CHAR_A 命中 character binding
+    scene = _make_scene("proj_no_project_binding")
+    base = {"system_prompt": "BASE", "user_prompt": "u"}
+    out = service._inject_style_reference(base, scene, task_type="scene_generation")
+    assert out is not base
+    assert "角色专属腔调" in out["system_prompt"]
+    assert out["system_prompt"].endswith("BASE")

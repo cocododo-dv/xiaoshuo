@@ -67,9 +67,15 @@ class InjectionService:
         self,
         project_id: str | None,
         task_type: str,
+        *,
+        character_id: str | None = None,
     ) -> SystemPromptFragments:
-        """主入口。无 active binding / profile 时返 empty fragments(no-op)。"""
-        fragments = self._resolve_fragments(project_id, task_type)
+        """主入口。无 active binding / profile 时返 empty fragments(no-op)。
+
+        PR-14 — character_id 非空时优先匹配 character scope binding
+        (character > project > global)。
+        """
+        fragments = self._resolve_fragments(project_id, task_type, character_id=character_id)
         self._record_invocation(project_id, task_type, fragments)
         return fragments
 
@@ -77,10 +83,12 @@ class InjectionService:
         self,
         project_id: str | None,
         task_type: str,
+        *,
+        character_id: str | None = None,
     ) -> SystemPromptFragments:
-        if not project_id:
+        if not project_id and not character_id:
             return SystemPromptFragments()
-        binding = self._pick_active_binding(project_id, task_type)
+        binding = self.resolve_active_binding(project_id, task_type, character_id=character_id)
         if binding is None:
             return SystemPromptFragments()
         profile = self.repo.get_profile(binding.profile_id)
@@ -122,12 +130,22 @@ class InjectionService:
         self._last_profile_id = None
         self._last_binding_id = None
 
-    # ------------------------------------------------------------- internals
-    def _pick_active_binding(self, project_id: str, task_type: str):
-        """优先级:scope=project + scope_ref_id 完全匹配 > scope=global。
+    # ------------------------------------------------------------- binding 选取
+    def resolve_active_binding(
+        self,
+        project_id: str | None,
+        task_type: str,
+        *,
+        character_id: str | None = None,
+    ):
+        """优先级单选:character > project > global,取最具体的一个。
 
-        同 scope 内取最新 ``created_at``。
+        PR-14 — InjectionService 与 qc_engine 共用的 binding 选取单点。
+        character_id 为空时跳过 character rank(退化为现有 project > global)。
+        同 rank 取最新 ``created_at``。
         """
+        if not project_id and not character_id:
+            return None
         bindings = [
             b
             for b in self.repo.list_bindings(task_type=task_type)
@@ -136,22 +154,20 @@ class InjectionService:
         if not bindings:
             return None
 
-        def _sort_key(b):
-            scope_rank = 0 if (b.scope == "project" and b.scope_ref_id == project_id) else (
-                1 if b.scope == "global" else 2
-            )
-            return (scope_rank, -1 * _ts_to_int(b.created_at))
+        def _rank(b) -> int:
+            if character_id and b.scope == "character" and b.scope_ref_id == character_id:
+                return 0
+            if project_id and b.scope == "project" and b.scope_ref_id == project_id:
+                return 1
+            if b.scope == "global":
+                return 2
+            return 99  # 不匹配
 
-        bindings = [
-            b
-            for b in bindings
-            if (b.scope == "project" and b.scope_ref_id == project_id)
-            or b.scope == "global"
-        ]
-        if not bindings:
+        candidates = [b for b in bindings if _rank(b) < 99]
+        if not candidates:
             return None
-        bindings.sort(key=_sort_key)
-        return bindings[0]
+        candidates.sort(key=lambda b: (_rank(b), -1 * _ts_to_int(b.created_at)))
+        return candidates[0]
 
     def _render(
         self,

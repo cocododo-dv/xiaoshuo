@@ -845,10 +845,8 @@ class HardQcEngine:
         """
         import time as _time
 
+        from novel_system.services.style_reference.injection import InjectionService
         from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
-        from novel_system.services.style_reference.repository import (
-            StyleReferenceRepository,
-        )
         from novel_system.services.style_reference.schemas import (
             ValidateRequest,
             ValidationMode,
@@ -859,26 +857,18 @@ class HardQcEngine:
         )
 
         project_id = getattr(scene, "project_id", None)
-        if not project_id or not neutral_content:
+        # PR-14 — character scope 用场景主视角 pov_character_id 匹配
+        character_id = getattr(scene, "pov_character_id", None)
+        if not neutral_content or (not project_id and not character_id):
             return None
         started_at = _time.perf_counter()
         verdict: str | None = None
         profile_id: str | None = None
         binding_id: str | None = None
         try:
-            repo = StyleReferenceRepository(self.session)
-            bindings = repo.list_bindings(task_type="scene_generation")
-            active = next(
-                (
-                    b
-                    for b in bindings
-                    if b.status == "active"
-                    and (
-                        (b.scope == "project" and b.scope_ref_id == project_id)
-                        or b.scope == "global"
-                    )
-                ),
-                None,
+            # PR-14 — 复用 InjectionService 单点 binding 选取(character > project > global)
+            active = InjectionService(self.session).resolve_active_binding(
+                project_id, "scene_generation", character_id=character_id,
             )
             if active is None:
                 return None
