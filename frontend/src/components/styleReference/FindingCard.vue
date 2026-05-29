@@ -21,7 +21,11 @@ function review(decision) {
 </script>
 
 <template>
-  <article class="finding-card" :class="`finding-kind-${finding.finding_kind}`">
+  <article
+    class="finding-card"
+    :class="`finding-kind-${finding.finding_kind}`"
+    :data-testid="`reference-finding-${finding.finding_id}`"
+  >
     <header class="card-head">
       <BaseBadge :tone="finding.finding_kind === 'forbidden_pattern' ? 'danger' : 'success'">
         {{ finding.finding_kind === "forbidden_pattern" ? "禁忌" : "正向" }}
@@ -40,6 +44,7 @@ function review(decision) {
         variant="primary"
         size="sm"
         :loading="busy"
+        :data-testid="`reference-approve-${finding.finding_id}`"
         @click="review('approved')"
       >通过</BaseButton>
       <BaseButton
@@ -47,6 +52,7 @@ function review(decision) {
         variant="danger"
         size="sm"
         :loading="busy"
+        :data-testid="`reference-reject-${finding.finding_id}`"
         @click="review('rejected')"
       >驳回</BaseButton>
       <BaseButton
@@ -54,6 +60,7 @@ function review(decision) {
         variant="ghost"
         size="sm"
         :loading="busy"
+        :data-testid="`reference-reset-${finding.finding_id}`"
         @click="review('pending')"
       >重置</BaseButton>
     </footer>

@@ -227,7 +227,7 @@ function describeSubDim(dimPath) {
 </script>
 
 <template>
-  <main class="style-reference-view">
+  <main class="style-reference-view" data-testid="reference-learning-view">
     <WorkflowPageHeader viewId="reference" kicker="抽取阶段" />
 
     <FlowActionReceipt :receipt="receipt" />
@@ -251,12 +251,14 @@ function describeSubDim(dimPath) {
               type="button"
               class="tab"
               :class="{ 'tab-active': importMode === 'path' }"
+              data-testid="reference-import-toggle"
               @click="setImportMode('path')"
             >文件路径</button>
             <button
               type="button"
               class="tab"
               :class="{ 'tab-active': importMode === 'upload' }"
+              data-testid="reference-import-toggle-upload"
               @click="setImportMode('upload')"
             >上传文件</button>
           </nav>
@@ -268,6 +270,7 @@ function describeSubDim(dimPath) {
                 type="text"
                 v-model="store.pathDraft.file_path"
                 placeholder="如 backend/tests/golden/style_reference/corpus/luxun_short_stories.txt"
+                data-testid="reference-import-path"
               />
             </label>
             <label class="field">
@@ -286,7 +289,13 @@ function describeSubDim(dimPath) {
                 <option value="allow_full_cloud">allow_full_cloud(全文上云)</option>
               </select>
             </label>
-            <BaseButton variant="primary" block :loading="store.loading" @click="submitImport">
+            <BaseButton
+              variant="primary"
+              block
+              :loading="store.loading"
+              data-testid="reference-import-submit"
+              @click="submitImport"
+            >
               开始导入
             </BaseButton>
           </div>
@@ -327,7 +336,7 @@ function describeSubDim(dimPath) {
             title="尚无参考书"
             description="导入第一本 TXT/MD 文件开始风格抽取。"
           />
-          <ul v-else class="books-list">
+          <ul v-else class="books-list" data-testid="reference-book-list">
             <li
               v-for="book in store.books"
               :key="book.book_id"
@@ -394,7 +403,12 @@ function describeSubDim(dimPath) {
               description="点击下方按钮启动 RunOrchestrator 调度 8 sub_dim 的 LLM 抽取。"
             >
               <template #action>
-                <BaseButton variant="primary" :loading="store.loading" @click="startRun">
+                <BaseButton
+                  variant="primary"
+                  :loading="store.loading"
+                  data-testid="reference-start-run"
+                  @click="startRun"
+                >
                   启动抽取 run
                 </BaseButton>
               </template>
@@ -422,7 +436,7 @@ function describeSubDim(dimPath) {
                 title="该 run 暂无 findings"
                 description="可能 LLM 未启用,或抽取结果都被两级重试丢弃了。前往 SystemConfig 检查 LLM provider。"
               />
-              <div v-else class="findings-by-dim">
+              <div v-else class="findings-by-dim" data-testid="reference-finding-list">
                 <article
                   v-for="bucket in findingsBySubDim"
                   :key="bucket.subDim"
@@ -466,7 +480,12 @@ function describeSubDim(dimPath) {
                   description="审阅完 findings 后,点击聚合按钮把 8 sub_dim 整合为 StyleProfile。"
                 >
                   <template #action>
-                    <BaseButton variant="primary" :loading="store.loading" @click="synthesize">
+                    <BaseButton
+                      variant="primary"
+                      :loading="store.loading"
+                      data-testid="reference-advance-run"
+                      @click="synthesize"
+                    >
                       聚合为 Profile
                     </BaseButton>
                   </template>
@@ -505,7 +524,11 @@ function describeSubDim(dimPath) {
                 <PreviewPanel :samples="store.previewSamples" :busy="store.loading" @regenerate="regeneratePreview" />
 
                 <footer class="profile-actions">
-                  <BaseButton variant="primary" @click="applyDialogOpen = true">应用 Profile</BaseButton>
+                  <BaseButton
+                    variant="primary"
+                    data-testid="reference-apply-button"
+                    @click="applyDialogOpen = true"
+                  >应用 Profile</BaseButton>
                   <BaseButton variant="ghost" @click="gotoReviewInbox">查看 ReviewInbox</BaseButton>
                 </footer>
               </article>
