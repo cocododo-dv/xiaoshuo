@@ -1,11 +1,15 @@
 """PR-10 §13 — MetricsAggregator:从 metric_events 表算 4 个运营指标。
 
-无缓存(本 PR 范围);每次 GET 直接 SQL 算。后续 PR-11 可加 5 分钟 in-memory cache。
+PR-12 §"性能轨道":加模块级 in-memory TTL cache(默认 300s),按 window_hours
+分键。聚合 5 个 SQL 较重,GET /metrics 高频调用时命中 cache 直返快照;
+cleanup_metric_events 真删后调 clear_metrics_cache() 失效避免脏读;
+conftest 每 test 清 cache 保证跨 test 隔离。
 """
 
 from __future__ import annotations
 
 import statistics
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -20,6 +24,15 @@ KIND_QC_GATE = "qc_gate_decided"
 KIND_VALIDATION = "validation_executed"
 KIND_AUTO_REWRITE_TRIGGERED = "auto_rewrite_triggered"
 KIND_AUTO_REWRITE_COMPLETED = "auto_rewrite_completed"
+
+# PR-12 — 模块级 TTL cache:window_hours -> (expires_at_monotonic, snapshot)
+_CACHE_TTL_SECONDS = 300
+_METRICS_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
+
+
+def clear_metrics_cache() -> None:
+    """清空 metrics 聚合缓存(测试隔离 + cleanup 真删后失效)。"""
+    _METRICS_CACHE.clear()
 
 
 def _utcnow() -> str:
@@ -38,7 +51,24 @@ class MetricsAggregator:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def compute_all(self, window_hours: int = 168) -> dict[str, Any]:
+    def compute_all(self, window_hours: int = 168, *, use_cache: bool = True) -> dict[str, Any]:
+        """按 window_hours 算 4 指标 + sample_counts。
+
+        use_cache=True(默认)时走模块级 TTL cache;同 window_hours 在 TTL 内
+        二次调用直返快照,不重算 5 个 SQL。use_cache=False 绕过(供单测精确断言)。
+        """
+        key = int(window_hours)
+        now = time.monotonic()
+        if use_cache:
+            cached = _METRICS_CACHE.get(key)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+        snapshot = self._compute_uncached(window_hours)
+        if use_cache:
+            _METRICS_CACHE[key] = (now + _CACHE_TTL_SECONDS, snapshot)
+        return snapshot
+
+    def _compute_uncached(self, window_hours: int) -> dict[str, Any]:
         since = _since_ts(window_hours)
         return {
             "injection_hit_rate": self._injection_hit_rate(since),

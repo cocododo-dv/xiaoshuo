@@ -8,6 +8,7 @@ import { computed, onActivated, onMounted, ref } from "vue";
 
 import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import LazySection from "../components/LazySection.vue";
+import ProgressiveList from "../components/ProgressiveList.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import BaseBadge from "../components/base/BaseBadge.vue";
 import BaseButton from "../components/base/BaseButton.vue";
@@ -451,22 +452,25 @@ function describeSubDim(dimPath) {
                       {{ bucket.forbidden_patterns.length }} 禁忌
                     </p>
                   </header>
-                  <div v-if="bucket.observations.length + bucket.forbidden_patterns.length > 0" class="dim-findings">
-                    <FindingCard
-                      v-for="f in bucket.observations"
-                      :key="f.finding_id"
-                      :finding="f"
-                      :busy="reviewingFindingId === f.finding_id"
-                      @review="(decision) => reviewFinding(f.finding_id, decision)"
-                    />
-                    <FindingCard
-                      v-for="f in bucket.forbidden_patterns"
-                      :key="f.finding_id"
-                      :finding="f"
-                      :busy="reviewingFindingId === f.finding_id"
-                      @review="(decision) => reviewFinding(f.finding_id, decision)"
-                    />
-                  </div>
+                  <ProgressiveList
+                    v-if="bucket.observations.length + bucket.forbidden_patterns.length > 0"
+                    :items="[...bucket.observations, ...bucket.forbidden_patterns]"
+                    :threshold="12"
+                    :initial-count="8"
+                    :batch-size="8"
+                  >
+                    <template #default="{ items }">
+                      <div class="dim-findings">
+                        <FindingCard
+                          v-for="f in items"
+                          :key="f.finding_id"
+                          :finding="f"
+                          :busy="reviewingFindingId === f.finding_id"
+                          @review="(decision) => reviewFinding(f.finding_id, decision)"
+                        />
+                      </div>
+                    </template>
+                  </ProgressiveList>
                   <p v-else class="dim-empty">该 sub_dim 无 finding(可能输入量不足或全部被重试丢弃)。</p>
                 </article>
               </div>
