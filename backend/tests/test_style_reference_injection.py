@@ -442,3 +442,95 @@ def test_disabled_character_binding_falls_back_to_project():
     # character binding disabled → 不命中,回落 project
     assert "项目通用特征CD" in fragments.positive_block
     assert "角色专属特征CD" not in fragments.positive_block
+
+
+# ---------------------------------------------------------------------------
+# PR-15 — scene scope binding(优先级单选 scene > character > project > global)
+# ---------------------------------------------------------------------------
+
+
+def _seed_four_level_bindings(
+    *,
+    seed: str,
+    project_id: str,
+    character_id: str,
+    scene_id: str,
+    include_scene: bool = True,
+    scene_feature: str = "场景专属特征",
+    char_feature: str = "角色专属特征",
+    project_feature: str = "项目通用特征",
+) -> None:
+    """落 1 book/run + 3 profile(scene/character/project)+ 对应 binding。
+
+    profile style_features 各异,便于断言命中哪个。
+    """
+    book_id = f"sr_book_{seed}"
+    run_id = f"sr_run_{seed}"
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id=book_id, title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
+
+        def _mk(suffix, feature, scope, ref):
+            repo.create_profile(
+                profile_id=f"sr_profile_{seed}_{suffix}", book_id=book_id, run_id=run_id,
+                title=suffix, status="active",
+                profile_json={"narrative_summary": "n", "style_features": [feature]},
+                coverage_json={}, source_finding_ids_json=[],
+            )
+            repo.create_binding(
+                binding_id=f"sr_bind_{seed}_{suffix}", profile_id=f"sr_profile_{seed}_{suffix}",
+                scope=scope, scope_ref_id=ref,
+                task_type="scene_generation", strategy="A", config_json={}, status="active",
+            )
+
+        _mk("proj", project_feature, "project", project_id)
+        _mk("char", char_feature, "character", character_id)
+        if include_scene:
+            _mk("scene", scene_feature, "scene", scene_id)
+        session.commit()
+
+
+def test_scene_binding_wins_over_character_and_project():
+    _seed_four_level_bindings(
+        seed="scenewin", project_id="proj_sw", character_id="char_sw", scene_id="scene_sw",
+        scene_feature="场景专属SW", char_feature="角色专属SW", project_feature="项目通用SW",
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_sw", "scene_generation", character_id="char_sw", scene_id="scene_sw",
+        )
+    assert "场景专属SW" in fragments.positive_block
+    assert "角色专属SW" not in fragments.positive_block
+    assert "项目通用SW" not in fragments.positive_block
+
+
+def test_scene_id_mismatch_falls_back_to_character():
+    _seed_four_level_bindings(
+        seed="scenemiss", project_id="proj_sm", character_id="char_sm", scene_id="scene_sm",
+        scene_feature="场景专属SM", char_feature="角色专属SM", project_feature="项目通用SM",
+    )
+    with SessionLocal() as session:
+        # scene_id 不匹配任何 scene binding → 回落 character
+        fragments = InjectionService(session).fragments_for(
+            "proj_sm", "scene_generation", character_id="char_sm", scene_id="scene_other",
+        )
+    assert "角色专属SM" in fragments.positive_block
+    assert "场景专属SM" not in fragments.positive_block
+
+
+def test_scene_id_none_skips_scene_binding():
+    _seed_four_level_bindings(
+        seed="scenenone", project_id="proj_sn", character_id="char_sn", scene_id="scene_sn",
+        scene_feature="场景专属SN", char_feature="角色专属SN", project_feature="项目通用SN",
+    )
+    with SessionLocal() as session:
+        # scene_id=None → 跳过 scene rank,命中 character
+        fragments = InjectionService(session).fragments_for(
+            "proj_sn", "scene_generation", character_id="char_sn",
+        )
+    assert "角色专属SN" in fragments.positive_block
+    assert "场景专属SN" not in fragments.positive_block

@@ -156,3 +156,39 @@ def test_injection_matches_character_binding_via_pov(session) -> None:
     assert out is not base
     assert "角色专属腔调" in out["system_prompt"]
     assert out["system_prompt"].endswith("BASE")
+
+
+def _seed_scene_binding(*, seed: str, scene_id: str, feature: str) -> None:
+    """PR-15 — 落 scene scope binding(scope_ref_id=scene_id)。"""
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done")
+        repo.create_profile(
+            profile_id=f"sr_profile_{seed}", book_id=f"sr_book_{seed}", run_id=f"sr_run_{seed}",
+            title="t", status="active",
+            profile_json={"narrative_summary": "n", "style_features": [feature]},
+            coverage_json={}, source_finding_ids_json=[],
+        )
+        repo.create_binding(
+            binding_id=f"sr_bind_{seed}", profile_id=f"sr_profile_{seed}",
+            scope="scene", scope_ref_id=scene_id,
+            task_type="scene_generation", strategy="A", config_json={}, status="active",
+        )
+        session.commit()
+
+
+def test_injection_matches_scene_binding_via_scene_id(session) -> None:
+    """PR-15 — scene.scene_id 命中 scene binding(优先于 character/project)。"""
+    # _make_scene scene_id 固定为 CH900_SC01
+    _seed_scene_binding(seed="scenebind", scene_id="CH900_SC01", feature="场景专属腔调")
+    service = SceneGenerationService(session, llm_client=object())
+    scene = _make_scene("proj_no_project_binding")
+    base = {"system_prompt": "BASE", "user_prompt": "u"}
+    out = service._inject_style_reference(base, scene, task_type="scene_generation")
+    assert out is not base
+    assert "场景专属腔调" in out["system_prompt"]
+    assert out["system_prompt"].endswith("BASE")

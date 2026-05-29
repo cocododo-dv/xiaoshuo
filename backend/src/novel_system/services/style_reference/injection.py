@@ -69,13 +69,16 @@ class InjectionService:
         task_type: str,
         *,
         character_id: str | None = None,
+        scene_id: str | None = None,
     ) -> SystemPromptFragments:
         """主入口。无 active binding / profile 时返 empty fragments(no-op)。
 
-        PR-14 — character_id 非空时优先匹配 character scope binding
-        (character > project > global)。
+        PR-14/15 — scene_id / character_id 非空时优先匹配对应 scope binding
+        (scene > character > project > global)。
         """
-        fragments = self._resolve_fragments(project_id, task_type, character_id=character_id)
+        fragments = self._resolve_fragments(
+            project_id, task_type, character_id=character_id, scene_id=scene_id,
+        )
         self._record_invocation(project_id, task_type, fragments)
         return fragments
 
@@ -85,10 +88,13 @@ class InjectionService:
         task_type: str,
         *,
         character_id: str | None = None,
+        scene_id: str | None = None,
     ) -> SystemPromptFragments:
-        if not project_id and not character_id:
+        if not project_id and not character_id and not scene_id:
             return SystemPromptFragments()
-        binding = self.resolve_active_binding(project_id, task_type, character_id=character_id)
+        binding = self.resolve_active_binding(
+            project_id, task_type, character_id=character_id, scene_id=scene_id,
+        )
         if binding is None:
             return SystemPromptFragments()
         profile = self.repo.get_profile(binding.profile_id)
@@ -137,14 +143,15 @@ class InjectionService:
         task_type: str,
         *,
         character_id: str | None = None,
+        scene_id: str | None = None,
     ):
-        """优先级单选:character > project > global,取最具体的一个。
+        """优先级单选:scene > character > project > global,取最具体的一个。
 
-        PR-14 — InjectionService 与 qc_engine 共用的 binding 选取单点。
-        character_id 为空时跳过 character rank(退化为现有 project > global)。
+        PR-14/15 — InjectionService 与 qc_engine 共用的 binding 选取单点。
+        scene_id / character_id 为空时跳过对应 rank(向下兼容)。
         同 rank 取最新 ``created_at``。
         """
-        if not project_id and not character_id:
+        if not project_id and not character_id and not scene_id:
             return None
         bindings = [
             b
@@ -155,12 +162,14 @@ class InjectionService:
             return None
 
         def _rank(b) -> int:
-            if character_id and b.scope == "character" and b.scope_ref_id == character_id:
+            if scene_id and b.scope == "scene" and b.scope_ref_id == scene_id:
                 return 0
-            if project_id and b.scope == "project" and b.scope_ref_id == project_id:
+            if character_id and b.scope == "character" and b.scope_ref_id == character_id:
                 return 1
-            if b.scope == "global":
+            if project_id and b.scope == "project" and b.scope_ref_id == project_id:
                 return 2
+            if b.scope == "global":
+                return 3
             return 99  # 不匹配
 
         candidates = [b for b in bindings if _rank(b) < 99]

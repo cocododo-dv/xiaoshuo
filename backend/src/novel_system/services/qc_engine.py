@@ -859,16 +859,18 @@ class HardQcEngine:
         project_id = getattr(scene, "project_id", None)
         # PR-14 — character scope 用场景主视角 pov_character_id 匹配
         character_id = getattr(scene, "pov_character_id", None)
-        if not neutral_content or (not project_id and not character_id):
+        # PR-15 — scene scope 用 scene_id 匹配(优先级最高)
+        scene_id = getattr(scene, "scene_id", None)
+        if not neutral_content or (not project_id and not character_id and not scene_id):
             return None
         started_at = _time.perf_counter()
         verdict: str | None = None
         profile_id: str | None = None
         binding_id: str | None = None
         try:
-            # PR-14 — 复用 InjectionService 单点 binding 选取(character > project > global)
+            # PR-14/15 — 复用 InjectionService 单点选取(scene > character > project > global)
             active = InjectionService(self.session).resolve_active_binding(
-                project_id, "scene_generation", character_id=character_id,
+                project_id, "scene_generation", character_id=character_id, scene_id=scene_id,
             )
             if active is None:
                 return None

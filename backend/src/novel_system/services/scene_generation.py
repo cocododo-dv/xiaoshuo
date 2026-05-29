@@ -633,11 +633,13 @@ class SceneGenerationService:
         project_id = getattr(scene, "project_id", None)
         # PR-14 — character scope 用场景主视角 pov_character_id 匹配
         character_id = getattr(scene, "pov_character_id", None)
-        if not project_id and not character_id:
+        # PR-15 — scene scope 用 scene_id 匹配(优先级最高)
+        scene_id = getattr(scene, "scene_id", None)
+        if not project_id and not character_id and not scene_id:
             return prompt
         try:
             fragments = InjectionService(self.session).fragments_for(
-                project_id, task_type, character_id=character_id,
+                project_id, task_type, character_id=character_id, scene_id=scene_id,
             )
             prefix = fragments.to_system_prompt_prefix()
         except Exception as exc:  # noqa: BLE001
