@@ -81,4 +81,21 @@ describe("InjectionStrategyPicker", () => {
     await Promise.resolve();
     expect(value.value.sub_dimensions).toContain("narrative.pacing");
   });
+
+  describe("a11y", () => {
+    it("选中 strategy 的 button aria-pressed=true,其余=false", async () => {
+      const { el } = mount({ ...baseState(), strategy: "A" });
+      expect(el.querySelector('[data-testid="strategy-A"]').getAttribute("aria-pressed")).toBe("true");
+      expect(el.querySelector('[data-testid="strategy-B"]').getAttribute("aria-pressed")).toBe("false");
+      expect(el.querySelector('[data-testid="strategy-mixed"]').getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("切换 strategy 后 aria-pressed 更新", async () => {
+      const { el } = mount({ ...baseState(), strategy: "A" });
+      el.querySelector('[data-testid="strategy-mixed"]').click();
+      await Promise.resolve();
+      expect(el.querySelector('[data-testid="strategy-mixed"]').getAttribute("aria-pressed")).toBe("true");
+      expect(el.querySelector('[data-testid="strategy-A"]').getAttribute("aria-pressed")).toBe("false");
+    });
+  });
 });

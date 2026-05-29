@@ -123,4 +123,42 @@ describe("ProfileApplyDialog", () => {
     expect(el.querySelector('[data-testid="bundle-preview"]')).not.toBeNull();
     expect(el.textContent).toContain("正向风格特征");
   });
+
+  describe("a11y", () => {
+    it("dialog 容器有 role=dialog + aria-modal + aria-labelledby", () => {
+      const { el } = mount(ProfileApplyDialog, { open: true, draft: defaultDraft() });
+      const dialog = el.querySelector(".apply-dialog");
+      expect(dialog.getAttribute("role")).toBe("dialog");
+      expect(dialog.getAttribute("aria-modal")).toBe("true");
+      expect(dialog.getAttribute("aria-labelledby")).toBe("apply-dialog-title");
+      expect(el.querySelector("#apply-dialog-title")).not.toBeNull();
+    });
+
+    it("Escape 键触发 close emit", async () => {
+      const { el, emitted } = mount(ProfileApplyDialog, { open: true, draft: defaultDraft() });
+      const dialog = el.querySelector(".apply-dialog");
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await nextTick();
+      expect(emitted.close).toBe(1);
+    });
+
+    it("点击遮罩本体关闭,点击内容区不关闭", async () => {
+      const { el, emitted } = mount(ProfileApplyDialog, { open: true, draft: defaultDraft() });
+      // 内容区点击冒泡到 mask,但 @click.self 不触发
+      el.querySelector(".apply-dialog").click();
+      await nextTick();
+      expect(emitted.close).toBe(0);
+      // 点击遮罩本体(mask 根)关闭
+      el.querySelector(".apply-dialog-mask").click();
+      await nextTick();
+      expect(emitted.close).toBe(1);
+    });
+
+    it("打开后焦点落到关闭按钮", async () => {
+      const { el } = mount(ProfileApplyDialog, { open: true, draft: defaultDraft() });
+      await nextTick();
+      await nextTick();
+      expect(document.activeElement).toBe(el.querySelector(".dialog-close"));
+    });
+  });
 });

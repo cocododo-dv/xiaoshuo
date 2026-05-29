@@ -27,13 +27,22 @@ function review(decision) {
     :data-testid="`reference-finding-${finding.finding_id}`"
   >
     <header class="card-head">
-      <BaseBadge :tone="finding.finding_kind === 'forbidden_pattern' ? 'danger' : 'success'">
+      <BaseBadge
+        :tone="finding.finding_kind === 'forbidden_pattern' ? 'danger' : 'success'"
+        :aria-label="`类型:${finding.finding_kind === 'forbidden_pattern' ? '禁忌模式' : '正向特征'}`"
+      >
         {{ finding.finding_kind === "forbidden_pattern" ? "禁忌" : "正向" }}
       </BaseBadge>
-      <BaseBadge :tone="finding.confidence === 'high' ? 'success' : finding.confidence === 'low' ? 'warning' : 'info'">
+      <BaseBadge
+        :tone="finding.confidence === 'high' ? 'success' : finding.confidence === 'low' ? 'warning' : 'info'"
+        :aria-label="`置信度:${finding.confidence || 'medium'}`"
+      >
         {{ finding.confidence || "medium" }}
       </BaseBadge>
-      <BaseBadge :tone="finding.status === 'approved' ? 'success' : finding.status === 'rejected' ? 'danger' : 'neutral'">
+      <BaseBadge
+        :tone="finding.status === 'approved' ? 'success' : finding.status === 'rejected' ? 'danger' : 'neutral'"
+        :aria-label="`状态:${finding.status}`"
+      >
         {{ finding.status }}
       </BaseBadge>
     </header>

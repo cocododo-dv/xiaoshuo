@@ -83,4 +83,14 @@ describe("StyleReferenceMetricsPanel", () => {
     await Promise.resolve();
     expect(emitted.reload).toEqual([720, 0]);
   });
+
+  describe("a11y", () => {
+    it("当前 window button aria-pressed=true,其余=false", () => {
+      // SAMPLE_METRICS.window_hours = 168
+      const { el } = mount({ metrics: SAMPLE_METRICS });
+      expect(el.querySelector('[data-testid="window-168"]').getAttribute("aria-pressed")).toBe("true");
+      expect(el.querySelector('[data-testid="window-720"]').getAttribute("aria-pressed")).toBe("false");
+      expect(el.querySelector('[data-testid="window-0"]').getAttribute("aria-pressed")).toBe("false");
+    });
+  });
 });

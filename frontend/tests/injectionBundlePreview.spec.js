@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createApp, h } from "vue";
+import { createApp, h, nextTick } from "vue";
 import { afterEach, describe, expect, it } from "vitest";
 
 import InjectionBundlePreview from "../src/components/styleReference/InjectionBundlePreview.vue";
@@ -55,5 +55,37 @@ describe("InjectionBundlePreview", () => {
     const el = mount({ preview: null, error: "请求失败" });
     expect(el.querySelector('[data-testid="bundle-preview-error"]')).not.toBeNull();
     expect(el.textContent).toContain("请求失败");
+  });
+
+  describe("a11y", () => {
+    const previewWithPrefix = {
+      fragments: {
+        positive_block: "[正向]\n短句",
+        forbidden_block: "",
+        metric_anchor_block: "",
+        strategy: "A",
+      },
+      prefix: "[STYLE_REFERENCE]\n[正向]\n短句\n[/STYLE_REFERENCE]\n\n",
+    };
+
+    it("toggle 初始 aria-expanded=false,点击后 true", async () => {
+      const el = mount({ preview: previewWithPrefix });
+      const toggle = el.querySelector(".bp-prefix-toggle");
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      toggle.click();
+      await nextTick();
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("aria-controls 指向展开后的 body id", async () => {
+      const el = mount({ preview: previewWithPrefix });
+      const toggle = el.querySelector(".bp-prefix-toggle");
+      const controlsId = toggle.getAttribute("aria-controls");
+      expect(controlsId).toBeTruthy();
+      toggle.click();
+      await nextTick();
+      const body = el.querySelector(".bp-prefix-body");
+      expect(body.getAttribute("id")).toBe(controlsId);
+    });
   });
 });

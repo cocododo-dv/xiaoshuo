@@ -69,6 +69,7 @@ function totalEvents() {
           type="button"
           :class="['win-btn', { active: windowHours === opt.hours }]"
           :disabled="loading"
+          :aria-pressed="windowHours === opt.hours"
           @click="selectWindow(opt.hours)"
           :data-testid="`window-${opt.hours}`"
         >
@@ -140,8 +141,13 @@ function totalEvents() {
   background: color-mix(in srgb, var(--color-primary, #4a90e2) 12%, transparent);
   border-color: var(--color-primary, #4a90e2);
 }
+.win-btn:focus-visible {
+  outline: 2px solid var(--color-primary, #2f6f62);
+  outline-offset: 2px;
+}
+/* PR-13 a11y — 提对比(原 0.6 → 0.72,≥ 4.5:1) */
 .sr-metrics-loading, .sr-metrics-error, .sr-metrics-empty {
-  margin: 0; font-size: 0.82rem; color: var(--text-muted, rgba(33, 26, 21, 0.6));
+  margin: 0; font-size: 0.82rem; color: rgba(33, 26, 21, 0.72);
 }
 .sr-metrics-error { color: #9a3434; }
 .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.6rem; }
@@ -152,9 +158,10 @@ function totalEvents() {
   border-radius: var(--radius-sm, 4px);
   background: rgba(0, 0, 0, 0.03);
 }
-.metric-label { margin: 0; font-size: 0.74rem; color: var(--text-muted, rgba(33, 26, 21, 0.65)); }
+.metric-label { margin: 0; font-size: 0.74rem; color: rgba(33, 26, 21, 0.72); }
 .metric-value { margin: 0; font-size: 1.4rem; font-weight: 700; font-family: var(--font-mono, monospace); }
-.metric-hint { margin: 0; font-size: 0.7rem; color: var(--text-muted, rgba(33, 26, 21, 0.55)); }
+/* PR-13 a11y — hint 提对比(原 0.55 → 0.72) */
+.metric-hint { margin: 0; font-size: 0.7rem; color: rgba(33, 26, 21, 0.72); }
 .metric-bar { height: 0.4rem; background: rgba(0, 0, 0, 0.08); border-radius: var(--radius-pill, 999px); overflow: hidden; }
 .metric-bar > span { display: block; height: 100%; background: var(--color-primary, #4a90e2); transition: width 0.18s; }
 .metric-bar.warn > span { background: linear-gradient(to right, #d4a73c, #c14848); }
@@ -163,7 +170,7 @@ function totalEvents() {
   display: flex;
   justify-content: space-between;
   font-size: 0.7rem;
-  color: var(--text-muted, rgba(33, 26, 21, 0.55));
+  color: rgba(33, 26, 21, 0.72);
 }
 .computed-at { font-family: var(--font-mono, monospace); }
 </style>

@@ -59,4 +59,13 @@ describe("IntensitySlider", () => {
     expect(el.textContent).toContain("0.9x 基线");
     expect(el.textContent).toContain("1.5x");
   });
+
+  describe("a11y", () => {
+    it("range input 有 aria-label + aria-valuetext 含当前值", () => {
+      const { el } = mount({ modelValue: 70 });
+      const input = el.querySelector('[data-testid="intensity-input"]');
+      expect(input.getAttribute("aria-label")).toBe("注入强度");
+      expect(input.getAttribute("aria-valuetext")).toContain("70");
+    });
+  });
 });

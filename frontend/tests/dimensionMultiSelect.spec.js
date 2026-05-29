@@ -67,4 +67,20 @@ describe("DimensionMultiSelect", () => {
     await Promise.resolve();
     expect(value.value).toEqual([]);
   });
+
+  describe("a11y", () => {
+    it("外层 role=group + aria-label", () => {
+      const { el } = mount({ modelValue: [] });
+      const group = el.querySelector(".dimension-multi-select");
+      expect(group.getAttribute("role")).toBe("group");
+      expect(group.getAttribute("aria-label")).toBe("子维度筛选");
+    });
+
+    it("快捷 button 有 aria-label", () => {
+      const { el } = mount({ modelValue: [] });
+      expect(el.querySelector('[data-testid="select-all"]').getAttribute("aria-label")).toBe("全选所有子维度");
+      expect(el.querySelector('[data-testid="clear-all"]').getAttribute("aria-label")).toBe("清空所有子维度");
+      expect(el.querySelector('[data-testid="select-layer-narrative"]').getAttribute("aria-label")).toContain("叙事");
+    });
+  });
 });

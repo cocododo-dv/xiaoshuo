@@ -29,6 +29,8 @@ const hasAnyContent = computed(() => {
 });
 
 const prefixExpanded = ref(false);
+// PR-13 a11y — aria-controls 关联折叠 body(每实例唯一 id)
+const prefixBodyId = `bp-prefix-body-${Math.random().toString(36).slice(2, 10)}`;
 
 function toggle() { prefixExpanded.value = !prefixExpanded.value; }
 </script>
@@ -60,10 +62,16 @@ function toggle() { prefixExpanded.value = !prefixExpanded.value; }
       </div>
       <p v-if="!hasAnyContent" class="bp-empty">strategy {{ fragments.strategy }} 命中空注入(可能 profile 缺少配置)。</p>
       <div v-if="prefix" class="bp-prefix" data-testid="bundle-preview-prefix">
-        <button type="button" class="bp-prefix-toggle" @click="toggle">
+        <button
+          type="button"
+          class="bp-prefix-toggle"
+          :aria-expanded="prefixExpanded"
+          :aria-controls="prefixBodyId"
+          @click="toggle"
+        >
           {{ prefixExpanded ? "▾" : "▸" }} 拼接后 system_prompt 前缀(共 {{ prefix.length }} 字)
         </button>
-        <pre v-if="prefixExpanded" class="bp-prefix-body">{{ prefix }}</pre>
+        <pre v-if="prefixExpanded" :id="prefixBodyId" class="bp-prefix-body">{{ prefix }}</pre>
       </div>
     </template>
   </section>
@@ -79,16 +87,17 @@ function toggle() { prefixExpanded.value = !prefixExpanded.value; }
   background: color-mix(in srgb, var(--color-panel-solid, #fffdf7) 85%, transparent);
 }
 .bp-head { display: flex; align-items: center; gap: 0.5rem; }
+/* PR-13 a11y — 提对比(原 0.6~0.62 → 0.72,≥ 4.5:1) */
 .bp-strategy {
   font-size: 0.72rem;
-  color: var(--text-muted, rgba(33, 26, 21, 0.62));
+  color: rgba(33, 26, 21, 0.78);
   padding: 0.05rem 0.4rem;
   border-radius: var(--radius-pill, 999px);
   background: rgba(0, 0, 0, 0.05);
 }
-.bp-loading { font-size: 0.86rem; color: var(--text-muted, rgba(33, 26, 21, 0.6)); }
+.bp-loading { font-size: 0.86rem; color: rgba(33, 26, 21, 0.72); }
 .bp-error { color: #9a3434; font-size: 0.86rem; }
-.bp-empty { font-size: 0.82rem; color: var(--text-muted, rgba(33, 26, 21, 0.6)); }
+.bp-empty { font-size: 0.82rem; color: rgba(33, 26, 21, 0.72); }
 .bp-blocks { display: grid; gap: 0.45rem; }
 .bp-block { padding: 0.4rem 0.55rem; border-radius: var(--radius-sm, 4px); background: rgba(0, 0, 0, 0.03); }
 .bp-block-title { margin: 0 0 0.2rem 0; font-size: 0.78rem; font-weight: 600; color: var(--text-muted, rgba(33, 26, 21, 0.7)); }
@@ -99,9 +108,13 @@ function toggle() { prefixExpanded.value = !prefixExpanded.value; }
   background: transparent;
   border: none;
   font-size: 0.78rem;
-  color: var(--text-muted, rgba(33, 26, 21, 0.62));
+  color: rgba(33, 26, 21, 0.78);
   cursor: pointer;
   padding: 0;
+}
+.bp-prefix-toggle:focus-visible {
+  outline: 2px solid var(--color-primary, #2f6f62);
+  outline-offset: 2px;
 }
 .bp-prefix-body {
   margin: 0;

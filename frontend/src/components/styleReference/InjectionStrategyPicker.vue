@@ -57,6 +57,7 @@ function updateSubDimensions(value) {
         type="button"
         :class="['strat-btn', { active: strategy === opt.value }]"
         :disabled="disabled"
+        :aria-pressed="strategy === opt.value"
         @click="selectStrategy(opt.value)"
         :data-testid="`strategy-${opt.value}`"
       >
@@ -99,7 +100,12 @@ function updateSubDimensions(value) {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary, #4a90e2) 30%, transparent);
 }
 .strat-label { font-weight: 700; font-size: 0.92rem; }
-.strat-desc { font-size: 0.74rem; color: var(--text-muted, rgba(33, 26, 21, 0.62)); }
+/* PR-13 a11y — strat-desc 提对比(原 0.62 → 0.72,≥ 4.5:1) */
+.strat-desc { font-size: 0.74rem; color: rgba(33, 26, 21, 0.72); }
+.strat-btn:focus-visible {
+  outline: 2px solid var(--color-primary, #2f6f62);
+  outline-offset: 2px;
+}
 .mixed-controls { display: grid; gap: 0.55rem; }
 .strategy-picker.disabled { opacity: 0.55; }
 </style>

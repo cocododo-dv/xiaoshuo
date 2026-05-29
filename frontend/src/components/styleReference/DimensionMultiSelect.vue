@@ -89,14 +89,14 @@ function selectLayer(layerKey) {
 </script>
 
 <template>
-  <div :class="['dimension-multi-select', { disabled }]">
+  <div :class="['dimension-multi-select', { disabled }]" role="group" aria-label="子维度筛选">
     <header class="dms-head">
       <strong>子维度筛选(默认全选 16 项)</strong>
       <div class="dms-actions">
-        <button type="button" class="dms-action" :disabled="disabled" @click="selectAll" data-testid="select-all">
+        <button type="button" class="dms-action" :disabled="disabled" aria-label="全选所有子维度" @click="selectAll" data-testid="select-all">
           全选
         </button>
-        <button type="button" class="dms-action" :disabled="disabled" @click="clearAll" data-testid="clear-all">
+        <button type="button" class="dms-action" :disabled="disabled" aria-label="清空所有子维度" @click="clearAll" data-testid="clear-all">
           全反选
         </button>
       </div>
@@ -109,6 +109,7 @@ function selectLayer(layerKey) {
             type="button"
             class="dms-layer-select"
             :disabled="disabled"
+            :aria-label="`全选${layer.label}层子维度`"
             @click="selectLayer(layer.key)"
             :data-testid="`select-layer-${layer.key}`"
           >
@@ -174,4 +175,11 @@ function selectLayer(layerKey) {
 .dms-item.active { background: color-mix(in srgb, var(--color-primary, #4a90e2) 10%, transparent); }
 .dms-item input { margin: 0; }
 .disabled { opacity: 0.55; }
+/* PR-13 a11y — 键盘焦点可见 */
+.dms-action:focus-visible,
+.dms-layer-select:focus-visible,
+.dms-item input:focus-visible {
+  outline: 2px solid var(--color-primary, #2f6f62);
+  outline-offset: 2px;
+}
 </style>

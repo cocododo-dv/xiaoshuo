@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, watch } from "vue";
+import { computed, nextTick, reactive, ref, watch } from "vue";
 
 import BaseButton from "../base/BaseButton.vue";
 import InjectionStrategyPicker from "./InjectionStrategyPicker.vue";
@@ -52,6 +52,18 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["close", "submit", "update:draft", "request-preview"]);
+
+// PR-13 a11y — 打开时焦点落到关闭按钮(供读屏朗读 dialog 标题)
+const closeButton = ref(null);
+watch(
+  () => props.open,
+  async (open) => {
+    if (!open) return;
+    await nextTick();
+    closeButton.value?.focus?.();
+  },
+  { immediate: true },
+);
 
 const localDraft = reactive({
   scope: "project",
@@ -128,11 +140,18 @@ function submit() {
 </script>
 
 <template>
-  <div v-if="open" class="apply-dialog-mask" role="dialog" aria-modal="true">
-    <div class="apply-dialog">
+  <div v-if="open" class="apply-dialog-mask" @click.self="emit('close')">
+    <div
+      class="apply-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="apply-dialog-title"
+      tabindex="-1"
+      @keydown.esc="emit('close')"
+    >
       <header class="dialog-head">
-        <p class="dialog-title">应用 Profile 到项目</p>
-        <button type="button" class="dialog-close" aria-label="关闭" @click="emit('close')">×</button>
+        <p id="apply-dialog-title" class="dialog-title">应用 Profile 到项目</p>
+        <button ref="closeButton" type="button" class="dialog-close" aria-label="关闭" @click="emit('close')">×</button>
       </header>
 
       <div class="dialog-body">
@@ -213,7 +232,13 @@ function submit() {
   border: none;
   font-size: 1.3rem;
   cursor: pointer;
-  color: var(--text-muted, rgba(33, 26, 21, 0.55));
+  /* PR-13 a11y — 提对比(原 0.55 alpha 偏低,× 关闭按钮 ≥ 4.5:1) */
+  color: rgba(33, 26, 21, 0.72);
+}
+.dialog-close:focus-visible {
+  outline: 2px solid var(--color-primary, #2f6f62);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm, 4px);
 }
 .dialog-body { display: grid; gap: 0.65rem; }
 .field { display: grid; gap: 0.25rem; font-size: 0.85rem; }

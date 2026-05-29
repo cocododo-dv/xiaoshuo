@@ -44,6 +44,8 @@ function onInput(event) {
         step="1"
         :value="clamped"
         :disabled="disabled"
+        aria-label="注入强度"
+        :aria-valuetext="`${clamped}(缩放 ${scaleLabel})`"
         @input="onInput"
         data-testid="intensity-input"
       />
@@ -79,15 +81,20 @@ function onInput(event) {
   min-width: 2.5rem;
   text-align: right;
 }
+/* PR-13 a11y — 提对比(原 0.6/0.55 → 0.72,≥ 4.5:1) */
 .intensity-scale {
   font-size: 0.78rem;
-  color: var(--text-muted, rgba(33, 26, 21, 0.6));
+  color: rgba(33, 26, 21, 0.72);
 }
 .ticks {
   display: flex;
   justify-content: space-between;
   font-size: 0.72rem;
-  color: var(--text-muted, rgba(33, 26, 21, 0.55));
+  color: rgba(33, 26, 21, 0.72);
+}
+.slider-row input[type="range"]:focus-visible {
+  outline: 2px solid var(--color-primary, #2f6f62);
+  outline-offset: 2px;
 }
 .tick { display: inline-flex; flex-direction: column; align-items: center; }
 .tick-mark { font-family: var(--font-mono, monospace); }
