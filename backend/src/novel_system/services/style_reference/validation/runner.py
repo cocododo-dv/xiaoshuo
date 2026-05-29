@@ -52,6 +52,10 @@ class ValidationOrchestrator:
         self._llm_enabled = llm_enabled
 
     def validate(self, profile_id: str, req: ValidateRequest) -> ValidateResponse:
+        import time as _time
+
+        from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
+
         profile = self.repo.get_profile(profile_id)
         if profile is None:
             raise DomainError(
@@ -60,9 +64,29 @@ class ValidationOrchestrator:
                 status_code=404,
             )
 
+        started_at = _time.perf_counter()
         if req.mode == ValidationMode.SYNC_ONLY:
-            return self._run_sync_only(profile_id, profile, req)
-        return self._run_async_full(profile_id, profile, req)
+            response = self._run_sync_only(profile_id, profile, req)
+        else:
+            response = self._run_async_full(profile_id, profile, req)
+        latency_ms = int((_time.perf_counter() - started_at) * 1000)
+
+        # PR-10 §13 — sync_only 知道 verdict;async_full 此时只立返 polling_url,
+        # outcome="dispatched"(后台 worker 完成后另写 completed 事件较复杂,本 PR 不做)
+        outcome = (
+            response.sync_result.verdict.value if response.sync_result is not None else "dispatched"
+        )
+        MetricsRecorder.record(
+            self.session,
+            "validation_executed",
+            target_kind=req.target_kind.value if req.target_kind else None,
+            target_ref_id=req.target_ref_id,
+            profile_id=profile_id,
+            outcome=outcome,
+            latency_ms=latency_ms,
+            context={"mode": req.mode.value},
+        )
+        return response
 
     # ---------------------------------------------------------- sync_only
 

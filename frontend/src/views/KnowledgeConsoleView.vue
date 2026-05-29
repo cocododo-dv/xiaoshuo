@@ -9,6 +9,7 @@ import PanelShell from "../components/PanelShell.vue";
 import StyleProfileDiffSummary from "../components/StyleProfileDiffSummary.vue";
 import StyleProfileRiskWarning from "../components/StyleProfileRiskWarning.vue";
 import StyleProfileSummary from "../components/StyleProfileSummary.vue";
+import StyleReferenceMetricsPanel from "../components/styleReference/StyleReferenceMetricsPanel.vue";
 import VirtualList from "../components/VirtualList.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
@@ -205,6 +206,12 @@ const REFERENCE_SOURCES = new Set(["reference_book_learning", "reference_profile
 
 function formatItemType(itemType) {
   return ITEM_TYPE_LABELS[itemType] || itemType || "-";
+}
+
+// PR-10 §13 — LazySection 首次展开时拉一次指标(已加载过则跳过)
+function ensureStyleReferenceMetricsLoaded() {
+  if (knowledgeConsole.styleReferenceMetrics !== null) return;
+  knowledgeConsole.loadStyleReferenceMetrics();
 }
 
 function formatStatus(status) {
@@ -1323,6 +1330,20 @@ watch(
             </LazySection>
           </template>
         </article>
+
+        <!-- PR-10 §13 — Style Reference 运营指标(无 selection 依赖,全局视图) -->
+        <LazySection
+          title="Style Reference 运营指标"
+          toggle-test-id="knowledge-toggle-style-reference-metrics"
+          @open="ensureStyleReferenceMetricsLoaded"
+        >
+          <StyleReferenceMetricsPanel
+            :metrics="knowledgeConsole.styleReferenceMetrics"
+            :loading="knowledgeConsole.styleReferenceMetricsLoading"
+            :error="knowledgeConsole.error || ''"
+            @reload="(hours) => knowledgeConsole.loadStyleReferenceMetrics(hours)"
+          />
+        </LazySection>
       </div>
     </PanelShell>
   </section>

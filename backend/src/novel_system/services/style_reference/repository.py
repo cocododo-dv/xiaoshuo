@@ -28,6 +28,7 @@ from novel_system.db.models import (
     StyleReferenceExtraction,
     StyleReferenceFinding,
     StyleReferenceInjectionBinding,
+    StyleReferenceMetricEvent,
     StyleReferenceParagraph,
     StyleReferenceProfile,
     StyleReferenceQuote,
@@ -407,3 +408,30 @@ class StyleReferenceRepository:
             delete(StyleReferenceBannedTerm).where(StyleReferenceBannedTerm.term_id == term_id)
         )
         return int(result.rowcount or 0)
+
+    # -------------------------------------------------- PR-10 metric events
+    def create_metric_event(self, **kwargs: Any) -> StyleReferenceMetricEvent:
+        row = StyleReferenceMetricEvent(**kwargs)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_metric_events(
+        self,
+        *,
+        event_kind: str | None = None,
+        profile_id: str | None = None,
+        since_ts: str | None = None,
+        limit: int | None = None,
+    ) -> list[StyleReferenceMetricEvent]:
+        stmt = select(StyleReferenceMetricEvent)
+        if event_kind is not None:
+            stmt = stmt.where(StyleReferenceMetricEvent.event_kind == event_kind)
+        if profile_id is not None:
+            stmt = stmt.where(StyleReferenceMetricEvent.profile_id == profile_id)
+        if since_ts is not None:
+            stmt = stmt.where(StyleReferenceMetricEvent.created_at >= since_ts)
+        stmt = stmt.order_by(StyleReferenceMetricEvent.created_at.desc())
+        if limit is not None:
+            stmt = stmt.limit(int(limit))
+        return list(self.session.scalars(stmt).all())

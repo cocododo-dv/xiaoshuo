@@ -843,6 +843,9 @@ class HardQcEngine:
         scene 无 project_id / 无 active binding / 调用失败 → 返 None(qc 结论直通)。
         否则返 "pass" / "partial" / "fail" / "plagiarism"(小写字串)。
         """
+        import time as _time
+
+        from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
         from novel_system.services.style_reference.repository import (
             StyleReferenceRepository,
         )
@@ -858,6 +861,10 @@ class HardQcEngine:
         project_id = getattr(scene, "project_id", None)
         if not project_id or not neutral_content:
             return None
+        started_at = _time.perf_counter()
+        verdict: str | None = None
+        profile_id: str | None = None
+        binding_id: str | None = None
         try:
             repo = StyleReferenceRepository(self.session)
             bindings = repo.list_bindings(task_type="scene_generation")
@@ -875,6 +882,8 @@ class HardQcEngine:
             )
             if active is None:
                 return None
+            profile_id = active.profile_id
+            binding_id = active.binding_id
             orchestrator = ValidationOrchestrator(self.session, llm_enabled=False)
             response = orchestrator.validate(
                 active.profile_id,
@@ -887,9 +896,23 @@ class HardQcEngine:
             )
             if response.sync_result is None:
                 return None
-            return response.sync_result.verdict.value
+            verdict = response.sync_result.verdict.value
+            return verdict
         except Exception:  # noqa: BLE001 — gate 不阻塞主流程
             return None
+        finally:
+            # PR-10 §13 — 记录 qc gate 决策事件;无 active binding 时不记录
+            if profile_id is not None:
+                MetricsRecorder.record(
+                    self.session,
+                    "qc_gate_decided",
+                    target_kind="scene",
+                    target_ref_id=scene.scene_id,
+                    profile_id=profile_id,
+                    binding_id=binding_id,
+                    outcome=verdict or "error",
+                    latency_ms=int((_time.perf_counter() - started_at) * 1000),
+                )
 
     def _persist_qc_report(
         self,

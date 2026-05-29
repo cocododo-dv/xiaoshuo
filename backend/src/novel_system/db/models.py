@@ -1783,3 +1783,31 @@ class StyleReferenceBannedTerm(Base):
     scope: Mapped[str] = mapped_column(String, default="generation")
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StyleReferenceMetricEvent(Base):
+    """PR-10 §13 — 可观测性事件流(append-only,无 FK)。
+
+    InjectionService / qc gate / ValidationOrchestrator / SceneAutoRewriteService
+    各调用点写 1 行;MetricsAggregator 按 event_kind + 时间窗口 group by。
+    event_kind 5 个允许值(由文档约束,**不**是 Python Enum):
+    injection_invoked / qc_gate_decided / validation_executed /
+    auto_rewrite_triggered / auto_rewrite_completed
+    """
+
+    __tablename__ = "style_reference_metric_events"
+    __table_args__ = (
+        Index("ix_sr_metric_events_kind_created", "event_kind", "created_at"),
+        Index("ix_sr_metric_events_profile_created", "profile_id", "created_at"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_kind: Mapped[str] = mapped_column(String)
+    target_kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    profile_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    binding_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)

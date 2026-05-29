@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.services.style_reference.config_loader import load_yaml_config
+from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     InjectionStrategy,
@@ -58,6 +59,8 @@ class InjectionService:
     def __init__(self, session: Session):
         self.session = session
         self.repo = StyleReferenceRepository(session)
+        self._last_profile_id: str | None = None
+        self._last_binding_id: str | None = None
 
     # --------------------------------------------------------------- public
     def fragments_for(
@@ -66,6 +69,15 @@ class InjectionService:
         task_type: str,
     ) -> SystemPromptFragments:
         """主入口。无 active binding / profile 时返 empty fragments(no-op)。"""
+        fragments = self._resolve_fragments(project_id, task_type)
+        self._record_invocation(project_id, task_type, fragments)
+        return fragments
+
+    def _resolve_fragments(
+        self,
+        project_id: str | None,
+        task_type: str,
+    ) -> SystemPromptFragments:
         if not project_id:
             return SystemPromptFragments()
         binding = self._pick_active_binding(project_id, task_type)
@@ -79,7 +91,36 @@ class InjectionService:
         except ValueError:
             strategy = InjectionStrategy.A
         config = binding.config_json or {}
-        return self._render(profile, strategy, config)
+        fragments = self._render(profile, strategy, config)
+        # 把 binding/profile id 寄到 fragments 暂存,record_invocation 会读
+        self._last_profile_id = binding.profile_id
+        self._last_binding_id = binding.binding_id
+        return fragments
+
+    def _record_invocation(
+        self,
+        project_id: str | None,
+        task_type: str,
+        fragments: SystemPromptFragments,
+    ) -> None:
+        prefix = fragments.to_system_prompt_prefix()
+        outcome = "hit" if prefix else "miss"
+        MetricsRecorder.record(
+            self.session,
+            "injection_invoked",
+            target_kind="project" if project_id else None,
+            target_ref_id=project_id,
+            profile_id=getattr(self, "_last_profile_id", None),
+            binding_id=getattr(self, "_last_binding_id", None),
+            outcome=outcome,
+            context={
+                "task_type": task_type,
+                "strategy": fragments.strategy.value,
+            },
+        )
+        # 用完即清,避免下一次 invocation 错误复用
+        self._last_profile_id = None
+        self._last_binding_id = None
 
     # ------------------------------------------------------------- internals
     def _pick_active_binding(self, project_id: str, task_type: str):

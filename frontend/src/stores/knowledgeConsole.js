@@ -7,6 +7,7 @@ import {
   fetchKnowledgeEntries,
   fetchKnowledgeEntryDetail,
   fetchKnowledgeEntryWorkflow,
+  fetchStyleReferenceMetrics,
   releaseReview,
   retryVerify,
 } from "../lib/api";
@@ -192,6 +193,9 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
     lastCreateResult: null,
     lastActionResult: null,
     error: "",
+    // PR-10 §13 — Style Reference 运营指标
+    styleReferenceMetrics: null,
+    styleReferenceMetricsLoading: false,
   }),
   actions: {
     markStale() {
@@ -390,6 +394,21 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         throw error;
       } finally {
         this.actionId = "";
+      }
+    },
+
+    // PR-10 §13 — Style Reference 运营指标
+    async loadStyleReferenceMetrics(windowHours = 168) {
+      this.styleReferenceMetricsLoading = true;
+      try {
+        const payload = await fetchStyleReferenceMetrics({ windowHours });
+        this.styleReferenceMetrics = snapshotPayload(payload?.metrics ?? null);
+        return this.styleReferenceMetrics;
+      } catch (error) {
+        this.error = error?.message || String(error || "未知错误");
+        throw error;
+      } finally {
+        this.styleReferenceMetricsLoading = false;
       }
     },
   },

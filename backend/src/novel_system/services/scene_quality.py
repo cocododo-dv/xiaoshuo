@@ -252,6 +252,15 @@ class SceneAutoRewriteService:
     def run(self, scene_id: str, *, mode: str = "auto", actor_ref: str = "operator") -> dict[str, Any]:
         if mode not in {"auto", "full_scene", "local_patch", "diagnose_only"}:
             raise DomainError("AUTO_REWRITE_MODE_INVALID", "unsupported auto rewrite mode", status_code=400)
+        # PR-10 §13 — auto_rewrite_triggered;outcome 暂留空,context 含 mode
+        from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
+        MetricsRecorder.record(
+            self.session,
+            "auto_rewrite_triggered",
+            target_kind="scene",
+            target_ref_id=scene_id,
+            context={"mode": mode, "actor_ref": actor_ref},
+        )
         scene = self.quality._require_scene(scene_id)
         contract = self.quality.latest_or_create_contract(scene_id, actor_ref=actor_ref)
         state = self.session.get(SceneRunState, scene_id)
@@ -340,6 +349,17 @@ class SceneAutoRewriteService:
             )
         )
         self.session.flush()
+        # PR-10 §13 — auto_rewrite_completed;outcome=success 当 status="candidate_ready",
+        # 其余视为 fail(包括 blocked / dispatched 等非 promotable 状态)
+        from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
+        MetricsRecorder.record(
+            self.session,
+            "auto_rewrite_completed",
+            target_kind="scene",
+            target_ref_id=scene_id,
+            outcome="success" if status == "candidate_ready" else "fail",
+            context={"mode": mode, "branch": branch, "status": status},
+        )
         return {"run": self.quality.serialize_run(run), "quality_state": self.quality.quality_state(scene_id)}
 
     def promote(self, run_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:

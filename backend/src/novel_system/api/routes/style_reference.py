@@ -40,6 +40,7 @@ from novel_system.services.style_reference.profile_synthesizer import ProfileSyn
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.run_orchestrator import RunOrchestrator
 from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.metrics_aggregator import MetricsAggregator
 from novel_system.services.style_reference.schemas import (
     BindingScope,
     InjectionPreviewRequest,
@@ -995,3 +996,20 @@ def dryrun_injection_preview(
         {"fragments": fragments.model_dump(), "prefix": fragments.to_system_prompt_prefix()},
         req_id=_req_id(request),
     )
+
+
+# ---------------------------------------------------------------------------
+# PR-10 — Metrics endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get(f"{PATH_PREFIX}/metrics")
+def get_style_reference_metrics(
+    request: Request,
+    window_hours: int = 168,
+    session: Session = Depends(get_session),
+):
+    """PR-10 §13 — 4 个运营指标 + sample_counts。window_hours=0 = 全部历史。"""
+    aggregator = MetricsAggregator(session)
+    snapshot = aggregator.compute_all(window_hours=max(0, int(window_hours)))
+    return ok({"metrics": snapshot}, req_id=_req_id(request))

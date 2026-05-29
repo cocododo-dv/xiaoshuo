@@ -144,6 +144,12 @@ export function listStyleReferenceValidationReports(profileId, { verdict } = {})
   return apiGet(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/reports${query}`);
 }
 
+// --- Metrics (PR-10) ---
+
+export function fetchStyleReferenceMetrics({ windowHours = 168 } = {}) {
+  return apiGet(`${PREFIX}/metrics?window_hours=${encodeURIComponent(windowHours)}`);
+}
+
 // --- Injection preview (PR-9) ---
 
 export function fetchBindingInjectionPreview(bindingId) {
