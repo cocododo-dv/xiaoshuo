@@ -95,26 +95,45 @@ def _merge_fragments(
     )
 
 
+def ordered_character_ids(pov_id, onstage_ids) -> list[str]:
+    """PR-18 — character 匹配集:pov 排首 + onstage 去重(pov 可能不在 onstage 内)。"""
+    ordered: list[str] = []
+    if pov_id:
+        ordered.append(pov_id)
+    for cid in (onstage_ids or []):
+        if cid and cid != pov_id:
+            ordered.append(cid)
+    return ordered
+
+
 def _binding_rank(
     b,
     *,
     project_id: str | None,
-    character_id: str | None,
+    character_ids: list[str] | None,
     scene_id: str | None,
 ) -> int:
-    """binding 优先级 rank(PR-14/15/16 单点):scene=0 > character=1 > project=2 > global=3。
+    """binding 优先级 rank(PR-14/15/16/18 单点):scene=0 > character=1 > project=2 > global=3。
 
     不匹配返 99(剔除)。resolve_active_binding(单选)与 resolve_binding_layers(叠加)共用。
+    PR-18 — character 匹配 character_ids 任一(onstage 多角色)。
     """
     if scene_id and b.scope == "scene" and b.scope_ref_id == scene_id:
         return 0
-    if character_id and b.scope == "character" and b.scope_ref_id == character_id:
+    if character_ids and b.scope == "character" and b.scope_ref_id in character_ids:
         return 1
     if project_id and b.scope == "project" and b.scope_ref_id == project_id:
         return 2
     if b.scope == "global":
         return 3
     return 99  # 不匹配
+
+
+def _char_order(b, character_ids: list[str] | None) -> int:
+    """PR-18 — character binding 在匹配集中的位置(pov=0 最优先);非 character 返 0。"""
+    if b.scope == "character" and character_ids and b.scope_ref_id in character_ids:
+        return character_ids.index(b.scope_ref_id)
+    return 0
 
 
 class InjectionService:
@@ -133,16 +152,16 @@ class InjectionService:
         project_id: str | None,
         task_type: str,
         *,
-        character_id: str | None = None,
+        character_ids: list[str] | None = None,
         scene_id: str | None = None,
     ) -> SystemPromptFragments:
         """主入口。无 active binding / profile 时返 empty fragments(no-op)。
 
-        PR-14/15 — scene_id / character_id 非空时优先匹配对应 scope binding
-        (scene > character > project > global)。
+        PR-14/15/18 — scene_id / character_ids 非空时优先匹配对应 scope binding
+        (scene > character > project > global);character_ids 为 onstage 多角色匹配集。
         """
         fragments = self._resolve_fragments(
-            project_id, task_type, character_id=character_id, scene_id=scene_id,
+            project_id, task_type, character_ids=character_ids, scene_id=scene_id,
         )
         self._record_invocation(project_id, task_type, fragments)
         return fragments
@@ -152,13 +171,13 @@ class InjectionService:
         project_id: str | None,
         task_type: str,
         *,
-        character_id: str | None = None,
+        character_ids: list[str] | None = None,
         scene_id: str | None = None,
     ) -> SystemPromptFragments:
-        if not project_id and not character_id and not scene_id:
+        if not project_id and not character_ids and not scene_id:
             return SystemPromptFragments()
         base_b, overlay_b = self.resolve_binding_layers(
-            project_id, task_type, character_id=character_id, scene_id=scene_id,
+            project_id, task_type, character_ids=character_ids, scene_id=scene_id,
         )
         if base_b is None and overlay_b is None:
             return SystemPromptFragments()
@@ -237,16 +256,16 @@ class InjectionService:
         project_id: str | None,
         task_type: str,
         *,
-        character_id: str | None = None,
+        character_ids: list[str] | None = None,
         scene_id: str | None = None,
     ):
         """优先级单选:scene > character > project > global,取最具体的一个。
 
-        PR-14/15 — InjectionService 与 qc_engine 共用的 binding 选取单点。
-        scene_id / character_id 为空时跳过对应 rank(向下兼容)。
-        同 rank 取最新 ``created_at``。
+        PR-14/15/18 — InjectionService 与 qc_engine 共用的 binding 选取单点。
+        scene_id / character_ids 为空时跳过对应 rank(向下兼容)。
+        character 多命中按 char_order(pov 优先,其余 onstage 顺序)决平,再 created_at。
         """
-        if not project_id and not character_id and not scene_id:
+        if not project_id and not character_ids and not scene_id:
             return None
         bindings = [
             b
@@ -258,13 +277,15 @@ class InjectionService:
 
         def _rank(b) -> int:
             return _binding_rank(
-                b, project_id=project_id, character_id=character_id, scene_id=scene_id,
+                b, project_id=project_id, character_ids=character_ids, scene_id=scene_id,
             )
 
         candidates = [b for b in bindings if _rank(b) < 99]
         if not candidates:
             return None
-        candidates.sort(key=lambda b: (_rank(b), -1 * _ts_to_int(b.created_at)))
+        candidates.sort(
+            key=lambda b: (_rank(b), _char_order(b, character_ids), -1 * _ts_to_int(b.created_at))
+        )
         return candidates[0]
 
     def resolve_binding_layers(
@@ -272,15 +293,15 @@ class InjectionService:
         project_id: str | None,
         task_type: str,
         *,
-        character_id: str | None = None,
+        character_ids: list[str] | None = None,
         scene_id: str | None = None,
     ):
         """PR-16 — 返 (base, overlay);供两层叠加用,两者皆可能 None。
 
         overlay = rank∈{0,1}(scene>character)最优先;base = rank∈{2,3}
-        (project>global)最优先。同 rank 取最新 created_at。复用 _binding_rank。
+        (project>global)最优先。character 多命中按 char_order(pov 优先)决平,再 created_at。
         """
-        if not project_id and not character_id and not scene_id:
+        if not project_id and not character_ids and not scene_id:
             return None, None
         bindings = [
             b
@@ -292,14 +313,16 @@ class InjectionService:
 
         def _rank(b) -> int:
             return _binding_rank(
-                b, project_id=project_id, character_id=character_id, scene_id=scene_id,
+                b, project_id=project_id, character_ids=character_ids, scene_id=scene_id,
             )
 
         def _pick(allowed: set[int]):
             cands = [b for b in bindings if _rank(b) in allowed]
             if not cands:
                 return None
-            cands.sort(key=lambda b: (_rank(b), -1 * _ts_to_int(b.created_at)))
+            cands.sort(
+                key=lambda b: (_rank(b), _char_order(b, character_ids), -1 * _ts_to_int(b.created_at))
+            )
             return cands[0]
 
         overlay = _pick({0, 1})

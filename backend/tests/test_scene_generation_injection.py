@@ -192,3 +192,16 @@ def test_injection_matches_scene_binding_via_scene_id(session) -> None:
     assert out is not base
     assert "场景专属腔调" in out["system_prompt"]
     assert out["system_prompt"].endswith("BASE")
+
+
+def test_injection_matches_onstage_nonpov_character(session) -> None:
+    """PR-18 — pov 无 binding,但 onstage 配角有 character binding → 命中配角。"""
+    _seed_character_binding(seed="onstagechar", character_id="CHAR_B", feature="配角腔调")
+    service = SceneGenerationService(session, llm_client=object())
+    scene = _make_scene("proj_no_project_binding")
+    scene.pov_character_id = "POV_NO_BIND"           # pov 无 binding
+    scene.onstage_chars_json = ["POV_NO_BIND", "CHAR_B"]
+    base = {"system_prompt": "BASE", "user_prompt": "u"}
+    out = service._inject_style_reference(base, scene, task_type="scene_generation")
+    assert out is not base
+    assert "配角腔调" in out["system_prompt"]

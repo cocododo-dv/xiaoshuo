@@ -845,7 +845,10 @@ class HardQcEngine:
         """
         import time as _time
 
-        from novel_system.services.style_reference.injection import InjectionService
+        from novel_system.services.style_reference.injection import (
+            InjectionService,
+            ordered_character_ids,
+        )
         from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
         from novel_system.services.style_reference.schemas import (
             ValidateRequest,
@@ -857,20 +860,23 @@ class HardQcEngine:
         )
 
         project_id = getattr(scene, "project_id", None)
-        # PR-14 — character scope 用场景主视角 pov_character_id 匹配
-        character_id = getattr(scene, "pov_character_id", None)
+        # PR-14/18 — character scope 用 pov ∪ onstage 匹配集(pov 优先)
+        character_ids = ordered_character_ids(
+            getattr(scene, "pov_character_id", None),
+            getattr(scene, "onstage_chars_json", None),
+        )
         # PR-15 — scene scope 用 scene_id 匹配(优先级最高)
         scene_id = getattr(scene, "scene_id", None)
-        if not neutral_content or (not project_id and not character_id and not scene_id):
+        if not neutral_content or (not project_id and not character_ids and not scene_id):
             return None
         started_at = _time.perf_counter()
         verdict: str | None = None
         profile_id: str | None = None
         binding_id: str | None = None
         try:
-            # PR-14/15 — 复用 InjectionService 单点选取(scene > character > project > global)
+            # PR-14/15/18 — 复用 InjectionService 单点选取(scene > character > project > global)
             active = InjectionService(self.session).resolve_active_binding(
-                project_id, "scene_generation", character_id=character_id, scene_id=scene_id,
+                project_id, "scene_generation", character_ids=character_ids, scene_id=scene_id,
             )
             if active is None:
                 return None

@@ -25,7 +25,10 @@ from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.injection import (
+    InjectionService,
+    ordered_character_ids,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -631,15 +634,18 @@ class SceneGenerationService:
         if prompt is None or scene is None:
             return prompt
         project_id = getattr(scene, "project_id", None)
-        # PR-14 — character scope 用场景主视角 pov_character_id 匹配
-        character_id = getattr(scene, "pov_character_id", None)
+        # PR-14/18 — character scope 用 pov ∪ onstage 匹配集(pov 优先)
+        character_ids = ordered_character_ids(
+            getattr(scene, "pov_character_id", None),
+            getattr(scene, "onstage_chars_json", None),
+        )
         # PR-15 — scene scope 用 scene_id 匹配(优先级最高)
         scene_id = getattr(scene, "scene_id", None)
-        if not project_id and not character_id and not scene_id:
+        if not project_id and not character_ids and not scene_id:
             return prompt
         try:
             fragments = InjectionService(self.session).fragments_for(
-                project_id, task_type, character_id=character_id, scene_id=scene_id,
+                project_id, task_type, character_ids=character_ids, scene_id=scene_id,
             )
             prefix = fragments.to_system_prompt_prefix()
         except Exception as exc:  # noqa: BLE001

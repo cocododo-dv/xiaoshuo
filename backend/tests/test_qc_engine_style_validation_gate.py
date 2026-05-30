@@ -190,3 +190,14 @@ def test_gate_scene_scope_binding_triggers_verdict(session) -> None:
     engine = HardQcEngine(session, llm_client=object())
     verdict = engine._apply_style_validation_gate(scene, "这景色真是美轮美奂极了。")
     assert verdict == "fail"
+
+
+def test_gate_onstage_nonpov_character_triggers_verdict(session) -> None:
+    """PR-18 — pov 无 binding,onstage 配角 character binding 的 banned_term 触发 fail。"""
+    scene = _make_scene("proj_no")
+    scene.pov_character_id = "POV_NO_BIND"
+    scene.onstage_chars_json = ["POV_NO_BIND", "B"]
+    _seed_character_binding_with_term(seed="onstageg", character_id="B", term="美轮美奂")
+    engine = HardQcEngine(session, llm_client=object())
+    verdict = engine._apply_style_validation_gate(scene, "这景色真是美轮美奂极了。")
+    assert verdict == "fail"

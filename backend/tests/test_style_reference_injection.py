@@ -6,7 +6,10 @@ import pytest
 
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.config_loader import clear_config_cache
-from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.injection import (
+    InjectionService,
+    ordered_character_ids,
+)
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import InjectionStrategy
 
@@ -398,7 +401,7 @@ def test_character_overlay_merges_with_project_base():
     )
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(
-            "proj_cw", "scene_generation", character_id="char_cw",
+            "proj_cw", "scene_generation", character_ids=["char_cw"],
         )
     # 两层叠加:overlay(character)+ base(project)均在
     assert "角色专属特征CW" in fragments.positive_block
@@ -413,7 +416,7 @@ def test_character_id_mismatch_falls_back_to_project():
     with SessionLocal() as session:
         # 传一个不匹配任何 character binding 的 character_id
         fragments = InjectionService(session).fragments_for(
-            "proj_cm", "scene_generation", character_id="char_other",
+            "proj_cm", "scene_generation", character_ids=["char_other"],
         )
     assert "项目通用特征CM" in fragments.positive_block
     assert "角色专属特征CM" not in fragments.positive_block
@@ -439,7 +442,7 @@ def test_disabled_character_binding_falls_back_to_project():
     )
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(
-            "proj_cd", "scene_generation", character_id="char_cd",
+            "proj_cd", "scene_generation", character_ids=["char_cd"],
         )
     # character binding disabled → 不命中,回落 project
     assert "项目通用特征CD" in fragments.positive_block
@@ -504,7 +507,7 @@ def test_scene_overlay_merges_with_project_base_skips_character():
     )
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(
-            "proj_sw", "scene_generation", character_id="char_sw", scene_id="scene_sw",
+            "proj_sw", "scene_generation", character_ids=["char_sw"], scene_id="scene_sw",
         )
     # overlay = scene(rank0,最具体增量);base = project(rank2)
     assert "场景专属SW" in fragments.positive_block
@@ -521,7 +524,7 @@ def test_scene_id_mismatch_falls_back_to_character():
     with SessionLocal() as session:
         # scene_id 不匹配任何 scene binding → 回落 character
         fragments = InjectionService(session).fragments_for(
-            "proj_sm", "scene_generation", character_id="char_sm", scene_id="scene_other",
+            "proj_sm", "scene_generation", character_ids=["char_sm"], scene_id="scene_other",
         )
     assert "角色专属SM" in fragments.positive_block
     assert "场景专属SM" not in fragments.positive_block
@@ -535,7 +538,7 @@ def test_scene_id_none_skips_scene_binding():
     with SessionLocal() as session:
         # scene_id=None → 跳过 scene rank,overlay=character;叠加 project base
         fragments = InjectionService(session).fragments_for(
-            "proj_sn", "scene_generation", character_id="char_sn",
+            "proj_sn", "scene_generation", character_ids=["char_sn"],
         )
     assert "角色专属SN" in fragments.positive_block
     assert "场景专属SN" not in fragments.positive_block
@@ -602,7 +605,7 @@ def test_overlay_forbidden_dedup():
     )
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(
-            "proj_dd", "scene_generation", character_id="char_dd",
+            "proj_dd", "scene_generation", character_ids=["char_dd"],
         )
     forbidden = fragments.forbidden_block
     # 共同的"禁堆砌华丽形容词"只出现一次
@@ -625,7 +628,7 @@ def test_overlay_token_each_half_capped():
     )
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(
-            "proj_cap", "scene_generation", character_id="char_cap",
+            "proj_cap", "scene_generation", character_ids=["char_cap"],
         )
     # half=400,positive ratio 0.6 → 各 ≤ 240;合并后两段各受限
     # 总 positive 不应远超 2*240(+标题/换行余量)
@@ -644,7 +647,7 @@ def test_overlay_only_base_is_single_layer():
     with SessionLocal() as session:
         # 无 character binding → overlay=None → 单层 base
         fragments = InjectionService(session).fragments_for(
-            "proj_bo", "scene_generation", character_id="char_bo",
+            "proj_bo", "scene_generation", character_ids=["char_bo"],
         )
     # 单层 strategy A 全文不截断(远超 half cap)
     assert len(fragments.positive_block) > 1000
@@ -660,7 +663,7 @@ def test_overlay_only_character_is_single_layer():
     )
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(
-            "proj_oo", "scene_generation", character_id="char_oo",
+            "proj_oo", "scene_generation", character_ids=["char_oo"],
         )
     assert "角色独有OO" in fragments.positive_block
 
@@ -680,7 +683,138 @@ def test_overlay_metric_prefers_overlay():
     )
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(
-            "proj_mt", "scene_generation", character_id="char_mt",
+            "proj_mt", "scene_generation", character_ids=["char_mt"],
         )
     assert "overlay_metric" in fragments.metric_anchor_block
     assert "base_metric" not in fragments.metric_anchor_block
+
+
+# ---------------------------------------------------------------------------
+# PR-18 — onstage 多角色 character 匹配(pov ∪ onstage,pov 优先决平)
+# ---------------------------------------------------------------------------
+
+
+def _seed_multi_character(
+    *,
+    seed: str,
+    project_id: str,
+    characters: list[dict],
+    project_feature: str = "项目通用M",
+) -> None:
+    """落 1 book/run + 1 project binding + 多个 character binding。
+
+    characters: [{character_id, feature, created_at?}]。
+    """
+    book_id = f"sr_book_{seed}"
+    run_id = f"sr_run_{seed}"
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id=book_id, title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
+        repo.create_profile(
+            profile_id=f"sr_profile_{seed}_proj", book_id=book_id, run_id=run_id, title="proj",
+            status="active",
+            profile_json={"narrative_summary": "n", "style_features": [project_feature]},
+            coverage_json={}, source_finding_ids_json=[],
+        )
+        repo.create_binding(
+            binding_id=f"sr_bind_{seed}_proj", profile_id=f"sr_profile_{seed}_proj",
+            scope="project", scope_ref_id=project_id,
+            task_type="scene_generation", strategy="A", config_json={}, status="active",
+        )
+        for i, ch in enumerate(characters):
+            repo.create_profile(
+                profile_id=f"sr_profile_{seed}_c{i}", book_id=book_id, run_id=run_id, title=f"c{i}",
+                status="active",
+                profile_json={"narrative_summary": "n", "style_features": [ch["feature"]]},
+                coverage_json={}, source_finding_ids_json=[],
+            )
+            kwargs = dict(
+                binding_id=f"sr_bind_{seed}_c{i}", profile_id=f"sr_profile_{seed}_c{i}",
+                scope="character", scope_ref_id=ch["character_id"],
+                task_type="scene_generation", strategy="A", config_json={}, status="active",
+            )
+            if ch.get("created_at"):
+                kwargs["created_at"] = ch["created_at"]
+            repo.create_binding(**kwargs)
+        session.commit()
+
+
+def test_ordered_character_ids_helper():
+    # pov 排首 + onstage 去重(pov 可能不在 onstage)
+    assert ordered_character_ids("A", ["B", "C"]) == ["A", "B", "C"]
+    assert ordered_character_ids("A", ["A", "B"]) == ["A", "B"]      # 去重
+    assert ordered_character_ids(None, ["B", "C"]) == ["B", "C"]     # pov 空
+    assert ordered_character_ids("A", []) == ["A"]                   # onstage 空
+    assert ordered_character_ids("A", ["B"]) == ["A", "B"]           # pov 不在 onstage
+
+
+def test_onstage_nonpov_character_matches():
+    """pov 无 binding,但 onstage 配角有 binding → 命中配角。"""
+    _seed_multi_character(
+        seed="onstage1", project_id="proj_os1",
+        characters=[{"character_id": "charB", "feature": "配角专属OS1"}],
+    )
+    # pov=charNoBind(无 binding),onstage=[charB]
+    cids = ordered_character_ids("charNoBind", ["charB"])
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_os1", "scene_generation", character_ids=cids,
+        )
+    assert "配角专属OS1" in fragments.positive_block
+
+
+def test_pov_character_wins_over_onstage():
+    """pov 与 onstage 配角都有 binding → pov 优先(char_order 0)。"""
+    _seed_multi_character(
+        seed="onstage2", project_id="proj_os2",
+        characters=[
+            {"character_id": "charA", "feature": "主视角OS2"},
+            {"character_id": "charB", "feature": "配角OS2"},
+        ],
+    )
+    cids = ordered_character_ids("charA", ["charB"])  # [charA, charB]
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_os2", "scene_generation", character_ids=cids,
+        )
+    assert "主视角OS2" in fragments.positive_block
+    assert "配角OS2" not in fragments.positive_block
+
+
+def test_pov_not_in_onstage_union_matches():
+    """pov 不在 onstage 列表里,但并集仍命中 pov binding。"""
+    _seed_multi_character(
+        seed="onstage3", project_id="proj_os3",
+        characters=[{"character_id": "charA", "feature": "主视角OS3"}],
+    )
+    # pov=charA 不在 onstage=[charB];并集 [charA, charB]
+    cids = ordered_character_ids("charA", ["charB"])
+    assert cids == ["charA", "charB"]
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_os3", "scene_generation", character_ids=cids,
+        )
+    assert "主视角OS3" in fragments.positive_block
+
+
+def test_pov_priority_overrides_created_at():
+    """pov binding 创建较早,配角较新;char_order(pov 优先)盖过 created_at。"""
+    _seed_multi_character(
+        seed="onstage4", project_id="proj_os4",
+        characters=[
+            {"character_id": "charA", "feature": "主视角OS4", "created_at": "2026-01-01T00:00:00Z"},
+            {"character_id": "charB", "feature": "配角OS4", "created_at": "2026-05-01T00:00:00Z"},
+        ],
+    )
+    cids = ordered_character_ids("charA", ["charB"])  # pov=charA 排首
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_os4", "scene_generation", character_ids=cids,
+        )
+    # charA(pov,char_order 0)优先,即便 charB created_at 更新
+    assert "主视角OS4" in fragments.positive_block
+    assert "配角OS4" not in fragments.positive_block
