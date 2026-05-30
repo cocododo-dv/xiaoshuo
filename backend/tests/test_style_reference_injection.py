@@ -390,7 +390,8 @@ def _seed_scoped_bindings(
         session.commit()
 
 
-def test_character_binding_wins_over_project():
+def test_character_overlay_merges_with_project_base():
+    """PR-16 — character(overlay)叠加 project(base):两层 positive 都注入。"""
     _seed_scoped_bindings(
         seed="charwin", project_id="proj_cw", character_id="char_cw",
         char_feature="角色专属特征CW", project_feature="项目通用特征CW",
@@ -399,8 +400,9 @@ def test_character_binding_wins_over_project():
         fragments = InjectionService(session).fragments_for(
             "proj_cw", "scene_generation", character_id="char_cw",
         )
+    # 两层叠加:overlay(character)+ base(project)均在
     assert "角色专属特征CW" in fragments.positive_block
-    assert "项目通用特征CW" not in fragments.positive_block
+    assert "项目通用特征CW" in fragments.positive_block
 
 
 def test_character_id_mismatch_falls_back_to_project():
@@ -494,7 +496,8 @@ def _seed_four_level_bindings(
         session.commit()
 
 
-def test_scene_binding_wins_over_character_and_project():
+def test_scene_overlay_merges_with_project_base_skips_character():
+    """PR-16 — 三层都命中时:overlay=scene(最具体增量)+ base=project;character 被跳过。"""
     _seed_four_level_bindings(
         seed="scenewin", project_id="proj_sw", character_id="char_sw", scene_id="scene_sw",
         scene_feature="场景专属SW", char_feature="角色专属SW", project_feature="项目通用SW",
@@ -503,9 +506,11 @@ def test_scene_binding_wins_over_character_and_project():
         fragments = InjectionService(session).fragments_for(
             "proj_sw", "scene_generation", character_id="char_sw", scene_id="scene_sw",
         )
+    # overlay = scene(rank0,最具体增量);base = project(rank2)
     assert "场景专属SW" in fragments.positive_block
+    assert "项目通用SW" in fragments.positive_block
+    # character(rank1)既非最高 overlay 也非 base,被跳过
     assert "角色专属SW" not in fragments.positive_block
-    assert "项目通用SW" not in fragments.positive_block
 
 
 def test_scene_id_mismatch_falls_back_to_character():
@@ -528,9 +533,154 @@ def test_scene_id_none_skips_scene_binding():
         scene_feature="场景专属SN", char_feature="角色专属SN", project_feature="项目通用SN",
     )
     with SessionLocal() as session:
-        # scene_id=None → 跳过 scene rank,命中 character
+        # scene_id=None → 跳过 scene rank,overlay=character;叠加 project base
         fragments = InjectionService(session).fragments_for(
             "proj_sn", "scene_generation", character_id="char_sn",
         )
     assert "角色专属SN" in fragments.positive_block
     assert "场景专属SN" not in fragments.positive_block
+
+
+# ---------------------------------------------------------------------------
+# PR-16 — 两层叠加合并(forbidden 去重 / token 各半 / 单层等价 / metric 优先)
+# ---------------------------------------------------------------------------
+
+
+def _seed_overlay_pair(
+    *,
+    seed: str,
+    project_id: str,
+    character_id: str,
+    base_json: dict,
+    overlay_json: dict,
+    base_strategy: str = "A",
+    overlay_strategy: str = "A",
+    include_base: bool = True,
+    include_overlay: bool = True,
+) -> None:
+    """落 project(base)+ character(overlay)两 profile/binding,profile_json 自定义。"""
+    book_id = f"sr_book_{seed}"
+    run_id = f"sr_run_{seed}"
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id=book_id, title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
+        if include_base:
+            repo.create_profile(
+                profile_id=f"sr_profile_{seed}_base", book_id=book_id, run_id=run_id,
+                title="base", status="active", profile_json=base_json,
+                coverage_json={}, source_finding_ids_json=[],
+            )
+            repo.create_binding(
+                binding_id=f"sr_bind_{seed}_base", profile_id=f"sr_profile_{seed}_base",
+                scope="project", scope_ref_id=project_id,
+                task_type="scene_generation", strategy=base_strategy, config_json={}, status="active",
+            )
+        if include_overlay:
+            repo.create_profile(
+                profile_id=f"sr_profile_{seed}_ov", book_id=book_id, run_id=run_id,
+                title="ov", status="active", profile_json=overlay_json,
+                coverage_json={}, source_finding_ids_json=[],
+            )
+            repo.create_binding(
+                binding_id=f"sr_bind_{seed}_ov", profile_id=f"sr_profile_{seed}_ov",
+                scope="character", scope_ref_id=character_id,
+                task_type="scene_generation", strategy=overlay_strategy, config_json={}, status="active",
+            )
+        session.commit()
+
+
+def test_overlay_forbidden_dedup():
+    """两层相同禁忌规则去重,只保留一条。"""
+    _seed_overlay_pair(
+        seed="dedup", project_id="proj_dd", character_id="char_dd",
+        base_json={"narrative_summary": "b", "banned_replication_rules": ["禁堆砌华丽形容词", "禁项目独有"]},
+        overlay_json={"narrative_summary": "o", "banned_replication_rules": ["禁堆砌华丽形容词", "禁角色独有"]},
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_dd", "scene_generation", character_id="char_dd",
+        )
+    forbidden = fragments.forbidden_block
+    # 共同的"禁堆砌华丽形容词"只出现一次
+    assert forbidden.count("禁堆砌华丽形容词") == 1
+    # 各自独有的都保留
+    assert "禁项目独有" in forbidden
+    assert "禁角色独有" in forbidden
+    # 单个 [禁忌模式] 标题
+    assert forbidden.count("[禁忌模式]") == 1
+
+
+def test_overlay_token_each_half_capped():
+    """base 与 overlay positive 各被截到 half*0.6 内。"""
+    long_base = ["基底" * 500]      # 1000 字
+    long_overlay = ["增量" * 500]   # 1000 字
+    _seed_overlay_pair(
+        seed="cap", project_id="proj_cap", character_id="char_cap",
+        base_json={"narrative_summary": "b", "style_features": long_base},
+        overlay_json={"narrative_summary": "o", "style_features": long_overlay},
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_cap", "scene_generation", character_id="char_cap",
+        )
+    # half=400,positive ratio 0.6 → 各 ≤ 240;合并后两段各受限
+    # 总 positive 不应远超 2*240(+标题/换行余量)
+    assert len(fragments.positive_block) <= 240 * 2 + 60
+
+
+def test_overlay_only_base_is_single_layer():
+    """仅 project base(无 overlay)→ 单层路径,strategy A 全文不截断。"""
+    long_base = ["基底全文" * 500]  # 2000 字
+    _seed_overlay_pair(
+        seed="baseonly", project_id="proj_bo", character_id="char_bo",
+        base_json={"narrative_summary": "b", "style_features": long_base},
+        overlay_json={},
+        include_overlay=False,
+    )
+    with SessionLocal() as session:
+        # 无 character binding → overlay=None → 单层 base
+        fragments = InjectionService(session).fragments_for(
+            "proj_bo", "scene_generation", character_id="char_bo",
+        )
+    # 单层 strategy A 全文不截断(远超 half cap)
+    assert len(fragments.positive_block) > 1000
+
+
+def test_overlay_only_character_is_single_layer():
+    """仅 character overlay(无 project base)→ 单层路径。"""
+    _seed_overlay_pair(
+        seed="ovonly", project_id="proj_oo", character_id="char_oo",
+        base_json={},
+        overlay_json={"narrative_summary": "o", "style_features": ["角色独有OO"]},
+        include_base=False,
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_oo", "scene_generation", character_id="char_oo",
+        )
+    assert "角色独有OO" in fragments.positive_block
+
+
+def test_overlay_metric_prefers_overlay():
+    """metric_anchor 取 overlay(更具体);overlay 有 metric 时不用 base 的。"""
+    _seed_overlay_pair(
+        seed="metric", project_id="proj_mt", character_id="char_mt",
+        base_json={
+            "narrative_summary": "b",
+            "metrics_baseline": {"base_metric": {"mean": 10.0, "std": 1.0}},
+        },
+        overlay_json={
+            "narrative_summary": "o",
+            "metrics_baseline": {"overlay_metric": {"mean": 20.0, "std": 2.0}},
+        },
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_mt", "scene_generation", character_id="char_mt",
+        )
+    assert "overlay_metric" in fragments.metric_anchor_block
+    assert "base_metric" not in fragments.metric_anchor_block

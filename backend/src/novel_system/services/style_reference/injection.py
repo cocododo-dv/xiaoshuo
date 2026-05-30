@@ -53,6 +53,70 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max_chars - 1] + "…"
 
 
+def _cap_fragments(frag: "SystemPromptFragments", budget: int) -> "SystemPromptFragments":
+    """PR-16 叠加专属:按 ratio(0.6/0.3/0.1)硬截 3 block(不管 strategy)。"""
+    return SystemPromptFragments(
+        positive_block=_truncate(frag.positive_block, int(budget * 0.6)),
+        forbidden_block=_truncate(frag.forbidden_block, int(budget * 0.3)),
+        metric_anchor_block=_truncate(frag.metric_anchor_block, int(budget * 0.1)),
+        strategy=frag.strategy,
+    )
+
+
+def _merge_forbidden_blocks(a: str, b: str) -> str:
+    """合并两个 [禁忌模式] block,'- xxx' 行去重保序(base 在前)。"""
+    seen: set[str] = set()
+    items: list[str] = []
+    for block in (a, b):
+        for line in block.splitlines():
+            s = line.strip()
+            if s.startswith("- ") and s not in seen:
+                seen.add(s)
+                items.append(s)
+    if not items:
+        return ""
+    return "[禁忌模式]\n" + "\n".join(items)
+
+
+def _merge_fragments(
+    base: "SystemPromptFragments", overlay: "SystemPromptFragments"
+) -> "SystemPromptFragments":
+    """PR-16 两层合并:positive 拼接 / forbidden 去重 / metric overlay 优先 / strategy 取 overlay。"""
+    positive = "\n\n".join(
+        block for block in (base.positive_block, overlay.positive_block) if block.strip()
+    )
+    forbidden = _merge_forbidden_blocks(base.forbidden_block, overlay.forbidden_block)
+    metric = overlay.metric_anchor_block or base.metric_anchor_block
+    return SystemPromptFragments(
+        positive_block=positive,
+        forbidden_block=forbidden,
+        metric_anchor_block=metric,
+        strategy=overlay.strategy,
+    )
+
+
+def _binding_rank(
+    b,
+    *,
+    project_id: str | None,
+    character_id: str | None,
+    scene_id: str | None,
+) -> int:
+    """binding 优先级 rank(PR-14/15/16 单点):scene=0 > character=1 > project=2 > global=3。
+
+    不匹配返 99(剔除)。resolve_active_binding(单选)与 resolve_binding_layers(叠加)共用。
+    """
+    if scene_id and b.scope == "scene" and b.scope_ref_id == scene_id:
+        return 0
+    if character_id and b.scope == "character" and b.scope_ref_id == character_id:
+        return 1
+    if project_id and b.scope == "project" and b.scope_ref_id == project_id:
+        return 2
+    if b.scope == "global":
+        return 3
+    return 99  # 不匹配
+
+
 class InjectionService:
     """读 active binding + profile,渲染 SystemPromptFragments。"""
 
@@ -61,6 +125,7 @@ class InjectionService:
         self.repo = StyleReferenceRepository(session)
         self._last_profile_id: str | None = None
         self._last_binding_id: str | None = None
+        self._last_base_binding_id: str | None = None
 
     # --------------------------------------------------------------- public
     def fragments_for(
@@ -92,24 +157,50 @@ class InjectionService:
     ) -> SystemPromptFragments:
         if not project_id and not character_id and not scene_id:
             return SystemPromptFragments()
-        binding = self.resolve_active_binding(
+        base_b, overlay_b = self.resolve_binding_layers(
             project_id, task_type, character_id=character_id, scene_id=scene_id,
         )
-        if binding is None:
+        if base_b is None and overlay_b is None:
             return SystemPromptFragments()
+        # 单层(只有 base 或只有 overlay)→ 走原路径,行为零回归
+        if base_b is None or overlay_b is None:
+            single = overlay_b or base_b
+            return self._fragments_from_binding(single)
+        # PR-16 两层叠加:各自 strategy 渲染 → 各 cap half → 合并
+        half = self._budget_total() // 2
+        base_frag = _cap_fragments(self._render_binding(base_b), half)
+        overlay_frag = _cap_fragments(self._render_binding(overlay_b), half)
+        merged = _merge_fragments(base_frag, overlay_frag)
+        self._last_profile_id = overlay_b.profile_id
+        self._last_binding_id = overlay_b.binding_id
+        self._last_base_binding_id = base_b.binding_id
+        return merged
+
+    def _fragments_from_binding(self, binding) -> SystemPromptFragments:
+        """单层路径:get_profile + _render,profile active 时记 last id(同 PR-15 行为)。"""
         profile = self.repo.get_profile(binding.profile_id)
         if profile is None or profile.status != "active":
             return SystemPromptFragments()
+        self._last_profile_id = binding.profile_id
+        self._last_binding_id = binding.binding_id
+        return self._render_for(profile, binding)
+
+    def _render_binding(self, binding) -> SystemPromptFragments:
+        """叠加路径:按 binding 自己的 strategy 渲染 fragments(不记 last id)。"""
+        profile = self.repo.get_profile(binding.profile_id)
+        if profile is None or profile.status != "active":
+            return SystemPromptFragments()
+        return self._render_for(profile, binding)
+
+    def _render_for(self, profile, binding) -> SystemPromptFragments:
         try:
             strategy = InjectionStrategy(binding.strategy)
         except ValueError:
             strategy = InjectionStrategy.A
-        config = binding.config_json or {}
-        fragments = self._render(profile, strategy, config)
-        # 把 binding/profile id 寄到 fragments 暂存,record_invocation 会读
-        self._last_profile_id = binding.profile_id
-        self._last_binding_id = binding.binding_id
-        return fragments
+        return self._render(profile, strategy, binding.config_json or {})
+
+    def _budget_total(self) -> int:
+        return int(_load_budget().get("system_prompt_max_tokens", 800))
 
     def _record_invocation(
         self,
@@ -130,11 +221,15 @@ class InjectionService:
             context={
                 "task_type": task_type,
                 "strategy": fragments.strategy.value,
+                # PR-16 — 两层叠加标记 + base binding(便于运营区分单层/叠加)
+                "layered": self._last_base_binding_id is not None,
+                "base_binding_id": self._last_base_binding_id,
             },
         )
         # 用完即清,避免下一次 invocation 错误复用
         self._last_profile_id = None
         self._last_binding_id = None
+        self._last_base_binding_id = None
 
     # ------------------------------------------------------------- binding 选取
     def resolve_active_binding(
@@ -162,21 +257,54 @@ class InjectionService:
             return None
 
         def _rank(b) -> int:
-            if scene_id and b.scope == "scene" and b.scope_ref_id == scene_id:
-                return 0
-            if character_id and b.scope == "character" and b.scope_ref_id == character_id:
-                return 1
-            if project_id and b.scope == "project" and b.scope_ref_id == project_id:
-                return 2
-            if b.scope == "global":
-                return 3
-            return 99  # 不匹配
+            return _binding_rank(
+                b, project_id=project_id, character_id=character_id, scene_id=scene_id,
+            )
 
         candidates = [b for b in bindings if _rank(b) < 99]
         if not candidates:
             return None
         candidates.sort(key=lambda b: (_rank(b), -1 * _ts_to_int(b.created_at)))
         return candidates[0]
+
+    def resolve_binding_layers(
+        self,
+        project_id: str | None,
+        task_type: str,
+        *,
+        character_id: str | None = None,
+        scene_id: str | None = None,
+    ):
+        """PR-16 — 返 (base, overlay);供两层叠加用,两者皆可能 None。
+
+        overlay = rank∈{0,1}(scene>character)最优先;base = rank∈{2,3}
+        (project>global)最优先。同 rank 取最新 created_at。复用 _binding_rank。
+        """
+        if not project_id and not character_id and not scene_id:
+            return None, None
+        bindings = [
+            b
+            for b in self.repo.list_bindings(task_type=task_type)
+            if b.status == "active"
+        ]
+        if not bindings:
+            return None, None
+
+        def _rank(b) -> int:
+            return _binding_rank(
+                b, project_id=project_id, character_id=character_id, scene_id=scene_id,
+            )
+
+        def _pick(allowed: set[int]):
+            cands = [b for b in bindings if _rank(b) in allowed]
+            if not cands:
+                return None
+            cands.sort(key=lambda b: (_rank(b), -1 * _ts_to_int(b.created_at)))
+            return cands[0]
+
+        overlay = _pick({0, 1})
+        base = _pick({2, 3})
+        return base, overlay
 
     def _render(
         self,
