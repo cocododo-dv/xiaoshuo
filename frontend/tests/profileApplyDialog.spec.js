@@ -160,5 +160,35 @@ describe("ProfileApplyDialog", () => {
       await nextTick();
       expect(document.activeElement).toBe(el.querySelector(".dialog-close"));
     });
+
+    it("focus trap:末项 Tab 循环回首项(关闭按钮)", async () => {
+      const { el } = mount(ProfileApplyDialog, { open: true, draft: defaultDraft() });
+      await nextTick();
+      const dialog = el.querySelector(".apply-dialog");
+      const sel = 'button:not([disabled]):not([tabindex="-1"]), select:not([disabled]),'
+        + ' input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+      const items = Array.from(dialog.querySelectorAll(sel));
+      const last = items[items.length - 1];
+      last.focus();
+      expect(document.activeElement).toBe(last);
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      await nextTick();
+      expect(document.activeElement).toBe(el.querySelector(".dialog-close"));
+    });
+
+    it("focus trap:首项 Shift+Tab 循环到末项", async () => {
+      const { el } = mount(ProfileApplyDialog, { open: true, draft: defaultDraft() });
+      await nextTick();
+      const dialog = el.querySelector(".apply-dialog");
+      const first = el.querySelector(".dialog-close");
+      first.focus();
+      const sel = 'button:not([disabled]):not([tabindex="-1"]), select:not([disabled]),'
+        + ' input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+      const items = Array.from(dialog.querySelectorAll(sel));
+      const last = items[items.length - 1];
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+      await nextTick();
+      expect(document.activeElement).toBe(last);
+    });
   });
 });

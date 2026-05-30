@@ -65,6 +65,39 @@ watch(
   { immediate: true },
 );
 
+// PR-17 a11y — 完整 focus trap:Tab/Shift+Tab 在 dialog 内循环,焦点不逃逸
+const dialogEl = ref(null);
+// 各类排除 tabindex=-1(含 roving 未选中的 radio),保证 Tab 序列与浏览器一致
+const FOCUSABLE_SELECTOR = [
+  'button:not([disabled]):not([tabindex="-1"])',
+  'select:not([disabled]):not([tabindex="-1"])',
+  'input:not([disabled]):not([tabindex="-1"])',
+  'textarea:not([disabled]):not([tabindex="-1"])',
+  'a[href]:not([tabindex="-1"])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
+function getFocusable() {
+  const root = dialogEl.value;
+  if (!root) return [];
+  return Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR));
+}
+
+function onTab(e) {
+  const items = getFocusable();
+  if (items.length === 0) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
 const localDraft = reactive({
   scope: "project",
   scope_ref_id: "",
@@ -142,12 +175,14 @@ function submit() {
 <template>
   <div v-if="open" class="apply-dialog-mask" @click.self="emit('close')">
     <div
+      ref="dialogEl"
       class="apply-dialog"
       role="dialog"
       aria-modal="true"
       aria-labelledby="apply-dialog-title"
       tabindex="-1"
       @keydown.esc="emit('close')"
+      @keydown.tab="onTab"
     >
       <header class="dialog-head">
         <p id="apply-dialog-title" class="dialog-title">应用 Profile 到项目</p>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createApp, h, ref } from "vue";
+import { createApp, h, nextTick, ref } from "vue";
 import { afterEach, describe, expect, it } from "vitest";
 
 import InjectionStrategyPicker from "../src/components/styleReference/InjectionStrategyPicker.vue";
@@ -83,19 +83,60 @@ describe("InjectionStrategyPicker", () => {
   });
 
   describe("a11y", () => {
-    it("选中 strategy 的 button aria-pressed=true,其余=false", async () => {
+    it("radiogroup + radio role,选中项 aria-checked=true 其余 false", () => {
       const { el } = mount({ ...baseState(), strategy: "A" });
-      expect(el.querySelector('[data-testid="strategy-A"]').getAttribute("aria-pressed")).toBe("true");
-      expect(el.querySelector('[data-testid="strategy-B"]').getAttribute("aria-pressed")).toBe("false");
-      expect(el.querySelector('[data-testid="strategy-mixed"]').getAttribute("aria-pressed")).toBe("false");
+      expect(el.querySelector('[role="radiogroup"]')).not.toBeNull();
+      const a = el.querySelector('[data-testid="strategy-A"]');
+      expect(a.getAttribute("role")).toBe("radio");
+      expect(a.getAttribute("aria-checked")).toBe("true");
+      expect(el.querySelector('[data-testid="strategy-B"]').getAttribute("aria-checked")).toBe("false");
+      expect(el.querySelector('[data-testid="strategy-mixed"]').getAttribute("aria-checked")).toBe("false");
     });
 
-    it("切换 strategy 后 aria-pressed 更新", async () => {
+    it("roving tabindex:选中项 0,其余 -1", () => {
+      const { el } = mount({ ...baseState(), strategy: "A" });
+      expect(el.querySelector('[data-testid="strategy-A"]').getAttribute("tabindex")).toBe("0");
+      expect(el.querySelector('[data-testid="strategy-B"]').getAttribute("tabindex")).toBe("-1");
+    });
+
+    it("切换 strategy 后 aria-checked + tabindex 更新", async () => {
       const { el } = mount({ ...baseState(), strategy: "A" });
       el.querySelector('[data-testid="strategy-mixed"]').click();
-      await Promise.resolve();
-      expect(el.querySelector('[data-testid="strategy-mixed"]').getAttribute("aria-pressed")).toBe("true");
-      expect(el.querySelector('[data-testid="strategy-A"]').getAttribute("aria-pressed")).toBe("false");
+      await nextTick();
+      const mixed = el.querySelector('[data-testid="strategy-mixed"]');
+      expect(mixed.getAttribute("aria-checked")).toBe("true");
+      expect(mixed.getAttribute("tabindex")).toBe("0");
+      expect(el.querySelector('[data-testid="strategy-A"]').getAttribute("aria-checked")).toBe("false");
+    });
+
+    it("ArrowRight 移动即选中下一个(A→B)", async () => {
+      const { el, value } = mount({ ...baseState(), strategy: "A" });
+      el.querySelector('[role="radiogroup"]').dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+      await nextTick();
+      expect(value.value.strategy).toBe("B");
+      expect(el.querySelector('[data-testid="strategy-B"]').getAttribute("aria-checked")).toBe("true");
+    });
+
+    it("ArrowLeft 从首项循环到末项(A→mixed)", async () => {
+      const { el, value } = mount({ ...baseState(), strategy: "A" });
+      el.querySelector('[role="radiogroup"]').dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+      );
+      await nextTick();
+      expect(value.value.strategy).toBe("mixed");
+    });
+
+    it("Home/End 跳到首/末", async () => {
+      const { el, value } = mount({ ...baseState(), strategy: "B" });
+      const group = el.querySelector('[role="radiogroup"]');
+      group.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+      await nextTick();
+      expect(value.value.strategy).toBe("mixed");
+      group.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+      await nextTick();
+      expect(value.value.strategy).toBe("A");
     });
   });
 });

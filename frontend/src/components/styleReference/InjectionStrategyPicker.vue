@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from "vue";
+import { computed, nextTick, ref } from "vue";
 
 import IntensitySlider from "./IntensitySlider.vue";
 import DimensionMultiSelect from "./DimensionMultiSelect.vue";
@@ -39,6 +39,29 @@ function selectStrategy(value) {
   update({ strategy: value });
 }
 
+// PR-17 a11y — W3C radiogroup arrow-key 导航:移动即选中(循环)+ roving focus
+const pickerEl = ref(null);
+const ARROW_KEYS = Object.freeze([
+  "ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End",
+]);
+
+function onKeydown(e) {
+  if (props.disabled || !ARROW_KEYS.includes(e.key)) return;
+  e.preventDefault();
+  const vals = STRATEGIES.map((o) => o.value);
+  let idx = vals.indexOf(strategy.value);
+  if (idx < 0) idx = 0;
+  if (e.key === "Home") idx = 0;
+  else if (e.key === "End") idx = vals.length - 1;
+  else if (e.key === "ArrowRight" || e.key === "ArrowDown") idx = (idx + 1) % vals.length;
+  else idx = (idx - 1 + vals.length) % vals.length;
+  const next = vals[idx];
+  selectStrategy(next);
+  nextTick(() => {
+    pickerEl.value?.querySelector(`[data-testid="strategy-${next}"]`)?.focus?.();
+  });
+}
+
 function updateIntensity(value) {
   update({ intensity: value });
 }
@@ -49,15 +72,17 @@ function updateSubDimensions(value) {
 </script>
 
 <template>
-  <div :class="['strategy-picker', { disabled }]">
-    <div class="strategy-buttons" role="group" aria-label="注入策略">
+  <div ref="pickerEl" :class="['strategy-picker', { disabled }]">
+    <div class="strategy-buttons" role="radiogroup" aria-label="注入策略" @keydown="onKeydown">
       <button
         v-for="opt in STRATEGIES"
         :key="opt.value"
         type="button"
+        role="radio"
         :class="['strat-btn', { active: strategy === opt.value }]"
         :disabled="disabled"
-        :aria-pressed="strategy === opt.value"
+        :aria-checked="strategy === opt.value"
+        :tabindex="strategy === opt.value ? 0 : -1"
         @click="selectStrategy(opt.value)"
         :data-testid="`strategy-${opt.value}`"
       >
