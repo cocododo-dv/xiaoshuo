@@ -63,11 +63,11 @@ def _cap_fragments(frag: "SystemPromptFragments", budget: int) -> "SystemPromptF
     )
 
 
-def _merge_forbidden_blocks(a: str, b: str) -> str:
-    """合并两个 [禁忌模式] block,'- xxx' 行去重保序(base 在前)。"""
+def _merge_forbidden_blocks(*blocks: str) -> str:
+    """PR-19 — 合并任意多个 [禁忌模式] block,'- xxx' 行去重保序(由泛到具体)。"""
     seen: set[str] = set()
     items: list[str] = []
-    for block in (a, b):
+    for block in blocks:
         for line in block.splitlines():
             s = line.strip()
             if s.startswith("- ") and s not in seen:
@@ -78,20 +78,23 @@ def _merge_forbidden_blocks(a: str, b: str) -> str:
     return "[禁忌模式]\n" + "\n".join(items)
 
 
-def _merge_fragments(
-    base: "SystemPromptFragments", overlay: "SystemPromptFragments"
-) -> "SystemPromptFragments":
-    """PR-16 两层合并:positive 拼接 / forbidden 去重 / metric overlay 优先 / strategy 取 overlay。"""
+def _merge_fragments(layers_frags: list["SystemPromptFragments"]) -> "SystemPromptFragments":
+    """PR-19 — 多层合并(由泛到具体):positive 顺序拼 / forbidden 全层去重 /
+    metric 最具体优先(反向取首个非空)/ strategy 取最具体层。"""
     positive = "\n\n".join(
-        block for block in (base.positive_block, overlay.positive_block) if block.strip()
+        f.positive_block for f in layers_frags if f.positive_block.strip()
     )
-    forbidden = _merge_forbidden_blocks(base.forbidden_block, overlay.forbidden_block)
-    metric = overlay.metric_anchor_block or base.metric_anchor_block
+    forbidden = _merge_forbidden_blocks(*[f.forbidden_block for f in layers_frags])
+    metric = ""
+    for f in reversed(layers_frags):  # 最具体层优先
+        if f.metric_anchor_block.strip():
+            metric = f.metric_anchor_block
+            break
     return SystemPromptFragments(
         positive_block=positive,
         forbidden_block=forbidden,
         metric_anchor_block=metric,
-        strategy=overlay.strategy,
+        strategy=layers_frags[-1].strategy,
     )
 
 
@@ -145,6 +148,7 @@ class InjectionService:
         self._last_profile_id: str | None = None
         self._last_binding_id: str | None = None
         self._last_base_binding_id: str | None = None
+        self._last_layer_count: int = 0
 
     # --------------------------------------------------------------- public
     def fragments_for(
@@ -176,23 +180,28 @@ class InjectionService:
     ) -> SystemPromptFragments:
         if not project_id and not character_ids and not scene_id:
             return SystemPromptFragments()
-        base_b, overlay_b = self.resolve_binding_layers(
+        layers = self.resolve_binding_layers(
             project_id, task_type, character_ids=character_ids, scene_id=scene_id,
         )
-        if base_b is None and overlay_b is None:
+        if not layers:
             return SystemPromptFragments()
-        # 单层(只有 base 或只有 overlay)→ 走原路径,行为零回归
-        if base_b is None or overlay_b is None:
-            single = overlay_b or base_b
-            return self._fragments_from_binding(single)
-        # PR-16 两层叠加:各自 strategy 渲染 → 各 cap half → 合并
-        half = self._budget_total() // 2
-        base_frag = _cap_fragments(self._render_binding(base_b), half)
-        overlay_frag = _cap_fragments(self._render_binding(overlay_b), half)
-        merged = _merge_fragments(base_frag, overlay_frag)
-        self._last_profile_id = overlay_b.profile_id
-        self._last_binding_id = overlay_b.binding_id
-        self._last_base_binding_id = base_b.binding_id
+        # 单层 → 走原路径,行为零回归(strategy 全语义,不 cap)
+        if len(layers) == 1:
+            return self._fragments_from_binding(layers[0])
+        # PR-16/19 多层加权叠加:由泛到具体,越具体预算越多
+        total = self._budget_total()
+        n = len(layers)
+        weights = list(range(1, n + 1))  # [1,2] / [1,2,3]
+        wsum = sum(weights)
+        capped = [
+            _cap_fragments(self._render_binding(b), total * weights[i] // wsum)
+            for i, b in enumerate(layers)
+        ]
+        merged = _merge_fragments(capped)
+        self._last_profile_id = layers[-1].profile_id      # 最具体层
+        self._last_binding_id = layers[-1].binding_id
+        self._last_base_binding_id = layers[0].binding_id  # 最泛层
+        self._last_layer_count = n
         return merged
 
     def _fragments_from_binding(self, binding) -> SystemPromptFragments:
@@ -240,15 +249,17 @@ class InjectionService:
             context={
                 "task_type": task_type,
                 "strategy": fragments.strategy.value,
-                # PR-16 — 两层叠加标记 + base binding(便于运营区分单层/叠加)
+                # PR-16/19 — 叠加标记 + base binding + 命中层数(运营区分单层/多层叠加)
                 "layered": self._last_base_binding_id is not None,
                 "base_binding_id": self._last_base_binding_id,
+                "layer_count": self._last_layer_count or (1 if prefix else 0),
             },
         )
         # 用完即清,避免下一次 invocation 错误复用
         self._last_profile_id = None
         self._last_binding_id = None
         self._last_base_binding_id = None
+        self._last_layer_count = 0
 
     # ------------------------------------------------------------- binding 选取
     def resolve_active_binding(
@@ -296,20 +307,21 @@ class InjectionService:
         character_ids: list[str] | None = None,
         scene_id: str | None = None,
     ):
-        """PR-16 — 返 (base, overlay);供两层叠加用,两者皆可能 None。
+        """PR-19 — 返由泛到具体的命中层 list:base(project>global)、character、scene
+        各取命中的最优先一个,过滤 None。
 
-        overlay = rank∈{0,1}(scene>character)最优先;base = rank∈{2,3}
-        (project>global)最优先。character 多命中按 char_order(pov 优先)决平,再 created_at。
+        character 多命中按 char_order(pov 优先)决平,再 created_at(PR-18)。
+        供多层加权叠加用(单层时 list 长度 1,走原路径零回归)。
         """
         if not project_id and not character_ids and not scene_id:
-            return None, None
+            return []
         bindings = [
             b
             for b in self.repo.list_bindings(task_type=task_type)
             if b.status == "active"
         ]
         if not bindings:
-            return None, None
+            return []
 
         def _rank(b) -> int:
             return _binding_rank(
@@ -325,9 +337,10 @@ class InjectionService:
             )
             return cands[0]
 
-        overlay = _pick({0, 1})
-        base = _pick({2, 3})
-        return base, overlay
+        base = _pick({2, 3})        # project > global(基底)
+        character = _pick({1})      # character(pov 优先,PR-18)
+        scene_b = _pick({0})        # scene(最具体)
+        return [b for b in (base, character, scene_b) if b is not None]  # 由泛到具体
 
     def _render(
         self,

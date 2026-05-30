@@ -499,8 +499,8 @@ def _seed_four_level_bindings(
         session.commit()
 
 
-def test_scene_overlay_merges_with_project_base_skips_character():
-    """PR-16 — 三层都命中时:overlay=scene(最具体增量)+ base=project;character 被跳过。"""
+def test_three_layer_full_merge():
+    """PR-19 — 三层全叠:scene + character + project 都注入(PR-16 曾跳过 character)。"""
     _seed_four_level_bindings(
         seed="scenewin", project_id="proj_sw", character_id="char_sw", scene_id="scene_sw",
         scene_feature="场景专属SW", char_feature="角色专属SW", project_feature="项目通用SW",
@@ -509,11 +509,96 @@ def test_scene_overlay_merges_with_project_base_skips_character():
         fragments = InjectionService(session).fragments_for(
             "proj_sw", "scene_generation", character_ids=["char_sw"], scene_id="scene_sw",
         )
-    # overlay = scene(rank0,最具体增量);base = project(rank2)
-    assert "场景专属SW" in fragments.positive_block
-    assert "项目通用SW" in fragments.positive_block
-    # character(rank1)既非最高 overlay 也非 base,被跳过
-    assert "角色专属SW" not in fragments.positive_block
+    pos = fragments.positive_block
+    # 三层全叠:base(project)+ character + scene 都在
+    assert "项目通用SW" in pos
+    assert "角色专属SW" in pos
+    assert "场景专属SW" in pos
+
+
+def test_three_layer_order_general_to_specific():
+    """PR-19 — 拼接顺序由泛到具体:project → character → scene。"""
+    _seed_four_level_bindings(
+        seed="order3", project_id="proj_o3", character_id="char_o3", scene_id="scene_o3",
+        scene_feature="场景O3", char_feature="角色O3", project_feature="项目O3",
+    )
+    with SessionLocal() as session:
+        pos = InjectionService(session).fragments_for(
+            "proj_o3", "scene_generation", character_ids=["char_o3"], scene_id="scene_o3",
+        ).positive_block
+    assert pos.index("项目O3") < pos.index("角色O3") < pos.index("场景O3")
+
+
+def test_three_layer_token_weighted_scene_largest():
+    """PR-19 — token 加权:scene 段预算最大(权重 3/6),project 基底最小(1/6)。"""
+    # 手工 seed 长 style_features(各层 ~900 字),确保都被 cap 截断,验证加权差异
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id="sr_book_w3b", title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum="chk_w3b", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id="sr_run_w3b", book_id="sr_book_w3b", status="done", phase="done")
+        for suffix, scope, ref, feat in [
+            ("proj", "project", "proj_w3b", "项" * 900),
+            ("char", "character", "char_w3b", "角" * 900),
+            ("scene", "scene", "scene_w3b", "景" * 900),
+        ]:
+            repo.create_profile(
+                profile_id=f"sr_profile_w3b_{suffix}", book_id="sr_book_w3b", run_id="sr_run_w3b",
+                title=suffix, status="active",
+                profile_json={"narrative_summary": "n", "style_features": [feat]},
+                coverage_json={}, source_finding_ids_json=[],
+            )
+            repo.create_binding(
+                binding_id=f"sr_bind_w3b_{suffix}", profile_id=f"sr_profile_w3b_{suffix}",
+                scope=scope, scope_ref_id=ref,
+                task_type="scene_generation", strategy="A", config_json={}, status="active",
+            )
+        session.commit()
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_w3b", "scene_generation", character_ids=["char_w3b"], scene_id="scene_w3b",
+        )
+    pos = fragments.positive_block
+    # scene 段(景)应比 project 段(项)长(加权 3:1)
+    assert pos.count("景") > pos.count("项")
+
+
+def test_three_layer_metric_prefers_most_specific():
+    """PR-19 — metric_anchor 取最具体层(scene)优先。"""
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id="sr_book_m3", title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum="chk_m3", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id="sr_run_m3", book_id="sr_book_m3", status="done", phase="done")
+        for suffix, scope, ref, metric_name in [
+            ("proj", "project", "proj_m3", "proj_metric"),
+            ("scene", "scene", "scene_m3", "scene_metric"),
+        ]:
+            repo.create_profile(
+                profile_id=f"sr_profile_m3_{suffix}", book_id="sr_book_m3", run_id="sr_run_m3",
+                title=suffix, status="active",
+                profile_json={
+                    "narrative_summary": "n",
+                    "metrics_baseline": {metric_name: {"mean": 1.0, "std": 0.1}},
+                },
+                coverage_json={}, source_finding_ids_json=[],
+            )
+            repo.create_binding(
+                binding_id=f"sr_bind_m3_{suffix}", profile_id=f"sr_profile_m3_{suffix}",
+                scope=scope, scope_ref_id=ref,
+                task_type="scene_generation", strategy="A", config_json={}, status="active",
+            )
+        session.commit()
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_m3", "scene_generation", scene_id="scene_m3",
+        )
+    assert "scene_metric" in fragments.metric_anchor_block
+    assert "proj_metric" not in fragments.metric_anchor_block
 
 
 def test_scene_id_mismatch_falls_back_to_character():
