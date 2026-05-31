@@ -61,6 +61,25 @@ describe("StyleReferenceMetricsPanel", () => {
     expect(el.querySelector('[data-testid="metrics-empty"]')).not.toBeNull();
   });
 
+  it("不传 daily 时不渲染趋势图(向后兼容)", () => {
+    const { el } = mount({ metrics: SAMPLE_METRICS });
+    expect(el.querySelector('[data-testid="metrics-trend-chart"]')).toBeNull();
+  });
+
+  it("传 daily 时渲染 MetricsTrendChart 趋势图", () => {
+    const daily = {
+      daily: [
+        { date: "2026-05-30", count: 3 },
+        { date: "2026-05-31", count: 7 },
+      ],
+      window_days: 2,
+      computed_at: "2026-05-31T08:00:00Z",
+    };
+    const { el } = mount({ metrics: SAMPLE_METRICS, daily });
+    expect(el.querySelector('[data-testid="metrics-trend-chart"]')).not.toBeNull();
+    expect(el.querySelectorAll('[data-testid="trend-bar"]').length).toBe(2);
+  });
+
   it("metrics 注入时渲染 4 个指标卡 + 百分比格式", () => {
     const { el } = mount({ metrics: SAMPLE_METRICS });
     expect(el.querySelector('[data-testid="metric-injection"]')).not.toBeNull();

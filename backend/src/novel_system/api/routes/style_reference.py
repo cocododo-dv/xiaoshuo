@@ -1013,3 +1013,15 @@ def get_style_reference_metrics(
     aggregator = MetricsAggregator(session)
     snapshot = aggregator.compute_all(window_hours=max(0, int(window_hours)))
     return ok({"metrics": snapshot}, req_id=_req_id(request))
+
+
+@router.get(f"{PATH_PREFIX}/metrics/daily")
+def get_style_reference_metrics_daily(
+    request: Request,
+    window_days: int = 14,
+    session: Session = Depends(get_session),
+):
+    """PR-22 — injection 调用量每日趋势(零填充连续轴,window_days 钳 [1,90])。"""
+    aggregator = MetricsAggregator(session)
+    result = aggregator.daily_injection_counts(window_days=int(window_days))
+    return ok(result, req_id=_req_id(request))

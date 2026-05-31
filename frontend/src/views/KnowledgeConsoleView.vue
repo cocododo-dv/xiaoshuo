@@ -208,10 +208,23 @@ function formatItemType(itemType) {
   return ITEM_TYPE_LABELS[itemType] || itemType || "-";
 }
 
+// PR-22 — 时间窗(hours)映射到趋势图的 window_days:7d / 30d / 全部→90d 上限
+function hoursToDays(hours) {
+  return hours === 0 ? 90 : Math.max(1, Math.round(hours / 24));
+}
+
 // PR-10 §13 — LazySection 首次展开时拉一次指标(已加载过则跳过)
+// PR-22 — 同时拉一次每日趋势
 function ensureStyleReferenceMetricsLoaded() {
   if (knowledgeConsole.styleReferenceMetrics !== null) return;
   knowledgeConsole.loadStyleReferenceMetrics();
+  knowledgeConsole.loadStyleReferenceMetricsDaily(hoursToDays(168));
+}
+
+// PR-22 — 切换时间窗时同步刷新快照与趋势
+function reloadStyleReferenceMetrics(hours) {
+  knowledgeConsole.loadStyleReferenceMetrics(hours);
+  knowledgeConsole.loadStyleReferenceMetricsDaily(hoursToDays(hours));
 }
 
 function formatStatus(status) {
@@ -1341,7 +1354,8 @@ watch(
             :metrics="knowledgeConsole.styleReferenceMetrics"
             :loading="knowledgeConsole.styleReferenceMetricsLoading"
             :error="knowledgeConsole.error || ''"
-            @reload="(hours) => knowledgeConsole.loadStyleReferenceMetrics(hours)"
+            :daily="knowledgeConsole.styleReferenceMetricsDaily"
+            @reload="reloadStyleReferenceMetrics"
           />
         </LazySection>
       </div>

@@ -142,3 +142,31 @@ class MetricsAggregator:
             KIND_AUTO_REWRITE_TRIGGERED: self._count_by_outcome(KIND_AUTO_REWRITE_TRIGGERED, since),
             KIND_AUTO_REWRITE_COMPLETED: self._count_by_outcome(KIND_AUTO_REWRITE_COMPLETED, since),
         }
+
+    # ----------------------------------------------------------- PR-22 trend
+    def daily_injection_counts(self, window_days: int = 14) -> dict[str, Any]:
+        """PR-22 — 按天聚合 injection_invoked 计数,零填充为连续日期轴。
+
+        created_at 存 ISO 串 ``YYYY-MM-DDThh:mm:ssZ``,``substr(created_at,1,10)``
+        即日期(纯 SQL,无方言依赖);缺失日在 Python 侧零填充。不缓存(单条
+        GROUP BY 廉价,且 cleanup 真删后永远新鲜)。
+        """
+        window_days = max(1, min(90, int(window_days)))
+        today = datetime.now(timezone.utc).date()
+        start = today - timedelta(days=window_days - 1)
+        since = start.strftime("%Y-%m-%dT00:00:00Z")
+        day_expr = func.substr(StyleReferenceMetricEvent.created_at, 1, 10)
+        rows = self.session.execute(
+            select(day_expr.label("day"), func.count().label("n"))
+            .where(
+                StyleReferenceMetricEvent.event_kind == KIND_INJECTION,
+                StyleReferenceMetricEvent.created_at >= since,
+            )
+            .group_by(day_expr)
+        ).all()
+        counts = {row.day: int(row.n) for row in rows}
+        daily = []
+        for i in range(window_days):
+            day = (start + timedelta(days=i)).isoformat()
+            daily.append({"date": day, "count": counts.get(day, 0)})
+        return {"daily": daily, "window_days": window_days, "computed_at": _utcnow()}

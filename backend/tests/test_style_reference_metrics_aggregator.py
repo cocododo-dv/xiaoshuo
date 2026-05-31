@@ -129,3 +129,72 @@ def test_window_hours_zero_means_all_history():
         result = MetricsAggregator(session).compute_all(window_hours=0)
     assert result["sample_counts"]["injection_invoked"] == 2
     assert result["injection_hit_rate"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# PR-22 — daily_injection_counts(每日趋势,零填充连续轴)
+# ---------------------------------------------------------------------------
+
+
+def _on_day(days_ago: int) -> str:
+    """返回 days_ago 天前当天正午的 ISO 串(按日期边界落到该日)。"""
+    d = (datetime.now(timezone.utc) - timedelta(days=days_ago)).date()
+    return f"{d.isoformat()}T12:00:00Z"
+
+
+def test_daily_injection_counts_buckets_by_day():
+    _seed_events([
+        {"event_kind": "injection_invoked", "outcome": "hit", "created_at": _on_day(0)},
+        {"event_kind": "injection_invoked", "outcome": "miss", "created_at": _on_day(0)},
+        {"event_kind": "injection_invoked", "outcome": "hit", "created_at": _on_day(2)},
+    ])
+    with SessionLocal() as session:
+        result = MetricsAggregator(session).daily_injection_counts(window_days=3)
+    assert result["window_days"] == 3
+    assert len(result["daily"]) == 3  # 连续轴
+    by_date = {row["date"]: row["count"] for row in result["daily"]}
+    today = datetime.now(timezone.utc).date()
+    assert by_date[today.isoformat()] == 2
+    assert by_date[(today - timedelta(days=1)).isoformat()] == 0  # 零填充
+    assert by_date[(today - timedelta(days=2)).isoformat()] == 1
+
+
+def test_daily_injection_counts_zero_fills_continuous_axis():
+    with SessionLocal() as session:
+        result = MetricsAggregator(session).daily_injection_counts(window_days=7)
+    assert len(result["daily"]) == 7
+    assert all(row["count"] == 0 for row in result["daily"])
+    dates = [row["date"] for row in result["daily"]]
+    assert dates == sorted(dates)  # 升序连续
+    assert dates[-1] == datetime.now(timezone.utc).date().isoformat()  # 末项今天
+
+
+def test_daily_injection_counts_only_injection_kind():
+    _seed_events([
+        {"event_kind": "injection_invoked", "outcome": "hit", "created_at": _on_day(0)},
+        {"event_kind": "qc_gate_decided", "outcome": "fail", "created_at": _on_day(0)},
+        {"event_kind": "validation_executed", "outcome": "pass", "created_at": _on_day(0)},
+    ])
+    with SessionLocal() as session:
+        result = MetricsAggregator(session).daily_injection_counts(window_days=1)
+    assert result["daily"][0]["count"] == 1  # 仅 injection_invoked 计入
+
+
+def test_daily_injection_counts_window_clamped():
+    with SessionLocal() as session:
+        agg = MetricsAggregator(session)
+        assert agg.daily_injection_counts(window_days=0)["window_days"] == 1     # 下限
+        high = agg.daily_injection_counts(window_days=999)
+        assert high["window_days"] == 90                                         # 上限
+        assert len(high["daily"]) == 90
+
+
+def test_daily_injection_counts_excludes_events_before_window():
+    _seed_events([
+        {"event_kind": "injection_invoked", "outcome": "hit", "created_at": _on_day(10)},
+        {"event_kind": "injection_invoked", "outcome": "hit", "created_at": _on_day(0)},
+    ])
+    with SessionLocal() as session:
+        result = MetricsAggregator(session).daily_injection_counts(window_days=3)
+    total = sum(row["count"] for row in result["daily"])
+    assert total == 1  # 10 天前的不计入 3 日窗

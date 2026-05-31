@@ -1,6 +1,8 @@
 <script setup>
 import { computed } from "vue";
 
+import MetricsTrendChart from "./MetricsTrendChart.vue";
+
 const props = defineProps({
   metrics: {
     type: Object,
@@ -14,7 +16,14 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  // PR-22 — injection 调用量每日趋势 { daily: [{date,count}], window_days, computed_at }
+  daily: {
+    type: Object,
+    default: null,
+  },
 });
+
+const dailyRows = computed(() => props.daily?.daily || []);
 
 const emit = defineEmits(["reload"]);
 
@@ -109,6 +118,7 @@ function totalEvents() {
           <p class="metric-hint">{{ sampleCounts.validation_executed || 0 }} 次执行</p>
         </article>
       </div>
+      <MetricsTrendChart v-if="daily" :daily="dailyRows" />
       <footer class="sr-metrics-foot">
         <span>窗口:{{ windowHours === 0 ? "全部" : `${windowHours}h` }} · 共 {{ totalEvents() }} 个事件</span>
         <span v-if="metrics.computed_at" class="computed-at">采集于 {{ metrics.computed_at }}</span>

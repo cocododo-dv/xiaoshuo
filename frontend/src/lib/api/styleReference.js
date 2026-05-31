@@ -150,6 +150,11 @@ export function fetchStyleReferenceMetrics({ windowHours = 168 } = {}) {
   return apiGet(`${PREFIX}/metrics?window_hours=${encodeURIComponent(windowHours)}`);
 }
 
+// PR-22 — injection 调用量每日趋势(零填充连续轴)
+export function fetchStyleReferenceMetricsDaily({ windowDays = 14 } = {}) {
+  return apiGet(`${PREFIX}/metrics/daily?window_days=${encodeURIComponent(windowDays)}`);
+}
+
 // --- Injection preview (PR-9) ---
 
 export function fetchBindingInjectionPreview(bindingId) {

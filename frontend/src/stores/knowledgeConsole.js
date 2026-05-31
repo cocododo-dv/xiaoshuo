@@ -8,6 +8,7 @@ import {
   fetchKnowledgeEntryDetail,
   fetchKnowledgeEntryWorkflow,
   fetchStyleReferenceMetrics,
+  fetchStyleReferenceMetricsDaily,
   releaseReview,
   retryVerify,
 } from "../lib/api";
@@ -196,6 +197,9 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
     // PR-10 §13 — Style Reference 运营指标
     styleReferenceMetrics: null,
     styleReferenceMetricsLoading: false,
+    // PR-22 — injection 调用量每日趋势
+    styleReferenceMetricsDaily: null,
+    styleReferenceMetricsDailyLoading: false,
   }),
   actions: {
     markStale() {
@@ -409,6 +413,21 @@ export const useKnowledgeConsoleStore = defineStore("knowledgeConsole", {
         throw error;
       } finally {
         this.styleReferenceMetricsLoading = false;
+      }
+    },
+
+    // PR-22 — 每日趋势(injection 调用量)
+    async loadStyleReferenceMetricsDaily(windowDays = 7) {
+      this.styleReferenceMetricsDailyLoading = true;
+      try {
+        const payload = await fetchStyleReferenceMetricsDaily({ windowDays });
+        this.styleReferenceMetricsDaily = snapshotPayload(payload ?? null);
+        return this.styleReferenceMetricsDaily;
+      } catch (error) {
+        this.error = error?.message || String(error || "未知错误");
+        throw error;
+      } finally {
+        this.styleReferenceMetricsDailyLoading = false;
       }
     },
   },
