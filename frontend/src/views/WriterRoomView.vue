@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowRight, Check, Eye, FileText, RefreshCw, Save, Sparkles, X } from "lucide-vue-next";
 
 import BaseBadge from "../components/base/BaseBadge.vue";
@@ -10,6 +10,7 @@ import FlowActionReceipt from "../components/FlowActionReceipt.vue";
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
+import { useFocusTrap } from "../composables/useFocusTrap";
 import { compactEntityOptions, formatChapterChoice, formatSceneChoice } from "../lib/readableRefs";
 import { useShellRouter } from "../router";
 import { useWriterRoomStore } from "../stores/writerRoom";
@@ -37,6 +38,15 @@ const autoSaveState = ref("idle");
 const rejectDialog = ref(false);
 const pendingRejectProposal = ref(null);
 const rejectNote = ref("");
+// PR-21 a11y — reject dialog focus trap + 打开后聚焦原因输入(esc 关闭见模板)
+const rejectDialogEl = ref(null);
+const rejectNoteEl = ref(null);
+const { onTab: onRejectTab } = useFocusTrap(rejectDialogEl);
+watch(rejectDialog, async (open) => {
+  if (!open) return;
+  await nextTick();
+  rejectNoteEl.value?.focus?.();
+});
 const chapters = computed(() => room.navigation?.chapters || []);
 const scenes = computed(() => room.navigation?.scenes || []);
 const chapterChoiceState = computed(() =>
@@ -582,17 +592,29 @@ onBeforeUnmount(() => {
       </div>
     </PanelShell>
 
-    <div v-if="rejectDialog" class="writer-room-modal-backdrop" data-testid="writer-room-reject-dialog" role="dialog" aria-modal="true">
+    <div
+      v-if="rejectDialog"
+      ref="rejectDialogEl"
+      class="writer-room-modal-backdrop"
+      data-testid="writer-room-reject-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="writer-room-reject-title"
+      tabindex="-1"
+      @keydown.tab="onRejectTab"
+      @keydown.esc.prevent="closeRejectDialog"
+    >
       <article class="writer-room-reject-modal">
         <div class="writer-room-section-head">
           <div>
             <span class="eyebrow">放弃改法</span>
-            <h3>{{ proposalTitle(pendingRejectProposal) }}</h3>
+            <h3 id="writer-room-reject-title">{{ proposalTitle(pendingRejectProposal) }}</h3>
           </div>
           <button type="button" class="ghost" @click="closeRejectDialog">关闭</button>
         </div>
         <p class="muted">可以留空；如果写一点原因，系统会把它记成后续改法的偏好线索。</p>
         <textarea
+          ref="rejectNoteEl"
           v-model="rejectNote"
           class="writer-room-reject-note"
           placeholder="例：太直白、解释过多、削弱人物选择压力"

@@ -4,6 +4,7 @@ import { computed, nextTick, reactive, ref, watch } from "vue";
 import BaseButton from "../base/BaseButton.vue";
 import InjectionStrategyPicker from "./InjectionStrategyPicker.vue";
 import InjectionBundlePreview from "./InjectionBundlePreview.vue";
+import { useFocusTrap } from "../../composables/useFocusTrap";
 
 const ALL_SUB_DIMS = Object.freeze([
   "language.sentence_structure",
@@ -66,37 +67,9 @@ watch(
 );
 
 // PR-17 a11y — 完整 focus trap:Tab/Shift+Tab 在 dialog 内循环,焦点不逃逸
+// PR-21 — trap 逻辑抽到 useFocusTrap composable(行为不变)
 const dialogEl = ref(null);
-// 各类排除 tabindex=-1(含 roving 未选中的 radio),保证 Tab 序列与浏览器一致
-const FOCUSABLE_SELECTOR = [
-  'button:not([disabled]):not([tabindex="-1"])',
-  'select:not([disabled]):not([tabindex="-1"])',
-  'input:not([disabled]):not([tabindex="-1"])',
-  'textarea:not([disabled]):not([tabindex="-1"])',
-  'a[href]:not([tabindex="-1"])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(", ");
-
-function getFocusable() {
-  const root = dialogEl.value;
-  if (!root) return [];
-  return Array.from(root.querySelectorAll(FOCUSABLE_SELECTOR));
-}
-
-function onTab(e) {
-  const items = getFocusable();
-  if (items.length === 0) return;
-  const first = items[0];
-  const last = items[items.length - 1];
-  const active = document.activeElement;
-  if (e.shiftKey && active === first) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && active === last) {
-    e.preventDefault();
-    first.focus();
-  }
-}
+const { onTab } = useFocusTrap(dialogEl);
 
 const localDraft = reactive({
   scope: "project",

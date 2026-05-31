@@ -310,6 +310,23 @@ describe("writer room shell", () => {
     expect(viewSource).not.toContain("作者在写作房间拒绝此改法。");
   });
 
+  it("PR-21 a11y: reject dialog 接入 focus trap + esc 关闭 + 初始聚焦 + aria-labelledby", () => {
+    const viewSource = readSource("src/views/WriterRoomView.vue");
+    // composable 复用(非内联)
+    expect(viewSource).toContain("useFocusTrap");
+    expect(viewSource).toContain("onRejectTab");
+    // dialog 容器接线:focus trap + esc 关闭 + 可程序聚焦
+    expect(viewSource).toContain('@keydown.tab="onRejectTab"');
+    expect(viewSource).toContain('@keydown.esc.prevent="closeRejectDialog"');
+    expect(viewSource).toContain('tabindex="-1"');
+    // aria-labelledby 指向标题 id
+    expect(viewSource).toContain('aria-labelledby="writer-room-reject-title"');
+    expect(viewSource).toContain('id="writer-room-reject-title"');
+    // 打开后聚焦原因输入(watch + ref)
+    expect(viewSource).toContain('ref="rejectNoteEl"');
+    expect(viewSource).toContain("rejectNoteEl.value?.focus");
+  });
+
   it("hydrates writer room payload and applies proposals through diff-first flow", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       const requestUrl = String(url);

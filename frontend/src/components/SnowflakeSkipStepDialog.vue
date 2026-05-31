@@ -2,6 +2,8 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { Sparkles, X } from "lucide-vue-next";
 
+import { useFocusTrap } from "../composables/useFocusTrap";
+
 const props = defineProps({
   open: {
     type: Boolean,
@@ -16,6 +18,10 @@ const props = defineProps({
 const emit = defineEmits(["close", "confirm", "draft-assistant"]);
 const reason = ref("");
 const reasonInput = ref(null);
+
+// PR-21 a11y — focus trap:Tab/Shift+Tab 在 dialog 内循环(esc 关闭 + open 聚焦 textarea 自留)
+const dialogEl = ref(null);
+const { onTab } = useFocusTrap(dialogEl);
 
 const canConfirm = computed(() => Boolean(reason.value.trim()));
 
@@ -53,10 +59,13 @@ function confirm() {
     @keydown.esc="close"
   >
     <section
+      ref="dialogEl"
       class="snowflake-skip-dialog"
       role="dialog"
       aria-modal="true"
       aria-labelledby="snowflake-skip-dialog-title"
+      tabindex="-1"
+      @keydown.tab="onTab"
     >
       <div class="panel-head">
         <div>
