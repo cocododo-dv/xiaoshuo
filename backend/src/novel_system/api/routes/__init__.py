@@ -11,7 +11,6 @@ __all__ = [
     "longform_control",
     "longform_editor",
     "projects",
-    "reference_books",
     "reference_safety",
     "review",
     "scenes",

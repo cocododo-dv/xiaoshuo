@@ -41,8 +41,7 @@ import {
 import { snapshotPayload, snapshotPayloadList } from "../lib/payloadSnapshot";
 
 // PR-6:16 sub_dim 全覆盖(language + narrative + scene + theme 各 4)
-// PR-3 / PR-5 阶段仅 language + narrative 有真实数据;PR-6 后 scene + theme
-// 也有数据,DimensionMatrix 16 格全亮(无 UI 改动,数据驱动)。
+// PR-6 后 scene + theme 也有数据,DimensionMatrix 16 格全亮(无 UI 改动,数据驱动)。
 const ALL_SUB_DIMS = [
   "language.sentence_structure",
   "language.vocabulary",
@@ -366,7 +365,7 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
           await this.loadRun(result.run_id);
           await this.loadRunFindings(result.run_id);
         }
-        this._setActionEnd("抽取已完成,可查看 8 sub_dim findings。");
+        this._setActionEnd("抽取已完成,可查看 16 sub_dim findings。");
         return result;
       } catch (err) {
         this._setActionError(err);

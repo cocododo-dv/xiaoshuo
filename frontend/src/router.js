@@ -276,7 +276,7 @@ const views = [
     label: "风格参考",
     stepLabel: "学习风格",
     legacyLabel: "参考书学习",
-    description: "导入参考书,自动抽取 4 层 16 sub_dim 风格特征(PR-5 阶段仅 language + narrative 8 维),聚合为 StyleProfile,可绑定到项目供后续场景生成消费。",
+    description: "导入参考书,自动抽取 4 层 16 sub_dim 风格特征,聚合为 StyleProfile,可绑定到项目供后续场景生成消费。",
     stage: "inform",
     icon: "GraduationCap",
     nextViews: ["review", "knowledge"],

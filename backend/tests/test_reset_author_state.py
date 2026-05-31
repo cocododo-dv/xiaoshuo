@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from sqlalchemy import func, select
 
+from novel_system.db.legacy_reference_models import (
+    ReferenceBook,
+    ReferenceBookSegment,
+    ReferenceFinding,
+    ReferenceLearningRound,
+    ReferenceLearningRun,
+    ReferenceProfile,
+)
 from novel_system.db.models import (
     AttemptTracker,
     AuthorDraft,
@@ -35,12 +44,6 @@ from novel_system.db.models import (
     ProjectBacktrackItem,
     QcReport,
     ReconcileFault,
-    ReferenceBook,
-    ReferenceBookSegment,
-    ReferenceFinding,
-    ReferenceLearningRound,
-    ReferenceLearningRun,
-    ReferenceProfile,
     ReindexJob,
     RelationProfile,
     ReviewItem,
@@ -75,6 +78,11 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.tools.reset_author_state import collect_reset_summary, execute_reset, main
+
+
+@pytest.fixture(autouse=True)
+def _ensure_legacy_reference_schema(legacy_reference_schema) -> None:
+    del legacy_reference_schema
 
 
 def _count(session, model) -> int:

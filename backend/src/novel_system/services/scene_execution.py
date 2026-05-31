@@ -7,15 +7,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from novel_system.db.legacy_reference_models import ReferenceProfile as LegacyReferenceProfile
 from novel_system.db.models import (
     ChapterGoal,
     QcReport,
-    ReferenceProfile,
     SceneBlueprint,
     SceneCard,
     SceneExecutionContract,
     SceneRunState,
     StoryProject,
+    StyleReferenceInjectionBinding,
+    StyleReferenceProfile,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
@@ -282,7 +284,7 @@ class SceneExecutionContractService:
             },
             "project": {
                 "project_id": project.project_id if project is not None else None,
-                "reference_profile_ids": list(project.reference_profile_ids_json or []) if project is not None else [],
+                "reference_profile_ids": self._reference_profile_ids(project) if project is not None else [],
             },
             "blueprint_json": dict(blueprint.blueprint_json or {}) if blueprint is not None else {},
             "reference_rules": reference_rules,
@@ -292,11 +294,15 @@ class SceneExecutionContractService:
     def _reference_rules(self, project: StoryProject | None) -> dict[str, list[str]]:
         if project is None:
             return {"style_rules": [], "structure_rules": [], "safety_rules": []}
+        style_profile = self._active_style_reference_profile(project.project_id)
+        if style_profile is not None and style_profile.status == "active":
+            return _normalize_reference_rules(style_profile.profile_json or {})
+
         profile_ids = list(project.reference_profile_ids_json or [])
         if not profile_ids:
             return {"style_rules": [], "structure_rules": [], "safety_rules": []}
         profiles = self.session.execute(
-            select(ReferenceProfile).where(ReferenceProfile.profile_id.in_(profile_ids))
+            select(LegacyReferenceProfile).where(LegacyReferenceProfile.profile_id.in_(profile_ids))
         ).scalars().all()
         style_rules: list[str] = []
         structure_rules: list[str] = []
@@ -311,6 +317,30 @@ class SceneExecutionContractService:
             "structure_rules": _dedupe(structure_rules),
             "safety_rules": _dedupe(safety_rules),
         }
+
+    def _active_style_reference_profile(self, project_id: str) -> StyleReferenceProfile | None:
+        binding = self.session.execute(
+            select(StyleReferenceInjectionBinding)
+            .where(
+                StyleReferenceInjectionBinding.scope == "project",
+                StyleReferenceInjectionBinding.scope_ref_id == project_id,
+                StyleReferenceInjectionBinding.task_type == "scene_generation",
+                StyleReferenceInjectionBinding.status == "active",
+            )
+            .order_by(
+                StyleReferenceInjectionBinding.created_at.desc(),
+                StyleReferenceInjectionBinding.binding_id.desc(),
+            )
+        ).scalars().first()
+        if binding is None:
+            return None
+        return self.session.get(StyleReferenceProfile, binding.profile_id)
+
+    def _reference_profile_ids(self, project: StoryProject) -> list[str]:
+        style_profile = self._active_style_reference_profile(project.project_id)
+        if style_profile is not None:
+            return [style_profile.profile_id]
+        return list(project.reference_profile_ids_json or [])
 
     def _require_scene(self, scene_id: str) -> SceneCard:
         scene = self.session.get(SceneCard, scene_id)
@@ -465,11 +495,25 @@ def _normalize_reference_rules(profile_json: dict[str, Any]) -> dict[str, list[s
     structure_rules = _listify(profile_json.get("structure_rules"))
     safety_rules = _listify(profile_json.get("safety_rules"))
     if not style_rules:
-        style_rules = _listify(profile_json.get("rhythm")) + _listify(profile_json.get("syntax")) + _listify(profile_json.get("narrative_methods"))
+        style_rules = (
+            _listify(profile_json.get("style_features"))
+            + _listify(profile_json.get("rhythm"))
+            + _listify(profile_json.get("syntax"))
+            + _listify(profile_json.get("narrative_methods"))
+        )
     if not structure_rules:
-        structure_rules = _listify(profile_json.get("structure_patterns")) + _listify(profile_json.get("structure_techniques"))
+        structure_rules = (
+            _listify(profile_json.get("narrative_patterns"))
+            + _listify(profile_json.get("calibration_guidance"))
+            + _listify(profile_json.get("structure_patterns"))
+            + _listify(profile_json.get("structure_techniques"))
+        )
     if not safety_rules:
-        safety_rules = _listify(profile_json.get("forbidden_copy_rules")) + _listify(profile_json.get("safety_constraints"))
+        safety_rules = (
+            _listify(profile_json.get("banned_replication_rules"))
+            + _listify(profile_json.get("forbidden_copy_rules"))
+            + _listify(profile_json.get("safety_constraints"))
+        )
     return {
         "style_rules": _dedupe(style_rules),
         "structure_rules": _dedupe(structure_rules),

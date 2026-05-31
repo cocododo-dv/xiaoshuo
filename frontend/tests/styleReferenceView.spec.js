@@ -83,6 +83,7 @@ afterEach(() => {
 
 describe("ReferenceLearningView", () => {
   it("初始渲染:WorkflowPageHeader + 导入卡 + 空 books 列表", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const el = mount();
     await nextTick();
     await nextTick();
@@ -91,6 +92,7 @@ describe("ReferenceLearningView", () => {
     expect(el.querySelector(".books-list-card")).not.toBeNull();
     // 主区右侧应显示"尚未选择参考书" empty state
     expect(el.querySelector(".main-side .base-empty")).not.toBeNull();
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("Invalid prop"));
   });
 
   it("import-tabs 默认选中 path,可切换 upload", async () => {

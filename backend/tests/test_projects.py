@@ -12,12 +12,13 @@ from novel_system.db.models import (
     LlmCall,
     OperationLog,
     ProjectBacktrackItem,
-    ReferenceBook,
-    ReferenceLearningRun,
-    ReferenceProfile,
     SceneCard,
     SceneRunState,
     StoryProject,
+    StyleReferenceBook,
+    StyleReferenceInjectionBinding,
+    StyleReferenceProfile,
+    StyleReferenceRun,
 )
 
 
@@ -194,39 +195,40 @@ def test_approve_outline_plan_materializes_chapter_goals_and_scene_cards(client,
 def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(client, session) -> None:
     project = _create_project(client)
     session.add(
-        ReferenceBook(
+        StyleReferenceBook(
             book_id="BOOK_STYLE",
             title="参考书",
             author_label="某作者",
             source_kind="path",
             source_path="ref.txt",
             cloud_policy="local_only",
-            analysis_focus="style_structure",
             text_checksum="checksum",
-            status="profile_ready",
+            total_chars=120,
+            status="ready",
+            stats_json={},
         )
     )
     session.add(
-        ReferenceLearningRun(
+        StyleReferenceRun(
             run_id="RUN_STYLE",
             book_id="BOOK_STYLE",
-            status="completed",
-            batch_size=8,
-            profile_id="PROFILE_READY",
+            status="done",
+            phase="done",
+            coverage_json={},
         )
     )
     session.add(
-        ReferenceProfile(
+        StyleReferenceProfile(
             profile_id="PROFILE_READY",
             book_id="BOOK_STYLE",
             run_id="RUN_STYLE",
             title="抽象风格画像",
-            status="ready",
+            status="active",
             profile_json={"rhythm": ["短句推进"], "forbidden_copy_rules": ["不复制原文表达"]},
         )
     )
     session.add(
-        ReferenceProfile(
+        StyleReferenceProfile(
             profile_id="PROFILE_DRAFT",
             book_id="BOOK_STYLE",
             run_id="RUN_STYLE",
@@ -243,7 +245,24 @@ def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(cl
         headers={"X-Idempotency-Key": "bind-ready-profile"},
     )
     assert ready_response.status_code == 200
-    assert ready_response.json()["data"]["project"]["reference_profile_ids"] == ["PROFILE_READY"]
+    payload = ready_response.json()["data"]
+    assert payload["project"]["reference_profile_ids"] == ["PROFILE_READY"]
+    assert payload["reference_profile"]["profile_id"] == "PROFILE_READY"
+    assert payload["binding_id"].startswith("sr_bind_")
+    assert payload["review_ids"] == []
+
+    refreshed_project = session.get(StoryProject, project["project_id"])
+    assert refreshed_project is not None
+    assert refreshed_project.reference_profile_ids_json == []
+
+    bindings = session.execute(
+        select(StyleReferenceInjectionBinding).where(
+            StyleReferenceInjectionBinding.scope == "project",
+            StyleReferenceInjectionBinding.scope_ref_id == project["project_id"],
+            StyleReferenceInjectionBinding.task_type == "scene_generation",
+        )
+    ).scalars().all()
+    assert [binding.profile_id for binding in bindings] == ["PROFILE_READY"]
 
     draft_response = client.post(
         f"/api/v1/projects/{project['project_id']}/reference-profiles",
@@ -260,7 +279,7 @@ def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(cl
         {
             "profile_id": "PROFILE_READY",
             "title": "抽象风格画像",
-            "status": "ready",
+            "status": "active",
             "profile_json": {"rhythm": ["短句推进"], "forbidden_copy_rules": ["不复制原文表达"]},
             "safe_summary": {
                 "abstract_tags": [
@@ -269,6 +288,11 @@ def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(cl
                 ],
                 "safety_note": "仅使用抽象节奏、结构和安全规则；不展示或复制参考书原文。",
             },
+            "binding_id": bindings[0].binding_id,
+            "scope": "project",
+            "scope_ref_id": project["project_id"],
+            "task_type": "scene_generation",
+            "strategy": "A",
         }
     ]
 

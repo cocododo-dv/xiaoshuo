@@ -84,7 +84,7 @@ describe("longform editor tower API and store", () => {
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/longform-editor/cards/lfcard_arc/actions");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/longform-editor/cards/lfcard_arc/publish-guidance");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/reference-safety/overview");
-    expect(urls).toContain("http://127.0.0.1:8000/api/v1/reference-books/refbook_safety/safety-profile/extract");
+    expect(urls).toContain("http://127.0.0.1:8000/api/v2/style-reference/books/refbook_safety/safety-profile/extract");
     expect(urls).toContain("http://127.0.0.1:8000/api/v1/source-safety/scan");
   });
 

@@ -86,4 +86,10 @@ describe("DimensionMatrix", () => {
     const highlighted = el.querySelectorAll(".cell-highlight");
     expect(highlighted.length).toBe(1);
   });
+
+  it("不再展示 PR 阶段或 8 维过期提示", () => {
+    const { el } = mount(DimensionMatrix, { findings: emptyFindings() });
+    expect(el.textContent).not.toContain("PR-5");
+    expect(el.textContent).not.toContain("8 维");
+  });
 });

@@ -13,16 +13,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import (
-    LlmCall,
+from novel_system.db.legacy_reference_models import (
     ReferenceBook,
     ReferenceBookSegment,
     ReferenceFinding,
     ReferenceLearningRound,
     ReferenceLearningRun,
     ReferenceProfile,
-    ReviewItem,
 )
+from novel_system.db.models import LlmCall, ReviewItem
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_client import LLMClient, LLMConfigurationError, LLMRequest, load_model_routing_config

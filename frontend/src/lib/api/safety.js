@@ -5,7 +5,7 @@ export function fetchReferenceSafetyOverview() {
 }
 
 export function extractReferenceSafetyProfile(bookId) {
-  return apiPost(`/api/v1/reference-books/${encodeURIComponent(bookId)}/safety-profile/extract`);
+  return apiPost(`/api/v2/style-reference/books/${encodeURIComponent(bookId)}/safety-profile/extract`);
 }
 
 export function scanSourceSafety(payload) {

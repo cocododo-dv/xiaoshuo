@@ -5,13 +5,14 @@ from novel_system.db.models import (
     FinalScene,
     ProjectBacktrackItem,
     QcReport,
-    ReferenceBook,
-    ReferenceLearningRun,
-    ReferenceProfile,
     SceneCard,
     SceneExecutionContract,
     SceneRunState,
     StoryProject,
+    StyleReferenceBook,
+    StyleReferenceInjectionBinding,
+    StyleReferenceProfile,
+    StyleReferenceRun,
 )
 
 
@@ -33,7 +34,7 @@ def _seed_project(session) -> None:
             planning_mode="snowflake",
             status="chapter_ready",
             current_chapter_id=CHAPTER_ID,
-            reference_profile_ids_json=["PROFILE_EXECUTION"],
+            reference_profile_ids_json=[],
         )
     )
     session.add(
@@ -122,39 +123,52 @@ def _seed_project(session) -> None:
     session.add(SceneRunState(scene_id=SCENE_ID, scene_status="ready", attempt_budget=4))
     session.add(SceneRunState(scene_id=REACTIVE_SCENE_ID, scene_status="ready", attempt_budget=4))
     session.add(
-        ReferenceBook(
+        StyleReferenceBook(
             book_id="BOOK_EXECUTION",
             title="参考书",
             author_label="某作者",
             source_kind="path",
             source_path="ref.txt",
             cloud_policy="local_only",
-            analysis_focus="style_structure",
             text_checksum="checksum",
-            status="profile_ready",
+            total_chars=120,
+            status="ready",
+            stats_json={},
         )
     )
     session.add(
-        ReferenceLearningRun(
+        StyleReferenceRun(
             run_id="RUN_EXECUTION",
             book_id="BOOK_EXECUTION",
-            status="completed",
-            batch_size=8,
-            profile_id="PROFILE_EXECUTION",
+            status="done",
+            phase="done",
+            coverage_json={},
         )
     )
     session.add(
-        ReferenceProfile(
+        StyleReferenceProfile(
             profile_id="PROFILE_EXECUTION",
             book_id="BOOK_EXECUTION",
             run_id="RUN_EXECUTION",
             title="抽象画像",
-            status="ready",
+            status="active",
             profile_json={
                 "style_rules": ["短句推进", "对白压缩解释"],
                 "structure_rules": ["主动场景尽量以 setback 收束", "反应场景必须落到 decision"],
                 "safety_rules": ["不得借用原文表达", "不得借用角色设定"],
             },
+        )
+    )
+    session.add(
+        StyleReferenceInjectionBinding(
+            binding_id="BIND_EXECUTION",
+            profile_id="PROFILE_EXECUTION",
+            scope="project",
+            scope_ref_id=PROJECT_ID,
+            task_type="scene_generation",
+            strategy="A",
+            config_json={},
+            status="active",
         )
     )
     session.commit()

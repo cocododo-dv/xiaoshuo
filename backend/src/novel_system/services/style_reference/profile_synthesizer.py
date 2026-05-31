@@ -1,4 +1,4 @@
-"""ProfileSynthesizer — 8 sub_dim findings → StyleProfile。
+"""ProfileSynthesizer — 16 sub_dim findings → StyleProfile。
 
 参见《风格参考模块重构执行手册 v1.1》§6.1(`style_ref_synthesize_profile`)与
 plans/style-reference-v1-1-fancy-shannon.md §"ProfileSynthesizer 流程"。
@@ -50,7 +50,7 @@ class SynthesizeError(StyleReferenceError):
 
 
 class ProfileSynthesizer:
-    """聚合 8 sub_dim findings → StyleReferenceProfile。"""
+    """聚合 16 sub_dim findings → StyleReferenceProfile。"""
 
     def __init__(
         self,

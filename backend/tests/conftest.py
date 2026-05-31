@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
 from novel_system.db.base import Base
+from novel_system.db.legacy_reference_models import LegacyReferenceBase
 from novel_system.db.session import SessionLocal, engine
 
 
@@ -82,6 +83,15 @@ def session():
         yield db
     finally:
         db.close()
+
+
+@pytest.fixture
+def legacy_reference_schema() -> Generator[None, None, None]:
+    LegacyReferenceBase.metadata.create_all(bind=engine())
+    try:
+        yield
+    finally:
+        LegacyReferenceBase.metadata.drop_all(bind=engine())
 
 
 @pytest.fixture
@@ -416,4 +426,3 @@ def fake_validation_llm():
             return _Resp({})
 
     return FakeValidationLLM
-

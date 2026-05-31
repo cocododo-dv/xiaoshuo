@@ -3,20 +3,28 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from novel_system.db.models import (
-    ChapterGoal,
-    LlmCall,
+import pytest
+
+from novel_system.db.legacy_reference_models import (
     ReferenceBookSegment,
     ReferenceFinding,
     ReferenceLearningRound,
-    ReviewItem,
-    SceneCard,
-    SceneRunState,
 )
+from novel_system.db.models import ChapterGoal, LlmCall, ReviewItem, SceneCard, SceneRunState
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.reference_learning import ReferenceLearningService, _is_front_matter_segment, _sanitize_reference_profile_text
 from novel_system.services.versioning.review_materialization import ReviewMaterializationService
+
+
+@pytest.fixture(autouse=True)
+def _enable_legacy_reference_books_router(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ENABLE_LEGACY_REFERENCE_BOOKS", "true")
+
+
+@pytest.fixture(autouse=True)
+def _legacy_reference_schema(legacy_reference_schema) -> None:
+    del legacy_reference_schema
 
 
 def _has_cjk(text: str) -> bool:

@@ -8,13 +8,13 @@ from novel_system.db.models import (
     ForeshadowTracker,
     LongformDiagnosticCard,
     LongformStructureGuidance,
-    ReferenceBook,
-    ReferenceBookSegment,
-    ReferenceProfile,
     RelationProfile,
     ReviewItem,
     SceneCard,
     SceneRunState,
+    StyleReferenceBook,
+    StyleReferenceParagraph,
+    StyleReferenceProfile,
     VoiceProfile,
     WriterEvaluation,
 )
@@ -257,41 +257,39 @@ def test_published_longform_guidance_is_reviewed_before_entering_bundle(client, 
 
 def test_reference_safety_extracts_profile_and_scans_exact_and_fuzzy_leakage(client, session) -> None:
     session.add(
-        ReferenceBook(
+        StyleReferenceBook(
             book_id="refbook_safety",
             title="Archive School",
             author_label="reference",
             source_kind="path",
             source_path="reference.md",
-            file_name="reference.md",
             cloud_policy="local_only",
-            analysis_focus="style_structure",
             text_checksum="checksum",
-            status="completed",
+            status="ready",
             total_chars=120,
-            total_segments=2,
             stats_json={},
         )
     )
     session.add(
-        ReferenceBookSegment(
-            segment_id="refseg_safety_001",
+        StyleReferenceParagraph(
+            paragraph_id="sr_para_safety_001",
             book_id="refbook_safety",
-            segment_index=1,
-            chapter_hint="opening",
-            segment_kind="opening",
+            paragraph_index=1,
+            paragraph_type="narration",
             start_offset=0,
             end_offset=80,
             text="Professor Meridian carried the glass compass through the rain gate and erased the witness oath.",
+            char_count=92,
+            classifier_confidence=0.98,
         )
     )
     session.add(
-        ReferenceProfile(
+        StyleReferenceProfile(
             profile_id="refprofile_safety",
             book_id="refbook_safety",
             run_id="run_safety",
             title="Archive School profile",
-            status="ready",
+            status="active",
             profile_json={"narrative_patterns": ["Delay the explanation until the witness oath changes hands."]},
             coverage_json={},
             source_finding_ids_json=[],
@@ -299,7 +297,7 @@ def test_reference_safety_extracts_profile_and_scans_exact_and_fuzzy_leakage(cli
     )
     session.commit()
 
-    extracted = client.post("/api/v1/reference-books/refbook_safety/safety-profile/extract", json={})
+    extracted = client.post("/api/v2/style-reference/books/refbook_safety/safety-profile/extract", json={})
     assert extracted.status_code == 200
     source_safety = extracted.json()["data"]["profile"]["profile_json"]["source_safety"]
     assert "Professor Meridian" in source_safety["protected_terms"]

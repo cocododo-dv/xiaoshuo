@@ -28,7 +28,7 @@ const emit = defineEmits(["notice"]);
 const store = useReferenceLearningStore();
 const { navigate } = useShellRouter();
 
-const { receipt, runFlowAction } = useFlowActionFeedback({
+const { receipts, runFlowAction } = useFlowActionFeedback({
   emitNotice: (message) => emit("notice", message),
 });
 
@@ -38,6 +38,21 @@ const STYLE_REF_SYNTHESIZE_SCOPE = "style_reference:synthesize";
 const STYLE_REF_PREVIEW_SCOPE = "style_reference:preview";
 const STYLE_REF_APPLY_SCOPE = "style_reference:apply";
 const STYLE_REF_REVIEW_SCOPE = "style_reference:review";
+const ACTION_RECEIPT_SCOPES = [
+  STYLE_REF_REVIEW_SCOPE,
+  STYLE_REF_APPLY_SCOPE,
+  STYLE_REF_PREVIEW_SCOPE,
+  STYLE_REF_SYNTHESIZE_SCOPE,
+  STYLE_REF_RUN_SCOPE,
+  STYLE_REF_IMPORT_SCOPE,
+];
+
+const actionReceipt = computed(() => {
+  for (const scope of ACTION_RECEIPT_SCOPES) {
+    if (receipts.value[scope]) return receipts.value[scope];
+  }
+  return null;
+});
 
 const applyDialogOpen = ref(false);
 const highlightedDim = ref("");
@@ -119,7 +134,7 @@ async function startRun() {
   await runFlowAction({
     scopeKey: STYLE_REF_RUN_SCOPE,
     actionLabel: "启动抽取 run",
-    runningMessage: "调度 LLM 抽 8 sub_dim findings(language + narrative)...",
+    runningMessage: "调度 LLM 抽取 4 层 16 sub_dim findings...",
     successMessage: () => store.lastActionMessage || "抽取完成。",
     nextStep: () => "下一步:在维度矩阵中点击某个 sub_dim,审阅 findings 卡片。",
     action: () => store.startRun(),
@@ -222,6 +237,14 @@ function describeSubDim(dimPath) {
     "narrative.pacing": "节奏",
     "narrative.time_handling": "时间",
     "narrative.information_density": "信息密度",
+    "scene.environment": "环境",
+    "scene.character_portrayal": "人物",
+    "scene.dialogue": "对话",
+    "scene.sensory_priority": "感官",
+    "theme.emotional_tone": "情绪",
+    "theme.values": "价值",
+    "theme.motifs": "母题",
+    "theme.narrative_philosophy": "哲思",
   };
   return labels[dimPath] || dimPath;
 }
@@ -231,7 +254,7 @@ function describeSubDim(dimPath) {
   <main class="style-reference-view" data-testid="reference-learning-view">
     <WorkflowPageHeader viewId="reference" kicker="抽取阶段" />
 
-    <FlowActionReceipt :receipt="receipt" />
+    <FlowActionReceipt :receipt="actionReceipt" />
 
     <p v-if="store.error" class="view-error" role="alert">
       {{ store.error }}
@@ -401,7 +424,7 @@ function describeSubDim(dimPath) {
           <section v-if="!store.currentRun" class="empty-run">
             <BaseEmptyState
               title="尚未启动抽取"
-              description="点击下方按钮启动 RunOrchestrator 调度 8 sub_dim 的 LLM 抽取。"
+              description="点击下方按钮启动 RunOrchestrator 调度四层 16 sub_dim 的 LLM 抽取。"
             >
               <template #action>
                 <BaseButton
@@ -481,7 +504,7 @@ function describeSubDim(dimPath) {
               <div v-if="!store.currentProfile" class="profile-empty">
                 <BaseEmptyState
                   title="尚未聚合 Profile"
-                  description="审阅完 findings 后,点击聚合按钮把 8 sub_dim 整合为 StyleProfile。"
+                  description="审阅完 findings 后,点击聚合按钮把 16 sub_dim 整合为 StyleProfile。"
                 >
                   <template #action>
                     <BaseButton

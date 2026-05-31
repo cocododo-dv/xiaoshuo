@@ -7,7 +7,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ReferenceBook, ReferenceBookSegment, ReferenceProfile
+from novel_system.db.models import (
+    StyleReferenceBook,
+    StyleReferenceParagraph,
+    StyleReferenceProfile,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.source_safety import scan_source_safety
 
@@ -18,32 +22,48 @@ class ReferenceSafetyService:
 
     def overview(self) -> dict[str, Any]:
         profiles = self.session.execute(
-            select(ReferenceProfile).order_by(ReferenceProfile.created_at.desc(), ReferenceProfile.profile_id.desc())
+            select(StyleReferenceProfile).order_by(
+                StyleReferenceProfile.created_at.desc(),
+                StyleReferenceProfile.profile_id.desc(),
+            )
         ).scalars().all()
         items = [self.serialize_profile(profile) for profile in profiles]
         return {
             "summary": {
                 "profile_count": len(items),
-                "ready_profile_count": sum(1 for item in items if item["status"] == "ready"),
+                "ready_profile_count": sum(
+                    1 for item in items if item["status"] in {"ready", "active"}
+                ),
                 "profile_with_safety_count": sum(1 for item in items if item["source_safety"]["ready"]),
             },
             "items": items,
         }
 
     def extract_profile(self, book_id: str) -> dict[str, Any]:
-        book = self.session.get(ReferenceBook, book_id)
+        book = self.session.get(StyleReferenceBook, book_id)
         if book is None:
-            raise DomainError("REFERENCE_BOOK_NOT_FOUND", f"reference book {book_id} not found", status_code=404)
+            raise DomainError(
+                "STYLE_REFERENCE_BOOK_NOT_FOUND",
+                f"style reference book {book_id} not found",
+                status_code=404,
+            )
         profile = self._latest_profile(book_id)
         if profile is None:
-            raise DomainError("REFERENCE_PROFILE_NOT_FOUND", f"reference profile for {book_id} not found", status_code=404)
-        segments = self.session.execute(
-            select(ReferenceBookSegment)
-            .where(ReferenceBookSegment.book_id == book_id)
-            .order_by(ReferenceBookSegment.segment_index.asc(), ReferenceBookSegment.segment_id.asc())
+            raise DomainError(
+                "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+                f"style reference profile for {book_id} not found",
+                status_code=404,
+            )
+        paragraphs = self.session.execute(
+            select(StyleReferenceParagraph)
+            .where(StyleReferenceParagraph.book_id == book_id)
+            .order_by(
+                StyleReferenceParagraph.paragraph_index.asc(),
+                StyleReferenceParagraph.paragraph_id.asc(),
+            )
         ).scalars().all()
         source_safety = build_reference_safety_profile(
-            [segment.text or "" for segment in segments if segment.segment_kind != "boilerplate"],
+            [paragraph.text or "" for paragraph in paragraphs],
             profile_id=profile.profile_id,
             book_id=book_id,
         )
@@ -64,7 +84,9 @@ class ReferenceSafetyService:
         profiles = []
         if profile_ids:
             profiles = self.session.execute(
-                select(ReferenceProfile).where(ReferenceProfile.profile_id.in_(profile_ids))
+                select(StyleReferenceProfile).where(
+                    StyleReferenceProfile.profile_id.in_(profile_ids)
+                )
             ).scalars().all()
         safety_profiles = []
         for profile in profiles:
@@ -80,15 +102,18 @@ class ReferenceSafetyService:
         result["profile_count"] = len(safety_profiles)
         return result
 
-    def _latest_profile(self, book_id: str) -> ReferenceProfile | None:
+    def _latest_profile(self, book_id: str) -> StyleReferenceProfile | None:
         return self.session.execute(
-            select(ReferenceProfile)
-            .where(ReferenceProfile.book_id == book_id)
-            .order_by(ReferenceProfile.created_at.desc(), ReferenceProfile.profile_id.desc())
+            select(StyleReferenceProfile)
+            .where(StyleReferenceProfile.book_id == book_id)
+            .order_by(
+                StyleReferenceProfile.created_at.desc(),
+                StyleReferenceProfile.profile_id.desc(),
+            )
         ).scalars().first()
 
     @staticmethod
-    def serialize_profile(profile: ReferenceProfile) -> dict[str, Any]:
+    def serialize_profile(profile: StyleReferenceProfile) -> dict[str, Any]:
         source_safety = (profile.profile_json or {}).get("source_safety")
         if not isinstance(source_safety, dict):
             source_safety = {"ready": False, "protected_terms": [], "distinctive_phrases": [], "scene_bridges": []}
@@ -105,14 +130,13 @@ class ReferenceSafetyService:
         }
 
     @staticmethod
-    def _serialize_book(book: ReferenceBook) -> dict[str, Any]:
+    def _serialize_book(book: StyleReferenceBook) -> dict[str, Any]:
         return {
             "book_id": book.book_id,
             "title": book.title,
             "author_label": book.author_label,
             "status": book.status,
             "total_chars": book.total_chars,
-            "total_segments": book.total_segments,
         }
 
 

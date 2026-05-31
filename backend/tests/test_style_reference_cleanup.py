@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from novel_system.db.models import ReferenceBook, ReferenceLearningRun, ReferenceProfile, ReviewItem
+from novel_system.db.legacy_reference_models import ReferenceBook, ReferenceLearningRun, ReferenceProfile
+from novel_system.db.models import ReviewItem
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.cleanup import (
     backup_legacy_to_json,
@@ -75,8 +76,9 @@ def test_backup_when_legacy_table_missing_returns_zero_rows(tmp_path: Path) -> N
     assert '"source_table": "reference_profiles"' in text_content
 
 
-def test_backup_when_legacy_table_present(tmp_path: Path) -> None:
-    """conftest 的 create_all 已建好旧 ORM 表;插一行 reference_profiles 验证 dump."""
+def test_backup_when_legacy_table_present(tmp_path: Path, legacy_reference_schema) -> None:
+    """显式创建 legacy ORM 表后,插一行 reference_profiles 验证 dump."""
+    del legacy_reference_schema
     with SessionLocal() as session:
         session.add(
             ReferenceBook(
@@ -116,5 +118,4 @@ def test_backup_when_legacy_table_present(tmp_path: Path) -> None:
     content = path.read_text(encoding="utf-8")
     assert "legacy 鲁迅风格" in content
     assert '"row_count": 1' in content
-
 

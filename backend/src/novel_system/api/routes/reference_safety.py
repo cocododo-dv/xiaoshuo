@@ -27,7 +27,7 @@ def get_reference_safety_overview(request: Request, session: Session = Depends(g
     )
 
 
-@router.post("/api/v1/reference-books/{book_id}/safety-profile/extract")
+@router.post("/api/v2/style-reference/books/{book_id}/safety-profile/extract")
 def extract_reference_safety_profile(book_id: str, request: Request, session: Session = Depends(get_session)):
     payload = ReferenceSafetyService(session).extract_profile(book_id)
     session.commit()

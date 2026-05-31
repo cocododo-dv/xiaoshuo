@@ -196,7 +196,7 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
     ),
     LLMNodeSpec(
         "style_ref_synthesize_profile",
-        "Style Reference Profile 聚合(8 sub_dim → StyleProfile)",
+        "Style Reference Profile 聚合(16 sub_dim → StyleProfile)",
         "style_reference",
         template_name="style_ref_synthesize_profile",
         model="gpt-5",

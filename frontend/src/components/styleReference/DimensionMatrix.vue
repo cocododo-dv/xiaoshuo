@@ -81,7 +81,7 @@ function statsFor(dimPath) {
 
 function layerSkipped(layerKey) {
   const level = props.inputAssessment?.[layerKey];
-  return level === "skip" || (layerKey !== "language" && layerKey !== "narrative");
+  return level === "skip";
 }
 
 function handleClick(dimPath, stats) {
@@ -96,7 +96,7 @@ const totalCells = computed(() => LAYERS.length * 4);
   <section class="dimension-matrix" aria-label="风格维度矩阵 4×16">
     <header class="matrix-head">
       <p class="matrix-title">维度矩阵({{ totalCells }} sub_dim)</p>
-      <p class="matrix-hint">PR-5 阶段:仅 language + narrative 8 维有数据;scene / theme 待 PR-6 落地。</p>
+      <p class="matrix-hint">默认覆盖 language / narrative / scene / theme 四层,共 16 个 sub_dim。</p>
     </header>
     <div class="matrix-grid">
       <template v-for="layer in LAYERS" :key="layer.key">

@@ -31,6 +31,13 @@ SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心
 PREFIX = "/api/v2/style-reference"
 
 
+def test_legacy_reference_books_routes_not_exposed_by_default(client: TestClient) -> None:
+    paths = {getattr(route, "path", "") for route in client.app.routes}
+
+    assert "/api/v1/reference-books" not in paths
+    assert not any(path.startswith("/api/v1/reference-books/") for path in paths)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

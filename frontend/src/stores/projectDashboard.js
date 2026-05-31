@@ -3,7 +3,7 @@ import { defineStore } from "pinia";
 import {
   approveProjectChapterFinal,
   approveProjectOutlinePlan,
-  attachProjectReferenceProfile,
+  applyStyleReferenceProfile,
   approveSnowflakeArtifact,
   createProject,
   fetchProjectDashboard,
@@ -413,22 +413,19 @@ export const useProjectDashboardStore = defineStore("projectDashboard", {
       const projectId = this.selectedProjectId || projectIdOf(this.project);
       const normalizedProfileId = String(profileId || "").trim();
       if (!projectId || !normalizedProfileId) {
-        throw new Error("请输入 ready 状态的参考画像 ID");
+        throw new Error("请输入可应用的参考画像 ID");
       }
       this.actionId = "bind-reference-profile";
       this.error = "";
       try {
-        const result = await attachProjectReferenceProfile(projectId, normalizedProfileId);
-        this.applyProject(result?.project);
-        this.profileBindDraft = "";
-        this.dashboard = snapshotPayload({
-          ...(this.dashboard || {}),
-          project: result?.project || this.project,
-          reference_profiles: [
-            result?.reference_profile,
-            ...this.referenceProfiles.filter((profile) => profile.profile_id !== normalizedProfileId),
-          ].filter(Boolean),
+        const result = await applyStyleReferenceProfile(normalizedProfileId, {
+          scope: "project",
+          scopeRefId: projectId,
+          taskType: "scene_generation",
+          strategy: "A",
         });
+        this.profileBindDraft = "";
+        await this.loadDashboard(projectId);
         this.lastActionMessage = "参考画像已绑定到当前项目。";
         return result;
       } catch (error) {
