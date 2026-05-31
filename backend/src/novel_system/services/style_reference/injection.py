@@ -307,10 +307,11 @@ class InjectionService:
         character_ids: list[str] | None = None,
         scene_id: str | None = None,
     ):
-        """PR-19 — 返由泛到具体的命中层 list:base(project>global)、character、scene
-        各取命中的最优先一个,过滤 None。
+        """PR-20 — 返由泛到具体的命中层 list:base(project>global,单)+ character
+        (onstage 全配角,pov 优先)+ scene(单),过滤 None。
 
-        character 多命中按 char_order(pov 优先)决平,再 created_at(PR-18)。
+        character 层从 PR-19 单选进化为多配角全叠:每个 onstage 命中角色各占一层,
+        按 char_order(pov 优先)+ created_at 排序,并按 scope_ref_id 去重(每角色一层)。
         供多层加权叠加用(单层时 list 长度 1,走原路径零回归)。
         """
         if not project_id and not character_ids and not scene_id:
@@ -337,10 +338,30 @@ class InjectionService:
             )
             return cands[0]
 
-        base = _pick({2, 3})        # project > global(基底)
-        character = _pick({1})      # character(pov 优先,PR-18)
-        scene_b = _pick({0})        # scene(最具体)
-        return [b for b in (base, character, scene_b) if b is not None]  # 由泛到具体
+        def _pick_all_characters():
+            """PR-20 — 全部 rank1 命中,pov 优先 + created_at 决平,按 character_id 去重(每角色一层)。"""
+            cands = [b for b in bindings if _rank(b) == 1]
+            cands.sort(
+                key=lambda b: (_char_order(b, character_ids), -1 * _ts_to_int(b.created_at))
+            )
+            seen: set[str] = set()
+            out = []
+            for b in cands:
+                if b.scope_ref_id not in seen:
+                    seen.add(b.scope_ref_id)
+                    out.append(b)
+            return out
+
+        base = _pick({2, 3})              # project > global(基底,单)
+        characters = _pick_all_characters()  # onstage 全配角,pov 优先(PR-20)
+        scene_b = _pick({0})              # scene(最具体,单)
+        layers = []
+        if base is not None:
+            layers.append(base)
+        layers.extend(characters)
+        if scene_b is not None:
+            layers.append(scene_b)
+        return layers                     # 由泛到具体
 
     def _render(
         self,

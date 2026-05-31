@@ -852,8 +852,8 @@ def test_onstage_nonpov_character_matches():
     assert "配角专属OS1" in fragments.positive_block
 
 
-def test_pov_character_wins_over_onstage():
-    """pov 与 onstage 配角都有 binding → pov 优先(char_order 0)。"""
+def test_pov_and_onstage_characters_both_merged():
+    """PR-20 — pov 与 onstage 配角都有 binding → 两层全叠,pov 排在配角前(PR-19 曾单选只注 pov)。"""
     _seed_multi_character(
         seed="onstage2", project_id="proj_os2",
         characters=[
@@ -866,8 +866,12 @@ def test_pov_character_wins_over_onstage():
         fragments = InjectionService(session).fragments_for(
             "proj_os2", "scene_generation", character_ids=cids,
         )
-    assert "主视角OS2" in fragments.positive_block
-    assert "配角OS2" not in fragments.positive_block
+    pos = fragments.positive_block
+    # 多配角全叠:pov(charA)与配角(charB)都注入
+    assert "主视角OS2" in pos
+    assert "配角OS2" in pos
+    # pov 配角层排在非 pov 配角层之前(char_order)
+    assert pos.index("主视角OS2") < pos.index("配角OS2")
 
 
 def test_pov_not_in_onstage_union_matches():
@@ -886,8 +890,8 @@ def test_pov_not_in_onstage_union_matches():
     assert "主视角OS3" in fragments.positive_block
 
 
-def test_pov_priority_overrides_created_at():
-    """pov binding 创建较早,配角较新;char_order(pov 优先)盖过 created_at。"""
+def test_pov_priority_orders_before_onstage_despite_created_at():
+    """PR-20 — pov binding 创建较早、配角较新;两者全叠,但 char_order(pov 优先)盖过 created_at 排序。"""
     _seed_multi_character(
         seed="onstage4", project_id="proj_os4",
         characters=[
@@ -900,6 +904,68 @@ def test_pov_priority_overrides_created_at():
         fragments = InjectionService(session).fragments_for(
             "proj_os4", "scene_generation", character_ids=cids,
         )
-    # charA(pov,char_order 0)优先,即便 charB created_at 更新
-    assert "主视角OS4" in fragments.positive_block
-    assert "配角OS4" not in fragments.positive_block
+    pos = fragments.positive_block
+    # 两配角都注入;charA(pov,char_order 0)排在前,即便 charB created_at 更新
+    assert "主视角OS4" in pos
+    assert "配角OS4" in pos
+    assert pos.index("主视角OS4") < pos.index("配角OS4")
+
+
+def test_same_character_multiple_bindings_dedup_one_layer():
+    """PR-20 — 同一 character_id 两个 active binding → 只一层(去重,取 created_at 较新)。"""
+    _seed_multi_character(
+        seed="dedup1", project_id="proj_dd",
+        characters=[
+            {"character_id": "charA", "feature": "旧腔调DD", "created_at": "2026-01-01T00:00:00Z"},
+            {"character_id": "charA", "feature": "新腔调DD", "created_at": "2026-05-01T00:00:00Z"},
+        ],
+    )
+    cids = ordered_character_ids("charA", [])  # 仅 charA
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_dd", "scene_generation", character_ids=cids,
+        )
+    pos = fragments.positive_block
+    # 同角色去重:只保留较新的 binding(新腔调),旧的不注入
+    assert "新腔调DD" in pos
+    assert "旧腔调DD" not in pos
+
+
+def test_multi_character_scene_segment_still_largest():
+    """PR-20 — 多配角 + scene 时,token 加权 [1..N] 顺延,scene 段(最具体)仍预算最大。"""
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_book(
+            book_id="sr_book_mw", title="t", source_kind="upload", cloud_policy="local_only",
+            text_checksum="chk_mw", total_chars=10, status="ready", stats_json={},
+        )
+        repo.create_run(run_id="sr_run_mw", book_id="sr_book_mw", status="done", phase="done")
+        # project base + 2 character + scene 各 ~900 字长 feature,确保都被 cap 截断
+        for suffix, scope, ref, feat in [
+            ("proj", "project", "proj_mw", "项" * 900),
+            ("ca", "character", "charA", "甲" * 900),
+            ("cb", "character", "charB", "乙" * 900),
+            ("scene", "scene", "scene_mw", "景" * 900),
+        ]:
+            repo.create_profile(
+                profile_id=f"sr_profile_mw_{suffix}", book_id="sr_book_mw", run_id="sr_run_mw",
+                title=suffix, status="active",
+                profile_json={"narrative_summary": "n", "style_features": [feat]},
+                coverage_json={}, source_finding_ids_json=[],
+            )
+            repo.create_binding(
+                binding_id=f"sr_bind_mw_{suffix}", profile_id=f"sr_profile_mw_{suffix}",
+                scope=scope, scope_ref_id=ref,
+                task_type="scene_generation", strategy="A", config_json={}, status="active",
+            )
+        session.commit()
+    cids = ordered_character_ids("charA", ["charB"])  # [charA, charB]
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            "proj_mw", "scene_generation", character_ids=cids, scene_id="scene_mw",
+        )
+    pos = fragments.positive_block
+    # 四层全叠:project / charA / charB / scene 都在
+    assert "项" in pos and "甲" in pos and "乙" in pos and "景" in pos
+    # 加权 [1,2,3,4]:scene 段(景,权重 4)比 project 基底(项,权重 1)长
+    assert pos.count("景") > pos.count("项")
