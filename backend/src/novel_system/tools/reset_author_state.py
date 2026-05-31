@@ -77,7 +77,7 @@ from novel_system.db.models import (
 from novel_system.db.session import SessionLocal
 
 PRESERVED_DOMAINS = [
-    "ReferenceBook / ReferenceBookSegment / ReferenceLearning* / ReferenceFinding / ReferenceProfile",
+    "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
     "SystemConfigSnapshot / SystemSecret",
     "config/models.yaml and config/prompts.yaml",
 ]

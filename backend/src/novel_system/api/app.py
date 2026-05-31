@@ -131,10 +131,6 @@ def create_app() -> FastAPI:
     app.include_router(domain.router)
     app.include_router(knowledge.router)
     app.include_router(reference_safety.router)
-    if app_settings.enable_legacy_reference_books:
-        from novel_system.api.routes import reference_books
-
-        app.include_router(reference_books.router)
     app.include_router(indexing.router)
     app.include_router(interop.router)
     app.include_router(system_config.router)

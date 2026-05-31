@@ -131,7 +131,7 @@ function jobItem() {
 
 async function stubReadableLayoutApi(page) {
   await page.route("**/api/v2/projects", (route) => fulfill(route, { items: [] }));
-  await page.route("**/api/v1/reference-books", (route) => fulfill(route, { items: [] }));
+  await page.route("**/api/v2/style-reference/books**", (route) => fulfill(route, { items: [] }));
   await page.route("**/api/v1/review-items**", (route) => fulfill(route, { items: [], total: 0, next_cursor: null }));
   await page.route("**/api/v1/human-review-events**", (route) => fulfill(route, { items: [], total: 0, next_cursor: null }));
   await page.route("**/api/v1/chapter-manuscripts**", async (route) => {

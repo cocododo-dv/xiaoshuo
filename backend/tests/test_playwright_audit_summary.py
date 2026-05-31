@@ -34,7 +34,7 @@ def test_playwright_audit_summary_writes_utf8_markdown(tmp_path) -> None:
     )
     (artifact_dir / "console-2026-04-20T07-00-01-564Z.log").write_text(
         "[warning] Password field is not contained in a form\n"
-        "[error] Failed to fetch http://127.0.0.1:8000/api/v1/reference-books\n",
+        "[error] Failed to fetch http://127.0.0.1:8000/api/v2/style-reference/books\n",
         encoding="utf-8",
     )
     (artifact_dir / "reference-export.md").write_text(

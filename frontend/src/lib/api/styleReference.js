@@ -4,6 +4,9 @@
 
 import { apiDelete, apiGet, apiPost, apiPostForm } from "./client";
 
+// Runtime truth: preview callers consume `SystemPromptFragments` from the
+// `injection-preview` endpoints directly; there is no public `/inject` API.
+
 const PREFIX = "/api/v2/style-reference";
 
 // --- Books ---

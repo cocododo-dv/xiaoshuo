@@ -21,6 +21,8 @@ REVISION_BASE = "20260515_0035"
 REVISION_DROP_LEGACY = "20260523_0036"
 REVISION_NEW_SCHEMA = "20260523_0037"
 REVISION_FINDINGS_HASH = "20260523_0038"
+REVISION_METRIC_EVENTS = "20260524_0039"
+REVISION_DROP_PROJECT_REFERENCE_PROFILE_IDS = "20260531_0040"
 
 NEW_TABLES = [
     "style_reference_books",
@@ -251,3 +253,30 @@ def test_downgrade_drops_new_tables_then_recreates_legacy(
     tables_after_up = _existing_tables(db_url)
     for tbl in NEW_TABLES:
         assert tbl in tables_after_up
+
+
+def test_head_drops_story_project_reference_profile_ids_column(
+    isolated_database: Path,
+    fake_backup: Path,
+) -> None:
+    db_url = f"sqlite:///{isolated_database}"
+    cfg = _alembic_config(db_url)
+
+    command.upgrade(cfg, "head")
+
+    story_project_columns = _list_columns(db_url, "story_projects")
+    assert "reference_profile_ids_json" not in story_project_columns
+
+
+def test_downgrade_from_head_to_0039_restores_story_project_reference_profile_ids(
+    isolated_database: Path,
+    fake_backup: Path,
+) -> None:
+    db_url = f"sqlite:///{isolated_database}"
+    cfg = _alembic_config(db_url)
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, REVISION_METRIC_EVENTS)
+
+    story_project_columns = _list_columns(db_url, "story_projects")
+    assert "reference_profile_ids_json" in story_project_columns

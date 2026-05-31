@@ -182,6 +182,31 @@ templates:
           items:
             type: string
 
+  long_form_continuation:
+    version: "2026-05-31.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are continuing a long-form web-novel scene from an approved source draft and prior generated continuation.
+      Preserve continuity, factual safety, and reusable style pressure exactly.
+    task_prompt: |
+      Continue the scene from the supplied source draft and continuation-so-far.
+      Do not restart the scene, summarize earlier beats, or repeat the last paragraph with minor wording changes.
+      Preserve character identity, POV distance, scene pressure, and style-reference guidance across the continuation.
+      If Longform Structure Guidance is present, treat it as pressure for arc, promise, payoff, and information release timing.
+      End this continuation chunk on live forward motion rather than explanation.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - scene_text
+      properties:
+        scene_text:
+          type: string
+        continuation_notes:
+          type: array
+          items:
+            type: string
+
   soft_qc:
     version: "2026-04-25.v2"
     input_token_budget: 1800

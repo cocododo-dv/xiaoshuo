@@ -5,6 +5,7 @@ import hashlib
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
@@ -32,6 +33,17 @@ HARD_QC_REQUIRED_ISSUE_KEYS = {"missing_required_text", "missing_hard_constraint
 HARD_QC_STYLE_ONLY_ISSUE_KEYS = {"style_compliance", "style_rule_violation", "style_profile_drift"}
 HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS = {"character_role_inconsistency"}
 UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {"character_pronoun_ambiguity", "character_pronoun_continuity"}
+
+
+def _build_qc_report_id(
+    scene_id: str,
+    *,
+    timestamp: str | None = None,
+    random_hex: str | None = None,
+) -> str:
+    stamp = timestamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    suffix = random_hex or uuid.uuid4().hex[:12]
+    return f"qc_report_{scene_id}_{stamp}_{suffix}"
 
 
 @dataclass(slots=True)
@@ -923,7 +935,7 @@ class HardQcEngine:
         neutral_content: str = "",
     ) -> QcReport:
         qc_report = QcReport(
-            qc_report_id=f"qc_report_{scene.scene_id}_{uuid.uuid4().hex[:12]}",
+            qc_report_id=_build_qc_report_id(scene.scene_id),
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
             qc_type="hard_qc",
@@ -1523,7 +1535,7 @@ class SoftQcEngine:
             }
         )
         qc_report = QcReport(
-            qc_report_id=f"qc_report_{scene.scene_id}_{uuid.uuid4().hex[:12]}",
+            qc_report_id=_build_qc_report_id(scene.scene_id),
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
             qc_type="soft_qc",

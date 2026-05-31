@@ -9,7 +9,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.legacy_reference_models import ReferenceProfile as LegacyReferenceProfile
 from novel_system.db.models import (
     ChapterGoal,
     ChapterRunJob,
@@ -83,7 +82,6 @@ class ProjectService:
             ),
             status=PROJECT_STATUS_OUTLINE_DRAFT,
             approved_chapter_ids_json=[],
-            reference_profile_ids_json=[],
         )
         self.session.add(project)
         self.session.flush()
@@ -291,20 +289,10 @@ class ProjectService:
 
     def _reference_profile_payloads(self, project: StoryProject) -> list[dict[str, Any]]:
         bound_profiles = self._bound_style_reference_profiles(project.project_id)
-        if bound_profiles:
-            return [
-                reference_profile_payload(profile, binding=binding)
-                for binding, profile in bound_profiles
-            ]
-
-        profile_ids = list(project.reference_profile_ids_json or [])
-        if not profile_ids:
-            return []
-        profiles = self.session.execute(
-            select(LegacyReferenceProfile).where(LegacyReferenceProfile.profile_id.in_(profile_ids))
-        ).scalars().all()
-        by_id = {profile.profile_id: profile for profile in profiles}
-        return [reference_profile_payload(by_id[profile_id]) for profile_id in profile_ids if profile_id in by_id]
+        return [
+            reference_profile_payload(profile, binding=binding)
+            for binding, profile in bound_profiles
+        ]
 
     def _bound_style_reference_profiles(
         self,
@@ -331,9 +319,7 @@ class ProjectService:
 
     def _project_reference_profile_ids(self, project: StoryProject) -> list[str]:
         bound_profiles = self._bound_style_reference_profiles(project.project_id)
-        if bound_profiles:
-            return [profile.profile_id for _, profile in bound_profiles]
-        return list(project.reference_profile_ids_json or [])
+        return [profile.profile_id for _, profile in bound_profiles]
 
     def _next_action(self, project: StoryProject, latest_plan: OutlinePlan | None, *, backtrack_items: list[dict[str, Any]] | None = None) -> str:
         if any(item.get("status") == "pending" for item in (backtrack_items or [])):
@@ -1209,9 +1195,7 @@ def project_payload(
         "active_outline_plan_id": project.active_outline_plan_id,
         "current_chapter_id": project.current_chapter_id,
         "approved_chapter_ids": list(project.approved_chapter_ids_json or []),
-        "reference_profile_ids": list(
-            reference_profile_ids if reference_profile_ids is not None else (project.reference_profile_ids_json or [])
-        ),
+        "reference_profile_ids": list(reference_profile_ids or []),
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
@@ -1269,7 +1253,7 @@ def scene_payload(scene: SceneCard) -> dict[str, Any]:
 
 
 def reference_profile_payload(
-    profile: LegacyReferenceProfile | StyleReferenceProfile,
+    profile: StyleReferenceProfile,
     *,
     binding: StyleReferenceInjectionBinding | None = None,
 ) -> dict[str, Any]:

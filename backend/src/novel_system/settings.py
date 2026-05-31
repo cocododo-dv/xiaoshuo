@@ -30,7 +30,6 @@ class Settings:
     )
     cors_allow_credentials: bool = True
     expose_error_detail: bool = False
-    enable_legacy_reference_books: bool = False
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -87,7 +86,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     )
     cors_allow_credentials = _get_bool_env("NOVEL_SYSTEM_CORS_ALLOW_CREDENTIALS", True)
     expose_error_detail = _get_bool_env("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", False)
-    enable_legacy_reference_books = _get_bool_env("NOVEL_SYSTEM_ENABLE_LEGACY_REFERENCE_BOOKS", False)
     vector_store_dir.mkdir(parents=True, exist_ok=True)
     settings = Settings(
         database_url=database_url,
@@ -105,7 +103,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         cors_origins=cors_origins,
         cors_allow_credentials=cors_allow_credentials,
         expose_error_detail=expose_error_detail,
-        enable_legacy_reference_books=enable_legacy_reference_books,
     )
     if not include_runtime_config:
         return settings

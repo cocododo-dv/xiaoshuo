@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from novel_system.db.models import SceneCard
+from novel_system.db.models import SceneCard, SceneDraft, SceneRunState
 from novel_system.db.session import SessionLocal
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
@@ -16,6 +17,7 @@ def _seed_style_reference_binding(
     *,
     project_id: str,
     seed: str,
+    task_type: str = "scene_generation",
     style_features: list[str] | None = None,
     strategy: str = "A",
     profile_status: str = "active",
@@ -44,7 +46,7 @@ def _seed_style_reference_binding(
         repo.create_binding(
             binding_id=binding_id, profile_id=profile_id,
             scope="project", scope_ref_id=project_id,
-            task_type="scene_generation", strategy=strategy,
+            task_type=task_type, strategy=strategy,
             config_json={}, status="active",
         )
         session.commit()
@@ -66,6 +68,20 @@ def _make_scene(project_id: str | None) -> SceneCard:
         scene_type="reveal",
         is_chapter_last=0,
     )
+
+
+def _persist_scene(session, scene: SceneCard) -> None:
+    session.add(scene)
+    session.add(SceneRunState(scene_id=scene.scene_id, scene_status="ready"))
+    session.flush()
+
+
+def _bundle() -> dict[str, object]:
+    return {
+        "bundle_id": "bundle_CH900_SC01_test",
+        "bundle_snapshot_hash": "bundle_hash_continuation_test",
+        "snapshot": {"scene_id": "CH900_SC01"},
+    }
 
 
 def test_injection_prepends_style_reference_block(session) -> None:
@@ -120,6 +136,272 @@ def test_long_form_continuation_node_carries_refresh_every_chars() -> None:
     nodes = {spec.node_id: spec for spec in llm_node_specs()}
     assert "long_form_continuation" in nodes
     assert nodes["long_form_continuation"].refresh_every_chars == 8000
+
+
+def test_long_form_continuation_generates_without_refresh_below_threshold(session, monkeypatch) -> None:
+    _seed_style_reference_binding(
+        project_id="proj_cont_once",
+        seed="cont_once",
+        task_type="long_form_continuation",
+        style_features=["续写腔调"],
+    )
+    scene = _make_scene("proj_cont_once")
+    _persist_scene(session, scene)
+    bundle = _bundle()
+
+    class FakePromptBuilder:
+        def build(self, snapshot, template_name):  # noqa: ANN001
+            assert snapshot == bundle["snapshot"]
+            assert template_name == "long_form_continuation"
+            return {
+                "template_name": template_name,
+                "template_version": "test",
+                "system_prompt": "BASE_SYSTEM",
+                "user_prompt": "BASE_USER",
+                "structured_schema": {
+                    "type": "object",
+                    "required": ["scene_text"],
+                    "properties": {"scene_text": {"type": "string"}},
+                },
+                "token_budget": {
+                    "target_input_tokens": 1000,
+                    "estimated_input_tokens": 0,
+                    "remaining_input_tokens": 1000,
+                },
+            }
+
+    class FakeRunner:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def run(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                llm_call_id="llm_call_cont_once",
+                response=SimpleNamespace(structured_output={"scene_text": "续写片段一"}),
+            )
+
+    runner = FakeRunner()
+    service = SceneGenerationService(session, llm_runner=runner)
+    service._prompt_builder_instance = FakePromptBuilder()
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation.get_llm_node_spec",
+        lambda node_id: SimpleNamespace(refresh_every_chars=100),
+        raising=False,
+    )
+
+    with patch.object(service, "_inject_style_reference", wraps=service._inject_style_reference) as inject_spy:
+        result = service.generate_long_form_continuation(
+            scene.scene_id,
+            bundle,
+            source_draft_row_id="draft_style_source",
+            source_content="原始正文",
+            target_continuation_chars=20,
+        )
+
+    assert inject_spy.call_count == 1
+    assert inject_spy.call_args.kwargs["task_type"] == "long_form_continuation"
+    assert runner.calls[0]["node_id"] == "long_form_continuation"
+    assert runner.calls[0]["step"] == "long_form_continuation"
+    assert runner.calls[0]["prompt"]["system_prompt"].startswith("[STYLE_REFERENCE]\n")
+    assert result.content == "续写片段一"
+
+    draft = session.query(SceneDraft).filter_by(stage="long_form_continuation").one()
+    assert draft.content == "续写片段一"
+    state = session.get(SceneRunState, scene.scene_id)
+    assert state is not None
+    assert state.current_style_draft_row_id == draft.row_id
+
+
+def test_long_form_continuation_refreshes_style_reference_after_threshold(session, monkeypatch) -> None:
+    _seed_style_reference_binding(
+        project_id="proj_cont_refresh_once",
+        seed="cont_refresh_once",
+        task_type="long_form_continuation",
+        style_features=["续写刷新"],
+    )
+    scene = _make_scene("proj_cont_refresh_once")
+    _persist_scene(session, scene)
+    bundle = _bundle()
+
+    class FakePromptBuilder:
+        def build(self, snapshot, template_name):  # noqa: ANN001
+            return {
+                "template_name": template_name,
+                "template_version": "test",
+                "system_prompt": "BASE_SYSTEM",
+                "user_prompt": "BASE_USER",
+                "structured_schema": {
+                    "type": "object",
+                    "required": ["scene_text"],
+                    "properties": {"scene_text": {"type": "string"}},
+                },
+                "token_budget": {
+                    "target_input_tokens": 1000,
+                    "estimated_input_tokens": 0,
+                    "remaining_input_tokens": 1000,
+                },
+            }
+
+    class FakeRunner:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self._segments = ["甲" * 6, "乙" * 6]
+
+        def run(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            index = len(self.calls) - 1
+            return SimpleNamespace(
+                llm_call_id=f"llm_call_cont_refresh_{index}",
+                response=SimpleNamespace(structured_output={"scene_text": self._segments[index]}),
+            )
+
+    runner = FakeRunner()
+    service = SceneGenerationService(session, llm_runner=runner)
+    service._prompt_builder_instance = FakePromptBuilder()
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation.get_llm_node_spec",
+        lambda node_id: SimpleNamespace(refresh_every_chars=10),
+        raising=False,
+    )
+
+    with patch.object(service, "_inject_style_reference", wraps=service._inject_style_reference) as inject_spy:
+        result = service.generate_long_form_continuation(
+            scene.scene_id,
+            bundle,
+            source_draft_row_id="draft_style_source",
+            source_content="原始正文",
+            target_continuation_chars=12,
+        )
+
+    assert inject_spy.call_count == 2
+    assert all(call.kwargs["task_type"] == "long_form_continuation" for call in inject_spy.call_args_list)
+    assert [call["node_id"] for call in runner.calls] == ["long_form_continuation", "long_form_continuation"]
+    assert result.content == ("甲" * 6) + ("乙" * 6)
+
+
+def test_long_form_continuation_refreshes_multiple_times(session, monkeypatch) -> None:
+    _seed_style_reference_binding(
+        project_id="proj_cont_refresh_multi",
+        seed="cont_refresh_multi",
+        task_type="long_form_continuation",
+        style_features=["多次刷新"],
+    )
+    scene = _make_scene("proj_cont_refresh_multi")
+    _persist_scene(session, scene)
+    bundle = _bundle()
+
+    class FakePromptBuilder:
+        def build(self, snapshot, template_name):  # noqa: ANN001
+            return {
+                "template_name": template_name,
+                "template_version": "test",
+                "system_prompt": "BASE_SYSTEM",
+                "user_prompt": "BASE_USER",
+                "structured_schema": {
+                    "type": "object",
+                    "required": ["scene_text"],
+                    "properties": {"scene_text": {"type": "string"}},
+                },
+                "token_budget": {
+                    "target_input_tokens": 1000,
+                    "estimated_input_tokens": 0,
+                    "remaining_input_tokens": 1000,
+                },
+            }
+
+    class FakeRunner:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self._segments = ["甲" * 11, "乙" * 10, "丙" * 8]
+
+        def run(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            index = len(self.calls) - 1
+            return SimpleNamespace(
+                llm_call_id=f"llm_call_cont_refresh_multi_{index}",
+                response=SimpleNamespace(structured_output={"scene_text": self._segments[index]}),
+            )
+
+    runner = FakeRunner()
+    service = SceneGenerationService(session, llm_runner=runner)
+    service._prompt_builder_instance = FakePromptBuilder()
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation.get_llm_node_spec",
+        lambda node_id: SimpleNamespace(refresh_every_chars=10),
+        raising=False,
+    )
+
+    with patch.object(service, "_inject_style_reference", wraps=service._inject_style_reference) as inject_spy:
+        result = service.generate_long_form_continuation(
+            scene.scene_id,
+            bundle,
+            source_draft_row_id="draft_style_source",
+            source_content="原始正文",
+            target_continuation_chars=25,
+        )
+
+    assert inject_spy.call_count == 3
+    assert len(runner.calls) == 3
+    assert result.content == ("甲" * 11) + ("乙" * 10) + ("丙" * 8)
+
+
+def test_long_form_continuation_degrades_when_no_style_binding(session, monkeypatch) -> None:
+    scene = _make_scene("proj_cont_no_binding")
+    _persist_scene(session, scene)
+    bundle = _bundle()
+
+    class FakePromptBuilder:
+        def build(self, snapshot, template_name):  # noqa: ANN001
+            return {
+                "template_name": template_name,
+                "template_version": "test",
+                "system_prompt": "BASE_SYSTEM",
+                "user_prompt": "BASE_USER",
+                "structured_schema": {
+                    "type": "object",
+                    "required": ["scene_text"],
+                    "properties": {"scene_text": {"type": "string"}},
+                },
+                "token_budget": {
+                    "target_input_tokens": 1000,
+                    "estimated_input_tokens": 0,
+                    "remaining_input_tokens": 1000,
+                },
+            }
+
+    class FakeRunner:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def run(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                llm_call_id="llm_call_cont_no_binding",
+                response=SimpleNamespace(structured_output={"scene_text": "无绑定也可续写"}),
+            )
+
+    runner = FakeRunner()
+    service = SceneGenerationService(session, llm_runner=runner)
+    service._prompt_builder_instance = FakePromptBuilder()
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation.get_llm_node_spec",
+        lambda node_id: SimpleNamespace(refresh_every_chars=8),
+        raising=False,
+    )
+
+    with patch.object(service, "_inject_style_reference", wraps=service._inject_style_reference) as inject_spy:
+        result = service.generate_long_form_continuation(
+            scene.scene_id,
+            bundle,
+            source_draft_row_id="draft_style_source",
+            source_content="原始正文",
+            target_continuation_chars=8,
+        )
+
+    assert inject_spy.call_count == 1
+    assert runner.calls[0]["prompt"]["system_prompt"] == "BASE_SYSTEM"
+    assert result.content == "无绑定也可续写"
 
 
 def _seed_character_binding(*, seed: str, character_id: str, feature: str) -> None:

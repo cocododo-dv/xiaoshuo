@@ -225,6 +225,15 @@ def test_prompt_builder_injects_literary_freshness_budget() -> None:
     assert "literary_freshness_budget" in payload["token_budget"]["included_sections"]
 
 
+def test_prompt_builder_supports_long_form_continuation_template() -> None:
+    payload = PromptBuilder().build(_bundle_snapshot(), "long_form_continuation")
+
+    assert payload["template_name"] == "long_form_continuation"
+    assert payload["structured_schema"]["required"] == ["scene_text"]
+    assert payload["token_budget"]["task_kind"] == "drafting"
+    assert "Preserve the source draft language" in payload["user_prompt"]
+
+
 def test_chapter_summary_schema_requires_carry_forward() -> None:
     payload = PromptBuilder().build(_bundle_snapshot(), "chapter_summary")
 

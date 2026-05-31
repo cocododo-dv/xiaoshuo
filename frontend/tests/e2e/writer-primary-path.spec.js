@@ -24,7 +24,7 @@ async function stubWriterPathApi(page) {
   await page.route("**/api/v2/projects", async (route) => {
     await fulfill(route, { items: [] });
   });
-  await page.route("**/api/v1/reference-books", async (route) => {
+  await page.route("**/api/v2/style-reference/books**", async (route) => {
     await fulfill(route, { items: [] });
   });
   await page.route("**/api/v1/review-items**", async (route) => {

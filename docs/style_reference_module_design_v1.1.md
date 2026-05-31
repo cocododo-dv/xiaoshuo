@@ -122,12 +122,12 @@ style_reference/
   materialization.py               # profile → ReviewItem → style_rules / narrative_patterns / banned_rule_clusters / calibration_lines
   repository.py                    # ORM CRUD
   errors.py                        # StyleReferenceError 体系
-  cleanup.py                       # 旧表清理 + 残留 ReviewItem 清理
+  cleanup.py                       # metric events 定期清理
 ```
 
 辅助:
 - `backend/src/novel_system/api/routes/style_reference.py` —— 新路由
-- `backend/src/novel_system/tools/reset_style_reference.py` —— 开发者脚本
+- `backend/src/novel_system/tools/reset_style_reference.py` —— 历史草案中的开发者脚本(当前运行时已移除)
 
 **新增配置目录** `config/style_reference/`(详见附录 A):
 - `tolerance_floors.yaml` —— 量化对齐的绝对下限
@@ -1431,3 +1431,7 @@ prompts/
 - 若手册中仍出现 “Phase 1 仅 language + narrative 8 维” 的阶段性表述，应以当前产品事实为准：主前端路径默认覆盖 4 层 16 个 sub-dim。
 
 **手册结束。v1.1 共 16 节 + 3 附录,Claude Code 拿到此文档应能直接开始 PR-1 实施。**
+> 2026-05-31 运行时对齐说明(优先级高于本文早期草案描述)：
+> 正式注入契约是 `SystemPromptFragments`，对外仅保留两个 `injection-preview` 端点，不再公开 `/inject` / `InjectionBundle` HTTP API。
+> 长文续写现在由 `SceneGenerationService.generate_long_form_continuation(...)` 内部消费 `long_form_continuation` 节点，并按 `refresh_every_chars` 在续写片段之间重新注入。
+> `/api/v1/reference-books/*` 与 `reference_learning.py` 已下线；legacy ORM / `reset_style_reference` 已从当前运行时移除，`cleanup.py` 仅保留 metric events 清理。历史 Alembic migration 保留仅作历史记录。

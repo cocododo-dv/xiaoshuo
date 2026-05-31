@@ -2,7 +2,7 @@
 
 > 依据《风格参考模块重构执行手册 v1.1》。本文件随 PR 推进滚动更新。
 > 更新日期:2026-05-31 · 分支 `main` · 24 commits(22 PR + 2 hotfix)
-> 测试规模:后端目标 ~343 测试 / 前端 522 测试(57 文件)+ smoke,全绿。
+> 测试规模:后端目标 ~343 测试 / 前端 524 测试(57 文件)+ smoke,全绿。
 
 ## 一、阶段与 commit 清单
 
@@ -95,4 +95,6 @@
 - 运行时已下线旧 `/api/v1/reference-books/*` 入口，应用仅保留 `/api/v2/style-reference/*` 作为参考书学习主公开面。
 - `POST /api/v2/style-reference/books/{book_id}/reclassify` 已从占位状态改为真实执行：会重跑段落分类、回写 `classifier_calibration` / `paragraph_type_distribution`，并清理旧 runs / findings / profiles / bindings / validation reports / banned terms / 相关 ReviewItem。
 - 前端主流程已切到四层全开，默认覆盖 `language + narrative + scene + theme` 共 16 个 sub-dim；文案不再以 “8 sub-dim” 作为主路径描述。
-- 当前仓库运行时已移除旧 `reference_books` 路由与旧 `reference_*` ORM 映射；legacy backup / cleanup 能力仅作为迁移安全网保留。
+- 当前仓库运行时已移除旧 `reference_books` 路由、旧 `reference_*` ORM 映射和 `reset_style_reference` 工具；当前 `cleanup.py` 仅保留 metric events 清理，历史 migration 语义仍只作为历史记录保留。
+> 2026-05-31 运行时对齐说明：正式注入契约以 `SystemPromptFragments + injection-preview` 为准，对外不再公开 `/inject` / `InjectionBundle`。
+> 长文续写已收口到 `SceneGenerationService.generate_long_form_continuation(...)`；legacy 运行时依赖(`reference_learning.py` / `/api/v1/reference-books/*` / fallback / legacy ORM / reset tool)已切断，历史 Alembic migration 保留仅作历史记录。

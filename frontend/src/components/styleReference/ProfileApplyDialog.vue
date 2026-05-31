@@ -191,6 +191,7 @@ function submit() {
             <option value="long_form_continuation">long_form_continuation</option>
             <option value="key_chapter">key_chapter</option>
           </select>
+          <small class="field-hint">`long_form_continuation` 用于长文续写链路，后端会按 `refresh_every_chars` 计划窗口重新注入风格片段。</small>
         </label>
 
         <div class="field">
@@ -251,6 +252,7 @@ function submit() {
 .dialog-body { display: grid; gap: 0.65rem; }
 .field { display: grid; gap: 0.25rem; font-size: 0.85rem; }
 .field-label { color: var(--text-muted, rgba(33, 26, 21, 0.68)); font-weight: 600; }
+.field-hint { color: var(--text-muted, rgba(33, 26, 21, 0.68)); font-size: 0.78rem; line-height: 1.35; }
 .field input,
 .field select {
   padding: 0.45rem 0.6rem;

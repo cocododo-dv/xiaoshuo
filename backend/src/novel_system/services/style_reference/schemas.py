@@ -9,6 +9,10 @@ ValidateRequest / ValidationReport / SemanticReport 等推迟到对应 PR。
 
 from __future__ import annotations
 
+# Runtime truth: `SystemPromptFragments` is the public injection payload.
+# `InjectionBundle` survives only as a historical design term in docs; the
+# current HTTP contract is the `injection-preview` response below.
+
 from enum import Enum
 from typing import Any
 

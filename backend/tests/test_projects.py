@@ -253,7 +253,6 @@ def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(cl
 
     refreshed_project = session.get(StoryProject, project["project_id"])
     assert refreshed_project is not None
-    assert refreshed_project.reference_profile_ids_json == []
 
     bindings = session.execute(
         select(StyleReferenceInjectionBinding).where(

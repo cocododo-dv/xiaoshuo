@@ -105,7 +105,7 @@ def test_list_metric_events_limit_and_order_desc():
 
 
 def test_migration_creates_table_smoke():
-    """alembic 0039 应创建表 + 2 索引;conftest 自动跑 head migration。"""
+    """运行时 schema 应包含 metric_events 表,仓储可直接读写。"""
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         repo.create_metric_event(

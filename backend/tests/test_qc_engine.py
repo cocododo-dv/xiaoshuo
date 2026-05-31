@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from pydantic import ValidationError
@@ -29,6 +30,9 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
+
+
+QC_REPORT_ID_RE = re.compile(r"^qc_report_CH100_SC01_\d{8}T\d{12}Z_[0-9a-f]{12}$")
 
 
 class FakeSceneClient:
@@ -567,6 +571,25 @@ def test_soft_qc_engine_persists_style_score_summary_and_api_serializers(session
     ]
 
 
+def test_build_qc_report_id_uses_sortable_timestamp_prefix() -> None:
+    from novel_system.services import qc_engine as qc_engine_module
+
+    first = qc_engine_module._build_qc_report_id(
+        "CH100_SC01",
+        timestamp="20260531T130000000000Z",
+        random_hex="ffffffffffff",
+    )
+    second = qc_engine_module._build_qc_report_id(
+        "CH100_SC01",
+        timestamp="20260531T130000000001Z",
+        random_hex="000000000000",
+    )
+
+    assert QC_REPORT_ID_RE.match(first)
+    assert QC_REPORT_ID_RE.match(second)
+    assert first < second
+
+
 def test_run_scene_hard_qc_pass_persists_report_and_continues(session) -> None:
     _seed_scene(session)
     orchestrator = _make_orchestrator(
@@ -591,6 +614,8 @@ def test_run_scene_hard_qc_pass_persists_report_and_continues(session) -> None:
     assert result["scene_status"] == "archived"
     assert result["hard_qc"]["branch"] == "continue"
     assert result["soft_qc"]["branch"] == "continue"
+    assert QC_REPORT_ID_RE.match(result["hard_qc"]["qc_report_id"])
+    assert QC_REPORT_ID_RE.match(result["soft_qc"]["qc_report_id"])
     assert hard_report.qc_type == "hard_qc"
     assert hard_report.source_draft_row_id == state.current_neutral_draft_row_id
     assert hard_report.source_bundle_id == state.current_bundle_id
@@ -889,18 +914,19 @@ def test_run_scene_does_not_waive_blocking_soft_qc_repeat_patch(session) -> None
 
     state = session.get(SceneRunState, "CH100_SC01")
     events = session.execute(select(HumanReviewEvent)).scalars().all()
-    reports = session.execute(
-        select(QcReport).where(QcReport.qc_type == "soft_qc").order_by(QcReport.created_at.asc(), QcReport.qc_report_id.asc())
-    ).scalars().all()
+    qc_report = session.get(QcReport, result["soft_qc"]["qc_report_id"])
 
     assert result["scene_status"] == "human_review_required"
     assert result["soft_qc"]["branch"] == "human_review_required"
     assert result["soft_qc"]["stop_reason"] == "blocking_soft_qc_issue"
+    assert QC_REPORT_ID_RE.match(result["soft_qc"]["qc_report_id"])
     assert state.current_final_scene_row_id is None
+    assert state.current_qc_report_id == result["soft_qc"]["qc_report_id"]
     assert len(events) == 1
-    assert reports[-1].resolution_code == "soft_block_human"
-    assert reports[-1].next_action == "human_review_required"
-    assert reports[-1].issues_json[0]["issue_key"] == "character_pronoun_drift"
+    assert qc_report is not None
+    assert qc_report.resolution_code == "soft_block_human"
+    assert qc_report.next_action == "human_review_required"
+    assert qc_report.issues_json[0]["issue_key"] == "character_pronoun_drift"
 
 
 def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_style_generation(session) -> None:

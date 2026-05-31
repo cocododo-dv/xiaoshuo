@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from novel_system.api.app import create_app
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
@@ -31,8 +32,10 @@ SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心
 PREFIX = "/api/v2/style-reference"
 
 
-def test_legacy_reference_books_routes_not_exposed_by_default(client: TestClient) -> None:
-    paths = {getattr(route, "path", "") for route in client.app.routes}
+def test_legacy_reference_books_routes_are_never_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ENABLE_LEGACY_REFERENCE_BOOKS", "true")
+    with TestClient(create_app()) as client:
+        paths = {getattr(route, "path", "") for route in client.app.routes}
 
     assert "/api/v1/reference-books" not in paths
     assert not any(path.startswith("/api/v1/reference-books/") for path in paths)

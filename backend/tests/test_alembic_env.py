@@ -7,6 +7,17 @@ import sys
 from pathlib import Path
 
 
+def _prepare_style_reference_backup_root(tmp_path: Path) -> Path:
+    repo_root = tmp_path / "style_reference_test_repo"
+    backup_dir = repo_root / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    (backup_dir / "style_reference_legacy_test.json").write_text(
+        '{"row_count": 0, "profiles": [], "source": "alembic-env"}',
+        encoding="utf-8",
+    )
+    return repo_root
+
+
 def test_alembic_upgrade_respects_database_url_env(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     backend_dir = repo_root
@@ -14,6 +25,7 @@ def test_alembic_upgrade_respects_database_url_env(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir / "src")
     env["NOVEL_SYSTEM_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    env["STYLE_REFERENCE_REPO_ROOT"] = str(_prepare_style_reference_backup_root(tmp_path))
 
     subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(backend_dir / "alembic.ini"), "upgrade", "head"],
@@ -74,6 +86,7 @@ def test_alembic_upgrade_repairs_existing_human_review_event_table(tmp_path: Pat
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir / "src")
     env["NOVEL_SYSTEM_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    env["STYLE_REFERENCE_REPO_ROOT"] = str(_prepare_style_reference_backup_root(tmp_path))
 
     subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(backend_dir / "alembic.ini"), "upgrade", "head"],

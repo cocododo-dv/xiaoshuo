@@ -16,6 +16,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import DIMENSION_WEIGHTS, QUALITY_DIMENSIONS, analyze_literary_quality
 from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.llm_task_runner import (
     CONTINUITY_BUDGET_ERROR_CODE,
     CONTINUITY_BUDGET_MESSAGE,
@@ -347,6 +348,140 @@ class SceneGenerationService:
             },
         )
 
+    def generate_long_form_continuation(
+        self,
+        scene_id: str,
+        bundle: dict[str, Any],
+        *,
+        source_draft_row_id: str,
+        source_content: str,
+        target_continuation_chars: int,
+    ) -> StyleGenerationResult:
+        scene = self.session.get(SceneCard, scene_id)
+        state = self.session.get(SceneRunState, scene_id)
+        fallback_llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
+        started_at = time.perf_counter()
+        prompt: dict[str, Any] | None = None
+
+        try:
+            prompt = self._prompt_builder().build(bundle["snapshot"], "long_form_continuation")
+        except Exception as exc:
+            self._persist_generation_failure(
+                scene=scene,
+                state=state,
+                bundle=bundle,
+                llm_call_id=fallback_llm_call_id,
+                step="long_form_continuation",
+                started_at=started_at,
+                task_config=None,
+                prompt=prompt,
+                request_summary={},
+                exc=exc,
+                source_draft_row_id=source_draft_row_id,
+            )
+            raise
+
+        node_spec = get_llm_node_spec("long_form_continuation")
+        refresh_every_chars = int(getattr(node_spec, "refresh_every_chars", 0) or 0)
+        target_chars = max(1, int(target_continuation_chars))
+        segment_count = 1
+        if refresh_every_chars > 0:
+            segment_count = max(1, (target_chars + refresh_every_chars - 1) // refresh_every_chars)
+        active_prompt = self._inject_style_reference(prompt, scene, task_type="long_form_continuation")
+        continuation_parts: list[str] = []
+        llm_call_ids: list[str] = []
+
+        for segment_index in range(segment_count):
+            existing_continuation = "".join(continuation_parts)
+            user_prompt = self._build_long_form_continuation_user_prompt(
+                active_prompt["user_prompt"],
+                source_content=source_content,
+                source_row_id=source_draft_row_id,
+                existing_continuation=existing_continuation,
+            )
+            try:
+                node_result = self._llm_runner.run(
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    bundle_id=bundle["bundle_id"],
+                    bundle_hash=bundle["bundle_snapshot_hash"],
+                    node_id="long_form_continuation",
+                    step="long_form_continuation",
+                    prompt=active_prompt,
+                    user_prompt=user_prompt,
+                    offline_client_factory=OfflineStyleClient,
+                    source_draft_row_id=source_draft_row_id,
+                    source_draft_content=(
+                        f"{source_content}\n\n{existing_continuation}".strip()
+                        if existing_continuation
+                        else source_content
+                    ),
+                )
+                continuation_parts.append(_extract_scene_text(node_result.response))
+                llm_call_ids.append(node_result.llm_call_id)
+            except LLMNodeExecutionError as exc:
+                self._record_runner_failure_attempt(
+                    scene=scene,
+                    state=state,
+                    bundle=bundle,
+                    step="long_form_continuation",
+                    prompt=active_prompt,
+                    exc=exc,
+                    source_draft_row_id=source_draft_row_id,
+                )
+                self._raise_original_runner_error(exc)
+            if segment_index + 1 < segment_count:
+                active_prompt = self._inject_style_reference(prompt, scene, task_type="long_form_continuation")
+
+        content = "".join(continuation_parts)
+        row_id = versioned_scene_artifact_id("draft_long_form_continuation", scene_id, bundle)
+        self.session.add(
+            SceneDraft(
+                row_id=row_id,
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                stage="long_form_continuation",
+                content=content,
+                source_bundle_id=bundle["bundle_id"],
+                source_bundle_hash=bundle["bundle_snapshot_hash"],
+                generation_llm_call_id=llm_call_ids[-1] if llm_call_ids else None,
+            )
+        )
+        self.session.flush()
+
+        self.session.add(
+            AttemptTracker(
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                step="long_form_continuation",
+                status="completed",
+                source_bundle_id=bundle["bundle_id"],
+                details_json={
+                    "row_id": row_id,
+                    "llm_call_id": llm_call_ids[-1] if llm_call_ids else None,
+                    "segment_count": len(continuation_parts),
+                    "llm_call_ids": llm_call_ids,
+                    "source_draft_row_id": source_draft_row_id,
+                    "refresh_every_chars": refresh_every_chars,
+                    "target_continuation_chars": target_chars,
+                },
+            )
+        )
+        self.session.flush()
+
+        state.current_style_draft_row_id = row_id
+        state.current_bundle_id = bundle["bundle_id"]
+        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+        self.session.flush()
+
+        return StyleGenerationResult(
+            row_id=row_id,
+            content=content,
+            llm_call_id=llm_call_ids[-1] if llm_call_ids else "",
+            bundle_id=bundle["bundle_id"],
+            bundle_hash=bundle["bundle_snapshot_hash"],
+        )
+
     def _run_style_generation(
         self,
         *,
@@ -608,6 +743,36 @@ class SceneGenerationService:
                     "",
                     f"## {patch_heading}",
                     "\n".join(f"- {item}" for item in patch_brief),
+                ]
+            )
+        if JSON_SCHEMA_INSTRUCTION not in base_prompt:
+            prompt_parts.extend(["", JSON_SCHEMA_INSTRUCTION])
+        return "\n".join(prompt_parts).strip()
+
+    @staticmethod
+    def _build_long_form_continuation_user_prompt(
+        base_prompt: str,
+        *,
+        source_content: str,
+        source_row_id: str,
+        existing_continuation: str,
+    ) -> str:
+        prompt_parts = [
+            base_prompt,
+            "",
+            "## Source Draft",
+            source_content,
+            "",
+            f"Source Draft Row ID: {source_row_id}",
+            "Continue directly from the source draft without restarting the scene or summarizing prior beats.",
+        ]
+        if existing_continuation.strip():
+            prompt_parts.extend(
+                [
+                    "",
+                    "## Continuation Written So Far",
+                    existing_continuation,
+                    "Continue immediately after the text above. Do not repeat or paraphrase the same beats.",
                 ]
             )
         if JSON_SCHEMA_INSTRUCTION not in base_prompt:

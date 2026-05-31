@@ -2,17 +2,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from sqlalchemy import func, select
 
-from novel_system.db.legacy_reference_models import (
-    ReferenceBook,
-    ReferenceBookSegment,
-    ReferenceFinding,
-    ReferenceLearningRound,
-    ReferenceLearningRun,
-    ReferenceProfile,
-)
 from novel_system.db.models import (
     AttemptTracker,
     AuthorDraft,
@@ -80,11 +71,6 @@ from novel_system.db.models import (
 from novel_system.tools.reset_author_state import collect_reset_summary, execute_reset, main
 
 
-@pytest.fixture(autouse=True)
-def _ensure_legacy_reference_schema(legacy_reference_schema) -> None:
-    del legacy_reference_schema
-
-
 def _count(session, model) -> int:
     return int(session.scalar(select(func.count()).select_from(model)) or 0)
 
@@ -107,58 +93,6 @@ def _create_v2_project(client, *, key: str = "after-reset") -> dict:
 
 def _seed_preserved_state(session) -> None:
     session.add(
-        ReferenceBook(
-            book_id="REF_BOOK",
-            title="Reference Manual",
-            author_label="Ref Author",
-            source_kind="path",
-            source_path="reference.txt",
-            file_name="reference.txt",
-            cloud_policy="local_only",
-            analysis_focus="style_structure",
-            text_checksum="checksum-ref",
-            status="profile_ready",
-            total_chars=1200,
-            total_segments=1,
-            stats_json={"language": "zh"},
-        )
-    )
-    session.add(
-        ReferenceBookSegment(
-            segment_id="REF_SEGMENT",
-            book_id="REF_BOOK",
-            segment_index=1,
-            chapter_hint="1",
-            segment_kind="chapter",
-            start_offset=0,
-            end_offset=120,
-            text="reference segment",
-            selected_count=1,
-        )
-    )
-    session.add(
-        ReferenceLearningRun(
-            run_id="REF_RUN",
-            book_id="REF_BOOK",
-            status="completed",
-            batch_size=8,
-            coverage_json={"rounds": 1},
-            round_count=1,
-            profile_id="REF_PROFILE",
-        )
-    )
-    session.add(
-        ReferenceLearningRound(
-            round_id="REF_ROUND",
-            book_id="REF_BOOK",
-            run_id="REF_RUN",
-            round_index=1,
-            status="approved",
-            segment_ids_json=["REF_SEGMENT"],
-            finding_ids_json=["REF_FINDING"],
-        )
-    )
-    session.add(
         ReviewItem(
             review_id="review_reference_finding",
             chapter_id=None,
@@ -171,34 +105,6 @@ def _seed_preserved_state(session) -> None:
                 "reference_book_id": "REF_BOOK",
                 "reference_segment_id": "REF_SEGMENT",
             },
-        )
-    )
-    session.add(
-        ReferenceFinding(
-            finding_id="REF_FINDING",
-            book_id="REF_BOOK",
-            run_id="REF_RUN",
-            round_id="REF_ROUND",
-            segment_id="REF_SEGMENT",
-            review_id="review_reference_finding",
-            finding_type="style_observation",
-            dimension="rhythm",
-            summary="reference finding",
-            evidence_preview="segment evidence",
-            candidate_payload_json={"source": "reference_book_learning"},
-            status="pending",
-        )
-    )
-    session.add(
-        ReferenceProfile(
-            profile_id="REF_PROFILE",
-            book_id="REF_BOOK",
-            run_id="REF_RUN",
-            title="Reference Profile",
-            status="ready",
-            profile_json={"rhythm": ["tight scenes"]},
-            coverage_json={"approved_findings": 1},
-            source_finding_ids_json=["REF_FINDING"],
         )
     )
     session.add(
@@ -253,7 +159,6 @@ def _seed_author_state(session) -> None:
                 active_outline_plan_id="plan_reset_outline",
                 current_chapter_id="CH_RESET_OUTLINE",
                 approved_chapter_ids_json=[],
-                reference_profile_ids_json=["REF_PROFILE"],
             ),
             StoryProject(
                 project_id="PRJ_RESET_SNOW",
@@ -267,7 +172,6 @@ def _seed_author_state(session) -> None:
                 active_outline_plan_id="plan_reset_snow",
                 current_chapter_id="CH_RESET_SNOW",
                 approved_chapter_ids_json=[],
-                reference_profile_ids_json=["REF_PROFILE"],
             ),
             OutlinePlan(
                 plan_id="plan_reset_outline",
@@ -1007,7 +911,7 @@ def _seed_all(session) -> None:
     session.commit()
 
 
-def test_collect_reset_summary_is_dry_run_and_preserves_reference_review_items(session) -> None:
+def test_collect_reset_summary_is_dry_run_and_preserves_reference_audit_traces(session) -> None:
     _seed_all(session)
 
     summary = collect_reset_summary(session)
@@ -1019,7 +923,7 @@ def test_collect_reset_summary_is_dry_run_and_preserves_reference_review_items(s
     assert summary["planned_counts"]["llm_calls"] == 1
     assert "reference_books" not in summary["planned_counts"]
     assert summary["preserved_domains"] == [
-        "ReferenceBook / ReferenceBookSegment / ReferenceLearning* / ReferenceFinding / ReferenceProfile",
+        "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
         "SystemConfigSnapshot / SystemSecret",
         "config/models.yaml and config/prompts.yaml",
     ]
@@ -1028,7 +932,7 @@ def test_collect_reset_summary_is_dry_run_and_preserves_reference_review_items(s
     assert session.get(ReviewItem, "review_reference_finding") is not None
 
 
-def test_execute_reset_clears_author_state_and_preserves_reference_assets(session) -> None:
+def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(session) -> None:
     _seed_all(session)
 
     summary = execute_reset(session)
@@ -1105,12 +1009,6 @@ def test_execute_reset_clears_author_state_and_preserves_reference_assets(sessio
     assert _count(session, LlmCall) == 1
     assert session.get(ReviewItem, "review_reference_finding") is not None
     assert session.get(LlmCall, "llm_call_reference_profile") is not None
-    assert _count(session, ReferenceBook) == 1
-    assert _count(session, ReferenceBookSegment) == 1
-    assert _count(session, ReferenceLearningRun) == 1
-    assert _count(session, ReferenceLearningRound) == 1
-    assert _count(session, ReferenceFinding) == 1
-    assert _count(session, ReferenceProfile) == 1
     assert _count(session, SystemConfigSnapshot) == 1
     assert _count(session, SystemSecret) == 1
 

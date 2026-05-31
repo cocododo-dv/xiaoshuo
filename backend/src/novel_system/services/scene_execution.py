@@ -7,7 +7,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.legacy_reference_models import ReferenceProfile as LegacyReferenceProfile
 from novel_system.db.models import (
     ChapterGoal,
     QcReport,
@@ -297,26 +296,7 @@ class SceneExecutionContractService:
         style_profile = self._active_style_reference_profile(project.project_id)
         if style_profile is not None and style_profile.status == "active":
             return _normalize_reference_rules(style_profile.profile_json or {})
-
-        profile_ids = list(project.reference_profile_ids_json or [])
-        if not profile_ids:
-            return {"style_rules": [], "structure_rules": [], "safety_rules": []}
-        profiles = self.session.execute(
-            select(LegacyReferenceProfile).where(LegacyReferenceProfile.profile_id.in_(profile_ids))
-        ).scalars().all()
-        style_rules: list[str] = []
-        structure_rules: list[str] = []
-        safety_rules: list[str] = []
-        for profile in profiles:
-            rules = _normalize_reference_rules(profile.profile_json or {})
-            style_rules.extend(rules["style_rules"])
-            structure_rules.extend(rules["structure_rules"])
-            safety_rules.extend(rules["safety_rules"])
-        return {
-            "style_rules": _dedupe(style_rules),
-            "structure_rules": _dedupe(structure_rules),
-            "safety_rules": _dedupe(safety_rules),
-        }
+        return {"style_rules": [], "structure_rules": [], "safety_rules": []}
 
     def _active_style_reference_profile(self, project_id: str) -> StyleReferenceProfile | None:
         binding = self.session.execute(
@@ -340,7 +320,7 @@ class SceneExecutionContractService:
         style_profile = self._active_style_reference_profile(project.project_id)
         if style_profile is not None:
             return [style_profile.profile_id]
-        return list(project.reference_profile_ids_json or [])
+        return []
 
     def _require_scene(self, scene_id: str) -> SceneCard:
         scene = self.session.get(SceneCard, scene_id)

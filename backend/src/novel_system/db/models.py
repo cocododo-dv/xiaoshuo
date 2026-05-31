@@ -40,7 +40,6 @@ class StoryProject(Base):
     active_outline_plan_id: Mapped[str | None] = mapped_column(String, nullable=True)
     current_chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
     approved_chapter_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
-    reference_profile_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 

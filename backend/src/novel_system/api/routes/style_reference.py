@@ -8,6 +8,10 @@ PR-4 18 端点 + PR-7 3 端点(validate / reports get / reports list)= 21 端点
 
 from __future__ import annotations
 
+# Runtime truth: the public injection contract is `SystemPromptFragments`
+# returned by the two `injection-preview` endpoints. There is no public
+# `/inject` / `InjectionBundle` HTTP API in the current implementation.
+
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile

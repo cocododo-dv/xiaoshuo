@@ -51,8 +51,7 @@ class LegacyBackupMissingError(StyleReferenceError):
     def __init__(self, backup_dir: str) -> None:
         super().__init__(
             "drop 旧 reference_learning 表前必须存在 backups/style_reference_legacy_*.json。"
-            f"未在 {backup_dir!r} 找到任何 JSON 备份;请先运行 "
-            "`python -m novel_system.tools.reset_style_reference --backup`",
+            f"未在 {backup_dir!r} 找到任何 JSON 备份;请先准备历史备份文件后再执行相关迁移。",
         )
         self.backup_dir = backup_dir
 

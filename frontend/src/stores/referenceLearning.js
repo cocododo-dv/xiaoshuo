@@ -13,6 +13,9 @@
 
 import { defineStore } from "pinia";
 
+// Runtime truth: the store's injection-preview state tracks the public
+// `SystemPromptFragments + prefix` contract returned by backend preview APIs.
+
 import {
   applyStyleReferenceProfile,
   cancelStyleReferenceRun,

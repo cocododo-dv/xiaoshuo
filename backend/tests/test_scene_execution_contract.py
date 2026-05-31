@@ -34,7 +34,6 @@ def _seed_project(session) -> None:
             planning_mode="snowflake",
             status="chapter_ready",
             current_chapter_id=CHAPTER_ID,
-            reference_profile_ids_json=[],
         )
     )
     session.add(
