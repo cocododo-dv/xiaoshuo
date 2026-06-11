@@ -30,6 +30,11 @@ from novel_system.services.errors import DomainError
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService, outline_plan_payload, project_payload
 from novel_system.services.project_runtime_invalidation import ProjectRuntimeInvalidationService
 from novel_system.services.snowflake_planner import GATE_STATUSES, SnowflakePlannerService
+from novel_system.services.snowflake_staleness import (
+    field_sigs,
+    recompute_stale,
+    snapshot_consumed_sigs,
+)
 from novel_system.services.snowflake_steps import (
     MATERIALIZATION_REQUIREMENTS,
     MATERIALIZATION_REQUIRED_STEPS,
@@ -52,7 +57,8 @@ from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMS
 
 STRUCTURED_GATE_STATUSES = set(GATE_STATUSES)
 SCENE_PATCH_FIELDS = {
-    "chapter_id",
+    # P1-1: scene_id / chapter_id are system-minted identity, never author-editable.
+    # chapter_title / chapter_goal / chapter_role stay editable (content, not identity).
     "chapter_title",
     "chapter_goal",
     "chapter_role",
@@ -353,6 +359,11 @@ class SnowflakeWorkspaceService:
         run.status = "approved"
         run.approved_at = utcnow()
         run.health_json = self._step_health(step_key, run.draft_json or {}, "approved", generation_source=(run.health_json or {}).get("generation_source"))
+        # Snapshot "what I consumed, at what version" so a later upstream revision can
+        # be diffed field-by-field instead of blindly staling everything downstream.
+        run.consumed_input_sigs_json = snapshot_consumed_sigs(
+            latest_by_step, list(self._input_refs(step_key, latest_by_step).keys())
+        )
         self._sync_structured_step_data(project, step_key, run.draft_json or {}, run, approved=True)
         downstream_impact = self._mark_downstream_stale(run)
         runtime_impact = (
@@ -1470,27 +1481,55 @@ class SnowflakeWorkspaceService:
     ) -> None:
         current_chapter_id = f"{project_id}_CH01"
         seq_by_chapter: dict[str, int] = {}
+        minted = False
         for index, item in enumerate(scenes, start=1):
             if not isinstance(item, dict):
                 continue
-            chapter_id = str(item.get("chapter_id") or current_chapter_id or f"{project_id}_CH01").strip()
+            # Identity is anchored on the immutable row_uid (P1-1). Fall back to the
+            # legacy scene_id lookup so step-9 drafts and pre-migration rows still
+            # bind to the plan that step-8 seeded — but never trust an author's edit
+            # of scene_id / chapter_id to *re-key* an existing row.
+            row_uid = str(item.get("row_uid") or "").strip()
+            plan = self._scene_plan_by_row_uid(project_id, row_uid) if row_uid else None
+            if plan is None:
+                incoming_scene_id = str(item.get("scene_id") or "").strip()
+                plan = self._scene_plan_by_scene_id(project_id, incoming_scene_id) if incoming_scene_id else None
+            created = plan is None
+
+            input_chapter_id = str(item.get("chapter_id") or current_chapter_id or f"{project_id}_CH01").strip()
+            if created:
+                # First time we see this row — mint its identity exactly once.
+                chapter_id = input_chapter_id
+            else:
+                # Already exists — system identity is locked, author input is ignored.
+                chapter_id = plan.chapter_id or input_chapter_id
             current_chapter_id = chapter_id
+
             next_seq = seq_by_chapter.get(chapter_id, 0) + 1
             scene_seq = _coerce_int(item.get("scene_seq"), next_seq)
             seq_by_chapter[chapter_id] = scene_seq
-            scene_id = str(item.get("scene_id") or f"{chapter_id}_SC{scene_seq:02d}").strip()
-            plan = self._scene_plan_by_scene_id(project_id, scene_id)
-            created = plan is None
-            if plan is None:
+
+            if created:
+                row_uid = row_uid or _mint_row_uid()
+                scene_id = f"{chapter_id}_SC{scene_seq:02d}"
                 plan = SnowflakeScenePlan(
-                    scene_plan_id=f"snowflake_scene_plan_{project_id}_{scene_id}",
+                    scene_plan_id=f"snowflake_scene_plan_{project_id}_{row_uid}",
                     project_id=project_id,
+                    row_uid=row_uid,
                     scene_id=scene_id,
                     chapter_id=chapter_id,
                     scene_seq=scene_seq,
                 )
                 self.session.add(plan)
-            plan.chapter_id = chapter_id
+                minted = True
+            else:
+                scene_id = plan.scene_id
+                if not plan.row_uid:
+                    # Adopt a row_uid for a legacy row matched via scene_id.
+                    plan.row_uid = row_uid or _mint_row_uid()
+                    minted = True
+                row_uid = plan.row_uid
+
             plan.scene_seq = scene_seq
             plan.source_step_run_id = run.step_run_id
             plan.status = "approved" if approved else "draft"
@@ -1498,16 +1537,39 @@ class SnowflakeWorkspaceService:
             plan.stale_accepted_at = None
             plan.stale_accepted_by = None
             plan.stale_accepted_note = None
-            self._apply_scene_patch(plan, _sanitize_scene_patch(item))
+            # Discard any author-supplied scene_id / chapter_id — those are system
+            # identity, not editable narrative fields.
+            patch = _sanitize_scene_patch(item)
+            patch.pop("scene_id", None)
+            patch.pop("chapter_id", None)
+            self._apply_scene_patch(plan, patch)
             if created and not plan.title:
                 plan.title = str(item.get("title") or item.get("summary") or f"场景 {index:02d}").strip()
             if created and not plan.chapter_title:
                 plan.chapter_title = str(item.get("chapter_title") or chapter_id).strip()
             plan.diagnosis_json = diagnose_scene_detail(_scene_plan_payload(plan))
 
+            # Stamp the minted identity back onto the draft row so the persisted
+            # draft_json and every later re-seed carry the same stable anchor.
+            if item.get("row_uid") != row_uid or item.get("scene_id") != scene_id or item.get("chapter_id") != chapter_id:
+                item["row_uid"] = row_uid
+                item["scene_id"] = scene_id
+                item["chapter_id"] = chapter_id
+                minted = True
+
+        if minted and isinstance(run.draft_json, dict):
+            run.draft_json = {**run.draft_json, "scenes": scenes}
+
     def _scene_plan_by_scene_id(self, project_id: str, scene_id: str) -> SnowflakeScenePlan | None:
         return self.session.execute(
             select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == project_id, SnowflakeScenePlan.scene_id == scene_id)
+        ).scalars().first()
+
+    def _scene_plan_by_row_uid(self, project_id: str, row_uid: str) -> SnowflakeScenePlan | None:
+        if not row_uid:
+            return None
+        return self.session.execute(
+            select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == project_id, SnowflakeScenePlan.row_uid == row_uid)
         ).scalars().first()
 
     def _scene_plan_for_triage_item(self, project_id: str, item: dict[str, Any]) -> SnowflakeScenePlan:
@@ -1578,36 +1640,43 @@ class SnowflakeWorkspaceService:
             row.status = "superseded"
 
     def _mark_downstream_stale(self, run: SnowflakeStepRun) -> dict[str, Any]:
-        step_index = STEP_ORDER[run.step_key]
-        downstream_keys = [step["step_key"] for step in list_step_definitions()[step_index + 1 :]]
-        if not downstream_keys:
-            return {
-                "step_key": run.step_key,
-                "affected_count": 0,
-                "affected_step_run_ids": [],
-                "affected_scene_plan_ids": [],
-                "summary": "No downstream snowflake steps are affected.",
-            }
-        reason = f"{run.step_key} was revised in version {run.version}; review dependent snowflake work."
-        affected_step_run_ids: list[str] = []
-        affected_scene_plan_ids: list[str] = []
-        rows = self.session.execute(
+        # P0-3: a single dependency/diff-aware judgment replaces the old "stale every
+        # later step" loop. Only steps whose approval snapshot of THIS step's consumed
+        # fields actually changed are marked — revising a step no longer punishes
+        # downstream work that did not depend on what changed.
+        candidates = self.session.execute(
             select(SnowflakeStepRun).where(
                 SnowflakeStepRun.project_id == run.project_id,
-                SnowflakeStepRun.step_key.in_(downstream_keys),
+                SnowflakeStepRun.step_run_id != run.step_run_id,
                 SnowflakeStepRun.status.in_(["pending_review", "approved", "skipped"]),
             )
         ).scalars().all()
-        for row in rows:
+        hits = recompute_stale(
+            changed_step_key=run.step_key,
+            current_field_sigs=field_sigs(run.draft_json or {}),
+            candidate_rows=candidates,
+            step_order=STEP_ORDER,
+        )
+
+        affected_step_run_ids: list[str] = []
+        affected_scene_plan_ids: list[str] = []
+        stale_step_keys: set[str] = set()
+        for hit in hits:
+            row = hit.row
             row.status = "stale"
-            row.stale_reason = reason
+            row.stale_reason = hit.reason
             row.stale_accepted_at = None
             row.stale_accepted_by = None
             row.stale_accepted_note = None
             affected_step_run_ids.append(row.step_run_id)
-            self._record_revision_link(run, affected_kind="step_run", affected_id=row.step_run_id, reason=reason)
+            stale_step_keys.add(row.step_key)
+            self._record_revision_link(run, affected_kind="step_run", affected_id=row.step_run_id, reason=hit.reason)
 
-        if any(STEP_ORDER[key] >= STEP_ORDER["scene_list"] for key in downstream_keys):
+        # Scene plans are the materialized output of scene_list / scene_details, so they
+        # only go stale when one of those steps is itself affected — not on every change
+        # that happens to sit upstream of scene_list.
+        if stale_step_keys & {"scene_list", "scene_details"}:
+            reason = f"{run.step_key} 改动影响了场景列表，复核场景计划。"
             for scene in self._scene_plans(run.project_id):
                 scene.status = "stale"
                 scene.stale_reason = reason
@@ -1616,12 +1685,19 @@ class SnowflakeWorkspaceService:
                 scene.stale_accepted_note = None
                 affected_scene_plan_ids.append(scene.scene_plan_id)
                 self._record_revision_link(run, affected_kind="scene_plan", affected_id=scene.scene_plan_id, reason=reason)
+
+        summary = (
+            f"{run.step_key} 改动影响 {len(affected_step_run_ids)} 个下游步骤、"
+            f"{len(affected_scene_plan_ids)} 个场景计划。"
+            if affected_step_run_ids or affected_scene_plan_ids
+            else "No downstream snowflake artifacts are affected."
+        )
         return {
             "step_key": run.step_key,
             "affected_count": len(affected_step_run_ids) + len(affected_scene_plan_ids),
             "affected_step_run_ids": affected_step_run_ids,
             "affected_scene_plan_ids": affected_scene_plan_ids,
-            "summary": reason if affected_step_run_ids or affected_scene_plan_ids else "No downstream snowflake artifacts are affected.",
+            "summary": summary,
         }
 
     @staticmethod
@@ -1888,6 +1964,7 @@ def _merge_preserving_existing(existing: dict[str, Any], incoming: dict[str, Any
 def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
     return {
         "scene_plan_id": scene.scene_plan_id,
+        "row_uid": scene.row_uid or "",
         "scene_id": scene.scene_id,
         "chapter_id": scene.chapter_id,
         "chapter_title": scene.chapter_title or "",
@@ -1926,6 +2003,7 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
 def _scene_list_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
     return {
         "scene_plan_id": scene.scene_plan_id,
+        "row_uid": scene.row_uid or "",
         "scene_id": scene.scene_id,
         "chapter_id": scene.chapter_id,
         "chapter_title": scene.chapter_title or scene.chapter_id,
@@ -1978,3 +2056,13 @@ def _coerce_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _mint_row_uid() -> str:
+    """Mint an immutable, system-owned scene-row identity (P1-1).
+
+    Scene identity no longer derives from the author-editable ``scene_id``; this
+    uuid is minted once when a row is first seen and then never changes, so a
+    reorder or an ID re-mint can never orphan a plan or break the diff chain.
+    """
+    return f"row_{uuid.uuid4().hex}"

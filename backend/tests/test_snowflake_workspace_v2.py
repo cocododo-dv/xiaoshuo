@@ -593,6 +593,10 @@ def test_workspace_v2_records_revision_links_when_upstream_step_is_reapproved(cl
     _approve_generated_step(client, project["project_id"], "one_sentence_summary")
 
     replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    client.patch(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
+        json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},
+    )
     response = client.post(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief/approve",
         json={},
@@ -726,7 +730,13 @@ def test_workspace_v2_marks_downstream_steps_stale_after_upstream_regeneration(c
     _approve_generated_step(client, project["project_id"], "book_brief")
     _approve_generated_step(client, project["project_id"], "one_sentence_summary")
 
-    _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    # P0-3: staleness is diff-aware, so the upstream revision must actually change
+    # book_brief's content to invalidate the step that consumed it.
+    replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    client.patch(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
+        json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},
+    )
     workspace = _approve_step(client, project["project_id"], "book_brief")["workspace"]
 
     assert workspace["current_step_key"] == "one_sentence_summary"
@@ -739,7 +749,11 @@ def test_workspace_v2_accepts_stale_step_with_audit_trail(client, session) -> No
     _approve_generated_step(client, project["project_id"], "book_brief")
     _approve_generated_step(client, project["project_id"], "one_sentence_summary")
 
-    _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    client.patch(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
+        json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},
+    )
     stale_workspace = _approve_step(client, project["project_id"], "book_brief")["workspace"]
     stale_step = next(step for step in stale_workspace["steps"] if step["step_key"] == "one_sentence_summary")
     assert stale_step["status"] == "stale"

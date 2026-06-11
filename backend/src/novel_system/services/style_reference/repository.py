@@ -201,6 +201,15 @@ class StyleReferenceRepository:
         stmt = select(StyleReferenceQuote).where(StyleReferenceQuote.book_id == book_id)
         return list(self.session.scalars(stmt).all())
 
+    def list_quotes_by_ids(self, quote_ids: list[str]) -> list[StyleReferenceQuote]:
+        """批量 IN 查询(PR-23 evidence 读路径,避免逐条 get)。"""
+        if not quote_ids:
+            return []
+        stmt = select(StyleReferenceQuote).where(
+            StyleReferenceQuote.quote_id.in_(quote_ids)
+        )
+        return list(self.session.scalars(stmt).all())
+
     def delete_quote(self, quote_id: str) -> int:
         result = self.session.execute(
             delete(StyleReferenceQuote).where(StyleReferenceQuote.quote_id == quote_id)
@@ -217,6 +226,17 @@ class StyleReferenceRepository:
     def list_evidences(self, finding_id: str) -> list[StyleReferenceEvidence]:
         stmt = select(StyleReferenceEvidence).where(
             StyleReferenceEvidence.finding_id == finding_id
+        )
+        return list(self.session.scalars(stmt).all())
+
+    def list_evidences_for_findings(
+        self, finding_ids: list[str]
+    ) -> list[StyleReferenceEvidence]:
+        """批量 IN 查询(PR-23 evidence 读路径,避免逐条 get)。"""
+        if not finding_ids:
+            return []
+        stmt = select(StyleReferenceEvidence).where(
+            StyleReferenceEvidence.finding_id.in_(finding_ids)
         )
         return list(self.session.scalars(stmt).all())
 

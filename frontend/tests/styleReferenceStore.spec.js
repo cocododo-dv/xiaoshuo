@@ -105,6 +105,25 @@ describe("referenceLearning store — selectBook", () => {
   });
 });
 
+describe("referenceLearning store — startRun 默认层(P0-1)", () => {
+  it("startRun() 无参时,调用 api 的 payload 不含 layers 键(默认值收敛到后端单点)", async () => {
+    api.startStyleReferenceRun.mockResolvedValue({ run_id: null });
+    const store = useReferenceLearningStore();
+    store.selectedBookId = "sr_book_1";
+    await store.startRun();
+    expect(api.startStyleReferenceRun).toHaveBeenCalledWith("sr_book_1", {});
+    expect(api.startStyleReferenceRun.mock.calls[0][1]).not.toHaveProperty("layers");
+  });
+
+  it("startRun(layers) 显式传层时透传 layers", async () => {
+    api.startStyleReferenceRun.mockResolvedValue({ run_id: null });
+    const store = useReferenceLearningStore();
+    store.selectedBookId = "sr_book_1";
+    await store.startRun(["language"]);
+    expect(api.startStyleReferenceRun).toHaveBeenCalledWith("sr_book_1", { layers: ["language"] });
+  });
+});
+
 describe("referenceLearning store — loadRunFindings + pendingDecisionCount", () => {
   it("findings 按 sub_dim + kind 正确分桶,pendingDecisionCount 更新", async () => {
     api.listStyleReferenceRunFindings.mockResolvedValue({
@@ -120,6 +139,30 @@ describe("referenceLearning store — loadRunFindings + pendingDecisionCount", (
     expect(store.findings["language.rhetoric"].forbidden_patterns).toHaveLength(1);
     expect(store.findings["narrative.pacing"].observations).toHaveLength(1);
     expect(store.pendingDecisionCount).toBe(2);  // f1 + f3 pending
+  });
+
+  it("loadRunFindings 默认携带 include=evidence,finding.evidence 数组保留(P0-2)", async () => {
+    api.listStyleReferenceRunFindings.mockResolvedValue({
+      findings: [
+        {
+          finding_id: "f1",
+          sub_dimension: "language.rhetoric",
+          finding_kind: "observation",
+          status: "pending",
+          evidence: [
+            { evidence_id: "ev1", anchor_kind: "paragraph_quote", quote_text: "引文甲", is_synthetic: 0 },
+            { evidence_id: "ev2", anchor_kind: "author_avoidance", quote_text: "引文乙", is_synthetic: 0 },
+          ],
+        },
+      ],
+    });
+    const store = useReferenceLearningStore();
+    await store.loadRunFindings("sr_run_1");
+    expect(api.listStyleReferenceRunFindings).toHaveBeenCalledWith(
+      "sr_run_1",
+      expect.objectContaining({ include: "evidence" }),
+    );
+    expect(store.findings["language.rhetoric"].observations[0].evidence).toHaveLength(2);
   });
 });
 

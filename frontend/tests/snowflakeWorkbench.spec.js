@@ -1304,7 +1304,7 @@ describe("snowflake workbench UI source", () => {
     expect(source).toContain('data-testid="snowflake-project-drawer"');
     expect(source).not.toContain('class="snowflake-project-sidebar"');
     expect(source).toMatch(
-      /\.snowflake-workbench-shell\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(260px,\s*320px\)/,
+      /\.snowflake-workbench-stage-grid\s*\{[\s\S]*grid-template-columns:\s*minmax\(210px,\s*250px\)\s+minmax\(0,\s*1fr\)\s+minmax\(250px,\s*300px\)/,
     );
   });
 

@@ -465,6 +465,9 @@ class InjectionService:
             row = self.repo.get_finding(fid)
             if row is None or row.finding_kind != "forbidden_pattern":
                 continue
+            # PR-23 — 被驳回的禁忌不注入 system prompt
+            if row.status == "rejected":
+                continue
             if sub_dim_filter is not None and row.sub_dimension not in sub_dim_filter:
                 continue
             stmt = (row.statement or "").strip()

@@ -129,7 +129,7 @@ class SnowflakeImpactAnalyzer:
         for index, item in enumerate(characters, start=1):
             if not isinstance(item, dict):
                 return None
-            character_id = str(item.get("character_id") or item.get("display_name") or item.get("name") or "").strip()
+            character_id = str(item.get("character_id") or "").strip()
             if not character_id:
                 return None
             by_id[character_id] = {**item, "_ordinal": index}

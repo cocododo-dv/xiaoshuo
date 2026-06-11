@@ -77,6 +77,16 @@ describe("styleReference API client URL 拼装", () => {
     expect(JSON.parse(calls[0].init.body)).toEqual({ layers: ["language", "narrative"] });
   });
 
+  it("startRun 不传 layers 时 body 为空对象(PR-23 默认值在后端)", async () => {
+    await sr.startStyleReferenceRun("sr_book_1");
+    expect(JSON.parse(calls[0].init.body)).toEqual({});
+  });
+
+  it("listRunFindings include=evidence 透传(PR-23)", async () => {
+    await sr.listStyleReferenceRunFindings("sr_run_x", { include: "evidence" });
+    expect(calls[0].url).toContain("include=evidence");
+  });
+
   it("listRunFindings query string 组装", async () => {
     await sr.listStyleReferenceRunFindings("sr_run_x", {
       subDimension: "language.rhetoric",

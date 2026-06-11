@@ -309,7 +309,14 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
       this._setActionStart("reclassify_book");
       try {
         const result = await reclassifyStyleReferenceBook(bookId);
-        this._setActionEnd(`段落重新分类已${result?.status === "reclassify_pending" ? "排队" : "执行"}。`);
+        this._setActionEnd(
+          `段落已重新分类(${result?.paragraphs_count ?? 0} 段),原抽取结果与画像已清空,请重新启动抽取 run。`
+        );
+        // 派生数据已被后端清空,刷新当前选中书的 run / findings / profiles 视图
+        if (this.selectedBookId === bookId) {
+          await this.selectBook(bookId);
+        }
+        return result;
       } catch (err) {
         this._setActionError(err);
       }
@@ -356,14 +363,15 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
       }
     },
 
-    async startRun(layers = ["language", "narrative"]) {
+    // PR-23 — 默认不传 layers,由后端单点决定默认值(全 4 层)
+    async startRun(layers = null) {
       if (!this.selectedBookId) {
         this.error = "请先选择一本参考书。";
         return;
       }
       this._setActionStart("start_run");
       try {
-        const result = await startStyleReferenceRun(this.selectedBookId, { layers });
+        const result = await startStyleReferenceRun(this.selectedBookId, layers ? { layers } : {});
         if (result?.run_id) {
           await this.loadRun(result.run_id);
           await this.loadRunFindings(result.run_id);
@@ -400,7 +408,8 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
 
     async loadRunFindings(runId, filters = {}) {
       try {
-        const data = await listStyleReferenceRunFindings(runId, filters);
+        // PR-23 — 默认带 include=evidence,finding 对象保留 evidence 数组供卡片渲染
+        const data = await listStyleReferenceRunFindings(runId, { include: "evidence", ...filters });
         const bucket = emptyFindingsBucket();
         for (const f of data?.findings ?? []) {
           const subDim = f.sub_dimension;

@@ -483,7 +483,16 @@ function openInWorkbench(sceneId) {
     target_id: sceneId,
     target_ref: `scene_card:${sceneId}`,
   });
-  emit("notice", `已在场景工作台打开 scene_card:${sceneId}`);
+  emit("notice", `已把场景 ${sceneId} 交给 AI 起草台`);
+}
+
+function writeSceneMyself(sceneId) {
+  openTarget({
+    target_type: "author_draft_scene",
+    target_id: sceneId,
+    target_ref: `author_draft_scene:${sceneId}`,
+  });
+  emit("notice", `已带着场景 ${sceneId} 进入写作房间`);
 }
 
 watch(
@@ -871,9 +880,18 @@ onActivated(() => {
                     <button
                       class="ghost"
                       :data-testid="`author-open-workbench-${row.sceneId}`"
+                      title="把这一场送入 AI 起草台流水线(预检 → 起草 → 质检 → 归档)"
                       @click="openInWorkbench(row.sceneId)"
                     >
-                      在场景工作台打开
+                      交给 AI
+                    </button>
+                    <button
+                      class="ghost"
+                      :data-testid="`author-write-scene-${row.sceneId}`"
+                      title="带着这张场景卡直达写作房间,自己写正文"
+                      @click="writeSceneMyself(row.sceneId)"
+                    >
+                      自己写
                     </button>
                   </div>
                 </div>

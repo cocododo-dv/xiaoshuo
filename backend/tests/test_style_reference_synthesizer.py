@@ -169,6 +169,62 @@ def test_synthesize_pydantic_validation_failure() -> None:
             synth.synthesize(book_id, run_id)
 
 
+def test_synthesize_excludes_rejected_findings() -> None:
+    """PR-23 — rejected finding 不进 LLM 聚合 payload,也不进 source_finding_ids_json。"""
+    book_id, run_id = _ingest_with_finding("rej")
+    rejected_statement = "被驳回的观察描述不应出现在聚合里"
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_finding(
+            finding_id="sr_find_rej_rejected",
+            book_id=book_id,
+            run_id=run_id,
+            extraction_id="sr_ext_rej",
+            sub_dimension="language.rhetoric",
+            finding_kind="observation",
+            statement=rejected_statement,
+            confidence="high",
+            status="rejected",
+        )
+        session.commit()
+
+    captured: list[str] = []
+    response_dict = {
+        "profile_title": "t",
+        "narrative_summary": "s",
+        "style_features": ["f"],
+        "narrative_patterns": ["p"],
+        "banned_replication_rules": ["b"],
+    }
+
+    class _Resp:
+        structured_output = response_dict
+        text = json.dumps(response_dict, ensure_ascii=False)
+        usage = {}
+        finish_reason = "stop"
+        provider = "fake"
+        model = "fake"
+        response_format = "json_object"
+        request_id = None
+        raw_response = {}
+
+    class _CapturingClient:
+        def generate(self, request):  # noqa: ANN001
+            captured.append(request.messages[-1]["content"])
+            return _Resp()
+
+    with SessionLocal() as session:
+        synth = ProfileSynthesizer(session, llm_client=_CapturingClient(), llm_enabled=True)
+        profile = synth.synthesize(book_id, run_id)
+        session.commit()
+
+    # statement 不在 LLM payload(sample_quotes)里
+    assert captured and rejected_statement not in captured[0]
+    # finding_id 不在 source_finding_ids_json;原 2 条 pending finding 保留
+    assert "sr_find_rej_rejected" not in profile.source_finding_ids_json
+    assert len(profile.source_finding_ids_json) == 2
+
+
 def test_synthesize_scene_samples_index_buckets_by_paragraph_type() -> None:
     """scene_samples_index 应按 paragraph_type 分桶(从 quote.extracted_features 读)。"""
     book_id, run_id = _ingest_with_finding("buckets")

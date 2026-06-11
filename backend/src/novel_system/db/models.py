@@ -67,6 +67,10 @@ class SnowflakeArtifact(Base):
     status: Mapped[str] = mapped_column(String, default="pending_review")
     artifact_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     input_refs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # P0-3: per-upstream content signatures captured at approval ("what I consumed,
+    # at what version"). Powers dependency/diff-aware staleness instead of marking
+    # every downstream step stale on any upstream change.
+    consumed_input_sigs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     diagnosis_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
     approved_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -85,6 +89,8 @@ class SnowflakeStepRun(Base):
     draft_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     health_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
     input_refs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # P0-3: per-upstream content signatures captured at approval — see SnowflakeArtifact.
+    consumed_input_sigs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     stale_accepted_at: Mapped[str | None] = mapped_column(String, nullable=True)
     stale_accepted_by: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -136,9 +142,16 @@ class SnowflakeCharacterPlan(Base):
 
 class SnowflakeScenePlan(Base):
     __tablename__ = "snowflake_scene_plans"
+    __table_args__ = (
+        # P1-1: immutable, system-minted row identity. Scene identity is no longer
+        # derived from the author-editable ``scene_id`` — ``row_uid`` is the stable
+        # anchor the staleness diff (P0-3) relies on.
+        Index("ix_snowflake_scene_plans_row_uid", "project_id", "row_uid", unique=True),
+    )
 
     scene_plan_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    row_uid: Mapped[str | None] = mapped_column(String, nullable=True)
     scene_id: Mapped[str] = mapped_column(String)
     chapter_id: Mapped[str] = mapped_column(String)
     chapter_title: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -220,8 +233,112 @@ class StoryCharacter(Base):
     display_name: Mapped[str] = mapped_column(String)
     role: Mapped[str | None] = mapped_column(String, nullable=True)
     summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    synopsis_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     bible_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String, default="draft")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class LongformAnchor(Base):
+    """控制塔锚点 — 全书必须保持为真的长程事实(强约束记忆)。
+
+    kind 字符串常量:fact / trait / setting / timeline;
+    status:pinned(在场)/ faded(淡出,可重新钉入)。
+    """
+
+    __tablename__ = "longform_anchors"
+
+    anchor_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    kind: Mapped[str] = mapped_column(String, default="fact")
+    text: Mapped[str] = mapped_column(Text)
+    source_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="pinned")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ChapterContract(Base):
+    """控制塔交接契约 — 塔在生成/写作一章前下发的长程约束包。
+
+    status 闸门:drafting → ready → dispatched → archived;
+    constraints_json:[{text, anchor_id?, scene_id?, kind?}, ...]。
+    """
+
+    __tablename__ = "chapter_contracts"
+
+    contract_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    chapter_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="drafting")
+    constraints_json: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True, default=list)
+    dispatched_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    archived_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ChapterAuditFinding(Base):
+    """控制塔章级审计发现 — 跨场连续性问题(逐场质检看不见的)。
+
+    kind 八类失控分类学(字符串常量):drift(漂移)/ overdue(逾期)/
+    unplanted_reveal(空降)/ causal_break(断链)/ unfair_clue(线索不公平)/
+    stall(停滞)/ deflation(泄气)/ arc(弧线);severity:warn / block;
+    status:open / adjudicated;decision:accept_fix / defer / dismiss。
+    """
+
+    __tablename__ = "chapter_audit_findings"
+
+    finding_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    chapter_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String, default="drift")
+    severity: Mapped[str] = mapped_column(String, default="warn")
+    text: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="open")
+    decision: Mapped[str | None] = mapped_column(String, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class LibraryEntity(Base):
+    """资料库实体(地点/物品/阵营/设定等非人物对象)。
+
+    人物的权威实体是 StoryCharacter,不在此表重复;资料库聚合接口
+    会把两者合并输出。kind 用字符串常量(不新增 Enum):
+    location / item / faction / concept。
+    """
+
+    __tablename__ = "library_entities"
+
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    kind: Mapped[str] = mapped_column(String, default="concept")
+    name: Mapped[str] = mapped_column(String)
+    aliases_json: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True, default=list)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
+    tags_json: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True, default=list)
+    status: Mapped[str] = mapped_column(String, default="active")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class LibraryRelation(Base):
+    """资料库关系边。端点用带前缀的 ref:"character:<id>" 或 "entity:<id>"。"""
+
+    __tablename__ = "library_relations"
+
+    relation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    from_ref: Mapped[str] = mapped_column(String)
+    to_ref: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String, default="related")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 

@@ -59,7 +59,7 @@ def _import_book(client: TestClient) -> str:
 
 
 def _seed_full_chain(book_id: str) -> tuple[str, str, str]:
-    """直接用 service 层快速建 run + finding + profile,绕过 LLM 调用。"""
+    """直接用 service 层快速建 run + finding(含 2 evidence)+ profile,绕过 LLM 调用。"""
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         run_id = f"sr_run_route_{book_id[-6:]}"
@@ -87,6 +87,42 @@ def _seed_full_chain(book_id: str) -> tuple[str, str, str]:
             statement="测试 observation 描述",
             confidence="high",
             status="pending",
+        )
+        # 2 evidence(≥2 强约束):1 条真实段落引文 + 1 条合成反例
+        paragraphs = repo.list_paragraphs(book_id)
+        repo.create_quote(
+            quote_id=f"sr_quote_route_a_{book_id[-6:]}",
+            book_id=book_id,
+            paragraph_id=paragraphs[0].paragraph_id if paragraphs else None,
+            span_start=0,
+            span_end=10,
+            quote_text="真实段落引文文本",
+            illustrates_dims=["language.rhetoric"],
+            extracted_features={},
+        )
+        repo.create_quote(
+            quote_id=f"sr_quote_route_b_{book_id[-6:]}",
+            book_id=book_id,
+            paragraph_id=None,
+            span_start=0,
+            span_end=8,
+            quote_text="合成反例文本",
+            illustrates_dims=["language.rhetoric"],
+            extracted_features={},
+        )
+        repo.create_evidence(
+            evidence_id=f"sr_ev_route_a_{book_id[-6:]}",
+            finding_id=finding_id,
+            quote_id=f"sr_quote_route_a_{book_id[-6:]}",
+            anchor_kind="paragraph_quote",
+            is_synthetic=0,
+        )
+        repo.create_evidence(
+            evidence_id=f"sr_ev_route_b_{book_id[-6:]}",
+            finding_id=finding_id,
+            quote_id=f"sr_quote_route_b_{book_id[-6:]}",
+            anchor_kind="counter_example",
+            is_synthetic=1,
         )
         profile_id = f"sr_profile_route_{book_id[-6:]}"
         repo.create_profile(
@@ -165,14 +201,53 @@ def test_delete_book(client: TestClient) -> None:
     assert resp2.status_code == 404
 
 
-def test_reclassify_placeholder(client: TestClient) -> None:
+def test_reclassify_llm_required_when_disabled(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     book_id = _import_book(client)
     resp = client.post(
         f"{PREFIX}/books/{book_id}/reclassify",
-        headers={"X-Idempotency-Key": "rec_1"},
+        headers={"X-Idempotency-Key": "rec_disabled"},
     )
-    assert resp.status_code == 200
-    assert resp.json()["data"]["status"] == "reclassify_pending"
+    # LLMRequiredError 同 start_run / synthesize 惯例:非 200
+    assert resp.status_code >= 400
+
+
+def test_reclassify_executes_and_purges_derived_data(
+    client: TestClient, monkeypatch, fake_paragraph_classifier
+) -> None:
+    """PR-23 — reclassify 真实执行:旧 run/finding/profile 消失,paragraphs 仍在,
+    stats_json 回写 paragraph_type_distribution / classifier_calibration。"""
+    import novel_system.api.routes.style_reference as sr_routes
+
+    fake = fake_paragraph_classifier(rule="default")
+    monkeypatch.setattr(
+        sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True)
+    )
+    book_id = _import_book(client)
+    run_id, finding_id, profile_id = _seed_full_chain(book_id)
+
+    resp = client.post(
+        f"{PREFIX}/books/{book_id}/reclassify",
+        headers={"X-Idempotency-Key": "rec_real"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["status"] == "reclassified"
+    assert data["paragraphs_count"] >= 1
+
+    # 派生数据全部消失
+    assert client.get(f"{PREFIX}/runs/{run_id}").status_code == 404
+    assert client.get(f"{PREFIX}/profiles/{profile_id}").status_code == 404
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        assert repo.list_findings(book_id=book_id) == []
+        assert repo.get_finding(finding_id) is None
+        # paragraphs 与 book 保留
+        assert len(repo.list_paragraphs(book_id)) == data["paragraphs_count"]
+
+    book = client.get(f"{PREFIX}/books/{book_id}").json()["data"]["book"]
+    assert book["stats_json"]["paragraph_type_distribution"]
+    assert "classifier_calibration" in book["stats_json"]
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +298,52 @@ def test_list_run_findings(client: TestClient) -> None:
     run_id, _, _ = _seed_full_chain(book_id)
     resp = client.get(f"{PREFIX}/runs/{run_id}/findings")
     assert resp.status_code == 200
-    assert len(resp.json()["data"]["findings"]) == 1
+    findings = resp.json()["data"]["findings"]
+    assert len(findings) == 1
+    # PR-23 — 不带 include 时响应里没有 evidence 键(零回归)
+    assert "evidence" not in findings[0]
+
+
+def test_start_run_defaults_to_all_four_layers(
+    client: TestClient, monkeypatch, fake_extractor_llm
+) -> None:
+    """PR-23 — POST runs 不带 layers → 全 4 层 + 16 sub_dim_results。"""
+    import novel_system.api.routes.style_reference as sr_routes
+
+    fake = fake_extractor_llm("default")
+    monkeypatch.setattr(
+        sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True)
+    )
+    book_id = _import_book(client)
+    resp = client.post(
+        f"{PREFIX}/books/{book_id}/runs",
+        json={},
+        headers={"X-Idempotency-Key": "run_default_layers"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["layers"] == ["language", "narrative", "scene", "theme"]
+    assert len(data["sub_dim_results"]) == 16
+
+
+def test_list_run_findings_include_evidence(client: TestClient) -> None:
+    """PR-23 — ?include=evidence:每条 finding 带 ≥2 evidence 且含 quote_text。"""
+    book_id = _import_book(client)
+    run_id, _, _ = _seed_full_chain(book_id)
+    resp = client.get(f"{PREFIX}/runs/{run_id}/findings?include=evidence")
+    assert resp.status_code == 200
+    findings = resp.json()["data"]["findings"]
+    assert len(findings) == 1
+    evidence = findings[0]["evidence"]
+    assert len(evidence) >= 2
+    assert all(e["quote_text"] for e in evidence)
+    assert {e["anchor_kind"] for e in evidence} == {"paragraph_quote", "counter_example"}
+    synthetic = next(e for e in evidence if e["anchor_kind"] == "counter_example")
+    assert synthetic["is_synthetic"] == 1
+    assert synthetic["paragraph_id"] is None
+    real = next(e for e in evidence if e["anchor_kind"] == "paragraph_quote")
+    assert real["paragraph_id"]
+    assert real["span"] == [0, 10]
 
 
 # ---------------------------------------------------------------------------

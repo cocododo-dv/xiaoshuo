@@ -2169,13 +2169,8 @@ def _offline_project_structure_payload(
         },
         "one_sentence_summary": {"summary": one_sentence},
         "one_paragraph_summary": {
+            # 三幕灾难不入库——读时由 derive_three_act(sentences) 派生（P1-2）。
             "sentences": _five_sentences(one_sentence, scene_lines),
-            "three_act_check": {
-                "first_disaster": scene_lines[0] if scene_lines else "",
-                "second_disaster": scene_lines[1] if len(scene_lines) > 1 else "",
-                "third_disaster": scene_lines[2] if len(scene_lines) > 2 else "",
-                "ending": scene_lines[-1] if scene_lines else "",
-            },
             "moral_premise": "",
         },
         "scene_list": {"scenes": scene_list},

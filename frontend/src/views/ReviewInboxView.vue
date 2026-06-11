@@ -561,3 +561,31 @@ watch(
     </PanelShell>
   </section>
 </template>
+
+<style scoped>
+/* 设计稿待办语言:「优先处理」是英雄横幅——需要拍板的事只有一个入口 */
+.review-focus-summary {
+  border: 1px solid color-mix(in srgb, var(--crimson) 28%, transparent);
+  border-left: 4px solid var(--crimson);
+  background: color-mix(in srgb, var(--crimson-wash) 36%, var(--paper-1));
+  border-radius: var(--r-lg);
+}
+
+.review-focus-summary .eyebrow {
+  color: var(--crimson);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.review-focus-summary h3 {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  letter-spacing: -0.01em;
+}
+
+.review-inbox-section-head h3,
+.review-inbox-section-head h2 {
+  font-family: var(--font-serif);
+}
+</style>

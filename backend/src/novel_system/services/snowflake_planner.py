@@ -10,72 +10,15 @@ from novel_system.db.models import OutlinePlan, SnowflakeArtifact, StoryCharacte
 from novel_system.services.errors import DomainError
 from novel_system.services.project_runtime_invalidation import ProjectRuntimeInvalidationService
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService, outline_plan_payload, project_payload
+from novel_system.services.snowflake_staleness import (
+    field_sigs,
+    recompute_stale,
+    snapshot_consumed_sigs,
+)
+from novel_system.services.snowflake_steps import STEP_ORDER, planner_step_list
 
-SNOWFLAKE_STEPS = [
-    {
-        "step_key": "book_brief",
-        "label": "读者定位",
-        "english_label": "Target Audience",
-        "description": "明确你的小说类型和目标读者群体。你写作的核心目标是取悦你的读者——先知道为谁写，再决定写什么。",
-    },
-    {
-        "step_key": "one_sentence_summary",
-        "label": "一句话概括",
-        "english_label": "One-Sentence Summary",
-        "description": "用一句话（最好25字以内）概括整部小说。这是最强营销工具——让人听完就想说「告诉我更多！」",
-    },
-    {
-        "step_key": "one_paragraph_summary",
-        "label": "一段话概括",
-        "english_label": "One-Paragraph Summary",
-        "description": "将一句话扩展为五句话，构建三幕结构与三个关键「灾难」转折点。这确保你的故事有扎实的戏剧骨架。",
-    },
-    {
-        "step_key": "character_sheets",
-        "label": "角色摘要表",
-        "english_label": "Character Sheets",
-        "description": "为每个重要角色创建基础档案。优秀小说由立体角色驱动——角色的价值观冲突产生了你所有的场景冲突。",
-    },
-    {
-        "step_key": "short_synopsis",
-        "label": "一页梗概",
-        "english_label": "Short Synopsis",
-        "description": "将五句话每一句扩展为一段（约100字），形成约500字的故事骨架。这是故事的第一次「填肉」。",
-    },
-    {
-        "step_key": "character_synopses",
-        "label": "角色背景故事",
-        "english_label": "Character Synopses",
-        "description": "为每个重要角色写半页到一页的背景故事。理解角色为何成为这样的人，你才能写出他真实可信的行动。",
-    },
-    {
-        "step_key": "long_synopsis",
-        "label": "长篇大纲",
-        "english_label": "Long Synopsis",
-        "description": "将一页梗概扩展为四到五页详细大纲。这是最接近实际写作的规划阶段。",
-        "skippable": True,
-    },
-    {
-        "step_key": "character_bibles",
-        "label": "角色全档案",
-        "english_label": "Character Bibles",
-        "description": "为每个角色创建详尽的「角色圣经」，彻底了解你的角色——他们是真实存在于你脑海中的人。",
-    },
-    {
-        "step_key": "scene_list",
-        "label": "场景列表",
-        "english_label": "Scene List",
-        "description": "列出小说中每一个场景。场景是小说的基本单位——每个场景必须有冲突，必须是一个完整的缩微故事。",
-    },
-    {
-        "step_key": "scene_details",
-        "label": "场景规划",
-        "english_label": "Scene Planning",
-        "description": "为每个场景规划关键信息。主动场景制造紧张，被动场景让读者喘息并期待——两者交替构成故事的引擎。",
-    },
-]
-
-STEP_INDEX = {step["step_key"]: index for index, step in enumerate(SNOWFLAKE_STEPS)}
+SNOWFLAKE_STEPS = planner_step_list()
+STEP_INDEX = STEP_ORDER
 GATE_STATUSES = {"approved", "skipped"}
 
 
@@ -178,6 +121,10 @@ class SnowflakePlannerService:
 
         artifact.status = "approved"
         artifact.approved_at = utcnow()
+        # P0-3: snapshot "what I consumed, at what version" for diff-aware staleness.
+        artifact.consumed_input_sigs_json = snapshot_consumed_sigs(
+            latest_by_step, list(self._input_refs(artifact.step_key, latest_by_step).keys())
+        )
         self._mark_downstream_stale(artifact)
         self._sync_characters(artifact)
         impact = ProjectRuntimeInvalidationService(self.session).invalidate_for_snowflake_step(
@@ -411,29 +358,47 @@ class SnowflakePlannerService:
             row.status = "superseded"
 
     def _mark_downstream_stale(self, artifact: SnowflakeArtifact) -> None:
-        step_index = STEP_INDEX[artifact.step_key]
-        downstream_keys = [step["step_key"] for step in SNOWFLAKE_STEPS[step_index + 1 :]]
-        if not downstream_keys:
-            return
-        rows = self.session.execute(
+        # P0-3: shares the single dependency/diff-aware judgment with the workspace
+        # path (snowflake_staleness.recompute_stale), so both stacks agree on exactly
+        # which steps a revision invalidates instead of staling every later step.
+        candidates = self.session.execute(
             select(SnowflakeArtifact).where(
                 SnowflakeArtifact.project_id == artifact.project_id,
-                SnowflakeArtifact.step_key.in_(downstream_keys),
+                SnowflakeArtifact.artifact_id != artifact.artifact_id,
                 SnowflakeArtifact.status.in_(["pending_review", "approved", "skipped"]),
             )
         ).scalars().all()
-        for row in rows:
-            row.status = "stale"
+        hits = recompute_stale(
+            changed_step_key=artifact.step_key,
+            current_field_sigs=field_sigs(artifact.artifact_json or {}),
+            candidate_rows=candidates,
+            step_order=STEP_INDEX,
+        )
+        for hit in hits:
+            hit.row.status = "stale"
 
     def _sync_characters(self, artifact: SnowflakeArtifact) -> None:
-        if artifact.step_key not in {"character_sheets", "character_bibles"}:
+        step_field = {
+            "character_sheets": "summary_json",
+            "character_synopses": "synopsis_json",
+            "character_bibles": "bible_json",
+        }
+        field = step_field.get(artifact.step_key)
+        if field is None:
             return
         characters = artifact.artifact_json.get("characters") or []
+        minted = False
         for index, item in enumerate(characters, start=1):
             if not isinstance(item, dict):
                 continue
             display_name = str(item.get("display_name") or item.get("name") or f"角色{index}").strip()
-            character_id = str(item.get("character_id") or f"{artifact.project_id}_CHAR{index:02d}").strip()
+            character_id = str(item.get("character_id") or "").strip()
+            if not character_id:
+                # Mint a stable, position-independent id and write it back so the
+                # approved artifact keeps the same identity on every later sync.
+                character_id = f"{artifact.project_id}_CHAR_{uuid.uuid4().hex[:8]}"
+                item["character_id"] = character_id
+                minted = True
             row = self.session.get(StoryCharacter, character_id)
             if row is None:
                 row = StoryCharacter(
@@ -442,6 +407,7 @@ class SnowflakePlannerService:
                     display_name=display_name,
                     role=item.get("role"),
                     summary_json={},
+                    synopsis_json={},
                     bible_json={},
                     status="approved",
                 )
@@ -449,10 +415,9 @@ class SnowflakePlannerService:
             row.display_name = display_name
             row.role = item.get("role") or row.role
             row.status = "approved"
-            if artifact.step_key == "character_sheets":
-                row.summary_json = item
-            else:
-                row.bible_json = item
+            setattr(row, field, item)
+        if minted:
+            artifact.artifact_json = {**artifact.artifact_json, "characters": characters}
 
     def _skip_artifact(self, step_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_step(step_key)
@@ -462,13 +427,6 @@ class SnowflakePlannerService:
         if not reason:
             raise DomainError("SNOWFLAKE_SKIP_REASON_REQUIRED", "skip_reason is required", status_code=400)
         return {"skipped": True, "skip_reason": reason}
-
-    def _diagnosis(self, step_key: str, artifact_json: dict[str, Any], status: str) -> dict[str, Any]:
-        if status == "skipped":
-            return {"severity": "info", "message": "此步骤已记录跳过原因，可继续下一步。"}
-        if not artifact_json:
-            return {"severity": "warning", "message": "候选内容为空。"}
-        return {"severity": "info", "message": "候选已生成，作者确认后进入下一层雪花。"}
 
     def _diagnosis(
         self,
@@ -505,86 +463,6 @@ class SnowflakePlannerService:
     ) -> dict[str, Any]:
         outline_lines = _outline_lines(project.outline_text)
         return _build_outline_based_artifact(project, step_key, latest_by_step, outline_lines)
-        if step_key == "book_brief":
-            return {
-                "category": project.genre or "长篇小说",
-                "target_reader": f"喜欢{project.genre or '类型小说'}、人物选择和层层揭示的读者",
-                "story_kind": "以行动、代价和真相揭露推动的长篇故事",
-                "delight_reason": "读者会期待主角不断接近真相，同时承担越来越具体的关系代价。",
-                "genre_promise": "以调查推进真相，以关系代价放大抉择。",
-                "expected_reader_emotion": "读者应持续感到压力、怀疑和必须立刻翻页的未完成感。",
-                "safety_rules": [
-                    "参考书只能提供抽象风格与结构经验，不得复制原文表达。",
-                    "不得借用参考书的人物、设定、桥段、标志性意象或句式。",
-                ],
-            }
-        if step_key == "one_sentence_summary":
-            return {
-                "summary": "一名被旧信召回雨城的女人追查十年前旧案，却发现真相会撕开自己的家族。"
-            }
-        if step_key == "one_paragraph_summary":
-            return {
-                "sentences": [
-                    "林岚收到来自十年前的信，被迫回到雨城面对旧案和家族裂缝。",
-                    "她发现第一条线索指向亲人，决定留下调查。",
-                    "调查中途，她原本相信的记忆被推翻，也必须改变只求自保的想法。",
-                    "当关键证人失踪，幕后人逼她沉默，她和对手都走向最后摊牌。",
-                    "林岚公开真相，失去安全的家庭幻象，却获得重新生活的自由。",
-                ],
-                "three_act_check": {
-                    "first_disaster": "旧信证明旧案并未结束。",
-                    "second_disaster": "家族成员可能参与掩盖真相。",
-                    "third_disaster": "证人失踪，主角被迫公开对抗。",
-                    "ending": "公开真相，承受代价。",
-                },
-                "moral_premise": "保护不是沉默，真正的保护要允许代价和真相同时被看见。",
-            }
-        if step_key == "character_sheets":
-            return {"characters": _base_characters(project.project_id)}
-        if step_key == "short_synopsis":
-            return {
-                "paragraphs": [
-                    "林岚收到一封迟到十年的信，雨城旧案重新浮出水面。她原想只确认信件来源就离开，却发现信中细节只有家里人才知道。",
-                    "她追查旧案时与陈渡重新合作，线索不断指向家族内部。林岚越想保护现有生活，越发现沉默本身就是当年悲剧的延续。",
-                    "证人失踪后，沈确逼她在家族体面和公开真相之间选择。林岚最终公布证据，付出亲情破裂的代价，也结束了旧案制造的长期恐惧。",
-                ]
-            }
-        if step_key == "character_synopses":
-            return {
-                "characters": [
-                    {
-                        **character,
-                        "synopsis": f"{character['display_name']}围绕旧案不断被迫选择，个人目标与家族真相发生冲突。",
-                    }
-                    for character in _base_characters(project.project_id)
-                ]
-            }
-        if step_key == "long_synopsis":
-            short = latest_by_step.get("short_synopsis")
-            paragraphs = list((short.artifact_json if short else {}).get("paragraphs") or [])
-            return {"paragraphs": paragraphs + ["最后的公开行动让雨城旧案从私人伤口变成公共真相。"]}
-        if step_key == "character_bibles":
-            return {
-                "characters": [
-                    {
-                        **character,
-                        "age": 32 if index == 1 else 35 + index,
-                        "home": "雨城旧城区",
-                        "strongest_trait": "能在压力下快速行动",
-                        "weakest_trait": "习惯把痛苦解释成自己的责任",
-                        "deepest_fear": "真相会证明自己一直爱错了人",
-                        "how_character_changes": "从逃避评价变成愿意承担公开真相的代价",
-                    }
-                    for index, character in enumerate(_base_characters(project.project_id), start=1)
-                ]
-            }
-        if step_key == "scene_list":
-            return {"scenes": _scene_list(project, outline_lines)}
-        if step_key == "scene_details":
-            scene_list = latest_by_step.get("scene_list")
-            scenes = list((scene_list.artifact_json if scene_list else {}).get("scenes") or _scene_list(project, outline_lines))
-            return {"scenes": [_scene_detail(scene, index) for index, scene in enumerate(scenes, start=1)]}
-        raise DomainError("SNOWFLAKE_STEP_NOT_FOUND", "unknown snowflake step", status_code=404)
 
 
 def _build_outline_based_artifact(
@@ -644,13 +522,8 @@ def _build_outline_based_artifact(
                 f"{spine[4]}让结局必须在真相、关系和代价之间完成选择。",
             ]
             return {
+                # 三幕灾难不入库——读时由 derive_three_act(sentences) 派生（P1-2）。
                 "sentences": sentences,
-                "three_act_check": {
-                    "first_disaster": sentences[1],
-                    "second_disaster": sentences[2],
-                    "third_disaster": sentences[3],
-                    "ending": sentences[4],
-                },
                 "moral_premise": "逃避代价只会扩大伤害；承担选择才可能结束伤害。",
             }
         sentences = [
@@ -661,13 +534,8 @@ def _build_outline_based_artifact(
             f"{spine[4]} forces the ending to choose between truth, relationship, and cost.",
         ]
         return {
+            # Three-act disasters are not persisted — derived on read from sentences (P1-2).
             "sentences": sentences,
-            "three_act_check": {
-                "first_disaster": sentences[1],
-                "second_disaster": sentences[2],
-                "third_disaster": sentences[3],
-                "ending": sentences[4],
-            },
             "moral_premise": "Avoiding cost preserves harm; choosing with cost creates change.",
         }
 
@@ -935,156 +803,9 @@ def _outline_scene_detail(scene: dict[str, Any], index: int, lines: list[str], *
     return base
 
 
-def _base_characters(project_id: str) -> list[dict[str, Any]]:
-    return [
-        {
-            "character_id": f"{project_id}_CHAR01",
-            "display_name": "林岚",
-            "role": "主角",
-            "goal": "查清十年前旧案与旧信来源",
-            "ambition": "摆脱被家族评价束缚的人生",
-            "values": ["没有什么比真相更重要", "没有什么比保护所爱的人更重要"],
-            "conflict": "真相会伤害她想保护的家人。",
-            "epiphany": "真正的保护不是沉默，而是让代价被看见。",
-            "one_sentence_summary": "一名回到雨城的女人追查旧案，却发现真相来自家族内部。",
-            "one_paragraph_summary": "林岚收到旧信后回城调查，逐步发现家族参与掩盖旧案；她在关系与真相之间挣扎，最终选择公开证据。",
-        },
-        {
-            "character_id": f"{project_id}_CHAR02",
-            "display_name": "陈渡",
-            "role": "盟友",
-            "goal": "帮助林岚恢复旧案证据链",
-            "ambition": "证明自己当年没有背弃朋友",
-            "values": ["没有什么比兑现承诺更重要", "没有什么比证据更重要"],
-            "conflict": "他掌握的信息会让林岚重新受伤。",
-            "epiphany": "陪伴不是替人决定，而是把选择交还给她。",
-            "one_sentence_summary": "一名旧友试图补上迟到十年的证据，却必须面对自己的沉默。",
-            "one_paragraph_summary": "陈渡协助调查旧信与旧案，既提供证据也制造新的不信任，最终学会让林岚自己做选择。",
-        },
-        {
-            "character_id": f"{project_id}_CHAR03",
-            "display_name": "沈确",
-            "role": "对手",
-            "goal": "阻止旧案真相公开",
-            "ambition": "维持雨城体面和家族秩序",
-            "values": ["没有什么比秩序更重要", "没有什么比保住体面更重要"],
-            "conflict": "林岚的调查不断逼近他保护的秘密。",
-            "epiphany": "",
-            "one_sentence_summary": "一名守旧秩序的人不惜继续制造伤害，也要让旧案保持沉默。",
-            "one_paragraph_summary": "沈确操控旧案相关证据，试图逼退林岚，但他的阻拦反而让真相更快浮出水面。",
-        },
-    ]
-
-
 def _outline_lines(outline_text: str) -> list[str]:
     lines = [line.strip(" -\t\r\n.。") for line in str(outline_text or "").splitlines() if line.strip()]
     return lines or ["旧信把主角带回雨城", "旧案牵出家族秘密", "主角公开真相"]
-
-
-def _scene_list(project: StoryProject, outline_lines: list[str]) -> list[dict[str, Any]]:
-    chapter_count = max(1, min(project.target_chapter_count or len(outline_lines) or 2, 4))
-    while len(outline_lines) < chapter_count:
-        outline_lines.append(outline_lines[-1])
-    scenes: list[dict[str, Any]] = []
-    for chapter_index in range(1, chapter_count + 1):
-        chapter_id = f"{project.project_id}_CH{chapter_index:02d}"
-        chapter_point = outline_lines[chapter_index - 1]
-        for scene_index in range(1, 3):
-            scenes.append(
-                {
-                    "scene_id": f"{chapter_id}_SC{scene_index:02d}",
-                    "chapter_id": chapter_id,
-                    "chapter_title": f"第{chapter_index:02d}章 {chapter_point[:16]}",
-                    "chapter_goal": f"推进大纲节点：{chapter_point}",
-                    "scene_seq": scene_index,
-                    "pov_character_id": f"{project.project_id}_CHAR01",
-                    "onstage_chars_json": [f"{project.project_id}_CHAR01", f"{project.project_id}_CHAR02"],
-                    "summary": f"{'打开局面' if scene_index == 1 else '制造转折'}：{chapter_point}",
-                    "scene_type": "proactive" if scene_index == 1 else "reactive",
-                    "chapter_role": "承压" if scene_index == 1 else "转向",
-                }
-            )
-    return scenes
-
-
-def _scene_detail(scene: dict[str, Any], index: int) -> dict[str, Any]:
-    scene_type = str(scene.get("scene_type") or ("proactive" if index % 2 else "reactive"))
-    base = {
-        **scene,
-        "scene_type": scene_type,
-        "location": "雨城旧街",
-        "target_length_band": "medium",
-        "must_include_text": scene.get("summary"),
-        "exit_change": "林岚得到新证据，但必须付出关系代价。",
-        "hook": "新的证据指向更亲近的人。",
-    }
-    if scene_type == "reactive":
-        base.update(
-            {
-                "scene_crucible": "如果人物在这一刻退缩，上一场 setback 带来的损失就会扩大并冻结后续行动。",
-                "reaction": "林岚被上一场的发现击中，短暂失去判断。",
-                "dilemma": "她不能退回安全生活，也不能立刻公开未证实的线索。",
-                "decision": "她决定冒险去见掌握时间线的人。",
-                "beats_json": ["情绪反应", "两难选择", "做出下一步决定"],
-            }
-        )
-    else:
-        base.update(
-            {
-                "scene_crucible": "人物越接近眼前目标，就越接近会让她付出代价的阻力源。",
-                "goal": "林岚要确认旧信与旧案的直接关联。",
-                "conflict": "相关人物回避证据，并用家族关系压她停手。",
-                "setback": "她拿到线索，却发现线索指向自己的家人。",
-                "beats_json": ["带着目标进入场景", "遭遇阻碍", "以代价或坏消息收束"],
-            }
-        )
-    return base
-
-
-def _scene_detail(scene: dict[str, Any], index: int) -> dict[str, Any]:
-    scene_type = str(scene.get("scene_type") or ("proactive" if index % 2 else "reactive")).strip() or "proactive"
-    base = {
-        **scene,
-        "scene_type": scene_type,
-        "location": scene.get("location") or "rain city old street",
-        "target_length_band": scene.get("target_length_band") or "medium",
-        "must_include_text": scene.get("must_include_text") or scene.get("summary"),
-        "exit_change": scene.get("exit_change") or "The scene should leave a visible cost or new pressure.",
-        "hook": scene.get("hook") or "End with a pull that forces the next scene.",
-        "triage_status": str(scene.get("triage_status") or "").strip(),
-        "triage_notes": str(scene.get("triage_notes") or "").strip(),
-    }
-    if scene_type == "reactive":
-        base.update(
-            {
-                "scene_crucible": scene.get("scene_crucible")
-                or scene.get("crucible")
-                or "If the character retreats here, the previous setback hardens into loss.",
-                "crucible": scene.get("crucible")
-                or scene.get("scene_crucible")
-                or "If the character retreats here, the previous setback hardens into loss.",
-                "reaction": scene.get("reaction") or "The protagonist reels from the last blow.",
-                "dilemma": scene.get("dilemma") or "Every available move now carries a cost.",
-                "decision": scene.get("decision") or "The protagonist commits to the next risky move.",
-                "beats_json": scene.get("beats_json") or ["reaction", "dilemma", "decision"],
-            }
-        )
-    else:
-        base.update(
-            {
-                "scene_crucible": scene.get("scene_crucible")
-                or scene.get("crucible")
-                or "The closer the protagonist moves toward the goal, the closer the price gets.",
-                "crucible": scene.get("crucible")
-                or scene.get("scene_crucible")
-                or "The closer the protagonist moves toward the goal, the closer the price gets.",
-                "goal": scene.get("goal") or "The protagonist enters with a concrete objective.",
-                "conflict": scene.get("conflict") or "People, information, or the setting block that objective.",
-                "setback": scene.get("setback") or "The scene ends with loss, cost, or a harder problem.",
-                "beats_json": scene.get("beats_json") or ["goal", "conflict", "setback"],
-            }
-        )
-    return base
 
 
 def _scene_writer_brief(scene_type: str, detail: dict[str, Any]) -> dict[str, Any]:

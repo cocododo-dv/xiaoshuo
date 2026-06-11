@@ -89,7 +89,9 @@ FastAPI application (`api/app.py`) with one router per domain area (`api/routes/
 - `services/snowflake_workspace_llm.py` + `services/llm_task_runner.py` — LLM call orchestration
 - `services/llm_client.py` — multi-provider LLM client (OpenAI-compatible, Anthropic, DeepSeek, Zhipu GLM, Gemini)
 - `services/scene_generation.py` + `services/qc_engine.py` + `services/scene_quality.py` — scene pipeline and quality gates
-- `services/reference_learning.py` + `services/style_profile.py` — reference book import and abstract style-profile extraction
+- `services/style_reference/` — reference-book style subsystem (ingest → segment → extract → synthesize → inject → validate → materialize); replaced the legacy `reference_learning.py`. See "Style Reference subsystem" below
+- `services/style_profile.py` — older abstract style-feature contract extractor (7 features: rhythm/syntax/imagery/narrative_distance/…), separate from `style_reference/`
+- `services/source_safety.py` + `services/reference_safety.py` — copy guardrails (protected source terms + n-gram copy detection over reference material)
 - `services/vector_store.py` — ChromaDB abstraction; swapped for in-memory store when `NOVEL_SYSTEM_VECTOR_BACKEND=memory`
 - `services/versioning/` — promotion, review materialization, runtime recovery, vector lifecycle
 - `services/idempotency.py` + `services/hash_engine.py` — idempotency contracts for LLM calls and content hashing
@@ -100,11 +102,13 @@ FastAPI application (`api/app.py`) with one router per domain area (`api/routes/
 - `SnowflakeScenePlan` / `SnowflakeSceneTriageItem` — scene-level plans and quality triage
 - `SnowflakeCharacterPlan` — per-character snowflake data
 - `ChapterGoal` / `SceneCard` — materialized chapter/scene production units (created by structure materialization)
+- `StyleReferenceBook` / `…Paragraph` / `…Run` / `…Extraction` / `…Finding` / `…Evidence` / `…Quote` / `…Profile` / `…InjectionBinding` / `…ValidationReport` / `…BannedTerm` / `…MetricEvent` — the Style Reference subsystem's table family
 
 **Configuration** lives in the project-root `config/` directory (not inside `backend/`):
 - `config/models.yaml` — model profiles (`local_fast`, `quality_strong`, `dual_track`) and task routing (task name → provider/model/temperature/response_format)
 - `config/prompts.yaml` — prompt templates with `system_prompt`, `task_prompt`, `structured_schema`, and `input_token_budget`
 - `config/allowlists.yaml` / `config/hash_contract.yaml` / `config/writer_rubrics.yaml` — domain policy files
+- `config/style_reference/` — Style Reference policy files (`banned_adjectives.yaml`, `extraction.yaml`, `injection_budget.yaml`, `input_thresholds.yaml`, `sensory_lexicon.yaml`, `tolerance_floors.yaml`, `anti_plagiarism_template.txt`, `prompts/`)
 - `config/evals/` — evaluation datasets for literary quality scoring
 
 Runtime LLM config can also be stored in the DB (via `SystemConfigSnapshot`) and applied on top of env vars by `settings.py:get_settings()`.
@@ -117,6 +121,8 @@ Runtime LLM config can also be stored in the DB (via `SystemConfigSnapshot`) and
 
 **Author-action pattern** (`services/author_actions.py`): when the backend detects a missing prerequisite (e.g., LLM not configured, step incomplete), it returns an `author_action` dict that tells the frontend which view to navigate to and what button to show. This avoids hard-blocking the user while still guiding them.
 
+**Style Reference subsystem** (`services/style_reference/`, route prefix `/api/v2/style-reference`): the reference-book style engine that replaced the legacy `reference_learning.py`. Pipeline: `ingest` (import + checksum + `assess_input_size` layer gating) → `segmentation/` (paragraph typing via heuristic + LLM classifier with anchor-set calibration) → `extractors/` (four layers — `language` / `narrative` / `scene` / `theme` — over 16 sub-dimensions; each finding requires ≥2 evidence spans and rejects banned vague adjectives, enforced by Pydantic + two-level retry) → `profile_synthesizer` (16 sub-profiles → `StyleProfile` + metrics baseline) → `injection/` (A=System-prompt / B=Few-shot / C=RAG strategies with a `style_intensity` slider and per-`TaskType` defaults) → `validation/` (three concurrent checks — `quantitative` adaptive-tolerance + `semantic` critic-LLM + `plagiarism` n-gram; sync fast-path for QC gates, async polling otherwise) → `materialization` (profile → `ReviewItem` → style rules). `metrics.py` computes hard quantitative anchors (sentence length, sensory-word frequency, dialogue ratio) as pure functions reused across extract/validate/preview. Findings are `observation` or `forbidden_pattern` (anti-samples), distinguished by `finding_kind`. Anti-plagiarism is two-layer: prevention (fixed System-prompt red-line segment) + detection (8-gram / 12-char). Authoritative design: `docs/style_reference_module_design_v1.1.md`; progress log: `docs/style-reference-progress.md`.
+
 ### Frontend (`frontend/src/`)
 
 Vue 3 SPA. Navigation is managed by `router.js` (a custom SPA router, not Vue Router) which defines `workflowGroups` (journey stages: shape/draft/polish/inform/decide/toolbox) and a flat view list with metadata like `writerPrimary`, `writerOrder`, `nextViews`, and `cacheMode`. View state lives in individual Pinia stores under `stores/` (one store per major view). The API layer lives in `lib/api/` (domain modules re-exported via `lib/api/index.js`). `lib/api/client.js` handles the response envelope, idempotency keys, operator-ref headers, and `ApiRequestError` normalization. Each module reads the backend base URL from `localStorage` (key `novel-system-api-base`) and falls back to `VITE_NOVEL_SYSTEM_API_BASE` or `http://127.0.0.1:8000`.
@@ -124,7 +130,7 @@ Vue 3 SPA. Navigation is managed by `router.js` (a custom SPA router, not Vue Ro
 **Primary writer views** (in `views/`):
 - `SnowflakeWorkbenchView.vue` — main entry; 10-step snowflake generation, scene triage, structure materialization and confirmation
 - `WriterRoomView.vue` — inline text editing for current chapter/scene
-- `ReferenceLearningView.vue` — import TXT/MD books and bind style profiles to a project
+- `ReferenceLearningView.vue` (`参考书学习`) — front end for the Style Reference subsystem: import books, run extraction, synthesize a profile, and bind a `ready` profile to a project (refactored in place; route slot and `stores/referenceLearning.js` retained)
 - `ReviewInboxView.vue` — human-review queue (QC blocks, safety flags, triage exceptions)
 
 **Advanced/production views** (hidden from writer mode):
@@ -139,7 +145,7 @@ The `UiModeSwitch` component switches between `作家` (writer) and `高级` (ad
 - **Structure Materialization**: `POST /api/v2/projects/{id}/snowflake-workspace/materialize` converts approved `SnowflakeScenePlan` rows into `ChapterGoal` and `SceneCard` records. Proactive scenes get `Goal/Conflict/Setback` written to `SceneCard.writer_brief_json`; reactive scenes get `Reaction/Dilemma/Decision`.
 - **Scene Triage**: Before materialization, each scene plan is scored and assigned a triage status (`qualified`, `needs_fix`, `rewrite`). The `suggest` endpoint uses LLM to recommend triage decisions.
 - **Vector Backend Split**: Windows tests always use `memory` backend; real ChromaDB only runs in Linux/WSL and is gated by the `chroma_integration` pytest marker. `conftest.py` applies this automatically.
-- **Reference Learning**: Imports books as `ReferenceBook` → segments → style findings → `ReferenceProfile`. Profiles are abstract (rhythm, syntax, structure); the system must never copy source text, characters, or plot.
+- **Style Reference (style imitation)**: Profiles are *abstract* (layered rhythm/syntax/imagery/narrative dimensions + anti-clone `forbidden_pattern`s) — the system must never copy source text, characters, settings, or signature imagery. See the "Style Reference subsystem" above for the ingest→extract→inject→validate pipeline; `services/source_safety.py` + `services/reference_safety.py` enforce the copy guardrails.
 - **Dual-stack Pagination**: API responses support both `page`/`page_size` (offset) and `cursor`/`limit` (cursor-based) patterns via `services/pagination.py`.
 - **Test Isolation**: `conftest.py` auto-creates an isolated SQLite DB per test in `tmp_path`, resets the engine, and auto-skips `chroma_integration`-marked tests on Windows. No shared test state between tests.
 - **Snowflake Assistant Turns**: `SnowflakeWorkspaceAssistantService` stores conversational coaching turns per step, enabling LLM-guided iterative refinement of snowflake drafts without losing context.

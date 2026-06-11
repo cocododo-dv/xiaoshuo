@@ -1,43 +1,45 @@
 /* Design tokens: warm paper workbench */
 :root {
-  --ink: #1b1815;
-  --paper: #efe6d3;
-  --paper-strong: #f7f1e5;
-  --accent: #a33f2f;
-  --accent-hover: #c44d3b;
+  /* 值已重指向 design-tokens.css 的全局设计令牌(随白昼/暮色/夜灯主题自动适配);
+     令牌名保持不变,旧视图无需任何改动。 */
+  --ink: var(--ink-1);
+  --paper: var(--paper-2);
+  --paper-strong: var(--paper-1);
+  --accent: var(--crimson);
+  --accent-hover: var(--crimson-soft);
   --sage: #4f6f63;
-  --blue: #315a73;
-  --teal: #3f7d86;
-  --navy: #253342;
-  --navy-hover: #364a60;
-  --surface-text: #211a15;
-  --surface-heading: #16110e;
-  --surface-muted: rgba(33, 26, 21, 0.72);
-  --surface-subtle: rgba(33, 26, 21, 0.58);
-  --surface-faint: rgba(33, 26, 21, 0.44);
-  --surface-panel: rgba(247, 241, 229, 0.94);
-  --surface-panel-strong: rgba(255, 252, 245, 0.9);
-  --surface-raised: rgba(255, 255, 255, 0.72);
-  --surface-line: rgba(33, 26, 21, 0.15);
+  --blue: var(--slate);
+  --teal: var(--gold);
+  --navy: var(--ink-1);
+  --navy-hover: var(--ink-2);
+  --surface-text: var(--ink-1);
+  --surface-heading: var(--ink-1);
+  --surface-muted: var(--ink-3);
+  --surface-subtle: var(--ink-3);
+  --surface-faint: var(--ink-4);
+  --surface-panel: var(--paper-1);
+  --surface-panel-strong: var(--paper-0);
+  --surface-raised: var(--paper-1);
+  --surface-line: var(--line-1);
   --rail-bg: #223039;
   --rail-bg-strong: #1d282f;
   --rail-text: #fbf5ea;
   --rail-muted: rgba(251, 245, 234, 0.78);
   --rail-subtle: rgba(251, 245, 234, 0.58);
-  --button-primary-bg: var(--navy);
-  --button-primary-hover: var(--navy-hover);
-  --button-secondary-bg: rgba(37, 51, 66, 0.1);
-  --button-secondary-hover: rgba(37, 51, 66, 0.16);
-  --button-secondary-text: #253342;
-  --button-secondary-border: rgba(37, 51, 66, 0.16);
-  --button-disabled-bg: rgba(37, 51, 66, 0.16);
-  --button-disabled-text: rgba(33, 26, 21, 0.48);
-  --danger-bg: #9f3a2d;
-  --danger-hover: #bc4b3a;
+  --button-primary-bg: var(--ink-1);
+  --button-primary-hover: var(--ink-2);
+  --button-secondary-bg: var(--paper-2);
+  --button-secondary-hover: var(--paper-3);
+  --button-secondary-text: var(--ink-2);
+  --button-secondary-border: var(--line-2);
+  --button-disabled-bg: var(--paper-3);
+  --button-disabled-text: var(--ink-4);
+  --danger-bg: var(--rose);
+  --danger-hover: color-mix(in srgb, var(--rose) 85%, white);
   --shadow: rgba(27, 24, 21, 0.16);
   --line: var(--surface-line);
-  --line-focus: rgba(163, 63, 47, 0.45);
-  --shadow-focus: 0 0 0 3px rgba(163, 63, 47, 0.15);
+  --line-focus: color-mix(in srgb, var(--crimson) 45%, transparent);
+  --shadow-focus: 0 0 0 3px var(--crimson-wash);
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
   --space-md: 1rem;
@@ -47,33 +49,33 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-pill: 999px;
-  --toast-info-edge: var(--blue);
-  --toast-info-bg: rgba(49, 90, 115, 0.1);
+  --toast-info-edge: var(--slate);
+  --toast-info-bg: var(--slate-wash);
   --toast-success-edge: var(--sage);
-  --toast-success-bg: rgba(79, 111, 99, 0.12);
-  --toast-warning-edge: #b07a1f;
-  --toast-warning-bg: rgba(176, 122, 31, 0.12);
-  --toast-error-edge: var(--danger-bg);
-  --toast-error-bg: rgba(159, 58, 45, 0.12);
+  --toast-success-bg: var(--sage-wash);
+  --toast-warning-edge: var(--gold);
+  --toast-warning-bg: var(--gold-wash);
+  --toast-error-edge: var(--rose);
+  --toast-error-bg: var(--rose-wash);
 
-  --color-canvas: #dccab2;
+  --color-canvas: var(--paper-0);
   --color-paper: var(--paper);
   --color-paper-strong: var(--paper-strong);
-  --color-panel: rgba(255, 253, 247, 0.94);
-  --color-panel-solid: #fffdf7;
-  --color-raised: rgba(255, 255, 255, 0.72);
+  --color-panel: var(--paper-1);
+  --color-panel-solid: var(--paper-1);
+  --color-raised: var(--paper-1);
   --color-rail: var(--rail-bg);
   --color-rail-strong: var(--rail-bg-strong);
-  --color-primary: #2f6f62;
-  --color-primary-strong: #24564d;
-  --color-secondary: var(--navy);
-  --color-info: var(--blue);
+  --color-primary: var(--crimson);
+  --color-primary-strong: color-mix(in srgb, var(--crimson) 85%, black);
+  --color-secondary: var(--ink-2);
+  --color-info: var(--slate);
   --color-success: var(--sage);
   --color-accent: var(--accent);
-  --color-warning: #b07a1f;
-  --color-danger: var(--danger-bg);
-  --color-border: rgba(33, 26, 21, 0.15);
-  --color-border-strong: rgba(33, 26, 21, 0.24);
+  --color-warning: var(--gold);
+  --color-danger: var(--rose);
+  --color-border: var(--line-1);
+  --color-border-strong: var(--line-2);
   --color-text: var(--surface-text);
   --color-text-muted: var(--surface-muted);
   --color-text-subtle: var(--surface-subtle);
@@ -93,8 +95,9 @@
   font-family: var(--font-body);
   color: var(--surface-text);
   background:
-    linear-gradient(135deg, rgba(163, 63, 47, 0.1), transparent 32%),
-    linear-gradient(135deg, #d6c7ae 0%, #f4ebdb 45%, #d4c1aa 100%);
+    radial-gradient(120% 80% at 0% 0%, color-mix(in srgb, var(--gold-wash) 40%, transparent), transparent 50%),
+    radial-gradient(90% 70% at 100% 100%, color-mix(in srgb, var(--crimson-wash) 26%, transparent), transparent 55%),
+    var(--paper-0);
 }
 
 /* Base elements */
@@ -121,7 +124,7 @@ button {
   border: 0;
   border-radius: 999px;
   background: var(--button-primary-bg);
-  color: white;
+  color: var(--paper-0);
   cursor: pointer;
   min-height: 2.75rem;
   padding: 0.72rem 1.1rem;

@@ -77,6 +77,9 @@ class ProfileSynthesizer:
             raise SynthesizeError(f"book {book_id!r} not found")
 
         findings = self.repo.list_findings(book_id=book_id, run_id=run_id)
+        # PR-23 — 被驳回的 finding 不进聚合 payload / source_finding_ids_json;
+        # pending + approved 保留(审阅是可选环节,与 review 端点三态语义一致)
+        findings = [f for f in findings if f.status != "rejected"]
         quotes = self.repo.list_quotes(book_id)
 
         sub_dim_summaries = _aggregate_sub_dim_stats(findings, quotes)

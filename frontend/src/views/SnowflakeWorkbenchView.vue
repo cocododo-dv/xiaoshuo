@@ -1,13 +1,14 @@
 <script setup>
+import { Snowflake } from "lucide-vue-next";
 import { computed, onActivated, onBeforeUnmount, onMounted, ref } from "vue";
 
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
-import SnowflakeAssistantPanel from "../components/SnowflakeAssistantPanel.vue";
 import SnowflakeMaterializationPanel from "../components/SnowflakeMaterializationPanel.vue";
 import SnowflakePlanningStage from "../components/SnowflakePlanningStage.vue";
 import SnowflakeProjectPanel from "../components/SnowflakeProjectPanel.vue";
 import SnowflakeSceneBoard from "../components/SnowflakeSceneBoard.vue";
 import SnowflakeTriagePanel from "../components/SnowflakeTriagePanel.vue";
+import { artifactStatusLabel, stepKeyLabel } from "../lib/snowflakeDisplay";
 import { useShellRouter } from "../router";
 import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
 import { useSystemConfigStore } from "../stores/systemConfig";
@@ -36,6 +37,41 @@ const triageStats = computed(() => {
     maybe: items.filter((item) => effectiveStatus(item) === "maybe").length,
   };
 });
+const stripTicks = computed(() =>
+  (store.steps || []).map((step, index) => {
+    const status = step?.artifact?.status || "";
+    const stale = status === "stale";
+    const state = step.gate_satisfied
+      ? status === "skipped"
+        ? "skip"
+        : "done"
+      : status === "pending_review"
+        ? "warn"
+        : "todo";
+    const num = String(index + 1).padStart(2, "0");
+    return {
+      key: step.step_key,
+      state,
+      stale,
+      active: store.currentStep?.step_key === step.step_key,
+      title: `${num} ${stepKeyLabel(step.step_key)} · ${stale ? "需复核" : artifactStatusLabel(status || "draft")}`,
+    };
+  }),
+);
+const staleStripSteps = computed(() => stripTicks.value.filter((tick) => tick.stale));
+
+function jumpToStep(stepKey) {
+  setWorkbenchMode("planning");
+  store.selectStep(stepKey);
+}
+
+function jumpToFirstStale() {
+  const first = staleStripSteps.value[0];
+  if (first) {
+    jumpToStep(first.key);
+  }
+}
+
 const llmReady = computed(() => Boolean(systemConfig.llm?.readiness?.ready));
 const llmReadinessSteps = computed(() => [
   {
@@ -116,6 +152,45 @@ onBeforeUnmount(() => {
 <template>
   <section class="snowflake-workbench-view" data-testid="snowflake-workbench-view">
     <WorkflowPageHeader view-id="snowflake-workbench" kicker="雪花" />
+
+    <header v-if="totalStepCount" class="snowflake-strip" data-testid="snowflake-strip">
+      <div class="snowflake-strip-left">
+        <span class="snowflake-strip-mark" aria-hidden="true"><Snowflake :size="22" /></span>
+        <div class="snowflake-strip-copy">
+          <span class="snowflake-strip-eyebrow">构思 · 雪花十步法</span>
+          <h2 class="snowflake-strip-title">从一句话，长成一部小说</h2>
+          <p class="snowflake-strip-principle">像雪花一样层层展开——每一步都在放大上一步，越早回头修订越省力。</p>
+        </div>
+      </div>
+      <div class="snowflake-strip-progress">
+        <div class="snowflake-strip-count">
+          <b>{{ completedStepCount }}</b>
+          <span>/ {{ totalStepCount }} 已确认</span>
+          <button
+            v-if="staleStripSteps.length"
+            type="button"
+            class="snowflake-strip-stale"
+            data-testid="snowflake-strip-stale"
+            title="跳到第一个需复核的步骤"
+            @click="jumpToFirstStale"
+          >
+            {{ staleStripSteps.length }} 需复核
+          </button>
+        </div>
+        <div class="snowflake-strip-ticks" role="group" aria-label="十步进度">
+          <button
+            v-for="tick in stripTicks"
+            :key="tick.key"
+            type="button"
+            class="snowflake-strip-tick"
+            :class="[`s-${tick.state}`, { 'is-active': tick.active, 'is-stale': tick.stale }]"
+            :title="tick.title"
+            :aria-label="tick.title"
+            @click="jumpToStep(tick.key)"
+          />
+        </div>
+      </div>
+    </header>
 
     <div class="snowflake-workbench-shell">
       <main class="snowflake-workbench-main">
@@ -258,33 +333,33 @@ onBeforeUnmount(() => {
           @notice="emit('notice', $event)"
         />
       </main>
-
-      <SnowflakeAssistantPanel @notice="emit('notice', $event)" />
     </div>
   </section>
 </template>
 
 <style>
 .snowflake-workbench-view {
-  --snowflake-paper: #f7f6ef;
-  --snowflake-paper-strong: #fffef8;
-  --snowflake-panel: #fffdf7;
-  --snowflake-ink: #24352f;
-  --snowflake-heading: #152620;
-  --snowflake-muted: #60746a;
-  --snowflake-faint: #87968d;
-  --snowflake-line: rgba(47, 111, 98, 0.16);
-  --snowflake-line-strong: rgba(47, 111, 98, 0.28);
-  --snowflake-moss: #2f6f62;
-  --snowflake-moss-deep: #24564d;
-  --snowflake-moss-soft: #edf7f2;
-  --snowflake-teal: #3f7d86;
-  --snowflake-teal-soft: #edf6f7;
-  --snowflake-warning: #8c672b;
-  --snowflake-warning-soft: #fff6e5;
-  --snowflake-danger: #9f3f32;
-  --snowflake-danger-soft: #fff1ed;
-  --snowflake-shadow: 0 16px 34px rgba(31, 55, 48, 0.1);
+  /* 模块令牌全部指向 design-tokens.css 的全局设计令牌,
+     随 data-theme(白昼/暮色/夜灯)自动适配。 */
+  --snowflake-paper: var(--paper-0);
+  --snowflake-paper-strong: var(--paper-1);
+  --snowflake-panel: var(--paper-1);
+  --snowflake-ink: var(--ink-2);
+  --snowflake-heading: var(--ink-1);
+  --snowflake-muted: var(--ink-3);
+  --snowflake-faint: var(--ink-4);
+  --snowflake-line: var(--line-1);
+  --snowflake-line-strong: var(--line-2);
+  --snowflake-moss: var(--crimson);
+  --snowflake-moss-deep: color-mix(in srgb, var(--crimson) 85%, black);
+  --snowflake-moss-soft: var(--crimson-wash);
+  --snowflake-teal: var(--gold);
+  --snowflake-teal-soft: var(--gold-wash);
+  --snowflake-warning: var(--gold);
+  --snowflake-warning-soft: var(--gold-wash);
+  --snowflake-danger: var(--rose);
+  --snowflake-danger-soft: var(--rose-wash);
+  --snowflake-shadow: var(--shadow-md);
 
   display: grid;
   gap: 18px;
@@ -293,9 +368,145 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 
+.snowflake-workbench-view h1,
+.snowflake-workbench-view h2,
+.snowflake-workbench-view h3 {
+  font-family: var(--font-serif);
+  letter-spacing: -0.01em;
+}
+
+.snowflake-workbench-view .snowflake-strip {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px 28px;
+  flex-wrap: wrap;
+  padding: 2px 2px 16px;
+  border-bottom: 1px solid var(--snowflake-line);
+}
+
+.snowflake-workbench-view .snowflake-strip-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.snowflake-workbench-view .snowflake-strip-mark {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: var(--snowflake-moss-soft);
+  color: var(--snowflake-moss);
+}
+
+.snowflake-workbench-view .snowflake-strip-eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--snowflake-moss);
+  font-weight: 700;
+}
+
+.snowflake-workbench-view .snowflake-strip-title {
+  font-size: 25px;
+  font-weight: 600;
+  margin: 2px 0;
+  color: var(--snowflake-heading);
+}
+
+.snowflake-workbench-view .snowflake-strip-principle {
+  font-size: 12.5px;
+  color: var(--snowflake-muted);
+  margin: 0;
+}
+
+.snowflake-workbench-view .snowflake-strip-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.snowflake-workbench-view .snowflake-strip-count {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--snowflake-muted);
+  font-size: 12.5px;
+}
+
+.snowflake-workbench-view .snowflake-strip-count b {
+  font-family: var(--font-serif);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--snowflake-heading);
+}
+
+.snowflake-workbench-view .snowflake-strip-stale {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  border: 0;
+  cursor: pointer;
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: var(--snowflake-warning-soft);
+  color: var(--snowflake-warning);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.snowflake-workbench-view .snowflake-strip-ticks {
+  display: flex;
+  gap: 5px;
+  width: min(260px, 40vw);
+}
+
+.snowflake-workbench-view .snowflake-strip-tick {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: var(--paper-3);
+  transition: transform var(--t-fast);
+}
+
+.snowflake-workbench-view .snowflake-strip-tick:hover {
+  transform: scaleY(1.25);
+}
+
+.snowflake-workbench-view .snowflake-strip-tick.s-done {
+  background: var(--sage);
+}
+
+.snowflake-workbench-view .snowflake-strip-tick.s-warn {
+  background: var(--gold);
+}
+
+.snowflake-workbench-view .snowflake-strip-tick.s-skip {
+  background: var(--snowflake-line-strong);
+}
+
+.snowflake-workbench-view .snowflake-strip-tick.is-stale {
+  background: var(--gold);
+  box-shadow: 0 0 0 2px var(--gold-wash);
+}
+
+.snowflake-workbench-view .snowflake-strip-tick.is-active {
+  background: var(--crimson);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--crimson) 30%, transparent);
+}
+
 .snowflake-workbench-view .snowflake-workbench-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
@@ -554,25 +765,286 @@ onBeforeUnmount(() => {
 
 .snowflake-workbench-view .project-row.active,
 .snowflake-workbench-view .step-pill.active {
-  border-color: rgba(47, 111, 98, 0.42);
+  border-color: color-mix(in srgb, var(--snowflake-moss) 42%, transparent);
   background: var(--snowflake-moss-soft);
   color: var(--snowflake-ink);
   box-shadow: inset 4px 0 0 var(--snowflake-moss);
 }
 
 .snowflake-workbench-view .step-pill.done:not(.active) {
-  border-color: rgba(47, 111, 98, 0.32);
-  background: #f2faf5;
+  border-color: color-mix(in srgb, var(--sage) 32%, transparent);
+  background: color-mix(in srgb, var(--sage-wash) 40%, var(--snowflake-paper-strong));
 }
 
 .snowflake-workbench-view .step-pill.stale:not(.active) {
-  border-color: rgba(159, 63, 50, 0.28);
-  background: var(--snowflake-danger-soft);
+  border-color: color-mix(in srgb, var(--snowflake-warning) 36%, transparent);
+  background: var(--snowflake-warning-soft);
 }
 
 .snowflake-workbench-view .step-pill.dirty:not(.active) {
-  border-color: rgba(63, 125, 134, 0.32);
-  background: var(--snowflake-teal-soft);
+  border-color: var(--snowflake-line-strong);
+  background: var(--slate-wash);
+}
+
+/* 设计稿 snow-step 形态:轨道色条 + 序号 + 名称/说明 + 状态标记 */
+.snowflake-workbench-view .step-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 9px 8px;
+  border-left-width: 1px;
+}
+
+.snowflake-workbench-view .step-pill-track {
+  flex: 0 0 3px;
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--snowflake-line);
+}
+
+.snowflake-workbench-view .step-pill-track.trk-plot {
+  background: var(--crimson-soft);
+}
+
+.snowflake-workbench-view .step-pill-track.trk-character {
+  background: var(--gold-soft);
+}
+
+.snowflake-workbench-view .step-pill-track.trk-orient {
+  background: var(--slate);
+}
+
+.snowflake-workbench-view .step-pill-num {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--snowflake-faint);
+}
+
+.snowflake-workbench-view .step-pill-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.snowflake-workbench-view .step-pill-body strong {
+  font-family: var(--font-serif);
+  font-size: 14px;
+}
+
+.snowflake-workbench-view .step-pill .step-pill-blurb {
+  font-size: 11.5px;
+  color: var(--snowflake-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snowflake-workbench-view .step-pill.stale .step-pill-blurb {
+  color: var(--snowflake-warning);
+  font-weight: 600;
+}
+
+.snowflake-workbench-view .step-pill-mark {
+  flex: 0 0 16px;
+  display: grid;
+  place-items: center;
+  color: var(--sage);
+}
+
+.snowflake-workbench-view .step-pill.stale .step-pill-mark {
+  color: var(--snowflake-warning);
+}
+
+.snowflake-workbench-view .step-pill .step-pill-skip {
+  color: var(--snowflake-faint);
+  font-weight: 700;
+}
+
+.snowflake-workbench-view .snowflake-track-legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--snowflake-faint);
+  padding: 0 2px 2px;
+}
+
+.snowflake-workbench-view .snowflake-track-legend .trk-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--snowflake-muted);
+  font-weight: 600;
+}
+
+.snowflake-workbench-view .snowflake-track-legend .trk-chip i {
+  width: 9px;
+  height: 3px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.snowflake-workbench-view .snowflake-track-legend .trk-chip.trk-plot i {
+  background: var(--crimson-soft);
+}
+
+.snowflake-workbench-view .snowflake-track-legend .trk-chip.trk-character i {
+  background: var(--gold-soft);
+}
+
+.snowflake-workbench-view .snowflake-track-legend .trk-chip.trk-orient i {
+  background: var(--slate);
+}
+
+.snowflake-workbench-view .snowflake-track-legend .trk-note {
+  margin-left: auto;
+}
+
+/* 设计稿画布头部:序号徽章 + 衬线标题 + 元信息行 + 状态药丸 */
+.snowflake-workbench-view .step-canvas-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.snowflake-workbench-view .step-canvas-num {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  display: grid;
+  place-items: center;
+  background: var(--ink-1);
+  color: var(--paper-0);
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.snowflake-workbench-view .step-canvas-titles {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.snowflake-workbench-view .step-canvas-titles h3 {
+  margin: 0;
+  font-size: 21px;
+}
+
+.snowflake-workbench-view .step-canvas-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--snowflake-faint);
+}
+
+.snowflake-workbench-view .step-canvas-track {
+  font-weight: 700;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.snowflake-workbench-view .step-canvas-track.trk-plot {
+  color: var(--crimson);
+  background: var(--crimson-wash);
+}
+
+.snowflake-workbench-view .step-canvas-track.trk-character {
+  color: var(--gold);
+  background: var(--gold-wash);
+}
+
+.snowflake-workbench-view .step-canvas-track.trk-orient {
+  color: var(--slate);
+  background: var(--slate-wash);
+}
+
+.snowflake-workbench-view .step-canvas-lineage {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--snowflake-muted);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 6px;
+}
+
+.snowflake-workbench-view .step-canvas-lineage:hover {
+  color: var(--snowflake-moss);
+  background: var(--snowflake-moss-soft);
+}
+
+.snowflake-workbench-view .step-canvas-state {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.snowflake-workbench-view .step-state-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--paper-2);
+  color: var(--snowflake-muted);
+  border: 1px solid var(--snowflake-line);
+}
+
+.snowflake-workbench-view .step-state-pill.is-done {
+  background: var(--sage-wash);
+  color: var(--sage);
+  border-color: transparent;
+}
+
+.snowflake-workbench-view .step-state-pill.is-required {
+  background: var(--crimson-wash);
+  color: var(--crimson);
+  border-color: transparent;
+}
+
+.snowflake-workbench-view .step-state-pill.is-stale {
+  background: var(--gold-wash);
+  color: var(--gold);
+  border-color: transparent;
+}
+
+/* 设计稿画布底部导航条:上一步 | 保存状态 | 略过 · 确认 · 下一步 */
+.snowflake-workbench-view .step-canvas-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--snowflake-line);
+  padding-top: 12px;
+  margin-top: 4px;
+}
+
+.snowflake-workbench-view .step-canvas-saved {
+  font-size: 12px;
+  color: var(--snowflake-faint);
+}
+
+.snowflake-workbench-view .step-canvas-saved.is-dirty {
+  color: var(--snowflake-warning);
+  font-weight: 600;
+}
+
+.snowflake-workbench-view .step-canvas-foot-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .snowflake-workbench-view .snowflake-progress-panel,
@@ -875,10 +1347,98 @@ onBeforeUnmount(() => {
   grid-template-columns: 1fr;
 }
 
+/* 设计稿三栏画布:步骤列表 | 中央画布 | 本步指导栏 */
 .snowflake-workbench-view .snowflake-workbench-stage-grid {
   display: grid;
-  grid-template-columns: minmax(210px, 260px) minmax(0, 1fr);
+  grid-template-columns: minmax(210px, 250px) minmax(0, 1fr) minmax(250px, 300px);
   gap: 16px;
+  align-items: start;
+}
+
+.snowflake-workbench-view .snowflake-ctx {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  position: sticky;
+  top: 12px;
+}
+
+.snowflake-workbench-view .snowflake-canvas-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--snowflake-line);
+  margin: 4px 0 2px;
+}
+
+.snowflake-workbench-view .snowflake-canvas-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--snowflake-muted);
+  font-size: 13.5px;
+  font-weight: 500;
+  position: relative;
+  border-radius: 0;
+  transition: color var(--t-fast);
+}
+
+.snowflake-workbench-view .snowflake-canvas-tab:hover {
+  color: var(--snowflake-heading);
+  background: transparent;
+  transform: none;
+}
+
+.snowflake-workbench-view .snowflake-canvas-tab.is-active {
+  color: var(--snowflake-heading);
+  font-weight: 600;
+}
+
+.snowflake-workbench-view .snowflake-canvas-tab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--snowflake-moss);
+  border-radius: 2px;
+}
+
+.snowflake-workbench-view .snowflake-lineage-refs {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--snowflake-line);
+  border-radius: 8px;
+  background: var(--snowflake-paper-strong);
+  padding: 12px;
+}
+
+.snowflake-workbench-view .lineage-ref-row {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--snowflake-line);
+  padding-top: 10px;
+}
+
+.snowflake-workbench-view .lineage-ref-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.snowflake-workbench-view .lineage-ref-head strong {
+  font-family: var(--font-serif);
+  color: var(--snowflake-heading);
+}
+
+.snowflake-workbench-view .lineage-ref-head .mini-btn {
+  margin-left: auto;
 }
 
 .snowflake-workbench-view .control-input {
@@ -1267,6 +1827,10 @@ onBeforeUnmount(() => {
 
   .snowflake-workbench-view .snowflake-workbench-stage-grid {
     grid-template-columns: 1fr;
+  }
+
+  .snowflake-workbench-view .snowflake-ctx {
+    position: static;
   }
 
   .snowflake-workbench-view .scene-board-layout,

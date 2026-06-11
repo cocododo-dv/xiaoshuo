@@ -2,8 +2,8 @@ import { ref } from "vue";
 
 import { useUiMode } from "./composables/useUiMode";
 
-const activeView = ref("snowflake-workbench");
-const visitedViews = ref(["snowflake-workbench"]);
+const activeView = ref("home");
+const visitedViews = ref(["home"]);
 const routeContext = ref({
   step: "",
   panel: "",
@@ -81,6 +81,42 @@ export const workflowGroups = [
 ];
 
 const views = [
+  {
+    id: "home",
+    label: "主页",
+    stepLabel: "主页",
+    legacyLabel: "项目主页",
+    description: "当前作品的驾驶舱：此刻该写哪一幕、雪花进度、待办速览与最近章节。",
+    stage: "draft",
+    icon: "Home",
+    nextViews: ["writer-room", "snowflake-workbench", "review"],
+    cacheMode: "light",
+    writerPrimary: true,
+    writerOrder: 0.5,
+    writerLabel: "主页",
+    writerGoal: "一眼看清此刻该写哪一幕，以及还有什么等你拍板。",
+    writerDoneSignal: "你知道下一步去哪个工作台。",
+    writerMotivation: "回到这部作品的指挥位。",
+    writerCriticalPath: false,
+  },
+  {
+    id: "flowmap",
+    label: "流程图",
+    stepLabel: "流程图",
+    legacyLabel: "流程地图",
+    description: "构思到拍板的活地图:每一站的真实状态与下一步入口。",
+    stage: "draft",
+    icon: "GitBranch",
+    nextViews: ["snowflake-workbench", "author", "review"],
+    cacheMode: "light",
+    writerPrimary: true,
+    writerOrder: 0.7,
+    writerLabel: "流程",
+    writerGoal: "看清这部作品此刻卡在哪一站。",
+    writerDoneSignal: "红点都被处理或自觉跳过。",
+    writerMotivation: "全流程一张图,不迷路。",
+    writerCriticalPath: false,
+  },
   {
     id: "snowflake-workbench",
     label: "雪花工作台",
@@ -290,6 +326,24 @@ const views = [
     writerCriticalPath: false,
   },
   {
+    id: "library",
+    label: "资料库",
+    stepLabel: "资料库",
+    legacyLabel: "世界资料库",
+    description: "人物、地点、物品与设定登记在册,关系连成网,随写随查。",
+    stage: "inform",
+    icon: "BookUser",
+    nextViews: ["snowflake-workbench", "writer-room"],
+    cacheMode: "light",
+    writerPrimary: true,
+    writerOrder: 6,
+    writerLabel: "资料",
+    writerGoal: "把世界档案登记在册,写到哪儿查到哪儿。",
+    writerDoneSignal: "关键实体都有摘要,关系连得上。",
+    writerMotivation: "让设定不再散落在脑子里。",
+    writerCriticalPath: false,
+  },
+  {
     id: "interop",
     label: "导入导出",
     stepLabel: "导入导出",
@@ -331,7 +385,7 @@ function ensureVisited(nextView) {
 export function useShellRouter() {
   function serializeLocation(viewId = activeView.value, context = routeContext.value) {
     const params = new URLSearchParams();
-    const normalizedView = viewMap[viewId] ? viewId : "snowflake-workbench";
+    const normalizedView = viewMap[viewId] ? viewId : "home";
     params.set("view", normalizedView);
     const { uiMode } = useUiMode();
     if (uiMode.value) {
@@ -364,8 +418,8 @@ export function useShellRouter() {
       return activeView.value;
     }
     const params = new URLSearchParams(window.location.search || "");
-    const requestedView = params.get("view") || "snowflake-workbench";
-    const nextView = viewMap[requestedView] ? requestedView : "snowflake-workbench";
+    const requestedView = params.get("view") || "home";
+    const nextView = viewMap[requestedView] ? requestedView : "home";
     const requestedMode = params.get("mode") || "";
     if (requestedMode) {
       useUiMode().setUiMode(requestedMode);
@@ -475,7 +529,7 @@ export function useShellRouter() {
   }
 
   function viewMeta(viewId) {
-    return viewMap[viewId] || viewMap["snowflake-workbench"];
+    return viewMap[viewId] || viewMap["home"];
   }
 
   function isViewActive(viewId) {
@@ -483,8 +537,8 @@ export function useShellRouter() {
   }
 
   function reset(options = {}) {
-    activeView.value = "snowflake-workbench";
-    visitedViews.value = ["snowflake-workbench"];
+    activeView.value = "home";
+    visitedViews.value = ["home"];
     clearFocus();
     if (options.replace) {
       writeLocation(activeView.value, { replace: true, target: routeContext.value });

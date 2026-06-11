@@ -1,15 +1,19 @@
 <script setup>
-import { PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
-import { computed, defineAsyncComponent, ref } from "vue";
+import { Moon, Search, Sun, SunDim } from "lucide-vue-next";
+import { computed, defineAsyncComponent, onBeforeUnmount, ref } from "vue";
 
+import CommandPalette from "./components/CommandPalette.vue";
 import UiModeSwitch from "./components/UiModeSwitch.vue";
-import WriterPathProgress from "./components/WriterPathProgress.vue";
 import WorkflowNav from "./components/WorkflowNav.vue";
+import WorkSwitcher from "./components/WorkSwitcher.vue";
 import { useNotices } from "./composables/useNotices";
+import { useTheme } from "./composables/useTheme";
 import { useUiMode } from "./composables/useUiMode";
 import { useShellRouter } from "./router";
 
 const VIEW_COMPONENTS = {
+  home: defineAsyncComponent(() => import("./views/HomeView.vue")),
+  flowmap: defineAsyncComponent(() => import("./views/FlowmapView.vue")),
   "snowflake-workbench": defineAsyncComponent(() => import("./views/SnowflakeWorkbenchView.vue")),
   "writer-flow": defineAsyncComponent(() => import("./views/WriterFlowView.vue")),
   "writer-room": defineAsyncComponent(() => import("./views/WriterRoomView.vue")),
@@ -24,22 +28,30 @@ const VIEW_COMPONENTS = {
   index: defineAsyncComponent(() => import("./views/IndexConsoleView.vue")),
   knowledge: defineAsyncComponent(() => import("./views/KnowledgeConsoleView.vue")),
   reference: defineAsyncComponent(() => import("./views/ReferenceLearningView.vue")),
+  library: defineAsyncComponent(() => import("./views/LibraryView.vue")),
   interop: defineAsyncComponent(() => import("./views/InteropCenterView.vue")),
   config: defineAsyncComponent(() => import("./views/SystemConfigView.vue")),
 };
 
 const { activeView, views, workflowGroups, navigate, hydrateFromLocation, installLocationSync } = useShellRouter();
 const { uiMode } = useUiMode();
+const { theme, themeLabel, cycleTheme } = useTheme();
 const { notices, pushNotice } = useNotices();
-const RAIL_COLLAPSED_STORAGE_KEY = "novel-system:rail-collapsed";
 
 hydrateFromLocation();
 installLocationSync();
 
-const activeViewComponent = computed(() => VIEW_COMPONENTS[activeView.value] || VIEW_COMPONENTS["snowflake-workbench"]);
-const railCollapsed = ref(readRailCollapsed());
+const activeViewComponent = computed(() => VIEW_COMPONENTS[activeView.value] || VIEW_COMPONENTS.home);
+const paletteOpen = ref(false);
+const railOpen = ref(false);
+
+function go(viewId, options) {
+  railOpen.value = false;
+  navigate(viewId, options);
+}
 
 // Legacy route markers kept as source anchors for shell registration tests:
+// activeView === 'home'
 // activeView === 'snowflake-workbench'
 // activeView === 'writer-flow'
 // activeView === 'writer-room'
@@ -51,68 +63,73 @@ const railCollapsed = ref(readRailCollapsed());
 // activeView === 'trash'
 // activeView === 'interop'
 
-function readRailCollapsed() {
-  if (typeof window === "undefined" || !window.localStorage) {
-    return false;
-  }
-  try {
-    return window.localStorage.getItem(RAIL_COLLAPSED_STORAGE_KEY) === "true";
-  } catch {
-    return false;
+const THEME_ICONS = { day: Sun, dusk: SunDim, night: Moon };
+const themeIcon = computed(() => THEME_ICONS[theme.value] || Sun);
+
+function onGlobalKeydown(event) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    paletteOpen.value = !paletteOpen.value;
   }
 }
 
-function persistRailCollapsed(value) {
-  if (typeof window === "undefined" || !window.localStorage) {
-    return;
-  }
-  try {
-    window.localStorage.setItem(RAIL_COLLAPSED_STORAGE_KEY, value ? "true" : "false");
-  } catch {
-    // Ignore storage failures; the in-memory toggle remains usable.
-  }
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", onGlobalKeydown);
+  onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
 }
-
-function toggleRailCollapsed() {
-  railCollapsed.value = !railCollapsed.value;
-  persistRailCollapsed(railCollapsed.value);
-}
-
 </script>
 
 <template>
-  <div class="shell" :class="[`ui-mode-${uiMode}`, { 'rail-collapsed': railCollapsed }]" :data-ui-mode="uiMode">
-    <aside class="rail" :aria-label="railCollapsed ? '主导航（已收起）' : '主导航'">
+  <div class="ws-app" :class="`ui-mode-${uiMode}`" :data-ui-mode="uiMode">
+    <aside
+      class="ws-rail"
+      :class="{ 'is-open': railOpen }"
+      aria-label="主导航"
+      @mouseenter="railOpen = true"
+      @mouseleave="railOpen = false"
+      @focusin="railOpen = true"
+      @click="railOpen = false"
+    >
+      <WorkSwitcher @navigate="go" />
+
       <button
         type="button"
-        class="rail-toggle"
-        data-testid="rail-toggle"
-        :aria-label="railCollapsed ? '展开导航栏' : '收起导航栏'"
-        :title="railCollapsed ? '展开导航栏' : '收起导航栏'"
-        :aria-pressed="railCollapsed ? 'true' : 'false'"
-        @click="toggleRailCollapsed"
+        class="ws-cmdk"
+        data-testid="cmdk-launch"
+        title="命令面板 Ctrl+K"
+        @click="paletteOpen = true"
       >
-        <component :is="railCollapsed ? PanelLeftOpen : PanelLeftClose" :size="17" aria-hidden="true" />
-        <span>{{ railCollapsed ? "展开" : "收起" }}</span>
+        <span class="ws-item-ic"><Search :size="18" aria-hidden="true" /></span>
+        <span class="ws-cmdk-label">快速跳转…</span>
+        <kbd>⌘K</kbd>
       </button>
 
-      <div class="brand">
-        <div class="eyebrow">Snowflake First</div>
-        <h1>雪花写作工作台</h1>
-        <p>把构思、起草、打磨和确认收拢成一张安静的作者桌面。</p>
-      </div>
-
-      <UiModeSwitch />
       <WorkflowNav
         :views="views"
         :groups="workflowGroups"
         :active-view="activeView"
-        :collapsed="railCollapsed"
-        @navigate="navigate"
+        @navigate="go"
       />
-    </aside>
 
-    <main class="stage">
+      <div class="ws-rail-foot">
+        <UiModeSwitch />
+        <button
+          type="button"
+          class="ws-foot-btn"
+          data-testid="theme-toggle"
+          :title="`主题:${themeLabel},点击切换`"
+          @click="cycleTheme"
+        >
+          <span class="ws-item-ic">
+            <component :is="themeIcon" :size="17" aria-hidden="true" />
+          </span>
+          <span>{{ themeLabel }}</span>
+        </button>
+      </div>
+    </aside>
+    <div class="ws-rail-scrim" aria-hidden="true" />
+
+    <main class="ws-content" :data-screen-label="`ws · ${activeView}`">
       <TransitionGroup name="notice-fade" tag="div" class="notice-stack stage-notices shell-notices" data-testid="notice-stack">
         <div
           v-for="notice in notices"
@@ -127,8 +144,6 @@ function toggleRailCollapsed() {
         </div>
       </TransitionGroup>
 
-      <WriterPathProgress v-if="uiMode === 'writer'" />
-
       <div class="view-stack">
         <Transition name="view-fade">
           <KeepAlive>
@@ -137,5 +152,7 @@ function toggleRailCollapsed() {
         </Transition>
       </div>
     </main>
+
+    <CommandPalette :open="paletteOpen" @close="paletteOpen = false" />
   </div>
 </template>

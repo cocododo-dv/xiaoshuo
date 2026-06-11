@@ -58,11 +58,12 @@ export function cancelStyleReferenceRun(runId) {
   return apiPost(`${PREFIX}/runs/${encodeURIComponent(runId)}/cancel`, {});
 }
 
-export function listStyleReferenceRunFindings(runId, { subDimension, findingKind, status } = {}) {
+export function listStyleReferenceRunFindings(runId, { subDimension, findingKind, status, include } = {}) {
   const params = new URLSearchParams();
   if (subDimension) params.set("sub_dimension", subDimension);
   if (findingKind) params.set("finding_kind", findingKind);
   if (status) params.set("status", status);
+  if (include) params.set("include", include);
   const query = params.toString();
   return apiGet(`${PREFIX}/runs/${encodeURIComponent(runId)}/findings${query ? `?${query}` : ""}`);
 }

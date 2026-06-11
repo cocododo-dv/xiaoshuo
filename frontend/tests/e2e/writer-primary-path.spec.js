@@ -3,8 +3,8 @@ import { expect, test } from "@playwright/test";
 import { configureConnection } from "./helpers.js";
 
 const VIEW_TARGETS = [
+  ["home", "home-view"],
   ["snowflake-workbench", "snowflake-workbench-view"],
-  ["writer-flow", "writer-flow-view"],
   ["reference", "reference-learning-view"],
   ["review", "review-inbox-view"],
   ["writer-room", "writer-room-view"],
@@ -39,7 +39,7 @@ async function stubWriterPathApi(page) {
 }
 
 async function openView(page, viewId, testId) {
-  if (viewId === "snowflake-workbench") {
+  if (viewId === "home") {
     await expect(page.getByTestId(testId)).toBeVisible();
     return;
   }
@@ -96,21 +96,11 @@ test("writer primary path stays navigable and avoids horizontal overflow across 
     await configureConnection(page, { operatorRef: "ops.writer-primary-path.e2e" });
     await page.reload();
 
-    await expect(page.getByTestId("writer-path-progress")).toBeVisible();
-    await expect(page.getByTestId("writer-path-active-summary")).toHaveAttribute("role", "status");
-
-    const guidanceCta = page.getByTestId("writer-path-go");
-    await expect(guidanceCta).toBeVisible();
-    await expect(guidanceCta).toBeEnabled();
-    expect((await guidanceCta.innerText()).trim().length).toBeGreaterThan(0);
+    await expect(page.getByTestId("home-view")).toBeVisible();
 
     for (const [viewId, testId] of VIEW_TARGETS) {
       await openView(page, viewId, testId);
       await expectNoHorizontalScroll(page);
     }
-
-    await page.getByTestId("journey-optional-reference").click();
-    await expect(page.getByTestId("reference-learning-view")).toBeVisible();
-    await expectNoHorizontalScroll(page);
   }
 });

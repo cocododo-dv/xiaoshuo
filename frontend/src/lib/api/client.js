@@ -244,6 +244,24 @@ export async function apiPatch(path, body = {}) {
   }
 }
 
+export async function apiPut(path, body = {}) {
+  const clientRequestId = buildClientRequestId();
+  try {
+    const response = await fetch(buildUrl(path), {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Operator-Ref": getOperatorRef(),
+        "X-Client-Request-Id": clientRequestId,
+      },
+      body: JSON.stringify(body),
+    });
+    return parseEnvelope(response, clientRequestId);
+  } catch (error) {
+    throw normalizeRequestError(error, clientRequestId);
+  }
+}
+
 export async function apiAdminPost(path, body = {}, adminToken = "") {
   const clientRequestId = buildClientRequestId();
   try {

@@ -123,6 +123,29 @@ def test_strategy_a_renders_all_three_blocks():
     assert prefix.endswith("[/STYLE_REFERENCE]\n\n")
 
 
+def test_rejected_forbidden_finding_not_injected():
+    """PR-23 — profile 引用 2 条 forbidden finding,其中 1 条 rejected → prefix 只含未驳回那条。"""
+    project_id = _seed(
+        seed="rej",
+        profile_json={
+            "narrative_summary": "s",
+            "style_features": ["f"],
+        },
+        forbidden_findings=["未驳回的禁忌描述", "已驳回的禁忌描述"],
+        strategy="A",
+    )
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.update_finding("sr_find_rej_1", status="rejected")
+        session.commit()
+
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
+    prefix = fragments.to_system_prompt_prefix()
+    assert "未驳回的禁忌描述" in prefix
+    assert "已驳回的禁忌描述" not in prefix
+
+
 def test_strategy_b_truncates_by_budget():
     long_features = ["特点描述" * 200]  # 单条 800 字
     project_id = _seed(

@@ -5,8 +5,20 @@ import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import PanelShell from "../components/PanelShell.vue";
 import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { formatChapterChoice, formatReadableTargetRef, formatSceneChoice } from "../lib/readableRefs";
+import {
+  adjudicateChapterAuditFinding,
+  createChapterAuditFinding,
+  createTowerAnchor,
+  fetchChapterAudit,
+  fetchChapterContract,
+  fetchTowerAnchors,
+  transitionChapterContract,
+  updateChapterContract,
+  updateTowerAnchor,
+} from "../lib/api";
 import { useShellRouter } from "../router";
 import { useLongformControlStore } from "../stores/longformControl";
+import { useSnowflakeWorkbenchStore } from "../stores/snowflakeWorkbench";
 import { useLongformEditorStore } from "../stores/longformEditor";
 
 const emit = defineEmits(["notice"]);
@@ -18,6 +30,187 @@ const { navigate, openTarget } = useShellRouter();
 const activeTab = ref("cards");
 const guidanceDraft = ref({});
 const scanText = ref("");
+
+/* —— 塔台:锚点(全书记忆)+ 交接契约(下发约束),接 longform_tower 后端 —— */
+const snowflake = useSnowflakeWorkbenchStore();
+const towerProjectId = computed(() => snowflake.selectedProjectId || snowflake.project?.project_id || "");
+const towerAnchors = ref([]);
+const towerContract = ref(null);
+const towerChapterId = ref("");
+const towerError = ref("");
+const anchorForm = ref({ kind: "fact", text: "" });
+const constraintForm = ref({ text: "", anchor_id: "", scene_id: "" });
+
+const TOWER_STATUS_LABELS = { drafting: "起草中", ready: "就绪", dispatched: "已下发", archived: "已归档" };
+const AUDIT_KIND_LABELS = {
+  drift: "漂移",
+  overdue: "逾期",
+  unplanted_reveal: "空降",
+  causal_break: "断链",
+  unfair_clue: "不公平",
+  stall: "停滞",
+  deflation: "泄气",
+  arc: "弧线",
+};
+const AUDIT_DECISION_LABELS = { accept_fix: "采纳修复", defer: "搁置", dismiss: "驳回" };
+const towerFindings = ref([]);
+const auditForm = ref({ kind: "drift", severity: "warn", text: "" });
+const archiveNeedsForce = ref(false);
+
+async function loadAudit() {
+  if (!towerProjectId.value || !towerContract.value?.chapter_id) {
+    towerFindings.value = [];
+    return;
+  }
+  try {
+    const payload = await fetchChapterAudit(towerProjectId.value, towerContract.value.chapter_id);
+    towerFindings.value = payload?.findings || [];
+  } catch {
+    towerFindings.value = [];
+  }
+}
+
+async function addFinding() {
+  const text = auditForm.value.text.trim();
+  if (!text || !towerContract.value) {
+    return;
+  }
+  towerError.value = "";
+  try {
+    const created = await createChapterAuditFinding(towerProjectId.value, towerContract.value.chapter_id, {
+      kind: auditForm.value.kind,
+      severity: auditForm.value.severity,
+      text,
+    });
+    towerFindings.value = [...towerFindings.value, created];
+    auditForm.value = { ...auditForm.value, text: "" };
+  } catch (error) {
+    towerError.value = error.message;
+  }
+}
+
+async function adjudicate(finding, decision) {
+  towerError.value = "";
+  try {
+    const updated = await adjudicateChapterAuditFinding(towerProjectId.value, finding.finding_id, { decision });
+    towerFindings.value = towerFindings.value.map((item) => (item.finding_id === finding.finding_id ? updated : item));
+    archiveNeedsForce.value = false;
+  } catch (error) {
+    towerError.value = error.message;
+  }
+}
+const contractLocked = computed(() => ["dispatched", "archived"].includes(towerContract.value?.status));
+const anchorNameById = computed(() => Object.fromEntries(towerAnchors.value.map((item) => [item.anchor_id, item.text])));
+
+async function loadTower() {
+  towerError.value = "";
+  try {
+    await snowflake.initialize();
+  } catch {
+    /* 无项目时塔台显示空态 */
+  }
+  if (!towerProjectId.value) {
+    return;
+  }
+  try {
+    const payload = await fetchTowerAnchors(towerProjectId.value);
+    towerAnchors.value = payload?.anchors || [];
+  } catch (error) {
+    towerError.value = error.message;
+  }
+}
+
+async function loadContract() {
+  const chapterId = towerChapterId.value.trim();
+  if (!towerProjectId.value || !chapterId) {
+    return;
+  }
+  towerError.value = "";
+  try {
+    towerContract.value = await fetchChapterContract(towerProjectId.value, chapterId);
+    archiveNeedsForce.value = false;
+    await loadAudit();
+  } catch (error) {
+    towerError.value = error.message;
+  }
+}
+
+async function addAnchor() {
+  const text = anchorForm.value.text.trim();
+  if (!text || !towerProjectId.value) {
+    return;
+  }
+  towerError.value = "";
+  try {
+    const created = await createTowerAnchor(towerProjectId.value, { kind: anchorForm.value.kind, text });
+    towerAnchors.value = [...towerAnchors.value, created];
+    anchorForm.value = { kind: anchorForm.value.kind, text: "" };
+    emit("notice", { type: "success", message: "锚点已钉入全书记忆。" });
+  } catch (error) {
+    towerError.value = error.message;
+  }
+}
+
+async function toggleAnchor(anchor) {
+  towerError.value = "";
+  try {
+    const next = anchor.status === "pinned" ? "faded" : "pinned";
+    const updated = await updateTowerAnchor(towerProjectId.value, anchor.anchor_id, { status: next });
+    towerAnchors.value = towerAnchors.value.map((item) => (item.anchor_id === anchor.anchor_id ? updated : item));
+  } catch (error) {
+    towerError.value = error.message;
+  }
+}
+
+async function saveConstraints(nextConstraints) {
+  towerError.value = "";
+  try {
+    towerContract.value = await updateChapterContract(towerProjectId.value, towerContract.value.chapter_id, {
+      constraints: nextConstraints,
+    });
+  } catch (error) {
+    towerError.value = error.message;
+  }
+}
+
+async function addConstraint() {
+  const text = constraintForm.value.text.trim();
+  if (!text || !towerContract.value) {
+    return;
+  }
+  await saveConstraints([
+    ...(towerContract.value.constraints || []),
+    {
+      text,
+      anchor_id: constraintForm.value.anchor_id || null,
+      scene_id: constraintForm.value.scene_id.trim() || null,
+    },
+  ]);
+  constraintForm.value = { text: "", anchor_id: "", scene_id: "" };
+}
+
+async function removeConstraint(index) {
+  const next = [...(towerContract.value?.constraints || [])];
+  next.splice(index, 1);
+  await saveConstraints(next);
+}
+
+async function moveContract(target, options = {}) {
+  towerError.value = "";
+  try {
+    towerContract.value = await transitionChapterContract(towerProjectId.value, towerContract.value.chapter_id, {
+      status: target,
+      ...(options.force ? { force: true } : {}),
+    });
+    archiveNeedsForce.value = false;
+    emit("notice", { type: "success", message: `契约已切换为「${TOWER_STATUS_LABELS[target] || target}」。` });
+  } catch (error) {
+    towerError.value = error.message;
+    if (error.code === "TOWER_AUDIT_OPEN") {
+      archiveNeedsForce.value = true;
+    }
+  }
+}
 
 const summary = computed(() => control.summary);
 const rhythmMap = computed(() => control.rhythmMap);
@@ -217,6 +410,7 @@ async function ensureLoaded() {
 
 onMounted(() => {
   ensureLoaded();
+  loadTower();
 });
 
 onActivated(() => {
@@ -296,6 +490,129 @@ onActivated(() => {
               </p>
               <p v-if="debt.deferral_reason" class="muted">延宕理由：{{ debt.deferral_reason }}</p>
             </article>
+          </div>
+        </section>
+
+        <section class="paper longform-section longform-tower" data-testid="longform-tower">
+          <div class="panel-head">
+            <div>
+              <span class="eyebrow">塔台</span>
+              <h3>全书记忆与交接契约</h3>
+              <p class="muted">塔只做四件事:规划契约 · 下发起草台 · 章级审计 · 守门归档;正文只在起草台与写作房间产出。</p>
+            </div>
+          </div>
+          <p v-if="towerError" class="longform-tower-error" data-testid="longform-tower-error">{{ towerError }}</p>
+          <p v-if="!towerProjectId" class="muted">先在构思里创建/选择作品,塔台会跟随当前作品。</p>
+
+          <div v-else class="longform-tower-grid">
+            <div class="longform-tower-panel">
+              <div class="longform-tower-panel-head">
+                <strong>锚点 · 全书必须为真</strong>
+                <span class="badge">{{ towerAnchors.length }}</span>
+              </div>
+              <ul class="longform-anchor-list">
+                <li v-for="anchor in towerAnchors" :key="anchor.anchor_id" :class="{ faded: anchor.status === 'faded' }">
+                  <span class="badge">{{ { fact: "事实", trait: "特质", setting: "设定", timeline: "时间线" }[anchor.kind] || anchor.kind }}</span>
+                  <span class="longform-anchor-text">{{ anchor.text }}</span>
+                  <button type="button" class="ghost mini-btn" :data-testid="`tower-anchor-toggle-${anchor.anchor_id}`" @click="toggleAnchor(anchor)">
+                    {{ anchor.status === "pinned" ? "淡出" : "重新钉入" }}
+                  </button>
+                </li>
+              </ul>
+              <p v-if="!towerAnchors.length" class="muted">还没有锚点——把"全书必须保持为真"的事实钉在这里。</p>
+              <div class="longform-anchor-form">
+                <select v-model="anchorForm.kind" class="control-input compact">
+                  <option value="fact">事实</option>
+                  <option value="trait">特质</option>
+                  <option value="setting">设定</option>
+                  <option value="timeline">时间线</option>
+                </select>
+                <input v-model="anchorForm.text" class="control-input" data-testid="tower-anchor-text" placeholder="例如:档案室在地下,不在三楼" @keydown.enter="addAnchor" />
+                <button type="button" class="primary mini-btn" data-testid="tower-anchor-add" :disabled="!anchorForm.text.trim()" @click="addAnchor">钉入</button>
+              </div>
+            </div>
+
+            <div class="longform-tower-panel">
+              <div class="longform-tower-panel-head">
+                <strong>交接契约 · 按章下发</strong>
+                <span v-if="towerContract" class="badge" :class="{ active: towerContract.status === 'dispatched' }" data-testid="tower-contract-status">
+                  {{ TOWER_STATUS_LABELS[towerContract.status] || towerContract.status }}
+                </span>
+              </div>
+              <div class="longform-contract-loader">
+                <input v-model="towerChapterId" class="control-input" data-testid="tower-contract-chapter" placeholder="章节 ID,如 CH009" @keydown.enter="loadContract" />
+                <button type="button" class="ghost mini-btn" data-testid="tower-contract-load" :disabled="!towerChapterId.trim()" @click="loadContract">打开契约</button>
+              </div>
+
+              <template v-if="towerContract">
+                <ul class="longform-constraint-list" data-testid="tower-constraint-list">
+                  <li v-for="(constraint, index) in towerContract.constraints" :key="`${constraint.text}-${index}`">
+                    <span class="longform-anchor-text">{{ constraint.text }}</span>
+                    <span v-if="constraint.anchor_id" class="badge" :title="anchorNameById[constraint.anchor_id] || constraint.anchor_id">锚</span>
+                    <span v-if="constraint.scene_id" class="badge">{{ constraint.scene_id }}</span>
+                    <button v-if="!contractLocked" type="button" class="ghost mini-btn" @click="removeConstraint(index)">删</button>
+                  </li>
+                </ul>
+                <p v-if="!towerContract.constraints.length" class="muted">空契约——先放入至少一条长程约束才能就绪。</p>
+
+                <div v-if="!contractLocked" class="longform-constraint-form">
+                  <input v-model="constraintForm.text" class="control-input" data-testid="tower-constraint-text" placeholder="约束,如:回收第 6 章的脚印线索" />
+                  <select v-model="constraintForm.anchor_id" class="control-input compact">
+                    <option value="">不挂锚点</option>
+                    <option v-for="anchor in towerAnchors" :key="`opt-${anchor.anchor_id}`" :value="anchor.anchor_id">{{ anchor.text.slice(0, 12) }}</option>
+                  </select>
+                  <input v-model="constraintForm.scene_id" class="control-input compact" placeholder="指派场景(可选)" />
+                  <button type="button" class="ghost mini-btn" data-testid="tower-constraint-add" :disabled="!constraintForm.text.trim()" @click="addConstraint">加入</button>
+                </div>
+
+                <div class="longform-contract-actions">
+                  <button v-if="towerContract.status === 'drafting'" type="button" class="primary mini-btn" data-testid="tower-contract-ready" :disabled="!towerContract.constraints.length" @click="moveContract('ready')">标记就绪</button>
+                  <template v-if="towerContract.status === 'ready'">
+                    <button type="button" class="ghost mini-btn" @click="moveContract('drafting')">回到起草</button>
+                    <button type="button" class="primary mini-btn" data-testid="tower-contract-dispatch" @click="moveContract('dispatched')">下发起草台</button>
+                  </template>
+                  <template v-if="towerContract.status === 'dispatched'">
+                    <button type="button" class="primary mini-btn" data-testid="tower-contract-archive" @click="moveContract('archived')">归档本章</button>
+                    <button v-if="archiveNeedsForce" type="button" class="ghost mini-btn longform-force-archive" data-testid="tower-contract-force-archive" @click="moveContract('archived', { force: true })">带病归档(确认)</button>
+                  </template>
+                  <span v-if="towerContract.status === 'archived'" class="muted">本章契约已归档,开下一章吧。</span>
+                </div>
+
+                <div class="longform-audit" data-testid="tower-audit">
+                  <div class="longform-tower-panel-head">
+                    <strong>章级审计 · 跨场连续性</strong>
+                    <span class="badge" :class="{ active: towerFindings.some((f) => f.status === 'open') }">
+                      {{ towerFindings.filter((f) => f.status === 'open').length }} 未裁决
+                    </span>
+                  </div>
+                  <ul v-if="towerFindings.length" class="longform-constraint-list">
+                    <li v-for="finding in towerFindings" :key="finding.finding_id" :class="{ adjudicated: finding.status === 'adjudicated' }">
+                      <span class="badge" :class="{ danger: finding.severity === 'block' }">{{ AUDIT_KIND_LABELS[finding.kind] || finding.kind }}</span>
+                      <span class="longform-anchor-text">{{ finding.text }}</span>
+                      <template v-if="finding.status === 'open'">
+                        <button type="button" class="ghost mini-btn" :data-testid="`tower-audit-fix-${finding.finding_id}`" @click="adjudicate(finding, 'accept_fix')">采纳修复</button>
+                        <button type="button" class="ghost mini-btn" @click="adjudicate(finding, 'defer')">搁置</button>
+                        <button type="button" class="ghost mini-btn" @click="adjudicate(finding, 'dismiss')">驳回</button>
+                      </template>
+                      <span v-else class="badge">{{ AUDIT_DECISION_LABELS[finding.decision] || finding.decision }}</span>
+                    </li>
+                  </ul>
+                  <p v-else class="muted">还没有审计发现——逐场质检看不见的跨章问题登记在这里。</p>
+                  <div class="longform-constraint-form">
+                    <select v-model="auditForm.kind" class="control-input compact">
+                      <option v-for="(label, kind) in AUDIT_KIND_LABELS" :key="kind" :value="kind">{{ label }}</option>
+                    </select>
+                    <select v-model="auditForm.severity" class="control-input compact">
+                      <option value="warn">提醒</option>
+                      <option value="block">拦截</option>
+                    </select>
+                    <input v-model="auditForm.text" class="control-input" data-testid="tower-audit-text" placeholder="发现,如:档案室写成了三楼" @keydown.enter="addFinding" />
+                    <button type="button" class="ghost mini-btn" data-testid="tower-audit-add" :disabled="!auditForm.text.trim()" @click="addFinding">登记</button>
+                  </div>
+                </div>
+              </template>
+              <p v-else class="muted">输入章节 ID 打开(或创建)这一章的契约。</p>
+            </div>
           </div>
         </section>
 
@@ -572,3 +889,115 @@ onActivated(() => {
     </PanelShell>
   </section>
 </template>
+
+<style scoped>
+.longform-tower-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.longform-tower-panel {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-lg);
+  background: var(--paper-0);
+  padding: 14px;
+}
+
+.longform-tower-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.longform-tower-panel-head strong {
+  font-family: var(--font-serif);
+}
+
+.longform-anchor-list,
+.longform-constraint-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.longform-anchor-list li,
+.longform-constraint-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-md);
+  background: var(--paper-1);
+}
+
+.longform-anchor-list li.faded {
+  opacity: 0.55;
+}
+
+.longform-anchor-text {
+  flex: 1;
+  min-width: 14ch;
+  font-size: 13px;
+}
+
+.longform-anchor-form,
+.longform-constraint-form,
+.longform-contract-loader {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.longform-anchor-form .control-input,
+.longform-constraint-form .control-input {
+  flex: 1;
+  min-width: 12ch;
+}
+
+.longform-anchor-form .compact,
+.longform-constraint-form .compact {
+  flex: 0 1 130px;
+}
+
+.longform-contract-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.longform-tower-error {
+  color: var(--rose);
+  font-size: 13px;
+}
+
+.longform-audit {
+  display: grid;
+  gap: 8px;
+  border-top: 1px dashed var(--line-2);
+  padding-top: 10px;
+}
+
+.longform-constraint-list li.adjudicated {
+  opacity: 0.6;
+}
+
+.longform-audit .badge.danger {
+  background: var(--rose-wash);
+  color: var(--rose);
+}
+
+.longform-force-archive {
+  color: var(--rose);
+  border-color: color-mix(in srgb, var(--rose) 40%, transparent);
+}
+</style>

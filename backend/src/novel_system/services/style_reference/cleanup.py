@@ -5,8 +5,118 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import delete, text
 from sqlalchemy.orm import Session
+
+from novel_system.db.models import (
+    ReviewItem,
+    StyleReferenceBannedTerm,
+    StyleReferenceEvidence,
+    StyleReferenceExtraction,
+    StyleReferenceFinding,
+    StyleReferenceInjectionBinding,
+    StyleReferenceProfile,
+    StyleReferenceQuote,
+    StyleReferenceRun,
+    StyleReferenceValidationReport,
+)
+
+
+def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
+    """删除 book 的全部派生数据,保留 paragraphs 与 book 本身。
+
+    覆盖 9 张派生表(validation reports → bindings → banned terms → profiles →
+    evidences → findings → extractions → quotes → runs,FK 反向顺序)+ 相关
+    ReviewItem(``review_style_ref_apply_*`` / ``review_style_ref_calib_*`` /
+    ``review_style_ref_finding_*`` 前缀)。
+
+    路由 ``delete_book`` 与 ``reclassify`` 共用;flush 但不 commit。
+    返回 {表名: 删除行数} 摘要。
+    """
+    from novel_system.services.style_reference.repository import (
+        StyleReferenceRepository,
+    )
+
+    repo = StyleReferenceRepository(session)
+    profile_ids = [p.profile_id for p in repo.list_profiles(book_id=book_id)]
+    findings = repo.list_findings(book_id=book_id)
+    finding_ids = [f.finding_id for f in findings]
+
+    counts: dict[str, int] = {}
+
+    def _exec(stmt, key: str) -> None:
+        result = session.execute(stmt)
+        counts[key] = counts.get(key, 0) + int(result.rowcount or 0)
+
+    # 相关 ReviewItem:finding review id 是确定性的(finding_id 后 12 位),
+    # apply / calib 按 profile_id 后 12 位做前缀匹配(见 materialization.py)。
+    review_ids = {f"review_style_ref_finding_{fid[-12:]}" for fid in finding_ids}
+    review_ids.update(f.review_id for f in findings if f.review_id)
+    if review_ids:
+        _exec(
+            delete(ReviewItem).where(ReviewItem.review_id.in_(sorted(review_ids))),
+            "review_items",
+        )
+    for pid in profile_ids:
+        suffix = pid[-12:] if len(pid) > 12 else pid
+        for prefix in ("review_style_ref_apply_", "review_style_ref_calib_"):
+            _exec(
+                delete(ReviewItem).where(
+                    ReviewItem.review_id.startswith(f"{prefix}{suffix}_", autoescape=True)
+                ),
+                "review_items",
+            )
+
+    for pid in profile_ids:
+        _exec(
+            delete(StyleReferenceValidationReport).where(
+                StyleReferenceValidationReport.profile_id == pid
+            ),
+            "validation_reports",
+        )
+        _exec(
+            delete(StyleReferenceInjectionBinding).where(
+                StyleReferenceInjectionBinding.profile_id == pid
+            ),
+            "bindings",
+        )
+        _exec(
+            delete(StyleReferenceBannedTerm).where(
+                StyleReferenceBannedTerm.profile_id == pid
+            ),
+            "banned_terms",
+        )
+    _exec(
+        delete(StyleReferenceProfile).where(StyleReferenceProfile.book_id == book_id),
+        "profiles",
+    )
+    if finding_ids:
+        _exec(
+            delete(StyleReferenceEvidence).where(
+                StyleReferenceEvidence.finding_id.in_(finding_ids)
+            ),
+            "evidences",
+        )
+    _exec(
+        delete(StyleReferenceFinding).where(StyleReferenceFinding.book_id == book_id),
+        "findings",
+    )
+    _exec(
+        delete(StyleReferenceExtraction).where(
+            StyleReferenceExtraction.book_id == book_id
+        ),
+        "extractions",
+    )
+    _exec(
+        delete(StyleReferenceQuote).where(StyleReferenceQuote.book_id == book_id),
+        "quotes",
+    )
+    _exec(
+        delete(StyleReferenceRun).where(StyleReferenceRun.book_id == book_id),
+        "runs",
+    )
+    session.flush()
+    return counts
 
 
 def cleanup_metric_events(

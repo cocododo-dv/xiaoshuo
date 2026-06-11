@@ -41,11 +41,14 @@ describe("writer flow command center", () => {
       .map((view) => view.id);
 
     expect(writerPrimaryIds).toEqual([
+      "home",
+      "flowmap",
       "snowflake-workbench",
       "writer-flow",
       "writer-room",
       "reference",
       "review",
+      "library",
     ]);
     expect(router.viewMeta("writer-flow")).toEqual(expect.objectContaining({
       writerPrimary: true,

@@ -15,6 +15,8 @@ export * from "./chapters";
 export * from "./config";
 export * from "./interop";
 export * from "./knowledge";
+export * from "./library";
+export * from "./longformTower";
 export * from "./literary";
 export * from "./projects";
 export * from "./review";

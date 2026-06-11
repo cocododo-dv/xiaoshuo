@@ -1,6 +1,6 @@
 ﻿<script setup>
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ArrowRight, Check, Eye, FileText, RefreshCw, Save, Sparkles, X } from "lucide-vue-next";
+import { ArrowRight, Check, Eye, FileText, Maximize2, Minimize2, RefreshCw, Save, Sparkles, X } from "lucide-vue-next";
 
 import BaseBadge from "../components/base/BaseBadge.vue";
 import BaseEmptyState from "../components/base/BaseEmptyState.vue";
@@ -12,6 +12,7 @@ import WorkflowPageHeader from "../components/WorkflowPageHeader.vue";
 import { useFlowActionFeedback } from "../composables/useFlowActionFeedback";
 import { useFocusTrap } from "../composables/useFocusTrap";
 import { compactEntityOptions, formatChapterChoice, formatSceneChoice } from "../lib/readableRefs";
+import { fetchChapterContract, fetchTowerAnchors } from "../lib/api";
 import { useShellRouter } from "../router";
 import { useWriterRoomStore } from "../stores/writerRoom";
 
@@ -25,6 +26,70 @@ const { receipt, runFlowAction } = useFlowActionFeedback({
 
 const WRITER_DRAFT_SCOPE = "writer-room:draft";
 const WRITER_PROPOSAL_SCOPE = "writer-room:proposal";
+
+/* 沉浸模式:收起两侧栏,只剩稿纸(设计稿 wr-desk 的 immersion) */
+const immersion = ref(false);
+
+/* —— 随身契约(控制塔):人写的章也在治理线内 ——
+   显示全书钉入锚点 + 当前章契约约束;当前场有指派时单独成组。 */
+const towerAnchors = ref([]);
+const towerContract = ref(null);
+const towerProjectId = computed(() => room.target?.project_id || room.chapter?.project_id || "");
+
+async function loadPocketContract() {
+  const projectId = towerProjectId.value;
+  if (!projectId) {
+    towerAnchors.value = [];
+    towerContract.value = null;
+    return;
+  }
+  try {
+    const payload = await fetchTowerAnchors(projectId);
+    towerAnchors.value = (payload?.anchors || []).filter((anchor) => anchor.status === "pinned");
+  } catch {
+    towerAnchors.value = [];
+  }
+  const chapterId = room.selectedChapterId;
+  if (!chapterId) {
+    towerContract.value = null;
+    return;
+  }
+  try {
+    towerContract.value = await fetchChapterContract(projectId, chapterId);
+  } catch {
+    towerContract.value = null;
+  }
+}
+
+watch(
+  () => [towerProjectId.value, room.selectedChapterId],
+  () => {
+    loadPocketContract();
+  },
+  { immediate: true },
+);
+
+const pocketSceneConstraints = computed(() =>
+  (towerContract.value?.constraints || []).filter(
+    (constraint) => constraint.scene_id && constraint.scene_id === room.selectedSceneId,
+  ),
+);
+const pocketChapterConstraints = computed(() =>
+  (towerContract.value?.constraints || []).filter(
+    (constraint) => !constraint.scene_id || constraint.scene_id !== room.selectedSceneId,
+  ),
+);
+const pocketVisible = computed(() =>
+  Boolean(towerAnchors.value.length || (towerContract.value?.constraints || []).length),
+);
+
+/* 字数目标环(设计稿 wr-desk 顶栏统计)。
+   后端暂无逐场目标字数,先用 2000 字参考目标;缺口已记入迁移路线图。 */
+const WRITING_GOAL_CHARS = 2000;
+const draftCharCount = computed(() => String(room.draftContent || "").replace(/\s/g, "").length);
+const goalPct = computed(() => Math.min(100, Math.round((draftCharCount.value / WRITING_GOAL_CHARS) * 100)));
+const GOAL_RING_R = 9;
+const GOAL_RING_C = 2 * Math.PI * GOAL_RING_R;
 
 const proposalModeOptions = [
   { value: "structure", label: "结构" },
@@ -378,6 +443,16 @@ onBeforeUnmount(() => {
       description="先写正文，再看诊断和改法建议。"
     >
       <template #actions>
+        <button
+          type="button"
+          class="ghost"
+          data-testid="writer-room-immersion"
+          :title="immersion ? '退出沉浸,召回两侧参考' : '沉浸写作,只留稿纸'"
+          @click="immersion = !immersion"
+        >
+          <component :is="immersion ? Minimize2 : Maximize2" :size="16" />
+          {{ immersion ? "退出沉浸" : "沉浸" }}
+        </button>
         <button type="button" class="ghost" :disabled="room.loading" @click="loadInitial({ force: true })">
           <RefreshCw :size="16" />
           刷新
@@ -404,7 +479,7 @@ onBeforeUnmount(() => {
         <span class="badge" :class="{ active: room.draftDirty || autoSaveState === 'saving', danger: autoSaveState === 'error' }">{{ draftStatusLabel }}</span>
       </div>
 
-      <div class="writer-room-grid">
+      <div class="writer-room-grid" :class="{ 'is-immersion': immersion }">
         <aside class="writer-room-nav" aria-label="章节与场景">
           <CompactEntitySelect
             label="章节"
@@ -460,6 +535,24 @@ onBeforeUnmount(() => {
               <span class="eyebrow">你的正文</span>
               <h3>正文</h3>
             </div>
+            <span class="writer-room-goal" :title="`本场 ${draftCharCount} 字 · 参考目标 ${WRITING_GOAL_CHARS} 字`" data-testid="writer-room-goal-ring">
+              <svg class="writer-room-goal-ring" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+                <circle cx="11" cy="11" :r="GOAL_RING_R" fill="none" stroke="var(--line-1)" stroke-width="3" />
+                <circle
+                  cx="11"
+                  cy="11"
+                  :r="GOAL_RING_R"
+                  fill="none"
+                  :stroke="goalPct >= 100 ? 'var(--sage)' : 'var(--crimson)'"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                  :stroke-dasharray="GOAL_RING_C"
+                  :stroke-dashoffset="GOAL_RING_C * (1 - goalPct / 100)"
+                  transform="rotate(-90 11 11)"
+                />
+              </svg>
+              <b>{{ draftCharCount.toLocaleString() }}</b> 字
+            </span>
             <span class="badge" :class="{ active: room.draftDirty || autoSaveState === 'saving', danger: autoSaveState === 'error' }">{{ draftStatusLabel }}</span>
           </div>
 
@@ -478,6 +571,29 @@ onBeforeUnmount(() => {
         </main>
 
         <aside class="writer-room-side" aria-label="诊断与改法">
+          <section v-if="pocketVisible" class="writer-room-pocket" data-testid="writer-room-pocket-contract">
+            <div class="writer-room-section-head">
+              <div>
+                <span class="eyebrow">随身契约 · 控制塔</span>
+                <h3>这一章要守住的</h3>
+              </div>
+              <span v-if="towerContract" class="badge">{{ { drafting: "起草中", ready: "就绪", dispatched: "已下发", archived: "已归档" }[towerContract.status] || towerContract.status }}</span>
+            </div>
+            <div v-if="pocketSceneConstraints.length" class="writer-room-pocket-group">
+              <strong>本场指派</strong>
+              <p v-for="(constraint, index) in pocketSceneConstraints" :key="`ps-${index}`" class="writer-room-pocket-item is-scene">{{ constraint.text }}</p>
+            </div>
+            <div v-if="pocketChapterConstraints.length" class="writer-room-pocket-group">
+              <strong>全章在场</strong>
+              <p v-for="(constraint, index) in pocketChapterConstraints" :key="`pc-${index}`" class="writer-room-pocket-item">{{ constraint.text }}</p>
+            </div>
+            <div v-if="towerAnchors.length" class="writer-room-pocket-group">
+              <strong>全书锚点</strong>
+              <p v-for="anchor in towerAnchors.slice(0, 5)" :key="anchor.anchor_id" class="writer-room-pocket-item is-anchor">{{ anchor.text }}</p>
+              <small v-if="towerAnchors.length > 5" class="muted">还有 {{ towerAnchors.length - 5 }} 条,去长篇控制塔查看。</small>
+            </div>
+          </section>
+
           <section class="writer-room-focus">
             <div class="writer-room-section-head">
               <div>
@@ -634,9 +750,25 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 书桌布局(设计稿 wr-desk):大纲 · 稿纸 · 上下文 三栏,
+   中央正文是搁在暖色桌面上的一张稿纸。 */
 .writer-room-view {
   display: grid;
   gap: 1rem;
+  --desk-surface: color-mix(in srgb, var(--paper-1) 62%, var(--paper-0));
+  --sheet-shadow:
+    0 0 0 1px color-mix(in srgb, var(--line-1) 55%, transparent),
+    0 1px 1px rgba(58, 52, 45, 0.04),
+    0 10px 28px rgba(58, 52, 45, 0.07),
+    0 34px 60px rgba(58, 52, 45, 0.05);
+}
+
+[data-theme="dark"] .writer-room-view {
+  --desk-surface: color-mix(in srgb, #000 22%, var(--paper-0));
+  --sheet-shadow:
+    0 0 0 1px color-mix(in srgb, var(--line-1) 70%, transparent),
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    0 18px 44px rgba(0, 0, 0, 0.42);
 }
 
 .writer-room-grid {
@@ -919,6 +1051,171 @@ onBeforeUnmount(() => {
   .writer-room-textarea {
     min-height: 46vh;
     padding: 0.9rem;
+  }
+}
+
+/* ==========================================================
+   书桌视觉层(设计稿 wr-desk)— 后置规则覆盖上面的面板风格
+   ========================================================== */
+.writer-room-grid {
+  background: var(--desk-surface);
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-xl);
+  padding: 18px;
+  gap: 18px;
+}
+
+/* 中央稿纸:一张搁在桌面上的纸 */
+.writer-room-editor {
+  background: var(--paper-0);
+  border-radius: var(--r-sm);
+  box-shadow: var(--sheet-shadow);
+  padding: 26px 30px 30px;
+  max-width: 760px;
+  width: 100%;
+  justify-self: center;
+}
+
+.writer-room-editor-head {
+  border-bottom: 1px solid var(--line-1);
+  padding-bottom: 10px;
+}
+
+.writer-room-editor-head h3 {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  letter-spacing: -0.01em;
+}
+
+.writer-room-textarea {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 2.05;
+  color: var(--ink-1);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 14px 2px 24px;
+  min-height: 58vh;
+  resize: vertical;
+}
+
+.writer-room-textarea:focus {
+  box-shadow: none;
+  border: 0;
+  outline: none;
+}
+
+.writer-room-textarea::placeholder {
+  color: var(--ink-4);
+}
+
+/* 两侧安静栏:去面板感,贴着桌面 */
+.writer-room-nav,
+.writer-room-side {
+  background: transparent;
+  padding: 4px 2px;
+}
+
+.writer-room-nav h3,
+.writer-room-side h3,
+.writer-room-brief h3 {
+  font-family: var(--font-serif);
+  font-size: 15px;
+}
+
+.writer-room-context-strip {
+  border: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--paper-1) 80%, transparent);
+  border-radius: var(--r-pill);
+  padding: 0.55rem 1rem;
+}
+
+/* 字数目标环 */
+.writer-room-goal {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  padding: 3px 10px 3px 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper-2) 55%, transparent);
+}
+
+.writer-room-goal b {
+  color: var(--ink-1);
+  font-family: var(--font-serif);
+  font-weight: 600;
+}
+
+.writer-room-goal-ring circle {
+  transition: stroke-dashoffset 200ms ease, stroke 200ms ease;
+}
+
+/* 随身契约侧栏 */
+.writer-room-pocket {
+  display: grid;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--crimson) 24%, transparent);
+  border-left: 3px solid var(--crimson);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--crimson-wash) 22%, var(--paper-1));
+  padding: 12px;
+}
+
+.writer-room-pocket-group {
+  display: grid;
+  gap: 4px;
+}
+
+.writer-room-pocket-group strong {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--ink-3);
+}
+
+.writer-room-pocket-item {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  padding-left: 10px;
+  border-left: 2px solid var(--line-2);
+}
+
+.writer-room-pocket-item.is-scene {
+  border-left-color: var(--crimson);
+  color: var(--ink-1);
+  font-weight: 500;
+}
+
+.writer-room-pocket-item.is-anchor {
+  border-left-color: var(--gold);
+}
+
+/* 沉浸模式:两侧消失,稿纸独占书桌 */
+.writer-room-grid.is-immersion {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.writer-room-grid.is-immersion .writer-room-nav,
+.writer-room-grid.is-immersion .writer-room-side {
+  display: none;
+}
+
+.writer-room-grid.is-immersion .writer-room-editor {
+  max-width: 820px;
+}
+
+@media (max-width: 1180px) {
+  .writer-room-grid {
+    padding: 12px;
+  }
+
+  .writer-room-editor {
+    max-width: none;
   }
 }
 </style>

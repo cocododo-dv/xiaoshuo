@@ -175,7 +175,8 @@ def test_ingest_duplicate_raises(ingest_service: IngestService) -> None:
 
 def test_ingest_luxun_placeholder(ingest_service: IngestService) -> None:
     """端到端冒烟:用 placeholder corpus 跑全流程,断言所有 stats 字段非空。"""
-    path = Path("backend/tests/golden/style_reference/corpus/luxun_short_stories.txt")
+    # 相对本测试文件解析,CWD 无关(repo 根 / backend 目录跑都能过)
+    path = Path(__file__).resolve().parent / "golden/style_reference/corpus/luxun_short_stories.txt"
     result = ingest_service.ingest_path(
         path,
         title="鲁迅 placeholder",

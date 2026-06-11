@@ -257,6 +257,51 @@ function openWriterRoomForScene(sceneReview) {
   });
 }
 
+/* 退回闭环(设计稿):退回必须带理由 + 定位,产出可追踪的回溯项,
+   而不是悄悄跳去写作房间。后端 final_review request_revision 已支持。 */
+const revisionDialogOpen = ref(false);
+const revisionReason = ref("");
+const revisionSceneId = ref("");
+const revisionJumpAfter = ref(true);
+
+function openRevisionDialog(sceneId = "") {
+  revisionSceneId.value = sceneId || "";
+  revisionDialogOpen.value = true;
+}
+
+async function submitRevisionRequest() {
+  const reason = revisionReason.value.trim();
+  if (!reason) {
+    return;
+  }
+  const sceneId = revisionSceneId.value;
+  await runFlowAction({
+    scopeKey: WRITER_FLOW_SCOPE,
+    actionLabel: "退回小修",
+    runningMessage: "正在记录退回原因与定位...",
+    successMessage: () => store.lastActionMessage || "已退回：原因与定位已记录为待办，修完可以再来批准。",
+    nextStep: () => "下一步：带着退回原因去写作房间修改。",
+    action: () =>
+      store.requestCurrentChapterRevision({
+        revision_notes: reason,
+        scene_decisions: sceneId
+          ? [{ scene_id: sceneId, decision: "request_revision", note: reason }]
+          : [],
+      }),
+  });
+  revisionDialogOpen.value = false;
+  if (revisionJumpAfter.value) {
+    const picked = sceneReviews.value.find((scene) => scene.scene_id === sceneId);
+    if (picked) {
+      openWriterRoomForScene(picked);
+    } else {
+      openWriterRoomForChapter();
+    }
+  }
+  revisionReason.value = "";
+  revisionSceneId.value = "";
+}
+
 function openBacktrackItem(item) {
   router.navigate("review", {
     target: {
@@ -459,8 +504,8 @@ watch(() => router.routeContext.value?.target, (target) => {
               <span class="eyebrow">终稿审阅</span>
               <h3>{{ reviewBodySourceText || "等待正文" }}</h3>
             </div>
-            <button type="button" class="ghost" @click="openWriterRoomForChapter">
-              需要小修
+            <button type="button" class="ghost" data-testid="writer-flow-request-revision" @click="openRevisionDialog()">
+              退回小修
             </button>
           </div>
           <p v-if="reviewPacket?.body" class="writer-flow-body-preview">{{ reviewPacket.body }}</p>
@@ -498,7 +543,7 @@ watch(() => router.routeContext.value?.target, (target) => {
                 <small v-if="scene.issues_summary[0].evidence">证据：{{ scene.issues_summary[0].evidence }}</small>
                 <small v-if="scene.issues_summary[0].suggested_action">建议：{{ scene.issues_summary[0].suggested_action }}</small>
               </div>
-              <button type="button" class="ghost mini" @click="openWriterRoomForScene(scene)">小修</button>
+              <button type="button" class="ghost mini" :data-testid="`writer-flow-revise-scene-${scene.scene_id}`" @click="openRevisionDialog(scene.scene_id)">退回此场</button>
             </article>
           </div>
           <label class="writer-flow-approval-notes" data-testid="writer-flow-approval-notes">
@@ -520,6 +565,53 @@ watch(() => router.routeContext.value?.target, (target) => {
           <small>{{ chapter.scenes?.length || 0 }} 场景</small>
         </article>
       </section>
+
+      <div v-if="revisionDialogOpen" class="writer-flow-reader-backdrop" data-testid="writer-flow-revision-dialog">
+        <article class="writer-flow-reader writer-flow-revision">
+          <div class="panel-head">
+            <div>
+              <span class="eyebrow">退回小修</span>
+              <h3>{{ currentChapter?.chapter_goal || reviewPacket?.chapter_id || "当前章节" }}</h3>
+            </div>
+            <button type="button" class="ghost" @click="revisionDialogOpen = false">取消</button>
+          </div>
+          <p class="muted">退回会把原因和定位记成可追踪的待办——修完回来批准,链路不丢。</p>
+          <label class="writer-flow-revision-field">
+            <span>定位到场(可选)</span>
+            <select v-model="revisionSceneId" class="control-input" data-testid="writer-flow-revision-scene">
+              <option value="">整章</option>
+              <option v-for="scene in sceneReviews" :key="scene.scene_id" :value="scene.scene_id">
+                第 {{ scene.scene_seq || "-" }} 场 · {{ scene.title || scene.scene_id }}
+              </option>
+            </select>
+          </label>
+          <label class="writer-flow-revision-field">
+            <span>退回原因(必填)</span>
+            <textarea
+              v-model="revisionReason"
+              class="control-input"
+              rows="4"
+              data-testid="writer-flow-revision-reason"
+              placeholder="例如:第 3 场的挫折没有代价,读者不会紧张;或:阿恪的动机在本章前后矛盾。"
+            />
+          </label>
+          <label class="writer-flow-revision-jump">
+            <input v-model="revisionJumpAfter" type="checkbox" />
+            <span>提交后直接打开写作房间修改</span>
+          </label>
+          <div class="action-row">
+            <button
+              type="button"
+              class="primary"
+              data-testid="writer-flow-revision-submit"
+              :disabled="!revisionReason.trim() || store.actionId.startsWith('final-review-revision')"
+              @click="submitRevisionRequest"
+            >
+              确认退回
+            </button>
+          </div>
+        </article>
+      </div>
 
       <div v-if="readDrawerOpen" class="writer-flow-reader-backdrop" data-testid="writer-flow-read-drawer">
         <article class="writer-flow-reader">
@@ -931,5 +1023,37 @@ watch(() => router.routeContext.value?.target, (target) => {
   .writer-flow-panel dl {
     grid-template-columns: 1fr;
   }
+}
+
+/* 退回小修对话框 */
+.writer-flow-view .writer-flow-revision {
+  display: grid;
+  gap: 14px;
+  max-width: 560px;
+}
+
+.writer-flow-view .writer-flow-revision-field {
+  display: grid;
+  gap: 6px;
+}
+
+.writer-flow-view .writer-flow-revision-field span {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.writer-flow-view .writer-flow-revision-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--surface-text);
+}
+
+.writer-flow-view .writer-flow-revision-jump input {
+  min-height: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--crimson);
 }
 </style>

@@ -17,6 +17,8 @@ from novel_system.api.routes import (
     indexing,
     interop,
     knowledge,
+    library,
+    longform_tower,
     literary_eval,
     literary_quality,
     longform_control,
@@ -129,6 +131,8 @@ def create_app() -> FastAPI:
     app.include_router(writer_deep_review.router)
     app.include_router(review.router)
     app.include_router(domain.router)
+    app.include_router(library.router)
+    app.include_router(longform_tower.router)
     app.include_router(knowledge.router)
     app.include_router(reference_safety.router)
     app.include_router(indexing.router)

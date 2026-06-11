@@ -16,26 +16,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
-from novel_system.db.models import (
-    ReviewItem,
-    StyleReferenceBannedTerm,
-    StyleReferenceEvidence,
-    StyleReferenceExtraction,
-    StyleReferenceFinding,
-    StyleReferenceInjectionBinding,
-    StyleReferenceParagraph,
-    StyleReferenceProfile,
-    StyleReferenceQuote,
-    StyleReferenceRun,
-    StyleReferenceValidationReport,
-)
+from novel_system.db.models import ReviewItem
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.style_reference.cleanup import purge_derived_data
 from novel_system.services.style_reference.dimensions import Layer
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.materialization import MaterializationService
@@ -141,8 +129,8 @@ def _serialize_run(run) -> dict[str, Any]:
     }
 
 
-def _serialize_finding(finding) -> dict[str, Any]:
-    return {
+def _serialize_finding(finding, *, evidence: list | None = None) -> dict[str, Any]:
+    payload = {
         "finding_id": finding.finding_id,
         "book_id": finding.book_id,
         "run_id": finding.run_id,
@@ -154,6 +142,10 @@ def _serialize_finding(finding) -> dict[str, Any]:
         "status": finding.status,
         "review_id": finding.review_id,
     }
+    # PR-23 — 仅 ?include=evidence 时输出;不带 include 的调用方零回归
+    if evidence is not None:
+        payload["evidence"] = evidence
+    return payload
 
 
 def _serialize_profile(profile) -> dict[str, Any]:
@@ -365,61 +357,10 @@ def delete_book(
                 f"book {book_id!r} not found",
                 status_code=404,
             )
-        # FK 反向 cascade(无 ON DELETE CASCADE,显式删)
-        # 顺序:reports → bindings → banned_terms → profiles → evidences → findings →
-        # extractions → quotes → runs → paragraphs → book
-        profile_ids = [p.profile_id for p in repo.list_profiles(book_id=book_id)]
-        for pid in profile_ids:
-            session.execute(
-                delete(StyleReferenceValidationReport).where(
-                    StyleReferenceValidationReport.profile_id == pid
-                )
-            )
-            session.execute(
-                delete(StyleReferenceInjectionBinding).where(
-                    StyleReferenceInjectionBinding.profile_id == pid
-                )
-            )
-            session.execute(
-                delete(StyleReferenceBannedTerm).where(
-                    StyleReferenceBannedTerm.profile_id == pid
-                )
-            )
-        session.execute(
-            delete(StyleReferenceProfile).where(
-                StyleReferenceProfile.book_id == book_id
-            )
-        )
-        finding_ids = [
-            f.finding_id for f in repo.list_findings(book_id=book_id)
-        ]
-        if finding_ids:
-            session.execute(
-                delete(StyleReferenceEvidence).where(
-                    StyleReferenceEvidence.finding_id.in_(finding_ids)
-                )
-            )
-        session.execute(
-            delete(StyleReferenceFinding).where(
-                StyleReferenceFinding.book_id == book_id
-            )
-        )
-        session.execute(
-            delete(StyleReferenceExtraction).where(
-                StyleReferenceExtraction.book_id == book_id
-            )
-        )
-        session.execute(
-            delete(StyleReferenceQuote).where(StyleReferenceQuote.book_id == book_id)
-        )
-        session.execute(
-            delete(StyleReferenceRun).where(StyleReferenceRun.book_id == book_id)
-        )
-        session.execute(
-            delete(StyleReferenceParagraph).where(
-                StyleReferenceParagraph.book_id == book_id
-            )
-        )
+        # FK 反向 cascade(无 ON DELETE CASCADE):派生数据走 purge_derived_data
+        # (与 reclassify 共用),再删 paragraphs → book
+        purge_derived_data(session, book_id)
+        repo.delete_paragraphs_for_book(book_id)
         repo.delete_book(book_id)
         return {"book_id": book_id, "deleted": True}
 
@@ -439,18 +380,21 @@ def reclassify_book(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """重跑段落分类器。PR-4 占位:实际重跑逻辑等同 ingest 的 segmentation 调度。"""
+    """PR-23 — 重跑段落分类器(复用 ingest 的 classify_paragraphs 管线)。
+
+    更新 paragraph_type / stats_json 并清空派生数据(paragraphs 与 book 保留)。
+    分类需要 LLM;不可用时 IngestService.reclassify 抛 LLMRequiredError。
+    """
 
     def _do() -> dict[str, Any]:
-        repo = StyleReferenceRepository(session)
-        book = repo.get_book(book_id)
-        if book is None:
-            raise DomainError(
-                "STYLE_REFERENCE_BOOK_NOT_FOUND",
-                f"book {book_id!r} not found",
-                status_code=404,
-            )
-        return {"book_id": book_id, "status": "reclassify_pending", "note": "PR-5+ 实装"}
+        client, enabled = _get_llm_client_and_enabled()
+        service = IngestService(session, llm_client=client, llm_enabled=enabled)
+        paragraphs_count = service.reclassify(book_id)
+        return {
+            "book_id": book_id,
+            "status": "reclassified",
+            "paragraphs_count": paragraphs_count,
+        }
 
     return _with_idem(
         session,
@@ -478,7 +422,8 @@ def start_run(
 
     def _do() -> dict[str, Any]:
         client, enabled = _get_llm_client_and_enabled()
-        layers_raw = body.get("layers") or ["language", "narrative"]
+        # PR-23 — 默认值单点:不带 layers 时全 4 层抽取(语 + 叙 + 景 + 题)
+        layers_raw = body.get("layers") or ["language", "narrative", "scene", "theme"]
         try:
             layers = [Layer(layer) for layer in layers_raw]
         except ValueError as exc:
@@ -565,6 +510,7 @@ def list_run_findings(
     sub_dimension: str | None = None,
     finding_kind: str | None = None,
     status: str | None = None,
+    include: str | None = None,
     session: Session = Depends(get_session),
 ):
     repo = StyleReferenceRepository(session)
@@ -574,8 +520,43 @@ def list_run_findings(
         finding_kind=finding_kind,
         status=status,
     )
+    # PR-23 — ?include=evidence:总查询数固定 3 条(findings + evidences + quotes)
+    evidence_map: dict[str, list[dict[str, Any]]] | None = None
+    if include == "evidence":
+        evidences = repo.list_evidences_for_findings(
+            [f.finding_id for f in findings]
+        )
+        quotes = {
+            q.quote_id: q
+            for q in repo.list_quotes_by_ids([e.quote_id for e in evidences])
+        }
+        evidence_map = {}
+        for e in evidences:
+            quote = quotes.get(e.quote_id)
+            evidence_map.setdefault(e.finding_id, []).append(
+                {
+                    "evidence_id": e.evidence_id,
+                    "anchor_kind": e.anchor_kind,
+                    "is_synthetic": e.is_synthetic,
+                    "quote_text": quote.quote_text if quote else "",
+                    "paragraph_id": quote.paragraph_id if quote else None,
+                    "span": [quote.span_start, quote.span_end] if quote else None,
+                }
+            )
     return ok(
-        {"findings": [_serialize_finding(f) for f in findings]},
+        {
+            "findings": [
+                _serialize_finding(
+                    f,
+                    evidence=(
+                        evidence_map.get(f.finding_id, [])
+                        if evidence_map is not None
+                        else None
+                    ),
+                )
+                for f in findings
+            ]
+        },
         req_id=_req_id(request),
     )
 

@@ -85,29 +85,14 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
         "description": "将一句话扩展为五句话，构建三幕结构与三个关键「灾难」转折点。这确保你的故事有扎实的戏剧骨架。",
         "default_draft": {
             "sentences": ["", "", "", "", ""],
-            "three_act_check": {
-                "first_disaster": "",
-                "second_disaster": "",
-                "third_disaster": "",
-                "ending": "",
-            },
+            # 三幕灾难不再手填——它是五句脊的派生视图（句 2/3/4 即三次灾难，句 5 即结局）。
+            # 由 derive_three_act() 读时派生，不入库，杜绝与五句脊双写漂移。
             "moral_premise": "",
         },
         "editor": {
             "kind": "form",
             "fields": [
                 {"key": "sentences", "kind": "sentences", "label": "五个关键句"},
-                {
-                    "key": "three_act_check",
-                    "kind": "object",
-                    "label": "三幕校验",
-                    "fields": [
-                        {"key": "first_disaster", "kind": "text", "label": "第一次灾难"},
-                        {"key": "second_disaster", "kind": "text", "label": "第二次灾难"},
-                        {"key": "third_disaster", "kind": "text", "label": "第三次灾难"},
-                        {"key": "ending", "kind": "text", "label": "结局"},
-                    ],
-                },
                 {"key": "moral_premise", "kind": "textarea", "label": "主题前提"},
             ],
         },
@@ -257,11 +242,12 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                     "kind": "scene_list",
                     "label": "场景列表",
                     "template": {
-                        "scene_id": "",
-                        "chapter_id": "",
+                        "row_uid": "",  # client mints uuid on add; immutable sync identity
+                        "scene_id": "",  # system-assigned, render as locked chip
+                        "chapter_id": "",  # system-assigned, locked
                         "chapter_title": "",
                         "chapter_goal": "",
-                        "scene_seq": 1,
+                        "scene_seq": 1,  # the ONLY reorder handle
                         "pov_character_id": "",
                         "summary": "",
                         "primary_form": "proactive",
@@ -270,6 +256,7 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                         "location": "",
                         "crucible": "",
                     },
+                    "readonly_fields": ["scene_id", "chapter_id", "row_uid"],
                 }
             ],
         },
@@ -289,8 +276,9 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                     "kind": "scene_details",
                     "label": "场景规划",
                     "template": {
-                        "scene_id": "",
-                        "chapter_id": "",
+                        "row_uid": "",  # carried from scene_list; immutable sync identity
+                        "scene_id": "",  # system-assigned, locked
+                        "chapter_id": "",  # system-assigned, locked
                         "title": "",
                         "summary": "",
                         "primary_form": "proactive",
@@ -310,6 +298,7 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                         "hook": "",
                         "beats_json": [],
                     },
+                    "readonly_fields": ["scene_id", "chapter_id", "row_uid"],
                     "scene_modes": [
                         {
                             "value": "proactive",
@@ -585,8 +574,42 @@ _FIELD_HELP: dict[str, dict[str, str]] = {
 }
 
 
+def derive_three_act(draft: dict[str, Any] | None) -> dict[str, str]:
+    """三幕灾难是五句脊的视图，不是独立事实（P1-2）。
+
+    句 2/3/4 本就是三次灾难、句 5 是结局方向。统一从 ``sentences`` 单向派生，
+    任何持久化 / 导出想暴露三幕都「读时派生」，不再入库——杜绝双写漂移。
+    """
+    payload = draft if isinstance(draft, dict) else {}
+    sentences = [str(item or "") for item in (payload.get("sentences") or [])] + [""] * 5
+    return {
+        "first_disaster": sentences[1],
+        "second_disaster": sentences[2],
+        "third_disaster": sentences[3],
+        "ending": sentences[4],
+    }
+
+
 def list_step_definitions() -> list[dict[str, Any]]:
     return deepcopy(SNOWFLAKE_STEP_CATALOG)
+
+
+def planner_step_list() -> list[dict[str, Any]]:
+    """Lightweight projection of the single catalog for the legacy planner flow.
+
+    Keeps the planner's existing API payload shape (step_key/label/english_label/
+    description/skippable) while sourcing all truth from SNOWFLAKE_STEP_CATALOG.
+    """
+    return [
+        {
+            "step_key": step["step_key"],
+            "label": step["label"],
+            "english_label": step["english_label"],
+            "description": step["description"],
+            "skippable": bool(step.get("skippable")),
+        }
+        for step in SNOWFLAKE_STEP_CATALOG
+    ]
 
 
 def get_step_definition(step_key: str) -> dict[str, Any]:
@@ -660,7 +683,7 @@ def diagnose_step_pressure(step_key: str, draft: dict[str, Any] | None) -> dict[
         if len(sentences) < 5:
             flags.append("five_sentence_spine_incomplete")
             fix_steps.append("补齐五句话：开局、三次灾难和结局方向。")
-        disaster_text = " ".join(str(item or "") for item in (payload.get("three_act_check") or {}).values())
+        disaster_text = " ".join(str(item or "") for item in derive_three_act(payload).values())
         if _looks_generic(disaster_text) or not _has_pressure_turn(disaster_text):
             flags.append("disaster_chain_too_soft")
             fix_steps.append("让每次灾难都迫使承诺、价值转变或不可逆升级。")

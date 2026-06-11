@@ -1,0 +1,332 @@
+/* ==========================================================
+   长篇控制塔 v2 — 样式（续）：战情板 / 透镜 / 右栏 / 预览
+   ========================================================== */
+
+/* ==========================================================
+   战情板
+   ========================================================== */
+.lf2-board { }
+.lf2-board-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; }
+.lf2-board-title { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; letter-spacing: 0.01em; color: var(--ink-1); }
+.lf2-board-title svg { color: var(--crimson); }
+.lf2-board-count { font-family: var(--font-serif); font-size: 18px; font-weight: 700; color: var(--crimson); }
+.lf2-board-count small { font-size: 0.62em; color: var(--ink-4); font-weight: 600; }
+.lf2-issues { display: flex; flex-direction: column; gap: 9px; }
+
+.lf2-issue { display: flex; align-items: stretch; gap: 12px; padding: 13px 15px; background: var(--paper-1); border: 1px solid var(--line-1); border-radius: var(--r-lg); cursor: pointer; transition: border-color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast); position: relative; --ic: var(--slate); }
+.lf2-issue::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 2px; background: var(--ic); }
+.lf2-issue.tone-rose { --ic: var(--rose); } .lf2-issue.tone-gold { --ic: var(--gold); } .lf2-issue.tone-slate { --ic: var(--slate); }
+.lf2-issue:hover { border-color: var(--line-2); box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.lf2-issue.is-sel { border-color: var(--crimson); box-shadow: 0 0 0 2px var(--crimson-wash); }
+.lf2-issue-ic { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; margin-left: 4px; align-self: center; background: color-mix(in srgb, var(--ic) 14%, var(--paper-0)); color: var(--ic); }
+.lf2-issue-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.lf2-issue-top { display: flex; align-items: center; gap: 8px; }
+.lf2-issue-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ic); }
+.lf2-sev { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--paper-2); color: var(--ink-3); }
+.lf2-sev.sev-high { background: var(--rose-wash); color: var(--rose); }
+.lf2-sev.sev-medium { background: var(--gold-wash); color: var(--gold); }
+.lf2-issue-title { font-size: 14px; font-family: var(--font-serif); font-weight: 600; color: var(--ink-1); line-height: 1.4; }
+.lf2-issue-meta { font-size: 11.5px; color: var(--ink-3); }
+.lf2-issue-act { align-self: center; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; padding: 7px 12px; border-radius: var(--r-md); border: 1px solid var(--ic); background: color-mix(in srgb, var(--ic) 8%, var(--paper-0)); color: var(--ic); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all var(--t-fast); }
+.lf2-issue-act:hover { background: var(--ic); color: #fff; }
+.lf2-issue-act svg { transition: transform var(--t-fast); }
+.lf2-issue-act:hover svg { transform: translateX(2px); }
+
+.lf2-issues-clear { display: flex; align-items: center; gap: 10px; padding: 16px; background: var(--sage-wash); border-radius: var(--r-lg); color: var(--sage); font-size: 13.5px; font-weight: 500; }
+.lf2-done-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; padding-top: 12px; border-top: 1px dashed var(--line-2); }
+.lf2-done-h { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: var(--sage); }
+.lf2-done-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 999px; background: var(--sage-wash); color: var(--sage); font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.lf2-done-chip:hover { filter: brightness(0.96); }
+
+/* ==========================================================
+   透镜
+   ========================================================== */
+.lf2-lens { background: var(--paper-1); border: 1px solid var(--line-1); border-radius: var(--r-xl); overflow: hidden; }
+.lf2-lens-tabs { display: flex; gap: 2px; padding: 7px 8px; border-bottom: 1px solid var(--line-1); background: var(--paper-0); }
+.lf2-lens-tab { display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border: 0; background: transparent; cursor: pointer; color: var(--ink-3); font-size: 13px; font-weight: 500; border-radius: var(--r-md); transition: all var(--t-fast); }
+.lf2-lens-tab svg { color: var(--ink-4); }
+.lf2-lens-tab:hover { color: var(--ink-1); background: var(--paper-2); }
+.lf2-lens-tab.is-active { color: var(--ink-1); font-weight: 600; background: var(--paper-2); }
+.lf2-lens-tab.is-active svg { color: var(--crimson); }
+.lf2-lens-badge { font-size: 10px; font-weight: 700; background: var(--rose); color: #fff; padding: 0 6px; height: 15px; min-width: 15px; border-radius: 999px; display: inline-grid; place-items: center; }
+.lf2-lens-body { padding: 18px 20px 20px; }
+.lf2-lens-intro { font-size: 12.5px; color: var(--ink-3); line-height: 1.6; margin-bottom: 14px; max-width: 70ch; }
+.lf2-lens-intro b { color: var(--crimson); font-weight: 600; }
+
+/* mini track */
+.lf2-track { position: relative; height: 18px; margin: 8px 0 6px; --tc: var(--slate); }
+.lf2-track.tone-rose { --tc: var(--rose); } .lf2-track.tone-gold { --tc: var(--gold); } .lf2-track.tone-sage { --tc: var(--sage); } .lf2-track.tone-slate { --tc: var(--slate); }
+.lf2-track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; background: var(--line-1); border-radius: 2px; }
+.lf2-track-line { position: absolute; top: 50%; height: 2.5px; transform: translateY(-50%); background: var(--tc); border-radius: 2px; }
+.lf2-track.tone-rose .lf2-track-line, .lf2-track.tone-gold .lf2-track-line { background: repeating-linear-gradient(90deg, var(--tc) 0 5px, transparent 5px 9px); }
+.lf2-track-dot { position: absolute; top: 50%; width: 9px; height: 9px; border-radius: 50%; transform: translate(-50%, -50%); background: var(--tc); border: 1.5px solid var(--paper-1); }
+.lf2-track-dot.is-pay { background: var(--paper-1); border: 2px solid var(--tc); }
+.lf2-track-dot.is-pay.is-od { background: var(--rose); border-color: var(--rose); }
+.lf2-track-q { position: absolute; top: 50%; transform: translate(-50%, -50%); font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--gold); background: var(--paper-1); padding: 0 2px; }
+.lf2-track-now { position: absolute; top: -1px; bottom: -1px; width: 1.5px; background: var(--crimson); opacity: 0.55; }
+
+/* ledger */
+.lf2-led-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.lf2-led { display: grid; grid-template-columns: 30px 1fr 36px; gap: 13px; align-items: start; padding: 12px 14px; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-lg); cursor: pointer; transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+.lf2-led:hover { border-color: var(--line-2); box-shadow: var(--shadow-sm); }
+.lf2-led.is-sel { border-color: var(--crimson); box-shadow: 0 0 0 2px var(--crimson-wash); }
+.lf2-led.is-od { background: color-mix(in srgb, var(--rose-wash) 26%, var(--paper-0)); }
+.lf2-led-pri { align-self: center; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; font-family: var(--font-serif); font-weight: 700; font-size: 14px; }
+.lf2-led-pri.pri-high { background: var(--rose-wash); color: var(--rose); }
+.lf2-led-pri.pri-medium { background: var(--gold-wash); color: var(--gold); }
+.lf2-led-pri.pri-low { background: var(--slate-wash); color: var(--slate); }
+.lf2-led-top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.lf2-led-title { font-size: 14.5px; font-weight: 600; color: var(--ink-1); }
+.lf2-led-meta { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
+.lf2-led .pill { padding: 2px 8px; }
+.lf2-pin { align-self: center; width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--line-1); background: var(--paper-1); color: var(--ink-3); display: grid; place-items: center; cursor: pointer; transition: all var(--t-fast); }
+.lf2-pin:hover { border-color: var(--line-2); color: var(--ink-1); }
+.lf2-pin.is-on { background: var(--crimson); border-color: var(--crimson); color: #fff; box-shadow: var(--shadow-sm); }
+
+/* threads */
+.lf2-thr-list { display: flex; flex-direction: column; gap: 10px; }
+.lf2-thr { padding: 14px 16px; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-lg); cursor: pointer; transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+.lf2-thr:hover { border-color: var(--line-2); box-shadow: var(--shadow-sm); }
+.lf2-thr.is-sel { border-color: var(--crimson); box-shadow: 0 0 0 2px var(--crimson-wash); }
+.lf2-thr-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+.lf2-thr-name { font-size: 15px; font-weight: 600; display: inline-flex; align-items: center; gap: 9px; }
+.lf2-thr-dot { width: 9px; height: 9px; border-radius: 50%; }
+.lf2-thr-track { display: flex; gap: 2px; }
+.lf2-thr-cell { flex: 1; height: 14px; border-radius: 3px; background: var(--paper-3); position: relative; }
+.lf2-thr-cell.is-stall { background: repeating-linear-gradient(45deg, var(--rose-wash) 0 3px, transparent 3px 6px); }
+.lf2-thr-cell.is-now::after { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1.5px; background: var(--crimson); transform: translateX(-50%); }
+.lf2-thr-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+
+/* arcs */
+.lf2-arc-card { background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-lg); padding: 18px 20px; }
+.lf2-arc-legend { display: flex; gap: 9px; flex-wrap: wrap; margin-bottom: 6px; }
+.lf2-arc-tag { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px; border: 1px solid transparent; background: color-mix(in srgb, var(--ac) 12%, var(--paper-0)); font-size: 13px; font-family: var(--font-serif); font-weight: 600; color: var(--ink-1); cursor: pointer; transition: all var(--t-fast); }
+.lf2-arc-tag:hover { border-color: var(--ac); }
+.lf2-arc-tag.is-sel { border-color: var(--ac); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ac) 20%, transparent); }
+.lf2-arc-tag small { color: var(--ink-3); font-weight: 400; font-family: var(--font-sans); }
+.lf2-arc-tag-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ac); }
+.lf2-arc-warn { font-family: var(--font-sans); font-size: 10px; font-weight: 700; color: var(--rose); background: var(--rose-wash); padding: 1px 6px; border-radius: 999px; }
+.lf2-arc-svg { width: 100%; height: auto; display: block; margin-top: 6px; }
+
+/* canon */
+.lf2-canon-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.lf2-canon { display: grid; grid-template-columns: 30px 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-lg); cursor: pointer; transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+.lf2-canon:hover { border-color: var(--line-2); box-shadow: var(--shadow-sm); }
+.lf2-canon.is-sel { border-color: var(--crimson); box-shadow: 0 0 0 2px var(--crimson-wash); }
+.lf2-canon.is-conflict { background: color-mix(in srgb, var(--rose-wash) 22%, var(--paper-0)); }
+.lf2-canon-ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: var(--slate-wash); color: var(--slate); }
+.lf2-canon-ic.is-conflict { background: var(--rose-wash); color: var(--rose); }
+.lf2-canon-body { min-width: 0; }
+.lf2-canon-top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.lf2-canon-subject { font-size: 12.5px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+.lf2-canon-eq { color: var(--ink-4); }
+.lf2-canon-value { font-size: 14.5px; font-weight: 600; color: var(--ink-1); }
+.lf2-canon-star { color: var(--gold); display: inline-flex; }
+.lf2-canon-meta { font-size: 11px; color: var(--ink-3); margin-top: 3px; display: flex; align-items: center; gap: 9px; }
+.lf2-canon-drift { display: inline-flex; align-items: center; gap: 4px; color: var(--rose); font-weight: 600; }
+.lf2-canon-act.is-fix { padding: 7px 13px; border-radius: var(--r-md); border: 1px solid var(--rose); background: var(--rose); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all var(--t-fast); }
+.lf2-canon-act.is-fix:hover { background: color-mix(in srgb, var(--rose) 88%, black); }
+
+/* ==========================================================
+   右栏 · AI 记忆视野
+   ========================================================== */
+.lf2-mem { background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-xl); padding: 18px; box-shadow: var(--shadow-sm); }
+.lf2-mem-h { display: flex; align-items: center; gap: 11px; margin-bottom: 16px; }
+.lf2-mem-ic { width: 32px; height: 32px; border-radius: 9px; background: var(--slate-wash); color: var(--slate); display: grid; place-items: center; }
+.lf2-mem-eyebrow { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-4); font-weight: 700; }
+.lf2-mem-title { font-size: 16px; font-weight: 600; margin-top: 2px; }
+.lf2-mem-strip { position: relative; display: flex; gap: 2px; align-items: flex-end; height: 46px; padding-bottom: 8px; }
+.lf2-mem-cell { flex: 1; position: relative; display: flex; align-items: flex-end; justify-content: center; height: 100%; }
+.lf2-mem-bar { width: 100%; border-radius: 2px; height: 100%; }
+.lf2-mem-bar.is-in { background: var(--slate); }
+.lf2-mem-bar.is-fade { background: var(--slate); }
+.lf2-mem-bar.is-future { background: repeating-linear-gradient(45deg, var(--line-2) 0 2px, transparent 2px 4px); border: 1px solid var(--line-1); }
+.lf2-mem-flag { position: absolute; bottom: -7px; width: 6px; height: 6px; border-radius: 50%; background: var(--rose); box-shadow: 0 0 0 2px var(--paper-0); animation: lf2Blink 1.8s ease-in-out infinite; }
+@keyframes lf2Blink { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .lf2-mem-flag { animation: none; } }
+.lf2-mem-now { position: absolute; top: -2px; bottom: 6px; width: 1.5px; background: var(--crimson); }
+.lf2-mem-now::after { content: "现在"; position: absolute; top: -2px; left: 3px; font-size: 8.5px; font-weight: 700; color: var(--crimson); white-space: nowrap; }
+.lf2-mem-scale { display: flex; justify-content: space-between; font-size: 10px; color: var(--ink-4); margin-top: 4px; }
+.lf2-mem-scale .is-fade { color: var(--slate); } .lf2-mem-scale .is-in { color: var(--ink-2); font-weight: 600; }
+.lf2-mem-note { font-size: 12.5px; line-height: 1.65; color: var(--ink-2); margin: 14px 0 0; }
+.lf2-mem-note b { font-weight: 700; }
+.lf2-mem-fade-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.lf2-mem-fade-list li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.lf2-mem-fade-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--rose); flex: 0 0 auto; }
+.lf2-mem-fade-text { flex: 1; min-width: 0; color: var(--ink-1); font-family: var(--font-serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lf2-mem-fade-ch { font-family: var(--font-mono); font-size: 11px; color: var(--ink-4); }
+.lf2-mem-repin { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 14px; padding: 11px; border-radius: var(--r-md); border: 1px solid var(--crimson); background: var(--crimson-wash); color: var(--crimson); font-size: 13px; font-weight: 600; cursor: pointer; transition: all var(--t-fast); white-space: nowrap; }
+.lf2-mem-repin:hover { background: var(--crimson); color: #fff; }
+
+/* ==========================================================
+   右栏 · 焦点详情
+   ========================================================== */
+.lf2-focus { background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-xl); padding: 18px; box-shadow: var(--shadow-sm); }
+.lf2-focus-head { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 14px; }
+.lf2-focus-ic { flex: 0 0 32px; width: 32px; height: 32px; border-radius: 9px; background: var(--crimson-wash); color: var(--crimson); display: grid; place-items: center; }
+.lf2-focus-titles { flex: 1; min-width: 0; }
+.lf2-focus-eyebrow { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-4); font-weight: 700; }
+.lf2-focus-title { font-size: 16.5px; font-weight: 600; line-height: 1.25; margin-top: 2px; }
+.lf2-focus-note { font-size: 13px; color: var(--ink-2); line-height: 1.65; margin: 4px 0 12px; display: flex; align-items: baseline; gap: 5px; }
+.lf2-focus-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.lf2-focus-stats > div { background: var(--paper-2); border-radius: var(--r-md); padding: 10px; text-align: center; }
+.lf2-focus-stats b { display: block; font-family: var(--font-serif); font-size: 19px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.lf2-focus-stats span { font-size: 11px; color: var(--ink-3); display: block; margin-top: 5px; }
+.lf2-focus-beat { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--gold); font-weight: 600; margin-bottom: 12px; }
+.lf2-focus-row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); padding: 9px 0; border-top: 1px solid var(--line-1); }
+.lf2-sched { margin-left: auto; background: var(--paper-2); border: 1px solid var(--line-1); border-radius: var(--r-sm); padding: 5px 8px; font: inherit; font-size: 12.5px; color: var(--ink-1); cursor: pointer; }
+.lf2-pinbar { display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; margin: 12px 0; padding: 11px; border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--paper-0); color: var(--ink-2); font-size: 13px; font-weight: 600; cursor: pointer; transition: all var(--t-fast); }
+.lf2-pinbar:hover { border-color: var(--crimson-soft); color: var(--ink-1); }
+.lf2-pinbar.is-on { background: var(--crimson); border-color: var(--crimson); color: #fff; }
+.lf2-pinbar.is-fix { background: var(--rose); border-color: var(--rose); color: #fff; }
+.lf2-pinbar.is-fix:hover { background: color-mix(in srgb, var(--rose) 88%, black); color: #fff; }
+.lf2-focus-actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.lf2-focus-actions .btn { flex: 0 0 auto; }
+.lf2-focus-back { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; background: transparent; border: 0; color: var(--ink-3); font-size: 12.5px; cursor: pointer; padding: 6px; }
+.lf2-focus-back:hover { color: var(--ink-1); }
+.lf2-focus-block { margin-top: 12px; }
+.lf2-focus-block-h { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 6px; }
+.lf2-focus-block-h.tone-slate { color: var(--slate); } .lf2-focus-block-h.tone-gold { color: var(--gold); } .lf2-focus-block-h.tone-sage { color: var(--sage); } .lf2-focus-block-h.tone-rose { color: var(--rose); }
+.lf2-focus-block ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.lf2-focus-block li { font-size: 13px; color: var(--ink-1); font-family: var(--font-serif); line-height: 1.45; padding-left: 12px; position: relative; }
+.lf2-focus-block li::before { content: ""; position: absolute; left: 0; top: 8px; width: 4px; height: 4px; border-radius: 50%; background: var(--line-3); }
+.lf2-focus-block-empty { font-size: 12.5px; color: var(--ink-4); }
+
+/* ==========================================================
+   右栏 · 交接舱（墨色）
+   ========================================================== */
+.lf2-cabin { background: linear-gradient(180deg, var(--ink-1), color-mix(in srgb, var(--ink-1) 92%, var(--ink-2))); color: var(--paper-0); border-radius: var(--r-xl); padding: 18px; box-shadow: var(--shadow-md); position: relative; }
+.lf2-cabin.is-pulse { animation: lf2CabinPop 540ms ease; }
+@keyframes lf2CabinPop { 0% { box-shadow: 0 0 0 0 var(--crimson); } 40% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--crimson) 55%, transparent); } 100% { box-shadow: var(--shadow-md); } }
+@media (prefers-reduced-motion: reduce) { .lf2-cabin.is-pulse { animation: none; } }
+.lf2-cabin-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.lf2-cabin-eyebrow { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold-soft); font-weight: 700; }
+.lf2-cabin-title { font-family: var(--font-serif); font-size: 16px; font-weight: 600; margin-top: 5px; color: var(--paper-0); }
+.lf2-cabin-count { flex: 0 0 auto; min-width: 30px; height: 28px; padding: 0 8px; border-radius: 999px; background: var(--crimson); color: #fff; font-family: var(--font-serif); font-weight: 700; font-size: 15px; display: grid; place-items: center; }
+.lf2-cabin-count small { font-size: 0.6em; opacity: 0.72; font-weight: 600; }
+.lf2-cabin-body { display: flex; flex-direction: column; gap: 13px; max-height: 38vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+.lf2-cabin-body::-webkit-scrollbar { width: 6px; }
+.lf2-cabin-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border: 0; border-radius: 999px; }
+.lf2-stratum-h { display: flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; color: rgba(255,255,255,0.6); margin-bottom: 7px; text-transform: none; }
+.lf2-stratum-h svg { color: var(--gold-soft); }
+.lf2-stratum-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.lf2-ho-item { display: flex; gap: 9px; align-items: flex-start; cursor: pointer; padding: 4px; margin: -4px; border-radius: 8px; transition: background var(--t-fast), opacity var(--t-fast); --hc: var(--slate); }
+.lf2-ho-item.tone-rose { --hc: var(--rose); } .lf2-ho-item.tone-gold { --hc: var(--gold); } .lf2-ho-item.tone-crimson { --hc: var(--crimson-soft); } .lf2-ho-item.tone-slate { --hc: var(--slate); }
+.lf2-ho-item:hover { background: rgba(255,255,255,0.05); }
+.lf2-ho-check { flex: 0 0 17px; width: 17px; height: 17px; border-radius: 5px; display: grid; place-items: center; margin-top: 2px; background: var(--sage); color: #fff; transition: background var(--t-fast); }
+.lf2-ho-plus { font-size: 13px; font-weight: 700; line-height: 1; }
+.lf2-ho-item.is-off { opacity: 0.42; }
+.lf2-ho-item.is-off:hover { opacity: 0.7; }
+.lf2-ho-item.is-off .lf2-ho-check { background: rgba(255,255,255,0.14); color: var(--paper-2); }
+.lf2-ho-item.is-off .lf2-ho-text { text-decoration: line-through; text-decoration-color: rgba(255,255,255,0.4); }
+.lf2-ho-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.lf2-ho-text { font-size: 13px; line-height: 1.45; color: var(--paper-0); font-family: var(--font-serif); }
+.lf2-ho-src { font-size: 10.5px; color: rgba(255,255,255,0.5); display: flex; align-items: center; gap: 6px; }
+.lf2-ho-tag { font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--hc) 32%, transparent); color: #fff; text-transform: uppercase; }
+.lf2-cabin-note { font-size: 11.5px; line-height: 1.55; color: rgba(255,255,255,0.5); margin: 13px 0 0; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.12); }
+.lf2-cabin-note b { color: var(--gold-soft); }
+.lf2-cabin-actions { display: flex; gap: 8px; margin-top: 12px; }
+.lf2-cabin-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 11px 12px; border-radius: var(--r-md); font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid transparent; transition: all var(--t-fast); }
+.lf2-cabin-btn.is-ghost { flex: 0 0 auto; background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.18); color: var(--paper-1); }
+.lf2-cabin-btn.is-ghost:hover { background: rgba(255,255,255,0.13); }
+.lf2-cabin-btn.is-go { flex: 1; background: var(--crimson); border-color: var(--crimson); color: #fff; }
+.lf2-cabin-btn.is-go:hover { background: color-mix(in srgb, var(--crimson) 88%, white); }
+.lf2-cabin-btn.is-go:disabled { opacity: 0.4; cursor: not-allowed; }
+.lf2-cabin-preview { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; margin-top: 9px; background: transparent; border: 0; color: rgba(255,255,255,0.55); font-size: 11.5px; cursor: pointer; padding: 4px; transition: color var(--t-fast); }
+.lf2-cabin-preview:hover { color: var(--gold-soft); }
+
+/* ==========================================================
+   预览模态
+   ========================================================== */
+.lf2-modal-scrim { position: fixed; inset: 0; background: rgba(20,18,15,0.5); backdrop-filter: blur(5px); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 5vh 20px; animation: lf2Fade 0.14s ease; }
+@keyframes lf2Fade { from { opacity: 0; } }
+.lf2-modal { width: min(680px, 100%); max-height: 90vh; display: flex; flex-direction: column; background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-xl); box-shadow: var(--shadow-lg); overflow: hidden; animation: lf2Slide 0.18s ease; }
+@keyframes lf2Slide { from { transform: translateY(14px); opacity: 0; } }
+.lf2-modal-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--line-1); }
+.lf2-modal-eyebrow { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--crimson); font-weight: 700; }
+.lf2-modal-title { font-size: 17px; font-weight: 600; margin-top: 4px; }
+.lf2-modal-x { width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--line-1); background: var(--paper-1); color: var(--ink-2); display: grid; place-items: center; cursor: pointer; flex: 0 0 auto; }
+.lf2-modal-x:hover { border-color: var(--line-2); color: var(--ink-1); }
+.lf2-prompt { flex: 1; overflow-y: auto; padding: 18px 20px; background: var(--ink-1); font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7; color: var(--paper-1); }
+.lf2-prompt-block { margin: 10px 0; }
+.lf2-prompt-line { white-space: pre-wrap; word-break: break-word; }
+.lf2-prompt-line b { color: #fff; font-weight: 600; }
+.lf2-prompt-cmt { color: rgba(236,229,212,0.42); }
+.lf2-prompt-sec { color: var(--gold-soft); font-weight: 600; margin-top: 4px; }
+.lf2-prompt-src { color: rgba(236,229,212,0.4); }
+.lf2-modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-top: 1px solid var(--line-1); background: var(--paper-1); }
+
+/* ---------- toast ---------- */
+.lf2-toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; z-index: 1800; background: var(--ink-1); color: var(--paper-0); padding: 11px 18px; border-radius: 12px; box-shadow: var(--shadow-lg); font-size: 13px; font-weight: 500; max-width: 90vw; animation: lf2ToastIn 320ms ease; }
+@keyframes lf2ToastIn { from { transform: translateX(-50%) translateY(12px); opacity: 0; } }
+.lf2-toast-dot { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--sage); color: #fff; flex: 0 0 auto; }
+
+/* ---------- responsive ---------- */
+@media (max-width: 1200px) {
+  .lf2-body { grid-template-columns: 1fr; }
+  .lf2-rail { position: static; max-height: none; border-left: 0; border-top: 1px solid var(--line-1); }
+  .lf2-cabin-body { max-height: none; }
+}
+@media (max-width: 760px) {
+  .lf2-header { flex-wrap: wrap; }
+  .lf2-vitals { order: 3; width: 100%; padding-top: 6px; border-top: 1px solid var(--line-1); }
+  .lf2-tagline-seam { display: none; }
+  .lf2-issue { flex-wrap: wrap; }
+  .lf2-issue-act { width: 100%; justify-content: center; margin-top: 4px; }
+}
+
+/* ---------- 其它连续性提示（设定锚点 lens 续） ---------- */
+.lf2-canon-other { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line-2); }
+.lf2-canon-other-h { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: var(--ink-3); margin-bottom: 10px; }
+.lf2-canon-other-h svg { color: var(--slate); }
+.lf2-risk-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.lf2-risk2 { display: grid; grid-template-columns: 6px 1fr auto; gap: 12px; align-items: center; padding: 11px 14px; background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-lg); cursor: pointer; transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+.lf2-risk2:hover { border-color: var(--line-2); box-shadow: var(--shadow-sm); }
+.lf2-risk2.is-sel { border-color: var(--crimson); box-shadow: 0 0 0 2px var(--crimson-wash); }
+.lf2-risk2-sev { align-self: stretch; border-radius: 4px; }
+.lf2-risk2-sev.sev-high { background: var(--rose); } .lf2-risk2-sev.sev-medium { background: var(--gold); } .lf2-risk2-sev.sev-low { background: var(--slate); }
+.lf2-risk2-top { display: flex; align-items: center; gap: 9px; margin-bottom: 4px; }
+.lf2-risk2-type { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--ink-3); background: var(--paper-2); padding: 2px 8px; border-radius: 999px; }
+.lf2-risk2-ch { font-family: var(--font-mono); font-size: 11px; color: var(--ink-4); }
+.lf2-risk2-text { font-size: 13.5px; color: var(--ink-1); line-height: 1.5; }
+.lf2-canon-fresh { font-family: var(--font-sans); font-size: 10px; font-weight: 700; color: #fff; background: var(--rose); padding: 1px 7px; border-radius: 999px; }
+
+/* ==========================================================
+   生成中 overlay + 交接回执（闭环后半环）
+   ========================================================== */
+.lf2-gen-scrim { position: fixed; inset: 0; z-index: 2100; display: grid; place-items: center; background: rgba(20,18,15,0.6); backdrop-filter: blur(6px); animation: lf2Fade 0.18s ease; }
+.lf2-gen-card { width: min(420px, calc(100% - 40px)); background: linear-gradient(180deg, var(--ink-1), color-mix(in srgb, var(--ink-1) 92%, var(--ink-2))); color: var(--paper-0); border-radius: var(--r-xl); padding: 30px 28px; text-align: center; box-shadow: var(--shadow-lg); }
+.lf2-gen-orb { width: 60px; height: 60px; margin: 0 auto 18px; border-radius: 50%; display: grid; place-items: center; color: var(--gold-soft); background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--crimson) 50%, transparent), transparent 70%); animation: lf2Orb 1.4s ease-in-out infinite; }
+@keyframes lf2Orb { 0%,100% { box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 0 22px 0 color-mix(in srgb, var(--crimson) 40%, transparent); } 50% { box-shadow: 0 0 0 1px rgba(255,255,255,0.12), 0 0 44px 6px color-mix(in srgb, var(--crimson) 55%, transparent); } }
+.lf2-gen-title { font-size: 17px; font-weight: 600; line-height: 1.5; }
+.lf2-gen-bar { height: 4px; border-radius: 999px; background: rgba(255,255,255,0.12); margin: 18px 0 12px; overflow: hidden; }
+.lf2-gen-bar span { display: block; height: 100%; width: 40%; border-radius: 999px; background: linear-gradient(90deg, var(--crimson-soft), var(--gold-soft)); animation: lf2GenBar 1.9s cubic-bezier(0.4,0,0.2,1) infinite; }
+@keyframes lf2GenBar { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
+.lf2-gen-sub { font-size: 11.5px; color: rgba(255,255,255,0.5); }
+@media (prefers-reduced-motion: reduce) { .lf2-gen-orb, .lf2-gen-bar span { animation: none; } .lf2-gen-bar span { width: 100%; } }
+
+.lf2-rcpt { max-width: 600px; }
+.lf2-rcpt-h { display: flex; align-items: center; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--line-1); }
+.lf2-rcpt-h-titles { flex: 1; min-width: 0; }
+.lf2-rcpt-score { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; padding: 7px 14px; border-radius: var(--r-lg); background: var(--sage-wash); color: var(--sage); }
+.lf2-rcpt-score b { font-family: var(--font-serif); font-size: 26px; font-weight: 700; line-height: 1; }
+.lf2-rcpt-score span { font-size: 10px; line-height: 1.15; font-weight: 700; }
+.lf2-rcpt-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; }
+.lf2-rcpt-sec-h { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; letter-spacing: 0.03em; margin: 2px 0 10px; }
+.lf2-rcpt-sec-h.is-ok { color: var(--sage); }
+.lf2-rcpt-sec-h.is-warn { color: var(--rose); margin-top: 18px; }
+.lf2-rcpt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.lf2-rcpt-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--paper-1); border-radius: var(--r-md); }
+.lf2-rcpt-tick { flex: 0 0 18px; width: 18px; height: 18px; border-radius: 50%; background: var(--sage); color: #fff; display: grid; place-items: center; }
+.lf2-rcpt-text { flex: 1; min-width: 0; font-size: 13px; font-family: var(--font-serif); color: var(--ink-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lf2-rcpt-verdict { flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--sage); background: var(--sage-wash); padding: 2px 8px; border-radius: 999px; }
+.lf2-rcpt-verdict.is-key { color: #fff; background: var(--sage); }
+.lf2-rcpt-new { background: color-mix(in srgb, var(--rose-wash) 50%, var(--paper-0)); border: 1px solid var(--rose-wash); border-radius: var(--r-lg); padding: 14px 16px; }
+.lf2-rcpt-new-top { display: flex; align-items: center; gap: 9px; font-family: var(--font-serif); font-size: 14.5px; font-weight: 600; color: var(--ink-1); }
+.lf2-rcpt-new-tag { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-sans); font-size: 10px; font-weight: 700; color: #fff; background: var(--rose); padding: 2px 7px; border-radius: 999px; }
+.lf2-rcpt-new-text { font-size: 13px; color: var(--ink-1); line-height: 1.55; margin-top: 8px; }
+.lf2-rcpt-new-hint { font-size: 11.5px; color: var(--rose); margin-top: 6px; }
+.lf2-rcpt-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 20px; border-top: 1px solid var(--line-1); background: var(--paper-1); }
+.lf2-rcpt-foot-note { font-size: 11.5px; color: var(--ink-3); flex: 1; min-width: 0; }
+.lf2-rcpt-foot-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+@media (max-width: 600px) { .lf2-rcpt-foot { flex-direction: column; align-items: stretch; } .lf2-rcpt-foot-actions .btn { flex: 1; justify-content: center; } }

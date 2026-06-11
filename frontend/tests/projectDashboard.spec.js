@@ -29,30 +29,33 @@ describe("outline-driven project dashboard", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps the snowflake workbench as the default writer-mode home while advanced mode keeps every backend tool", () => {
+  it("keeps the home cockpit as the default writer-mode landing while advanced mode keeps every backend tool", () => {
     const router = useShellRouter();
     const routerSource = readSource("src/router.js");
     const appSource = readSource("src/App.vue");
 
     router.reset();
 
-    expect(router.activeView.value).toBe("snowflake-workbench");
-    expect(router.visitedViews.value).toEqual(["snowflake-workbench"]);
+    expect(router.activeView.value).toBe("home");
+    expect(router.visitedViews.value).toEqual(["home"]);
     expect(router.views[0]).toEqual(expect.objectContaining({
-      id: "snowflake-workbench",
-      label: "雪花工作台",
+      id: "home",
+      label: "主页",
       writerPrimary: true,
-      writerOrder: 1,
+      writerOrder: 0.5,
     }));
     expect(router.views
       .filter((view) => view.writerPrimary)
       .sort((left, right) => (left.writerOrder || 99) - (right.writerOrder || 99))
       .map((view) => view.id)).toEqual([
+      "home",
+      "flowmap",
       "snowflake-workbench",
       "writer-flow",
       "writer-room",
       "reference",
       "review",
+      "library",
     ]);
     expect(routerSource).toContain('id: "snowflake-workbench"');
     expect(routerSource).toContain('id: "writer-flow"');

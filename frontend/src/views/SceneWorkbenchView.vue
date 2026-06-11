@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onActivated, onDeactivated, ref, watch } from "vue";
+import { fetchChapterContract } from "../lib/api/longformTower";
 
 import AttemptTimeline from "../components/AttemptTimeline.vue";
 import BaseEmptyState from "../components/base/BaseEmptyState.vue";
@@ -53,6 +54,87 @@ const missingDependencies = computed(() => runPreflight.value.missing_dependenci
 const createActions = computed(() => runPreflight.value.create_actions || []);
 const constraintConflicts = computed(() => runPreflight.value.constraint_conflicts || []);
 const runJob = computed(() => workbench.runJob || null);
+
+/* 设计稿六段流水线导轨:把后端 10 个 run 阶段折叠成作者可读的六段。
+   阶段顺序与 backend scene_run_jobs.SCENE_RUN_STAGE_ORDER 对齐。 */
+const PIPELINE_STAGE_ORDER = [
+  "planning_running",
+  "bundle_built",
+  "neutral_running",
+  "hard_qc_running",
+  "style_running",
+  "soft_qc_running",
+  "rewrite_running",
+  "acceptance_review_running",
+  "near_final",
+  "archived",
+];
+
+const PIPELINE_DISPLAY_STAGES = [
+  { key: "preflight", label: "预检 · 打包", steps: ["planning_running", "bundle_built"] },
+  { key: "draft", label: "起草", steps: ["neutral_running", "style_running"] },
+  { key: "qc", label: "质检", steps: ["hard_qc_running", "soft_qc_running"] },
+  { key: "rewrite", label: "二改", steps: ["rewrite_running"] },
+  { key: "acceptance", label: "校核", steps: ["acceptance_review_running", "near_final"] },
+  { key: "archive", label: "归档", steps: ["archived"] },
+];
+
+const pipelineStages = computed(() => {
+  const sceneStatus = workbench.data?.scene_run_state?.scene_status || "";
+  const jobStep = runJob.value?.current_step || runJob.value?.stage || "";
+  const archived = sceneStatus === "archived" || jobStep === "archived";
+  const currentIdx = archived ? PIPELINE_STAGE_ORDER.length - 1 : PIPELINE_STAGE_ORDER.indexOf(jobStep);
+  return PIPELINE_DISPLAY_STAGES.map((stage) => {
+    const stageIdxs = stage.steps.map((step) => PIPELINE_STAGE_ORDER.indexOf(step));
+    const first = Math.min(...stageIdxs);
+    const last = Math.max(...stageIdxs);
+    let state = "todo";
+    if (archived || currentIdx > last) {
+      state = "done";
+    } else if (currentIdx >= first && currentIdx <= last) {
+      state = "active";
+    }
+    return { key: stage.key, label: stage.label, state };
+  });
+});
+
+const pipelineVisible = computed(() => Boolean(workbench.data?.scene_card));
+
+/* —— 长程约束(控制塔交接契约):预检时在场 ——
+   设计语义:契约下发后,起草台预检读同一份约束,生成链路合一。 */
+const towerContract = ref(null);
+
+async function loadSceneContract() {
+  const card = workbench.data?.scene_card || {};
+  const projectId = card.project_id || workbench.data?.chapter?.project_id || "";
+  const chapterId = card.chapter_id || "";
+  if (!projectId || !chapterId) {
+    towerContract.value = null;
+    return;
+  }
+  try {
+    towerContract.value = await fetchChapterContract(projectId, chapterId);
+  } catch {
+    towerContract.value = null;
+  }
+}
+
+watch(
+  () => [workbench.data?.scene_card?.scene_id, workbench.data?.scene_card?.chapter_id],
+  () => {
+    loadSceneContract();
+  },
+  { immediate: true },
+);
+
+const contractConstraints = computed(() => {
+  const sceneId = workbench.data?.scene_card?.scene_id || "";
+  return (towerContract.value?.constraints || []).map((constraint) => ({
+    ...constraint,
+    assigned: Boolean(constraint.scene_id && constraint.scene_id === sceneId),
+  }));
+});
+
 const generationSummary = computed(() => {
   const summary = workbench.data?.generation_summary || null;
   if (!summary || !workbench.data?.near_final_summary) {
@@ -627,6 +709,24 @@ onDeactivated(() => {
           </div>
         </div>
 
+        <div v-if="pipelineVisible" class="scene-pipeline-rail" data-testid="scene-pipeline-rail" aria-label="起草流水线进度">
+          <template v-for="(stage, index) in pipelineStages" :key="stage.key">
+            <div class="scene-pipeline-stage" :class="`s-${stage.state}`">
+              <span class="scene-pipeline-dot" aria-hidden="true">
+                <template v-if="stage.state === 'done'">✓</template>
+                <template v-else>{{ index + 1 }}</template>
+              </span>
+              <span class="scene-pipeline-label">{{ stage.label }}</span>
+            </div>
+            <span
+              v-if="index < pipelineStages.length - 1"
+              class="scene-pipeline-link"
+              :class="{ 'is-done': stage.state === 'done' }"
+              aria-hidden="true"
+            />
+          </template>
+        </div>
+
         <article class="paper scene-blueprint-card" data-testid="scene-literary-blueprint-card">
           <div class="receipt-head">
             <div>
@@ -668,6 +768,17 @@ onDeactivated(() => {
         />
 
         <article class="paper preflight-card" data-testid="scene-run-preflight-card">
+          <div v-if="contractConstraints.length" class="scene-contract-strip" data-testid="scene-contract-strip">
+            <div class="scene-contract-head">
+              <strong>长程约束 · 来自控制塔交接契约</strong>
+              <span class="badge" :class="{ active: towerContract?.status === 'dispatched' }">
+                {{ { drafting: "起草中", ready: "就绪", dispatched: "已下发", archived: "已归档" }[towerContract?.status] || towerContract?.status }}
+              </span>
+            </div>
+            <p v-for="(constraint, index) in contractConstraints" :key="`ctr-${index}`" class="scene-contract-item" :class="{ 'is-assigned': constraint.assigned }">
+              {{ constraint.text }}<span v-if="constraint.assigned" class="badge">本场指派</span>
+            </p>
+          </div>
           <div class="receipt-head">
             <div>
               <h3>运行前检查</h3>
@@ -1176,3 +1287,117 @@ onDeactivated(() => {
     </PanelShell>
   </section>
 </template>
+
+<style scoped>
+/* 设计稿六段流水线导轨(预检·打包 → 起草 → 质检 → 二改 → 校核 → 归档) */
+.scene-pipeline-rail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-lg);
+  background: var(--paper-1);
+}
+
+.scene-pipeline-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.scene-pipeline-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--paper-3);
+  color: var(--ink-3);
+  border: 2px solid transparent;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+
+.scene-pipeline-stage.s-done .scene-pipeline-dot {
+  background: var(--sage);
+  color: #fff;
+}
+
+.scene-pipeline-stage.s-active .scene-pipeline-dot {
+  background: var(--paper-0);
+  color: var(--crimson);
+  border-color: var(--crimson);
+  box-shadow: 0 0 0 3px var(--crimson-wash);
+}
+
+.scene-pipeline-label {
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+.scene-pipeline-stage.s-active .scene-pipeline-label {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+
+.scene-pipeline-stage.s-done .scene-pipeline-label {
+  color: var(--ink-2);
+}
+
+.scene-pipeline-link {
+  flex: 1 1 14px;
+  min-width: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line-2);
+}
+
+.scene-pipeline-link.is-done {
+  background: var(--sage);
+}
+
+/* 长程约束(契约下发)块 */
+.scene-contract-strip {
+  display: grid;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--crimson) 24%, transparent);
+  border-left: 3px solid var(--crimson);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--crimson-wash) 20%, var(--paper-1));
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.scene-contract-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scene-contract-head strong {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+
+.scene-contract-item {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.scene-contract-item.is-assigned {
+  color: var(--ink-1);
+  font-weight: 500;
+}
+</style>

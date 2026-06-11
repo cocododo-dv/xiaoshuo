@@ -1,25 +1,9 @@
 <script setup>
-import {
-  BookOpenText,
-  ClipboardCheck,
-  Feather,
-  FileInput,
-  GraduationCap,
-  Library,
-  Microscope,
-  PlayCircle,
-  Radar,
-  Route,
-  ScrollText,
-  Settings2,
-  ShieldCheck,
-  Snowflake,
-  Trash2,
-  UploadCloud,
-} from "lucide-vue-next";
 import { computed } from "vue";
 
 import { useUiMode } from "../composables/useUiMode";
+import { RAIL_GROUPS, railLabel } from "../lib/railGroups";
+import { iconForView } from "../lib/viewIcons";
 
 const props = defineProps({
   views: {
@@ -43,134 +27,63 @@ const props = defineProps({
 const emit = defineEmits(["navigate"]);
 const { isAdvancedMode } = useUiMode();
 
-const ICONS = {
-  BookOpenText,
-  ClipboardCheck,
-  Feather,
-  FileInput,
-  GraduationCap,
-  Library,
-  Microscope,
-  PlayCircle,
-  Radar,
-  Route,
-  ScrollText,
-  Settings2,
-  ShieldCheck,
-  Snowflake,
-  Trash2,
-  UploadCloud,
-};
+const viewMap = computed(() => Object.fromEntries(props.views.map((view) => [view.id, view])));
 
-const groupMap = computed(() => Object.fromEntries(props.groups.map((group) => [group.id, group])));
-const visibleViews = computed(() => {
-  if (isAdvancedMode.value) {
-    const stageOrder = props.groups.map((group) => group.id);
-    const rank = (view) => {
-      const idx = stageOrder.indexOf(view.stage);
-      return idx === -1 ? stageOrder.length : idx;
-    };
-    return props.views
-      .map((view, index) => ({ view, index }))
-      .sort((left, right) => {
-        const delta = rank(left.view) - rank(right.view);
-        return delta !== 0 ? delta : left.index - right.index;
-      })
-      .map((entry) => entry.view);
-  }
-  return props.views
-    .filter((view) => view.writerPrimary || view.id === props.activeView)
-    .sort((left, right) => (left.writerOrder || 99) - (right.writerOrder || 99));
-});
-const orderedRows = computed(() =>
-  visibleViews.value.map((view, index) => {
-    const previous = visibleViews.value[index - 1];
-    return {
-      view,
-      group: groupMap.value[view.stage] || { label: view.stage, description: "" },
-      showGroup: isAdvancedMode.value && (!previous || previous.stage !== view.stage),
-    };
-  }),
+const visibleGroups = computed(() =>
+  RAIL_GROUPS.filter((group) => !group.advanced || isAdvancedMode.value)
+    .map((group) => ({
+      ...group,
+      items: group.items
+        .filter((item) => viewMap.value[item.id])
+        .map((item) => ({ ...item, view: viewMap.value[item.id] })),
+    }))
+    .filter((group) => group.items.length),
 );
 
-function iconFor(view) {
-  return ICONS[view.icon] || PlayCircle;
-}
+const flatItems = computed(() => visibleGroups.value.flatMap((group) => group.items.map((item) => ({ ...item, groupLabel: group.label }))));
 
-function labelFor(view) {
-  return !isAdvancedMode.value && view.writerLabel ? view.writerLabel : view.label;
-}
-
-function isOptionalView(view) {
-  return view.writerCriticalPath === false;
-}
-
-function writerIndex(view) {
-  if (isAdvancedMode.value) return 0;
-  if (!view.writerCriticalPath) return 0;
-  return view.writerOrder || 0;
+function labelFor(item) {
+  return item.label || railLabel(item.id) || item.view?.label || item.id;
 }
 </script>
 
 <template>
-  <nav
-    class="workflow-nav"
-    :class="{ collapsed }"
-    aria-label="工作流步骤导航"
-    data-testid="workflow-nav"
-  >
+  <nav class="workflow-nav" aria-label="主导航" data-testid="workflow-nav">
     <label class="workflow-nav-mobile" data-testid="workflow-nav-mobile">
-      <span>当前步骤</span>
+      <span>当前页面</span>
       <select
         class="mobile-nav-select"
         :value="activeView"
         data-testid="workflow-nav-mobile-select"
         @change="emit('navigate', $event.target.value)"
       >
-        <option
-          v-for="row in orderedRows"
-          :key="`mobile-${row.view.id}`"
-          :value="row.view.id"
-        >
-          {{ labelFor(row.view) }} / {{ row.group.label }}
+        <option v-for="item in flatItems" :key="`mobile-${item.id}`" :value="item.id">
+          {{ labelFor(item) }} / {{ item.groupLabel }}
         </option>
       </select>
     </label>
 
-    <div class="workflow-nav-desktop-list" data-testid="workflow-nav-desktop-list">
-      <section v-for="row in orderedRows" :key="row.view.id" class="workflow-nav-group">
-        <div v-if="row.showGroup && !collapsed" class="workflow-nav-group-head">
-          <strong>{{ row.group.label }}</strong>
-          <span>{{ row.group.description }}</span>
-        </div>
+    <div class="ws-nav-scroll workflow-nav-desktop-list" data-testid="workflow-nav-desktop-list">
+      <div v-for="group in visibleGroups" :key="group.id" class="ws-nav-group">
+        <div class="ws-nav-label">{{ group.label }}</div>
         <button
+          v-for="item in group.items"
+          :key="item.id"
           type="button"
-          class="workflow-nav-btn"
-          :class="{ active: activeView === row.view.id, optional: !isAdvancedMode && isOptionalView(row.view), numbered: !collapsed && !isAdvancedMode && !!writerIndex(row.view) }"
-          :aria-current="activeView === row.view.id ? 'page' : undefined"
-          :aria-label="collapsed ? labelFor(row.view) : undefined"
-          :data-testid="`nav-${row.view.id}`"
-          :title="collapsed ? labelFor(row.view) : undefined"
-          @click="emit('navigate', row.view.id)"
+          class="ws-item"
+          :class="{ 'is-active': activeView === item.id }"
+          :aria-current="activeView === item.id ? 'page' : undefined"
+          :aria-label="labelFor(item)"
+          :title="labelFor(item)"
+          :data-testid="`nav-${item.id}`"
+          @click="emit('navigate', item.id)"
         >
-          <span v-if="!collapsed && !isAdvancedMode && writerIndex(row.view)" class="workflow-nav-number">{{ writerIndex(row.view) }}</span>
-          <span class="workflow-nav-icon" aria-hidden="true">
-            <component :is="iconFor(row.view)" :size="17" />
+          <span class="ws-item-ic" aria-hidden="true">
+            <component :is="iconForView(item.view)" :size="19" />
           </span>
-          <span v-if="!collapsed" class="workflow-nav-copy">
-            <strong>{{ labelFor(row.view) }}</strong>
-            <small v-if="isAdvancedMode">{{ row.view.legacyLabel }}</small>
-            <small v-else-if="isOptionalView(row.view) && row.view.id === 'reference'">随时可做</small>
-            <span
-              v-if="isAdvancedMode"
-              class="workflow-nav-route"
-              :data-testid="`nav-${row.view.id}-route`"
-            >
-              view: {{ row.view.id }}
-            </span>
-          </span>
+          <span class="ws-item-label">{{ labelFor(item) }}</span>
         </button>
-      </section>
+      </div>
     </div>
   </nav>
 </template>

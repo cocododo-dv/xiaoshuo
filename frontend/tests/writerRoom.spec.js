@@ -152,8 +152,8 @@ describe("writer room shell", () => {
 
     router.reset();
 
-    expect(router.activeView.value).toBe("snowflake-workbench");
-    expect(router.views[0]).toEqual(expect.objectContaining({
+    expect(router.activeView.value).toBe("home");
+    expect(router.views[2]).toEqual(expect.objectContaining({
       id: "snowflake-workbench",
       writerPrimary: true,
       writerLabel: "想清楚故事",

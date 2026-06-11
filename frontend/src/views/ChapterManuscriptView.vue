@@ -570,6 +570,27 @@ onActivated(() => {
       <div v-else-if="manuscripts.error" class="empty">{{ manuscripts.error }}</div>
 
       <div v-else class="manuscript-layout">
+        <div v-if="items.length" class="manuscript-spine" data-testid="manuscript-spine" aria-label="全书书脊">
+          <button
+            v-for="(item, index) in items"
+            :key="`spine-${item.chapter_id}`"
+            type="button"
+            class="manuscript-spine-block"
+            :class="[`s-${item.completion_status || 'empty'}`, { 'is-active': item.chapter_id === manuscripts.selectedChapterId }]"
+            :title="`${item.chapter_title || item.chapter_id} · ${statusLabel(item.completion_status)}`"
+            :aria-label="`${item.chapter_title || item.chapter_id} · ${statusLabel(item.completion_status)}`"
+            :data-testid="`manuscript-spine-${item.chapter_id}`"
+            @click="selectChapter(item.chapter_id)"
+          >
+            <span class="manuscript-spine-num">{{ index + 1 }}</span>
+          </button>
+          <span class="manuscript-spine-legend" aria-hidden="true">
+            <i class="s-complete" /> 完整
+            <i class="s-partial" /> 部分
+            <i class="s-empty" /> 未生成
+          </span>
+        </div>
+
         <aside class="paper manuscript-list-panel">
           <div class="receipt-head">
             <div>
@@ -984,3 +1005,100 @@ onActivated(() => {
     </PanelShell>
   </section>
 </template>
+
+<style scoped>
+/* 设计稿书脊:全书章节一字排开,颜色即状态,点击即选章 */
+.manuscript-spine {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-lg);
+  background: var(--paper-1);
+}
+
+.manuscript-spine-block {
+  width: 26px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: 4px 4px 2px 2px;
+  background: var(--paper-2);
+  color: var(--ink-3);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: transform var(--t-fast), box-shadow var(--t-fast);
+}
+
+.manuscript-spine-block:hover {
+  transform: translateY(-2px);
+  background-color: var(--paper-2);
+  box-shadow: var(--shadow-sm);
+}
+
+.manuscript-spine-num {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.manuscript-spine-block.s-complete {
+  background: var(--sage-wash);
+  border-color: color-mix(in srgb, var(--sage) 45%, transparent);
+  color: var(--sage);
+}
+
+.manuscript-spine-block.s-partial {
+  background: var(--gold-wash);
+  border-color: color-mix(in srgb, var(--gold) 45%, transparent);
+  color: var(--gold);
+}
+
+.manuscript-spine-block.s-aggregate_differs_current {
+  background: var(--rose-wash);
+  border-color: color-mix(in srgb, var(--rose) 45%, transparent);
+  color: var(--rose);
+}
+
+.manuscript-spine-block.is-active {
+  border-color: var(--crimson);
+  box-shadow: 0 0 0 2px var(--crimson-wash);
+  color: var(--ink-1);
+}
+
+.manuscript-spine-legend {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-4);
+}
+
+.manuscript-spine-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+  margin-left: 8px;
+}
+
+.manuscript-spine-legend i.s-complete {
+  background: var(--sage-wash);
+  border: 1px solid var(--sage);
+}
+
+.manuscript-spine-legend i.s-partial {
+  background: var(--gold-wash);
+  border: 1px solid var(--gold);
+}
+
+.manuscript-spine-legend i.s-empty {
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+}
+</style>

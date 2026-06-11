@@ -31,12 +31,20 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph
 from novel_system.services.errors import DomainError
 from novel_system.services.source_safety import scan_source_safety
+from novel_system.services.style_reference.cleanup import purge_derived_data
 from novel_system.services.style_reference.config_loader import load_yaml_config
-from novel_system.services.style_reference.errors import DuplicateBookError, EmptyBookError
+from novel_system.services.style_reference.errors import (
+    DuplicateBookError,
+    EmptyBookError,
+    LLMRequiredError,
+)
 from novel_system.services.style_reference.metrics import MetricsEngine, ParagraphRecord
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import CloudPolicy
-from novel_system.services.style_reference.segmentation import classify_paragraphs
+from novel_system.services.style_reference.segmentation import (
+    SegmentationResult,
+    classify_paragraphs,
+)
 from novel_system.services.style_reference.text_utils import (
     compute_text_checksum,
     decode_text,
@@ -147,6 +155,49 @@ class IngestService:
             cloud_policy=cloud_policy,
         )
 
+    def reclassify(self, book_id: str) -> int:
+        """重跑段落分类器(与首次导入共用 ``classify_paragraphs`` 管线)。
+
+        - 更新全部 paragraphs 的 ``paragraph_type`` / ``classifier_confidence``;
+        - 回写 ``book.stats_json`` 的 metrics / classifier_calibration /
+          paragraph_type_distribution(与 ingest 同一计算路径);
+        - 级联清空派生数据(runs / findings / profiles / bindings 等;
+          paragraphs 与 book 本身保留)。
+
+        分类需要 LLM;不可用时抛 :class:`LLMRequiredError`。
+        返回重分类的段落数。
+        """
+        book = self.repo.get_book(book_id)
+        if book is None:
+            raise DomainError(
+                "STYLE_REFERENCE_BOOK_NOT_FOUND",
+                f"book {book_id!r} not found",
+                status_code=404,
+            )
+        if not self._llm_enabled or self._llm_client is None:
+            raise LLMRequiredError(operation="reclassify_book")
+
+        paragraphs = self.repo.list_paragraphs(book_id)
+        if not paragraphs:
+            raise EmptyBookError("reclassify")
+
+        spans = [(p.start_offset, p.end_offset, p.text) for p in paragraphs]
+        seg_result = classify_paragraphs(
+            spans, llm_enabled=True, llm_client=self._llm_client
+        )
+        for paragraph, c in zip(paragraphs, seg_result.classifications):
+            paragraph.paragraph_type = c.paragraph_type
+            paragraph.classifier_confidence = float(c.confidence)
+
+        book.stats_json = {
+            **(book.stats_json or {}),
+            **self._classification_stats(spans, seg_result),
+        }
+
+        purge_derived_data(self.session, book_id)
+        self.session.flush()
+        return len(paragraphs)
+
     # ----------------------------------------------------------------- private
 
     def _ingest_bytes(
@@ -188,35 +239,9 @@ class IngestService:
             llm_client=self._llm_client,
         )
 
-        # 构造 ParagraphRecord 用于 MetricsEngine
-        records = [
-            ParagraphRecord(
-                text=body,
-                paragraph_type=c.paragraph_type,
-            )
-            for (_s, _e, body), c in zip(paragraph_spans, seg_result.classifications)
-        ]
-
-        engine = self._get_metrics_engine()
-        metrics_with_var = engine.compute_with_variance(records)
-        sample_count = len(records)
-        metrics_block: dict[str, dict[str, float | int]] = {
-            name: {"mean": float(mean), "std": float(std), "sample_count": sample_count}
-            for name, (mean, std) in metrics_with_var.items()
-        }
-
-        input_assessment = assess_input_size(len(normalized))
-        type_counter = Counter(c.paragraph_type for c in seg_result.classifications)
-        type_distribution = {
-            ptype: round(count / sample_count, 4)
-            for ptype, count in type_counter.items()
-        } if sample_count else {}
-
         stats_json = {
-            "metrics": metrics_block,
-            "input_assessment": input_assessment,
-            "classifier_calibration": seg_result.calibration,
-            "paragraph_type_distribution": type_distribution,
+            **self._classification_stats(paragraph_spans, seg_result),
+            "input_assessment": assess_input_size(len(normalized)),
             "safety": safety_payload,
         }
 
@@ -252,6 +277,43 @@ class IngestService:
             paragraphs_count=len(paragraph_spans),
             safety_payload=safety_payload,
         )
+
+    def _classification_stats(
+        self,
+        paragraph_spans: list[tuple[int, int, str]],
+        seg_result: SegmentationResult,
+    ) -> dict[str, Any]:
+        """stats_json 中跟段落分类绑定的 3 个键(ingest 与 reclassify 共用)。
+
+        返回 ``metrics`` / ``classifier_calibration`` / ``paragraph_type_distribution``。
+        """
+        records = [
+            ParagraphRecord(
+                text=body,
+                paragraph_type=c.paragraph_type,
+            )
+            for (_s, _e, body), c in zip(paragraph_spans, seg_result.classifications)
+        ]
+
+        engine = self._get_metrics_engine()
+        metrics_with_var = engine.compute_with_variance(records)
+        sample_count = len(records)
+        metrics_block: dict[str, dict[str, float | int]] = {
+            name: {"mean": float(mean), "std": float(std), "sample_count": sample_count}
+            for name, (mean, std) in metrics_with_var.items()
+        }
+
+        type_counter = Counter(c.paragraph_type for c in seg_result.classifications)
+        type_distribution = {
+            ptype: round(count / sample_count, 4)
+            for ptype, count in type_counter.items()
+        } if sample_count else {}
+
+        return {
+            "metrics": metrics_block,
+            "classifier_calibration": seg_result.calibration,
+            "paragraph_type_distribution": type_distribution,
+        }
 
     def _get_metrics_engine(self) -> MetricsEngine:
         if self._metrics_engine is None:

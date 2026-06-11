@@ -1541,36 +1541,18 @@ templates:
       Keep the escalation causal and specific.
       Preserve the user's input language and approved facts; each sentence should make the next pressure turn necessary.
     task_prompt: |
-      Return five key sentences, a three-act disaster check, and a moral premise. Use the pressure_rubric and current_pressure_diagnosis to strengthen weak disasters, moral turns, and ending cost.
+      Return five key sentences and a moral premise. Sentences 2/3/4 ARE the three disasters and sentence 5 is the ending — the three-act check is derived from them, so do not return it separately. Use the pressure_rubric and current_pressure_diagnosis to strengthen weak disasters, moral turns, and ending cost.
     structured_schema:
       type: object
       additionalProperties: false
       required:
         - sentences
-        - three_act_check
         - moral_premise
       properties:
         sentences:
           type: array
           items:
             type: string
-        three_act_check:
-          type: object
-          additionalProperties: false
-          required:
-            - first_disaster
-            - second_disaster
-            - third_disaster
-            - ending
-          properties:
-            first_disaster:
-              type: string
-            second_disaster:
-              type: string
-            third_disaster:
-              type: string
-            ending:
-              type: string
         moral_premise:
           type: string
 

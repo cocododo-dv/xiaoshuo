@@ -29,13 +29,15 @@ function mountComponent(component, props = {}) {
 }
 
 describe("workflow-driven shell metadata", () => {
-  it("keeps the snowflake workbench as the default entry while exposing step navigation metadata", () => {
+  it("keeps the home cockpit as the default entry while exposing step navigation metadata", () => {
     const router = useShellRouter();
 
     router.reset();
 
-    expect(router.activeView.value).toBe("snowflake-workbench");
+    expect(router.activeView.value).toBe("home");
     expect(router.views.map((view) => view.id)).toEqual([
+      "home",
+      "flowmap",
       "snowflake-workbench",
       "writer-flow",
       "writer-room",
@@ -51,6 +53,7 @@ describe("workflow-driven shell metadata", () => {
       "index",
       "knowledge",
       "reference",
+      "library",
       "interop",
     ]);
 
@@ -100,11 +103,14 @@ describe("workflow-driven shell metadata", () => {
       .filter((view) => view.writerPrimary)
       .sort((left, right) => (left.writerOrder || 99) - (right.writerOrder || 99))
       .map((view) => view.id)).toEqual([
+        "home",
+        "flowmap",
         "snowflake-workbench",
         "writer-flow",
         "writer-room",
         "reference",
         "review",
+        "library",
       ]);
     router.views
       .filter((view) => view.writerPrimary)
@@ -165,9 +171,9 @@ describe("workflow-driven shell metadata", () => {
     window.history.replaceState({}, "", "/?view=missing-console&mode=writer");
     router.hydrateFromLocation();
 
-    expect(router.activeView.value).toBe("snowflake-workbench");
+    expect(router.activeView.value).toBe("home");
     params = new URL(window.location.href).searchParams;
-    expect(params.get("view")).toBe("snowflake-workbench");
+    expect(params.get("view")).toBe("home");
     expect(localStorage.getItem(UI_MODE_STORAGE_KEY)).toBe("writer");
   });
 });
@@ -229,21 +235,23 @@ describe("writer and advanced UI modes", () => {
     });
 
     try {
-      expect(wrapper.el.textContent).toContain("想清楚故事");
-      expect(wrapper.el.textContent).toContain("写出这一章");
-      expect(wrapper.el.textContent).toContain("打磨正文");
-      expect(wrapper.el.textContent).toContain("学风格");
-      expect(wrapper.el.textContent).toContain("等你确认");
-      expect(wrapper.el.textContent).not.toContain("编排章节");
+      expect(wrapper.el.textContent).toContain("主页");
+      expect(wrapper.el.textContent).toContain("构思");
+      expect(wrapper.el.textContent).toContain("写作");
+      expect(wrapper.el.textContent).toContain("风格");
+      expect(wrapper.el.textContent).toContain("待办");
+      expect(wrapper.el.textContent).toContain("设置");
+      expect(wrapper.el.textContent).not.toContain("章节编排");
       expect(wrapper.el.textContent).not.toContain("文学质检");
-      expect(wrapper.el.textContent).not.toContain("场景工作台");
-      expect(wrapper.el.querySelector('[data-testid="nav-workbench-route"]')).toBeNull();
+      expect(wrapper.el.textContent).not.toContain("AI 起草台");
+      expect(wrapper.el.querySelector('[data-testid="nav-workbench"]')).toBeNull();
 
       mode.setUiMode("advanced");
       await nextTick();
 
-      expect(wrapper.el.textContent).toContain("场景工作台");
-      expect(wrapper.el.querySelector('[data-testid="nav-workbench-route"]')?.textContent).toContain("view: workbench");
+      expect(wrapper.el.textContent).toContain("AI 起草台");
+      expect(wrapper.el.textContent).toContain("生产与质控");
+      expect(wrapper.el.querySelector('[data-testid="nav-workbench"]')).not.toBeNull();
     } finally {
       wrapper.unmount();
     }
@@ -270,13 +278,17 @@ describe("writer and advanced UI modes", () => {
       const selector = wrapper.el.querySelector('[data-testid="workflow-nav-mobile-select"]');
 
       expect(selector).not.toBeNull();
-      expect(selector.value).toBe("snowflake-workbench");
+      expect(selector.value).toBe("home");
       expect([...selector.options].map((option) => option.value)).toEqual([
+        "home",
+        "flowmap",
         "snowflake-workbench",
-        "writer-flow",
         "writer-room",
         "reference",
         "review",
+        "library",
+        "config",
+        "trash",
       ]);
 
       selector.value = "review";
@@ -289,7 +301,7 @@ describe("writer and advanced UI modes", () => {
     }
   });
 
-  it("keeps desktop navigation usable as an icon rail when collapsed", async () => {
+  it("keeps the slim rail items labelled for tooltips and assistive tech", async () => {
     const { useUiMode } = await import("../src/composables/useUiMode.js");
     const { default: WorkflowNav } = await import("../src/components/WorkflowNav.vue");
     const router = useShellRouter();
@@ -310,15 +322,12 @@ describe("writer and advanced UI modes", () => {
     try {
       const desktopList = wrapper.el.querySelector('[data-testid="workflow-nav-desktop-list"]');
       const workbenchButton = wrapper.el.querySelector('[data-testid="nav-workbench"]');
-      const workbenchTitle = router.views.find((view) => view.id === "workbench").label;
 
       expect(desktopList).not.toBeNull();
       expect(workbenchButton).not.toBeNull();
-      expect(workbenchButton.getAttribute("title")).toBe(workbenchTitle);
-      expect(workbenchButton.getAttribute("aria-label")).toBe(workbenchTitle);
-      expect(desktopList.textContent).not.toContain(workbenchTitle);
+      expect(workbenchButton.getAttribute("title")).toBe("AI 起草台");
+      expect(workbenchButton.getAttribute("aria-label")).toBe("AI 起草台");
       expect(desktopList.textContent).not.toContain("view: workbench");
-      expect(wrapper.el.querySelector('[data-testid="nav-workbench-route"]')).toBeNull();
 
       workbenchButton.dispatchEvent(new MouseEvent("click"));
 
@@ -362,27 +371,29 @@ describe("writer and advanced UI modes", () => {
     }
   });
 
-  it("declares persisted shell rail collapse state and responsive styles", () => {
+  it("declares the hover-expanding slim rail with responsive fallbacks", () => {
     const appSource = readSource("src/App.vue");
-    const styleSource = readSource("src/styles/app.css");
+    const shellSource = readSource("src/styles/shell.css");
 
-    expect(appSource).toContain("railCollapsed");
-    expect(appSource).toContain("novel-system:rail-collapsed");
-    expect(appSource).toContain("PanelLeftClose");
-    expect(appSource).toContain("PanelLeftOpen");
-    expect(appSource).toContain('data-testid="rail-toggle"');
-    expect(styleSource).toContain(".shell.rail-collapsed");
-    expect(styleSource).toContain(".rail-toggle");
-    expect(styleSource).toMatch(/@media \(max-width:\s*980px\)[\s\S]*\.shell\.rail-collapsed/);
+    expect(appSource).toContain('class="ws-rail"');
+    expect(appSource).toContain('class="ws-rail-scrim"');
+    expect(shellSource).toContain(".ws-rail.is-open");
+    expect(shellSource).toContain(".ws-rail-scrim");
+    expect(shellSource).toMatch(/@media \(max-width:\s*980px\)[\s\S]*\.ws-rail/);
   });
 
-  it("mounts the writer path task bar only in writer mode", () => {
+  it("replaces the writer path task bar with the home cockpit landing", () => {
     const appSource = readSource("src/App.vue");
+
+    expect(appSource).not.toContain("WriterPathProgress");
+    expect(appSource).toContain("home: defineAsyncComponent");
+    expect(appSource).toContain("./views/HomeView.vue");
+  });
+
+  it("keeps the retired writer path component testable on its own", () => {
     const componentSource = readSource("src/components/WriterPathProgress.vue");
     const styleSource = readSource("src/styles/app.css");
 
-    expect(appSource).toContain("WriterPathProgress");
-    expect(appSource).toContain('v-if="uiMode === \'writer\'"');
     expect(componentSource).toContain('data-testid="writer-path-progress"');
     expect(componentSource).toContain('data-testid="writer-path-active-summary"');
     expect(styleSource).toContain(".writer-path-progress");

@@ -138,7 +138,18 @@ def test_snowflake_downstream_versions_become_stale_when_earlier_step_changes(cl
     first = _approve_step(client, project["project_id"], "book_brief")
     second = _approve_step(client, project["project_id"], "one_sentence_summary")
 
+    # P0-3: staleness is now diff-aware — a revision that actually changes book_brief's
+    # content invalidates the downstream step that consumed it.
     replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    client.patch(
+        f"/api/v1/projects/{project['project_id']}/snowflake/artifacts/{replacement['artifact_id']}",
+        json={
+            "artifact_json": {
+                **replacement["artifact_json"],
+                "target_reader": "一个与初稿截然不同、更聚焦的读者群体。",
+            }
+        },
+    )
     _approve_artifact(client, project["project_id"], replacement["artifact_id"])
 
     session.expire_all()

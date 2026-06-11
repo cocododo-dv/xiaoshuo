@@ -723,10 +723,10 @@ describe("writer deep revision desk", () => {
     expect(source).toContain("candidate.status !== 'candidate'");
   });
 
-  it("keeps the snowflake workbench as the default first screen", () => {
+  it("keeps the home cockpit as the default first screen", () => {
     const routerSource = readSource("src/router.js");
 
-    expect(routerSource).toContain('const activeView = ref("snowflake-workbench")');
-    expect(routerSource).toContain('const visitedViews = ref(["snowflake-workbench"])');
+    expect(routerSource).toContain('const activeView = ref("home")');
+    expect(routerSource).toContain('const visitedViews = ref(["home"])');
   });
 });
