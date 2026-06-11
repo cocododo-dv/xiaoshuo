@@ -1,14 +1,19 @@
-"""FE-ALIGN Phase 2: 两部种子作品（潮汐档案 / 盐镇来信）的后端 demo seed。
+"""FE-ALIGN Phase 2/3: 两部种子作品（潮汐档案 / 盐镇来信）的后端 demo seed。
 
 原型 design/ws-works.jsx 的 WS_WORKS_SEED 后端化：项目档案、写作统计基线、
-章节/场景骨架（含 fe_display 展示态与 GCS brief）、续写场景的正文草稿、
-雪花步骤状态。由 seed_demo 调用（dev.ps1 的 skip-demo-seed 开关在上游生效）。
+雪花步骤状态、目录（章/场景树，含戏剧卡/线索/张力——数据来自
+fe_demo_catalog.json，由 frontend-react/scripts/export-demo-catalog.mjs 从
+前端种子 ARR_CHAPTERS / CAT_SALT_CHAPTERS 导出）、在写场景的正文草稿。
 
-幂等：按固定 project_id 清理后重建。
+目录写入复用 CatalogService.import_catalog —— 与一次性迁移走同一代码路径。
+幂等：按固定 project_id 清理后重建。由 seed_demo 调用（dev.ps1 的
+skip-demo-seed 开关在上游生效）。
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -22,26 +27,16 @@ from novel_system.db.models import (
     StoryProject,
     utcnow,
 )
-from novel_system.services.writing_stats import WRITING_STATS_TZ, WritingStatsService
+from novel_system.services.catalog import CatalogService
+from novel_system.services.writing_stats import (
+    WRITING_STATS_TZ,
+    WritingStatsService,
+    count_words,
+)
 
 DEMO_WORK_IDS = ("tide", "salt")
 
-_TIDE_CHAPTERS = [
-    ("盐钟残片", "approved", 100, False),
-    ("潮汐记录室", "approved", 100, False),
-    ("被改写的人", "approved", 100, False),
-    ("回声讲堂", "approved", 100, False),
-    ("夜班指南", "review", 80, False),
-    ("周岚的钥匙", "draft", 88, False),
-    ("三号档案箱", "draft", 70, False),
-    ("返回的潮声", "writing", 12, True),
-]
-
-_SALT_CHAPTERS = [
-    ("盐场的早班", "approved", 100, False),
-    ("藤椅与旧匣", "review", 76, False),
-    ("没寄出的信", "writing", 34, True),
-]
+_CATALOG_JSON = Path(__file__).with_name("fe_demo_catalog.json")
 
 # 雪花步骤状态（按 SNOWFLAKE_STEP_CATALOG 的 step_key 顺序；映射见 project_overview）：
 # approved→done；pending_review 且为首个未过闸步→active；其余 pending_review→warn；缺行→todo。
@@ -113,6 +108,7 @@ def cleanup_fe_demo_works(session: Session) -> None:
 
 def seed_fe_demo_works(session: Session) -> list[str]:
     cleanup_fe_demo_works(session)
+    catalogs = json.loads(_CATALOG_JSON.read_text(encoding="utf-8"))
     now_sh = datetime.now(WRITING_STATS_TZ)
     yesterday = (now_sh - timedelta(days=1)).date().isoformat()
 
@@ -127,17 +123,8 @@ def seed_fe_demo_works(session: Session) -> list[str]:
         target_word_count=120000,
         target_chapter_count=24,
         words_target_daily=1500,
-        chapters=_TIDE_CHAPTERS,
+        catalog_chapters=catalogs["tide"],
         steps=_TIDE_STEPS,
-        scene_title="夜班修复台 · 二次发现",
-        scene_brief={
-            "goal": "在馆长发现前，独自核对 No.31 的真伪",
-            "conflict": "馆长晚归，仍在馆中走动",
-            "setback": "系统提示「读取异常」，记录开始自我改写",
-        },
-        scene_kind="proactive",
-        scene_seq=3,
-        scene_words=1240,
         resume_lines=_TIDE_RESUME_LINES,
         paused_days_ago=3,
         words_total=38420,
@@ -156,17 +143,8 @@ def seed_fe_demo_works(session: Session) -> list[str]:
         target_word_count=100000,
         target_chapter_count=20,
         words_target_daily=1200,
-        chapters=_SALT_CHAPTERS,
+        catalog_chapters=catalogs["salt"],
         steps=_SALT_STEPS,
-        scene_title="盐田尽头 · 没寄出的信",
-        scene_brief={
-            "goal": "把信塞进祖父的旧木匣，赶在天亮前离开盐镇",
-            "conflict": "祖父半夜起身，坐在堂屋没有开灯",
-            "setback": "木匣里早已躺着另一封字迹相同的信",
-        },
-        scene_kind="proactive",
-        scene_seq=1,
-        scene_words=760,
         resume_lines=_SALT_RESUME_LINES,
         paused_days_ago=1,
         words_total=12600,
@@ -197,20 +175,14 @@ def _seed_work(
     target_word_count: int,
     target_chapter_count: int,
     words_target_daily: int,
-    chapters: list[tuple[str, str, int, bool]],
+    catalog_chapters: list[dict],
     steps: dict[str, str],
-    scene_title: str,
-    scene_brief: dict[str, str],
-    scene_kind: str,
-    scene_seq: int,
-    scene_words: int,
     resume_lines: list[str],
     paused_days_ago: int,
     words_total: int,
     streak_days: int,
     streak_last_day: str | None,
 ) -> None:
-    writing_chapter_id = None
     project = StoryProject(
         project_id=project_id,
         title=title,
@@ -230,54 +202,32 @@ def _seed_work(
     session.add(project)
     session.flush()
 
-    for index, (chapter_title, state, pct, active) in enumerate(chapters):
-        chapter_id = f"{project_id}-ch{index + 1:02d}"
-        if active:
-            writing_chapter_id = chapter_id
-        session.add(
-            ChapterGoal(
-                chapter_id=chapter_id,
-                project_id=project_id,
-                planned_scene_count=1,
-                chapter_goal=chapter_title,
-                writer_brief_json={
-                    "title": chapter_title,
-                    "fe_display": {"state": state, "pct": pct, "active": active},
-                },
-            )
-        )
-    session.flush()
+    # 目录：与一次性迁移同一条代码路径（带「待写」占位章的过滤——
+    # lf2 的 planned 占位行不属于真实目录）
+    chapters = [c for c in catalog_chapters if str(c.get("title") or "").strip() not in ("", "（待写）")]
+    catalog = CatalogService(session)
+    catalog.import_catalog(project_id, {"chapters": chapters})
 
-    # 在写章的场景骨架 + 续写场景（带 GCS brief 与正文草稿）
-    if writing_chapter_id:
-        for seq in range(1, scene_seq + 1):
-            is_resume_scene = seq == scene_seq
-            scene_id = f"{writing_chapter_id}-sc{seq:02d}"
-            session.add(
-                SceneCard(
-                    scene_id=scene_id,
-                    chapter_id=writing_chapter_id,
-                    project_id=project_id,
-                    scene_seq=seq,
-                    scene_goal=scene_title if is_resume_scene else f"场景 {seq}",
-                    scene_type=scene_kind,
-                    writer_brief_json={
-                        "title": scene_title if is_resume_scene else f"场景 {seq}",
-                        "primary_form": scene_kind,
-                        **(scene_brief if is_resume_scene else {}),
-                        "fe_display": {"writing": is_resume_scene},
-                    },
-                )
-            )
-        session.flush()
-        resume_scene_id = f"{writing_chapter_id}-sc{scene_seq:02d}"
+    # 当前章的在写场景（state=writing）挂正文草稿，resume 卡读其末两行
+    # （ARR 数据里多章带 writing 场景，必须限定在 current 章内）
+    writing_scene = None
+    if project.current_chapter_id:
+        writing_scene = session.execute(
+            select(SceneCard).where(
+                SceneCard.chapter_id == project.current_chapter_id,
+                SceneCard.state == "writing",
+                SceneCard.trashed_flag == 0,
+            ).order_by(SceneCard.scene_seq.asc())
+        ).scalars().first()
+    if writing_scene is not None:
         paused_at = (datetime.now(WRITING_STATS_TZ) - timedelta(days=paused_days_ago)).isoformat()
+        content = _prose(resume_lines, int(writing_scene.words_current or 0) or 800)
         draft = AuthorDraft(
-            draft_id=f"author_draft_scene_{resume_scene_id}_demo",
+            draft_id=f"author_draft_scene_{writing_scene.scene_id}_demo",
             object_type="scene",
-            object_id=resume_scene_id,
+            object_id=writing_scene.scene_id,
             source_text_ref="demo_seed",
-            content=_prose(resume_lines, scene_words),
+            content=content,
             revision_no=1,
             status="current",
             created_by="demo_seed",
@@ -286,7 +236,10 @@ def _seed_work(
         session.add(draft)
         session.flush()
         draft.updated_at = paused_at
-        project.current_chapter_id = writing_chapter_id
+        writing_scene.words_current = count_words(content)
+        # 在写场景所在章立为当前章（import 已按 item.current 设置过；这里兜底）
+        if not project.current_chapter_id:
+            project.current_chapter_id = writing_scene.chapter_id
 
     for step_key, status in steps.items():
         session.add(

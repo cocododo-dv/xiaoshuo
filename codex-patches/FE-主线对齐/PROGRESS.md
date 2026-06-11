@@ -7,8 +7,8 @@
 
 - [x] Phase 0 · 基线与陷阱 — 提交：d661cd5（另：开工基线快照 c2044ae）
 - [x] Phase 1 · 前端工程化 — 提交：00254f5
-- [ ] Phase 2 · 作品域与聚合 — 提交：
-- [ ] Phase 3 · 目录统一 — 提交：
+- [x] Phase 2 · 作品域与聚合 — 提交：e858b8b
+- [x] Phase 3 · 目录统一 — 提交：（见下方 Phase 3 记录；全量 pytest 827 passed）
 - [ ] Phase 4 · 回收站 — 提交：
 - [ ] Phase 5 · 待办收件箱 — 提交：
 - [ ] Phase 6 · 资料库 — 提交：
@@ -81,6 +81,35 @@
 - 验收：12 个新后端测试绿；前端 build 过；Playwright 冒烟 5 项全过
   （书架来自后端/统计数字/新建落库换会话仍在/主页渲染/PATCH profile 落库）。
 
+## Phase 3 记录（2026-06-11）
+
+- 后端：迁移 `20260611_0048`（ChapterGoal += narrative_json/state/words_target/display_order；
+  SceneCard += state/words_current；场景排序**复用 scene_seq**，不另建列）。
+  `services/catalog.py` + `routes/catalog.py`（v2）：GET 全树（slug=chNN/chNNsM 计算、
+  words rollup、display_order 惰性补号）、章/场景 PATCH、建章（空目录首章立 writing）、
+  插场景(at)、move（复用 scene_seq 逻辑）、import（admin/loopback 保护，仅空目录，
+  章级字数差额摊给零字数场景）。章标题权威字段=narrative_json["title"]（回退
+  writer_brief_json.chapter_title→title→chapter_goal 首行）。
+- `author_drafts.save`：scene.words_current 落库 + 响应带 words_rollup
+  {scene_words, chapter_words, words_total}；project_overview 章节视图改走
+  CatalogService（与目录 API 同源，fe_display 退役，pct=words rollup）。
+- demo seed 升级：前端种子目录（ARR_CHAPTERS/CAT_SALT_CHAPTERS 全量戏剧卡/线索/张力）
+  经 `scripts/export-demo-catalog.mjs` 导出为 `tools/fe_demo_catalog.json`，seed 走
+  CatalogService.import_catalog（与迁移同一代码路径）；当前章的在写场景挂正文草稿。
+- 前端：`ws-catalog.jsx` 接真 —— API 缓存 + 形状适配（C4：reactive 的 RDD 映射进
+  goal/obstacle/turn 槽位 + kindFields=["反应","两难","决定"]）；**set() diff 引擎**
+  （6 处整树写穿调用点不动视图：字段变化→PATCH、新增→POST、删除→既有 v1 trash、
+  排序→既有 v1 scene-order）；本地 today/streak 计数器退役（catToday/catAddToday/
+  catBumpStreak 删除，统计全走服务端）；一次性迁移 arr.chapters.v2 → POST import
+  （仅后端目录为空时；打 ws_catalog_migrated_v1::<id> 标记）。
+- `wr-doc-store.jsx`（新 store）：正文 = author-drafts 主路径（ensure + PATCH，
+  revision 冲突以服务端为准重水合）；wr-doc 本地键退化为同步读缓存；保存响应的
+  words_rollup 回流目录+统计。ws-writer.jsx 改动=3 个持久化触点 + 水合回填监听 +
+  目录就绪后默认场景补选（冷启动直达 #writer 的修复）。
+- 验收：catalog 7+2 后端测试绿；Playwright P3 冒烟 7 项全过（目录来自后端含戏剧卡/
+  改章题落库/加删场景后端可见/正文保存→words rollup 全链路/跨会话水合）；15 视图
+  截图零 console 错误，编排台与基线像素一致（数据已为后端目录）。
+
 ## 核对发现（实际代码 vs 简报假设）
 
 | Phase | 简报假设 | 实际情况 | 处理 |
@@ -91,6 +120,10 @@
 | 2 | 雪花第 10 步 step_key | 是 `scene_details` 不是「场景规划 scene_planning」 | seed/映射按 scene_details |
 | 2 | `POST /api/v2/projects` 载荷 | `outline_text` 必填（ProjectService.create 校验） | 适配层以 sub/title 兜底填充 |
 | 2 | ChapterGoal 有标题概念 | **无 title/序号列**；标题只能放 writer_brief_json | P2 用 brief.title + fe_display；P3 建正式列 |
+| 3 | 简报：SceneCard 增 display_order | scene_seq 已是排序字段（v1 scene-order 端点写它） | 复用 scene_seq，不建新列（简报改动2也要求二选一） |
+| 3 | adoptOutline ≙ 物化主路径（materialize/approve） | ws-snow 在 P3 仍是本地数据，后端无 scene plans，materialize 必 409 | adoptOutline 经 set() diff → catalog API 后端建章；materialize 主路径待 ws-snow 接 v2 工作台（P8）|
+| 3 | 章级与场景级 trash 机制 | 已核对：同一服务 AuthorLifecycleService，软删标记 trashed_flag（章 trash 级联场景）；purge 物理删除 | P4 沿用同一机制扩作品级 |
+| 3 | 「wr-notes:<sid> 同步迁移」 | 写作器代码中无该键的实际使用者（仅回收站 purge 清理它） | 无需迁移；P4 处理回收站时一并核对 |
 | 2 | 正文保存写路径 | ✅ 已核实：`ensure` + `PATCH author-drafts/{draft_id}` | 埋点加在 PATCH 服务层 |
 | 4 | 章/场景 trash 的实现机制（软删标记 or 移表）；两套是否同一服务 | （待核对 services 层） | |
 | 5 | ReviewItem 状态机可扩展为统一 state | （待核对） | |
@@ -105,5 +138,17 @@
 - `WsWorks.remove/restoreWork` 为提示性空壳（P4 接软删/恢复端点）；作品删除入口
   按钮仍可见但点击只弹说明（视图零修改约束下的最小方案）。
 - 旧 localStorage 键（ws_works_created_v1 等）迁移后保留不删（P8 统一清理）。
-- demo 作品的本地目录种子（ws-catalog/ws-snow 等）在 P3 前继续生效——主页/构思
-  视图对 demo 作品显示的是本地种子数据 + 服务端统计的混合（诚实标识 WsDemoTag 未摘）。
+- ~~demo 作品的本地目录种子在 P3 前继续生效~~（P3 已解决：目录种子后端化，
+  目录/正文/字数全链路后端；ws-snow 构思视图仍本地，P8 接 v2 工作台）。
+- P3：`WsCatalog.reset()` 改为「丢缓存重拉服务端」——demo 作品不再能从前端一键回种子
+  （等价能力=重跑 seed_demo / dev 重启自动 reseed）。
+- P3：ws-manuscripts 经 set() 写的 `approvedAt` 是视图糖字段，不入库（refetch 后丢失，
+  显示退化为状态徽标）；P8 接成稿中心时按需落库。
+- P3：restoreScene（本地回收站恢复）暂为「重新建行」语义（旧行已 trash）；
+  P4 切到后端 restore 端点后恢复原行。
+- 题外（DEFERRED，不属本任务范围）：既有测试存在**负载敏感的偶发失败**——
+  `test_scene_generation.py::test_run_scene_records_style_routing_failure`、
+  `test_qc_engine.py` 两例等按 `created_at` 排序断言的测试，在机器高负载下多行
+  落入同一时钟 tick，排序回退到随机 id 而翻车（Windows 时钟粒度）。无并发负载时
+  全量 827 passed 全绿；与 FE-ALIGN 改动无关（P2 提交点同样可复现机制）。
+  建议后续给 LlmCall 排序断言加序列号或冻结时钟，本任务不动。

@@ -11,6 +11,7 @@ from novel_system.api.response import error
 from novel_system.api.routes import (
     author_drafts,
     author_desk,
+    catalog,
     chapter_manuscripts,
     chapters,
     domain,
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
             req_id=req_id,
         )
 
+    app.include_router(catalog.router)
     app.include_router(chapters.router)
     app.include_router(projects.router)
     app.include_router(project_overview.router)

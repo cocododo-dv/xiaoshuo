@@ -46,9 +46,25 @@ def test_seed_demo_creates_first_chapter_and_review_item(session) -> None:
     assert summary["chapter_id"] == "CH001"
     assert summary["scene_ids"] == ["CH001_SC01", "CH001_SC02", "CH001_SC03"]
     assert summary["review_ids"] == ["review_demo_style_observation"]
-    # FE-ALIGN P2 起 seed_demo 还会内联两部种子作品（tide 8 章 3 场 / salt 3 章 1 场）
-    assert _count_rows(session, ChapterGoal) == 1 + 8 + 3
-    assert _count_rows(session, SceneCard) == 3 + 3 + 1
+    # FE-ALIGN P2/P3 起 seed_demo 还会内联两部种子作品（tide/salt 完整目录）；
+    # runtime demo 自身仍是 1 章 3 场。
+    demo_projects = ("tide", "salt")
+    runtime_chapters = session.scalar(
+        select(func.count()).select_from(ChapterGoal).where(
+            ChapterGoal.project_id.is_(None) | ChapterGoal.project_id.notin_(demo_projects)
+        )
+    )
+    runtime_scenes = session.scalar(
+        select(func.count()).select_from(SceneCard).where(
+            SceneCard.project_id.is_(None) | SceneCard.project_id.notin_(demo_projects)
+        )
+    )
+    assert runtime_chapters == 1
+    assert runtime_scenes == 3
+    fe_chapters = session.scalar(
+        select(func.count()).select_from(ChapterGoal).where(ChapterGoal.project_id.in_(demo_projects))
+    )
+    assert fe_chapters > 0
     assert _count_rows(session, SceneRunState) == 3
     assert _count_rows(session, ReviewItem) == 1
 
@@ -159,8 +175,11 @@ def test_seed_demo_is_idempotent(session) -> None:
     session.commit()
 
     assert first == second
-    # 3 个 runtime demo 场景 + FE 种子作品场景（tide 3 / salt 1），重复 seed 不增行
-    assert _count_rows(session, SceneCard) == 3 + 3 + 1
+    # 重复 seed 不增行（runtime demo 与 FE 种子作品都按固定 id 清理后重建）
+    scene_count_after_two_seeds = _count_rows(session, SceneCard)
+    seed_demo(session)
+    session.commit()
+    assert _count_rows(session, SceneCard) == scene_count_after_two_seeds
     assert _count_rows(session, ReviewItem) == 1
 
 

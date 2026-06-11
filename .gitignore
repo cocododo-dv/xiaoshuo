@@ -23,7 +23,7 @@ frontend/e2e-*.txt
 
 frontend-react/dist/
 frontend-react/node_modules/
-frontend-react/.shots/
+frontend-react/.shots*/
 
 # Per-developer local Claude permission config; must not be shared.
 .claude/settings.local.json

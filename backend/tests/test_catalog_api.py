@@ -1,0 +1,190 @@
+"""FE-ALIGN Phase 3: 目录 API（/api/v2/projects/{id}/catalog…）。"""
+from __future__ import annotations
+
+from novel_system.db.models import AuthorDraft
+
+_seq = 0
+
+
+def _create_project(client) -> dict:
+    global _seq
+    _seq += 1
+    response = client.post(
+        "/api/v2/projects",
+        json={"title": f"目录测试 {_seq}", "outline_text": "大纲", "genre": "悬疑"},
+        headers={"X-Idempotency-Key": f"catalog-create-{_seq}"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["project"]
+
+
+def _post(client, path, body=None, extra_headers=None):
+    global _seq
+    _seq += 1
+    headers = {"X-Idempotency-Key": f"catalog-{_seq}", **(extra_headers or {})}
+    response = client.post(path, json=body or {}, headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def test_create_first_chapter_becomes_writing_and_current(client):
+    project = _create_project(client)
+    pid = project["project_id"]
+    data = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "第一章"})
+    assert data["chapter"]["state"] == "writing"
+    assert data["chapter"]["current"] is True
+    assert data["chapter"]["slug"] == "ch01"
+    assert len(data["chapter"]["scenes"]) == 1  # 默认开场场景
+    assert data["chapter"]["scenes"][0]["slug"] == "ch01s1"
+    assert data["chapter"]["scenes"][0]["state"] == "writing"
+
+    second = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "第二章", "current": False})
+    assert second["chapter"]["state"] == "planned"
+    assert second["chapter"]["slug"] == "ch02"
+
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    assert [c["slug"] for c in tree["chapters"]] == ["ch01", "ch02"]
+    assert tree["chapters"][0]["current"] is True
+
+
+def test_patch_chapter_narrative_and_state(client):
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "原题"})["chapter"]
+    response = client.patch(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}",
+        json={
+            "title": "改名章",
+            "state": "draft",
+            "words_target": 4200,
+            "tension": 0.66,
+            "pov": "林岑",
+            "drama": {"promise": "p", "spine": "s"},
+            "threads": [{"name": "盐钟", "role": "新引"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    updated = response.json()["data"]["chapter"]
+    assert updated["title"] == "改名章"
+    assert updated["state"] == "draft"
+    assert updated["words"]["target"] == 4200
+    assert updated["tension"] == 0.66
+    assert updated["drama"]["spine"] == "s"
+    assert updated["threads"][0]["name"] == "盐钟"
+
+    bad = client.patch(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}",
+        json={"state": "nonsense"},
+    )
+    assert bad.status_code == 400
+
+
+def test_scene_crud_insert_move_and_kind_brief(client):
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "章"})["chapter"]
+    cid = chapter["chapter_id"]
+
+    s2 = _post(client, f"/api/v2/projects/{pid}/catalog/chapters/{cid}/scenes", {"title": "反应场", "kind": "反应", "brief": {"reaction": "震惊", "dilemma": "走或留", "decision": "先藏起来"}})["scene"]
+    assert s2["kind"] == "reactive"
+    assert s2["brief"]["dilemma"] == "走或留"
+    assert s2["seq"] == 2
+
+    s_insert = _post(client, f"/api/v2/projects/{pid}/catalog/chapters/{cid}/scenes", {"title": "插入到最前", "at": 0})["scene"]
+    assert s_insert["seq"] == 1
+
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    scenes = tree["chapters"][0]["scenes"]
+    assert [s["title"] for s in scenes] == ["插入到最前", "开场", "反应场"]
+    assert [s["slug"] for s in scenes] == ["ch01s1", "ch01s2", "ch01s3"]
+
+    moved = _post(client, f"/api/v2/projects/{pid}/catalog/scenes/{s_insert['scene_id']}/move", {"to": 2})
+    titles = [s["title"] for s in moved["chapter"]["scenes"]]
+    assert titles == ["开场", "反应场", "插入到最前"]
+
+    patched = client.patch(
+        f"/api/v2/projects/{pid}/catalog/scenes/{s2['scene_id']}",
+        json={"title": "改名场", "state": "done", "brief": {"decision": "撕掉信"}},
+    ).json()["data"]["scene"]
+    assert patched["title"] == "改名场"
+    assert patched["state"] == "done"
+    assert patched["brief"]["decision"] == "撕掉信"
+
+
+def test_catalog_import_then_blocked_when_not_empty(client, monkeypatch):
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    project = _create_project(client)
+    pid = project["project_id"]
+    payload = {
+        "chapters": [
+            {
+                "title": "迁移章一",
+                "state": "approved",
+                "words": {"cur": 3000, "target": 4000},
+                "current": False,
+                "tension": 0.4,
+                "scenes": [
+                    {"title": "场一", "kind": "主动", "state": "done", "goal": "g", "obstacle": "o", "turn": "t"},
+                    {"title": "场二", "kind": "反应", "state": "done", "goal": "r", "obstacle": "d", "turn": "x"},
+                ],
+            },
+            {"title": "迁移章二", "state": "writing", "current": True, "scenes": [{"title": "在写场", "kind": "主动", "state": "writing"}]},
+        ]
+    }
+    no_token = client.post(
+        f"/api/v2/projects/{pid}/catalog/import",
+        json=payload,
+        headers={"X-Idempotency-Key": "catalog-import-no-token"},
+    )
+    assert no_token.status_code == 403  # admin 保护
+
+    data = _post(client, f"/api/v2/projects/{pid}/catalog/import", payload,
+                 extra_headers={"X-Admin-Token": "admin-token"})
+    assert data["created_chapter_count"] == 2
+    assert data["created_scene_count"] == 3
+
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    ch1 = tree["chapters"][0]
+    assert ch1["words"]["cur"] == 3000  # 章级字数摊给场景后 rollup 不丢
+    assert ch1["scenes"][1]["kind"] == "reactive"
+    assert tree["chapters"][1]["current"] is True
+
+    again = client.post(
+        f"/api/v2/projects/{pid}/catalog/import",
+        json=payload,
+        headers={"X-Idempotency-Key": "catalog-import-again", "X-Admin-Token": "admin-token"},
+    )
+    assert again.status_code == 409  # 非空目录拒绝导入
+
+
+def test_draft_save_updates_scene_words_and_returns_rollup(client, session):
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "章"})["chapter"]
+    scene_id = chapter["scenes"][0]["scene_id"]
+    draft = AuthorDraft(
+        draft_id="draft-catalog-1",
+        object_type="scene",
+        object_id=scene_id,
+        source_text_ref="test",
+        content="",
+        revision_no=1,
+        status="current",
+    )
+    session.add(draft)
+    session.commit()
+
+    response = client.patch(
+        "/api/v1/author-drafts/draft-catalog-1",
+        json={"content": "这一场写了二十个字符的正文内容补满数。", "base_revision_no": 1},
+    )
+    assert response.status_code == 200, response.text
+    rollup = response.json()["data"]["words_rollup"]
+    assert rollup["scene_id"] == scene_id
+    assert rollup["scene_words"] == 19
+    assert rollup["chapter_words"] == 19
+    assert "words_total" in rollup
+
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    assert tree["chapters"][0]["words"]["cur"] == 19
+    assert tree["chapters"][0]["scenes"][0]["words"] == 19

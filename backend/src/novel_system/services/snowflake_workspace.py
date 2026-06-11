@@ -112,6 +112,7 @@ class SnowflakeWorkspaceService:
         return {"items": items}
 
     def _chapters_written(self, project_id: str) -> int:
+        """FE-ALIGN P3：已动笔章数 = 有正文字数 rollup 或状态非 planned/todo 的章。"""
         chapters = self.session.execute(
             select(ChapterGoal).where(
                 ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0
@@ -119,8 +120,12 @@ class SnowflakeWorkspaceService:
         ).scalars().all()
         written = 0
         for chapter in chapters:
-            display = dict((chapter.writer_brief_json or {}).get("fe_display") or {})
-            if int(display.get("pct") or 0) > 0:
+            scene_words = self.session.execute(
+                select(SceneCard.words_current).where(
+                    SceneCard.chapter_id == chapter.chapter_id, SceneCard.trashed_flag == 0
+                )
+            ).scalars().all()
+            if sum(int(w or 0) for w in scene_words) > 0 or str(chapter.state or "planned") not in {"planned", "todo"}:
                 written += 1
         return written
 

@@ -180,7 +180,7 @@ def test_dashboard_v2_shape_with_demo_seed(client, session):
     assert "潮汐表第三页" in data["resume"]["last_lines"][0]
     assert data["resume"]["scene_words"] > 0
     assert data["brief"]["kind"] == "proactive"
-    assert data["brief"]["goal"].startswith("在馆长发现前")
+    assert "No.31" in data["brief"]["goal"]
 
     board = {row["step_key"]: row["status"] for row in data["snowflake"]}
     assert board["book_brief"] == "done"
@@ -190,9 +190,11 @@ def test_dashboard_v2_shape_with_demo_seed(client, session):
 
     recent = data["chapters_recent"]
     assert len(recent) == 5
-    assert recent[-1]["title"] == "返回的潮声"
-    assert recent[-1]["active"] is True
-    assert recent[-1]["state"] == "writing"
+    ch08 = next(r for r in recent if r["title"] == "返回的潮声")
+    assert ch08["active"] is True
+    assert ch08["state"] == "writing"
+    assert ch08["no"] == "08"
+    assert ch08["pct"] > 0  # words rollup（场景字数求和 / words_target）
 
     assert data["stats"]["words_total"] == 38420
     assert data["stats"]["streak_days"] == 6  # streak_last_day=昨天 → 有效

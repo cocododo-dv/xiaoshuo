@@ -1,7 +1,7 @@
 import React from "react";
 import { WsWorks, wsKey } from "./ws-works.jsx";
 import { ARR_CHAPTERS } from "./ws-author-data.jsx";
-import { apiGet } from "./lib/client.js";
+import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 
 /* global window, React, ARR_CHAPTERS */
 /* ==========================================================
@@ -127,67 +127,6 @@ function catSeedFor(workId) {
   return []; // 新建作品：空白结构，由写作器 / 编排台引导建章
 }
 
-/* ---- store ---- */
-const catCache = {}; // workId → chapters
-const catSubs = new Set();
-
-function catLoad(workId) {
-  if (catCache[workId]) return catCache[workId];
-  let list = null;
-  try {
-    const raw = localStorage.getItem(CAT_LS + "::" + workId);
-    const parsed = raw ? JSON.parse(raw) : null;
-    if (Array.isArray(parsed) && parsed.length) list = parsed;
-  } catch (e) {}
-  if (!list) list = JSON.parse(JSON.stringify(catSeedFor(workId)));
-  catCache[workId] = catStamp(list);
-  return catCache[workId];
-}
-
-function catPersist(workId) {
-  try { localStorage.setItem(CAT_LS + "::" + workId, JSON.stringify(catCache[workId])); } catch (e) {}
-}
-function catNotify() { catSubs.forEach(fn => { try { fn(); } catch (e) {} }); }
-
-/* 今日字数（按作品、按自然日）*/
-function catToday() {
-  const d = new Date().toISOString().slice(0, 10);
-  try {
-    const rec = JSON.parse(localStorage.getItem(catKey(CAT_DAY_LS))) || {};
-    return rec.d === d ? (rec.n || 0) : 0;
-  } catch (e) { return 0; }
-}
-function catAddToday(delta) {
-  if (!delta || delta <= 0) return catToday();
-  const d = new Date().toISOString().slice(0, 10);
-  const n = catToday() + delta;
-  try { localStorage.setItem(catKey(CAT_DAY_LS), JSON.stringify({ d, n })); } catch (e) {}
-  catBumpStreak();
-  return n;
-}
-
-/* 连续写作天数：当天首次产生正向字数时记账；昨天也写过 → +1，否则重记为 1 */
-function catStreakRec() {
-  try { return JSON.parse(localStorage.getItem(catKey(CAT_STREAK_LS))) || null; } catch (e) { return null; }
-}
-function catBumpStreak() {
-  const d = new Date().toISOString().slice(0, 10);
-  const rec = catStreakRec() || {};
-  if (rec.last === d) return rec.streak || 1;
-  const y = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
-  const streak = rec.last === y ? (rec.streak || 0) + 1 : 1;
-  try { localStorage.setItem(catKey(CAT_STREAK_LS), JSON.stringify({ last: d, streak })); } catch (e) {}
-  return streak;
-}
-/* 展示用的有效 streak：断更超过一天归零；从未记过账则沿用种子值 */
-function catEffectiveStreak(fallback) {
-  const rec = catStreakRec();
-  if (!rec) return fallback;
-  const d = new Date().toISOString().slice(0, 10);
-  const y = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
-  return (rec.last === d || rec.last === y) ? (rec.streak || 0) : 0;
-}
-
 /* 汇总同步进 WsWorks（切换器 / 主页进度同源）。
    FE-ALIGN P2（D2）：字数/今日/streak 改读后端 writing-stats（只读派生，
    经 WsWorks.__applyDerived 注入，WsWorks.update 的回写路径已删除）；
@@ -218,22 +157,359 @@ function catPushTotals() {
   });
 }
 
+/* ---- store（FE-ALIGN Phase 3：目录真相源 = /api/v2/projects/{id}/catalog）----
+   · get() 保持同步：每作品一份内存缓存，启动/切换作品时从 API 填充，
+     写后乐观更新 + 端点调用，失败整体重拉（服务端为准）+ 提示。
+   · 视图章节/场景形状与原型一致；C4 裁决：反应场景的 RDD 映射进
+     goal/obstacle/turn 槽位，附 kindFields 标签元数据。
+   · set() 写穿点改为 diff 拆解：字段变化→PATCH，新增→POST，删除→v1 trash，
+     排序→v1 scene-order（复用既有逻辑，不另起排序端点）。
+   · 一次性迁移：旧 localStorage 目录编辑（arr.chapters.v2::<id>）在后端目录
+     为空时经 POST catalog/import 上行，打 ws_catalog_migrated_v1::<id> 标记。 */
+
+const KIND_FIELDS_GCS = ["目标", "阻碍", "挫折"];
+const KIND_FIELDS_RDD = ["反应", "两难", "决定"];
+const CAT_MIGRATED_LS = "ws_catalog_migrated_v1";
+
+function catFromApiScene(s) {
+  const reactive = s.kind === "reactive";
+  const b = s.brief || {};
+  return {
+    sid: s.slug,
+    backendId: s.scene_id,
+    title: s.title,
+    kind: reactive ? "反应" : "主动",
+    state: s.state,
+    words: s.words || 0,
+    goal: reactive ? (b.reaction || "") : (b.goal || ""),
+    obstacle: reactive ? (b.dilemma || "") : (b.conflict || ""),
+    turn: reactive ? (b.decision || "") : (b.setback || ""),
+    kindFields: reactive ? KIND_FIELDS_RDD : KIND_FIELDS_GCS,
+  };
+}
+
+function catFromApiChapter(c) {
+  return {
+    id: c.slug,
+    backendId: c.chapter_id,
+    act: c.act || "act1",
+    n: c.no,
+    title: c.title,
+    state: c.state,
+    tension: typeof c.tension === "number" ? c.tension : 0.3,
+    pov: c.pov || "",
+    time: c.time_label || "",
+    place: c.place || "",
+    current: !!c.current,
+    words: { cur: (c.words && c.words.cur) || 0, target: (c.words && c.words.target) || 0 },
+    entry: c.entry || "",
+    exit: c.exit || "",
+    align: c.align !== false,
+    promise: c.promise || "",
+    drama: { promise: "", spine: "", arc: "", problem: "", aftertaste: "", ending: "", forbidden: "", notes: "", ...(c.drama || {}) },
+    threads: c.threads || [],
+    scenes: (c.scenes || []).map(catFromApiScene),
+  };
+}
+
+/* 章对象 diff → PATCH 载荷（只含变化字段） */
+function catChapterPatch(prev, next) {
+  const patch = {};
+  if (next.title !== prev.title) patch.title = next.title;
+  if (next.state !== prev.state) patch.state = next.state;
+  const prevTarget = (prev.words && prev.words.target) || 0;
+  const nextTarget = (next.words && next.words.target) || 0;
+  if (nextTarget !== prevTarget) patch.words_target = nextTarget || null;
+  if (next.act !== prev.act) patch.act = next.act;
+  if (next.tension !== prev.tension) patch.tension = next.tension;
+  if (next.pov !== prev.pov) patch.pov = next.pov;
+  if (next.time !== prev.time) patch.time_label = next.time;
+  if (next.place !== prev.place) patch.place = next.place;
+  if (next.entry !== prev.entry) patch.entry = next.entry;
+  if (next.exit !== prev.exit) patch.exit = next.exit;
+  if (next.align !== prev.align) patch.align = next.align;
+  if (next.promise !== prev.promise) patch.promise = next.promise;
+  if (JSON.stringify(next.drama || {}) !== JSON.stringify(prev.drama || {})) patch.drama = next.drama || {};
+  if (JSON.stringify(next.threads || []) !== JSON.stringify(prev.threads || [])) patch.threads = next.threads || [];
+  if (next.current && !prev.current) patch.current = true;
+  return patch;
+}
+
+function catScenePatch(prev, next) {
+  const patch = {};
+  if (next.title !== prev.title) patch.title = next.title;
+  if (next.state !== prev.state) patch.state = next.state;
+  const reactive = next.kind === "反应";
+  if (next.kind !== prev.kind) {
+    patch.kind = reactive ? "reactive" : "proactive";
+    // 换型时把三个槽位整体写到新键
+    patch.brief = reactive
+      ? { reaction: next.goal || "", dilemma: next.obstacle || "", decision: next.turn || "" }
+      : { goal: next.goal || "", conflict: next.obstacle || "", setback: next.turn || "" };
+    return patch;
+  }
+  const brief = {};
+  if (next.goal !== prev.goal) brief[reactive ? "reaction" : "goal"] = next.goal || "";
+  if (next.obstacle !== prev.obstacle) brief[reactive ? "dilemma" : "conflict"] = next.obstacle || "";
+  if (next.turn !== prev.turn) brief[reactive ? "decision" : "setback"] = next.turn || "";
+  if (Object.keys(brief).length) patch.brief = brief;
+  return patch;
+}
+
+function catSceneCreateBody(s, at) {
+  const reactive = s.kind === "反应";
+  return {
+    title: s.title,
+    kind: reactive ? "reactive" : "proactive",
+    at,
+    state: s.state === "active" ? "writing" : (s.state || "todo"),
+    brief: reactive
+      ? { reaction: s.goal || "", dilemma: s.obstacle || "", decision: s.turn || "" }
+      : { goal: s.goal || "", conflict: s.obstacle || "", setback: s.turn || "" },
+  };
+}
+
+/* ---- 缓存与装载 ---- */
+const catCache = {};       // workId → view chapters
+const catReadyMap = {};    // workId → API 已返回
+const catSubs = new Set();
+const catPendingCreates = {}; // slug/sid → 创建中的 Promise（后端 id 待回填）
+
+function catNotify() { catSubs.forEach(fn => { try { fn(); } catch (e) {} }); }
+const catApiBase = (id) => `/api/v2/projects/${id}/catalog`;
+
+function catLoad(workId) { return catCache[workId] || []; }
+
+const catFetching = {};
+function catFetch(workId, options) {
+  const migrate = !options || options.migrate !== false;
+  if (!workId || workId === "__loading__") return Promise.resolve();
+  if (catFetching[workId]) return catFetching[workId];
+  catFetching[workId] = (async () => {
+    try {
+      let data = await apiGet(catApiBase(workId));
+      let chapters = (data && data.chapters) || [];
+      if (migrate && !chapters.length) {
+        const imported = await catMigrateLegacy(workId);
+        if (imported) {
+          data = await apiGet(catApiBase(workId));
+          chapters = (data && data.chapters) || [];
+        }
+      }
+      catCache[workId] = chapters.map(catFromApiChapter);
+      catReadyMap[workId] = true;
+      catNotify();
+      catPushTotals();
+      try { window.WrDocs && window.WrDocs.hydrateActive && window.WrDocs.hydrateActive(); } catch (e) {}
+    } catch (e) {
+      console.warn("[WsCatalog] 拉取目录失败:", e);
+    } finally {
+      delete catFetching[workId];
+    }
+  })();
+  return catFetching[workId];
+}
+
+/* 旧 localStorage 目录编辑 → 一次性上行（仅后端目录为空时；import 端点 loopback 免 token） */
+async function catMigrateLegacy(workId) {
+  try {
+    if (localStorage.getItem(CAT_MIGRATED_LS + "::" + workId)) return false;
+    const raw = localStorage.getItem(CAT_LS + "::" + workId);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!Array.isArray(parsed) || !parsed.length) {
+      localStorage.setItem(CAT_MIGRATED_LS + "::" + workId, new Date().toISOString());
+      return false;
+    }
+    await apiPost(catApiBase(workId) + "/import", { chapters: parsed });
+    localStorage.setItem(CAT_MIGRATED_LS + "::" + workId, new Date().toISOString());
+    return true;
+  } catch (e) {
+    console.warn("[WsCatalog] 旧目录迁移失败（保留旧键，下次再试）:", e);
+    return false;
+  }
+}
+
+/* 写失败统一恢复：以服务端为准整体重拉 + 提示 */
+function catRecover(error) {
+  try { window.alert((error && error.message) || "目录保存失败，已恢复为服务端版本。"); } catch (e) {}
+  catFetch(catActiveId(), { migrate: false });
+}
+
+/* 后端 id 解析（含等待乐观创建完成） */
+async function catBackendChapterId(chId) {
+  const find = () => { const c = catLoad(catActiveId()).find(x => x.id === chId); return c && c.backendId; };
+  let id = find();
+  if (!id && catPendingCreates[chId]) { await catPendingCreates[chId]; id = find(); }
+  return id;
+}
+async function catBackendSceneId(sid) {
+  const lookup = () => {
+    for (const c of catLoad(catActiveId())) {
+      const s = (c.scenes || []).find(x => x.sid === sid);
+      if (s) return { scene: s, chapter: c };
+    }
+    return null;
+  };
+  let hit = lookup();
+  if (hit && !hit.scene.backendId && catPendingCreates[hit.chapter.id]) {
+    await catPendingCreates[hit.chapter.id];
+    hit = lookup();
+  }
+  if (hit && !hit.scene.backendId && catPendingCreates[sid]) {
+    await catPendingCreates[sid];
+    hit = lookup();
+  }
+  return hit && hit.scene.backendId;
+}
+
+function catCreateChapterViaApi(workId, nc) {
+  const p = (async () => {
+    const result = await apiPost(`${catApiBase(workId)}/chapters`, {
+      title: nc.title,
+      state: nc.state === "active" ? "writing" : nc.state,
+      current: !!nc.current,
+      words_target: (nc.words && nc.words.target) || null,
+      act: nc.act,
+      tension: nc.tension,
+      pov: nc.pov,
+      time_label: nc.time,
+      place: nc.place,
+      entry: nc.entry,
+      exit: nc.exit,
+      align: nc.align,
+      promise: nc.promise,
+      drama: nc.drama || {},
+      threads: nc.threads || [],
+      with_scene: false,
+    });
+    const created = result && result.chapter;
+    if (!created) return;
+    const mine = catLoad(workId).find(c => c.id === nc.id);
+    if (mine) mine.backendId = created.chapter_id;
+    for (let i = 0; i < (nc.scenes || []).length; i++) {
+      const s = nc.scenes[i];
+      const sres = await apiPost(
+        `${catApiBase(workId)}/chapters/${created.chapter_id}/scenes`,
+        catSceneCreateBody(s, i)
+      );
+      const mineScene = mine && (mine.scenes || []).find(x => x.sid === s.sid);
+      if (mineScene && sres && sres.scene) mineScene.backendId = sres.scene.scene_id;
+    }
+  })();
+  catPendingCreates[nc.id] = p;
+  p.finally(() => { delete catPendingCreates[nc.id]; });
+  return p;
+}
+
+function catCreateSceneViaApi(workId, chId, s, at) {
+  const p = (async () => {
+    const chapterId = await catBackendChapterId(chId);
+    if (!chapterId) return;
+    const res = await apiPost(`${catApiBase(workId)}/chapters/${chapterId}/scenes`, catSceneCreateBody(s, at));
+    const chapter = catLoad(workId).find(x => x.id === chId);
+    const mine = chapter && (chapter.scenes || []).find(x => x.sid === s.sid);
+    if (mine && res && res.scene) mine.backendId = res.scene.scene_id;
+  })();
+  catPendingCreates[s.sid] = p;
+  p.finally(() => { delete catPendingCreates[s.sid]; });
+  return p;
+}
+
+/* set() 写穿点的 diff 拆解（视图层零修改的关键）：乐观缓存已先行，
+   这里按差异派发端点调用；任何一步失败 → 整体重拉恢复。 */
+async function catDispatchDiff(workId, prev, next) {
+  const ops = [];
+  const prevById = Object.fromEntries(prev.map(c => [c.id, c]));
+  const nextIds = new Set(next.map(c => c.id));
+  for (const c of prev) {
+    if (!nextIds.has(c.id) && c.backendId) {
+      ops.push(() => apiPost("/api/v1/chapters/trash", { chapter_ids: [c.backendId] }));
+    }
+  }
+  for (const nc of next) {
+    const pc = prevById[nc.id];
+    if (!pc) {
+      ops.push(() => catCreateChapterViaApi(workId, nc));
+      continue;
+    }
+    const patch = catChapterPatch(pc, nc);
+    if (Object.keys(patch).length) {
+      ops.push(async () => {
+        const chapterId = await catBackendChapterId(nc.id);
+        if (chapterId) await apiPatch(`${catApiBase(workId)}/chapters/${chapterId}`, patch);
+      });
+    }
+    const prevScenes = pc.scenes || [];
+    const nextScenes = nc.scenes || [];
+    const prevBySid = Object.fromEntries(prevScenes.map(s => [s.sid, s]));
+    const nextSids = new Set(nextScenes.map(s => s.sid));
+    for (const s of prevScenes) {
+      if (!nextSids.has(s.sid) && s.backendId) {
+        ops.push(() => apiPost("/api/v1/scenes/trash", { scene_ids: [s.backendId] }));
+      }
+    }
+    nextScenes.forEach((s, index) => {
+      const ps = prevBySid[s.sid];
+      if (!ps) {
+        ops.push(() => catCreateSceneViaApi(workId, nc.id, s, index));
+        return;
+      }
+      const scenePatch = catScenePatch(ps, s);
+      if (Object.keys(scenePatch).length) {
+        ops.push(async () => {
+          const sceneId = await catBackendSceneId(s.sid);
+          if (sceneId) await apiPatch(`${catApiBase(workId)}/scenes/${sceneId}`, scenePatch);
+        });
+      }
+    });
+    const prevOrder = prevScenes.map(s => s.sid).filter(sid => nextSids.has(sid));
+    const nextOrder = nextScenes.map(s => s.sid).filter(sid => prevBySid[sid]);
+    if (prevOrder.join("|") !== nextOrder.join("|")) {
+      ops.push(async () => {
+        const chapterId = await catBackendChapterId(nc.id);
+        if (!chapterId) return;
+        const sceneIds = [];
+        for (const s of nextScenes) {
+          const sceneId = await catBackendSceneId(s.sid);
+          if (sceneId) sceneIds.push(sceneId);
+        }
+        if (sceneIds.length) {
+          await apiPost(`/api/v1/chapters/${chapterId}/scene-order`, {
+            scene_ids: sceneIds,
+            last_scene_id: sceneIds[sceneIds.length - 1],
+          });
+        }
+      });
+    }
+  }
+  if (!ops.length) return;
+  try {
+    for (const op of ops) await op();
+    catFetch(workId, { migrate: false }); // 以服务端编号/rollup 收敛
+  } catch (e) {
+    catRecover(e);
+  }
+}
+
 const WsCatalog = {
   get() { return catLoad(catActiveId()); },
   isEmpty() { return this.get().length === 0; },
+  /* 目录是否已从后端装载（短暂为空数组时视图可区分 loading / 真空目录） */
+  ready() { return !!catReadyMap[catActiveId()]; },
   set(next) {
     const id = catActiveId();
+    const prev = catLoad(id);
     catCache[id] = catStamp(Array.isArray(next) ? next : []);
-    catPersist(id); catPushTotals(); catNotify();
+    catNotify();
+    catDispatchDiff(id, prev, catCache[id]);
   },
-  /* 清空用户编辑，回到种子（按当前作品） */
+  /* 重置 = 丢弃本地缓存、以服务端为准重拉（demo 作品的种子由后端 seed 维护） */
   reset() {
     const id = catActiveId();
     delete catCache[id];
-    try { localStorage.removeItem(CAT_LS + "::" + id); } catch (e) {}
-    const next = this.get();
-    catPushTotals(); catNotify();
-    return next;
+    catFetch(id, { migrate: false });
+    catNotify();
+    return this.get();
   },
   /* —— 查找 —— */
   sceneById(sid) {
@@ -255,7 +531,7 @@ const WsCatalog = {
     if (cur && cur.scenes && cur.scenes.length) return { chapter: cur, scene: cur.scenes[0], index: 0 };
     return null;
   },
-  /* —— 写作器结构操作 —— */
+  /* —— 写作器结构操作（经 set() 的 diff 引擎落端点）—— */
   renameScene(chId, sid, title) {
     this.set(this.get().map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.map(s => s.sid === sid ? { ...s, title } : s) }));
   },
@@ -274,14 +550,15 @@ const WsCatalog = {
   removeScene(chId, sid) {
     this.set(this.get().map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.filter(s => s.sid !== sid) }));
   },
-  /* 从回收站恢复场景；原章节已删时退而插入当前章 */
+  /* 从回收站恢复场景；原章节已删时退而插入当前章（P4 切换为后端 restore 端点） */
   restoreScene(chId, scene, index) {
     const chs = this.get();
     let target = chs.find(c => c.id === chId);
     if (!target) { target = this.currentChapter(); if (!target) return false; }
     const at = Math.max(0, Math.min(typeof index === "number" ? index : target.scenes.length, target.scenes.length));
+    const restored = { ...scene, backendId: undefined }; // 重新建行（旧行已 trash，P4 接 restore）
     this.set(chs.map(c => c.id !== target.id ? c : {
-      ...c, scenes: [...c.scenes.slice(0, at), scene, ...c.scenes.slice(at)],
+      ...c, scenes: [...c.scenes.slice(0, at), restored, ...c.scenes.slice(at)],
     }));
     return true;
   },
@@ -301,9 +578,9 @@ const WsCatalog = {
     this.set([...chs.map(c => ({ ...c, current: false })), ch]);
     return this.get().find(c => c.id === id);
   },
-  /* —— 雪花大纲 → 目录物化：把构思第 7 步的章节表落进章节编排 ——
-     list = [{id, act, title, summary, spine}]。同名章自动跳过；
-     目录原本为空时，第一章直接立为在写章（写作器即刻可写）。 */
+  /* —— 雪花大纲 → 目录：经 set() 的 diff 引擎在后端建章（不在前端造本地行）。
+     注：构思视图接 v2 工作台后改走 materialize 主路径（P8）；当前雪花数据在
+     本地，后端无 scene plans，materialize 必然 409，故直接走目录批量建章。 */
   adoptOutline(list) {
     const cur = this.get();
     const existing = new Set(cur.map(c => (c.title || "").trim()));
@@ -336,31 +613,51 @@ const WsCatalog = {
     this.set(next);
     return fresh.length;
   },
-  /* —— 字数回写（写作器自动保存时调用）—— */
-  recordSceneWords(sid, count, prevCount) {
+  /* —— 字数（写作器自动保存时调用）：本地即时更新；
+     权威 rollup 由正文保存响应经 __applyWordsRollup 注入，统计走服务端 —— */
+  recordSceneWords(sid, count) {
     const hit = this.sceneById(sid);
     if (!hit) return;
-    const delta = count - (typeof prevCount === "number" ? prevCount : (hit.scene.words || 0));
-    if (!delta && hit.scene.words === count) return;
-    catAddToday(delta);
-    this.set(this.get().map(c => c.id !== hit.chapter.id ? c : {
+    const delta = count - (hit.scene.words || 0);
+    if (!delta) return;
+    const id = catActiveId();
+    catCache[id] = this.get().map(c => c.id !== hit.chapter.id ? c : {
       ...c,
       words: { ...c.words, cur: Math.max(0, ((c.words && c.words.cur) || 0) + delta) },
       scenes: c.scenes.map(s => s.sid === sid ? { ...s, words: count } : s),
-    }));
+    });
+    catNotify();
   },
   totals() {
     const chs = this.get();
     const words = chs.reduce((s, c) => s + ((c.words && c.words.cur) || 0), 0);
+    const active = window.WsWorks ? window.WsWorks.active() : null;
     return {
       words,
       written: chs.filter(c => ((c.words && c.words.cur) || 0) > 0).length,
       planned: chs.length,
       approved: chs.filter(c => c.state === "approved").length,
-      today: catToday(),
+      today: (active && active.wordsToday) || 0,
     };
   },
   subscribe(fn) { catSubs.add(fn); return () => catSubs.delete(fn); },
+  /* —— FE-ALIGN 内部接缝（非契约面）—— */
+  __backendSceneId: catBackendSceneId,
+  __applyWordsRollup(sid, rollup) {
+    if (!rollup) return;
+    const hit = this.sceneById(sid);
+    const id = catActiveId();
+    if (hit) {
+      catCache[id] = this.get().map(c => c.id !== hit.chapter.id ? c : {
+        ...c,
+        words: { ...c.words, cur: rollup.chapter_words },
+        scenes: c.scenes.map(s => s.sid === sid ? { ...s, words: rollup.scene_words } : s),
+      });
+      catNotify();
+    }
+    catPushTotals();
+  },
+  __refresh(workId) { return catFetch(workId || catActiveId(), { migrate: false }); },
 };
 
 /* hook：订阅目录 + 作品切换 */
@@ -375,9 +672,14 @@ function useCatalogChapters() {
   return WsCatalog.get();
 }
 
-/* 启动 & 切换作品时，把目录汇总同步进 WsWorks（进度同源）*/
+/* 启动 & 切换作品：装载目录 + 同步统计（进度同源） */
+try { catFetch(catActiveId()); } catch (e) {}
 try { catPushTotals(); } catch (e) {}
-window.addEventListener("ws:work-changed", () => { try { catPushTotals(); } catch (e) {} });
+window.addEventListener("ws:work-changed", () => {
+  try { catFetch(catActiveId()); } catch (e) {}
+  try { catPushTotals(); } catch (e) {}
+});
+
 
 /* ==========================================================
    WsTrashStore — 回收站（按作品隔离、持久化、可恢复）

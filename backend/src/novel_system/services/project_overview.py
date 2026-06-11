@@ -25,6 +25,7 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryProject,
 )
+from novel_system.services.catalog import CatalogService
 from novel_system.services.projects import ProjectService
 from novel_system.services.snowflake_steps import list_step_definitions
 from novel_system.services.writing_stats import WritingStatsService, count_words
@@ -54,6 +55,7 @@ class ProjectOverviewService:
         self.session = session
         self._projects = ProjectService(session)
         self._stats = WritingStatsService(session)
+        self._catalog = CatalogService(session)
 
     # ---- writing-stats ----
 
@@ -65,15 +67,17 @@ class ProjectOverviewService:
 
     def dashboard(self, project_id: str) -> dict[str, Any]:
         project = self._projects.require_project(project_id)
-        chapters = self._chapter_rows(project_id)
-        chapter_views = self._chapter_views(project, chapters)
+        chapter_views = self._chapter_views(project)
         current = self._current_chapter_view(project, chapter_views)
         resume, brief = self._resume_and_brief(current)
         return {
             "resume": resume,
             "brief": brief,
             "snowflake": self._snowflake_board(project_id),
-            "chapters_recent": chapter_views[-5:],
+            "chapters_recent": [
+                {key: value for key, value in view.items() if key != "scenes"}
+                for view in chapter_views[-5:]
+            ],
             "stats": self._stats.stats_payload(project_id),
         }
 
@@ -120,7 +124,7 @@ class ProjectOverviewService:
             "open_review_count": open_review_count,
             "draft_queue_len": draft_queue_len,
             "qc_blocked_count": qc_blocked_count,
-            "last_manuscript": self._last_manuscript(project, chapter_views=self._chapter_views(project, chapters)),
+            "last_manuscript": self._last_manuscript(project, chapter_views=self._chapter_views(project)),
         }
 
     # ---- internals ----
@@ -155,22 +159,26 @@ class ProjectOverviewService:
         ).scalars().all()
         return {row.object_id: row for row in rows}
 
-    def _chapter_views(self, project: StoryProject, chapters: list[ChapterGoal]) -> list[dict[str, Any]]:
+    def _chapter_views(self, project: StoryProject) -> list[dict[str, Any]]:
+        """FE-ALIGN P3：与目录 API 同源（CatalogService 序列化），主页/编排/成稿一致。"""
         views: list[dict[str, Any]] = []
-        for index, chapter in enumerate(chapters):
-            brief = dict(chapter.writer_brief_json or {})
-            display = dict(brief.get("fe_display") or {})
-            active = chapter.chapter_id == project.current_chapter_id or bool(display.get("active"))
-            state = str(display.get("state") or ("writing" if active else "draft"))
-            title = str(brief.get("title") or "").strip() or _fallback_title(chapter)
+        for index, chapter in enumerate(self._catalog.chapter_rows(project.project_id)):
+            payload = self._catalog.chapter_payload(project, chapter, index)
+            words = payload["words"]
+            pct = (
+                min(100, round((words["cur"] or 0) * 100 / words["target"]))
+                if words.get("target")
+                else (100 if payload["state"] == "approved" else 0)
+            )
             views.append(
                 {
-                    "chapter_id": chapter.chapter_id,
-                    "no": f"{index + 1:02d}",
-                    "title": title,
-                    "state": state,
-                    "pct": int(display.get("pct") or 0),
-                    "active": active,
+                    "chapter_id": payload["chapter_id"],
+                    "no": payload["no"],
+                    "title": payload["title"],
+                    "state": payload["state"],
+                    "pct": pct,
+                    "active": bool(payload["current"] or payload["state"] == "writing"),
+                    "scenes": payload["scenes"],
                 }
             )
         return views
@@ -191,49 +199,24 @@ class ProjectOverviewService:
     def _resume_and_brief(
         self, current: dict[str, Any] | None
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """与目录 API 同源：场景载荷（slug/title/kind/state/brief）直接取自 CatalogService。"""
         if current is None:
             return None, None
-        scenes = list(
-            self.session.execute(
-                select(SceneCard)
-                .where(SceneCard.chapter_id == current["chapter_id"], SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.scene_seq.asc())
-            ).scalars().all()
-        )
+        scenes = list(current.get("scenes") or [])
         if not scenes:
             return None, None
-        scene = next(
-            (s for s in scenes if (dict(s.writer_brief_json or {}).get("fe_display") or {}).get("writing")),
-            scenes[-1],
-        )
-        brief_json = dict(scene.writer_brief_json or {})
-        draft = self._current_scene_drafts([scene.scene_id]).get(scene.scene_id)
+        scene = next((s for s in scenes if s["state"] == "writing"), scenes[-1])
+        draft = self._current_scene_drafts([scene["scene_id"]]).get(scene["scene_id"])
         lines = _content_lines(draft.content if draft else None)
         resume = {
             "chapter_no": current["no"],
-            "scene_slug": f"ch{current['no']}s{scene.scene_seq}",
-            "scene_title": str(brief_json.get("title") or scene.scene_goal or "").strip(),
+            "scene_slug": scene["slug"],
+            "scene_title": scene["title"],
             "last_lines": lines[-2:],
-            "scene_words": count_words(draft.content) if draft else 0,
+            "scene_words": count_words(draft.content) if draft else int(scene.get("words") or 0),
             "paused_at": draft.updated_at if draft else None,
         }
-        kind_raw = str(brief_json.get("primary_form") or scene.scene_type or "proactive").lower()
-        kind = "reactive" if kind_raw.startswith("react") or kind_raw == "反应" else "proactive"
-        if kind == "proactive":
-            brief = {
-                "kind": kind,
-                "goal": str(brief_json.get("goal") or ""),
-                "conflict": str(brief_json.get("conflict") or ""),
-                "setback": str(brief_json.get("setback") or ""),
-            }
-        else:
-            brief = {
-                "kind": kind,
-                "reaction": str(brief_json.get("reaction") or ""),
-                "dilemma": str(brief_json.get("dilemma") or ""),
-                "decision": str(brief_json.get("decision") or ""),
-            }
-        return resume, brief
+        return resume, dict(scene["brief"])
 
     def _latest_by_step(self, project_id: str) -> dict[str, SnowflakeStepRun]:
         rows = self.session.execute(

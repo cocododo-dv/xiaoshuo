@@ -381,6 +381,12 @@ class ChapterGoal(Base):
     planned_scene_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mid_aggregate_enabled: Mapped[int] = mapped_column(Integer, default=0)
     chapter_goal: Mapped[str] = mapped_column(Text)
+    # FE-ALIGN P3 目录统一：叙事卡（act/tension/pov/entry/exit/promise/drama/threads/title）、
+    # 章状态、目标字数、显示顺序（混合 id 格式下不能依赖 chapter_id 字典序）。
+    narrative_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    state: Mapped[str] = mapped_column(String, default="planned")
+    words_target: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    display_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     main_plot_push: Mapped[str | None] = mapped_column(Text, nullable=True)
     emotional_target: Mapped[str | None] = mapped_column(Text, nullable=True)
     ending_effect: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -416,6 +422,10 @@ class SceneCard(Base):
     target_length_band: Mapped[str | None] = mapped_column(String, nullable=True)
     scene_type: Mapped[str | None] = mapped_column(String, nullable=True)
     is_chapter_last: Mapped[int] = mapped_column(Integer, default=0)
+    # FE-ALIGN P3：场景写作状态（todo/writing/done）与当前正文字数
+    # （正文保存时更新；排序复用既有 scene_seq，不另建 display_order）。
+    state: Mapped[str] = mapped_column(String, default="todo")
+    words_current: Mapped[int] = mapped_column(Integer, default=0)
     trashed_flag: Mapped[int] = mapped_column(Integer, default=0)
     trashed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     trashed_by: Mapped[str | None] = mapped_column(String, nullable=True)

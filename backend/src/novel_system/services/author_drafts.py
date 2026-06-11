@@ -245,15 +245,27 @@ class AuthorDraftService:
         content = payload.get("content")
         if not isinstance(content, str):
             raise DomainError("AUTHOR_DRAFT_INVALID", "content must be a string", status_code=400)
-        words_delta = count_words(content) - count_words(draft.content)
+        new_words = count_words(content)
+        words_delta = new_words - count_words(draft.content)
         draft.content = content
         draft.revision_no += 1
         draft.updated_by = actor_ref or draft.updated_by
         # FE-ALIGN P2 字数埋点（D2）：保存主路径上报 words_delta，统计按 project 聚合。
-        if words_delta:
-            project_id = self._resolve_project_id(draft.object_type, draft.object_id)
-            if project_id:
-                WritingStatsService(self.session).record_words_delta(project_id, words_delta)
+        project_id = self._resolve_project_id(draft.object_type, draft.object_id)
+        if words_delta and project_id:
+            WritingStatsService(self.session).record_words_delta(project_id, words_delta)
+        # FE-ALIGN P3 目录 rollup：场景正文字数落 SceneCard.words_current，
+        # 响应带最新 rollup（前端不再自算 delta）。
+        words_rollup: dict[str, Any] | None = None
+        if draft.object_type == "scene":
+            scene = self.session.get(SceneCard, draft.object_id)
+            if scene is not None:
+                scene.words_current = new_words
+                from novel_system.services.catalog import CatalogService
+
+                words_rollup = CatalogService(self.session).words_rollup(scene)
+                if project_id:
+                    words_rollup["words_total"] = WritingStatsService(self.session).stats_payload(project_id)["words_total"]
         self._add_event(
             draft,
             event_type="edited",
@@ -265,7 +277,10 @@ class AuthorDraftService:
             payload={"base_revision_no": base_revision_no, "revision_no": draft.revision_no},
         )
         self.session.flush()
-        return self._draft_response(draft)
+        response = self._draft_response(draft)
+        if words_rollup is not None:
+            response["words_rollup"] = words_rollup
+        return response
 
     def derive_from_generation(self, draft_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)

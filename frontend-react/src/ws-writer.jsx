@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { WrDocs } from "./wr-doc-store.jsx";
 
 /* global React, I */
 /* ==========================================================
@@ -308,6 +309,23 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const [mentionIdx, setMentionIdx] = useWS(0);
   const mentionCtx = useWR(null);
   const [chapters, setChapters] = useWS(wrFromCatalog);
+
+  /* FE-ALIGN P3：目录改为后端异步装载 —— 冷启动直达写作器（刷新停在 #writer）时
+     activeScene 可能初始化为 null；目录就绪后自动选中在写场景并刷新章节树 */
+  useWE(() => {
+    if (!window.WsCatalog) return;
+    const sync = () => {
+      setChapters(wrFromCatalog());
+      setActiveScene(prev => {
+        if (prev) return prev;
+        const w = window.WsCatalog.writingScene();
+        return w && w.scene ? w.scene.sid : prev;
+      });
+    };
+    const un = window.WsCatalog.subscribe(sync);
+    if (!activeScene) sync();
+    return un;
+  }, []); // eslint-disable-line
   const deskWideInit = () => tw.wrLayout !== "immersive" && typeof window !== "undefined" && !window.matchMedia("(max-width: 999px)").matches;
   const [leftOpen, setLeftOpen] = useWS(deskWideInit);
   const [rightOpen, setRightOpen] = useWS(deskWideInit);
@@ -373,7 +391,9 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const persistDoc = useWC(() => {
     const el = editorRef.current;
     if (!el || !activeScene) return;
-    try { localStorage.setItem(wrDocKey(activeScene), wrCleanHTML(el)); } catch (e) {}
+    /* FE-ALIGN P3：正文落 author-drafts 主路径（WrDocs 缓存写通 + PATCH），
+       字数 rollup 由保存响应回流目录/统计 */
+    try { WrDocs.save(activeScene, wrCleanHTML(el)); } catch (e) {}
     const count = wrCountOf(el);
     if (window.WsCatalog) { try { window.WsCatalog.recordSceneWords(activeScene, count, baselineRef.current); } catch (e) {} }
     baselineRef.current = count;
@@ -440,8 +460,9 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     const el = editorRef.current;
     if (!el) return;
     if (!activeScene) { el.innerHTML = ""; setWordCount(0); return; }
+    /* FE-ALIGN P3：同步读 WrDocs 缓存（兼容旧 wr-doc 本地键），后台水合服务端草稿 */
     let stored = null;
-    try { stored = localStorage.getItem(wrDocKey(activeScene)); } catch (e) {}
+    try { stored = WrDocs.load(activeScene); } catch (e) {}
     el.innerHTML = stored != null ? stored : wrSeedHTML(activeScene);
     wrHighlightEntities(el);
     baselineRef.current = wrCountOf(el);
@@ -451,12 +472,26 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       const id = pendingEntity.current; pendingEntity.current = null;
       requestAnimationFrame(() => locateEntity(id));
     }
+    /* 服务端草稿水合完成且本地无未保存改动 → 回填编辑器（跨浏览器以服务端为准） */
+    const onDocLoaded = (e) => {
+      if (!e || e.detail !== activeScene || dirtyRef.current) return;
+      let fresh = null;
+      try { fresh = WrDocs.load(activeScene); } catch (e2) {}
+      if (fresh != null && el.innerHTML !== fresh) {
+        el.innerHTML = fresh;
+        wrHighlightEntities(el);
+        baselineRef.current = wrCountOf(el);
+        recount();
+      }
+    };
+    window.addEventListener("ws:wr-doc-loaded", onDocLoaded);
     /* 离开这个场景（或卸载）时，把未落盘的改动用「当时的」场景 id 冲掉 */
     const sid = activeScene;
     return () => {
+      window.removeEventListener("ws:wr-doc-loaded", onDocLoaded);
       clearTimeout(saveTimer.current);
       if (dirtyRef.current && el && sid) {
-        try { localStorage.setItem(wrDocKey(sid), wrCleanHTML(el)); } catch (e) {}
+        try { WrDocs.save(sid, wrCleanHTML(el)); } catch (e) {}
         try { window.WsCatalog && window.WsCatalog.recordSceneWords(sid, wrCountOf(el), baselineRef.current); } catch (e) {}
         dirtyRef.current = false;
       }
