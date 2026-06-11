@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
+import { apiGet, apiPost } from "./lib/client.js";
 
 /* global React, ReactDOM, I */
 /* ==========================================================
@@ -21,104 +22,24 @@ const RV_KINDS = {
 };
 
 /* priority: 1 = 优先处理 · 2/3 = 其余 */
-const RV_SEED = [
-  {
-    id: "r1", kind: "decision", priority: 1,
-    title: "参考画像「冷峻短句」是否应用到本项目",
-    where: "风格参考 · 三天前学完", source: "风格参考", time: "3 天前",
-    detail: "要点：句子尽量短于 14 字、少形容词、以动词收尾、删去解释性从句。应用后将作为写作房间的默认润色基线，可随时关闭。",
-    preview: { before: "她久久地凝望着窗外那片渐渐暗下来的天色。", after: "她望着窗外。天色暗了。" },
-    actions: [
-      { label: "应用到本项目", intent: "primary", op: "resolve" },
-      { label: "先去改造", intent: "ghost", op: "nav", to: "styleref" },
-      { label: "丢弃", intent: "quiet", op: "resolve" },
-    ],
-  },
-  {
-    id: "r3", kind: "qc", priority: 2,
-    title: "第 7 章节奏过快，建议补一段反应场景",
-    where: "第 7 章 · SC 03 之后", source: "文学质检", time: "昨天",
-    detail: "连续三个主动场景之间没有喘息，读者情绪曲线缺少回落。建议在 SC 03 后插入 200–400 字的反应节拍，让林岑消化「钥匙」的发现。采纳会直接在目录第 7 章 SC 03 后插入一个待写的反应场。",
-    actions: [
-      { label: "去章节编排看结构", intent: "primary", op: "nav", to: "author" },
-      { label: "采纳 · 插入反应场", intent: "ghost", op: "resolve", effect: { type: "insertScene", ch: "ch07", at: 3, scene: { title: "回廊喘息 · 反应拍", kind: "反应", state: "todo", goal: "让林岑消化「钥匙」的发现", obstacle: "夜班时间所剩无几", turn: "（待规划）" } } },
-      { label: "忽略", intent: "quiet", op: "resolve" },
-    ],
-  },
-  {
-    id: "r4", kind: "idea", priority: 2,
-    title: "角色全档案 · 还差「师父周岚」",
-    where: "雪花构思 · 第 08 步", source: "构思", time: "昨天",
-    detail: "周岚的全档案仍有四项空缺，缺它会影响第 6–8 章的动机一致性。",
-    checklist: ["成长创伤", "对外面具", "内在真我", "与林岑的羁绊曲线"],
-    actions: [
-      { label: "去补全", intent: "primary", op: "nav", to: "snowflake", step: "profile" },
-      { label: "稍后再说", intent: "quiet", op: "snooze" },
-    ],
-  },
-  {
-    id: "r5", kind: "decision", priority: 2,
-    title: "第 6 章标题在两个候选间未定",
-    where: "第 6 章 · 标题", source: "章节编排", time: "2 天前",
-    detail: "「周岚的钥匙」直白点题、呼应线索；「她留下的钥匙」更含蓄、留悬念。选定后会直接改写目录里第 6 章的标题。",
-    options: ["周岚的钥匙", "她留下的钥匙"],
-    actions: [
-      { label: "用「周岚的钥匙」", intent: "primary", op: "resolve", effect: { type: "renameChapter", ch: "ch06", title: "周岚的钥匙" } },
-      { label: "用「她留下的钥匙」", intent: "ghost", op: "resolve", effect: { type: "renameChapter", ch: "ch06", title: "她留下的钥匙" } },
-      { label: "再想想", intent: "quiet", op: "snooze" },
-    ],
-  },
-  {
-    id: "r6", kind: "risk", priority: 2,
-    title: "时间线：第 3 章与第 5 章季节描写不一致",
-    where: "第 3 章 → 第 5 章", source: "时间线", time: "3 天前",
-    detail: "第 3 章写「初秋的潮气」，第 5 章却出现「初夏蝉鸣」，但两章间隔仅约十天。需统一季节锚点。",
-    actions: [
-      { label: "打开时间线", intent: "primary", op: "nav", to: "library" },
-      { label: "标记为已核", intent: "quiet", op: "resolve" },
-    ],
-  },
-  {
-    id: "r7", kind: "note", priority: 3,
-    title: "批注 · 「潮声」意象是否前后呼应",
-    where: "第 8 章 · 第 12 段", source: "写作房间", time: "今天",
-    detail: "你给这段留过一条批注：开篇用「潮声」作记忆触发，结尾是否应让它再次响起，形成回环？",
-    actions: [
-      { label: "回到该段", intent: "primary", op: "nav", to: "writer", scene: "ch08s3" },
-      { label: "标记已读", intent: "quiet", op: "resolve" },
-    ],
-  },
-  {
-    id: "r8", kind: "qc", priority: 3,
-    title: "全书「潮汐」一词出现 47 次，可能过载",
-    where: "全书 · 用词", source: "文学质检", time: "今天",
-    detail: "核心意象高频复现有记忆点，但密度偏高易显刻意。可在非关键段落用「水位」「退潮」等近义替换 8–10 处。",
-    actions: [
-      { label: "在深改姿态里看", intent: "primary", op: "nav", to: "writer", posture: "deep" },
-      { label: "知道了", intent: "quiet", op: "resolve" },
-    ],
-  },
-];
-
 const RV_BAND = { 1: { label: "优先处理", hint: "需要你尽快拍板" }, 2: { label: "其余待办", hint: "建议与提示，得空再看" } };
 
 /* ==========================================================
-   持久化 store —— 按作品隔离，处理/稍后状态跨刷新保留；
-   徽标订阅式更新（ws:review-changed）。种子仅属于「潮汐档案」，
-   其它作品从空收件箱开始。
+   store —— FE-ALIGN Phase 5：接真后端统一收件箱。
+   GET /api/v1/review-items?state=open|snoozed&project_id=…
+   = 持久卡 ∪ 实时派生卡（派生由后端从工作台真相现算：
+   不可划掉 / 修好自动消失 / 指纹变化复浮现）。
+   resolve 的 effect 在后端同一事务执行（D4）；视图通过
+   window.rvResolveAction 钩子告知本次点击的动作，store 把
+   action_index 带给 resolve 端点。
+   「今日已处理 N 件」是 UI 偏好级计数，留 localStorage。
    ========================================================== */
-const RV_LS = "ws_review_v1";
-const rvKey = () => (window.wsKey ? window.wsKey(RV_LS) : RV_LS);
-const rvSeed = () => { try { return window.WsWorks && window.WsWorks.activeId() !== "tide" ? [] : RV_SEED; } catch (e) { return RV_SEED; } };
-function rvLoad() { try { return JSON.parse(localStorage.getItem(rvKey())) || {}; } catch (e) { return {}; } }
-function rvSave(patch) {
-  const st = { ...rvLoad(), ...patch };
-  try { localStorage.setItem(rvKey(), JSON.stringify(st)); } catch (e) {}
-  try { window.dispatchEvent(new CustomEvent("ws:review-changed")); } catch (e) {}
-}
-/* —— 投递 API：任何模块都可以往当前作品的收件箱里塞一条待办 ——
-   rvPush({ kind, priority, title, where, source, detail, actions?, effectPayload? })
-   持久化在 st.custom（按作品隔离），与种子条目走同一条处理/稍后/撤销流。 */
+const RV_DONE_LS = "ws_review_done_v1";
+const RV_MIGRATED_LS = "ws_review_migrated_v1";
+const RV_LEGACY_LS = "ws_review_v1";
+
+const rvActiveId = () => { try { return window.WsWorks ? window.WsWorks.activeId() : null; } catch (e) { return null; } };
+
 function rvAgo(t) {
   const m = Math.floor((Date.now() - t) / 60000);
   if (m < 1) return "刚刚";
@@ -127,178 +48,204 @@ function rvAgo(t) {
   if (h < 24) return h + " 小时前";
   return Math.floor(h / 24) + " 天前";
 }
-function rvCustomList() {
-  const st = rvLoad();
-  return (st.custom || []).map(it => ({ ...it, time: rvAgo(it.at || Date.now()) }));
-}
-function rvPush(item) {
-  const st = rvLoad();
-  const it = {
-    id: "c" + Date.now().toString(36) + Math.floor(Math.random() * 1e3).toString(36),
-    at: Date.now(),
-    kind: "note", priority: 2,
-    actions: [{ label: "知道了", intent: "quiet", op: "resolve" }],
-    ...item,
+
+/* 后端卡片 → 视图条目（形状=契约附录卡片形状） */
+function rvAdapt(card) {
+  const occurred = card.occurred_at ? Date.parse(card.occurred_at) : NaN;
+  return {
+    id: card.id,
+    kind: card.kind || "note",
+    priority: card.priority || 2,
+    title: card.title,
+    where: card.where || "",
+    source: card.source || "",
+    time: card.live ? "实时" : (Number.isNaN(occurred) ? "" : rvAgo(occurred)),
+    detail: card.detail || "",
+    preview: card.preview || undefined,
+    checklist: card.checklist || undefined,
+    options: card.options || undefined,
+    live: !!card.live,
+    actions: (card.actions || []).map(a => ({
+      label: a.label,
+      intent: a.intent || "ghost",
+      op: a.op === "nav" ? "nav" : a.op === "snooze" ? "snooze" : a.op === "bridge" ? "bridge" : "resolve",
+      to: a.nav_to || a.to,
+      step: a.nav_step || a.step,
+      scene: a.nav_scene || a.scene,
+      posture: a.nav_posture || a.posture,
+      canonId: a.canon_id || a.canonId,
+      /* 后端 effect 不在前端执行（D4）；保留占位对象让视图的
+         needsChoice 守卫（带效果的卡不允许批量划掉）继续生效 */
+      effect: a.effect ? { type: "__backend__" } : undefined,
+    })),
   };
-  rvSave({ custom: [it, ...(st.custom || [])].slice(0, 50) });
-  return it.id;
 }
-function rvAllItems() { return [...rvDerived(), ...rvCustomList(), ...rvSeed()]; }
-/* —— 实时派生待办：直接从工作台真相（雪花 / 起草台 / 章节目录）算出来。
-   修好即自动消失；不能被「无动作划掉」（live: true），只能去源头处理或稍后。
-   id 带内容指纹：状况变化后会作为新条目重新浮现（即使曾稍后）。 —— */
-function rvDerived() {
-  const out = [];
-  const stepName = (k) => { const s = (window.S2_STEPS || []).find(x => x.key === k); return s ? `${s.num} ${s.name}` : k; };
-  /* 1）雪花 · 上游已改需复核 */
-  try {
-    const wb = window.s2ReadWorkbench ? window.s2ReadWorkbench() : null;
-    if (wb && wb.per) Object.keys(wb.per).forEach(k => {
-      const v = wb.per[k];
-      if (!v || !v.stale) return;
-      out.push({
-        id: `lv-stale-${k}`, live: true, kind: "idea", priority: 1,
-        title: `雪花「${stepName(k)}」上游已改 · 需复核`,
-        where: `构思 · ${stepName(k)}`, source: "雪花构思", time: "实时",
-        detail: `上游 ${(v.staleAncestors || []).map(stepName).join("、")} 在本步确认后发生改动。回去核对一致性后点「已复核」，这条会自动消失。`,
-        actions: [{ label: "去复核", intent: "primary", op: "nav", to: "snowflake", step: k }, { label: "稍后再说", intent: "quiet", op: "snooze" }],
-      });
-    });
-  } catch (e) {}
-  /* 2）雪花 · 09 织线诊断 + 10 逐场覆盖率 */
-  try {
-    const st = window.s2ExportState ? window.s2ExportState() : null;
-    const sc = st && st.scaffolds;
-    const list = (sc && sc.scenes && sc.scenes.list) || [];
-    if (list.length) {
-      const noCru = list.filter(s => !(s.crucible || "").trim()).length;
-      const pacing = window.s2PacingRuns ? window.s2PacingRuns(list) : { tight: [] };
-      const tightMax = pacing.tight.length ? Math.max(...pacing.tight.map(r => r.len)) : 0;
-      const probs = [];
-      if (noCru) probs.push(`${noCru} 场缺坎埚（冲突）`);
-      if (tightMax >= 3) probs.push(`连续 ${tightMax} 场主动、节奏紧绷`);
-      if (probs.length) out.push({
-        id: `lv-scenes-${noCru}-${tightMax}`, live: true, kind: "qc", priority: 2,
-        title: `09 场景列表有 ${probs.length} 处结构问题`,
-        where: "构思 · 09 场景列表", source: "织线诊断", time: "实时",
-        detail: probs.join("；") + "。这些诊断与 09 画布上的同源，修好即自动消失。",
-        actions: [{ label: "去 09 修", intent: "primary", op: "nav", to: "snowflake", step: "scenes" }, { label: "稍后再说", intent: "quiet", op: "snooze" }],
-      });
-      const plans = (sc.planning && sc.planning.plans) || {};
-      const F = ["goal", "conflict", "setback", "reaction", "dilemma", "decision"];
-      const planned = list.filter(s => { const p = plans[s.id]; return p && F.some(f => (p[f] || "").trim()); }).length;
-      if (planned < list.length) out.push({
-        id: `lv-plan-${planned}-${list.length}`, live: true, kind: "idea", priority: 2,
-        title: `10 场景规划还差 ${list.length - planned} 场`,
-        where: "构思 · 10 场景规划", source: "雪花构思", time: "实时",
-        detail: `09 共 ${list.length} 场，已逐场规划 ${planned} 场。每场五分钟；规划全了，物化出的章节卡才带完整 GCS / RDD。`,
-        actions: [{ label: "去 10 规划", intent: "primary", op: "nav", to: "snowflake", step: "planning" }, { label: "稍后再说", intent: "quiet", op: "snooze" }],
-      });
+
+/* 视图/调用方条目 → 后端卡片载荷（rvPush 用） */
+function rvToPayload(item) {
+  return {
+    project_id: rvActiveId(),
+    kind: item.kind || "note",
+    priority: item.priority || 2,
+    title: item.title,
+    source: item.source || "",
+    where: item.where || "",
+    detail: item.detail || "",
+    preview: item.preview,
+    checklist: item.checklist,
+    options: item.options,
+    dedupe_key: item.dedupeKey || item.dedupe_key,
+    actions: (item.actions || [{ label: "知道了", intent: "quiet", op: "resolve" }]).map(a => ({
+      label: a.label,
+      intent: a.intent,
+      op: a.op,
+      nav_to: a.to,
+      nav_step: a.step,
+      nav_scene: a.scene,
+      nav_posture: a.posture,
+      effect: a.effect && a.effect.type !== "__backend__" ? a.effect : undefined,
+    })),
+  };
+}
+
+let rvCache = { open: [], snoozed: [] };
+const rvResolvedSet = new Set();          // 本会话内已处理 id（rvIsResolved 用）
+const rvPendingAction = {};               // id → 本次点击的 action_index（resolve 携带）
+
+function rvEmit() { try { window.dispatchEvent(new CustomEvent("ws:review-changed")); } catch (e) {} }
+
+let rvFetching = null;
+function rvFetch() {
+  const pid = rvActiveId();
+  if (!pid || pid === "__loading__") return Promise.resolve();
+  if (rvFetching) return rvFetching;
+  rvFetching = (async () => {
+    try {
+      await rvMigrateLegacy(pid);
+      const [open, snoozed] = await Promise.all([
+        apiGet(`/api/v1/review-items?state=open&project_id=${encodeURIComponent(pid)}`),
+        apiGet(`/api/v1/review-items?state=snoozed&project_id=${encodeURIComponent(pid)}`),
+      ]);
+      rvCache = {
+        open: ((open && open.items) || []).map(rvAdapt),
+        snoozed: ((snoozed && snoozed.items) || []).map(rvAdapt),
+      };
+      rvEmit();
+    } catch (e) {
+      console.warn("[WsReview] 拉取收件箱失败:", e);
+    } finally {
+      rvFetching = null;
     }
-  } catch (e) {}
-  /* 3）起草台 · AI 稿待裁决 */
+  })();
+  return rvFetching;
+}
+
+let rvFetchTimer = null;
+function rvFetchDebounced() {
+  clearTimeout(rvFetchTimer);
+  rvFetchTimer = setTimeout(() => { rvFetch(); }, 600);
+}
+
+/* 一次性迁移：旧 localStorage 的 custom 项上行（resolved/snoozed 状态迁不动则丢弃——卡片可再生） */
+async function rvMigrateLegacy(pid) {
   try {
-    (window.scnQueueLoad ? window.scnQueueLoad() : []).forEach(sid => {
-      const r = window.scnRunLoad ? window.scnRunLoad(sid) : null;
-      if (!r || r.state !== "ready") return;
-      const hit = window.WsCatalog ? window.WsCatalog.sceneById(sid) : null;
-      const title = hit ? hit.scene.title : sid;
-      out.push({
-        id: `lv-run-${sid}-${r.attempt || 1}`, live: true, kind: "decision", priority: 1,
-        title: `AI 稿待裁决：「${title}」`,
-        where: hit ? `第 ${hit.chapter.n} 章 · ${title}` : title, source: "AI 起草台", time: "实时",
-        detail: `第 ${r.attempt || 1} 次尝试${r.verdict ? ` · ${r.verdict.words} 字 · 质检${r.verdict.qc}` : " · 已过质检"}。采纳归档 / 退回重写 / 送深改，三选一。`,
-        actions: [{ label: "去裁决", intent: "primary", op: "nav", to: "scene" }, { label: "稍后再说", intent: "quiet", op: "snooze" }],
-      });
-    });
+    const flagKey = RV_MIGRATED_LS + "::" + pid;
+    if (localStorage.getItem(flagKey)) return;
+    const raw = localStorage.getItem((window.wsKey ? window.wsKey(RV_LEGACY_LS) : RV_LEGACY_LS));
+    const st = raw ? JSON.parse(raw) : null;
+    const custom = (st && st.custom) || [];
+    for (const it of custom) {
+      if (!it || !it.title) continue;
+      try { await apiPost("/api/v1/review-items", rvToPayload(it)); } catch (e) {}
+    }
+    localStorage.setItem(flagKey, new Date().toISOString());
   } catch (e) {}
-  /* 4）长篇控制塔 · 设定冲突待裁决（与塔同一事实：任一侧裁决，另一侧同步消失） */
-  try {
-    (window.lf7PendingCanon ? window.lf7PendingCanon() : []).forEach(c => {
-      const canRule = c.value && c.value !== "（待统一）";
-      out.push({
-        id: `lv-canon-${c.id}`, live: true, kind: c.drift ? "risk" : "decision", priority: c.drift ? 1 : 2,
-        title: `设定冲突待裁决：${c.subject}`,
-        where: `长篇控制塔 · 第 ${c.conflictCh} 章`, source: "长篇控制塔", time: "实时",
-        detail: `${c.conflictText}。` + (canRule
-          ? `控制塔建议以第 ${c.source} 章为准（${c.subject} = ${c.value}）；裁决后会锁定为设定锚点，装进下一章交接契约的强约束，塔里的同一条也会同步消失。`
-          : `这条还没有可直接采纳的统一值，去控制塔裁决。`),
-        actions: [
-          ...(canRule ? [{ label: `统一为「${c.value}」并锁定`, intent: "primary", op: "bridge", canonId: c.id }] : []),
-          { label: canRule ? "去控制塔细看" : "去控制塔裁决", intent: canRule ? "ghost" : "primary", op: "nav", to: "longform" },
-          { label: "稍后再说", intent: "quiet", op: "snooze" },
-        ],
-      });
-    });
-  } catch (e) {}
-  /* 5）目录 · 审阅中章节 / 全场已成稿可送审 */
-  try {
-    (window.WsCatalog ? window.WsCatalog.get() : []).forEach(c => {
-      if (c.state === "review") {
-        out.push({
-          id: `lv-rev-${c.id}`, live: true, kind: "decision", priority: 1,
-          title: `第 ${c.n} 章《${c.title}》待你批准`,
-          where: `成稿中心 · 第 ${c.n} 章`, source: "成稿中心", time: "实时",
-          detail: `本章 ${(c.scenes || []).length} 场、${((c.words && c.words.cur) || 0).toLocaleString()} 字，正在审阅中。批准为终稿，或退回小修。`,
-          actions: [{ label: "去审阅", intent: "primary", op: "nav", to: "manuscripts" }, { label: "稍后再说", intent: "quiet", op: "snooze" }],
-        });
-      } else if (c.state === "writing") {
-        const sc = c.scenes || [];
-        if (sc.length && sc.every(s => s.state === "done"))
-        {
-          /* 塔台化：由控制塔下发的章（第 9 章）全场成稿后，先过章级审计再谈送审 */
-          const tower9 = (() => { try { return parseInt(c.n, 10) === 9 && window.Lf7Bridge && !window.Lf7Bridge.isArchived(9) && !!window.Lf7Bridge.state().handoff9; } catch (e) { return false; } })();
-          if (tower9) out.push({
-            id: `lv-aud-${c.id}`, live: true, kind: "decision", priority: 1,
-            title: `第 ${c.n} 章全场成稿 · 待控制塔章级审计`,
-            where: `长篇控制塔 · 第 ${c.n} 章`, source: "长篇控制塔", time: "实时",
-            detail: "起草台的逐场质检只管场内质量；跨场连续性（设定漂移 / 承诺回收 / 公平性）由控制塔章级审计把关。审计通过并归档后，本章才进成稿中心送审。",
-            actions: [{ label: "去控制塔审计", intent: "primary", op: "nav", to: "longform" }, { label: "稍后再说", intent: "quiet", op: "snooze" }],
-          });
-          else out.push({
-          id: `lv-sub-${c.id}`, live: true, kind: "qc", priority: 2,
-          title: `第 ${c.n} 章全部场景已成稿 · 可送审`,
-          where: `成稿中心 · 第 ${c.n} 章`, source: "成稿中心", time: "实时",
-          detail: `《${c.title}》的 ${sc.length} 场全部完成。在成稿中心送入审阅，进入批准流程。`,
-          actions: [{ label: "去送审", intent: "primary", op: "nav", to: "manuscripts" }, { label: "稍后再说", intent: "quiet", op: "snooze" }],
-          });
-        }
-      }
-    });
-  } catch (e) {}
-  return out;
+}
+
+function rvCustomList() { return rvCache.open.filter(i => !i.live); }
+
+function rvPush(item) {
+  const payload = rvToPayload(item || {});
+  apiPost("/api/v1/review-items", payload).then(() => rvFetch()).catch((e) => {
+    console.warn("[WsReview] 投递待办失败:", e);
+  });
+  return "pending"; // 旧签名返回 id；真实 id 由刷新后的列表供给
 }
 
 function rvOpenItems() {
-  const st = rvLoad();
-  const gone = new Set([...(st.resolved || []), ...(st.snoozed || [])]);
-  // 稳定排序：优先处理带在前，同带内保持投递/种子顺序
-  return rvAllItems().filter(i => !gone.has(i.id))
-    .sort((a, b) => (a.priority === 1 ? 0 : 1) - (b.priority === 1 ? 0 : 1));
+  return rvCache.open.slice().sort((a, b) => (a.priority === 1 ? 0 : 1) - (b.priority === 1 ? 0 : 1));
 }
-function rvSnoozedList() {
-  const st = rvLoad();
-  const ids = new Set(st.snoozed || []);
-  return rvAllItems().filter(i => ids.has(i.id));
-}
+function rvSnoozedList() { return rvCache.snoozed; }
+
 const rvToday = () => new Date().toISOString().slice(0, 10);
-function rvDoneToday() { const st = rvLoad(); return st.doneD === rvToday() ? (st.doneN || 0) : 0; }
+function rvDoneState() {
+  try { return JSON.parse(localStorage.getItem(RV_DONE_LS)) || {}; } catch (e) { return {}; }
+}
+function rvDoneToday() { const st = rvDoneState(); return st.d === rvToday() ? (st.n || 0) : 0; }
+function rvBumpDone(delta) {
+  try { localStorage.setItem(RV_DONE_LS, JSON.stringify({ d: rvToday(), n: Math.max(0, rvDoneToday() + delta) })); } catch (e) {}
+}
+
+/* 视图在执行动作时经此钩子告知「点了哪个动作」（act() 的单行接缝） */
+function rvResolveAction(item, action) {
+  if (!item || !action) return;
+  const index = (item.actions || []).indexOf(action);
+  if (index >= 0) rvPendingAction[item.id] = index;
+}
+
 function rvMarkResolved(ids) {
-  const st = rvLoad();
-  rvSave({
-    resolved: [...new Set([...(st.resolved || []), ...ids])],
-    snoozed: (st.snoozed || []).filter(x => !ids.includes(x)),
-    doneD: rvToday(), doneN: rvDoneToday() + ids.length,
-  });
+  const pid = rvActiveId();
+  (ids || []).forEach(id => rvResolvedSet.add(id));
+  rvCache = { ...rvCache, open: rvCache.open.filter(i => !ids.includes(i.id)) };
+  rvBumpDone((ids || []).length);
+  rvEmit();
+  (async () => {
+    for (const id of ids || []) {
+      const body = { project_id: pid };
+      if (rvPendingAction[id] != null) { body.action_index = rvPendingAction[id]; delete rvPendingAction[id]; }
+      try { await apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/resolve`, body); }
+      catch (e) {
+        try { window.alert((e && e.message) || "处理失败。"); } catch (e2) {}
+      }
+    }
+    rvFetch();
+  })();
 }
+
 function rvUnresolve(ids) {
-  const st = rvLoad();
-  rvSave({ resolved: (st.resolved || []).filter(x => !ids.includes(x)), doneD: rvToday(), doneN: Math.max(0, rvDoneToday() - ids.length) });
+  (ids || []).forEach(id => rvResolvedSet.delete(id));
+  rvBumpDone(-(ids || []).length);
+  (async () => {
+    for (const id of ids || []) {
+      try { await apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/unresolve`, {}); } catch (e) {}
+    }
+    rvFetch();
+  })();
 }
-function rvMarkSnoozed(id) { const st = rvLoad(); rvSave({ snoozed: [...new Set([...(st.snoozed || []), id])] }); }
-function rvUnsnooze(id) { const st = rvLoad(); rvSave({ snoozed: (st.snoozed || []).filter(x => x !== id) }); }
-function rvIsResolved(id) { const st = rvLoad(); return (st.resolved || []).indexOf(id) >= 0; }
-function rvBadge() { const n = rvOpenItems().filter(i => i.priority === 1).length; return n > 0 ? String(n) : null; }
+
+function rvMarkSnoozed(id) {
+  const pid = rvActiveId();
+  const it = rvCache.open.find(x => x.id === id);
+  rvCache = {
+    open: rvCache.open.filter(x => x.id !== id),
+    snoozed: it ? [it, ...rvCache.snoozed] : rvCache.snoozed,
+  };
+  rvEmit();
+  apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/snooze`, { project_id: pid })
+    .then(() => rvFetch())
+    .catch(() => rvFetch());
+}
+
+function rvUnsnooze(id) {
+  const pid = rvActiveId();
+  apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/unsnooze`, { project_id: pid })
+    .then(() => rvFetch())
+    .catch(() => rvFetch());
+}
+
+function rvIsResolved(id) { return rvResolvedSet.has(id); }
+function rvBadge() { const n = rvCache.open.filter(i => i.priority === 1).length; return n > 0 ? String(n) : null; }
+
 function useReviewBadge() {
   const [, force] = React.useState(0);
   React.useEffect(() => {
@@ -318,6 +265,14 @@ function useReviewBadge() {
   }, []);
   return rvBadge();
 }
+
+/* 启动装载 + 真相变动时刷新（派生卡在后端现算，目录/作品切换都可能改变它们） */
+try { rvFetch(); } catch (e) {}
+window.addEventListener("ws:work-changed", () => { try { rvFetchDebounced(); } catch (e) {} });
+window.addEventListener("ws:trash-changed", () => { try { rvFetchDebounced(); } catch (e) {} });
+try { if (window.WsCatalog) window.WsCatalog.subscribe(() => rvFetchDebounced()); } catch (e) {}
+Object.assign(window, { rvResolveAction });
+
 
 function WsReview({ go }) {
   const [items, setItems] = React.useState(rvOpenItems);
@@ -468,6 +423,8 @@ function WsReview({ go }) {
     else {
       const inverse = runEffect(a.effect);
       if (inverse) inversesRef.current[item.id] = inverse;
+      /* FE-ALIGN P5 接缝：effect 已后端化（D4），store 需要知道点了哪个动作 */
+      if (window.rvResolveAction) { try { window.rvResolveAction(item, a); } catch (e) {} }
       resolve(item.id);
     }
   };
@@ -736,7 +693,7 @@ function RvEmpty({ hasSnoozed, go }) {
   );
 }
 
-Object.assign(window, { WsReview, RV_SEED, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge });
+Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsReview, RV_SEED, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge };
+export { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge };

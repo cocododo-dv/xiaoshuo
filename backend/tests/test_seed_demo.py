@@ -66,7 +66,12 @@ def test_seed_demo_creates_first_chapter_and_review_item(session) -> None:
     )
     assert fe_chapters > 0
     assert _count_rows(session, SceneRunState) == 3
-    assert _count_rows(session, ReviewItem) == 1
+    # 1 条 legacy demo review + tide 的 5 张待办卡（item_type=fe_card）
+    legacy_reviews = session.scalar(
+        select(func.count()).select_from(ReviewItem).where(ReviewItem.item_type != "fe_card")
+    )
+    assert legacy_reviews == 1
+    assert _count_rows(session, ReviewItem) == 1 + 5
 
 
 def test_seed_demo_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_state(session) -> None:
@@ -180,7 +185,8 @@ def test_seed_demo_is_idempotent(session) -> None:
     seed_demo(session)
     session.commit()
     assert _count_rows(session, SceneCard) == scene_count_after_two_seeds
-    assert _count_rows(session, ReviewItem) == 1
+    # 1 条 legacy demo review + tide 的 5 张待办卡，重复 seed 不增行
+    assert _count_rows(session, ReviewItem) == 1 + 5
 
 
 def test_seed_demo_creates_traceable_voice_and_relation_profiles(session) -> None:

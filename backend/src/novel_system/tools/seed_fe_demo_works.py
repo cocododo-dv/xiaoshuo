@@ -255,9 +255,128 @@ def _seed_work(
         )
     session.flush()
 
+    if project_id == "tide":
+        _seed_tide_review_cards(session)
+
     WritingStatsService(session).seed_stats(
         project_id,
         words_total=words_total,
         streak_days=streak_days,
         streak_last_day=streak_last_day,
     )
+
+
+def _seed_tide_review_cards(session: Session) -> None:
+    """原型 ws-review RV_SEED 的后端化（effect 指向真实章节行；dedupe 幂等）。"""
+    from novel_system.db.models import ReviewItem
+    from novel_system.services.review_cards import ReviewCardService
+
+    session.execute(
+        delete(ReviewItem).where(
+            ReviewItem.project_id == "tide", ReviewItem.item_type == "fe_card"
+        )
+    )
+    session.flush()
+    chapters = session.execute(
+        select(ChapterGoal)
+        .where(ChapterGoal.project_id == "tide", ChapterGoal.trashed_flag == 0)
+        .order_by(ChapterGoal.display_order.asc())
+    ).scalars().all()
+    by_no = {index + 1: chapter for index, chapter in enumerate(chapters)}
+    cards = ReviewCardService(session)
+    if 6 in by_no:
+        cards.create_card(
+            {
+                "project_id": "tide",
+                "kind": "decision",
+                "priority": 2,
+                "title": "第 6 章标题在两个候选间未定",
+                "source": "章节编排",
+                "where": "第 6 章 · 标题",
+                "detail": "「周岚的钥匙」直白点题、呼应线索；「她留下的钥匙」更含蓄、留悬念。选定后会直接改写目录里第 6 章的标题。",
+                "options": ["周岚的钥匙", "她留下的钥匙"],
+                "dedupe_key": "demo:tide:ch06-title",
+                "actions": [
+                    {"label": "用「周岚的钥匙」", "intent": "primary", "op": "resolve",
+                     "effect": {"type": "rename_chapter", "chapter_id": by_no[6].chapter_id, "title": "周岚的钥匙"}},
+                    {"label": "用「她留下的钥匙」", "intent": "ghost", "op": "resolve",
+                     "effect": {"type": "rename_chapter", "chapter_id": by_no[6].chapter_id, "title": "她留下的钥匙"}},
+                    {"label": "再想想", "intent": "quiet", "op": "snooze"},
+                ],
+            },
+            actor_ref="demo_seed",
+        )
+    if 7 in by_no:
+        cards.create_card(
+            {
+                "project_id": "tide",
+                "kind": "qc",
+                "priority": 2,
+                "title": "第 7 章节奏过快，建议补一段反应场景",
+                "source": "文学质检",
+                "where": "第 7 章 · SC 03 之后",
+                "detail": "连续三个主动场景之间没有喘息，读者情绪曲线缺少回落。建议在 SC 03 后插入 200–400 字的反应节拍，让林岑消化「钥匙」的发现。采纳会直接在目录第 7 章 SC 03 后插入一个待写的反应场。",
+                "dedupe_key": "demo:tide:ch07-reaction",
+                "actions": [
+                    {"label": "去章节编排看结构", "intent": "primary", "op": "nav", "nav_to": "author"},
+                    {"label": "采纳 · 插入反应场", "intent": "ghost", "op": "resolve",
+                     "effect": {"type": "insert_scene", "chapter_id": by_no[7].chapter_id, "at": 3,
+                                "scene": {"title": "回廊喘息 · 反应拍", "kind": "reactive", "state": "todo",
+                                          "brief": {"reaction": "让林岑消化「钥匙」的发现", "dilemma": "夜班时间所剩无几", "decision": "（待规划）"}}}},
+                    {"label": "忽略", "intent": "quiet", "op": "resolve"},
+                ],
+            },
+            actor_ref="demo_seed",
+        )
+    cards.create_card(
+        {
+            "project_id": "tide",
+            "kind": "risk",
+            "priority": 2,
+            "title": "时间线：第 3 章与第 5 章季节描写不一致",
+            "source": "时间线",
+            "where": "第 3 章 → 第 5 章",
+            "detail": "第 3 章写「初秋的潮气」，第 5 章却出现「初夏蝉鸣」，但两章间隔仅约十天。需统一季节锚点。",
+            "dedupe_key": "demo:tide:season",
+            "actions": [
+                {"label": "打开时间线", "intent": "primary", "op": "nav", "nav_to": "library"},
+                {"label": "标记为已核", "intent": "quiet", "op": "resolve"},
+            ],
+        },
+        actor_ref="demo_seed",
+    )
+    cards.create_card(
+        {
+            "project_id": "tide",
+            "kind": "note",
+            "priority": 3,
+            "title": "批注 · 「潮声」意象是否前后呼应",
+            "source": "写作房间",
+            "where": "第 8 章 · 第 12 段",
+            "detail": "你给这段留过一条批注：开篇用「潮声」作记忆触发，结尾是否应让它再次响起，形成回环？",
+            "dedupe_key": "demo:tide:note-tide-sound",
+            "actions": [
+                {"label": "回到该段", "intent": "primary", "op": "nav", "nav_to": "writer", "nav_scene": "ch08s3"},
+                {"label": "标记已读", "intent": "quiet", "op": "resolve"},
+            ],
+        },
+        actor_ref="demo_seed",
+    )
+    cards.create_card(
+        {
+            "project_id": "tide",
+            "kind": "qc",
+            "priority": 3,
+            "title": "全书「潮汐」一词出现 47 次，可能过载",
+            "source": "文学质检",
+            "where": "全书 · 用词",
+            "detail": "核心意象高频复现有记忆点，但密度偏高易显刻意。可在非关键段落用「水位」「退潮」等近义替换 8–10 处。",
+            "dedupe_key": "demo:tide:word-overload",
+            "actions": [
+                {"label": "在深改姿态里看", "intent": "primary", "op": "nav", "nav_to": "writer", "nav_posture": "deep"},
+                {"label": "知道了", "intent": "quiet", "op": "resolve"},
+            ],
+        },
+        actor_ref="demo_seed",
+    )
+    session.flush()

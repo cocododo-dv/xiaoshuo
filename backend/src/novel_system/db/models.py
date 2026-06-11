@@ -1202,8 +1202,32 @@ class ReviewItem(Base):
     max_retry: Mapped[int] = mapped_column(Integer, default=3)
     approved_item_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     approved_item_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # FE-ALIGN P5: 待办收件箱卡片模型（原型 ws-review 五类卡；legacy 行这些列为 NULL，
+    # 响应里把 status pending/approved/rejected 映射成统一 state open/resolved）。
+    # 卡片行 item_type="fe_card"、status 恒 "pending"（CheckConstraint 兼容），生命周期走 state。
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provenance_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    card_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    actions_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)
+    snooze_until: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolved_action_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ReviewDerivedSnooze(Base):
+    """FE-ALIGN P5: 实时派生待办的稍后记录（按内容指纹 id 存——指纹变化即重新浮现）。"""
+
+    __tablename__ = "review_derived_snoozes"
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String, primary_key=True)
+    snooze_until: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
 class HumanReviewEvent(Base):

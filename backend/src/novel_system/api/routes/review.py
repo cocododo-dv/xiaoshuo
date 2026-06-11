@@ -28,6 +28,7 @@ from novel_system.services.human_review_support import (
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.knowledge_registry import descriptor_for_item_type
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
+from novel_system.services.review_cards import CARD_KINDS, ReviewCardService
 from novel_system.services.versioning import PromotionService, ReviewMaterializationService
 
 router = APIRouter(tags=["review"])
@@ -42,11 +43,19 @@ def list_review_items(
     target_collection: str | None = None,
     scene_id: str | None = None,
     chapter_id: str | None = None,
+    state: str | None = None,
+    project_id: str | None = None,
     page: int | None = None,
     page_size: int | None = None,
     cursor: str | None = None,
     limit: int | None = None,
 ):
+    # FE-ALIGN P5 卡片模式：?state=open|snoozed&project_id=… → 持久卡 ∪ 派生卡（统一形状）
+    if state is not None:
+        if not project_id:
+            raise DomainError("REVIEW_PROJECT_REQUIRED", "project_id is required with state filter", status_code=400)
+        result = ReviewCardService(session).list_cards(project_id, state=state)
+        return ok(result, req_id=getattr(request.state, "request_id", None))
     query = select(ReviewItem)
     if status:
         query = query.where(ReviewItem.status == status)
@@ -70,6 +79,11 @@ def list_review_items(
     )
 
 
+@router.get("/api/v1/review-items/badge")
+def review_badge(project_id: str, request: Request, session: Session = Depends(get_session)):
+    return ok(ReviewCardService(session).badge(project_id), req_id=getattr(request.state, "request_id", None))
+
+
 @router.get("/api/v1/review-items/{review_id}")
 def review_detail(review_id: str, request: Request, session: Session = Depends(get_session)):
     item = session.get(ReviewItem, review_id)
@@ -81,17 +95,89 @@ def review_detail(review_id: str, request: Request, session: Session = Depends(g
 @router.post("/api/v1/review-items")
 def create_review_item(payload: dict, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    # FE-ALIGN P5：带 kind 的载荷走卡片创建（dedupe_key 去重）；legacy 载荷保持原 upsert 流
+    is_card = payload.get("kind") in CARD_KINDS and "review_id" not in payload
+    action = (
+        (lambda: ReviewCardService(session).create_card(payload, actor_ref=actor_ref))
+        if is_card
+        else (lambda: _upsert_review_item(session, payload))
+    )
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items",
         payload=payload,
-        action=lambda: _upsert_review_item(session, payload),
+        action=action,
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# FE-ALIGN P5：卡片状态流转（resolve 在同一事务执行 effect — D4）
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/v1/review-items/{review_id}/resolve")
+def resolve_review_card(
+    review_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    body = dict(payload or {})
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/review-items/{review_id}/resolve",
+        payload={"review_id": review_id, **body},
+        action=lambda: ReviewCardService(session).resolve(
+            review_id,
+            action_index=body.get("action_index"),
+            project_id=body.get("project_id"),
+            actor_ref=actor_ref,
+        ),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/review-items/{review_id}/unresolve")
+def unresolve_review_card(review_id: str, request: Request, session: Session = Depends(get_session)):
+    result = ReviewCardService(session).unresolve(review_id)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/review-items/{review_id}/snooze")
+def snooze_review_card(
+    review_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+):
+    body = dict(payload or {})
+    result = ReviewCardService(session).snooze(review_id, project_id=body.get("project_id"))
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/review-items/{review_id}/unsnooze")
+def unsnooze_review_card(
+    review_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+):
+    body = dict(payload or {})
+    result = ReviewCardService(session).unsnooze(review_id, project_id=body.get("project_id"))
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v1/review-items/import-demo")

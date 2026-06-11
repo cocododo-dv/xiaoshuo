@@ -12,6 +12,7 @@ from __future__ import annotations
 # returned by the two `injection-preview` endpoints. There is no public
 # `/inject` / `InjectionBundle` HTTP API in the current implementation.
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -21,6 +22,8 @@ from sqlalchemy.orm import Session
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.db.models import ReviewItem
+
+logger = logging.getLogger(__name__)
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.style_reference.cleanup import purge_derived_data
@@ -658,6 +661,38 @@ def synthesize_profile(
         client, enabled = _get_llm_client_and_enabled()
         synth = ProfileSynthesizer(session, llm_client=client, llm_enabled=enabled)
         profile = synth.synthesize(run.book_id, run_id)
+        # FE-ALIGN P5：风格学习完成 → 全局 decision 卡（任一作品的收件箱可见；
+        # 「应用到本项目」effect 在 resolve 时以当前作品为 scope 执行绑定）
+        try:
+            from novel_system.services.review_cards import ReviewCardService
+
+            profile_json = profile.profile_json or {}
+            summary = str(profile_json.get("narrative_summary") or "").strip()
+            ReviewCardService(session).create_card(
+                {
+                    "project_id": None,
+                    "kind": "decision",
+                    "priority": 1,
+                    "title": f"参考画像「{profile.title}」是否应用到本项目",
+                    "source": "风格参考",
+                    "where": "风格参考 · 刚学完",
+                    "detail": (summary[:200] + ("…" if len(summary) > 200 else "")) or "画像已合成，可应用为写作润色基线，可随时关闭。",
+                    "dedupe_key": f"style-profile:{profile.profile_id}",
+                    "actions": [
+                        {
+                            "label": "应用到本项目",
+                            "intent": "primary",
+                            "op": "resolve",
+                            "effect": {"type": "bind_style_profile", "profile_id": profile.profile_id},
+                        },
+                        {"label": "先去看画像", "intent": "ghost", "op": "nav", "nav_to": "styleref"},
+                        {"label": "丢弃", "intent": "quiet", "op": "resolve"},
+                    ],
+                },
+                actor_ref="style_reference",
+            )
+        except Exception:  # 卡片失败不阻塞画像合成
+            logger.exception("style profile decision card creation failed")
         return {"profile": _serialize_profile(profile)}
 
     return _with_idem(

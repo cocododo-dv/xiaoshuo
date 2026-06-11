@@ -1,0 +1,199 @@
+"""FE-ALIGN Phase 5: 待办收件箱（卡片模型 / effect 后端执行 / 派生项 / badge）。"""
+from __future__ import annotations
+
+from novel_system.db.models import SceneCard
+from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+
+_seq = 0
+
+
+def _post(client, path, body=None):
+    global _seq
+    _seq += 1
+    response = client.post(path, json=body or {}, headers={"X-Idempotency-Key": f"rc-{_seq}"})
+    return response
+
+
+def _create_project(client) -> dict:
+    global _seq
+    _seq += 1
+    response = client.post(
+        "/api/v2/projects",
+        json={"title": f"收件箱测试 {_seq}", "outline_text": "大纲"},
+        headers={"X-Idempotency-Key": f"rc-create-{_seq}"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["project"]
+
+
+def _card(client, project_id, **overrides):
+    payload = {
+        "project_id": project_id,
+        "kind": "qc",
+        "priority": 2,
+        "title": "测试卡",
+        "source": "测试",
+        "where": "测试位置",
+        "detail": "说明",
+        "actions": [{"label": "知道了", "intent": "quiet", "op": "resolve"}],
+        **overrides,
+    }
+    response = _post(client, "/api/v1/review-items", payload)
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["card"]
+
+
+def test_card_create_list_resolve_unresolve(client):
+    project = _create_project(client)
+    pid = project["project_id"]
+    card = _card(client, pid, title="一张普通卡")
+    assert card["state"] == "open"
+    assert card["kind"] == "qc"
+
+    items = client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"]
+    assert any(item["id"] == card["id"] for item in items)
+
+    resolved = _post(client, f"/api/v1/review-items/{card['id']}/resolve", {"action_index": 0})
+    assert resolved.status_code == 200, resolved.text
+    items = client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"]
+    assert all(item["id"] != card["id"] for item in items)
+
+    unresolved = _post(client, f"/api/v1/review-items/{card['id']}/unresolve")
+    assert unresolved.status_code == 200
+    items = client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"]
+    assert any(item["id"] == card["id"] for item in items)
+
+
+def test_dedupe_key_once_task(client):
+    project = _create_project(client)
+    pid = project["project_id"]
+    first = _card(client, pid, title="同一事项", dedupe_key="task:audit:ch09")
+    second_resp = _post(
+        client,
+        "/api/v1/review-items",
+        {"project_id": pid, "kind": "qc", "title": "同一事项又来一次", "dedupe_key": "task:audit:ch09"},
+    )
+    assert second_resp.status_code == 200
+    second = second_resp.json()["data"]
+    assert second["deduped"] is True
+    assert second["card"]["id"] == first["id"]
+    items = client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"]
+    assert sum(1 for item in items if item.get("dedupe_key") == "task:audit:ch09") == 1
+
+
+def test_resolve_executes_effect_in_transaction(client):
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "原始章题"}).json()["data"]["chapter"]
+    cid = chapter["chapter_id"]
+
+    rename = _card(
+        client, pid, kind="decision", title="改章题决策",
+        options=["新章题 A", "新章题 B"],
+        actions=[
+            {"label": "用 A", "intent": "primary", "op": "resolve", "effect": {"type": "rename_chapter", "chapter_id": cid, "title": "新章题 A"}},
+            {"label": "用 B", "intent": "ghost", "op": "resolve", "effect": {"type": "rename_chapter", "chapter_id": cid, "title": "新章题 B"}},
+        ],
+    )
+    resolved = _post(client, f"/api/v1/review-items/{rename['id']}/resolve", {"action_index": 1})
+    assert resolved.status_code == 200, resolved.text
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    assert tree["chapters"][0]["title"] == "新章题 B"
+
+    insert = _card(
+        client, pid, kind="qc", title="插入反应场",
+        actions=[
+            {"label": "采纳 · 插入反应场", "intent": "primary", "op": "resolve",
+             "effect": {"type": "insert_scene", "chapter_id": cid, "at": 1,
+                        "scene": {"title": "回廊喘息 · 反应拍", "kind": "reactive",
+                                  "brief": {"reaction": "消化发现", "dilemma": "时间所剩无几", "decision": "（待规划）"}}}},
+            {"label": "忽略", "intent": "quiet", "op": "resolve"},
+        ],
+    )
+    resolved = _post(client, f"/api/v1/review-items/{insert['id']}/resolve", {"action_index": 0})
+    assert resolved.status_code == 200, resolved.text
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    scenes = tree["chapters"][0]["scenes"]
+    assert scenes[1]["title"] == "回廊喘息 · 反应拍"
+    assert scenes[1]["kind"] == "reactive"
+
+    unknown = _card(client, pid, title="未知效果",
+                    actions=[{"label": "执行", "op": "resolve", "effect": {"type": "no_such_effect"}}])
+    bad = _post(client, f"/api/v1/review-items/{unknown['id']}/resolve", {"action_index": 0})
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "REVIEW_EFFECT_UNKNOWN"
+
+
+def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, session):
+    seed_fe_demo_works(session)
+    session.commit()
+    # 制造一个目录异常：tide ch08 的一场标 done 但 0 字
+    scene = session.execute(
+        SceneCard.__table__.select().where(SceneCard.project_id == "tide", SceneCard.state == "todo")
+    ).first()
+    target_id = scene.scene_id
+    row = session.get(SceneCard, target_id)
+    row.state = "done"
+    row.words_current = 0
+    session.commit()
+
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    hollow = next((i for i in items if str(i["id"]).startswith("derived:catalog:hollow:")), None)
+    assert hollow is not None
+    assert hollow["live"] is True
+
+    # ① 不可无动作 resolve
+    blocked = _post(client, f"/api/v1/review-items/{hollow['id']}/resolve", {"project_id": "tide"})
+    assert blocked.status_code == 409
+
+    # snooze 按指纹存
+    snoozed = _post(client, f"/api/v1/review-items/{hollow['id']}/snooze", {"project_id": "tide"})
+    assert snoozed.status_code == 200
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    assert all(i["id"] != hollow["id"] for i in items)
+    snoozed_list = client.get("/api/v1/review-items?state=snoozed&project_id=tide").json()["data"]["items"]
+    assert any(i["id"] == hollow["id"] for i in snoozed_list)
+
+    # ③ 指纹复浮：源头状况变化（又一场 done 0 字）→ 新指纹，即使曾 snooze 也重新浮现
+    another = session.execute(
+        SceneCard.__table__.select().where(SceneCard.project_id == "tide", SceneCard.state == "todo")
+    ).first()
+    row2 = session.get(SceneCard, another.scene_id)
+    row2.state = "done"
+    row2.words_current = 0
+    session.commit()
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    refloated = next((i for i in items if str(i["id"]).startswith("derived:catalog:hollow:")), None)
+    assert refloated is not None
+    assert refloated["id"] != hollow["id"]
+
+    # ② 源头修好自动消失
+    row.state = "todo"
+    row2.state = "todo"
+    session.commit()
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    assert all(not str(i["id"]).startswith("derived:catalog:hollow:") for i in items)
+
+
+def test_badge_counts_priority_one(client, session):
+    project = _create_project(client)
+    pid = project["project_id"]
+    _card(client, pid, priority=1, kind="decision", title="高优先")
+    _card(client, pid, priority=2, title="普通")
+    badge = client.get(f"/api/v1/review-items/badge?project_id={pid}").json()["data"]
+    assert badge["count"] == 1
+
+
+def test_global_card_visible_in_any_project(client):
+    project = _create_project(client)
+    pid = project["project_id"]
+    response = _post(
+        client,
+        "/api/v1/review-items",
+        {"kind": "decision", "priority": 1, "title": "全局风格卡", "dedupe_key": "style-profile:sr_test"},
+    )
+    assert response.status_code == 200
+    items = client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"]
+    # project_id 为 NULL 的全局卡此版本不并入项目桶 —— 风格卡设计为全局，先确认行为
+    # （列表按 project 过滤；全局卡的并入在 list_cards 处理）
+    assert any(i["title"] == "全局风格卡" for i in items)

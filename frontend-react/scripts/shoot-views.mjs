@@ -10,6 +10,7 @@ const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
 const OUT = process.argv[3] || path.resolve("react-shots");
+const API = process.argv[4] || null; // 可选：覆盖 novel-system-api-base（默认 8000）
 fs.mkdirSync(OUT, { recursive: true });
 
 const VIEWS = [
@@ -30,6 +31,15 @@ async function waitApp() {
   await page.waitForTimeout(600);
 }
 
+if (API) {
+  // 首个导航前注入 api base，避免首跳打到默认 8000
+  await page.addInitScript((api) => {
+    if (!localStorage.getItem("novel-system-api-base") || localStorage.getItem("novel-system-api-base") !== api) {
+      localStorage.setItem("novel-system-api-base", api);
+      localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
+    }
+  }, API);
+}
 await page.goto(BASE);
 await waitApp();
 

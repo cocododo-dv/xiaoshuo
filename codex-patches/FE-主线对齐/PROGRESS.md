@@ -9,7 +9,7 @@
 - [x] Phase 1 · 前端工程化 — 提交：00254f5
 - [x] Phase 2 · 作品域与聚合 — 提交：e858b8b
 - [x] Phase 3 · 目录统一 — 提交：de32d78
-- [ ] Phase 4 · 回收站 — 提交：
+- [x] Phase 4 · 回收站 — 提交：64957cd
 - [ ] Phase 5 · 待办收件箱 — 提交：
 - [ ] Phase 6 · 资料库 — 提交：
 - [ ] Phase 7 · 控制塔桥 — 提交：
@@ -128,6 +128,36 @@
   恢复阻止）；P4 冒烟 4 项全过（删整部→切换器消失→回收站恢复→数据无损含统计；
   删场景→恢复正文保留；永久清除无残影）；全量 pytest **832 passed**；build 过。
 
+## Phase 5 记录（2026-06-11）
+
+- 后端：迁移 `20260611_0050`（ReviewItem += project_id/kind/priority/provenance_json/
+  card_json/actions_json/state/snooze_until/resolved_action_index/dedupe_key +
+  (project_id,dedupe_key) 唯一索引；新表 review_derived_snoozes）。**扩展原表**：
+  卡片行 item_type="fe_card"、status 恒 pending（legacy CheckConstraint 兼容），
+  生命周期走 state；legacy 行响应映射 pending→open、approved/rejected→resolved。
+- `services/review_cards.py`：create（dedupe 静默去重=onceTask）/list（持久卡∪派生卡，
+  全局卡 project_id=NULL 任一作品可见）/resolve（**同一事务执行 actions_json[i].effect**，
+  D4）/unresolve（不回滚 effect）/snooze（派生按指纹存表）/badge。
+  `services/review_effects.py` 注册表：insert_scene、rename_chapter（走 CatalogService）、
+  bind_style_profile（走 style_reference MaterializationService.apply_profile，
+  scope=project=当前作品）；rule_canon P7 注册、create_entity/add_timeline_event P6 注册。
+- `services/review_derived.py`：三类派生（雪花空缺/已起草未确认、目录异常·空章+
+  成稿无字、产出待办·审阅中待批准/全场成稿可送审）；三语义后端保证（live 卡 resolve
+  409 / GET 现算修好即消 / id 带指纹 snooze 按指纹存）。
+- 端点：GET review-items?state=&project_id=（卡片模式）、POST（kind 载荷走卡片创建）、
+  resolve/unresolve/snooze/unsnooze、badge（声明在 {review_id} 之前防吞）。
+- 生产者：风格画像 synthesize 完成 → 全局 decision 卡（dedupe=style-profile:{id}，
+  effect=bind_style_profile，resolve 时以当前作品为 scope 绑定）。demo seed 给 tide
+  补 5 张原型 RV_SEED 卡（rename/insert effect 指向真实章节 id）。
+- 前端：ws-review store 段接真（适配层卡片↔视图形状；rvPush→POST；resolve/snooze/
+  unresolve→端点；badge=缓存派生；done_today 留 localStorage UI 计数；旧 ws_review_v1
+  custom 项一次性上行）。**视图唯一接缝**：act() 增一行 `window.rvResolveAction(item, a)`
+  ——effect 后端化后 store 必须知道点了哪个动作（action_index），视图本地 runEffect 对
+  后端 effect 占位类型自然 no-op，needsChoice 守卫保留。
+- 验收：6 后端测试绿（建/列/收/撤、dedupe、effect 事务含未知类型 400、派生三语义、
+  badge、全局卡）；P5 冒烟 6 项全过（QC 卡插场景落库/决策卡 rename 落库/badge/
+  派生不可划掉+修好消失/dedupe）；15 视图零错误；全量 pytest **838 passed**。
+
 ## 核对发现（实际代码 vs 简报假设）
 
 | Phase | 简报假设 | 实际情况 | 处理 |
@@ -144,7 +174,7 @@
 | 3 | 「wr-notes:<sid> 同步迁移」 | 写作器代码中无该键的实际使用者（仅回收站 purge 清理它） | 无需迁移；P4 处理回收站时一并核对 |
 | 2 | 正文保存写路径 | ✅ 已核实：`ensure` + `PATCH author-drafts/{draft_id}` | 埋点加在 PATCH 服务层 |
 | 4 | 章/场景 trash 的实现机制（软删标记 or 移表）；两套是否同一服务 | 同一服务 AuthorLifecycleService；trashed_flag 软删；章 trash 级联场景；「场景已删时章删被 409 阻止」「场景 restore 追加到章尾（scene_seq 重排）」 | 作品级沿用同列名约定；统一列表对被级联场景标 restorable=false |
-| 5 | ReviewItem 状态机可扩展为统一 state | （待核对） | |
+| 5 | ReviewItem 状态机可扩展为统一 state | status 有 CheckConstraint(pending/approved/rejected)，不能直接改枚举 | 新增独立 state 列；卡片行 status 恒 pending；legacy 行响应映射 |
 | 6 | library 实体模型字段差集 | （待核对） | |
 | 7 | adjudicate 幂等性 | （待核对） | |
 
