@@ -361,9 +361,16 @@ function Start-TrackedServices {
     }
 
     Write-Host ("Backend:  {0}" -f $script:BackendUrl) -ForegroundColor Green
-    Write-Host ("Frontend: {0}" -f $script:FrontendUrl) -ForegroundColor Green
-    Write-Host ("React:    {0}" -f $script:ReactUrl) -ForegroundColor Green
+    Write-Host ("React:    {0}  (default)" -f $script:ReactUrl) -ForegroundColor Green
+    Write-Host ("Frontend: {0}  (legacy Vue)" -f $script:FrontendUrl) -ForegroundColor Green
     Write-Host ("Logs:     {0}" -f $script:RunDir) -ForegroundColor Green
+
+    # FE-ALIGN P8: React 前端是默认入口（Vue 降为备用）
+    try {
+        Start-Process $script:ReactUrl
+    }
+    catch {
+    }
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot

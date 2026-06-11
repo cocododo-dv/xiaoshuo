@@ -29,7 +29,35 @@ wsl -d Ubuntu-24.04 bash -lc "cd <wsl-path> && bash scripts/verify_wsl_strict.sh
 
 Full Windows CI lane: `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
 
-### Frontend (Vue 3 + Vite + Pinia)
+### Frontend (React, primary) — `frontend-react/`
+The production frontend (FE 主线对齐 D1): the 「潮汐工作台」 high-fidelity prototype
+(`codex-patches/FE-主线对齐/design/`) engineered as Vite + React 18. `start-dev.cmd`
+serves it on `http://127.0.0.1:5174` and opens it by default; the Vue frontend (5173)
+is legacy/backup.
+
+```powershell
+cd frontend-react
+npm install        # first time
+npm run dev        # http://127.0.0.1:5174
+npm run build
+```
+
+Architecture rules (see `codex-patches/FE-主线对齐/契约附录-store缝合面.md`):
+- **Store layer only**: views keep the prototype's store contracts (WsWorks / WsCatalog /
+  WsTrashStore / review store / Lf7Bridge); stores are API-backed with sync in-memory
+  caches (optimistic write + rollback / refetch-on-failure).
+- `src/lib/client.js` mirrors the Vue client contract (envelope / X-Idempotency-Key /
+  X-Operator-Ref / `novel-system-api-base` localStorage override).
+- localStorage holds only UI preferences and read caches of backend truth
+  (`wr-doc:*` is a write-through cache of author-drafts); business writes all go
+  through `/api/v1` + `/api/v2` endpoints.
+- Demo data comes from the backend seed (`novel_system.tools.seed_fe_demo_works`,
+  project ids `tide`/`salt` — keep these literal ids).
+- Contract-level E2E: `cd frontend; node ../frontend-react/scripts/run-smokes.mjs`
+  (runs smoke-phase2..7 against a seeded backend; uses frontend/'s Playwright install).
+- Progress ledger & deferred items: `codex-patches/FE-主线对齐/PROGRESS.md`.
+
+### Frontend (Vue 3 + Vite + Pinia, legacy)
 Located in `frontend/`.
 
 ```powershell

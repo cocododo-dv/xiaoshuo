@@ -307,7 +307,7 @@ function WsStyleRef({ go }) {
         <aside className="sr-books">
           <header className="sr-books-head">
             <div>
-              <div className="page-eyebrow" style={{margin:0}}>风格参考</div>
+              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {window.WsDemoTag && <window.WsDemoTag note="演示流水线：学习进度/画像为模拟数据。后端 style-reference 子系统已就绪（画像合成后会向待办投递绑定决策卡），视图接真见 PROGRESS.md 遗留项。" />}</div>
               <h2 className="text-serif" style={{fontSize:18, margin:"4px 0 0"}}>参考书库</h2>
             </div>
             <button className="btn btn-accent btn-sm"><I.Plus size={13} /></button>

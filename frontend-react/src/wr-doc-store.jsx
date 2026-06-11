@@ -15,11 +15,20 @@ import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 
 const wrKeyOf = (sid) => (window.wsKey ? window.wsKey("wr-doc:" + sid) : "wr-doc:" + sid);
 
-// sid → { draftId, revision, hydrated, dirty, chain }
+// 作品id::sid → { draftId, revision, hydrated, dirty, chain }
+// 必须带作品前缀：同名 slug（ch01s1）在每部作品都存在，裸 sid 会把
+// PATCH 打到上一部作品的 draft（跨作品数据污染）。
 const docMeta = {};
 
+function metaKeyOf(sid) {
+  let work = "";
+  try { work = (window.WsWorks && window.WsWorks.activeId()) || ""; } catch (e) {}
+  return work + "::" + sid;
+}
+
 function meta(sid) {
-  return docMeta[sid] || (docMeta[sid] = { draftId: null, revision: 0, hydrated: false, dirty: false, chain: Promise.resolve() });
+  const key = metaKeyOf(sid);
+  return docMeta[key] || (docMeta[key] = { draftId: null, revision: 0, hydrated: false, dirty: false, chain: Promise.resolve() });
 }
 
 function cacheRead(sid) {

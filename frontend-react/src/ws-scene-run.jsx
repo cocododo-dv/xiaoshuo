@@ -231,7 +231,12 @@ function scnAdoptToDoc(sid, draft) {
   if (hasReal && !window.confirm("这一场在写作器里已有正文。归档会覆盖现有正文（写作器的版本会丢失），确定继续？")) {
     return { ok: false, reason: "已取消" };
   }
-  try { localStorage.setItem(key, html); } catch (e) { return { ok: false, reason: "写入失败" }; }
+  /* FE-ALIGN P8：正文写穿 author-drafts 主路径（WrDocs 缓存+PATCH），
+     不再绕过后端直写 localStorage */
+  try {
+    if (window.WrDocs) window.WrDocs.save(sid, html);
+    else localStorage.setItem(key, html);
+  } catch (e) { return { ok: false, reason: "写入失败" }; }
   const hit = window.WsCatalog.sceneById(sid);
   const prev = hit && typeof hit.scene.words === "number" ? hit.scene.words : 0;
   const count = text.replace(/\s/g, "").length;

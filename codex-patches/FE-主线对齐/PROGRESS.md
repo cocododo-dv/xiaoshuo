@@ -12,7 +12,7 @@
 - [x] Phase 4 · 回收站 — 提交：64957cd
 - [x] Phase 5 · 待办收件箱 — 提交：f6785bb
 - [x] Phase 6 · 资料库 — 提交：4f57fb2
-- [ ] Phase 7 · 控制塔桥 — 提交：
+- [x] Phase 7 · 控制塔桥 — 提交：b05021e
 - [ ] Phase 8 · 收尾退役 — 提交：
 
 ## 决策点确认（开工前人工填写；空白 = 按默认）
@@ -218,6 +218,48 @@
   开放 finding 阻断）；P7 冒烟 5 项全过；15 视图零错误；全量 pytest **850 passed**。
 - 核对发现（简报「adjudicate 幂等性」）：可重复调用，幂等覆盖 decision/note，
   不报错；卡片置 resolved 也幂等。
+
+## Phase 8 记录（2026-06-12）
+
+- 接真状态核对（store 真相源）：home/works/catalog/writer/review/library/trash/
+  flowmap = 全后端；manuscripts/author/ops/palette = 派生自目录与正文缓存（真数据）；
+  settings/tweaks = UI 偏好（本约定允许本地）。
+- 起草台采纳正文改写穿 WrDocs（原直写 localStorage 绕过后端的数据洞）。
+- **修复跨作品正文污染 bug**（全局验收冒烟揪出）：WrDocs 的 docMeta 按裸 sid
+  缓存，同名 slug（ch01s1）在切换作品后会把 PATCH 打到上一部作品的 draft；
+  meta 键改为「作品id::sid」。
+- start-dev 默认打开 React（5174，Vue 降为 legacy 备用）；CLAUDE.md 增补
+  React 前端章节（架构规则/E2E/账本指针）。
+- E2E 平移：scripts/run-smokes.mjs 跑批 smoke-phase2..7（套间 reseed 保独立，
+  全部通过）+ scripts/smoke-acceptance.mjs（新建空白书全链路 7 项）。
+- ws-styleref 补 WsDemoTag（原缺诚实标注）。
+- wsKey 业务键审计：wr-doc:*（后端正文的写穿缓存 ✓）/ ws-lib-graph-pos、
+  wr-notes、tweaks（UI 偏好 ✓）/ ws_snow_state_v2（构思暂存，见遗留）/
+  scn-run、scn-queue（起草台运行态，见遗留）/ lf7 handoff9（UI 流程标记 ✓）。
+
+### 全局验收（主简报 5 条）
+
+1. **新建空白书全链路** ✓ smoke-acceptance 7/7：新建→编排建章→写正文（author-drafts）
+   →统计上涨→待办卡 effect 改目录→契约归档推章状态→回收站往返。
+   （雪花构思在本地暂存、其物化边界走 API —— 见遗留 5。）
+2. **跨会话** ✓ 清 localStorage 重载后目录/正文/统计/章题全部从后端水合。
+3. **demo 两部种子作品** ✓ smoke-phase2..7 六套批跑全过（目录/统计/待办/资料/塔桥）。
+4. **Vue 前端不回归** ✓ 59 文件 / 536 测试 + smoke ok。
+5. **后端全量** ✓ 850 passed（chroma_integration 12 deselected，Windows 惯例）。
+
+### 遗留 / 例外（DEFERRED）
+
+| # | 事项 | 原因 / 现状 |
+|---|---|---|
+| D1 | ws-scene 起草引擎 scnRun → 后端 scenes run/full 管线 | 原型用 window.claude.complete（宿主 API，本构建不存在，UI 会明确报「AI 接口不可用」）；run/full 异步任务管线大改造。采纳/字数/状态写回已接真。视图带精确 DemoTag |
+| D2 | ws-styleref 视图 → style_reference v2 API | 后端子系统完整；提取/合成需启用 LLM。卡片桥已通（synthesize→全局决策卡→bind_style_profile effect）。视图带 DemoTag |
+| D3 | lf6 控制塔视图数据（lf2/lf3 静态） | 桥三链路（裁决/任务/归档）已后端同源；塔的悬念债/弧线等可视化数据待接锚点/审计 API。视图带 DemoTag |
+| D4 | ws-manuscripts 版本对比区 | author_drafts 无历史版本查询端点；目录态/批准流已真。区域带 DemoTag |
+| D5 | ws-snow 雪花构思 state 本地（ws_snow_state_v2） | 简报 P8 改动清单未列雪花；构思为暂存、其「物化→目录」边界已 API 化（P3 adoptOutline）。后续可对接 snowflake-workspace v2 |
+| D6 | window.* 兼容赋值与 9 处运行时探测清理 | 纯机械大改、回归风险 > 收益（不影响「业务数据进后端」验收）；建议独立 PR 处理 |
+| D7 | 负载敏感 flaky（created_at 时间戳并列排序断言） | 预存在（P0 基线即有），单跑/整文件全绿，仅并发负载下偶发 |
+
+WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 
 ## 核对发现（实际代码 vs 简报假设）
 
