@@ -82,6 +82,17 @@ def transition_chapter_contract(
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.get("/api/v2/projects/{project_id}/longform/audit")
+def list_project_audit(
+    project_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """FE-ALIGN P7：项目级审计清单（lf7 桥 ruled/pending 缓存数据源）。"""
+    result = LongformTowerService(session).list_all_findings(project_id)
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.get("/api/v2/projects/{project_id}/longform/chapters/{chapter_id}/audit")
 def list_chapter_audit(
     project_id: str,

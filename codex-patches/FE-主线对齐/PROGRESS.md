@@ -11,7 +11,7 @@
 - [x] Phase 3 · 目录统一 — 提交：de32d78
 - [x] Phase 4 · 回收站 — 提交：64957cd
 - [x] Phase 5 · 待办收件箱 — 提交：f6785bb
-- [ ] Phase 6 · 资料库 — 提交：
+- [x] Phase 6 · 资料库 — 提交：4f57fb2
 - [ ] Phase 7 · 控制塔桥 — 提交：
 - [ ] Phase 8 · 收尾退役 — 提交：
 
@@ -191,6 +191,33 @@
 - 核对发现：实体「差集」实际不需要新列——aliases/status 已有，first_seen/
   fields(facts/blurb/arc/appears) 走 details_json 键约定；新增 library_derive
   LLM 节点必须同时进 llm_node_registry（缺了会让 system-config sync-missing 422）。
+
+## Phase 7 记录（2026-06-11）
+
+- 链路①（裁决同源）：`create_finding` 同事务产 decision/risk 卡
+  （dedupe=canon:{finding_id}，drift/block→risk+P1；FE 展示元数据 subject/value/
+  source/drift 以 JSON 存 evidence——不加列）；effect 注册表补 `rule_canon`
+  （调 adjudicate 同一服务函数）；adjudicate 反向同事务把卡置 resolved。
+  create_finding 接受可选 finding_id（幂等，demo seed / 桥迁移用）。
+- 链路②（onceTask）：`Lf7Bridge.onceTask` 退化为 rvPush+dedupeKey 薄封装
+  （后端唯一索引静默去重；返回值恒 true——重复与否由后端裁决，记录为已知差异）。
+- 链路③（归档写回）：契约 transition→archived 时推进 ChapterGoal.state→draft +
+  触发 P6 资料派生（LLM 关静默跳过）；开放 findings 未裁决时 409（force 可越过，
+  既有规则）。新端点 `GET …/longform/audit`（项目级清单，桥缓存数据源）。
+- flow-status 的 open_review_count 改统一收件箱口径（fe_card 行 status 恒
+  pending，旧计数失真）。
+- demo seed：LF2_CANON 三条 conflict（c1/c2/c3）→ ChapterAuditFinding（经
+  create_finding 同源产卡）。
+- 前端：lf7-bridge 接真——findings 项目级缓存；ruleCanon→adjudicate（乐观+刷新）；
+  addCanonConflict→POST audit；extraCanon/pendingCanon 从缓存还原 canon 形状
+  （evidence JSON）；isArchived 改读目录章状态（draft/review/approved）；
+  markArchived 退化为刷新；resetLoop9 不移植（弹说明，等价=reset_author_state）；
+  旧 lf7_bridge_v1 一次性上行（extraCanon→findings、canonRuled→adjudicate，
+  tasked/archived 丢弃）。handoff9 流程标记仍留本地（纯 UI 流程态）。
+- 验收：6 后端测试绿（同事务成卡/双向裁决消失/finding 幂等+卡 dedupe/归档写回/
+  开放 finding 阻断）；P7 冒烟 5 项全过；15 视图零错误；全量 pytest **850 passed**。
+- 核对发现（简报「adjudicate 幂等性」）：可重复调用，幂等覆盖 decision/note，
+  不报错；卡片置 resolved 也幂等。
 
 ## 核对发现（实际代码 vs 简报假设）
 

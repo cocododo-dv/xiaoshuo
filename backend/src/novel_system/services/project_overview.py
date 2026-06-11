@@ -96,19 +96,11 @@ class ProjectOverviewService:
         draft_queue_len = sum(
             1 for scene in scenes if not (drafts.get(scene.scene_id) and drafts[scene.scene_id].content.strip())
         )
-        open_review_count = 0
-        if chapter_ids or scene_ids:
-            open_review_count = len(
-                self.session.execute(
-                    select(ReviewItem.review_id).where(
-                        ReviewItem.status == "pending",
-                        (
-                            ReviewItem.chapter_id.in_(chapter_ids or [""])
-                            | ReviewItem.scene_id.in_(scene_ids or [""])
-                        ),
-                    )
-                ).scalars().all()
-            )
+        # FE-ALIGN P5/P7：统一收件箱口径（持久卡 ∪ 派生卡的 open 数；
+        # fe_card 行 status 恒 pending，不能再按 status 计数）
+        from novel_system.services.review_cards import ReviewCardService
+
+        open_review_count = len(ReviewCardService(self.session).list_cards(project_id, state="open")["items"])
         qc_blocked_count = 0
         if chapter_ids:
             qc_blocked_count = len(

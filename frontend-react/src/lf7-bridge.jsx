@@ -1,92 +1,214 @@
 import { wsKey } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { apiGet, apiPost } from "./lib/client.js";
 
 /* global window */
 /* ==========================================================
-   lf7-bridge — 控制塔 ↔ 工作台联动桥（P0 深改）
+   lf7-bridge — 控制塔 ↔ 工作台联动桥（FE-ALIGN Phase 7：接真）
    ----------------------------------------------------------
-   解决三个链路断点：
-   ① 统一拍板对象：塔里的设定冲突 = 待办收件箱里的同一条
-      待裁决事项（lf7PendingCanon → ws-review 实时派生；
-      任一侧裁决，另一侧同步消失）。
-   ② 拍板动作产物化：塔的「补铺垫 / 补前因 / 裁决偏离」
-      不再只是 toast —— onceTask 把可追踪任务投进收件箱。
-   ③ 归档写回：第 9 章草稿归档时落进 WsCatalog 单一真相源
-      （state: draft），成稿中心 / 流程图 / 主页随之可见。
-   持久化按作品隔离（wsKey），事件 lf:bridge-changed。
+   ① 设定裁决统一：finding（ChapterAuditFinding）是唯一状态——
+      ruleCanon → POST adjudicate（后端同事务把待办卡置 resolved）；
+      待办卡的 rule_canon effect 调同一服务函数。任一侧裁决，另一侧消失。
+   ② onceTask → 待办卡 dedupe_key 唯一索引（重复触发静默去重）。
+   ③ 归档写回：契约 transition→archived（后端推进目录章状态 + 触发资料派生）。
+   事件 lf:bridge-changed 语义保留。
    ========================================================== */
 
 const LF7_LS = "lf7_bridge_v1";
 const lf7Key = () => (window.wsKey ? window.wsKey(LF7_LS) : LF7_LS);
-const lf7IsTide = () => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } };
+const LF7_MIGRATED_LS = "lf7_bridge_migrated_v1";
+const lf7ProjectId = () => { try { return window.WsWorks ? window.WsWorks.activeId() : null; } catch (e) { return null; } };
+const lf7IsTide = () => lf7ProjectId() === "tide";
 
-function lf7Load() { try { return JSON.parse(localStorage.getItem(lf7Key())) || {}; } catch (e) { return {}; } }
-function lf7Save(patch) {
-  const st = { ...lf7Load(), ...patch };
-  try { localStorage.setItem(lf7Key(), JSON.stringify(st)); } catch (e) {}
+function lf7Emit() {
   try { window.dispatchEvent(new CustomEvent("lf:bridge-changed")); } catch (e) {}
   try { window.dispatchEvent(new CustomEvent("ws:review-changed")); } catch (e) {}
 }
 
-const Lf7Bridge = {
-  state: lf7Load,
-  /* —— 设定裁决：塔或收件箱任一侧统一并锁定 —— */
-  ruleCanon(id, value) {
-    const st = lf7Load();
-    lf7Save({ canonRuled: { ...(st.canonRuled || {}), [id]: { value: value || null, at: Date.now() } } });
-  },
-  isRuled(id) { return !!((lf7Load().canonRuled || {})[id]); },
-  ruled() { return lf7Load().canonRuled || {}; },
-  /* —— 归档时新发现的冲突（如 c7「三楼/地下」）跨会话保留 —— */
-  addCanonConflict(entry) {
-    const st = lf7Load();
-    const ex = st.extraCanon || [];
-    if (ex.some(c => c.id === entry.id)) return;
-    lf7Save({ extraCanon: [...ex, entry] });
-  },
-  extraCanon() { return lf7Load().extraCanon || []; },
-  /* —— 拍板产物化：同一事项只投递一次待办 —— */
-  onceTask(key, payload) {
-    const st = lf7Load();
-    const done = st.tasked || {};
-    if (done[key]) return false;
-    if (window.rvPush) window.rvPush(payload);
-    lf7Save({ tasked: { ...done, [key]: Date.now() } });
-    return true;
-  },
-  /* —— 归档登记 —— */
-  isArchived(ch) { return !!((lf7Load().archived || {})[ch]); },
-  markArchived(ch) { const st = lf7Load(); lf7Save({ archived: { ...(st.archived || {}), [ch]: Date.now() } }); },
-  /* —— 演示闭环复位：撤销第 9 章下发/归档，目录与起草台队列一并清理，可重新走一轮 —— */
-  resetLoop9() {
+/* ---- findings 缓存（项目级审计清单） ---- */
+let lf7Findings = [];
+let lf7Fetching = null;
+function lf7Fetch() {
+  const pid = lf7ProjectId();
+  if (!pid || pid === "__loading__") return Promise.resolve();
+  if (lf7Fetching) return lf7Fetching;
+  lf7Fetching = (async () => {
     try {
-      if (window.WsCatalog) {
-        const chs = window.WsCatalog.get();
-        const ch9 = chs.find(c => parseInt(c.n, 10) === 9);
-        if (ch9) {
-          (ch9.scenes || []).forEach(s => {
-            if (!s.sid) return;
-            ["scn-run:", "wr-doc:", "wr-notes:"].forEach(p => {
-              try { localStorage.removeItem(window.wsKey ? window.wsKey(p + s.sid) : p + s.sid); } catch (e) {}
-            });
-          });
-          window.WsCatalog.set(chs.filter(c => parseInt(c.n, 10) !== 9));
-        }
-        if (window.scnQueueLoad && window.scnQueueSave) window.scnQueueSave(window.scnQueueLoad().filter(sid => !/^ch09/.test(sid)));
-      }
-    } catch (e) {}
-    const st = lf7Load();
-    const archived = { ...(st.archived || {}) };
-    delete archived["9"]; delete archived[9];
-    lf7Save({ handoff9: null, archived });
+      await lf7MigrateLegacy(pid);
+      const data = await apiGet(`/api/v2/projects/${pid}/longform/audit`);
+      lf7Findings = (data && data.findings) || [];
+      lf7Emit();
+    } catch (e) {
+      console.warn("[Lf7Bridge] 拉取审计清单失败:", e);
+    } finally {
+      lf7Fetching = null;
+    }
+  })();
+  return lf7Fetching;
+}
+
+function lf7Meta(finding) {
+  try { return JSON.parse(finding.evidence || "{}") || {}; } catch (e) { return {}; }
+}
+
+/* 旧 localStorage 桥状态一次性上行：未裁决的 extraCanon → findings；
+   已裁决（canonRuled）尽力对应 adjudicate；tasked/archived 丢弃（后端重建） */
+async function lf7MigrateLegacy(pid) {
+  try {
+    const flag = LF7_MIGRATED_LS + "::" + pid;
+    if (localStorage.getItem(flag)) return;
+    localStorage.setItem(flag, new Date().toISOString());
+    const st = JSON.parse(localStorage.getItem(lf7Key()) || "{}");
+    for (const entry of st.extraCanon || []) {
+      try {
+        await apiPost(`/api/v2/projects/${pid}/longform/chapters/${entry.conflictCh || "ch"}/audit`, {
+          finding_id: entry.id,
+          kind: "drift",
+          severity: entry.drift ? "block" : "warn",
+          text: entry.conflictText || entry.subject || "设定冲突",
+          meta: { subject: entry.subject, value: entry.value, source: entry.source, drift: !!entry.drift },
+        });
+      } catch (e) {}
+    }
+    for (const id of Object.keys(st.canonRuled || {})) {
+      try {
+        await apiPost(`/api/v2/projects/${pid}/longform/audit/${id}/adjudicate`, {
+          decision: "accept_fix",
+          note: (st.canonRuled[id] || {}).value || "",
+        });
+      } catch (e) {}
+    }
+  } catch (e) {}
+}
+
+const Lf7Bridge = {
+  /* 旧 state() 返回桥状态对象；视图读 handoff9 等键 —— 缓存映射保形 */
+  state() {
+    const ruled = this.ruled();
+    return {
+      canonRuled: ruled,
+      extraCanon: this.extraCanon(),
+      archived: lf7ArchivedMap(),
+      handoff9: lf7HandoffLocal().handoff9 || null,
+      tasked: {},
+    };
   },
+  /* —— 设定裁决：塔或收件箱任一侧统一并锁定（后端同源） —— */
+  ruleCanon(id, value) {
+    const pid = lf7ProjectId();
+    if (!pid) return;
+    // 乐观：本地缓存先置 adjudicated
+    lf7Findings = lf7Findings.map(f => f.finding_id === id ? { ...f, status: "adjudicated", decision_note: value || f.decision_note } : f);
+    lf7Emit();
+    apiPost(`/api/v2/projects/${pid}/longform/audit/${id}/adjudicate`, {
+      decision: "accept_fix",
+      note: value || "",
+    }).then(() => lf7Fetch()).catch((e) => {
+      try { window.alert((e && e.message) || "裁决失败。"); } catch (e2) {}
+      lf7Fetch();
+    });
+  },
+  isRuled(id) {
+    const f = lf7Findings.find(x => x.finding_id === id);
+    return !!(f && f.status === "adjudicated");
+  },
+  ruled() {
+    const out = {};
+    lf7Findings.forEach(f => {
+      if (f.status === "adjudicated") out[f.finding_id] = { value: f.decision_note || null, at: Date.parse(f.updated_at || "") || Date.now() };
+    });
+    return out;
+  },
+  /* —— 归档时新发现的冲突：直接建 finding（后端同事务产待办卡） —— */
+  addCanonConflict(entry) {
+    const pid = lf7ProjectId();
+    if (!pid || !entry || !entry.id) return;
+    if (lf7Findings.some(f => f.finding_id === entry.id)) return;
+    const chapterRef = lf7ChapterIdByNo(entry.conflictCh) || String(entry.conflictCh || "");
+    apiPost(`/api/v2/projects/${pid}/longform/chapters/${chapterRef}/audit`, {
+      finding_id: entry.id,
+      kind: "drift",
+      severity: entry.drift ? "block" : "warn",
+      text: entry.conflictText || entry.subject || "设定冲突",
+      meta: { subject: entry.subject, value: entry.value, source: entry.source, drift: !!entry.drift },
+    }).then(() => lf7Fetch()).catch((e) => {
+      console.warn("[Lf7Bridge] 登记冲突失败:", e);
+    });
+  },
+  extraCanon() {
+    /* 后端 findings 中超出 LF2_CANON 静态种子的条目（归档新增），还原为 canon 条目形状 */
+    const base = new Set(((window.LF2_CANON || [])).map(c => c.id));
+    return lf7Findings
+      .filter(f => !base.has(f.finding_id))
+      .map(f => {
+        const meta = lf7Meta(f);
+        return {
+          id: f.finding_id,
+          subject: meta.subject || f.text,
+          value: meta.value || "（待统一）",
+          source: meta.source,
+          status: f.status === "adjudicated" ? "locked" : "conflict",
+          drift: !!meta.drift,
+          conflictCh: meta.source,
+          conflictText: f.text,
+        };
+      });
+  },
+  /* —— 拍板产物化：dedupe_key 唯一索引保证同一事项只有一张卡 —— */
+  onceTask(key, payload) {
+    if (window.rvPush) window.rvPush({ ...(payload || {}), dedupeKey: key });
+    return true; // 去重由后端唯一索引静默完成
+  },
+  /* —— 归档登记：以目录章状态为准（写回链 P7 后端化） —— */
+  isArchived(ch) {
+    try {
+      const chapter = (window.WsCatalog ? window.WsCatalog.get() : []).find(c => parseInt(c.n, 10) === parseInt(ch, 10));
+      return !!(chapter && ["draft", "review", "approved"].includes(chapter.state));
+    } catch (e) { return false; }
+  },
+  markArchived(ch) {
+    /* 真实归档动作走 lf7ArchiveCh9 / 契约 transition；这里仅触发刷新（保留签名） */
+    void ch;
+    try { if (window.WsCatalog && window.WsCatalog.__refresh) window.WsCatalog.__refresh(); } catch (e) {}
+    lf7Emit();
+  },
+  /* —— 演示闭环复位：不再移植（等价能力 = 后端 reset_author_state 工具） —— */
+  resetLoop9() {
+    try { window.alert("演示复位已随后端化下线：用 python -m novel_system.tools.reset_author_state 重置，或重启 dev（自动 reseed demo）。"); } catch (e) {}
+  },
+  __refresh: lf7Fetch,
 };
+
+/* handoff9 等纯 UI 流程标记仍留本地（不构成业务真相） */
+function lf7HandoffLocal() {
+  try { return JSON.parse(localStorage.getItem(lf7Key()) || "{}"); } catch (e) { return {}; }
+}
+function lf7SaveLocal(patch) {
+  const st = { ...lf7HandoffLocal(), ...patch };
+  try { localStorage.setItem(lf7Key(), JSON.stringify(st)); } catch (e) {}
+  lf7Emit();
+}
+function lf7ArchivedMap() {
+  const out = {};
+  try {
+    (window.WsCatalog ? window.WsCatalog.get() : []).forEach(c => {
+      if (["draft", "review", "approved"].includes(c.state)) out[parseInt(c.n, 10)] = true;
+    });
+  } catch (e) {}
+  return out;
+}
+function lf7ChapterIdByNo(no) {
+  try {
+    const chapter = (window.WsCatalog ? window.WsCatalog.get() : []).find(c => parseInt(c.n, 10) === parseInt(no, 10));
+    return chapter ? chapter.backendId : null;
+  } catch (e) { return null; }
+}
 
 /* 把已裁决应用到 canon 种子（塔挂载时调用）：
    已裁决 → 锁定 + 钉入；归档新增的冲突（extraCanon）一并并入 */
 function lf7ApplyCanon(seed) {
-  const ruled = lf7Load().canonRuled || {};
-  const extras = (lf7Load().extraCanon || []).filter(x => !seed.some(c => c.id === x.id));
+  const ruled = Lf7Bridge.ruled();
+  const extras = Lf7Bridge.extraCanon().filter(x => !seed.some(c => c.id === x.id));
   return [...seed, ...extras].map(c =>
     ruled[c.id] && c.status === "conflict"
       ? { ...c, status: "locked", pinned: true, drift: false, fresh: false }
@@ -94,14 +216,22 @@ function lf7ApplyCanon(seed) {
   );
 }
 
-/* 待裁决设定冲突 —— 待办收件箱的实时派生源（与塔同一事实） */
+/* 待裁决设定冲突（塔与待办同一事实：后端 findings status=open） */
 function lf7PendingCanon() {
-  if (!lf7IsTide()) return [];
+  if (!lf7IsTide()) {
+    /* 非 demo 作品：纯后端 findings */
+    return lf7Findings.filter(f => f.status === "open").map(f => {
+      const meta = lf7Meta(f);
+      return { id: f.finding_id, subject: meta.subject || f.text, value: meta.value || "（待统一）", source: meta.source, conflictCh: meta.source, conflictText: f.text, drift: !!meta.drift };
+    });
+  }
   const base = window.LF2_CANON || [];
-  const ruled = lf7Load().canonRuled || {};
-  const extras = (lf7Load().extraCanon || []).filter(x => !base.some(c => c.id === x.id));
-  return [...base, ...extras].filter(c => c.status === "conflict" && !ruled[c.id]);
+  const ruled = Lf7Bridge.ruled();
+  const openIds = new Set(lf7Findings.filter(f => f.status === "open").map(f => f.finding_id));
+  const extras = Lf7Bridge.extraCanon().filter(x => x.status === "conflict" && !base.some(c => c.id === x.id));
+  return [...base, ...extras].filter(c => c.status === "conflict" && !ruled[c.id] && (openIds.size === 0 || openIds.has(c.id) || !lf7Findings.some(f => f.finding_id === c.id)));
 }
+
 
 /* 塔台化：交接 = 把第 9 章按契约拆成 3 场、入列 AI 起草台（唯一执行器）。
    塔不再直接生成正文 —— 场内质检归起草台，跨章审计归塔。 */
@@ -150,7 +280,7 @@ function lf7Dispatch9() {
       const q = window.scnQueueLoad();
       window.scnQueueSave([...sids.filter(x => !q.includes(x)), ...q]);
     }
-    lf7Save({ handoff9: { at: Date.now(), sids } });
+    lf7SaveLocal({ handoff9: { at: Date.now(), sids } });
     return { sids, ch: 9 };
   } catch (e) { return null; }
 }
@@ -207,6 +337,10 @@ function lf7ArchiveCh9() {
     return true;
   } catch (e) { return false; }
 }
+
+/* 启动装载 + 作品切换刷新 */
+try { lf7Fetch(); } catch (e) {}
+window.addEventListener("ws:work-changed", () => { try { lf7Fetch(); } catch (e) {} });
 
 Object.assign(window, { Lf7Bridge, lf7ApplyCanon, lf7PendingCanon, lf7ArchiveCh9, lf7Dispatch9 });
 

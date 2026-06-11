@@ -214,7 +214,7 @@ def test_flow_status_shape(client, session):
     session.commit()
     data = client.get("/api/v2/projects/tide/flow-status").json()["data"]
     assert data["snowflake_pct"] == 80  # 10 步中 8 步 approved
-    assert data["open_review_count"] == 0
+    assert data["open_review_count"] >= 8  # 统一收件箱口径：5 demo 卡 + 3 canon 卡 + 派生
     assert data["draft_queue_len"] >= 1  # ch08 sc01/sc02 无正文
     assert data["qc_blocked_count"] == 0
     assert data["last_manuscript"] is None  # demo 未走归档链

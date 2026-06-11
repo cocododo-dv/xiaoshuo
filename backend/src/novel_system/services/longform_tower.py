@@ -6,15 +6,25 @@
 """
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterAuditFinding, ChapterContract, LongformAnchor, utcnow
+from novel_system.db.models import (
+    ChapterAuditFinding,
+    ChapterContract,
+    LongformAnchor,
+    ReviewItem,
+    utcnow,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import ProjectService
+
+logger = logging.getLogger(__name__)
 
 ANCHOR_KINDS = {"fact", "trait", "setting", "timeline"}
 AUDIT_KINDS = {"drift", "overdue", "unplanted_reveal", "causal_break", "unfair_clue", "stall", "deflation", "arc"}
@@ -228,6 +238,20 @@ class LongformTowerService:
             "open_count": sum(1 for item in findings if item.status == "open"),
         }
 
+    def list_all_findings(self, project_id: str) -> dict[str, Any]:
+        """FE-ALIGN P7：项目级审计清单（lf7 桥的 ruled/pending 缓存数据源）。"""
+        project = self._require_project(project_id)
+        findings = self.session.scalars(
+            select(ChapterAuditFinding)
+            .where(ChapterAuditFinding.project_id == project.project_id)
+            .order_by(ChapterAuditFinding.created_at)
+        ).all()
+        return {
+            "project_id": project.project_id,
+            "findings": [_finding_payload(item) for item in findings],
+            "open_count": sum(1 for item in findings if item.status == "open"),
+        }
+
     def create_finding(self, project_id: str, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         project = self._require_project(project_id)
         text = str(payload.get("text") or "").strip()
@@ -239,19 +263,79 @@ class LongformTowerService:
         severity = str(payload.get("severity") or "warn").strip()
         if severity not in AUDIT_SEVERITIES:
             raise DomainError("TOWER_AUDIT_SEVERITY_INVALID", f"severity must be one of {sorted(AUDIT_SEVERITIES)}", status_code=400)
+        # FE-ALIGN P7：允许调用方指定 finding_id（demo seed / 桥迁移的幂等键）；
+        # FE 展示元数据（subject/value/source/drift）以 JSON 存 evidence（meta 优先）。
+        finding_id = str(payload.get("finding_id") or "").strip() or f"AUD_{uuid.uuid4().hex[:10].upper()}"
+        existing = self.session.get(ChapterAuditFinding, finding_id)
+        if existing is not None:
+            return _finding_payload(existing)
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else None
+        evidence = str(payload.get("evidence") or "").strip() or None
+        if meta is not None and not evidence:
+            evidence = json.dumps(meta, ensure_ascii=False)
         finding = ChapterAuditFinding(
-            finding_id=f"AUD_{uuid.uuid4().hex[:10].upper()}",
+            finding_id=finding_id,
             project_id=project.project_id,
             chapter_id=chapter_id,
             kind=kind,
             severity=severity,
             text=text,
-            evidence=str(payload.get("evidence") or "").strip() or None,
+            evidence=evidence,
             status="open",
         )
         self.session.add(finding)
         self.session.flush()
+        # 链路①：finding 创建 ↔ 待办 decision 卡同事务同源（dedupe=canon:{finding_id}）
+        self._create_canon_card(finding, meta or {})
         return _finding_payload(finding)
+
+    def _create_canon_card(self, finding: ChapterAuditFinding, meta: dict[str, Any]) -> None:
+        from novel_system.services.review_cards import ReviewCardService
+
+        subject = str(meta.get("subject") or "").strip()
+        value = str(meta.get("value") or "").strip()
+        source = str(meta.get("source") or "").strip()
+        can_rule = bool(value and value != "（待统一）")
+        actions: list[dict[str, Any]] = []
+        if can_rule:
+            actions.append(
+                {
+                    "label": f"统一为「{value}」并锁定",
+                    "intent": "primary",
+                    "op": "resolve",
+                    "effect": {"type": "rule_canon", "finding_id": finding.finding_id, "value": value},
+                }
+            )
+        actions.append(
+            {
+                "label": "去控制塔细看" if can_rule else "去控制塔裁决",
+                "intent": "ghost" if can_rule else "primary",
+                "op": "nav",
+                "nav_to": "longform",
+            }
+        )
+        actions.append({"label": "稍后再说", "intent": "quiet", "op": "snooze"})
+        detail = finding.text + (
+            f"。控制塔建议以第 {source} 章为准（{subject} = {value}）；裁决后锁定为设定锚点，塔里的同一条会同步消失。"
+            if can_rule
+            else "。这条还没有可直接采纳的统一值，去控制塔裁决。"
+        )
+        ReviewCardService(self.session).create_card(
+            {
+                "project_id": finding.project_id,
+                "chapter_id": finding.chapter_id,
+                "kind": "risk" if bool(meta.get("drift")) or finding.severity == "block" else "decision",
+                "priority": 1 if bool(meta.get("drift")) or finding.severity == "block" else 2,
+                "title": f"设定冲突待裁决：{subject or finding.text[:24]}",
+                "source": "长篇控制塔",
+                "where": f"长篇控制塔 · 第 {finding.chapter_id} 章" if not source else f"长篇控制塔 · 第 {source} 章",
+                "detail": detail,
+                "options": [value] if can_rule else None,
+                "dedupe_key": f"canon:{finding.finding_id}",
+                "actions": actions,
+            },
+            actor_ref="longform_tower",
+        )
 
     def adjudicate_finding(self, project_id: str, finding_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         project = self._require_project(project_id)
@@ -264,6 +348,16 @@ class LongformTowerService:
         finding.decision = decision
         finding.decision_note = str(payload.get("note") or "").strip() or None
         finding.status = "adjudicated"
+        # 链路①反向：直接走塔的 adjudicate 时，同事务把对应待办卡置 resolved
+        # （effect rule_canon 路径里该卡正被 resolve 流程处理，这里幂等置位即可）
+        card = self.session.scalars(
+            select(ReviewItem).where(
+                ReviewItem.project_id == project.project_id,
+                ReviewItem.dedupe_key == f"canon:{finding.finding_id}",
+            )
+        ).first()
+        if card is not None and (card.state or "open") == "open":
+            card.state = "resolved"
         self.session.flush()
         return _finding_payload(finding)
 
@@ -305,4 +399,26 @@ class LongformTowerService:
         if target == "archived":
             contract.archived_at = utcnow()
         self.session.flush()
-        return _contract_payload(contract)
+        result = _contract_payload(contract)
+        # FE-ALIGN P7 链路③：归档写回 —— 推进目录章状态 + 触发资料派生（LLM 关则静默跳过）。
+        if target == "archived":
+            result["write_back"] = self._archive_write_back(project.project_id, chapter_id)
+        return result
+
+    def _archive_write_back(self, project_id: str, chapter_id: str) -> dict[str, Any]:
+        from novel_system.db.models import ChapterGoal
+        from novel_system.services.library_derive import LibraryDeriveService
+
+        write_back: dict[str, Any] = {"chapter_state": None, "derive": None}
+        chapter = self.session.get(ChapterGoal, chapter_id)
+        if chapter is not None and chapter.project_id == project_id:
+            if str(chapter.state or "planned") in {"planned", "todo", "writing"}:
+                chapter.state = "draft"
+            write_back["chapter_state"] = chapter.state
+            self.session.flush()
+        try:
+            write_back["derive"] = LibraryDeriveService(self.session).derive_from_chapter(project_id, chapter_id)
+        except Exception:  # 派生失败不阻塞归档
+            logger.exception("archive derive failed for %s", chapter_id)
+            write_back["derive"] = {"skipped": True, "reason": "error"}
+        return write_back

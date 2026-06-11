@@ -205,6 +205,58 @@ def _seed_tide_library(session: Session) -> None:
     session.flush()
 
 
+# 原型 lf2-data LF2_CANON 的 conflict 条目（locked 条目不建 finding——已是定论）
+_TIDE_CANON_CONFLICTS = [
+    {
+        "finding_id": "c1", "chapter_no": 5, "kind": "drift", "severity": "block",
+        "text": "第 5 章「还在念中学」与第 1 章「28 岁」冲突",
+        "meta": {"subject": "林岑 · 年龄", "value": "28 岁", "source": 1, "drift": True},
+    },
+    {
+        "finding_id": "c2", "chapter_no": 7, "kind": "drift", "severity": "warn",
+        "text": "第 7 章写「生铁」，与第 1 章「铜」冲突",
+        "meta": {"subject": "盐钟 · 材质", "value": "铜", "source": 1, "drift": True},
+    },
+    {
+        "finding_id": "c3", "chapter_no": 5, "kind": "drift", "severity": "warn",
+        "text": "第 5 章「同一周内」与第 3 章「三天后」冲突",
+        "meta": {"subject": "时间线 · 父亲失踪", "value": "案发后第三天", "source": 3, "drift": False},
+    },
+]
+
+
+def _seed_tide_audit(session: Session) -> None:
+    """链路① demo：LF2_CANON 冲突 → ChapterAuditFinding（同事务产 decision/risk 卡）。"""
+    from novel_system.db.models import ChapterAuditFinding
+    from novel_system.services.longform_tower import LongformTowerService
+
+    session.execute(delete(ChapterAuditFinding).where(ChapterAuditFinding.project_id == "tide"))
+    session.flush()
+    chapters = session.execute(
+        select(ChapterGoal)
+        .where(ChapterGoal.project_id == "tide", ChapterGoal.trashed_flag == 0)
+        .order_by(ChapterGoal.display_order.asc())
+    ).scalars().all()
+    by_no = {index + 1: chapter for index, chapter in enumerate(chapters)}
+    tower = LongformTowerService(session)
+    for item in _TIDE_CANON_CONFLICTS:
+        chapter = by_no.get(item["chapter_no"])
+        if chapter is None:
+            continue
+        tower.create_finding(
+            "tide",
+            chapter.chapter_id,
+            {
+                "finding_id": item["finding_id"],
+                "kind": item["kind"],
+                "severity": item["severity"],
+                "text": item["text"],
+                "meta": item["meta"],
+            },
+        )
+    session.flush()
+
+
 def cleanup_fe_demo_works(session: Session) -> None:
     scene_ids = [
         row
@@ -378,6 +430,7 @@ def _seed_work(
     if project_id == "tide":
         _seed_tide_review_cards(session)
         _seed_tide_library(session)
+        _seed_tide_audit(session)
 
     WritingStatsService(session).seed_stats(
         project_id,
