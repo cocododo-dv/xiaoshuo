@@ -46,6 +46,10 @@ class StoryProject(Base):
     active_outline_plan_id: Mapped[str | None] = mapped_column(String, nullable=True)
     current_chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
     approved_chapter_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # FE-ALIGN P4: 作品级软删（沿用章/场景 trash 的列名约定；级联只动可见性不动数据）
+    trashed_flag: Mapped[int] = mapped_column(Integer, default=0)
+    trashed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    trashed_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 

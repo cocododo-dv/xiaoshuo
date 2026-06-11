@@ -34,6 +34,7 @@ from novel_system.api.routes import (
     style_profile,
     style_reference,
     system_config,
+    trash,
     work_profile,
     writer_room,
     writer_deep_review,
@@ -119,6 +120,7 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(catalog.router)
+    app.include_router(trash.router)
     app.include_router(chapters.router)
     app.include_router(projects.router)
     app.include_router(project_overview.router)

@@ -94,8 +94,11 @@ class ProjectService:
         return {"project": project_payload(project)}
 
     def list(self) -> dict[str, Any]:
+        # FE-ALIGN P4: 软删作品默认不出现在任何列表（回收站统一列表单独供给）
         projects = self.session.execute(
-            select(StoryProject).order_by(StoryProject.created_at.desc(), StoryProject.project_id.desc())
+            select(StoryProject)
+            .where((StoryProject.trashed_flag.is_(None)) | (StoryProject.trashed_flag == 0))
+            .order_by(StoryProject.created_at.desc(), StoryProject.project_id.desc())
         ).scalars().all()
         return {"items": [project_summary_payload(project) for project in projects]}
 

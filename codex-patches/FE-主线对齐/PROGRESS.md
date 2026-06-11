@@ -8,7 +8,7 @@
 - [x] Phase 0 · 基线与陷阱 — 提交：d661cd5（另：开工基线快照 c2044ae）
 - [x] Phase 1 · 前端工程化 — 提交：00254f5
 - [x] Phase 2 · 作品域与聚合 — 提交：e858b8b
-- [x] Phase 3 · 目录统一 — 提交：（见下方 Phase 3 记录；全量 pytest 827 passed）
+- [x] Phase 3 · 目录统一 — 提交：de32d78
 - [ ] Phase 4 · 回收站 — 提交：
 - [ ] Phase 5 · 待办收件箱 — 提交：
 - [ ] Phase 6 · 资料库 — 提交：
@@ -110,6 +110,24 @@
   改章题落库/加删场景后端可见/正文保存→words rollup 全链路/跨会话水合）；15 视图
   截图零 console 错误，编排台与基线像素一致（数据已为后端目录）。
 
+## Phase 4 记录（2026-06-11）
+
+- 后端：迁移 `20260611_0049`（StoryProject += trashed_flag/at/by，沿用章/场景列名约定）。
+  `services/trash.py` + `routes/trash.py`（v2）：作品软删 `DELETE /api/v2/projects/{id}` /
+  恢复 `POST …/restore`；统一三级列表 `GET /api/v2/trash?project_id=…`（条目 id =
+  `work:|chapter:|scene:` 前缀；全局作品桶 + 作品内章/场景桶；章被删时其场景
+  restorable=false 引导先恢复章）；按条目恢复 `POST /api/v2/trash/{entry}/restore`；
+  永久清除 `DELETE /api/v2/trash/{entry}`（D3 仅手动；作品 purge 级联 FE 域全表）。
+  catalog 路由补章/场景级软删/恢复桥（校验归属后走既有 AuthorLifecycleService）。
+  `ProjectService.list` 过滤软删作品。
+- 前端：`WsTrashStore` 接真（缓存 + work-changed/trash-changed 刷新；push 退化为
+  刷新壳；restore 乐观返回 true、失败 store 自提示）；`WsWorks.remove` 实装软删
+  （乐观下架+回滚），`restoreWork` 实装恢复端点；**isSeed 恒 false**（摘「种子不可删」，
+  demo 可删可恢复；演示身份仍在 work.isDemo）。
+- 验收：5 个后端测试绿（往返/三级列表/正文随恢复回来/purge 无残影/章删级联下场景
+  恢复阻止）；P4 冒烟 4 项全过（删整部→切换器消失→回收站恢复→数据无损含统计；
+  删场景→恢复正文保留；永久清除无残影）；全量 pytest **832 passed**；build 过。
+
 ## 核对发现（实际代码 vs 简报假设）
 
 | Phase | 简报假设 | 实际情况 | 处理 |
@@ -125,7 +143,7 @@
 | 3 | 章级与场景级 trash 机制 | 已核对：同一服务 AuthorLifecycleService，软删标记 trashed_flag（章 trash 级联场景）；purge 物理删除 | P4 沿用同一机制扩作品级 |
 | 3 | 「wr-notes:<sid> 同步迁移」 | 写作器代码中无该键的实际使用者（仅回收站 purge 清理它） | 无需迁移；P4 处理回收站时一并核对 |
 | 2 | 正文保存写路径 | ✅ 已核实：`ensure` + `PATCH author-drafts/{draft_id}` | 埋点加在 PATCH 服务层 |
-| 4 | 章/场景 trash 的实现机制（软删标记 or 移表）；两套是否同一服务 | （待核对 services 层） | |
+| 4 | 章/场景 trash 的实现机制（软删标记 or 移表）；两套是否同一服务 | 同一服务 AuthorLifecycleService；trashed_flag 软删；章 trash 级联场景；「场景已删时章删被 409 阻止」「场景 restore 追加到章尾（scene_seq 重排）」 | 作品级沿用同列名约定；统一列表对被级联场景标 restorable=false |
 | 5 | ReviewItem 状态机可扩展为统一 state | （待核对） | |
 | 6 | library 实体模型字段差集 | （待核对） | |
 | 7 | adjudicate 幂等性 | （待核对） | |
@@ -144,8 +162,12 @@
   （等价能力=重跑 seed_demo / dev 重启自动 reseed）。
 - P3：ws-manuscripts 经 set() 写的 `approvedAt` 是视图糖字段，不入库（refetch 后丢失，
   显示退化为状态徽标）；P8 接成稿中心时按需落库。
-- P3：restoreScene（本地回收站恢复）暂为「重新建行」语义（旧行已 trash）；
-  P4 切到后端 restore 端点后恢复原行。
+- ~~P3：restoreScene 重新建行~~（P4 已切后端 restore：恢复原行，但**追加到章尾**——
+  既有 lifecycle 语义 scene_seq 重排，与原型「恢复回原位置」略有出入，记为已知差异）。
+- P4：旧 localStorage 回收站条目（ws_trash_v1/ws_trash_works_v1）不迁移——其中场景
+  在后端真相里已不存在或已另行处理，恢复无意义；旧键 P8 统一清理。
+- P4：场景 purge 不再清理本地 wr-doc 缓存键（scene_id↔slug 映射已断）；残留缓存键
+  无害，P8 统一清理。
 - 题外（DEFERRED，不属本任务范围）：既有测试存在**负载敏感的偶发失败**——
   `test_scene_generation.py::test_run_scene_records_style_routing_failure`、
   `test_qc_engine.py` 两例等按 `created_at` 排序断言的测试，在机器高负载下多行

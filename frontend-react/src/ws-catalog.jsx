@@ -1,7 +1,7 @@
 import React from "react";
 import { WsWorks, wsKey } from "./ws-works.jsx";
 import { ARR_CHAPTERS } from "./ws-author-data.jsx";
-import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 
 /* global window, React, ARR_CHAPTERS */
 /* ==========================================================
@@ -486,6 +486,7 @@ async function catDispatchDiff(workId, prev, next) {
   try {
     for (const op of ops) await op();
     catFetch(workId, { migrate: false }); // 以服务端编号/rollup 收敛
+    try { window.dispatchEvent(new CustomEvent("ws:trash-changed")); } catch (e) {}
   } catch (e) {
     catRecover(e);
   }
@@ -682,65 +683,86 @@ window.addEventListener("ws:work-changed", () => {
 
 
 /* ==========================================================
-   WsTrashStore — 回收站（按作品隔离、持久化、可恢复）
-   目前接入：写作器删除场景（正文文档一并保留，恢复即回）。
-   其它模块的删除后续可用 push() 接入同一个箱子。
+   WsTrashStore — 回收站（FE-ALIGN Phase 4：接真后端统一三级列表）
+   GET /api/v2/trash?project_id=… = 全局作品桶 + 当前作品的章/场景桶；
+   软删端点自动产生条目，push() 退化为「触发刷新」的兼容壳。
+   restore/purge 走对应端点；失败由 store 自行提示并以服务端为准刷新。
    ========================================================== */
-const TRASH_LS = "ws_trash_v1";
-const TRASH_G_LS = "ws_trash_works_v1"; // 全局桶：被删除的整部作品（不随作品命名空间）
-const trashKey = () => catKey(TRASH_LS);
 const trashSubs = new Set();
-function trashLoad() { try { return JSON.parse(localStorage.getItem(trashKey())) || []; } catch (e) { return []; } }
-function trashGLoad() { try { return JSON.parse(localStorage.getItem(TRASH_G_LS)) || []; } catch (e) { return []; } }
+let trashCache = [];
+let trashFetching = null;
+const TRASH_KIND_LABEL = { work: "作品", chapter: "章节", scene: "场景" };
+
 function trashNotify() { trashSubs.forEach(fn => { try { fn(); } catch (e) {} }); }
-function trashSave(list) {
-  try { localStorage.setItem(trashKey(), JSON.stringify(list)); } catch (e) {}
-  trashNotify();
+
+function trashAdapt(item) {
+  return {
+    id: item.id,
+    kind: TRASH_KIND_LABEL[item.kind] || item.kind || "内容",
+    title: item.kind === "work" ? `《${item.title}》· 整部` : item.title,
+    removedAt: item.removed_at ? (Date.parse(item.removed_at) || Date.now()) : Date.now(),
+    restorable: item.restorable !== false,
+    payload: { type: item.kind },
+  };
 }
-function trashGSave(list) {
-  try { localStorage.setItem(TRASH_G_LS, JSON.stringify(list)); } catch (e) {}
-  trashNotify();
+
+function trashFetch() {
+  if (trashFetching) return trashFetching;
+  const id = catActiveId();
+  const qs = id && id !== "__loading__" ? `?project_id=${encodeURIComponent(id)}` : "";
+  trashFetching = apiGet(`/api/v2/trash${qs}`).then((data) => {
+    trashCache = ((data && data.items) || []).map(trashAdapt);
+    trashNotify();
+  }).catch((e) => {
+    console.warn("[WsTrashStore] 拉取回收站失败:", e);
+  }).finally(() => { trashFetching = null; });
+  return trashFetching;
 }
+
 const WsTrashStore = {
-  list() { return [...trashGLoad(), ...trashLoad()].sort((a, b) => (b.removedAt || 0) - (a.removedAt || 0)); },
+  list() { return trashCache; },
+  /* 兼容壳：各软删端点已自动产生后端条目，这里只触发刷新（旧调用点无害化） */
   push(item) {
-    const it = { id: "t" + Date.now().toString(36) + Math.floor(Math.random() * 1e3).toString(36), removedAt: Date.now(), ...item };
-    if (it.payload && it.payload.type === "work") trashGSave([it, ...trashGLoad()].slice(0, 20));
-    else trashSave([it, ...trashLoad()].slice(0, 100));
-    return it;
+    trashFetch();
+    return { id: "pending", removedAt: Date.now(), ...(item || {}) };
   },
   restore(id) {
-    const g = trashGLoad();
-    const gi = g.find(x => x.id === id);
-    if (gi) {
-      const ok = !!(window.WsWorks && gi.payload && window.WsWorks.restoreWork(gi.payload.work, gi.payload.keys));
-      if (ok) trashGSave(g.filter(x => x.id !== id));
-      return ok;
-    }
-    const list = trashLoad();
-    const it = list.find(x => x.id === id);
-    if (!it) return false;
-    let ok = true;
-    if (it.payload && it.payload.type === "scene") {
-      ok = WsCatalog.restoreScene(it.payload.chId, it.payload.scene, it.payload.index);
-    }
-    if (ok) trashSave(list.filter(x => x.id !== id));
-    return ok;
+    apiPost(`/api/v2/trash/${encodeURIComponent(id)}/restore`, {}).then(() => {
+      trashFetch();
+      if (String(id).startsWith("work:")) {
+        if (window.WsWorks && window.WsWorks.__refresh) window.WsWorks.__refresh();
+      } else {
+        catFetch(catActiveId(), { migrate: false });
+      }
+    }).catch((e) => {
+      try { window.alert((e && e.message) || "恢复失败。"); } catch (e2) {}
+      trashFetch();
+    });
+    return true; // 乐观返回；失败走上面的独立提示
   },
   purge(id) {
-    const g = trashGLoad();
-    if (g.some(x => x.id === id)) { trashGSave(g.filter(x => x.id !== id)); return; }
-    const list = trashLoad();
-    const it = list.find(x => x.id === id);
-    if (it && it.payload && it.payload.type === "scene" && it.payload.scene && it.payload.scene.sid) {
-      try { localStorage.removeItem(catKey("wr-doc:" + it.payload.scene.sid)); } catch (e) {}
-      try { localStorage.removeItem(catKey("wr-notes:" + it.payload.scene.sid)); } catch (e) {}
-    }
-    trashSave(list.filter(x => x.id !== id));
+    apiDelete(`/api/v2/trash/${encodeURIComponent(id)}`).then(() => {
+      trashFetch();
+    }).catch((e) => {
+      try { window.alert((e && e.message) || "永久删除失败。"); } catch (e2) {}
+      trashFetch();
+    });
   },
-  clear() { this.list().slice().forEach(it => this.purge(it.id)); },
+  clear() {
+    (async () => {
+      for (const it of trashCache.slice()) {
+        try { await apiDelete(`/api/v2/trash/${encodeURIComponent(it.id)}`); } catch (e) {}
+      }
+      trashFetch();
+    })();
+  },
   subscribe(fn) { trashSubs.add(fn); return () => trashSubs.delete(fn); },
 };
+
+try { trashFetch(); } catch (e) {}
+window.addEventListener("ws:work-changed", () => { try { trashFetch(); } catch (e) {} });
+/* 软删端点完成后的精确刷新信号（WsWorks.remove / 目录删除成功时 dispatch） */
+window.addEventListener("ws:trash-changed", () => { try { trashFetch(); } catch (e) {} });
 
 /* ==========================================================
    WsDemoTag — 演示工作台的诚实标识

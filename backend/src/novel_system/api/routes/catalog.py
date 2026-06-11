@@ -22,6 +22,10 @@ def _req_id(request: Request):
     return getattr(request.state, "request_id", None)
 
 
+def _operator(request: Request) -> str:
+    return getattr(request.state, "operator_ref", None) or "operator"
+
+
 @router.get("/api/v2/projects/{project_id}/catalog")
 def get_catalog(project_id: str, request: Request, session: Session = Depends(get_session)):
     return ok(CatalogService(session).catalog(project_id), req_id=_req_id(request))
@@ -87,6 +91,64 @@ def move_catalog_scene(
     session: Session = Depends(get_session),
 ):
     result = CatalogService(session).move_scene(project_id, scene_id, payload or {})
+    session.commit()
+    return ok(result, req_id=_req_id(request))
+
+
+@router.delete("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}")
+def trash_catalog_chapter(
+    project_id: str,
+    chapter_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """章级软删（桥接既有 AuthorLifecycleService trash 机制）。"""
+    from novel_system.services.trash import TrashService
+
+    result = TrashService(session).trash_chapter_in_project(project_id, chapter_id, actor_ref=_operator(request))
+    session.commit()
+    return ok(result, req_id=_req_id(request))
+
+
+@router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/restore")
+def restore_catalog_chapter(
+    project_id: str,
+    chapter_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    from novel_system.services.trash import TrashService
+
+    result = TrashService(session).restore_entry(f"chapter:{chapter_id}")
+    session.commit()
+    return ok(result, req_id=_req_id(request))
+
+
+@router.delete("/api/v2/projects/{project_id}/catalog/scenes/{scene_id}")
+def trash_catalog_scene(
+    project_id: str,
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """场景级软删（桥接既有 AuthorLifecycleService trash 机制）。"""
+    from novel_system.services.trash import TrashService
+
+    result = TrashService(session).trash_scene_in_project(project_id, scene_id, actor_ref=_operator(request))
+    session.commit()
+    return ok(result, req_id=_req_id(request))
+
+
+@router.post("/api/v2/projects/{project_id}/catalog/scenes/{scene_id}/restore")
+def restore_catalog_scene(
+    project_id: str,
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    from novel_system.services.trash import TrashService
+
+    result = TrashService(session).restore_entry(f"scene:{scene_id}")
     session.commit()
     return ok(result, req_id=_req_id(request))
 

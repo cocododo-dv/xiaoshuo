@@ -1,5 +1,5 @@
 import React from "react";
-import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 
 /* global window */
 /* ==========================================================
@@ -302,9 +302,26 @@ const WsWorks = {
     return temp;
   },
   remove(id) {
-    /* P4 接回收站后端后启用整部软删；当前阶段不允许删除（避免本地删除与后端真相分叉） */
-    void id;
-    wsToastError(null, "整部作品的删除将在回收站接入后端后开放（FE-ALIGN Phase 4）。");
+    /* FE-ALIGN P4：整部软删（DELETE /api/v2/projects/{id}）。
+       乐观下架 + 失败回滚；回收站条目由后端自动产生。 */
+    if (WS_WORKS.length <= 1) return; // 至少保留一部（原型既有限制，P4 只摘「种子不可删」）
+    const victim = WS_WORKS.find(w => w.id === id);
+    if (!victim) return;
+    const prevList = WS_WORKS;
+    const prevActive = WS_ACTIVE_ID;
+    WS_WORKS = WS_WORKS.filter(w => w.id !== id);
+    if (WS_ACTIVE_ID === id) WS_ACTIVE_ID = WS_WORKS[0].id;
+    wsSaveCache();
+    wsNotify();
+    apiDelete(`/api/v2/projects/${id}`).then(() => {
+      try { window.dispatchEvent(new CustomEvent("ws:trash-changed")); } catch (e) {}
+    }).catch((error) => {
+      WS_WORKS = prevList;
+      WS_ACTIVE_ID = prevActive;
+      wsSaveCache();
+      wsNotify();
+      wsToastError(error, "删除作品失败。");
+    });
   },
   update(id, patch) {
     const body = patch || {};
@@ -341,16 +358,18 @@ const WsWorks = {
       wsToastError(error, "保存作品档案失败。");
     });
   },
-  isSeed: (id) => {
-    const w = WS_WORKS.find(x => x.id === id);
-    return !!(w && w.isDemo);
-  },
-  /* 从回收站整体恢复 —— P4 接后端 restore 端点；keys 参数随 localStorage 时代消亡（保留签名、忽略） */
+  /* FE-ALIGN P4：摘除「种子不可删」前端限制（demo 可删可恢复，由后端 is_demo 表达身份）。
+     视图以 isSeed 作为删除门闩，故恒为 false；演示身份仍在 work.isDemo 上。 */
+  isSeed: () => false,
+  /* 从回收站整体恢复（POST /api/v2/projects/{id}/restore）；
+     keys 参数随 localStorage 时代消亡（签名保留、忽略） */
   restoreWork(w, keys) {
     void keys;
     if (!w || !w.id) return false;
-    wsToastError(null, "整部作品的恢复将在回收站接入后端后开放（FE-ALIGN Phase 4）。");
-    return false;
+    apiPost(`/api/v2/projects/${w.id}/restore`, {}).then(() => wsRefresh()).catch((error) => {
+      wsToastError(error, "恢复作品失败。");
+    });
+    return true;
   },
   subscribe(fn) { wsSubs.add(fn); return () => wsSubs.delete(fn); },
   /* —— FE-ALIGN 内部接缝（非契约面）：统计派生字段的只读注入 + 手动刷新 —— */
