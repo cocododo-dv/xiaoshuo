@@ -132,7 +132,7 @@ function Resolve-AvailablePort {
 
 function Get-RecordedRootProcessIds {
     $recorded = New-Object System.Collections.Generic.List[int]
-    foreach ($pidFile in @($script:BackendPidFile, $script:FrontendPidFile)) {
+    foreach ($pidFile in @($script:BackendPidFile, $script:FrontendPidFile, $script:ReactPidFile)) {
         if (-not (Test-Path $pidFile)) {
             continue
         }
@@ -194,7 +194,7 @@ function Get-DescendantProcessIds {
 }
 
 function Remove-RunState {
-    Remove-Item $script:BackendPidFile, $script:FrontendPidFile, $script:BackendUrlFile, $script:FrontendUrlFile -ErrorAction SilentlyContinue
+    Remove-Item $script:BackendPidFile, $script:FrontendPidFile, $script:ReactPidFile, $script:BackendUrlFile, $script:FrontendUrlFile, $script:ReactUrlFile -ErrorAction SilentlyContinue
 }
 
 function ConvertTo-SingleQuotedPowerShellLiteral {
@@ -225,7 +225,7 @@ function Resolve-DevConfigSecret {
 }
 
 function Clear-PreviousLogs {
-    Remove-Item $script:BackendOutLog, $script:BackendErrLog, $script:FrontendOutLog, $script:FrontendErrLog -ErrorAction SilentlyContinue
+    Remove-Item $script:BackendOutLog, $script:BackendErrLog, $script:FrontendOutLog, $script:FrontendErrLog, $script:ReactOutLog, $script:ReactErrLog -ErrorAction SilentlyContinue
 }
 
 function Stop-TrackedServices {
@@ -325,6 +325,7 @@ function Start-TrackedServices {
     $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
     $script:BackendHealthUrl = "$script:BackendUrl/api/v1/chapters"
     Assert-PortAvailable -Port $script:FrontendPort -Label "Frontend"
+    Assert-PortAvailable -Port $script:ReactPort -Label "React frontend"
 
     New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
     Clear-PreviousLogs
@@ -344,8 +345,15 @@ function Start-TrackedServices {
         Set-Content -Path $script:FrontendPidFile -Value $frontendProcess.Id
         Set-Content -Path $script:FrontendUrlFile -Value $script:FrontendUrl
 
+        Write-Step -Message "Starting React frontend on $script:ReactUrl"
+        $reactCommand = '$env:VITE_NOVEL_SYSTEM_API_BASE = ''{0}''; npm.cmd run dev -- --host 127.0.0.1 --port {1}' -f $script:BackendUrl, $script:ReactPort
+        $reactProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $reactCommand) -WorkingDirectory $script:ReactDir -RedirectStandardOutput $script:ReactOutLog -RedirectStandardError $script:ReactErrLog -PassThru
+        Set-Content -Path $script:ReactPidFile -Value $reactProcess.Id
+        Set-Content -Path $script:ReactUrlFile -Value $script:ReactUrl
+
         Wait-Until -Label "backend health" -Condition { Test-UrlHealthy -Url $script:BackendHealthUrl } -TimeoutSeconds 90
         Wait-Until -Label "frontend home" -Condition { Test-UrlHealthy -Url $script:FrontendUrl } -TimeoutSeconds 60
+        Wait-Until -Label "react frontend home" -Condition { Test-UrlHealthy -Url $script:ReactUrl } -TimeoutSeconds 60
     }
     catch {
         Stop-TrackedServices
@@ -354,29 +362,37 @@ function Start-TrackedServices {
 
     Write-Host ("Backend:  {0}" -f $script:BackendUrl) -ForegroundColor Green
     Write-Host ("Frontend: {0}" -f $script:FrontendUrl) -ForegroundColor Green
+    Write-Host ("React:    {0}" -f $script:ReactUrl) -ForegroundColor Green
     Write-Host ("Logs:     {0}" -f $script:RunDir) -ForegroundColor Green
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $script:BackendDir = Join-Path $repoRoot "backend"
 $script:FrontendDir = Join-Path $repoRoot "frontend"
+$script:ReactDir = Join-Path $repoRoot "frontend-react"
 $script:RunDir = Join-Path $repoRoot ".codex-run"
 $script:BackendPidFile = Join-Path $script:RunDir "backend.pid"
 $script:FrontendPidFile = Join-Path $script:RunDir "frontend.pid"
+$script:ReactPidFile = Join-Path $script:RunDir "frontend-react.pid"
 $script:BackendUrlFile = Join-Path $script:RunDir "backend.url"
 $script:FrontendUrlFile = Join-Path $script:RunDir "frontend.url"
+$script:ReactUrlFile = Join-Path $script:RunDir "frontend-react.url"
 $script:SkipDemoSeedMarker = Join-Path $script:RunDir "skip-demo-seed"
 $script:ConfigSecretFile = Join-Path $script:RunDir "config.secret"
 $script:BackendOutLog = Join-Path $script:RunDir "backend.out.log"
 $script:BackendErrLog = Join-Path $script:RunDir "backend.err.log"
 $script:FrontendOutLog = Join-Path $script:RunDir "frontend.out.log"
 $script:FrontendErrLog = Join-Path $script:RunDir "frontend.err.log"
+$script:ReactOutLog = Join-Path $script:RunDir "frontend-react.out.log"
+$script:ReactErrLog = Join-Path $script:RunDir "frontend-react.err.log"
 $script:BackendPreferredPort = 8000
 $script:BackendPort = $script:BackendPreferredPort
 $script:FrontendPort = 5173
+$script:ReactPort = 5174
 $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
 $script:BackendHealthUrl = "$script:BackendUrl/api/v1/chapters"
 $script:FrontendUrl = "http://127.0.0.1:5173"
+$script:ReactUrl = "http://127.0.0.1:5174"
 
 switch ($Action) {
     "start" {

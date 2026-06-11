@@ -5,8 +5,8 @@
 
 ## 状态
 
-- [x] Phase 0 · 基线与陷阱 — 提交：（基线 c2044ae + Phase 0 提交见下）
-- [ ] Phase 1 · 前端工程化 — 提交：
+- [x] Phase 0 · 基线与陷阱 — 提交：d661cd5（另：开工基线快照 c2044ae）
+- [x] Phase 1 · 前端工程化 — 提交：（见下方 Phase 1 记录）
 - [ ] Phase 2 · 作品域与聚合 — 提交：
 - [ ] Phase 3 · 目录统一 — 提交：
 - [ ] Phase 4 · 回收站 — 提交：
@@ -41,10 +41,28 @@
   T8 运行时探测 9 处 6 文件/T11 无前缀 localStorage 键。
   T12：design/ 下无 merge-plan-*、design-canvas、*-standalone 文件，index.html 引用即搬运清单。
 
+## Phase 1 记录（2026-06-11）
+
+- `frontend-react/`：Vite 6 + React 18.3.1。`src/` 由一次性 codemod
+  `scripts/port-design.mjs` 从 `design/` 机械转换生成（import/export 化 + 入口装配，
+  逻辑零改动；window.* 赋值过渡期保留）。后续 Phase 直接演进 src/，不再重跑 codemod。
+- 人工处理两个文件：`tweaks-panel.jsx`（删宿主 postMessage 协议与 deck-stage 逻辑，
+  useTweaks 持久化改 localStorage 键 `ws_tweaks_v1`，面板开关改听本地事件 `ws:tweaks-open`）；
+  `ws-app.jsx`（两处 `__activate_edit_mode` postMessage → dispatch `ws:tweaks-open`，
+  尾部 createRoot 移入 main.jsx，不包 StrictMode）。
+- 验收：`npm run build` 过（86 模块，仅 chunk 体积提示）；15 视图 Playwright 截图
+  （`scripts/shoot-views.mjs`）与 Phase 0 基线肉眼一致、零 console/page 错误；
+  交互冒烟（`scripts/smoke-interact.mjs`）6 项全过：主题切换/舒适度面板/⌘K/
+  新建作品/作品切换/删除→回收站恢复（均 localStorage）。
+- `scripts/dev.ps1` + start/stop-dev.cmd 增加 React 前端（5174），与 Vue（5173）并行；
+  `frontend-react/README.md` 注明双入口。
+
 ## 核对发现（实际代码 vs 简报假设）
 
 | Phase | 简报假设 | 实际情况 | 处理 |
 |---|---|---|---|
+| 1 | 文件头 `/* global */` 注释 = 完整依赖清单 | 有遗漏（如 ws-app.jsx 用了 ws-snow 的 `WsConstruct` 未声明） | codemod 加全注册表词边界扫描兜底；只允许 import 加载序更早的文件防环 |
+| 1 | T12 提到 design/ 可能混入 merge-plan-*/design-canvas/*-standalone | 实际不存在这些文件；index.html 引用清单即全部 46 个 jsx + 14 个 css | 按 index.html 清单搬运 |
 | 2 | 正文保存写路径 | ✅ 已核实：`ensure` + `PATCH author-drafts/{draft_id}` | 埋点加在 PATCH 服务层 |
 | 4 | 章/场景 trash 的实现机制（软删标记 or 移表）；两套是否同一服务 | （待核对 services 层） | |
 | 5 | ReviewItem 状态机可扩展为统一 state | （待核对） | |

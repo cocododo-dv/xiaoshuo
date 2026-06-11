@@ -1,0 +1,135 @@
+/* ==========================================================
+   长篇控制塔 v2 — 控制台样式（基于 styles.css 设计令牌）
+   双色叙事：左 = 稿纸（你写下的书）· 右 = 墨（AI 的记忆）
+   ========================================================== */
+.lf2-root {
+  min-height: 100vh;
+  display: flex; flex-direction: column;
+  background:
+    radial-gradient(120% 80% at 0% 0%, rgba(176,133,69,0.05), transparent 50%),
+    radial-gradient(80% 60% at 100% 100%, rgba(154,58,42,0.035), transparent 50%),
+    var(--paper-0);
+  color: var(--ink-1);
+  font-family: var(--font-sans);
+}
+.lf2-root small { font-size: 0.7em; }
+.tone-ink { color: var(--ink-1); } .tone-sage { color: var(--sage); }
+.tone-rose { color: var(--rose); } .tone-gold { color: var(--gold); }
+.tone-crimson { color: var(--crimson); } .tone-slate { color: var(--slate); }
+.lf2-spin { animation: lf2Spin 0.9s linear infinite; }
+@keyframes lf2Spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .lf2-spin { animation-duration: 0.01ms; } }
+
+/* ---------- header ---------- */
+.lf2-header {
+  display: flex; align-items: center; gap: 14px 22px;
+  padding: 15px 26px; border-bottom: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--paper-0) 90%, transparent);
+  backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 30;
+}
+.lf2-brand { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.lf2-brand-mark {
+  width: 40px; height: 40px; border-radius: 11px;
+  background: linear-gradient(135deg, var(--ink-1), var(--ink-2)); color: var(--gold-soft);
+  display: grid; place-items: center; box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+}
+.lf2-brand-eyebrow { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--crimson); font-weight: 700; }
+.lf2-brand-title { font-family: var(--font-serif); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin-top: 2px; display: flex; align-items: baseline; gap: 9px; }
+.lf2-brand-genre { font-family: var(--font-sans); font-size: 11px; font-weight: 500; color: var(--ink-4); letter-spacing: 0.02em; white-space: nowrap; }
+
+.lf2-vitals { display: flex; align-items: stretch; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; mask-image: linear-gradient(90deg, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%); }
+.lf2-vitals::-webkit-scrollbar { display: none; }
+.lf2-vital { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 15px; position: relative; min-width: 56px; flex: 0 0 auto; }
+.lf2-vital + .lf2-vital::before { content: ""; position: absolute; left: 0; top: 16%; bottom: 16%; width: 1px; background: var(--line-1); }
+.lf2-vital-val { font-family: var(--font-serif); font-size: 21px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.lf2-vital.is-big .lf2-vital-val { font-size: 27px; }
+.lf2-vital-val small { font-size: 12px; color: var(--ink-4); font-weight: 500; margin-left: 1px; }
+.lf2-vital-label { font-size: 11px; color: var(--ink-3); margin-top: 6px; white-space: nowrap; }
+.lf2-vital.is-sig { background: linear-gradient(180deg, transparent, var(--rose-wash)); border-radius: 0 0 10px 10px; }
+.lf2-vital.is-sig .lf2-vital-label { color: var(--rose); font-weight: 600; }
+
+.lf2-header-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.lf2-header-actions .btn { white-space: nowrap; }
+.btn.is-scanning { color: var(--crimson); }
+.lf2-theme-btn { width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--line-1); background: var(--paper-1); color: var(--ink-2); display: grid; place-items: center; cursor: pointer; transition: all var(--t-fast); }
+.lf2-theme-btn:hover { border-color: var(--line-2); color: var(--ink-1); }
+
+/* ---------- tagline ---------- */
+.lf2-tagline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 26px; font-size: 12.5px; color: var(--ink-3); background: var(--paper-1); border-bottom: 1px solid var(--line-1); }
+.lf2-tagline svg { color: var(--crimson); flex: 0 0 auto; }
+.lf2-tagline-text { flex: 1 1 360px; min-width: 0; }
+.lf2-tagline b { color: var(--crimson); font-weight: 600; }
+.lf2-tagline-seam { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-4); font-family: var(--font-mono); }
+.lf2-tagline-seam::before { content: "◧"; font-size: 13px; color: var(--ink-3); }
+
+/* ---------- body grid ---------- */
+.lf2-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 438px; align-items: start; }
+.lf2-left { padding: 22px 24px 64px; min-width: 0; display: flex; flex-direction: column; gap: 22px; }
+.lf2-rail { border-left: 1px solid var(--line-1); background: linear-gradient(180deg, var(--paper-1), var(--paper-0)); padding: 20px 20px 44px; display: flex; flex-direction: column; gap: 16px; position: sticky; top: 108px; align-self: start; max-height: calc(100vh - 108px); overflow-y: auto; }
+
+/* ==========================================================
+   ATLAS
+   ========================================================== */
+.lf2-atlas { background: var(--paper-1); border: 1px solid var(--line-1); border-radius: var(--r-xl); padding: 16px 20px 13px; box-shadow: var(--shadow-sm); }
+.lf2-atlas.is-scanning { box-shadow: 0 0 0 1px var(--crimson-soft), var(--shadow-md); }
+.lf2-act-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 13px; flex-wrap: wrap; }
+.lf2-act { display: inline-flex; align-items: baseline; gap: 5px; padding: 6px 13px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--paper-0); color: var(--ink-2); font-size: 12.5px; font-weight: 500; cursor: pointer; transition: all var(--t-fast); white-space: nowrap; }
+.lf2-act:hover { border-color: var(--ink-4); color: var(--ink-1); }
+.lf2-act b { font-family: var(--font-serif); font-size: 14px; font-weight: 700; }
+.lf2-act small { font-size: 10.5px; color: var(--ink-4); font-family: var(--font-mono); }
+.lf2-act.is-on { background: var(--ink-1); border-color: var(--ink-1); color: var(--paper-0); box-shadow: var(--shadow-sm); }
+.lf2-act.is-on small { color: rgba(255,255,255,0.6); }
+.lf2-act-spacer { margin-left: auto; font-size: 11px; color: var(--ink-4); }
+
+.lf2-atlas-plot { position: relative; }
+.lf2-atlas-svg { width: 100%; height: auto; display: block; }
+.lf2-chcell:hover rect:first-of-type { filter: brightness(0.98); }
+.lf2-pulse { animation: lf2Pulse 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes lf2Pulse { 0%,100% { r: 4; } 50% { r: 6.5; } }
+@media (prefers-reduced-motion: reduce) { .lf2-pulse { animation: none; } }
+
+/* scan sweep */
+.lf2-scan-sweep { position: absolute; inset: 0; border-radius: var(--r-xl); overflow: hidden; pointer-events: none; z-index: 6; }
+.lf2-scan-sweep::before { content: ""; position: absolute; top: 0; bottom: 0; width: 32%; left: -32%; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--crimson) 13%, transparent) 60%, color-mix(in srgb, var(--crimson) 22%, transparent)); border-right: 1.5px solid var(--crimson-soft); animation: lf2Sweep 1.6s cubic-bezier(0.4,0,0.2,1); }
+@keyframes lf2Sweep { from { left: -32%; } to { left: 100%; } }
+.lf2-scan-label { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--crimson); background: color-mix(in srgb, var(--paper-0) 92%, transparent); padding: 5px 12px; border-radius: 999px; box-shadow: var(--shadow-sm); }
+@media (prefers-reduced-motion: reduce) { .lf2-scan-sweep::before { animation-duration: 0.01ms; } }
+
+/* atlas popover */
+.lf2-pop { position: absolute; transform: translate(-50%, calc(-100% - 12px)); z-index: 8; width: 250px; padding: 12px 14px; background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); pointer-events: none; --pc: var(--slate); animation: lf2PopIn 130ms ease; }
+.lf2-pop.tone-rose { --pc: var(--rose); } .lf2-pop.tone-gold { --pc: var(--gold); } .lf2-pop.tone-sage { --pc: var(--sage); } .lf2-pop.tone-slate { --pc: var(--slate); }
+.lf2-pop.is-left { transform: translate(-88%, calc(-100% - 12px)); }
+.lf2-pop.is-right { transform: translate(-12%, calc(-100% - 12px)); }
+.lf2-pop.is-below { transform: translate(-50%, 14px); }
+.lf2-pop.is-below.is-left { transform: translate(-88%, 14px); }
+.lf2-pop.is-below.is-right { transform: translate(-12%, 14px); }
+.lf2-pop::after { content: ""; position: absolute; left: 50%; bottom: -7px; width: 12px; height: 12px; background: var(--paper-0); border-right: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2); transform: translateX(-50%) rotate(45deg); }
+.lf2-pop.is-left::after { left: 88%; } .lf2-pop.is-right::after { left: 12%; }
+.lf2-pop.is-below::after { bottom: auto; top: -7px; border: 0; border-left: 1px solid var(--line-2); border-top: 1px solid var(--line-2); }
+@keyframes lf2PopIn { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .lf2-pop { animation: none; } }
+.lf2-pop-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.lf2-pop-pri { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; font-family: var(--font-serif); font-weight: 700; font-size: 12px; background: color-mix(in srgb, var(--pc) 16%, var(--paper-0)); color: var(--pc); }
+.lf2-pop-title { font-family: var(--font-serif); font-size: 14px; font-weight: 600; color: var(--ink-1); line-height: 1.3; }
+.lf2-pop-pin { margin-left: auto; flex: 0 0 auto; font-size: 10px; font-weight: 700; color: #fff; background: var(--crimson); min-width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; }
+.lf2-pop-route { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding-bottom: 9px; border-bottom: 1px solid var(--line-1); }
+.lf2-pop-route b { color: var(--ink-1); font-weight: 600; white-space: nowrap; }
+.lf2-pop-arrow { color: var(--pc); font-weight: 700; }
+.lf2-pop-status { margin-left: auto; white-space: nowrap; font-size: 10.5px; font-weight: 700; color: var(--pc); background: color-mix(in srgb, var(--pc) 13%, var(--paper-0)); padding: 1px 8px; border-radius: 999px; }
+.lf2-pop-note { font-size: 12.5px; line-height: 1.55; color: var(--ink-2); margin: 9px 0 0; }
+.lf2-pop-hint { font-size: 10.5px; color: var(--ink-4); margin-top: 9px; }
+.lf2-pop-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.lf2-pop-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; line-height: 1.4; }
+.lf2-pop-tag.tone-slate { background: var(--slate-wash); color: var(--slate); }
+.lf2-pop-tag.tone-gold { background: var(--gold-wash); color: var(--gold); }
+.lf2-pop-tag.tone-sage { background: var(--sage-wash); color: var(--sage); }
+.lf2-pop-tag.tone-muted { background: var(--paper-2); color: var(--ink-4); }
+
+/* atlas legend */
+.lf2-atlas-legend { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-1); font-size: 11.5px; color: var(--ink-3); }
+.lf2-atlas-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.lf2-lg-dot { width: 12px; height: 3px; border-radius: 2px; }
+.lf2-lg-dash { width: 14px; height: 0; border-top: 2px dashed var(--ink-4); }
+.lf2-lg-arc { width: 16px; height: 9px; border: 1.6px solid; border-bottom: 0; border-radius: 9px 9px 0 0; }
+.lf2-lg-arc--od { border-style: dashed; }
+.lf2-lg-seam { width: 0; height: 13px; border-left: 1.5px dashed var(--crimson); }

@@ -1,0 +1,58 @@
+// Phase 1 验收辅助：对 React 工程逐视图截图 + 捕获 console/page 错误。
+// 运行：cd frontend && node ../frontend-react/scripts/shoot-views.mjs <BASE> <OUTDIR>
+// （从 frontend/ 运行以复用其 node_modules 里的 playwright）
+import path from "node:path";
+import fs from "node:fs";
+import { createRequire } from "node:module";
+
+const require = createRequire(path.join(process.cwd(), "package.json"));
+const { chromium } = require("playwright");
+
+const BASE = process.argv[2] || "http://127.0.0.1:5174/";
+const OUT = process.argv[3] || path.resolve("react-shots");
+fs.mkdirSync(OUT, { recursive: true });
+
+const VIEWS = [
+  "home", "flowmap", "snowflake", "writer", "styleref", "review", "library",
+  "author", "scene", "manuscripts", "longform", "index", "interop", "settings", "trash",
+];
+
+const errors = [];
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+page.setDefaultTimeout(60_000);
+page.on("console", (msg) => { if (msg.type() === "error") errors.push(`[console] ${msg.text()}`); });
+page.on("pageerror", (err) => errors.push(`[pageerror] ${err.message}`));
+
+async function waitApp() {
+  await page.waitForSelector(".ws-app", { state: "attached" });
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(600);
+}
+
+await page.goto(BASE);
+await waitApp();
+
+for (const id of ["salt", "tide"]) {
+  await page.evaluate((wid) => localStorage.setItem("ws_active_work_v1", wid), id);
+  await page.reload();
+  await waitApp();
+}
+
+for (let i = 0; i < VIEWS.length; i++) {
+  const v = VIEWS[i];
+  await page.evaluate((hash) => { location.hash = hash; }, "#" + v);
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: path.join(OUT, `${String(i + 1).padStart(2, "0")}-${v}.png`) });
+  console.log("shot", v, `(errors so far: ${errors.length})`);
+}
+
+await browser.close();
+if (errors.length) {
+  console.log(`\n==== ${errors.length} errors ====`);
+  const uniq = [...new Set(errors)];
+  for (const e of uniq.slice(0, 40)) console.log(" -", e.slice(0, 400));
+  process.exitCode = 1;
+} else {
+  console.log("\nno console/page errors");
+}
