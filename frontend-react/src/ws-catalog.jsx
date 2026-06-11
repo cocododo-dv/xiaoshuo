@@ -1,6 +1,7 @@
 import React from "react";
 import { WsWorks, wsKey } from "./ws-works.jsx";
 import { ARR_CHAPTERS } from "./ws-author-data.jsx";
+import { apiGet } from "./lib/client.js";
 
 /* global window, React, ARR_CHAPTERS */
 /* ==========================================================
@@ -187,19 +188,34 @@ function catEffectiveStreak(fallback) {
   return (rec.last === d || rec.last === y) ? (rec.streak || 0) : 0;
 }
 
-/* 汇总并回写 WsWorks（切换器 / 主页进度同源）*/
+/* 汇总同步进 WsWorks（切换器 / 主页进度同源）。
+   FE-ALIGN P2（D2）：字数/今日/streak 改读后端 writing-stats（只读派生，
+   经 WsWorks.__applyDerived 注入，WsWorks.update 的回写路径已删除）；
+   chaptersWritten 在目录统一（P3）前仍取本地目录 rollup。 */
 function catPushTotals() {
   if (!window.WsWorks) return;
   const id = catActiveId();
+  if (!id || id === "__loading__") return; // 启动占位作品（列表尚未从后端返回）
   const chs = catLoad(id);
-  const words = chs.reduce((s, c) => s + ((c.words && c.words.cur) || 0), 0);
   const written = chs.filter(c => ((c.words && c.words.cur) || 0) > 0).length;
-  const w = window.WsWorks.list().find(x => x.id === id);
-  const today = catToday();
-  const streak = w ? catEffectiveStreak(w.streak) : 0;
-  if (w && (w.wordsTotal !== words || w.chaptersWritten !== written || w.wordsToday !== today || w.streak !== streak)) {
-    window.WsWorks.update(id, { wordsTotal: words, chaptersWritten: written, wordsToday: today, streak });
-  }
+  apiGet(`/api/v2/projects/${id}/writing-stats`).then((stats) => {
+    if (!stats || !window.WsWorks.__applyDerived) return;
+    const w = window.WsWorks.list().find(x => x.id === id);
+    const next = {
+      wordsTotal: stats.words_total || 0,
+      wordsToday: stats.words_today || 0,
+      streak: stats.streak_days || 0,
+      chaptersWritten: written,
+    };
+    /* 仅在值变化时注入 —— __applyDerived 会广播 ws:work-changed，
+       而本函数又监听该事件，无守卫会形成异步自激循环 */
+    if (w && (w.wordsTotal !== next.wordsTotal || w.wordsToday !== next.wordsToday
+      || w.streak !== next.streak || w.chaptersWritten !== next.chaptersWritten)) {
+      window.WsWorks.__applyDerived(id, next);
+    }
+  }).catch(() => {
+    /* 后端不可达：保持现值（缓存影子），不再做本地回写 */
+  });
 }
 
 const WsCatalog = {

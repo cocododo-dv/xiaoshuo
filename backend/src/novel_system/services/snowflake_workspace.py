@@ -96,13 +96,33 @@ class SnowflakeWorkspaceService:
 
     def list_projects(self) -> dict[str, Any]:
         rows = self._projects.list()
-        return {
-            "items": [
-                item
-                for item in rows.get("items") or []
-                if str(item.get("planning_mode") or "") == "snowflake"
-            ]
-        }
+        items = [
+            item
+            for item in rows.get("items") or []
+            if str(item.get("planning_mode") or "") == "snowflake"
+        ]
+        # FE-ALIGN P2: 切换器/主页需要每部作品的统计摘要（只读派生，D2 服务端计算）。
+        from novel_system.services.writing_stats import WritingStatsService
+
+        stats = WritingStatsService(self.session)
+        for item in items:
+            project_id = item.get("project_id")
+            item["stats"] = stats.stats_payload(project_id)
+            item["chapters_written"] = self._chapters_written(project_id)
+        return {"items": items}
+
+    def _chapters_written(self, project_id: str) -> int:
+        chapters = self.session.execute(
+            select(ChapterGoal).where(
+                ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0
+            )
+        ).scalars().all()
+        written = 0
+        for chapter in chapters:
+            display = dict((chapter.writer_brief_json or {}).get("fe_display") or {})
+            if int(display.get("pct") or 0) > 0:
+                written += 1
+        return written
 
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         result = self._projects.create({**(payload or {}), "planning_mode": "snowflake", "snowflake_workflow_mode": (payload or {}).get("snowflake_workflow_mode") or "explore"})

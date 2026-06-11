@@ -1,0 +1,294 @@
+"""FE-ALIGN Phase 2: v2 作品域聚合（dashboard / flow-status / writing-stats）。
+
+原型主页（design/ws-works.jsx 的 home 形状）所需的聚合读端点，纯读不新增写路径。
+雪花步骤状态映射（简报改动 3）：approved→done、当前步→active、
+skipped 或完整度未达（stale/pending 草稿）→warn、未开始→todo。
+
+章节的展示态（state/pct）在 Phase 3 目录统一前暂存于
+ChapterGoal.writer_brief_json["fe_display"]（demo seed 写入；真实章节走默认推导），
+Phase 3 落正式列后由目录服务接管。
+"""
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from novel_system.db.models import (
+    AuthorDraft,
+    ChapterGoal,
+    ChapterState,
+    ReviewItem,
+    SceneCard,
+    SnowflakeStepRun,
+    StoryProject,
+)
+from novel_system.services.projects import ProjectService
+from novel_system.services.snowflake_steps import list_step_definitions
+from novel_system.services.writing_stats import WritingStatsService, count_words
+
+_TAG_BREAK_RE = re.compile(r"</(?:p|div|h\d|li|blockquote)>|<br\s*/?>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _content_lines(content: str | None) -> list[str]:
+    if not content:
+        return []
+    text = _TAG_BREAK_RE.sub("\n", content)
+    text = _TAG_RE.sub("", text)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _gate_satisfied(run: SnowflakeStepRun | None) -> bool:
+    if run is None:
+        return False
+    if run.status in {"approved", "skipped"}:
+        return True
+    return run.status == "stale" and bool(run.stale_accepted_at)
+
+
+class ProjectOverviewService:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self._projects = ProjectService(session)
+        self._stats = WritingStatsService(session)
+
+    # ---- writing-stats ----
+
+    def writing_stats(self, project_id: str) -> dict[str, Any]:
+        self._projects.require_project(project_id)
+        return self._stats.stats_payload(project_id)
+
+    # ---- dashboard ----
+
+    def dashboard(self, project_id: str) -> dict[str, Any]:
+        project = self._projects.require_project(project_id)
+        chapters = self._chapter_rows(project_id)
+        chapter_views = self._chapter_views(project, chapters)
+        current = self._current_chapter_view(project, chapter_views)
+        resume, brief = self._resume_and_brief(current)
+        return {
+            "resume": resume,
+            "brief": brief,
+            "snowflake": self._snowflake_board(project_id),
+            "chapters_recent": chapter_views[-5:],
+            "stats": self._stats.stats_payload(project_id),
+        }
+
+    # ---- flow-status ----
+
+    def flow_status(self, project_id: str) -> dict[str, Any]:
+        project = self._projects.require_project(project_id)
+        steps = list_step_definitions()
+        latest = self._latest_by_step(project_id)
+        approved = sum(1 for step in steps if (run := latest.get(step["step_key"])) and run.status == "approved")
+        chapters = self._chapter_rows(project_id)
+        chapter_ids = [chapter.chapter_id for chapter in chapters]
+        scenes = self._scene_rows(project_id)
+        scene_ids = [scene.scene_id for scene in scenes]
+        drafts = self._current_scene_drafts(scene_ids)
+        draft_queue_len = sum(
+            1 for scene in scenes if not (drafts.get(scene.scene_id) and drafts[scene.scene_id].content.strip())
+        )
+        open_review_count = 0
+        if chapter_ids or scene_ids:
+            open_review_count = len(
+                self.session.execute(
+                    select(ReviewItem.review_id).where(
+                        ReviewItem.status == "pending",
+                        (
+                            ReviewItem.chapter_id.in_(chapter_ids or [""])
+                            | ReviewItem.scene_id.in_(scene_ids or [""])
+                        ),
+                    )
+                ).scalars().all()
+            )
+        qc_blocked_count = 0
+        if chapter_ids:
+            qc_blocked_count = len(
+                self.session.execute(
+                    select(ChapterState.chapter_id).where(
+                        ChapterState.chapter_id.in_(chapter_ids),
+                        ChapterState.aggregate_block_reason != "none",
+                    )
+                ).scalars().all()
+            )
+        return {
+            "snowflake_pct": round(approved * 100 / len(steps)) if steps else 0,
+            "open_review_count": open_review_count,
+            "draft_queue_len": draft_queue_len,
+            "qc_blocked_count": qc_blocked_count,
+            "last_manuscript": self._last_manuscript(project, chapter_views=self._chapter_views(project, chapters)),
+        }
+
+    # ---- internals ----
+
+    def _chapter_rows(self, project_id: str) -> list[ChapterGoal]:
+        return list(
+            self.session.execute(
+                select(ChapterGoal)
+                .where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
+                .order_by(ChapterGoal.chapter_id.asc())
+            ).scalars().all()
+        )
+
+    def _scene_rows(self, project_id: str) -> list[SceneCard]:
+        return list(
+            self.session.execute(
+                select(SceneCard)
+                .where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
+                .order_by(SceneCard.chapter_id.asc(), SceneCard.scene_seq.asc())
+            ).scalars().all()
+        )
+
+    def _current_scene_drafts(self, scene_ids: list[str]) -> dict[str, AuthorDraft]:
+        if not scene_ids:
+            return {}
+        rows = self.session.execute(
+            select(AuthorDraft).where(
+                AuthorDraft.object_type == "scene",
+                AuthorDraft.object_id.in_(scene_ids),
+                AuthorDraft.status == "current",
+            )
+        ).scalars().all()
+        return {row.object_id: row for row in rows}
+
+    def _chapter_views(self, project: StoryProject, chapters: list[ChapterGoal]) -> list[dict[str, Any]]:
+        views: list[dict[str, Any]] = []
+        for index, chapter in enumerate(chapters):
+            brief = dict(chapter.writer_brief_json or {})
+            display = dict(brief.get("fe_display") or {})
+            active = chapter.chapter_id == project.current_chapter_id or bool(display.get("active"))
+            state = str(display.get("state") or ("writing" if active else "draft"))
+            title = str(brief.get("title") or "").strip() or _fallback_title(chapter)
+            views.append(
+                {
+                    "chapter_id": chapter.chapter_id,
+                    "no": f"{index + 1:02d}",
+                    "title": title,
+                    "state": state,
+                    "pct": int(display.get("pct") or 0),
+                    "active": active,
+                }
+            )
+        return views
+
+    def _current_chapter_view(
+        self, project: StoryProject, chapter_views: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        if not chapter_views:
+            return None
+        for view in chapter_views:
+            if view["chapter_id"] == project.current_chapter_id:
+                return view
+        for view in chapter_views:
+            if view["state"] == "writing" or view["active"]:
+                return view
+        return chapter_views[-1]
+
+    def _resume_and_brief(
+        self, current: dict[str, Any] | None
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        if current is None:
+            return None, None
+        scenes = list(
+            self.session.execute(
+                select(SceneCard)
+                .where(SceneCard.chapter_id == current["chapter_id"], SceneCard.trashed_flag == 0)
+                .order_by(SceneCard.scene_seq.asc())
+            ).scalars().all()
+        )
+        if not scenes:
+            return None, None
+        scene = next(
+            (s for s in scenes if (dict(s.writer_brief_json or {}).get("fe_display") or {}).get("writing")),
+            scenes[-1],
+        )
+        brief_json = dict(scene.writer_brief_json or {})
+        draft = self._current_scene_drafts([scene.scene_id]).get(scene.scene_id)
+        lines = _content_lines(draft.content if draft else None)
+        resume = {
+            "chapter_no": current["no"],
+            "scene_slug": f"ch{current['no']}s{scene.scene_seq}",
+            "scene_title": str(brief_json.get("title") or scene.scene_goal or "").strip(),
+            "last_lines": lines[-2:],
+            "scene_words": count_words(draft.content) if draft else 0,
+            "paused_at": draft.updated_at if draft else None,
+        }
+        kind_raw = str(brief_json.get("primary_form") or scene.scene_type or "proactive").lower()
+        kind = "reactive" if kind_raw.startswith("react") or kind_raw == "反应" else "proactive"
+        if kind == "proactive":
+            brief = {
+                "kind": kind,
+                "goal": str(brief_json.get("goal") or ""),
+                "conflict": str(brief_json.get("conflict") or ""),
+                "setback": str(brief_json.get("setback") or ""),
+            }
+        else:
+            brief = {
+                "kind": kind,
+                "reaction": str(brief_json.get("reaction") or ""),
+                "dilemma": str(brief_json.get("dilemma") or ""),
+                "decision": str(brief_json.get("decision") or ""),
+            }
+        return resume, brief
+
+    def _latest_by_step(self, project_id: str) -> dict[str, SnowflakeStepRun]:
+        rows = self.session.execute(
+            select(SnowflakeStepRun)
+            .where(SnowflakeStepRun.project_id == project_id)
+            .order_by(SnowflakeStepRun.version.asc(), SnowflakeStepRun.created_at.asc())
+        ).scalars().all()
+        latest: dict[str, SnowflakeStepRun] = {}
+        for row in rows:
+            if row.status == "superseded":
+                continue
+            latest[row.step_key] = row
+        return latest
+
+    def _snowflake_board(self, project_id: str) -> list[dict[str, Any]]:
+        latest = self._latest_by_step(project_id)
+        current_key = next(
+            (
+                step["step_key"]
+                for step in list_step_definitions()
+                if not _gate_satisfied(latest.get(step["step_key"]))
+            ),
+            None,
+        )
+        board: list[dict[str, Any]] = []
+        for step in list_step_definitions():
+            run = latest.get(step["step_key"])
+            if run is not None and run.status == "approved":
+                status = "done"
+            elif step["step_key"] == current_key:
+                status = "active"
+            elif run is not None:
+                status = "warn"  # skipped / stale / 完整度未达的草稿
+            else:
+                status = "todo"
+            board.append({"step_key": step["step_key"], "label": step["label"], "status": status})
+        return board
+
+    def _last_manuscript(
+        self, project: StoryProject, *, chapter_views: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        approved_ids = list(project.approved_chapter_ids_json or [])
+        if not approved_ids:
+            return None
+        view_by_id = {view["chapter_id"]: view for view in chapter_views}
+        last_id = approved_ids[-1]
+        chapter = self.session.get(ChapterGoal, last_id)
+        view = view_by_id.get(last_id)
+        return {
+            "no": view["no"] if view else last_id,
+            "title": view["title"] if view else (_fallback_title(chapter) if chapter else last_id),
+            "at": chapter.updated_at if chapter else None,
+        }
+
+
+def _fallback_title(chapter: ChapterGoal) -> str:
+    text = str(chapter.chapter_goal or "").strip().splitlines()[0] if chapter.chapter_goal else ""
+    return text[:24] or chapter.chapter_id

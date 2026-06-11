@@ -949,6 +949,10 @@ def _seed_preflight_e2e(session: Session) -> dict[str, list[str]]:
 
 
 def _seed_demo(session: Session, *, fixture: str | None = None) -> dict[str, list[str] | str]:
+    # FE-ALIGN P2: 两部种子作品（潮汐档案/盐镇来信）后端化（独立模块，自带幂等清理）。
+    from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+
+    seed_fe_demo_works(session)
     _cleanup_demo_runtime(session)
     _upsert_chapter(session, DEMO_CHAPTER)
     for payload in DEMO_SCENES:

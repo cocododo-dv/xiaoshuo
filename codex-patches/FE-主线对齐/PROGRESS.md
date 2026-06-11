@@ -6,7 +6,7 @@
 ## 状态
 
 - [x] Phase 0 · 基线与陷阱 — 提交：d661cd5（另：开工基线快照 c2044ae）
-- [x] Phase 1 · 前端工程化 — 提交：（见下方 Phase 1 记录）
+- [x] Phase 1 · 前端工程化 — 提交：00254f5
 - [ ] Phase 2 · 作品域与聚合 — 提交：
 - [ ] Phase 3 · 目录统一 — 提交：
 - [ ] Phase 4 · 回收站 — 提交：
@@ -57,12 +57,40 @@
 - `scripts/dev.ps1` + start/stop-dev.cmd 增加 React 前端（5174），与 Vue（5173）并行；
   `frontend-react/README.md` 注明双入口。
 
+## Phase 2 记录（2026-06-11）
+
+- 后端：`StoryProject` 增 mark/accent/synopsis_line/words_target_daily/is_demo（迁移
+  `20260611_0047`，单头）；新表 `project_writing_stats`；`services/writing_stats.py`
+  （today/streak 规则照抄原型 catAddToday/catBumpStreak/catEffectiveStreak，
+  Asia/Shanghai；字数口径=剥 HTML 去空白字符数）；埋点挂在
+  `AuthorDraftService.save`（PATCH author-drafts 主路径，D2）。
+- 新端点（routes/project_overview.py，全部 v2）：`PATCH …/profile`、
+  `GET …/writing-stats`、`GET …/dashboard`（resume/brief/snowflake/chapters_recent/stats）、
+  `GET …/flow-status`。v2 项目列表每项附 `stats` + `chapters_written`。
+- 章节展示态（state/pct）在 P3 目录统一前暂存 `ChapterGoal.writer_brief_json["fe_display"]`
+  （demo seed 写入），P3 落正式列。
+- demo seed：`tools/seed_fe_demo_works.py`（挂入 seed_demo，幂等）；**project_id 沿用
+  原型字面 id `tide`/`salt`**——前端目录种子按该 id 命名空间回退，换 id 会让 demo 目录消失。
+- CORS 默认白名单补 5174/5175（React dev/preview）。
+- 前端：`lib/client.js`（自 Vue 端移植）；`ws-works.jsx` 全面接真（列表/创建/档案
+  PATCH/一次性迁移 ws_works_created_v1→POST；缓存影子保 list() 同步语义；
+  乐观更新+失败回滚；WS_WORKS_SEED 硬编码删除）；派生字段只读化——
+  `WsWorks.update` 不再接受 wordsTotal/wordsToday/streak/chaptersWritten，
+  `catPushTotals` 改读 writing-stats 经内部接缝 `__applyDerived` 注入（带变化守卫防
+  ws:work-changed 自激循环）。`remove`/`restoreWork` 在 P4 接软删端点前为提示性空壳。
+- 验收：12 个新后端测试绿；前端 build 过；Playwright 冒烟 5 项全过
+  （书架来自后端/统计数字/新建落库换会话仍在/主页渲染/PATCH profile 落库）。
+
 ## 核对发现（实际代码 vs 简报假设）
 
 | Phase | 简报假设 | 实际情况 | 处理 |
 |---|---|---|---|
 | 1 | 文件头 `/* global */` 注释 = 完整依赖清单 | 有遗漏（如 ws-app.jsx 用了 ws-snow 的 `WsConstruct` 未声明） | codemod 加全注册表词边界扫描兜底；只允许 import 加载序更早的文件防环 |
 | 1 | T12 提到 design/ 可能混入 merge-plan-*/design-canvas/*-standalone | 实际不存在这些文件；index.html 引用清单即全部 46 个 jsx + 14 个 css | 按 index.html 清单搬运 |
+| 2 | 主页读 `work.home`（dashboard 供给） | ws-home 实际**优先读本地 WsCatalog/s2StepSummary/rvOpenItems**，home 仅兜底 | dashboard→home 适配照做（新建作品/兜底路径用）；目录真相 P3 切换 |
+| 2 | 雪花第 10 步 step_key | 是 `scene_details` 不是「场景规划 scene_planning」 | seed/映射按 scene_details |
+| 2 | `POST /api/v2/projects` 载荷 | `outline_text` 必填（ProjectService.create 校验） | 适配层以 sub/title 兜底填充 |
+| 2 | ChapterGoal 有标题概念 | **无 title/序号列**；标题只能放 writer_brief_json | P2 用 brief.title + fe_display；P3 建正式列 |
 | 2 | 正文保存写路径 | ✅ 已核实：`ensure` + `PATCH author-drafts/{draft_id}` | 埋点加在 PATCH 服务层 |
 | 4 | 章/场景 trash 的实现机制（软删标记 or 移表）；两套是否同一服务 | （待核对 services 层） | |
 | 5 | ReviewItem 状态机可扩展为统一 state | （待核对） | |
@@ -71,4 +99,11 @@
 
 ## 遗留 / 例外
 
-（如：某视图保留 WsDemoTag 的原因、迁不动的本地数据、推迟项）
+- P2→P3 间隔期：写作器正文仍存 localStorage（wr-doc 键），本地写作不产生服务端
+  words_delta —— 切换器「今日字数/总字数」在此期间只反映后端统计（demo 种子值），
+  P3 接通 author-drafts 保存链路后恢复实时。
+- `WsWorks.remove/restoreWork` 为提示性空壳（P4 接软删/恢复端点）；作品删除入口
+  按钮仍可见但点击只弹说明（视图零修改约束下的最小方案）。
+- 旧 localStorage 键（ws_works_created_v1 等）迁移后保留不删（P8 统一清理）。
+- demo 作品的本地目录种子（ws-catalog/ws-snow 等）在 P3 前继续生效——主页/构思
+  视图对 demo 作品显示的是本地种子数据 + 服务端统计的混合（诚实标识 WsDemoTag 未摘）。

@@ -1,0 +1,229 @@
+"""FE-ALIGN Phase 2: 作品档案 / 写作统计 / dashboard v2 / flow-status。"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard, StoryProject
+from novel_system.services.writing_stats import (
+    WRITING_STATS_TZ,
+    WritingStatsService,
+    count_words,
+)
+from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+
+
+_create_seq = 0
+
+
+def _create_project(client, **overrides):
+    global _create_seq
+    _create_seq += 1
+    payload = {
+        "title": "测试作品",
+        "outline_text": "一句话大纲",
+        "genre": "悬疑",
+        "mark": "测",
+        "accent": "slate",
+        "synopsis_line": "一句话简介",
+        "target_word_count": 100000,
+        "words_target_daily": 1000,
+        **overrides,
+    }
+    response = client.post(
+        "/api/v2/projects",
+        json=payload,
+        headers={"X-Idempotency-Key": f"create-overview-{_create_seq}"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["project"]
+
+
+def test_project_profile_fields_roundtrip(client):
+    project = _create_project(client)
+    assert project["mark"] == "测"
+    assert project["accent"] == "slate"
+    assert project["synopsis_line"] == "一句话简介"
+    assert project["words_target_daily"] == 1000
+    assert project["is_demo"] is False
+
+    listed = client.get("/api/v2/projects").json()["data"]["items"]
+    row = next(item for item in listed if item["project_id"] == project["project_id"])
+    assert row["accent"] == "slate"
+    assert row["stats"]["words_total"] == 0
+    assert "chapters_written" in row
+
+
+def test_project_profile_patch(client):
+    project = _create_project(client)
+    response = client.patch(
+        f"/api/v2/projects/{project['project_id']}/profile",
+        json={"accent": "crimson", "words_target_daily": 2000, "title": "改名后"},
+    )
+    assert response.status_code == 200, response.text
+    updated = response.json()["data"]["project"]
+    assert updated["accent"] == "crimson"
+    assert updated["words_target_daily"] == 2000
+    assert updated["title"] == "改名后"
+
+    blank_title = client.patch(
+        f"/api/v2/projects/{project['project_id']}/profile", json={"title": "  "}
+    )
+    assert blank_title.status_code == 400
+
+
+def test_count_words_matches_prototype_rule():
+    assert count_words("") == 0
+    assert count_words("你好 世界\n第二行") == 7
+    assert count_words("<p>你好，<b>世界</b></p>") == 5
+
+
+def test_writing_stats_same_day_accumulates(client, session):
+    project = _create_project(client)
+    svc = WritingStatsService(session)
+    base = datetime(2026, 6, 10, 9, 0, tzinfo=WRITING_STATS_TZ)
+    svc.record_words_delta(project["project_id"], 300, now=base)
+    svc.record_words_delta(project["project_id"], 200, now=base + timedelta(hours=2))
+    stats = svc.stats_payload(project["project_id"], now=base + timedelta(hours=3))
+    assert stats["words_total"] == 500
+    assert stats["words_today"] == 500
+    assert stats["streak_days"] == 1
+
+
+def test_writing_stats_streak_across_days(client, session):
+    project = _create_project(client)
+    svc = WritingStatsService(session)
+    day1 = datetime(2026, 6, 9, 22, 0, tzinfo=WRITING_STATS_TZ)
+    day2 = day1 + timedelta(days=1)
+    svc.record_words_delta(project["project_id"], 100, now=day1)
+    svc.record_words_delta(project["project_id"], 100, now=day2)
+    stats = svc.stats_payload(project["project_id"], now=day2)
+    assert stats["streak_days"] == 2
+    assert stats["words_today"] == 100  # 跨日清零重记
+
+
+def test_writing_stats_streak_broken_after_gap(client, session):
+    project = _create_project(client)
+    svc = WritingStatsService(session)
+    day1 = datetime(2026, 6, 1, 9, 0, tzinfo=WRITING_STATS_TZ)
+    svc.record_words_delta(project["project_id"], 100, now=day1)
+    # 断更两天后展示归零
+    later = day1 + timedelta(days=3)
+    stats = svc.stats_payload(project["project_id"], now=later)
+    assert stats["streak_days"] == 0
+    # 再次写作重记为 1
+    svc.record_words_delta(project["project_id"], 50, now=later)
+    stats = svc.stats_payload(project["project_id"], now=later)
+    assert stats["streak_days"] == 1
+
+
+def test_writing_stats_negative_delta_only_hits_total(client, session):
+    project = _create_project(client)
+    svc = WritingStatsService(session)
+    now = datetime(2026, 6, 10, 9, 0, tzinfo=WRITING_STATS_TZ)
+    svc.record_words_delta(project["project_id"], 300, now=now)
+    svc.record_words_delta(project["project_id"], -100, now=now + timedelta(minutes=5))
+    stats = svc.stats_payload(project["project_id"], now=now + timedelta(minutes=6))
+    assert stats["words_total"] == 200
+    assert stats["words_today"] == 300  # 负增量不回吐今日字数
+
+
+def test_author_draft_save_reports_words_delta(client, session):
+    project = _create_project(client)
+    chapter = ChapterGoal(
+        chapter_id="ch-stats-1",
+        project_id=project["project_id"],
+        chapter_goal="测试章",
+        planned_scene_count=1,
+    )
+    scene = SceneCard(
+        chapter_id="ch-stats-1",
+        scene_id="sc-stats-1",
+        project_id=project["project_id"],
+        scene_seq=1,
+        scene_goal="测试场景",
+    )
+    draft = AuthorDraft(
+        draft_id="draft-stats-1",
+        object_type="scene",
+        object_id="sc-stats-1",
+        source_text_ref="test",
+        content="",
+        revision_no=1,
+        status="current",
+    )
+    session.add_all([chapter, scene, draft])
+    session.commit()
+
+    response = client.patch(
+        "/api/v1/author-drafts/draft-stats-1",
+        json={"content": "正文一共十个字啊。", "base_revision_no": 1},
+    )
+    assert response.status_code == 200, response.text
+    stats = client.get(
+        f"/api/v2/projects/{project['project_id']}/writing-stats"
+    ).json()["data"]
+    assert stats["words_total"] == count_words("正文一共十个字啊。")
+    assert stats["words_today"] == stats["words_total"]
+    assert stats["streak_days"] == 1
+    assert stats["last_active_at"]
+
+
+def test_dashboard_v2_shape_with_demo_seed(client, session):
+    seed_fe_demo_works(session)
+    session.commit()
+
+    data = client.get("/api/v2/projects/tide/dashboard").json()["data"]
+    assert data["resume"]["chapter_no"] == "08"
+    assert data["resume"]["scene_slug"] == "ch08s3"
+    assert data["resume"]["scene_title"] == "夜班修复台 · 二次发现"
+    assert len(data["resume"]["last_lines"]) == 2
+    assert "潮汐表第三页" in data["resume"]["last_lines"][0]
+    assert data["resume"]["scene_words"] > 0
+    assert data["brief"]["kind"] == "proactive"
+    assert data["brief"]["goal"].startswith("在馆长发现前")
+
+    board = {row["step_key"]: row["status"] for row in data["snowflake"]}
+    assert board["book_brief"] == "done"
+    assert board["character_synopses"] == "active"
+    assert board["character_bibles"] == "warn"
+    assert board["scene_details"] == "done"
+
+    recent = data["chapters_recent"]
+    assert len(recent) == 5
+    assert recent[-1]["title"] == "返回的潮声"
+    assert recent[-1]["active"] is True
+    assert recent[-1]["state"] == "writing"
+
+    assert data["stats"]["words_total"] == 38420
+    assert data["stats"]["streak_days"] == 6  # streak_last_day=昨天 → 有效
+
+
+def test_dashboard_v2_blank_project(client):
+    project = _create_project(client)
+    data = client.get(f"/api/v2/projects/{project['project_id']}/dashboard").json()["data"]
+    assert data["resume"] is None
+    assert data["brief"] is None
+    assert all(row["status"] in {"todo", "active"} for row in data["snowflake"])
+    assert data["chapters_recent"] == []
+
+
+def test_flow_status_shape(client, session):
+    seed_fe_demo_works(session)
+    session.commit()
+    data = client.get("/api/v2/projects/tide/flow-status").json()["data"]
+    assert data["snowflake_pct"] == 80  # 10 步中 8 步 approved
+    assert data["open_review_count"] == 0
+    assert data["draft_queue_len"] >= 1  # ch08 sc01/sc02 无正文
+    assert data["qc_blocked_count"] == 0
+    assert data["last_manuscript"] is None  # demo 未走归档链
+
+
+def test_demo_seed_idempotent(client, session):
+    seed_fe_demo_works(session)
+    seed_fe_demo_works(session)
+    session.commit()
+    projects = session.query(StoryProject).filter(StoryProject.is_demo == 1).all()
+    assert {p.project_id for p in projects} == {"tide", "salt"}
+    listed = client.get("/api/v2/projects").json()["data"]["items"]
+    demo_rows = [item for item in listed if item["is_demo"]]
+    assert len(demo_rows) == 2

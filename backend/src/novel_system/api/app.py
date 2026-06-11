@@ -23,6 +23,7 @@ from novel_system.api.routes import (
     literary_quality,
     longform_control,
     longform_editor,
+    project_overview,
     projects,
     reference_safety,
     review,
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
 
     app.include_router(chapters.router)
     app.include_router(projects.router)
+    app.include_router(project_overview.router)
     app.include_router(author_drafts.router)
     app.include_router(author_desk.router)
     app.include_router(chapter_manuscripts.router)

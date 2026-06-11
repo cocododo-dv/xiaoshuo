@@ -25,6 +25,11 @@ class Settings:
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
+        # FE-ALIGN: React 前端 dev(5174) / preview(5175)
+        "http://127.0.0.1:5174",
+        "http://localhost:5174",
+        "http://127.0.0.1:5175",
+        "http://localhost:5175",
         "http://127.0.0.1:8081",
         "http://localhost:8081",
     )
@@ -80,6 +85,11 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         (
             "http://127.0.0.1:5173",
             "http://localhost:5173",
+            # FE-ALIGN: React 前端 dev(5174) / preview(5175)
+            "http://127.0.0.1:5174",
+            "http://localhost:5174",
+            "http://127.0.0.1:5175",
+            "http://localhost:5175",
             "http://127.0.0.1:8081",
             "http://localhost:8081",
         ),

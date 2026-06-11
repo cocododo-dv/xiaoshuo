@@ -36,6 +36,7 @@ from novel_system.services.writer_review import (
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
 )
+from novel_system.services.writing_stats import WritingStatsService, count_words
 
 AUTHOR_DRAFT_EVENT_TYPES = {
     "created",
@@ -215,6 +216,22 @@ class AuthorDraftService:
         self.session.flush()
         return draft
 
+    def _resolve_project_id(self, object_type: str, object_id: str) -> str | None:
+        if object_type == "project":
+            return object_id
+        if object_type == "chapter":
+            chapter = self.session.get(ChapterGoal, object_id)
+            return chapter.project_id if chapter else None
+        if object_type == "scene":
+            scene = self.session.get(SceneCard, object_id)
+            if scene is None:
+                return None
+            if scene.project_id:
+                return scene.project_id
+            chapter = self.session.get(ChapterGoal, scene.chapter_id)
+            return chapter.project_id if chapter else None
+        return None
+
     def save(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
         base_revision_no = payload.get("base_revision_no")
@@ -228,9 +245,15 @@ class AuthorDraftService:
         content = payload.get("content")
         if not isinstance(content, str):
             raise DomainError("AUTHOR_DRAFT_INVALID", "content must be a string", status_code=400)
+        words_delta = count_words(content) - count_words(draft.content)
         draft.content = content
         draft.revision_no += 1
         draft.updated_by = actor_ref or draft.updated_by
+        # FE-ALIGN P2 字数埋点（D2）：保存主路径上报 words_delta，统计按 project 聚合。
+        if words_delta:
+            project_id = self._resolve_project_id(draft.object_type, draft.object_id)
+            if project_id:
+                WritingStatsService(self.session).record_words_delta(project_id, words_delta)
         self._add_event(
             draft,
             event_type="edited",

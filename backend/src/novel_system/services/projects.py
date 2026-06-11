@@ -67,12 +67,18 @@ class ProjectService:
             raise DomainError("PROJECT_OUTLINE_REQUIRED", "outline_text is required", status_code=400)
 
         planning_mode = _planning_mode(payload.get("planning_mode"))
+        title = str(payload.get("title") or "未命名小说").strip() or "未命名小说"
         project = StoryProject(
             project_id=self._next_project_id(),
-            title=str(payload.get("title") or "未命名小说").strip() or "未命名小说",
+            title=title,
             genre=_optional_text(payload.get("genre")),
             target_word_count=_optional_positive_int(payload.get("target_word_count")),
             target_chapter_count=_optional_positive_int(payload.get("target_chapter_count")),
+            mark=_optional_text(payload.get("mark")) or (title[:1] if title else None),
+            accent=_optional_text(payload.get("accent")),
+            synopsis_line=_optional_text(payload.get("synopsis_line")),
+            words_target_daily=_optional_positive_int(payload.get("words_target_daily")),
+            is_demo=1 if payload.get("is_demo") else 0,
             outline_text=outline_text,
             planning_mode=planning_mode,
             snowflake_schema_version=SNOWFLAKE_METHOD_VERSION if planning_mode == "snowflake" else None,
@@ -92,6 +98,38 @@ class ProjectService:
             select(StoryProject).order_by(StoryProject.created_at.desc(), StoryProject.project_id.desc())
         ).scalars().all()
         return {"items": [project_summary_payload(project) for project in projects]}
+
+    # FE-ALIGN P2: 作品档案局部更新（PATCH /api/v2/projects/{id}/profile）。
+    # 字数/进度类字段是只读派生（writing-stats / 目录 rollup），不在可写清单内。
+    PROFILE_PATCHABLE = (
+        "title",
+        "genre",
+        "mark",
+        "accent",
+        "synopsis_line",
+        "target_word_count",
+        "target_chapter_count",
+        "words_target_daily",
+    )
+
+    def update_profile(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        project = self.require_project(project_id)
+        body = payload or {}
+        for key in self.PROFILE_PATCHABLE:
+            if key not in body:
+                continue
+            value = body[key]
+            if key == "title":
+                title = str(value or "").strip()
+                if not title:
+                    raise DomainError("PROJECT_TITLE_REQUIRED", "title must not be empty", status_code=400)
+                project.title = title
+            elif key in ("target_word_count", "target_chapter_count", "words_target_daily"):
+                setattr(project, key, _optional_positive_int(value))
+            else:
+                setattr(project, key, _optional_text(value))
+        self.session.flush()
+        return {"project": project_payload(project)}
 
     def dashboard(self, project_id: str) -> dict[str, Any]:
         project = self.require_project(project_id)
@@ -1187,6 +1225,12 @@ def project_payload(
         "genre": project.genre,
         "target_word_count": project.target_word_count,
         "target_chapter_count": project.target_chapter_count,
+        # FE-ALIGN P2 作品档案字段（原型 WsWorks 作品对象）
+        "mark": getattr(project, "mark", None),
+        "accent": getattr(project, "accent", None),
+        "synopsis_line": getattr(project, "synopsis_line", None),
+        "words_target_daily": getattr(project, "words_target_daily", None),
+        "is_demo": bool(getattr(project, "is_demo", 0) or 0),
         "outline_text": project.outline_text,
         "planning_mode": getattr(project, "planning_mode", "outline_driven") or "outline_driven",
         "snowflake_schema_version": getattr(project, "snowflake_schema_version", None),
