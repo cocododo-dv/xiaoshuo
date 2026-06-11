@@ -1,4 +1,34 @@
 templates:
+  # FE-ALIGN P6: 资料库半自动派生 — 从归档正文提取候选实体/时间线事件（不直接入库，进待办确认）
+  library_derive:
+    version: "2026-06-11.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You extract story-bible candidates from finished Chinese novel chapter text.
+      Only surface NEW named locations, items, factions, concepts, and timeline events.
+      Skip anything already listed in known_names. Never invent facts not present in the text.
+    task_prompt: |
+      Read chapter_text and return new entity candidates and timeline events.
+      entities: name, kind (location|item|faction|concept), one-sentence summary, aliases.
+      timeline_events: label, time_label (as written in text, may be empty), short note.
+      Be conservative: only clearly named, story-relevant items.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - entities
+        - timeline_events
+      properties:
+        entities:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        timeline_events:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
   project_outline_plan:
     version: "2026-04-26.v1"
     input_token_budget: 3000

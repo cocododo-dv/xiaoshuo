@@ -376,6 +376,27 @@ class LibraryRelation(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
+class TimelineEvent(Base):
+    """FE-ALIGN P6: 资料库时间线事件（原型 ws-library 大事记 cat=events）。
+
+    entity_refs_json 元素用带前缀 ref（"character:<id>" / "entity:<id>"），
+    chapter_ref 是展示用章标记（如 "CH02" / "贯穿"），不强约束外键。
+    """
+
+    __tablename__ = "timeline_events"
+
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    label: Mapped[str] = mapped_column(String)
+    time_label: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    entity_refs_json: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True, default=list)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    display_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class ChapterGoal(Base):
     __tablename__ = "chapter_goals"
 

@@ -1,7 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { LIB_CATS } from "./ws-library-data.jsx";
+import { LIB_BY_ID, LIB_CATS } from "./ws-library-data.jsx";
 import { LIB_REL_TYPES, LIB_relType } from "./ws-library-derive.jsx";
+import { apiDelete, apiPatch, apiPost } from "./lib/client.js";
 
 /* global React, I, LIB_CATS, LIB_REL_TYPES, LIB_relType */
 const { useState: useEdSt } = React;
@@ -15,14 +16,95 @@ const { useState: useEdSt } = React;
 const LIB_EDIT_KEY = "ws-lib-edits-v1";
 const LIB_ADD_KEY  = "ws-lib-additions-v1";
 const LIB_K = (k) => (window.wsKey ? window.wsKey(k) : k);  // per-work namespace
+const LIB_MIGRATED_KEY = "ws-lib-migrated-v1";
+
+const libProjectId = () => { try { return window.WsWorks ? window.WsWorks.activeId() : null; } catch (e) { return null; } };
+const libApiBase = () => `/api/v2/projects/${libProjectId()}/library`;
+const libRefetch = () => { try { if (window.LIB_refetch) window.LIB_refetch(); } catch (e) {} };
+const libToast = (e, fallback) => { try { window.alert((e && e.message) || fallback); } catch (e2) {} };
+
+/* —— FE-ALIGN P6：编辑/新建直接落后端（base 已来自 API），
+   localStorage 覆盖层退化为「读空」；旧键一次性上行后保留（P8 清理）。 —— */
 
 function LIB_loadEdits() {
-  try { return JSON.parse(localStorage.getItem(LIB_K(LIB_EDIT_KEY)) || "{}"); }
-  catch (e) { return {}; }
+  LIB_migrateLegacy();
+  return {};
 }
+
+/* 条目 patch → 各对象的 PATCH/关系 CRUD；调用粒度=单次保存的 edits 全量 diff */
+const libSentEdits = {};
 function LIB_persist(edits) {
-  try { localStorage.setItem(LIB_K(LIB_EDIT_KEY), JSON.stringify(edits)); } catch (e) {}
+  (async () => {
+    try {
+      for (const id of Object.keys(edits || {})) {
+        const patch = edits[id];
+        if (!patch || JSON.stringify(libSentEdits[id]) === JSON.stringify(patch)) continue;
+        const base = LIB_BY_ID[id];
+        if (!base) continue;
+        await libPushPatch(base, patch);
+        libSentEdits[id] = patch;
+      }
+      libRefetch();
+    } catch (e) {
+      libToast(e, "资料卡保存失败。");
+      libRefetch();
+    }
+  })();
 }
+
+async function libPushPatch(base, patch) {
+  const body = {};
+  if (patch.name != null) body.name = patch.name;
+  if (patch.summary != null) body.summary = patch.summary;
+  const details = {};
+  if (patch.blurb != null) details.blurb = patch.blurb;
+  if (patch.facts != null) details.facts = patch.facts;
+  if (Object.keys(details).length) body.details = { ...(baseDetails(base)), ...details };
+  if (base.cat === "people") {
+    if (patch.kind != null) body.role = patch.kind;
+    await apiPatch(`${libApiBase()}/characters/${base.id}`, body);
+  } else if (base.cat === "events") {
+    const eventBody = {};
+    if (patch.name != null) eventBody.label = patch.name;
+    if (patch.blurb != null || patch.summary != null) eventBody.note = patch.blurb || patch.summary;
+    await apiPatch(`${libApiBase()}/timeline/${base.id}`, eventBody);
+  } else {
+    if (patch.tags != null) body.tags = patch.tags;
+    await apiPatch(`${libApiBase()}/entities/${base.id}`, body);
+  }
+  if (patch.links) await libSyncLinks(base, patch.links);
+}
+
+function baseDetails(base) {
+  return {
+    blurb: base.blurb, facts: base.facts, appears: base.appears,
+    arc: base.arc, state: base.state, code: base.code, accent: base.accent,
+    glyph: base.glyph, pinned: base.pinned, updated: base.updated,
+  };
+}
+
+async function libSyncLinks(base, nextLinks) {
+  const prev = base.links || [];
+  const nextIds = new Set((nextLinks || []).map(l => l.id));
+  for (const link of prev) {
+    if (!nextIds.has(link.id) && link.relationId) {
+      try { await apiDelete(`${libApiBase()}/relations/${link.relationId}`); } catch (e) {}
+    }
+  }
+  const prevIds = new Set(prev.map(l => l.id));
+  for (const link of nextLinks || []) {
+    if (prevIds.has(link.id)) continue;
+    const target = LIB_BY_ID[link.id];
+    if (!target || !target.ref || !base.ref || String(target.ref).startsWith("event:")) continue;
+    try {
+      await apiPost(`${libApiBase()}/relations`, {
+        from_ref: base.ref, to_ref: target.ref,
+        kind: link.type || "related", note: link.rel || "",
+      });
+    } catch (e) {}
+  }
+}
+
 /* merge a stored patch over a base entry */
 function LIB_applyEdit(entry, edits) {
   const p = entry && edits ? edits[entry.id] : null;
@@ -30,12 +112,52 @@ function LIB_applyEdit(entry, edits) {
 }
 
 /* ---- additions (用户新建条目) ---- */
-function LIB_loadAdds() {
-  try { const a = JSON.parse(localStorage.getItem(LIB_K(LIB_ADD_KEY)) || "[]"); return Array.isArray(a) ? a : []; }
-  catch (e) { return []; }
-}
+function LIB_loadAdds() { return []; }
+
+const libSentAdds = new Set();
 function LIB_persistAdds(adds) {
-  try { localStorage.setItem(LIB_K(LIB_ADD_KEY), JSON.stringify(adds)); } catch (e) {}
+  (async () => {
+    try {
+      for (const add of adds || []) {
+        if (!add || libSentAdds.has(add.id)) continue;
+        libSentAdds.add(add.id);
+        if (add.cat === "people") {
+          await apiPost(`${libApiBase()}/characters`, {
+            name: add.name, role: add.kind, summary: add.summary || "",
+            details: { blurb: add.blurb, facts: add.facts, glyph: add.glyph },
+          });
+        } else if (add.cat === "events") {
+          await apiPost(`${libApiBase()}/timeline`, {
+            label: add.name, note: add.blurb || add.summary || "",
+          });
+        } else {
+          await apiPost(`${libApiBase()}/entities`, {
+            name: add.name, kind: "concept", summary: add.summary || "",
+            tags: add.tags || [], details: { blurb: add.blurb, facts: add.facts, glyph: add.glyph, code: add.code },
+          });
+        }
+      }
+      libRefetch();
+    } catch (e) {
+      libToast(e, "新建资料失败。");
+      libRefetch();
+    }
+  })();
+}
+
+/* 旧 localStorage 覆盖层（edits/additions）一次性上行 —— 迁不动的丢弃（资料可再编） */
+function LIB_migrateLegacy() {
+  try {
+    const pid = libProjectId();
+    if (!pid || pid === "__loading__") return;
+    const flag = LIB_K(LIB_MIGRATED_KEY);
+    if (localStorage.getItem(flag)) return;
+    localStorage.setItem(flag, new Date().toISOString());
+    const edits = JSON.parse(localStorage.getItem(LIB_K(LIB_EDIT_KEY)) || "{}");
+    const adds = JSON.parse(localStorage.getItem(LIB_K(LIB_ADD_KEY)) || "[]");
+    if (Object.keys(edits).length) LIB_persist(edits);
+    if (Array.isArray(adds) && adds.length) LIB_persistAdds(adds);
+  } catch (e) {}
 }
 /* 构造一个新档案的种子，cat = 类别 id，name = 名称 */
 function LIB_newEntry(cat, name) {
@@ -271,15 +393,13 @@ function DossierCreate({ onCreate, onCancel }) {
   );
 }
 
-/* ---- 种子门控 + 实时合并视图（写作器等模块共用） ----
-   内置种子条目属于「潮汐档案」；其它作品只看到自己新建的档案。
-   LIB_live() 返回「种子（按作品）+ 用户新建 + 编辑覆盖」的合并结果，
+/* ---- 实时合并视图（写作器等模块共用） ----
+   FE-ALIGN P6：LIB_ENTRIES 已按当前作品从后端装载，门控恒开
+   （per-work 隔离由 API 保证）；LIB_live() 直接返回当前缓存，
    供正文实体高亮 / @提及等运行时消费，保证与资料库页面同源。 */
-const LIB_seedOn = () => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } };
+const LIB_seedOn = () => true;
 function LIB_live() {
-  const seeds = LIB_seedOn() ? (window.LIB_ENTRIES || []) : [];
-  const edits = LIB_loadEdits();
-  const entries = [...seeds, ...LIB_loadAdds()].map(e => LIB_applyEdit(e, edits));
+  const entries = (window.LIB_ENTRIES || []).slice();
   const byId = entries.reduce((m, e) => { m[e.id] = e; return m; }, {});
   return { entries, byId };
 }

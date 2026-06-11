@@ -85,6 +85,126 @@ def _prose(lines: list[str], target_chars: int) -> str:
     return "\n".join(paragraphs)
 
 
+_LIBRARY_JSON = Path(__file__).with_name("fe_demo_library.json")
+
+# 原型 kind 展示词 → 后端实体 kind
+_ENTITY_KIND_MAP = {
+    "地点": "location",
+    "场所": "location",
+    "物品": "item",
+    "线索": "item",
+    "信物": "item",
+    "机构": "faction",
+    "组织": "faction",
+    "阵营": "faction",
+}
+
+
+def _seed_tide_library(session: Session) -> None:
+    """原型 ws-library-data 的后端化：人物→StoryCharacter、世界→LibraryEntity、
+    大事记→TimelineEvent、links→LibraryRelation（事件端点不建边——关系表只接受
+    character/entity ref）。"""
+    from novel_system.db.models import (
+        LibraryEntity,
+        LibraryRelation,
+        StoryCharacter,
+        TimelineEvent,
+    )
+
+    if not _LIBRARY_JSON.exists():
+        return
+    entries = json.loads(_LIBRARY_JSON.read_text(encoding="utf-8")).get("tide") or []
+    for model in (LibraryRelation, TimelineEvent, LibraryEntity):
+        session.execute(delete(model).where(model.project_id == "tide"))
+    session.execute(delete(StoryCharacter).where(StoryCharacter.project_id == "tide"))
+    session.flush()
+
+    ref_of: dict[str, str] = {}
+    for entry in entries:
+        extras = {
+            key: entry.get(key)
+            for key in ("code", "accent", "glyph", "blurb", "facts", "appears", "arc", "state", "pinned", "updated")
+            if entry.get(key) is not None
+        }
+        if entry["cat"] == "people":
+            session.add(
+                StoryCharacter(
+                    character_id=entry["id"],
+                    project_id="tide",
+                    display_name=entry["name"],
+                    role=entry.get("kind") or None,
+                    summary_json={"one_line": entry.get("summary") or "", "fe_details": extras},
+                    status="active",
+                )
+            )
+            ref_of[entry["id"]] = f"character:{entry['id']}"
+        elif entry["cat"] == "world":
+            session.add(
+                LibraryEntity(
+                    entity_id=entry["id"],
+                    project_id="tide",
+                    kind=_ENTITY_KIND_MAP.get(str(entry.get("kind") or ""), "concept"),
+                    name=entry["name"],
+                    aliases_json=[],
+                    summary=entry.get("summary") or "",
+                    details_json=extras,
+                    tags_json=list(entry.get("tags") or []),
+                    status="active",
+                )
+            )
+            ref_of[entry["id"]] = f"entity:{entry['id']}"
+        elif entry["cat"] == "events":
+            facts = {f.get("k"): f.get("v") for f in (entry.get("facts") or []) if isinstance(f, dict)}
+            appears = list(entry.get("appears") or [])
+            session.add(
+                TimelineEvent(
+                    event_id=entry["id"],
+                    project_id="tide",
+                    label=entry["name"],
+                    time_label=str(facts.get("时间") or facts.get("时点") or entry.get("summary") or ""),
+                    chapter_ref=appears[0] if appears else None,
+                    entity_refs_json=[],
+                    note=entry.get("blurb") or entry.get("summary") or "",
+                    display_order=None,
+                )
+            )
+    session.flush()
+
+    # links → 关系边（端点限 character/entity；目标是事件的链接进事件 entity_refs）
+    event_ids = {e["id"] for e in entries if e["cat"] == "events"}
+    seen_pairs: set[tuple[str, str]] = set()
+    for entry in entries:
+        source_ref = ref_of.get(entry["id"])
+        for link in entry.get("links") or []:
+            target_id = link.get("id")
+            if target_id in event_ids and source_ref:
+                event = session.get(TimelineEvent, target_id)
+                if event is not None:
+                    refs = list(event.entity_refs_json or [])
+                    if source_ref not in refs:
+                        refs.append(source_ref)
+                        event.entity_refs_json = refs
+                continue
+            target_ref = ref_of.get(target_id)
+            if not source_ref or not target_ref:
+                continue
+            pair = tuple(sorted((source_ref, target_ref)))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            session.add(
+                LibraryRelation(
+                    relation_id=f"REL_DEMO_{len(seen_pairs):03d}",
+                    project_id="tide",
+                    from_ref=source_ref,
+                    to_ref=target_ref,
+                    kind=str(link.get("type") or "related"),
+                    note=str(link.get("rel") or ""),
+                )
+            )
+    session.flush()
+
+
 def cleanup_fe_demo_works(session: Session) -> None:
     scene_ids = [
         row
@@ -257,6 +377,7 @@ def _seed_work(
 
     if project_id == "tide":
         _seed_tide_review_cards(session)
+        _seed_tide_library(session)
 
     WritingStatsService(session).seed_stats(
         project_id,

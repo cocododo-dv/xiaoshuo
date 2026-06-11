@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import LibraryEntity, LibraryRelation, StoryCharacter
+from novel_system.db.models import LibraryEntity, LibraryRelation, StoryCharacter, TimelineEvent
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import ProjectService
 
@@ -45,9 +45,25 @@ def _character_payload(character: StoryCharacter) -> dict[str, Any]:
         "name": character.display_name,
         "role": character.role or "",
         "summary": str(summary.get("one_line") or summary.get("summary") or ""),
+        # FE-ALIGN P6：资料卡扩展字段（facts/blurb/arc/appears 等自由字段组）
+        "details": dict(summary.get("fe_details") or {}),
         "status": character.status,
         "ref": f"character:{character.character_id}",
         "updated_at": character.updated_at,
+    }
+
+
+def _timeline_payload(event: TimelineEvent) -> dict[str, Any]:
+    return {
+        "event_id": event.event_id,
+        "project_id": event.project_id,
+        "label": event.label,
+        "time_label": event.time_label or "",
+        "chapter_ref": event.chapter_ref or "",
+        "entity_refs": event.entity_refs_json or [],
+        "note": event.note or "",
+        "display_order": event.display_order,
+        "updated_at": event.updated_at,
     }
 
 
@@ -92,7 +108,146 @@ class LibraryService:
             "characters": [_character_payload(item) for item in characters],
             "entities": [_entity_payload(item) for item in entities],
             "relations": [_relation_payload(item) for item in relations],
+            # FE-ALIGN P6：时间线并入聚合（前端一次装载）
+            "timeline": [_timeline_payload(item) for item in self._timeline_rows(project.project_id)],
         }
+
+    # ---- FE-ALIGN P6：时间线 ----
+
+    def _timeline_rows(self, project_id: str) -> list[TimelineEvent]:
+        rows = list(
+            self.session.scalars(
+                select(TimelineEvent).where(TimelineEvent.project_id == project_id)
+            ).all()
+        )
+        rows.sort(key=lambda r: (r.display_order is None, r.display_order or 0, r.created_at))
+        return rows
+
+    def list_timeline(self, project_id: str) -> dict[str, Any]:
+        project = self._require_project(project_id)
+        return {"items": [_timeline_payload(item) for item in self._timeline_rows(project.project_id)]}
+
+    def create_timeline_event(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        project = self._require_project(project_id)
+        label = str(payload.get("label") or "").strip()
+        if not label:
+            raise DomainError("TIMELINE_LABEL_REQUIRED", "event label is required", status_code=400)
+        rows = self._timeline_rows(project.project_id)
+        event = TimelineEvent(
+            event_id=f"EVT_{uuid.uuid4().hex[:10].upper()}",
+            project_id=project.project_id,
+            label=label,
+            time_label=str(payload.get("time_label") or "").strip() or None,
+            chapter_ref=str(payload.get("chapter_ref") or "").strip() or None,
+            entity_refs_json=list(payload.get("entity_refs") or []),
+            note=str(payload.get("note") or "").strip() or None,
+            display_order=int(payload["display_order"]) if payload.get("display_order") is not None else len(rows) + 1,
+        )
+        self.session.add(event)
+        self.session.flush()
+        return _timeline_payload(event)
+
+    def _require_event(self, project_id: str, event_id: str) -> TimelineEvent:
+        event = self.session.get(TimelineEvent, event_id)
+        if event is None or event.project_id != project_id:
+            raise DomainError("TIMELINE_EVENT_NOT_FOUND", "timeline event not found", status_code=404)
+        return event
+
+    def update_timeline_event(self, project_id: str, event_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        project = self._require_project(project_id)
+        event = self._require_event(project.project_id, event_id)
+        if "label" in payload:
+            label = str(payload.get("label") or "").strip()
+            if not label:
+                raise DomainError("TIMELINE_LABEL_REQUIRED", "event label is required", status_code=400)
+            event.label = label
+        if "time_label" in payload:
+            event.time_label = str(payload.get("time_label") or "").strip() or None
+        if "chapter_ref" in payload:
+            event.chapter_ref = str(payload.get("chapter_ref") or "").strip() or None
+        if "entity_refs" in payload:
+            event.entity_refs_json = list(payload.get("entity_refs") or [])
+        if "note" in payload:
+            event.note = str(payload.get("note") or "").strip() or None
+        if "display_order" in payload and payload.get("display_order") is not None:
+            event.display_order = int(payload["display_order"])
+        self.session.flush()
+        return _timeline_payload(event)
+
+    def delete_timeline_event(self, project_id: str, event_id: str) -> dict[str, Any]:
+        project = self._require_project(project_id)
+        event = self._require_event(project.project_id, event_id)
+        self.session.delete(event)
+        self.session.flush()
+        return {"event_id": event_id, "deleted": True}
+
+    # ---- FE-ALIGN P6：图投影（实体+关系 → nodes/edges，纯投影） ----
+
+    def graph(self, project_id: str) -> dict[str, Any]:
+        overview = self.overview(project_id)
+        nodes = [
+            {"id": item["ref"], "kind": "character", "name": item["name"]}
+            for item in overview["characters"]
+        ] + [
+            {"id": item["ref"], "kind": item["kind"], "name": item["name"]}
+            for item in overview["entities"]
+        ]
+        edges = [
+            {
+                "from": item["from_ref"],
+                "to": item["to_ref"],
+                "relation": item["kind"],
+                "note": item["note"],
+            }
+            for item in overview["relations"]
+        ]
+        return {"nodes": nodes, "edges": edges}
+
+    # ---- FE-ALIGN P6：人物档案的资料卡编辑（改名后引用经 character_id 不断） ----
+
+    def create_character(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """资料库侧新建人物档案（雪花角色同步之外的手动入口）。"""
+        project = self._require_project(project_id)
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise DomainError("LIBRARY_ENTITY_NAME_REQUIRED", "character name is required", status_code=400)
+        character = StoryCharacter(
+            character_id=f"CHAR_{uuid.uuid4().hex[:10].upper()}",
+            project_id=project.project_id,
+            display_name=name,
+            role=str(payload.get("role") or "").strip() or None,
+            summary_json={
+                "one_line": str(payload.get("summary") or "").strip(),
+                "fe_details": dict(payload.get("details") or {}),
+            },
+            status="active",
+        )
+        self.session.add(character)
+        self.session.flush()
+        return _character_payload(character)
+
+    def update_character(self, project_id: str, character_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        project = self._require_project(project_id)
+        character = self.session.get(StoryCharacter, character_id)
+        if character is None or character.project_id != project.project_id:
+            raise DomainError("LIBRARY_CHARACTER_NOT_FOUND", "character not found in project", status_code=404)
+        if "name" in payload:
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                raise DomainError("LIBRARY_ENTITY_NAME_REQUIRED", "character name is required", status_code=400)
+            character.display_name = name
+        if "role" in payload:
+            character.role = str(payload.get("role") or "").strip() or None
+        if "summary" in payload:
+            summary = dict(character.summary_json or {})
+            summary["one_line"] = str(payload.get("summary") or "").strip()
+            character.summary_json = summary
+        if "details" in payload:
+            summary = dict(character.summary_json or {})
+            summary["fe_details"] = dict(payload.get("details") or {})
+            character.summary_json = summary
+        self.session.flush()
+        return _character_payload(character)
 
     def create_entity(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         project = self._require_project(project_id)

@@ -35,3 +35,20 @@ if (!Array.isArray(salt) || !salt.length) throw new Error("CAT_SALT_CHAPTERS eva
 fs.writeFileSync(OUT, JSON.stringify({ tide, salt }, null, 1), "utf8");
 console.log(`tide chapters: ${tide.length}, salt chapters: ${salt.length}`);
 console.log("written:", OUT);
+
+// P6：资料库种子（ws-library-data.jsx 也是纯数据模块）—— 只导出 people/world/events，
+// refs/profiles/knowledge 由风格/知识子系统供给（P8 接真）
+const LIB_OUT = path.resolve(HERE, "../../backend/src/novel_system/tools/fe_demo_library.json");
+let libData = fs.readFileSync(path.join(SRC, "ws-library-data.jsx"), "utf8");
+libData = libData
+  .replace(/^import .*$/gm, "")
+  .replace(/^\/\* ESM 导出.*$/gm, "")
+  .replace(/^export .*$/gm, "");
+const libSandbox = { window: {} };
+vm.createContext(libSandbox);
+vm.runInContext(libData + "\nthis.__entries = (typeof LIB_SEED_ENTRIES !== 'undefined' && LIB_SEED_ENTRIES.length) ? LIB_SEED_ENTRIES : LIB_ENTRIES;", libSandbox);
+const entries = libSandbox.__entries.filter(e => ["people", "world", "events"].includes(e.cat));
+if (!entries.length) throw new Error("LIB_ENTRIES eval failed");
+fs.writeFileSync(LIB_OUT, JSON.stringify({ tide: entries }, null, 1), "utf8");
+console.log(`tide library entries: ${entries.length}`);
+console.log("written:", LIB_OUT);

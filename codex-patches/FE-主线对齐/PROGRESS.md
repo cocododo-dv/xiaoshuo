@@ -10,7 +10,7 @@
 - [x] Phase 2 · 作品域与聚合 — 提交：e858b8b
 - [x] Phase 3 · 目录统一 — 提交：de32d78
 - [x] Phase 4 · 回收站 — 提交：64957cd
-- [ ] Phase 5 · 待办收件箱 — 提交：
+- [x] Phase 5 · 待办收件箱 — 提交：f6785bb
 - [ ] Phase 6 · 资料库 — 提交：
 - [ ] Phase 7 · 控制塔桥 — 提交：
 - [ ] Phase 8 · 收尾退役 — 提交：
@@ -157,6 +157,40 @@
 - 验收：6 后端测试绿（建/列/收/撤、dedupe、effect 事务含未知类型 400、派生三语义、
   badge、全局卡）；P5 冒烟 6 项全过（QC 卡插场景落库/决策卡 rename 落库/badge/
   派生不可划掉+修好消失/dedupe）；15 视图零错误；全量 pytest **838 passed**。
+
+## Phase 6 记录（2026-06-11）
+
+- 后端：迁移 `20260611_0051`（新表 timeline_events）。LibraryService 扩展：
+  时间线 CRUD（GET/POST/PATCH/DELETE …/library/timeline）、图投影
+  `GET …/library/graph`（人物+实体 → nodes，关系 → edges，纯投影）、
+  人物资料卡 `POST/PATCH …/library/characters`（改名经 character_id 引用不断；
+  fe_details 自由字段组挂 summary_json）、overview 聚合并入 timeline。
+- 半自动派生（D5）：`services/library_derive.py` + `POST …/library/derive`
+  —— LLM 未配置静默跳过（带 author_action 提示）；启用时走 call_llm_node
+  （新节点 library_derive：llm_node_registry + config/models.yaml task_routing +
+  config/prompts.yaml 模板）；候选**不直接入库**，产 idea 卡
+  （dedupe=derive:{chapter}:{name}，actions=确认入库/忽略）。
+  effect 注册表补 create_entity / add_timeline_event。归档自动触发挂 P7 写回链。
+- demo seed：ws-library-data 种子（people/world/events 20 条）导出
+  fe_demo_library.json —— 人物→StoryCharacter、世界→LibraryEntity、
+  大事记→TimelineEvent、links→LibraryRelation（指向事件的链接进事件 entity_refs）。
+  作品 purge 级联补 StoryCharacter/TimelineEvent。
+- 前端：ws-library-data 接真 —— LIB_ENTRIES 退化为可变缓存数组（保持引用，
+  视图随访问重挂载读取），API 聚合适配为原型条目形状（人物/世界/大事记；
+  refs/profiles/knowledge 三类 P8 接风格/知识子系统前留空）；静态种子改名
+  LIB_SEED_ENTRIES 仅作导出脚本数据源。ws-library-edit：LIB_persist 改为
+  per-条目 diff → PATCH（人物/实体/时间线分流）+ links diff → relations
+  POST/DELETE；LIB_persistAdds → POST（people→characters / events→timeline /
+  其余→entities）；LIB_seedOn 恒 true（per-work 隔离由 API 保证）；旧本地
+  覆盖层键一次性上行。**视图接缝（与 P3/P5 同类）**：WsReview 增一个
+  ws:review-changed 同步 effect（store 异步化后缓存更新需进视图列表）+
+  store 在进入 #review 时刷新。
+- 验收：6 后端测试绿（时间线 CRUD 排序/图投影/人物改名 id 不断/derive 静默跳过/
+  effect 入库进图/seed 幂等）；P6 冒烟 5 项全过 + P5 冒烟回归 6 项全过；
+  15 视图零错误；全量 pytest **844 passed**。
+- 核对发现：实体「差集」实际不需要新列——aliases/status 已有，first_seen/
+  fields(facts/blurb/arc/appears) 走 details_json 键约定；新增 library_derive
+  LLM 节点必须同时进 llm_node_registry（缺了会让 system-config sync-missing 422）。
 
 ## 核对发现（实际代码 vs 简报假设）
 

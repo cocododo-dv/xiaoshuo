@@ -104,6 +104,39 @@ def _bind_style_profile(session: Session, project_id: str, payload: dict[str, An
     }
 
 
+def _create_entity(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from novel_system.services.library import LibraryService
+
+    return LibraryService(session).create_entity(
+        project_id,
+        {
+            "name": payload.get("name"),
+            "kind": payload.get("kind") or "concept",
+            "summary": payload.get("summary") or "",
+            "aliases": payload.get("aliases") or [],
+            "details": payload.get("details") or {},
+            "tags": payload.get("tags") or [],
+        },
+    )
+
+
+def _add_timeline_event(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from novel_system.services.library import LibraryService
+
+    return LibraryService(session).create_timeline_event(
+        project_id,
+        {
+            "label": payload.get("label"),
+            "time_label": payload.get("time_label") or "",
+            "chapter_ref": payload.get("chapter_ref") or "",
+            "entity_refs": payload.get("entity_refs") or [],
+            "note": payload.get("note") or "",
+        },
+    )
+
+
 register_effect("insert_scene", _insert_scene)
 register_effect("rename_chapter", _rename_chapter)
 register_effect("bind_style_profile", _bind_style_profile)
+register_effect("create_entity", _create_entity)
+register_effect("add_timeline_event", _add_timeline_event)

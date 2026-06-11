@@ -96,6 +96,16 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.1,
         max_output_tokens=1200,
     ),
+    # FE-ALIGN P6: 资料库半自动派生（归档正文 → 候选实体/时间线事件 → 待办确认）
+    LLMNodeSpec(
+        "library_derive",
+        "Library derive candidates",
+        "project",
+        template_name="library_derive",
+        model="gpt-5-mini",
+        temperature=0.1,
+        max_output_tokens=1600,
+    ),
     LLMNodeSpec(
         "style_profile_extract",
         "Style profile extract",

@@ -207,6 +207,8 @@ class TrashService:
         if chapter_ids:
             self.session.execute(delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids)))
             self.session.execute(delete(ChapterGoal).where(ChapterGoal.chapter_id.in_(chapter_ids)))
+        from novel_system.db.models import StoryCharacter, TimelineEvent
+
         for model in (
             SnowflakeSceneTriageItem,
             SnowflakeScenePlan,
@@ -219,6 +221,8 @@ class TrashService:
             LongformAnchor,
             LibraryRelation,
             LibraryEntity,
+            TimelineEvent,
+            StoryCharacter,
             OutlinePlan,
             ProjectWritingStats,
         ):

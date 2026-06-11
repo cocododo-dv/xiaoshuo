@@ -271,6 +271,10 @@ try { rvFetch(); } catch (e) {}
 window.addEventListener("ws:work-changed", () => { try { rvFetchDebounced(); } catch (e) {} });
 window.addEventListener("ws:trash-changed", () => { try { rvFetchDebounced(); } catch (e) {} });
 try { if (window.WsCatalog) window.WsCatalog.subscribe(() => rvFetchDebounced()); } catch (e) {}
+/* 进入待办视图时刷新一轮（外部投递的卡即时可见） */
+window.addEventListener("hashchange", () => {
+  try { if ((location.hash || "").includes("review")) rvFetchDebounced(); } catch (e) {}
+});
 Object.assign(window, { rvResolveAction });
 
 
@@ -291,6 +295,14 @@ function WsReview({ go }) {
     const id = setTimeout(() => setToast(null), 5200);
     return () => clearTimeout(id);
   }, [toast]);
+
+  /* FE-ALIGN P6 接缝：store 改为异步后端装载后，缓存更新（后端刷新/外部投递）
+     需同步进视图列表 —— 原型是同步 localStorage 读，无需此订阅 */
+  React.useEffect(() => {
+    const sync = () => { setItems(rvOpenItems()); setSnoozed(rvSnoozedList()); };
+    window.addEventListener("ws:review-changed", sync);
+    return () => window.removeEventListener("ws:review-changed", sync);
+  }, []);
 
   const counts = React.useMemo(() => {
     const c = { all: items.length };
