@@ -257,6 +257,56 @@ def _seed_tide_audit(session: Session) -> None:
     session.flush()
 
 
+# FE-ALIGN F4：lf6 控制塔可视化层（悬念债/设定锚点/故事线/人物弧线）的后端真相。
+# 原型形状以 JSON 存 LongformAnchor.note（{"fe": {...}}），text 存人读摘要。
+_TIDE_ANCHORS = [
+    # —— 设定锚点（LF2_CANON；c1-c3 的冲突态由审计 findings 叠加，锚点存基准事实）——
+    ("c1", "trait",    "林岑 · 年龄 = 28 岁", {"subject": "林岑 · 年龄", "value": "28 岁", "source": 1, "status": "conflict", "drift": True, "conflictCh": 5, "conflictText": "第 5 章「还在念中学」与第 1 章「28 岁」冲突", "critical": True, "pinned": True}),
+    ("c2", "setting",  "盐钟 · 材质 = 铜", {"subject": "盐钟 · 材质", "value": "铜", "source": 1, "status": "conflict", "drift": True, "conflictCh": 7, "conflictText": "第 7 章写「生铁」，与第 1 章「铜」冲突", "critical": False, "pinned": False}),
+    ("c3", "timeline", "时间线 · 父亲失踪 = 案发后第三天", {"subject": "时间线 · 父亲失踪", "value": "案发后第三天", "source": 3, "status": "conflict", "drift": False, "conflictCh": 5, "conflictText": "第 5 章「同一周内」与第 3 章「三天后」冲突", "critical": False, "pinned": False}),
+    ("c4", "trait",    "周岚 · 身份 = 档案学院督察", {"subject": "周岚 · 身份", "value": "档案学院督察", "source": 6, "status": "locked", "critical": True, "pinned": True}),
+    ("c5", "fact",     "No.31 · 含义 = 父亲盐钟编号·核心谜面", {"subject": "No.31 · 含义", "value": "父亲盐钟编号·核心谜面", "source": 1, "status": "locked", "critical": True, "pinned": True}),
+    ("c6", "fact",     "叙事 · 人称 = 第三人称限知（林岑视角）", {"subject": "叙事 · 人称", "value": "第三人称限知（林岑视角）", "source": 1, "status": "locked", "critical": False, "pinned": False}),
+    # —— 悬念债（LF2_LOOPS）——
+    ("l1", "promise", "「No.31」编号到底指什么", {"title": "「No.31」编号到底指什么", "setup": 1, "payoff": 12, "state": "open", "pri": "high", "pinned": True, "note": "父亲遗物盐钟上刻的编号，全书核心谜面。"}),
+    ("l2", "promise", "父亲最后一次值班的录像", {"title": "父亲最后一次值班的录像", "setup": 3, "payoff": 10, "state": "open", "pri": "high", "pinned": True, "note": "证明改写发生的关键物证，读者已被明确许诺会看到。"}),
+    ("l6", "promise", "楼梯间的第二组脚印", {"title": "楼梯间的第二组脚印", "setup": 2, "payoff": 6, "state": "open", "pri": "high", "pinned": False, "note": "第 2 章埋下、原计划第 6 章揭晓——已越过当前章仍未回收。"}),
+    ("l3", "promise", "周岚母亲的来信", {"title": "周岚母亲的来信", "setup": 4, "payoff": 20, "state": "open", "pri": "medium", "pinned": False, "note": "可推到结尾区段，作为周岚转向的情感支点。"}),
+    ("l4", "promise", "档案学院 2011 改组真相", {"title": "档案学院 2011 改组真相", "setup": 4, "payoff": None, "state": "open", "pri": "medium", "pinned": False, "note": "尚未排定回收章——副线停滞的根因。"}),
+    ("l5", "promise", "盐钟铭牌背面的备份单", {"title": "盐钟铭牌背面的备份单", "setup": 1, "payoff": 8, "state": "closing", "pri": "low", "pinned": False, "note": "本章（第 8 章）正在回收。"}),
+    # —— 故事线（LF2_THREADS）——
+    ("main", "thread", "主线 · 父亲的真相", {"name": "主线 · 父亲的真相", "short": "主线", "color": "crimson", "segs": [[1, 8]]}),
+    ("sub",  "thread", "副线 · 档案学院改组", {"name": "副线 · 档案学院改组", "short": "副线", "color": "slate", "segs": [[2, 2], [4, 4]]}),
+    ("anti", "thread", "对抗线 · 周岚", {"name": "对抗线 · 周岚", "short": "对抗线", "color": "ink", "segs": [[5, 8]]}),
+    ("love", "thread", "感情线 · 林岑×阿恪", {"name": "感情线 · 林岑×阿恪", "short": "感情线", "color": "gold", "segs": [[1, 1], [4, 4], [6, 6], [8, 8]]}),
+    # —— 人物弧线（LF2_ARCS）——
+    ("arc-lin",  "arc", "林岑 · 主角弧线", {"name": "林岑", "role": "主角", "color": "crimson", "state": "二次发现 · 0.75 ↑", "points": [{"ch": 1, "v": 0.30, "label": "守护父亲"}, {"ch": 2, "v": 0.35}, {"ch": 3, "v": 0.40, "label": "怀疑出现"}, {"ch": 4, "v": 0.45}, {"ch": 5, "v": 0.55}, {"ch": 6, "v": 0.62}, {"ch": 7, "v": 0.70, "label": "证据 No.1"}, {"ch": 8, "v": 0.75, "label": "二次发现", "current": True}]}),
+    ("arc-zhou", "arc", "周岚 · 对立弧线", {"name": "周岚", "role": "对立", "color": "slate", "state": "被迫接触 · 0.48 ↓", "points": [{"ch": 1, "v": 0.80, "label": "无瑕"}, {"ch": 2, "v": 0.78}, {"ch": 3, "v": 0.74}, {"ch": 4, "v": 0.70}, {"ch": 5, "v": 0.65, "label": "微小裂缝"}, {"ch": 6, "v": 0.58}, {"ch": 7, "v": 0.55}, {"ch": 8, "v": 0.48, "label": "被迫接触", "current": True}]}),
+    ("arc-ake",  "arc", "阿恪 · 次要弧线", {"name": "阿恪", "role": "次要", "color": "gold", "state": "自第 6 章无成长点", "stalledFrom": 6, "points": [{"ch": 1, "v": 0.50, "label": "搭档"}, {"ch": 4, "v": 0.55, "label": "提示"}, {"ch": 6, "v": 0.62}, {"ch": 8, "v": 0.62, "label": "电话出场", "current": True}]}),
+]
+
+
+def _seed_tide_anchors(session: Session) -> None:
+    """链路② demo：控制塔锚点库（悬念债/设定/故事线/弧线 → LongformAnchor）。"""
+    from novel_system.db.models import LongformAnchor
+
+    session.execute(delete(LongformAnchor).where(LongformAnchor.project_id == "tide"))
+    session.flush()
+    for fe_id, kind, text, fe in _TIDE_ANCHORS:
+        session.add(
+            LongformAnchor(
+                anchor_id=f"ANC_TIDE_{fe_id.upper().replace('-', '_')}",
+                project_id="tide",
+                kind=kind,
+                text=text,
+                source_ref=f"ch{fe.get('source')}" if fe.get("source") else None,
+                note=json.dumps({"fe": {"id": fe_id, **fe}}, ensure_ascii=False),
+                status="pinned",
+            )
+        )
+    session.flush()
+
+
 def cleanup_fe_demo_works(session: Session) -> None:
     scene_ids = [
         row
@@ -270,6 +320,9 @@ def cleanup_fe_demo_works(session: Session) -> None:
                 AuthorDraft.object_type == "scene", AuthorDraft.object_id.in_(scene_ids)
             )
         )
+    from novel_system.db.models import LongformAnchor
+
+    session.execute(delete(LongformAnchor).where(LongformAnchor.project_id.in_(DEMO_WORK_IDS)))
     session.execute(delete(SceneCard).where(SceneCard.project_id.in_(DEMO_WORK_IDS)))
     session.execute(delete(ChapterGoal).where(ChapterGoal.project_id.in_(DEMO_WORK_IDS)))
     session.execute(delete(SnowflakeStepRun).where(SnowflakeStepRun.project_id.in_(DEMO_WORK_IDS)))
@@ -431,6 +484,7 @@ def _seed_work(
         _seed_tide_review_cards(session)
         _seed_tide_library(session)
         _seed_tide_audit(session)
+        _seed_tide_anchors(session)
 
     WritingStatsService(session).seed_stats(
         project_id,

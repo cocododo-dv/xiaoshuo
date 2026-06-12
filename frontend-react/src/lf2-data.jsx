@@ -55,7 +55,7 @@ const LF2_TARGET = [
 ];
 
 /* 故事线：在场区段 = [from,to]。最后活跃章远落后于 now 即"停滞"。 */
-const LF2_THREADS = [
+let LF2_THREADS = [
   { id: "main", name: "主线 · 父亲的真相",   short: "主线",   color: "crimson", segs: [[1, 8]] },
   { id: "sub",  name: "副线 · 档案学院改组", short: "副线",   color: "slate",   segs: [[2, 2], [4, 4]] },
   { id: "anti", name: "对抗线 · 周岚",       short: "对抗线", color: "ink",     segs: [[5, 8]] },
@@ -63,7 +63,7 @@ const LF2_THREADS = [
 ];
 
 /* 悬念债 = 对读者的承诺。setup 起飞，payoff 落地；payoff < now 仍 open = 逾期。 */
-const LF2_LOOPS = [
+let LF2_LOOPS = [
   { id: "l1", title: "「No.31」编号到底指什么", setup: 1, payoff: 12, state: "open", pri: "high", pinned: true,
     note: "父亲遗物盐钟上刻的编号，全书核心谜面。" },
   { id: "l2", title: "父亲最后一次值班的录像", setup: 3, payoff: 10, state: "open", pri: "high", pinned: true,
@@ -79,7 +79,7 @@ const LF2_LOOPS = [
 ];
 
 /* 连续性风险：drift = 由最近一次 AI 生成引入的矛盾（控制塔重点抓的） */
-const LF2_RISKS = [
+let LF2_RISKS = [
   { id: "r1", type: "设定", text: "林岑年龄出现两个版本：第 1 章「28 岁」与第 5 章「还在念中学」", ch: 5, sev: "high",   drift: true,
     fix: "林岑年龄统一为 28 岁（以第 1 章为准）", canon: "c1" },
   { id: "r2", type: "设定", text: "盐钟材质前后不一：第 1 章写「铜」，第 7 章写「生铁」", ch: 7, sev: "medium", drift: true,
@@ -90,7 +90,7 @@ const LF2_RISKS = [
 ];
 
 /* 设定锚点 — AI 不许自相矛盾的"既定事实"。conflict = 当前有漂移待统一。 */
-const LF2_CANON = [
+let LF2_CANON = [
   { id: "c1", subject: "林岑 · 年龄",     value: "28 岁",            source: 1, status: "conflict", drift: true,  conflictCh: 5, conflictText: "第 5 章「还在念中学」与第 1 章「28 岁」冲突", critical: true,  pinned: true },
   { id: "c2", subject: "盐钟 · 材质",     value: "铜",               source: 1, status: "conflict", drift: true,  conflictCh: 7, conflictText: "第 7 章写「生铁」，与第 1 章「铜」冲突", critical: false, pinned: false },
   { id: "c3", subject: "时间线 · 父亲失踪", value: "案发后第三天",     source: 3, status: "conflict", drift: false, conflictCh: 5, conflictText: "第 5 章「同一周内」与第 3 章「三天后」冲突", critical: false, pinned: false },
@@ -100,7 +100,7 @@ const LF2_CANON = [
 ];
 
 /* 人物弧线：沿章节推进的内部状态值（0..1） */
-const LF2_ARCS = [
+let LF2_ARCS = [
   { name: "林岑", role: "主角", color: "crimson", state: "二次发现 · 0.75 ↑", points: [
     { ch: 1, v: 0.30, label: "守护父亲" }, { ch: 2, v: 0.35 }, { ch: 3, v: 0.40, label: "怀疑出现" },
     { ch: 4, v: 0.45 }, { ch: 5, v: 0.55 }, { ch: 6, v: 0.62 }, { ch: 7, v: 0.70, label: "证据 No.1" },
@@ -291,6 +291,98 @@ function lf2SyncFromCatalog() {
 }
 lf2SyncFromCatalog();
 window.lf2SyncFromCatalog = lf2SyncFromCatalog;
+
+/* ==========================================================
+   FE-ALIGN F4：可视化数据层接后端锚点库（longform/anchors）。
+   悬念债(promise) / 设定锚点(fact|trait|setting|timeline) /
+   故事线(thread) / 人物弧线(arc) —— FE 形状以 JSON 存 note.fe；
+   有锚点的作品以后端为准（tide 由 seed 维护，等于原演示数据），
+   无锚点的非 tide 作品清空演示层（lf6 引导态接管）。
+   塔内的钉入/排期/回收/锁定经 lf2LoopOp/lf2CanonOp 写回 PATCH。
+   ========================================================== */
+let LF2_ANCHOR_IDS = {};   // fe id -> anchor_id（写回路由）
+let LF2_TOWER_WORK = null; // 已水合且有锚点数据的作品
+
+const lf2ParseFe = (a) => { try { return (JSON.parse(a.note || "{}") || {}).fe || null; } catch (e) { return null; } };
+
+async function lf2SyncFromTower() {
+  let workId = null;
+  try { workId = window.WsWorks && window.WsWorks.activeId(); } catch (e) {}
+  if (!workId) return;
+  let data = null;
+  try {
+    const { apiGet } = await import("./lib/client.js");
+    data = await apiGet(`/api/v2/projects/${workId}/longform/anchors`);
+  } catch (e) { return; }
+  const anchors = (data && data.anchors) || [];
+  if (!anchors.length) {
+    if (workId !== "tide") {
+      LF2_LOOPS = []; LF2_CANON = []; LF2_THREADS = []; LF2_ARCS = []; LF2_RISKS = [];
+      LF2_TOWER_WORK = null; LF2_ANCHOR_IDS = {};
+      lf2PushGlobals();
+    }
+    return;
+  }
+  const loops = [], canon = [], threads = [], arcs = [];
+  const ids = {};
+  anchors.forEach(a => {
+    const fe = lf2ParseFe(a);
+    if (!fe || !fe.id) return;
+    ids[fe.id] = a.anchor_id;
+    if (a.kind === "promise") loops.push({ ...fe });
+    else if (a.kind === "thread") threads.push({ ...fe });
+    else if (a.kind === "arc") arcs.push({ ...fe });
+    else canon.push({ ...fe });
+  });
+  LF2_LOOPS = loops; LF2_CANON = canon; LF2_THREADS = threads; LF2_ARCS = arcs;
+  if (workId !== "tide") LF2_RISKS = []; // 演示用结构提示仅属 tide
+  LF2_ANCHOR_IDS = ids;
+  LF2_TOWER_WORK = workId;
+  lf2PushGlobals();
+  try { window.dispatchEvent(new CustomEvent("lf2:tower-synced", { detail: workId })); } catch (e) {}
+}
+
+function lf2PushGlobals() {
+  Object.assign(window, { LF2_LOOPS, LF2_CANON, LF2_THREADS, LF2_ARCS, LF2_RISKS });
+}
+
+async function lf2AnchorPatch(feId, fe) {
+  const anchorId = LF2_ANCHOR_IDS[feId];
+  if (!anchorId || !LF2_TOWER_WORK) return;
+  try {
+    const { apiPatch } = await import("./lib/client.js");
+    await apiPatch(`/api/v2/projects/${LF2_TOWER_WORK}/longform/anchors/${anchorId}`, {
+      note: JSON.stringify({ fe }),
+    });
+  } catch (e) { console.warn("[lf2] 锚点写回失败:", feId, e); }
+}
+
+/* 塔内操作写回（视图一行接缝调用；同时改本模块缓存让重挂载读到最新） */
+function lf2LoopOp(op, id, arg) {
+  const loop = LF2_LOOPS.find(l => l.id === id);
+  if (!loop) return;
+  if (op === "pin") loop.pinned = !loop.pinned;
+  else if (op === "ensurePin") loop.pinned = true;
+  else if (op === "schedule") loop.payoff = arg;
+  else if (op === "resolve") { loop.state = "closed"; loop.pinned = false; }
+  lf2AnchorPatch(id, { id, ...loop });
+}
+function lf2CanonOp(op, id) {
+  const c = LF2_CANON.find(x => x.id === id);
+  if (!c) return;
+  if (op === "pin") c.pinned = !c.pinned;
+  else if (op === "lock") { c.status = "locked"; c.pinned = true; }
+  lf2AnchorPatch(id, { id, ...c });
+}
+const lf2HasTowerData = () => !!LF2_TOWER_WORK && (LF2_LOOPS.length + LF2_CANON.length + LF2_THREADS.length) > 0;
+
+window.addEventListener("ws:work-changed", () => { lf2SyncFromTower(); });
+window.addEventListener("hashchange", () => {
+  if ((location.hash || "").indexOf("longform") >= 0) lf2SyncFromTower();
+});
+setTimeout(() => lf2SyncFromTower(), 700); // 启动水合（等 WsWorks 就绪）
+
+Object.assign(window, { lf2SyncFromTower, lf2LoopOp, lf2CanonOp, lf2HasTowerData });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { LF2_BOOK, LF2_NEXT, LF2_CHAPTERS, LF2_TARGET, LF2_THREADS, LF2_LOOPS, LF2_RISKS, LF2_CANON, LF2_ARCS, LF2_ACTS, LF2_CLR, lf2Tone, lf2ThreadLast, lf2ThreadStalled, lf2Derive, lf2Issues, lf2Handoff, lf2SyncFromCatalog };

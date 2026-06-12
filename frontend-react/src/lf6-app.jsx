@@ -328,15 +328,17 @@ function Lf6Tower({ go, standalone }) {
   const TAB_OF = { loop: "ledger", thread: "threads", arc: "arcs", canon: "canon", clue: "clues", orphan: "board", causal: "board", risk: "board" };
   const select = (ref) => { setSel(ref); if (ref && TAB_OF[ref.type]) setTab(TAB_OF[ref.type]); };
 
-  const pinLoop = (id) => setLoops(ls => ls.map(l => l.id === id ? { ...l, pinned: !l.pinned } : l));
-  const ensurePinLoop = (id) => setLoops(ls => ls.map(l => l.id === id ? { ...l, pinned: true } : l));
-  const schedule = (id, ch) => setLoops(ls => ls.map(l => l.id === id ? { ...l, payoff: ch } : l));
-  const resolveLoop = (id) => { setLoops(ls => ls.map(l => l.id === id ? { ...l, state: "closed", pinned: false } : l)); setSel(null); flash("已标记回收，悬念债结清"); };
+  /* FE-ALIGN F4 授权接缝：塔内操作经 lf2LoopOp/lf2CanonOp 写回后端锚点库 */
+  const pinLoop = (id) => { setLoops(ls => ls.map(l => l.id === id ? { ...l, pinned: !l.pinned } : l)); try { window.lf2LoopOp && window.lf2LoopOp("pin", id); } catch (e) {} };
+  const ensurePinLoop = (id) => { setLoops(ls => ls.map(l => l.id === id ? { ...l, pinned: true } : l)); try { window.lf2LoopOp && window.lf2LoopOp("ensurePin", id); } catch (e) {} };
+  const schedule = (id, ch) => { setLoops(ls => ls.map(l => l.id === id ? { ...l, payoff: ch } : l)); try { window.lf2LoopOp && window.lf2LoopOp("schedule", id, ch); } catch (e) {} };
+  const resolveLoop = (id) => { setLoops(ls => ls.map(l => l.id === id ? { ...l, state: "closed", pinned: false } : l)); setSel(null); flash("已标记回收，悬念债结清"); try { window.lf2LoopOp && window.lf2LoopOp("resolve", id); } catch (e) {} };
   const resolveCanon = (id) => {
     setCanon(cs => cs.map(c => c.id === id ? { ...c, status: "locked", pinned: true } : c));
     try { if (window.Lf7Bridge) window.Lf7Bridge.ruleCanon(id); } catch (e) {}  // 同步消掉收件箱里的同一条
+    try { window.lf2CanonOp && window.lf2CanonOp("lock", id); } catch (e) {}
   };
-  const pinCanon = (id) => setCanon(cs => cs.map(c => c.id === id ? { ...c, pinned: !c.pinned } : c));
+  const pinCanon = (id) => { setCanon(cs => cs.map(c => c.id === id ? { ...c, pinned: !c.pinned } : c)); try { window.lf2CanonOp && window.lf2CanonOp("pin", id); } catch (e) {} };
 
   const markLoaded = (id) => { setDoneIds(s => new Set(s).add(id)); setLoadPing(p => p + 1); };
 
@@ -574,7 +576,7 @@ function Lf6Tower({ go, standalone }) {
         <div className="lf3-brand">
           <span className="lf3-brand-mark"><I.Radar size={20} /></span>
           <div>
-            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {window.WsDemoTag && <window.WsDemoTag note="演示工作台：悬念债 / 契约 / 审计为示例作品的模拟数据。设定裁决会与待办收件箱双向同步；归档会把第 9 章草稿写回章节目录。" />}</div>
+            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {window.WsDemoTag && <window.WsDemoTag note="悬念债 / 设定锚点 / 故事线 / 人物弧线已接后端锚点库，契约与裁决为真实数据；「生成 / 草稿审计」流程仍为演示模拟（接真见起草引擎管线）。" />}</div>
             <div className="lf3-brand-title">{window.WsWorks ? window.WsWorks.active().title : "潮汐档案"}<span className="lf3-brand-genre">{window.WsWorks ? window.WsWorks.active().genre : "悬疑 · 长篇"}</span></div>
           </div>
         </div>
@@ -834,8 +836,11 @@ function Lf6Empty({ go }) {
 }
 
 function WsLongform6(props) {
+  /* FE-ALIGN F4：有后端锚点数据的作品点亮全塔（tide 由 seed 维护）；
+     还没有锚点的作品保持引导态。 */
   const isTide = (() => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
-  if (!isTide) return <Lf6Empty go={props.go} />;
+  const hasTower = isTide || (() => { try { return !!(window.lf2HasTowerData && window.lf2HasTowerData()); } catch (e) { return false; } })();
+  if (!hasTower) return <Lf6Empty go={props.go} />;
   if (window.lf2SyncFromCatalog) window.lf2SyncFromCatalog();  // 章节/进度与目录同源
   return <Lf6Tower {...props} />;
 }

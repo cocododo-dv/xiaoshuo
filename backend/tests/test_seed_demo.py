@@ -72,6 +72,13 @@ def test_seed_demo_creates_first_chapter_and_review_item(session) -> None:
     )
     assert legacy_reviews == 1
     assert _count_rows(session, ReviewItem) == 1 + 5 + 3
+    # FE-ALIGN F4：tide 控制塔锚点库 = 6 设定 + 6 悬念债 + 4 故事线 + 3 弧线
+    from novel_system.db.models import LongformAnchor
+
+    tide_anchors = session.scalar(
+        select(func.count()).select_from(LongformAnchor).where(LongformAnchor.project_id == "tide")
+    )
+    assert tide_anchors == 6 + 6 + 4 + 3
 
 
 def test_seed_demo_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_state(session) -> None:

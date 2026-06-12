@@ -26,7 +26,9 @@ from novel_system.services.projects import ProjectService
 
 logger = logging.getLogger(__name__)
 
-ANCHOR_KINDS = {"fact", "trait", "setting", "timeline"}
+# fact/trait/setting/timeline = 设定锚点；promise/thread/arc = FE 控制塔的
+# 悬念债/故事线/人物弧线（FE-ALIGN F4：结构化形状以 JSON 存 note 列，text 存摘要）。
+ANCHOR_KINDS = {"fact", "trait", "setting", "timeline", "promise", "thread", "arc"}
 AUDIT_KINDS = {"drift", "overdue", "unplanted_reveal", "causal_break", "unfair_clue", "stall", "deflation", "arc"}
 AUDIT_SEVERITIES = {"warn", "block"}
 AUDIT_DECISIONS = {"accept_fix", "defer", "dismiss"}

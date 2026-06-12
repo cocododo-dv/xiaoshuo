@@ -318,7 +318,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - [x] F1（源 D7）utcnow 严格单调根治负载敏感 flaky — commit 见 git log `FE-ALIGN F1`
 - [x] F2（源 D4）author-draft 修订历史 + 成稿对比接真 — commit 见 git log `FE-ALIGN F2`
 - [x] F3（源 D5）ws-snow 接 snowflake-workspace v2 — commit 见 git log `FE-ALIGN F3`
-- [ ] F4（源 D3）lf6 控制塔可视化接锚点/审计 API — commit `______`
+- [x] F4（源 D3）lf6 控制塔可视化接锚点/审计 API — commit 见 git log `FE-ALIGN F4`
 - [ ] F5（源 D2）ws-styleref 接 style_reference v2 — commit `______`
 - [ ] F6（源 D1）ws-scene 起草引擎接 scenes run 管线 — commit `______`
 - [ ] F7（源 D6）window.* 兼容赋值清理 — commit `______`
@@ -386,3 +386,26 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
   此前冒烟残留的回收站作品污染 phase4 用例，purge 后复跑全绿；f2/f3 冒烟
   清理步骤已改为软删+回收站彻底清除）；后端全量 857 passed（F3 零后端改动）；
   build 绿。
+
+### F4 明细
+
+- 后端：`ANCHOR_KINDS` 扩 `promise`/`thread`/`arc`（悬念债/故事线/人物弧线），
+  FE 形状以 JSON 存 `LongformAnchor.note`（`{"fe": {...}}`），text 存人读摘要；
+  无新表无迁移。测试：test_tower_bridge 新增 kind 往返+400 校验。
+- seed：`_seed_tide_anchors`（19 条 = 6 设定 + 6 悬念债 + 4 故事线 + 3 弧线，
+  与原 LF2_* 演示数据等值；幂等 delete+rebuild；cleanup 级联补 LongformAnchor）；
+  test_seed_demo 断言 19。
+- 前端 lf2-data：演示层 LF2_LOOPS/CANON/THREADS/ARCS/RISKS 由 const 转 let
+  （ESM live binding），新增 `lf2SyncFromTower()`（启动/`ws:work-changed`/
+  `#longform` hashchange 水合；有锚点的作品以后端为准，无锚点的非 tide 清空
+  演示层）+ `lf2LoopOp`/`lf2CanonOp`（钉入/排期/回收/锁定 → PATCH note 写回）
+  + `lf2HasTowerData`。
+- **授权视图改动（记录在案）**：lf6-app 六个操作函数各加一行 store 写回调用
+  （pinLoop/ensurePinLoop/schedule/resolveLoop/resolveCanon/pinCanon）；
+  `WsLongform6` 点亮闸门由「仅 tide」放宽为「tide 或有锚点数据的作品」；
+  页级 DemoTag 文案收窄（悬念债/锚点/线/弧已真，「生成/草稿审计」仍为演示——
+  接真归 F6 起草引擎管线；LF3_ORPHANS/CAUSAL/CLUES/RETRIEVE 仍为 tide 演示层，
+  属同一生成流模拟，记录保留）。
+- 验证：smoke-f4.mjs 5/5（seed 19 条 → 水合 → 塔渲染 → POST 新锚点刷新可见 →
+  排期写回 PATCH 落库）；run-smokes 六套全过；后端全量 858 passed；build 绿。
+  期间教训：8009 验证后端是旧进程时新 kind 会 400——改后端后必须重启验证服务。

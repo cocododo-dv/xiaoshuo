@@ -133,3 +133,28 @@ def test_archive_blocked_by_open_findings_without_force(client):
         headers={"X-Idempotency-Key": "tb-blocked"},
     )
     assert blocked.status_code == 409
+
+
+def test_anchor_fe_kinds_promise_thread_arc(client):
+    """FE-ALIGN F4：悬念债/故事线/弧线以扩展 kind 存锚点库，note 携带 FE 形状 JSON。"""
+    import json as _json
+
+    pid = _create_project(client)
+    base = f"/api/v2/projects/{pid}/longform/anchors"
+    fe = {"id": "l1", "title": "钩子", "setup": 1, "payoff": 9, "state": "open", "pri": "high", "pinned": True}
+    created = _post(client, base, {"kind": "promise", "text": "钩子", "note": _json.dumps({"fe": fe}, ensure_ascii=False)})
+    assert created["kind"] == "promise"
+    for kind in ("thread", "arc"):
+        _post(client, base, {"kind": kind, "text": f"k-{kind}"})
+    bad = client.post(base, json={"kind": "nonsense", "text": "x"}, headers={"X-Idempotency-Key": "tb-anc-bad"})
+    assert bad.status_code == 400
+
+    listed = client.get(base).json()["data"]["anchors"]
+    assert {a["kind"] for a in listed} >= {"promise", "thread", "arc"}
+    target = next(a for a in listed if a["kind"] == "promise")
+    fe2 = {**fe, "payoff": 15}
+    patched = client.patch(f"{base}/{target['anchor_id']}", json={"note": _json.dumps({"fe": fe2}, ensure_ascii=False)},
+                           headers={"X-Idempotency-Key": "tb-anc-patch"})
+    assert patched.status_code == 200
+    import json
+    assert json.loads(patched.json()["data"]["note"])["fe"]["payoff"] == 15
