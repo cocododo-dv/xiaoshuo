@@ -492,3 +492,38 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 | D9 | 起草 note（作者自由改写指令）不进后端管线 | scenes run 提示词由 config/prompts.yaml 组装；起草日志已明示改用写作台·深改姿态 |
 | D10 | LF3 演示层（ORPHANS/CAUSAL/CLUES/RETRIEVE/AUDIT 流程模拟） | 与「生成/草稿审计」同属起草管线可视化，待管线在真实 LLM 环境跑通后再投影 |
 | D11 | 雪花 history（步骤快照日志）不跨会话 | 体积大（每条含全量快照），revs/confirmRevs 已随存 fe_meta |
+
+---
+
+## 后续 G 系列（DEFERRED D8–D11 收尾）
+
+> 简报：`后续任务简报-DEFERRED-2.md`。规则沿用 F 系列；LLM 阶段验收口径 =
+> 管线接真 + 诚实降级（本环境 LLM 不可用，端到端产文不在验收内）。
+
+- [x] G1（源 D10）LF3 空降/断链/线索不公平接审计 findings — commit 见 git log `FE-ALIGN G1`
+- [ ] G2（源 D11）雪花 history 轻量跨会话 — commit `______`
+- [ ] G3（源 D9）起草 note 进 scenes run 管线 — commit `______`
+- [ ] G4（源 D8）写作台内联改写接 passages/patch-candidates — commit `______`
+- [ ] G5（源 D8）雪花候选生成接后端 LLM 节点 — commit `______`
+
+### G1 明细
+
+- seed：`_seed_tide_lf3_findings`（9 条 = 2 空降 unplanted_reveal + 3 因果
+  causal_break + 4 认知态 unfair_clue；FE 形状 JSON 存 evidence）。
+  **ORM 直插而非 create_finding**——服务会同事务产 decision 卡，这批是
+  可视化数据层，不该涌进收件箱（ReviewItem 计数断言不变）。
+  AUDIT_KINDS 本就含这三类，后端零代码改动。test_seed_demo 断言 12 条
+  findings 按 kind 分布。
+- lf3-data：LF3_ORPHANS/CAUSAL/CLUES 转 let + `lf3SyncFromAudit()`
+  （GET longform/audit → 按 kind 分桶投影；启动/work-changed/#longform
+  水合；无数据的非 tide 清空）。LF3_RETRIEVE / LF3_AUDIT 留演示（起草管线
+  运行产物，候 D12）。
+- **顺手修掉的真问题**：`Lf7Bridge.extraCanon()` 原来只按「不在 LF2_CANON
+  静态 id 里」过滤——G1 的 9 条 LF3 findings 会被误还原成 canon 冲突涌进
+  锚点页。补 `kind === "drift"` 过滤（canon 冲突的登记 kind，
+  addCanonConflict 也只发 drift）。
+- lf6 DemoTag 收窄：空降/断链/认知态已真；「生成/草稿审计」流程模拟与
+  记忆预算池仍为演示。
+- 验证：smoke-g1.mjs 4/4（seed 12 条 → LF3_* 投影 → 塔渲染空降且 canon 页
+  无污染 → POST 新空降刷新可见）；run-smokes 六套全过；后端 861 passed；
+  build 绿。

@@ -139,10 +139,12 @@ const Lf7Bridge = {
     });
   },
   extraCanon() {
-    /* 后端 findings 中超出 LF2_CANON 静态种子的条目（归档新增），还原为 canon 条目形状 */
+    /* 后端 findings 中超出 LF2_CANON 静态种子的条目（归档新增），还原为 canon 条目形状。
+       只认 kind=drift（canon 冲突的登记 kind）——G1 起 findings 还承载
+       空降/断链/认知态（unplanted_reveal/causal_break/unfair_clue），归 LF3 投影 */
     const base = new Set(((LF2_CANON || [])).map(c => c.id));
     return lf7Findings
-      .filter(f => !base.has(f.finding_id))
+      .filter(f => f.kind === "drift" && !base.has(f.finding_id))
       .map(f => {
         const meta = lf7Meta(f);
         return {

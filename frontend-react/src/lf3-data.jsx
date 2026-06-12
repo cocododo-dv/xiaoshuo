@@ -17,7 +17,7 @@ const LF3_BUDGET_CAP = 2400;           // 第 N+1 章「长程记忆」token 预
 const LF3_TITLE = "潮汐档案";
 
 /* ---------- ① 空降回收：有揭晓 / 揭示，但全书找不到铺垫 ---------- */
-const LF3_ORPHANS = [
+let LF3_ORPHANS = [
   { id: "o1", reveal: "周岚早就认识林岑的父亲", revealCh: 7, sev: "high",
     why: "第 7 章周岚一句台词暗示她与父亲旧识，但前六章无任何铺垫——读者会觉得「凭空冒出」。",
     fix: "在第 1–6 章补一处不起眼的照面 / 物证，让揭示有根。" },
@@ -27,7 +27,7 @@ const LF3_ORPHANS = [
 ];
 
 /* ---------- ② 因果脊柱：承重事件的因果链 ---------- */
-const LF3_CAUSAL = [
+let LF3_CAUSAL = [
   { id: "k1", cause: "父亲销毁值班录像", causeCh: 3, effect: "林岑只能靠盐钟追线索", effectCh: 7, load: true, status: "ok" },
   { id: "k2", cause: "周岚调走档案 No.31", causeCh: 6, effect: "档案箱里出现替换件", effectCh: 8, load: true, status: "ok" },
   { id: "k3", cause: "林岑拿到门禁权限", causeCh: null, effect: "第 8 章独自进入档案室", effectCh: 8, load: true, status: "break",
@@ -38,7 +38,7 @@ const LF3_CAUSAL = [
 /* ---------- ③ 读者认知态：悬疑公平性账本 ---------- */
 /* truth=真相; planted=线索铺设章(null=尚未铺设); reveal=向读者揭晓章(null=未揭晓);
    knows=已知此真相的角色; fair=揭晓前是否已对读者公平铺设 */
-const LF3_CLUES = [
+let LF3_CLUES = [
   { id: "q1", q: "父亲是否被人改写记录", truth: "是，被档案学院高层授意", planted: 2, reveal: 7, knows: ["林岑", "周岚"], fair: true },
   { id: "q2", q: "盐钟 No.31 指向什么", truth: "父亲藏下的备份档案柜编号", planted: 1, reveal: null, knows: ["（无）"], fair: true, pending: true },
   { id: "q3", q: "谁动了楼梯间", truth: "周岚的助手，第二组脚印的主人", planted: 2, reveal: null, knows: ["周岚"], fair: false,
@@ -208,6 +208,57 @@ Object.assign(window, {
   LF3_BUDGET_CAP, LF3_TITLE, LF3_ORPHANS, LF3_CAUSAL, LF3_CLUES, LF3_RETRIEVE, LF3_COST, LF3_AUDIT,
   lf3Issues, lf3Brief,
 });
+
+/* ==========================================================
+   FE-ALIGN G1：空降 / 因果脊柱 / 读者认知态接后端审计层。
+   ChapterAuditFinding（kind = unplanted_reveal / causal_break /
+   unfair_clue）→ LF3_ORPHANS / LF3_CAUSAL / LF3_CLUES；FE 形状以
+   JSON 存 evidence（{"fe": {...}}，tide 由 seed 维护 = 原演示数据）。
+   LF3_RETRIEVE / LF3_AUDIT（记忆预算池 / 草稿审计流程模拟）仍为演示
+   ——它们展示的是起草管线的运行产物（账本记录）。
+   ========================================================== */
+const LF3_KIND_BUCKET = { unplanted_reveal: "orphans", causal_break: "causal", unfair_clue: "clues" };
+
+async function lf3SyncFromAudit() {
+  let workId = null;
+  try { workId = window.WsWorks && window.WsWorks.activeId(); } catch (e) {}
+  if (!workId) return;
+  let data = null;
+  try {
+    const { apiGet } = await import("./lib/client.js");
+    data = await apiGet(`/api/v2/projects/${workId}/longform/audit`);
+  } catch (e) { return; }
+  const rows = (data && (data.findings || data.items)) || [];
+  const buckets = { orphans: [], causal: [], clues: [] };
+  rows.forEach(f => {
+    const bucket = LF3_KIND_BUCKET[f.kind];
+    if (!bucket) return;
+    let fe = null;
+    try { fe = (JSON.parse(f.evidence || "{}") || {}).fe || null; } catch (e) {}
+    if (fe && fe.id) buckets[bucket].push({ ...fe });
+  });
+  const any = buckets.orphans.length + buckets.causal.length + buckets.clues.length > 0;
+  if (!any) {
+    if (workId !== "tide") {
+      LF3_ORPHANS = []; LF3_CAUSAL = []; LF3_CLUES = [];
+      Object.assign(window, { LF3_ORPHANS, LF3_CAUSAL, LF3_CLUES });
+    }
+    return;
+  }
+  LF3_ORPHANS = buckets.orphans;
+  LF3_CAUSAL = buckets.causal;
+  LF3_CLUES = buckets.clues;
+  Object.assign(window, { LF3_ORPHANS, LF3_CAUSAL, LF3_CLUES });
+  try { window.dispatchEvent(new CustomEvent("lf3:audit-synced", { detail: workId })); } catch (e) {}
+}
+
+window.addEventListener("ws:work-changed", () => { lf3SyncFromAudit(); });
+window.addEventListener("hashchange", () => {
+  if ((location.hash || "").indexOf("longform") >= 0) lf3SyncFromAudit();
+});
+setTimeout(() => lf3SyncFromAudit(), 800); // 启动水合（等 WsWorks 就绪）
+
+Object.assign(window, { lf3SyncFromAudit });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { LF3_BUDGET_CAP, LF3_TITLE, LF3_ORPHANS, LF3_CAUSAL, LF3_CLUES, LF3_RETRIEVE, LF3_COST, LF3_AUDIT, lf3Issues, lf3Brief };

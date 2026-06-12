@@ -579,7 +579,7 @@ function Lf6Tower({ go, standalone }) {
         <div className="lf3-brand">
           <span className="lf3-brand-mark"><I.Radar size={20} /></span>
           <div>
-            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {WsDemoTag && <WsDemoTag note="悬念债 / 设定锚点 / 故事线 / 人物弧线已接后端锚点库，契约与裁决为真实数据；「生成 / 草稿审计」流程仍为演示模拟（接真见起草引擎管线）。" />}</div>
+            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {WsDemoTag && <WsDemoTag note="悬念债 / 锚点 / 故事线 / 弧线（锚点库）与空降 / 断链 / 认知态（审计层）均为后端真实数据，契约与裁决同源；「生成 / 草稿审计」流程模拟与记忆预算池仍为演示（待起草管线在真实 LLM 环境跑通）。" />}</div>
             <div className="lf3-brand-title">{WsWorks ? WsWorks.active().title : "潮汐档案"}<span className="lf3-brand-genre">{WsWorks ? WsWorks.active().genre : "悬疑 · 长篇"}</span></div>
           </div>
         </div>

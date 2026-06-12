@@ -257,6 +257,72 @@ def _seed_tide_audit(session: Session) -> None:
     session.flush()
 
 
+# FE-ALIGN G1：LF3 扩展审计层（空降/断链/线索不公平）的后端真相。
+# 经 ORM 直插（create_finding 会同事务产 decision 卡——这批是可视化数据层，
+# 不该涌进收件箱）；FE 形状以 JSON 存 evidence（{"fe": {...}}）。
+_TIDE_LF3_FINDINGS = [
+    # —— 空降回收（LF3_ORPHANS → kind=unplanted_reveal）——
+    ("o1", "unplanted_reveal", "block", 7, "周岚早就认识林岑的父亲",
+     {"reveal": "周岚早就认识林岑的父亲", "revealCh": 7, "sev": "high",
+      "why": "第 7 章周岚一句台词暗示她与父亲旧识，但前六章无任何铺垫——读者会觉得「凭空冒出」。",
+      "fix": "在第 1–6 章补一处不起眼的照面 / 物证，让揭示有根。"}),
+    ("o2", "unplanted_reveal", "warn", 8, "档案室有第二把钥匙",
+     {"reveal": "档案室有第二把钥匙", "revealCh": 8, "sev": "medium",
+      "why": "第 8 章顺手用了「第二把钥匙」开门，此前从未出现这把钥匙的存在。",
+      "fix": "在第 6 章「周岚的钥匙」里多给一个镜头，或改写本章用已知途径。"}),
+    # —— 因果脊柱（LF3_CAUSAL → kind=causal_break；ok 链也存，status 由 fe.status 表达）——
+    ("k1", "causal_break", "warn", 7, "父亲销毁值班录像 → 林岑只能靠盐钟追线索",
+     {"cause": "父亲销毁值班录像", "causeCh": 3, "effect": "林岑只能靠盐钟追线索", "effectCh": 7, "load": True, "status": "ok"}),
+    ("k2", "causal_break", "warn", 8, "周岚调走档案 No.31 → 档案箱里出现替换件",
+     {"cause": "周岚调走档案 No.31", "causeCh": 6, "effect": "档案箱里出现替换件", "effectCh": 8, "load": True, "status": "ok"}),
+    ("k3", "causal_break", "block", 8, "（缺前因）→ 第 8 章独自进入档案室",
+     {"cause": "林岑拿到门禁权限", "causeCh": None, "effect": "第 8 章独自进入档案室", "effectCh": 8, "load": True, "status": "break",
+      "why": "第 8 章林岑独自刷卡进入档案室，但全书从未交代她如何获得门禁——因缺前因，这个动作悬空。",
+      "fix": "在第 5–7 章补一处「拿到 / 借到门禁」的因，或改为周岚带入。"}),
+    # —— 读者认知态（LF3_CLUES → kind=unfair_clue；fair 链也存档）——
+    ("q1", "unfair_clue", "warn", 7, "父亲是否被人改写记录",
+     {"q": "父亲是否被人改写记录", "truth": "是，被档案学院高层授意", "planted": 2, "reveal": 7, "knows": ["林岑", "周岚"], "fair": True}),
+    ("q2", "unfair_clue", "warn", 1, "盐钟 No.31 指向什么",
+     {"q": "盐钟 No.31 指向什么", "truth": "父亲藏下的备份档案柜编号", "planted": 1, "reveal": None, "knows": ["（无）"], "fair": True, "pending": True}),
+    ("q3", "unfair_clue", "block", 2, "谁动了楼梯间",
+     {"q": "谁动了楼梯间", "truth": "周岚的助手，第二组脚印的主人", "planted": 2, "reveal": None, "knows": ["周岚"], "fair": False,
+      "note": "脚印第 2 章已埋，但「主人是谁」至今未给读者任何可推理的线索——若第 9 章直接揭晓即为「不公平」。"}),
+    ("q4", "unfair_clue", "block", 8, "母亲是否知情",
+     {"q": "母亲是否知情", "truth": "知情且参与了掩盖", "planted": None, "reveal": 20, "knows": ["周岚母亲"], "fair": False,
+      "note": "计划第 20 章揭晓，但目前零铺垫。需在中段开始埋。"}),
+]
+
+
+def _seed_tide_lf3_findings(session: Session) -> None:
+    """链路③ demo：LF3 扩展审计层 → ChapterAuditFinding（ORM 直插，不产卡）。"""
+    from novel_system.db.models import ChapterAuditFinding
+
+    chapters = session.execute(
+        select(ChapterGoal)
+        .where(ChapterGoal.project_id == "tide", ChapterGoal.trashed_flag == 0)
+        .order_by(ChapterGoal.display_order.asc())
+    ).scalars().all()
+    by_no = {index + 1: chapter for index, chapter in enumerate(chapters)}
+    last = chapters[-1] if chapters else None
+    for fe_id, kind, severity, chapter_no, text, fe in _TIDE_LF3_FINDINGS:
+        chapter = by_no.get(chapter_no) or last
+        if chapter is None:
+            continue
+        session.add(
+            ChapterAuditFinding(
+                finding_id=f"AUD_TIDE_{fe_id.upper()}",
+                project_id="tide",
+                chapter_id=chapter.chapter_id,
+                kind=kind,
+                severity=severity,
+                text=text,
+                evidence=json.dumps({"fe": {"id": fe_id, **fe}}, ensure_ascii=False),
+                status="open",
+            )
+        )
+    session.flush()
+
+
 # FE-ALIGN F4：lf6 控制塔可视化层（悬念债/设定锚点/故事线/人物弧线）的后端真相。
 # 原型形状以 JSON 存 LongformAnchor.note（{"fe": {...}}），text 存人读摘要。
 _TIDE_ANCHORS = [
@@ -484,6 +550,7 @@ def _seed_work(
         _seed_tide_review_cards(session)
         _seed_tide_library(session)
         _seed_tide_audit(session)
+        _seed_tide_lf3_findings(session)
         _seed_tide_anchors(session)
 
     WritingStatsService(session).seed_stats(

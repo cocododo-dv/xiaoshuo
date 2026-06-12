@@ -73,12 +73,23 @@ def test_seed_demo_creates_first_chapter_and_review_item(session) -> None:
     assert legacy_reviews == 1
     assert _count_rows(session, ReviewItem) == 1 + 5 + 3
     # FE-ALIGN F4：tide 控制塔锚点库 = 6 设定 + 6 悬念债 + 4 故事线 + 3 弧线
-    from novel_system.db.models import LongformAnchor
+    from novel_system.db.models import ChapterAuditFinding, LongformAnchor
 
     tide_anchors = session.scalar(
         select(func.count()).select_from(LongformAnchor).where(LongformAnchor.project_id == "tide")
     )
     assert tide_anchors == 6 + 6 + 4 + 3
+    # FE-ALIGN G1：LF3 扩展审计层 = 3 canon 冲突 + 2 空降 + 3 因果 + 4 认知态
+    tide_findings = session.scalar(
+        select(func.count()).select_from(ChapterAuditFinding).where(ChapterAuditFinding.project_id == "tide")
+    )
+    assert tide_findings == 3 + 2 + 3 + 4
+    lf3_kinds = session.scalars(
+        select(ChapterAuditFinding.kind).where(ChapterAuditFinding.project_id == "tide")
+    ).all()
+    assert lf3_kinds.count("unplanted_reveal") == 2
+    assert lf3_kinds.count("causal_break") == 3
+    assert lf3_kinds.count("unfair_clue") == 4
 
 
 def test_seed_demo_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_state(session) -> None:
