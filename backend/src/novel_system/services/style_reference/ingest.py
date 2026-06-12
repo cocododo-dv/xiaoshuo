@@ -123,7 +123,7 @@ class IngestService:
             raw_bytes=raw,
             source_kind="path",
             source_path=str(path),
-            title=title,
+            title=(title or "").strip() or path.stem,
             author_label=author_label,
             cloud_policy=cloud_policy,
         )
@@ -146,11 +146,12 @@ class IngestService:
                     "only TXT and MD reference books are supported",
                     status_code=400,
                 )
+        fallback_title = Path(file_name).stem if file_name else "未命名参考书"
         return self._ingest_bytes(
             raw_bytes=raw_bytes,
             source_kind="upload",
             source_path=file_name,
-            title=title,
+            title=(title or "").strip() or fallback_title,
             author_label=author_label,
             cloud_policy=cloud_policy,
         )

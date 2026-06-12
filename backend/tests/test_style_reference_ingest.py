@@ -237,3 +237,25 @@ def test_ingest_cloud_policy_pydantic_validation(ingest_service: IngestService) 
             author_label="x",
             cloud_policy="invalid_policy_xyz",
         )
+
+
+def test_ingest_blank_title_falls_back_to_filename(ingest_service: IngestService, tmp_path: Path) -> None:
+    """标题留空时从文件名推导（路径导入 = stem；上传 = 文件名 stem）。"""
+    book_path = tmp_path / "reference-learning.md"
+    book_path.write_text(SAMPLE_TEXT, encoding="utf-8")
+    result = ingest_service.ingest_path(
+        file_path=book_path,
+        title="  ",
+        author_label=None,
+        cloud_policy="local_only",
+    )
+    assert result.book.title == "reference-learning"
+
+    upload = ingest_service.ingest_upload(
+        raw_bytes=(SAMPLE_TEXT + "（上传变体）").encode("utf-8"),
+        file_name="风格样本.txt",
+        title="",
+        author_label=None,
+        cloud_policy="local_only",
+    )
+    assert upload.book.title == "风格样本"
