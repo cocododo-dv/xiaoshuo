@@ -1,5 +1,5 @@
 import React from "react";
-import { LF2_ACTS, LF2_ARCS, LF2_BOOK, LF2_CANON, LF2_CHAPTERS, LF2_CLR, LF2_LOOPS, LF2_NEXT, LF2_RISKS, LF2_TARGET, LF2_THREADS, lf2Derive, lf2ThreadLast, lf2ThreadStalled } from "./lf2-data.jsx";
+import { LF2_ACTS, LF2_ARCS, LF2_BOOK, LF2_CANON, LF2_CHAPTERS, LF2_CLR, LF2_LOOPS, LF2_NEXT, LF2_RETRIEVE_POOL, LF2_RISKS, LF2_TARGET, LF2_THREADS, lf2Derive, lf2ThreadLast, lf2ThreadStalled } from "./lf2-data.jsx";
 
 /* global React, LF2_BOOK, LF2_NEXT, LF2_CHAPTERS, LF2_TARGET, LF2_THREADS, LF2_LOOPS, LF2_RISKS, LF2_CANON, LF2_ARCS, LF2_ACTS, LF2_CLR, lf2ThreadLast, lf2ThreadStalled, lf2Derive */
 /* ==========================================================
@@ -48,7 +48,7 @@ let LF3_CLUES = [
 ];
 
 /* ---------- ④ 记忆预算：可检索池（存于全书向量库，相关才召回，不占预算） ---------- */
-const LF3_RETRIEVE = [
+let LF3_RETRIEVE = [
   { id: "rv1", text: "档案学院走廊的钟摆声 · 环境母题", ch: 2, tone: "slate", reason: "氛围细节，相关章节才需要" },
   { id: "rv2", text: "林岑住在城南旧公寓 7 楼", ch: 1, tone: "slate", reason: "次要设定，写到家时召回" },
   { id: "rv3", text: "阿恪是法医出身 · 善验物证", ch: 1, tone: "slate", reason: "阿恪在场时召回" },
@@ -251,6 +251,22 @@ async function lf3SyncFromAudit() {
   Object.assign(window, { LF3_ORPHANS, LF3_CAUSAL, LF3_CLUES });
   try { window.dispatchEvent(new CustomEvent("lf3:audit-synced", { detail: workId })); } catch (e) {}
 }
+
+/* H1：记忆预算可检索池 ← 锚点库的 faded 池（lf2SyncFromTower 已分流，
+   这里在其同步事件上投影；消费者（Lf3Memory/Lf4Brief）经 ESM live import 生效） */
+window.addEventListener("lf2:tower-synced", () => {
+  try {
+    const pool = LF2_RETRIEVE_POOL || [];
+    if (pool.length) {
+      LF3_RETRIEVE = pool.map(p => ({ id: p.id, text: p.text || "", ch: p.ch || null, tone: p.tone || "slate", reason: p.reason || "" }));
+    } else {
+      let workId = null;
+      try { workId = window.WsWorks && window.WsWorks.activeId(); } catch (e) {}
+      if (workId && workId !== "tide") LF3_RETRIEVE = [];
+    }
+    Object.assign(window, { LF3_RETRIEVE });
+  } catch (e) {}
+});
 
 window.addEventListener("ws:work-changed", () => { lf3SyncFromAudit(); });
 window.addEventListener("hashchange", () => {

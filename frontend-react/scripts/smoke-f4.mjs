@@ -34,9 +34,9 @@ await page.reload();
 await page.waitForSelector(".ws-app");
 await page.waitForTimeout(2500); // 等启动水合（700ms 定时 + fetch）
 
-await check("① seed 锚点 → 19 条（6 设定+6 悬念+4 线+3 弧）", async () => {
+await check("① seed 锚点 → 24 条（6 设定+6 悬念+4 线+3 弧+5 检索池）", async () => {
   const data = await api("/api/v2/projects/tide/longform/anchors");
-  if ((data.anchors || []).length !== 19) throw new Error(`anchors: ${(data.anchors || []).length}`);
+  if ((data.anchors || []).length !== 24) throw new Error(`anchors: ${(data.anchors || []).length}`);
 });
 
 await check("② 水合：LF2_* 由锚点库背书", async () => {

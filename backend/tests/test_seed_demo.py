@@ -78,7 +78,14 @@ def test_seed_demo_creates_first_chapter_and_review_item(session) -> None:
     tide_anchors = session.scalar(
         select(func.count()).select_from(LongformAnchor).where(LongformAnchor.project_id == "tide")
     )
-    assert tide_anchors == 6 + 6 + 4 + 3
+    # H1：+5 条可检索池（status=faded 的记忆预算条目）
+    assert tide_anchors == 6 + 6 + 4 + 3 + 5
+    faded = session.scalar(
+        select(func.count()).select_from(LongformAnchor).where(
+            LongformAnchor.project_id == "tide", LongformAnchor.status == "faded"
+        )
+    )
+    assert faded == 5
     # FE-ALIGN G1：LF3 扩展审计层 = 3 canon 冲突 + 2 空降 + 3 因果 + 4 认知态
     tide_findings = session.scalar(
         select(func.count()).select_from(ChapterAuditFinding).where(ChapterAuditFinding.project_id == "tide")

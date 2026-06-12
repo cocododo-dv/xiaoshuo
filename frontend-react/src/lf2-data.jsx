@@ -303,6 +303,7 @@ window.lf2SyncFromCatalog = lf2SyncFromCatalog;
    ========================================================== */
 let LF2_ANCHOR_IDS = {};   // fe id -> anchor_id（写回路由）
 let LF2_TOWER_WORK = null; // 已水合且有锚点数据的作品
+let LF2_RETRIEVE_POOL = []; // H1：可检索池（faded 锚点 → lf3-data 投影 LF3_RETRIEVE）
 
 const lf2ParseFe = (a) => { try { return (JSON.parse(a.note || "{}") || {}).fe || null; } catch (e) { return null; } };
 
@@ -324,18 +325,20 @@ async function lf2SyncFromTower() {
     }
     return;
   }
-  const loops = [], canon = [], threads = [], arcs = [];
+  const loops = [], canon = [], threads = [], arcs = [], retrievePool = [];
   const ids = {};
   anchors.forEach(a => {
     const fe = lf2ParseFe(a);
     if (!fe || !fe.id) return;
     ids[fe.id] = a.anchor_id;
-    if (a.kind === "promise") loops.push({ ...fe });
+    if (fe.pool === "retrieve" || a.status === "faded") retrievePool.push({ ...fe }); // H1：记忆预算可检索池
+    else if (a.kind === "promise") loops.push({ ...fe });
     else if (a.kind === "thread") threads.push({ ...fe });
     else if (a.kind === "arc") arcs.push({ ...fe });
     else canon.push({ ...fe });
   });
   LF2_LOOPS = loops; LF2_CANON = canon; LF2_THREADS = threads; LF2_ARCS = arcs;
+  LF2_RETRIEVE_POOL = retrievePool;
   if (workId !== "tide") LF2_RISKS = []; // 演示用结构提示仅属 tide
   LF2_ANCHOR_IDS = ids;
   LF2_TOWER_WORK = workId;
@@ -344,7 +347,7 @@ async function lf2SyncFromTower() {
 }
 
 function lf2PushGlobals() {
-  Object.assign(window, { LF2_LOOPS, LF2_CANON, LF2_THREADS, LF2_ARCS, LF2_RISKS });
+  Object.assign(window, { LF2_LOOPS, LF2_CANON, LF2_THREADS, LF2_ARCS, LF2_RISKS, LF2_RETRIEVE_POOL });
 }
 
 async function lf2AnchorPatch(feId, fe) {
@@ -386,4 +389,4 @@ setTimeout(() => lf2SyncFromTower(), 700); // 启动水合（等 WsWorks 就绪�
 Object.assign(window, { lf2SyncFromTower, lf2LoopOp, lf2CanonOp, lf2HasTowerData });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { LF2_BOOK, LF2_NEXT, LF2_CHAPTERS, LF2_TARGET, LF2_THREADS, LF2_LOOPS, LF2_RISKS, LF2_CANON, LF2_ARCS, LF2_ACTS, LF2_CLR, lf2Tone, lf2ThreadLast, lf2ThreadStalled, lf2Derive, lf2Issues, lf2Handoff, lf2SyncFromCatalog };
+export { LF2_BOOK, LF2_NEXT, LF2_CHAPTERS, LF2_TARGET, LF2_THREADS, LF2_LOOPS, LF2_RISKS, LF2_CANON, LF2_ARCS, LF2_ACTS, LF2_CLR, LF2_RETRIEVE_POOL, lf2Tone, lf2ThreadLast, lf2ThreadStalled, lf2Derive, lf2Issues, lf2Handoff, lf2SyncFromCatalog };

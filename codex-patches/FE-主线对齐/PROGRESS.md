@@ -604,3 +604,29 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 | # | 事项 | 原因 / 现状 |
 |---|---|---|
 | D12 | 控制塔「生成/草稿审计」流程模拟 + LF3_RETRIEVE 记忆预算池 | 展示的是起草管线在真实 LLM 环境下的运行产物（交接回执/逐条审计/预算分配）；管线已可真跑（F6/G3），待 LLM 环境就绪后把真实 run 产物投影进塔（替换 LF3_AUDIT 静态） |
+
+---
+
+## 后续 H 系列（DEFERRED D12 收尾）
+
+> 简报：`后续任务简报-DEFERRED-3.md`。审计回执诚实口径：确定性扫描只声明
+> 「检出（真实引用句）/未检出（待人工核对）」，违约判定留给 LLM 审计（D13）。
+
+- [x] H1（源 D12）LF3_RETRIEVE 记忆池接锚点库 — commit 见 git log `FE-ALIGN H1`
+- [ ] H2（源 D12）章级审计回执接真实产物 — commit `______`
+
+### H1 明细
+
+- seed：rv1–rv5 五条入锚点库（kind 按语义 fact/setting/trait/timeline，
+  `status="faded"` = 淡出可检索，fe JSON 带 pool:"retrieve"）；tide 锚点
+  19→24，seed 断言 + smoke-f4 断言随更新。
+- lf2SyncFromTower 分流：pool/faded 锚点不进 LF2_CANON，归集
+  `LF2_RETRIEVE_POOL`（ESM live export）；lf3-data 在 `lf2:tower-synced`
+  上投影进 LF3_RETRIEVE（const→let；Lf3Memory/Lf4Brief 等消费者
+  live import 自动生效）；无数据非 tide 清空。
+- 钉入升格（pinnedFacts promote）不做持久写回——以代码为准的裁决：
+  promote 是「本章简报」级 UI 状态，其持久面就是下发契约本身（P7 已真），
+  全局改写 anchor status 反而语义错位。记账。
+- 验证：smoke-h1.mjs 4/4（seed 24/5 faded → 投影 5 条且 canon 不被污染 →
+  塔记忆面板渲染 → POST+PATCH faded 新条目刷新可见）；smoke-f4 回归过；
+  run-smokes 六套全过；后端全量 869 passed；build 绿。

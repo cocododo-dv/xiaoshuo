@@ -345,6 +345,12 @@ _TIDE_ANCHORS = [
     ("sub",  "thread", "副线 · 档案学院改组", {"name": "副线 · 档案学院改组", "short": "副线", "color": "slate", "segs": [[2, 2], [4, 4]]}),
     ("anti", "thread", "对抗线 · 周岚", {"name": "对抗线 · 周岚", "short": "对抗线", "color": "ink", "segs": [[5, 8]]}),
     ("love", "thread", "感情线 · 林岑×阿恪", {"name": "感情线 · 林岑×阿恪", "short": "感情线", "color": "gold", "segs": [[1, 1], [4, 4], [6, 6], [8, 8]]}),
+    # —— 记忆预算 · 可检索池（LF3_RETRIEVE → status=faded，fe.pool=retrieve）——
+    ("rv1", "setting", "档案学院走廊的钟摆声 · 环境母题", {"text": "档案学院走廊的钟摆声 · 环境母题", "ch": 2, "tone": "slate", "reason": "氛围细节，相关章节才需要", "pool": "retrieve"}),
+    ("rv2", "setting", "林岑住在城南旧公寓 7 楼", {"text": "林岑住在城南旧公寓 7 楼", "ch": 1, "tone": "slate", "reason": "次要设定，写到家时召回", "pool": "retrieve"}),
+    ("rv3", "trait",   "阿恪是法医出身 · 善验物证", {"text": "阿恪是法医出身 · 善验物证", "ch": 1, "tone": "slate", "reason": "阿恪在场时召回", "pool": "retrieve"}),
+    ("rv4", "fact",    "盐钟铭牌背面的备份单（已回收）", {"text": "盐钟铭牌背面的备份单（已回收）", "ch": 1, "tone": "sage", "reason": "已结清，仅作背景", "pool": "retrieve"}),
+    ("rv5", "timeline", "第 3 章雨夜的潮汐时刻表", {"text": "第 3 章雨夜的潮汐时刻表", "ch": 3, "tone": "slate", "reason": "时间线细节", "pool": "retrieve"}),
     # —— 人物弧线（LF2_ARCS）——
     ("arc-lin",  "arc", "林岑 · 主角弧线", {"name": "林岑", "role": "主角", "color": "crimson", "state": "二次发现 · 0.75 ↑", "points": [{"ch": 1, "v": 0.30, "label": "守护父亲"}, {"ch": 2, "v": 0.35}, {"ch": 3, "v": 0.40, "label": "怀疑出现"}, {"ch": 4, "v": 0.45}, {"ch": 5, "v": 0.55}, {"ch": 6, "v": 0.62}, {"ch": 7, "v": 0.70, "label": "证据 No.1"}, {"ch": 8, "v": 0.75, "label": "二次发现", "current": True}]}),
     ("arc-zhou", "arc", "周岚 · 对立弧线", {"name": "周岚", "role": "对立", "color": "slate", "state": "被迫接触 · 0.48 ↓", "points": [{"ch": 1, "v": 0.80, "label": "无瑕"}, {"ch": 2, "v": 0.78}, {"ch": 3, "v": 0.74}, {"ch": 4, "v": 0.70}, {"ch": 5, "v": 0.65, "label": "微小裂缝"}, {"ch": 6, "v": 0.58}, {"ch": 7, "v": 0.55}, {"ch": 8, "v": 0.48, "label": "被迫接触", "current": True}]}),
@@ -367,7 +373,8 @@ def _seed_tide_anchors(session: Session) -> None:
                 text=text,
                 source_ref=f"ch{fe.get('source')}" if fe.get("source") else None,
                 note=json.dumps({"fe": {"id": fe_id, **fe}}, ensure_ascii=False),
-                status="pinned",
+                # H1：可检索池（记忆预算的 retrieve 态）= faded（淡出，可重新钉入）
+                status="faded" if fe.get("pool") == "retrieve" else "pinned",
             )
         )
     session.flush()
