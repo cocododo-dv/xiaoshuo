@@ -3,9 +3,11 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
+from novel_system.db.models import utcnow
+
 
 def now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return utcnow()
 
 
 def parse_iso_datetime(value: str | None) -> datetime | None:

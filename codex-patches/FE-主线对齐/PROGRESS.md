@@ -307,3 +307,28 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
   落入同一时钟 tick，排序回退到随机 id 而翻车（Windows 时钟粒度）。无并发负载时
   全量 827 passed 全绿；与 FE-ALIGN 改动无关（P2 提交点同样可复现机制）。
   建议后续给 LlmCall 排序断言加序列号或冻结时钟，本任务不动。
+
+---
+
+## 后续 F 系列（DEFERRED D1–D7 收尾）
+
+> 简报：`后续任务简报-DEFERRED.md`。规则沿用主简报；P8 加的 WsDemoTag
+> 在对应管线接真后移除；极小视图接缝沿用 P3/P5/P6 先例并在此记账。
+
+- [x] F1（源 D7）utcnow 严格单调根治负载敏感 flaky — commit 见 git log `FE-ALIGN F1`
+- [ ] F2（源 D4）author-draft 修订历史 + 成稿对比接真 — commit `______`
+- [ ] F3（源 D5）ws-snow 接 snowflake-workspace v2 — commit `______`
+- [ ] F4（源 D3）lf6 控制塔可视化接锚点/审计 API — commit `______`
+- [ ] F5（源 D2）ws-styleref 接 style_reference v2 — commit `______`
+- [ ] F6（源 D1）ws-scene 起草引擎接 scenes run 管线 — commit `______`
+- [ ] F7（源 D6）window.* 兼容赋值清理 — commit `______`
+
+### F1 明细
+
+- `db/models.py:utcnow()` 改进程内严格单调（threading.Lock + 同 tick 微秒 +1），
+  所有 `default=utcnow` 列一次性根治；`services/versioning/shared.py:now_iso`
+  统一委托同一实现。`services/idempotency.py:utcnow`（返回 datetime，TTL 语义）不动。
+- 新增 `tests/test_utcnow_monotonic.py`：万次快速调用严格递增 + 字典序一致、
+  8 线程 4000 次无重复、now_iso 委托验证。
+- 验证：全量 853 passed（原 850 + 新 3）/ 12 skipped；原 flaky 两文件
+  与全量套件并发对跑 20 轮（人为制造高负载）无翻车。
