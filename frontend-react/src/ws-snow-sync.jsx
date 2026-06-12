@@ -221,6 +221,9 @@ async function snowHydrate(workId, opts) {
       if (draft.fe_meta) {
         if (draft.fe_meta.revs) remote.revs = draft.fe_meta.revs;
         if (draft.fe_meta.confirmRevs) remote.confirmRevs = draft.fe_meta.confirmRevs;
+        // G2：跨会话 journal（去快照、cap 20）——视图只对带 snap 的条目给回滚按钮，
+        // 还原条目天然只读，不需要视图改动
+        if (Array.isArray(draft.fe_meta.history)) remote.history = draft.fe_meta.history;
       }
     } else if (canonHasContent(feKey, draft)) {
       any = true;
@@ -263,7 +266,14 @@ async function snowPushKey(cacheKey) {
       fe_state: ((saved.states || {})[feKey]) || "todo",
       fe_t: saved._t || Date.now(),
     };
-    if (feKey === "audience") fragment.fe_meta = { revs: saved.revs || {}, confirmRevs: saved.confirmRevs || {} };
+    if (feKey === "audience") {
+      fragment.fe_meta = {
+        revs: saved.revs || {},
+        confirmRevs: saved.confirmRevs || {},
+        // G2：journal 随存——去掉 snap 内容快照（体积大），只留时间线行
+        history: (saved.history || []).slice(0, 20).map(h => ({ t: h.t, who: h.who, action: h.action, note: h.note, key: h.key })),
+      };
+    }
     const { fe_t, ...sigPart } = fragment;
     const sig = JSON.stringify(sigPart);
     const prev = mine[feKey] || {};

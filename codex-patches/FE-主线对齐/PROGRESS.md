@@ -501,7 +501,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 > 管线接真 + 诚实降级（本环境 LLM 不可用，端到端产文不在验收内）。
 
 - [x] G1（源 D10）LF3 空降/断链/线索不公平接审计 findings — commit 见 git log `FE-ALIGN G1`
-- [ ] G2（源 D11）雪花 history 轻量跨会话 — commit `______`
+- [x] G2（源 D11）雪花 history 轻量跨会话 — commit 见 git log `FE-ALIGN G2`
 - [ ] G3（源 D9）起草 note 进 scenes run 管线 — commit `______`
 - [ ] G4（源 D8）写作台内联改写接 passages/patch-candidates — commit `______`
 - [ ] G5（源 D8）雪花候选生成接后端 LLM 节点 — commit `______`
@@ -527,3 +527,14 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 验证：smoke-g1.mjs 4/4（seed 12 条 → LF3_* 投影 → 塔渲染空降且 canon 页
   无污染 → POST 新空降刷新可见）；run-smokes 六套全过；后端 861 passed；
   build 绿。
+
+### G2 明细
+
+- ws-snow-sync：fe_meta（book_brief 随行）增 `history`——去掉 snap 内容快照、
+  cap 20 条的 journal（t/who/action/note/key）；水合时还原进缓存。
+- 视图零新增接缝：时间线的回滚按钮本就只对带 snap 的条目渲染
+  （`h.snap && onRestore`），还原条目天然只读；既有水合接缝补一行
+  `setHistory`。本地新操作仍带 snap、可回滚。
+- 验证：smoke-g2.mjs 3/3（journal 上行 fe_meta 且 snap 剥离 → 清缓存重载
+  还原 → 视图无误渲染且无可回滚按钮）；smoke-f3 回归 4/4；后端全量
+  861 passed（零后端改动）；build 绿。

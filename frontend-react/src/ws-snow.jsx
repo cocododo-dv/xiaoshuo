@@ -1084,6 +1084,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       setStates({ ...s2DefaultStates(), ...(s.states || {}) });
       setRevs({ ...Object.fromEntries(S2_STEPS.map(x => [x.key, 0])), ...(s.revs || {}) });
       setConfirmRevs({ ...(s.confirmRevs || {}) });
+      setHistory(s.history || []); // G2：跨会话 journal（无 snap 条目天然只读）
       sigRef.current = null;
     };
     window.addEventListener("ws:snow-hydrated", onHyd);
