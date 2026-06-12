@@ -409,7 +409,7 @@ function WsManuscripts({ go }) {
                 <div className="seg">
                   <button className={`seg-btn ${view === "read" ? "is-active" : ""}`} onClick={() => setView("read")}>正文</button>
                   <button className={`seg-btn ${view === "structure" ? "is-active" : ""}`} onClick={() => setView("structure")}>结构</button>
-                  {(picked.state === "approved" || picked.state === "review") && isTide && M_BODY[picked.id] &&
+                  {(picked.state === "approved" || picked.state === "review") && catPicked && (catPicked.scenes || []).length > 0 &&
                     <button className={`seg-btn ${view === "diff" ? "is-active" : ""}`} onClick={() => setView("diff")}>对比</button>}
                 </div>
               )}
@@ -422,7 +422,7 @@ function WsManuscripts({ go }) {
               <>
                 {view === "read"      && <ManuRead picked={picked} body={body} />}
                 {view === "structure" && <ManuStructure picked={picked} body={body} catCh={catPicked} />}
-                {view === "diff"      && <ManuDiff picked={picked} />}
+                {view === "diff"      && <ManuDiff picked={picked} catCh={catPicked} />}
               </>
             )}
 
@@ -719,37 +719,102 @@ function ManuStructure({ picked, body, catCh }) {
   );
 }
 
-/* ---------- 对比 ---------- */
-function ManuDiff({ picked }) {
+/* ---------- 对比：正文修订历史（FE-ALIGN F2 接真，数据源 WrDocVersions） ---------- */
+function manuRevTime(iso) {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return d.toDateString() === new Date().toDateString() ? `今天 ${hm}` : `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${hm}`;
+  } catch (e) { return ""; }
+}
+
+function ManuDiff({ picked, catCh }) {
+  const scenes = (catCh && catCh.scenes) || [];
+  const [sid, setSid] = useSt9(() => (scenes[0] ? scenes[0].sid : null));
+  const [vers, setVers] = useSt9(null);   // null = 列表加载中
+  const [selNew, setSelNew] = useSt9(null);
+  const [selOld, setSelOld] = useSt9(null);
+  const [diff, setDiff] = useSt9(null);
+
+  useEf9(() => {
+    if (scenes.length && !scenes.some(s => s.sid === sid)) setSid(scenes[0].sid);
+  }, [picked && picked.id, scenes.length]); // eslint-disable-line
+
+  useEf9(() => {
+    let on = true;
+    setVers(null); setDiff(null); setSelNew(null); setSelOld(null);
+    if (!sid || !window.WrDocVersions) { setVers([]); return undefined; }
+    window.WrDocVersions.list(sid).then(items => {
+      if (!on) return;
+      setVers(items);
+      if (items.length >= 2) { setSelNew(items[0].revisionNo); setSelOld(items[1].revisionNo); }
+    }).catch(() => { if (on) setVers([]); });
+    return () => { on = false; };
+  }, [sid]);
+
+  useEf9(() => {
+    let on = true;
+    setDiff(null);
+    if (!sid || selNew == null || selOld == null || !window.WrDocVersions) return undefined;
+    Promise.all([window.WrDocVersions.paras(sid, selOld), window.WrDocVersions.paras(sid, selNew)])
+      .then(([a, b]) => { if (on) setDiff(window.WrDocVersions.diff(a, b)); })
+      .catch(() => { if (on) setDiff({ paras: [], adds: 0, dels: 0 }); });
+    return () => { on = false; };
+  }, [sid, selNew, selOld]);
+
+  const verLabel = (v) => `v${v.revisionNo} · ${manuRevTime(v.at) || "—"}${v.words ? ` · ${v.words} 字` : ""}`;
+  const ready = vers && vers.length >= 2;
   return (
     <div className="ms-diff">
       <div className="ms-diff-head">
         <span className="text-muted text-sm">对比</span>
-        {window.WsDemoTag && <window.WsDemoTag note="版本对比为演示数据：写作器暂未保留历史版本，接入后这里会显示真实 diff。" />}
-        <select className="select" style={{maxWidth: 190}} defaultValue="cur">
-          <option value="cur">{picked.ver} · 当前</option>
-          <option>v17 · 1 小时前</option>
-          <option>v16 · 今早 09:14</option>
-        </select>
-        <I.ArrowRight size={14} style={{color:"var(--ink-3)"}} />
-        <select className="select" style={{maxWidth: 190}} defaultValue="prev">
-          <option value="prev">v17 · 1 小时前</option>
-          <option>v16 · 今早 09:14</option>
-        </select>
-        <span className="ms-diff-stat"><span className="d-add-dot" />+2 句</span>
-        <span className="ms-diff-stat"><span className="d-del-dot" />−1 句</span>
+        {scenes.length > 1 && (
+          <select className="select" style={{ maxWidth: 170 }} value={sid || ""} onChange={(e) => setSid(e.target.value)}>
+            {scenes.map((s, i) => <option key={s.sid} value={s.sid}>{String(i + 1).padStart(2, "0")} · {s.title}</option>)}
+          </select>
+        )}
+        {ready && (
+          <>
+            <select className="select" style={{ maxWidth: 190 }} value={selNew ?? ""}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setSelNew(n);
+                if (selOld != null && selOld >= n) {
+                  const older = vers.find(v => v.revisionNo < n);
+                  setSelOld(older ? older.revisionNo : null);
+                }
+              }}>
+              {vers.map(v => (
+                <option key={v.revisionNo} value={v.revisionNo}>
+                  {v.revisionNo === vers[0].revisionNo ? `${verLabel(v)} · 当前` : verLabel(v)}
+                </option>
+              ))}
+            </select>
+            <I.ArrowRight size={14} style={{color:"var(--ink-3)"}} />
+            <select className="select" style={{ maxWidth: 190 }} value={selOld ?? ""} onChange={(e) => setSelOld(Number(e.target.value))}>
+              {vers.filter(v => selNew == null || v.revisionNo < selNew).map(v => (
+                <option key={v.revisionNo} value={v.revisionNo}>{verLabel(v)}</option>
+              ))}
+            </select>
+            {diff && <span className="ms-diff-stat"><span className="d-add-dot" />+{diff.adds} 句</span>}
+            {diff && <span className="ms-diff-stat"><span className="d-del-dot" />−{diff.dels} 句</span>}
+          </>
+        )}
       </div>
       <div className="ms-diff-body">
-        <p className="ms-diff-p"><span className="d-same">林岑把今天的最后一片残片放进恒温箱时，馆里的钟已经过了十一点。</span></p>
-        <p className="ms-diff-p">
-          <span className="d-same">她从来不喜欢这一段时间。十一点之后，老馆的中央空调会进入夜间模式，</span>
-          <span className="d-del">机器声变得很轻</span>
-          <span className="d-add">机器声变得安静</span>
-          <span className="d-same">，安静到她能听见自己的手指敲在键盘上的回响。</span>
-        </p>
-        <p className="ms-diff-p">
-          <span className="d-add">盐钟箱内壁的湿度计是 47%，她记下来——和昨天同一时刻完全一样。可档案编号却差了一位。</span>
-        </p>
+        {vers === null && <p className="ms-diff-p text-muted">正在加载版本历史…</p>}
+        {vers && vers.length < 2 && (
+          <p className="ms-diff-p text-muted">这一场还没有可对比的历史版本——在写作台再保存一次正文，这里就会出现两个版本。</p>
+        )}
+        {ready && !diff && <p className="ms-diff-p text-muted">正在比对两个版本…</p>}
+        {diff && diff.paras.map((pg, k) => (
+          <p key={k} className="ms-diff-p">
+            {pg.segs.map((sg, x) => (
+              <span key={x} className={sg.t === "same" ? "d-same" : sg.t === "del" ? "d-del" : "d-add"}>{sg.text}</span>
+            ))}
+          </p>
+        ))}
       </div>
     </div>
   );

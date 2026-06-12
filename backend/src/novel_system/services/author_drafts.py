@@ -12,6 +12,7 @@ from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
     AuthorDraftProposal,
+    AuthorDraftRevision,
     AuthorPreferenceProfile,
     AuthorStructureCandidate,
     ChapterGoal,
@@ -213,6 +214,7 @@ class AuthorDraftService:
             actor_ref=actor_ref,
             payload={"source_text_ref": source["source_text_ref"], **(event_payload or {})},
         )
+        self._snapshot_revision(draft, actor_ref=actor_ref, origin="created")
         self.session.flush()
         return draft
 
@@ -276,6 +278,7 @@ class AuthorDraftService:
             note=_optional_text(payload, "note"),
             payload={"base_revision_no": base_revision_no, "revision_no": draft.revision_no},
         )
+        self._snapshot_revision(draft, actor_ref=actor_ref, origin="edited")
         self.session.flush()
         response = self._draft_response(draft)
         if words_rollup is not None:
@@ -300,6 +303,7 @@ class AuthorDraftService:
                 "revision_no": draft.revision_no,
             },
         )
+        self._snapshot_revision(draft, actor_ref=actor_ref, origin="derived")
         self.session.flush()
         return self._draft_response(draft)
 
@@ -466,6 +470,7 @@ class AuthorDraftService:
             },
         )
         self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref, decision_reason=decision_reason)
+        self._snapshot_revision(draft, actor_ref=actor_ref, origin="proposal_applied")
         self.session.flush()
         return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
 
@@ -513,6 +518,7 @@ class AuthorDraftService:
             },
         )
         self._refresh_proposal_preference_profile(proposal, actor_ref=actor_ref, decision_reason=decision_reason)
+        self._snapshot_revision(draft, actor_ref=actor_ref, origin="proposal_applied")
         self.session.flush()
         return {"proposal": self.serialize_proposal(proposal), **self._draft_response(draft)}
 
@@ -713,6 +719,7 @@ class AuthorDraftService:
                 "revision_no": draft.revision_no,
             },
         )
+        self._snapshot_revision(draft, actor_ref=actor_ref, origin="candidate_inserted")
         self.session.flush()
         return self._draft_response(draft)
 
@@ -747,6 +754,77 @@ class AuthorDraftService:
             "object_id": draft.object_id,
             "revision_no": draft.revision_no,
             "events": [self.serialize_event(row) for row in rows],
+        }
+
+    # FE-ALIGN F2 修订历史：每次 revision_no 推进存完整内容快照，支撑成稿中心版本对比。
+    def _snapshot_revision(self, draft: AuthorDraft, *, actor_ref: str, origin: str) -> None:
+        existing = self.session.execute(
+            select(AuthorDraftRevision.draft_revision_id)
+            .where(AuthorDraftRevision.draft_id == draft.draft_id)
+            .where(AuthorDraftRevision.revision_no == int(draft.revision_no))
+        ).scalar_one_or_none()
+        if existing is not None:
+            return
+        self.session.add(
+            AuthorDraftRevision(
+                draft_revision_id=f"author_draft_rev_{uuid.uuid4().hex[:12]}",
+                draft_id=draft.draft_id,
+                revision_no=int(draft.revision_no),
+                content=draft.content or "",
+                words=count_words(draft.content or ""),
+                origin=origin,
+                created_by=actor_ref or "author_draft",
+            )
+        )
+
+    def revisions(self, draft_id: str) -> dict[str, Any]:
+        draft = self._require_draft(draft_id)
+        rows = self.session.execute(
+            select(AuthorDraftRevision)
+            .where(AuthorDraftRevision.draft_id == draft.draft_id)
+            .order_by(AuthorDraftRevision.revision_no.desc())
+        ).scalars().all()
+        return {
+            "draft_id": draft.draft_id,
+            "object_type": draft.object_type,
+            "object_id": draft.object_id,
+            "revision_no": draft.revision_no,
+            "items": [
+                {
+                    "revision_no": row.revision_no,
+                    "words": row.words,
+                    "origin": row.origin,
+                    "created_by": row.created_by,
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ],
+        }
+
+    def revision(self, draft_id: str, revision_no: int) -> dict[str, Any]:
+        draft = self._require_draft(draft_id)
+        row = self.session.execute(
+            select(AuthorDraftRevision)
+            .where(AuthorDraftRevision.draft_id == draft.draft_id)
+            .where(AuthorDraftRevision.revision_no == int(revision_no))
+        ).scalar_one_or_none()
+        if row is None:
+            raise DomainError(
+                "AUTHOR_DRAFT_REVISION_NOT_FOUND",
+                "author draft revision not found",
+                status_code=404,
+                details={"draft_id": draft.draft_id, "revision_no": revision_no},
+            )
+        return {
+            "revision": {
+                "draft_id": draft.draft_id,
+                "revision_no": row.revision_no,
+                "content": row.content,
+                "words": row.words,
+                "origin": row.origin,
+                "created_by": row.created_by,
+                "created_at": row.created_at,
+            }
         }
 
     def _draft_response(self, draft: AuthorDraft) -> dict[str, Any]:

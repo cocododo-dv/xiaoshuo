@@ -316,7 +316,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 > 在对应管线接真后移除；极小视图接缝沿用 P3/P5/P6 先例并在此记账。
 
 - [x] F1（源 D7）utcnow 严格单调根治负载敏感 flaky — commit 见 git log `FE-ALIGN F1`
-- [ ] F2（源 D4）author-draft 修订历史 + 成稿对比接真 — commit `______`
+- [x] F2（源 D4）author-draft 修订历史 + 成稿对比接真 — commit 见 git log `FE-ALIGN F2`
 - [ ] F3（源 D5）ws-snow 接 snowflake-workspace v2 — commit `______`
 - [ ] F4（源 D3）lf6 控制塔可视化接锚点/审计 API — commit `______`
 - [ ] F5（源 D2）ws-styleref 接 style_reference v2 — commit `______`
@@ -332,3 +332,25 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
   8 线程 4000 次无重复、now_iso 委托验证。
 - 验证：全量 853 passed（原 850 + 新 3）/ 12 skipped；原 flaky 两文件
   与全量套件并发对跑 20 轮（人为制造高负载）无翻车。
+
+### F2 明细
+
+- 后端：新表 `author_draft_revisions`（draft_revision_id PK / draft_id /
+  revision_no / content / words / origin / created_by / created_at，
+  (draft_id, revision_no) 唯一）+ 迁移 `20260612_0052`（单头续链，inspector 守卫）。
+- `AuthorDraftService` 六个 revision 推进点统一走 `_snapshot_revision`
+  （created / edited / derived / proposal_applied ×2 / candidate_inserted），
+  幂等（同 draft+revision 已存在则跳过）；冲突 409 不产快照。
+- 端点：`GET /api/v1/author-drafts/{draft_id}/revisions`（倒序、列表不带正文）、
+  `GET …/revisions/{revision_no}`（含 content；缺失 404
+  AUTHOR_DRAFT_REVISION_NOT_FOUND）。测试 `test_author_draft_revisions.py` 4 条。
+- 前端 store：`wr-doc-store.jsx` 新增 `WrDocVersions`（list/paras/diff；
+  draftId 复用 WrDocs ensure 链路；句级 LCS diff，按新版段落分版式）。
+- **授权视图改动（记录在案）**：`ws-manuscripts.jsx` `ManuDiff` 由静态演示组件
+  重写为消费 WrDocVersions 的真实对比（视觉契约不变：`.select` 选择器、
+  `d-same/d-del/d-add` 句级样式、±句统计）；「对比」标签可见条件由
+  `isTide && M_BODY[id]` 放开为「章有场景即可」；调用点补传 `catCh`。
+  原 DemoTag（版本对比为演示数据）随接真移除。
+- 验证：后端全量 857 passed / 12 skipped；`smoke-f2.mjs` 4/4
+  （两次保存→版本列表≥3→旧版内容取回→UI 真 diff 渲染）；run-smokes 六套全过；
+  `npm run build` 绿。

@@ -46,6 +46,18 @@ def get_author_draft_events(draft_id: str, request: Request, session: Session = 
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.get("/api/v1/author-drafts/{draft_id}/revisions")
+def list_author_draft_revisions(draft_id: str, request: Request, session: Session = Depends(get_session)):
+    result = AuthorDraftService(session).revisions(draft_id)
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v1/author-drafts/{draft_id}/revisions/{revision_no}")
+def get_author_draft_revision(draft_id: str, revision_no: int, request: Request, session: Session = Depends(get_session)):
+    result = AuthorDraftService(session).revision(draft_id, revision_no)
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v1/author-drafts/{draft_id}/derive-from-generation")
 def derive_author_draft_from_generation(draft_id: str, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"

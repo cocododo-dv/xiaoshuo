@@ -991,6 +991,25 @@ class AuthorDraftEvent(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
+class AuthorDraftRevision(Base):
+    """正文修订快照（FE-ALIGN F2）：每次 revision_no 推进时存一行完整内容。"""
+
+    __tablename__ = "author_draft_revisions"
+    __table_args__ = (
+        UniqueConstraint("draft_id", "revision_no", name="uq_author_draft_revisions_draft_rev"),
+        Index("ix_author_draft_revisions_draft", "draft_id"),
+    )
+
+    draft_revision_id: Mapped[str] = mapped_column(String, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String)
+    revision_no: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    words: Mapped[int] = mapped_column(Integer, default=0)
+    origin: Mapped[str] = mapped_column(String, default="edited")
+    created_by: Mapped[str] = mapped_column(String, default="author_draft")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
 class AuthorStructureCandidate(Base):
     __tablename__ = "author_structure_candidates"
     __table_args__ = (
