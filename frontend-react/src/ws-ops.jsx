@@ -1,6 +1,10 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { WsCatalog } from "./ws-catalog.jsx";
+import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
+import { rvCustomList, rvIsResolved } from "./ws-review.jsx";
+import { WsWorks, wsKey } from "./ws-works.jsx";
+import { s2ExportState } from "./ws-snow.jsx";
+import { wrSeedHTML, wrNotesSeed } from "./ws-writer.jsx";
 
 /* global React, I */
 const { useState: useSt12 } = React;
@@ -21,7 +25,7 @@ const IDX_STATE = {
 function idxDerive() {
   const rows = [];
   try {
-    const chs = window.WsCatalog ? window.WsCatalog.get() : [];
+    const chs = WsCatalog ? WsCatalog.get() : [];
     chs.forEach(c => {
       if (c.state === "approved") rows.push({ id: "ch-" + c.id, target: `chapter_final · 第 ${c.n} 章《${c.title}》`, action: "publish", state: "done", note: "终稿已锁定，汇入整书", at: null, nav: "manuscripts", cta: "查看" });
       else if (c.state === "review") rows.push({ id: "ch-" + c.id, target: `chapter_review · 第 ${c.n} 章《${c.title}》`, action: "review", state: "pending", note: "等待你在成稿中心批准", at: null, nav: "manuscripts", cta: "去批准" });
@@ -29,8 +33,8 @@ function idxDerive() {
     });
   } catch (e) {}
   try {
-    (window.rvCustomList ? window.rvCustomList() : []).forEach(it => {
-      const ok = window.rvIsResolved && window.rvIsResolved(it.id);
+    (rvCustomList ? rvCustomList() : []).forEach(it => {
+      const ok = rvIsResolved && rvIsResolved(it.id);
       rows.push({ id: "rv-" + it.id, target: `review_item · ${it.title}`, action: it.source || "审核", state: ok ? "done" : "pending", note: ok ? "已拍板生效" : "等待你在收件箱拍板", at: it.at, nav: "review", cta: ok ? "查看" : "去拍板" });
     });
   } catch (e) {}
@@ -43,7 +47,7 @@ function idxDerive() {
 
 function WsIndex({ go }) {
   /* 订阅目录 + 收件箱：上游变动时重新派生 */
-  if (window.useCatalogChapters) window.useCatalogChapters();
+  if (useCatalogChapters) useCatalogChapters();
   const [, force] = useSt12(0);
   React.useEffect(() => {
     const bump = () => force(n => n + 1);
@@ -193,22 +197,22 @@ function ioHtmlToText(html) {
   return txt === "在这里开始写这一场……" ? "" : txt;
 }
 function ioBuildMarkdown() {
-  const work = window.WsWorks.active();
-  const chs = window.WsCatalog ? window.WsCatalog.get() : [];
+  const work = WsWorks.active();
+  const chs = WsCatalog ? WsCatalog.get() : [];
   let md = `# ${work.title}\n\n> ${work.genre || ""}${work.sub ? " · " + work.sub : ""}\n`;
   chs.forEach(c => {
     md += `\n\n## 第 ${c.n} 章 · ${c.title}\n`;
     (c.scenes || []).forEach((s, i) => {
       md += `\n### ${String(i + 1).padStart(2, "0")} · ${s.title}\n\n`;
       let txt = "";
-      try { txt = ioHtmlToText(localStorage.getItem(window.wsKey("wr-doc:" + s.sid)) || ""); } catch (e) {}
+      try { txt = ioHtmlToText(localStorage.getItem(wsKey("wr-doc:" + s.sid)) || ""); } catch (e) {}
       md += (txt || "（本场尚无正文）") + "\n";
     });
   });
   return md;
 }
 function ioCollectWorkKeys() {
-  const id = window.WsWorks.activeId();
+  const id = WsWorks.activeId();
   const suffix = "::" + id;
   const keys = {};
   for (let i = 0; i < localStorage.length; i++) {
@@ -218,7 +222,7 @@ function ioCollectWorkKeys() {
   return keys;
 }
 function ioExportMarkdown(setToast) {
-  const work = window.WsWorks.active();
+  const work = WsWorks.active();
   const md = ioBuildMarkdown();
   const file = `${work.title} · 全书稿.md`;
   const size = ioDownload(file, md, "text/markdown;charset=utf-8");
@@ -226,22 +230,22 @@ function ioExportMarkdown(setToast) {
   setToast(`已导出「${file}」`);
 }
 function ioExportBundle(setToast) {
-  const work = window.WsWorks.active();
+  const work = WsWorks.active();
   const keys = ioCollectWorkKeys();
   /* 运行时真相强制入包：种子作品没编辑过的部分不在 localStorage 里，
      只抄键会导出一部空书。这里把目录与有种子文的正文一并物化进包。 */
-  try { if (window.WsCatalog) keys["arr.chapters.v2"] = JSON.stringify(window.WsCatalog.get()); } catch (e) {}
-  try { if (window.s2ExportState) { const s = window.s2ExportState(); if (s) keys["ws_snow_state_v2"] = JSON.stringify(s); } } catch (e) {}
+  try { if (WsCatalog) keys["arr.chapters.v2"] = JSON.stringify(WsCatalog.get()); } catch (e) {}
+  try { if (s2ExportState) { const s = s2ExportState(); if (s) keys["ws_snow_state_v2"] = JSON.stringify(s); } } catch (e) {}
   try {
-    const chs = window.WsCatalog ? window.WsCatalog.get() : [];
+    const chs = WsCatalog ? WsCatalog.get() : [];
     chs.forEach(c => (c.scenes || []).forEach(s => {
       if (!s.sid) return;
       if (keys["wr-doc:" + s.sid] == null) {
-        const seeded = window.wrSeedHTML ? window.wrSeedHTML(s.sid) : null;
+        const seeded = wrSeedHTML ? wrSeedHTML(s.sid) : null;
         if (seeded && !/^<p>在这里开始写/.test(seeded)) keys["wr-doc:" + s.sid] = seeded;
       }
       if (keys["wr-notes:" + s.sid] == null) {
-        const ns = window.wrNotesSeed ? window.wrNotesSeed(s.sid) : "";
+        const ns = wrNotesSeed ? wrNotesSeed(s.sid) : "";
         if (ns) keys["wr-notes:" + s.sid] = ns;
       }
     }));
@@ -266,11 +270,11 @@ function ioImportBundle(fileObj, setToast) {
       if (!data || data.__ws_backup == null || !data.keys) { setToast("这不是本工作台导出的数据包（缺少标记）。"); return; }
       const meta = data.work || {};
       if (!window.confirm(`将「${meta.title || "未命名作品"}」恢复为一部新作品？不会覆盖现有内容。`)) return;
-      const w = window.WsWorks.create({ title: meta.title, genre: meta.genre, sub: meta.sub, wordsTarget: meta.wordsTarget, accent: meta.accent });
+      const w = WsWorks.create({ title: meta.title, genre: meta.genre, sub: meta.sub, wordsTarget: meta.wordsTarget, accent: meta.accent });
       Object.keys(data.keys).forEach(base => {
         try { localStorage.setItem(base + "::" + w.id, data.keys[base]); } catch (e) {}
       });
-      if (meta.chaptersTotal) window.WsWorks.update(w.id, { chaptersTotal: meta.chaptersTotal });
+      if (meta.chaptersTotal) WsWorks.update(w.id, { chaptersTotal: meta.chaptersTotal });
       ioLogPush({ kind: "import", file: fileObj.name, size: fileObj.size });
       setToast(`已恢复为新作品「${meta.title || "未命名作品"}」，正在进入…`);
       setTimeout(() => { location.hash = "#home"; location.reload(); }, 900);
@@ -298,8 +302,8 @@ function WsInterop({ go }) {
     return () => clearTimeout(id);
   }, [toast]);
   const note = (msg) => { setToast(msg); force(n => n + 1); };
-  const work = window.WsWorks ? window.WsWorks.active() : { title: "—" };
-  const totals = window.WsCatalog ? window.WsCatalog.totals() : { words: 0, planned: 0 };
+  const work = WsWorks ? WsWorks.active() : { title: "—" };
+  const totals = WsCatalog ? WsCatalog.totals() : { words: 0, planned: 0 };
   const recent = ioLog();
 
   const onFile = (f) => { if (f) ioImportBundle(f, note); };

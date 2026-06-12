@@ -1,5 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { wsKey } from "./ws-works.jsx";
+import { s2ExportState } from "./ws-snow.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 
 /* global React, I */
 /* ==========================================================
@@ -7,15 +10,15 @@ import { I } from "./icons.jsx";
    ----------------------------------------------------------
    把演示流水线的「预检 → 起草 → 质检 → 裁决 → 归档」落到实处：
    · 上下文：雪花构思（一句话 / 道德前提 / 读者定位 / 角色表）+ 章节卡
-   · 起草：window.claude.complete，输出按戏剧拍标注的分段 JSON
+   · 起草：后端 scenes run 管线（run/jobs 投递 + 轮询，FE-ALIGN F6）
    · 质检：确定性、可解释——短句率 / 句式重复 / 超长句标红，不装神弄鬼
    · 归档：写入写作器正文文档（wr-doc:sid）+ 字数回写 + 场景卡置 done
    · 持久化：每场的运行结果存 scn-run:sid（按作品隔离），刷新不丢
    ========================================================== */
 
 const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words"];
-const scnRunKey = (sid) => (window.wsKey ? window.wsKey("scn-run:" + sid) : "scn-run:" + sid);
-const scnQueueKey = () => (window.wsKey ? window.wsKey("scn-queue:v1") : "scn-queue:v1");
+const scnRunKey = (sid) => (wsKey ? wsKey("scn-run:" + sid) : "scn-run:" + sid);
+const scnQueueKey = () => (wsKey ? wsKey("scn-queue:v1") : "scn-queue:v1");
 
 function scnRunLoad(sid) {
   try { return JSON.parse(localStorage.getItem(scnRunKey(sid))) || null; } catch (e) { return null; }
@@ -36,7 +39,7 @@ function scnQueueSave(sids) {
 /* ---- 上游上下文：雪花构思折叠成提示词材料 ---- */
 function scnSnowContext() {
   try {
-    const st = window.s2ExportState ? window.s2ExportState() : null;
+    const st = s2ExportState ? s2ExportState() : null;
     if (!st) return "";
     const d = st.drafts || {}, sc = st.scaffolds || {};
     const lines = [];
@@ -56,7 +59,7 @@ function scnSnowContext() {
 }
 
 function scnBuildPrompt(item, note, prevText) {
-  const hit = item.sid && window.WsCatalog ? window.WsCatalog.sceneById(item.sid) : null;
+  const hit = item.sid && WsCatalog ? WsCatalog.sceneById(item.sid) : null;
   const c = hit ? hit.chapter : null;
   const s = hit ? hit.scene : {};
   const reactive = (s.kind || item.kind || "").includes("反应");
@@ -211,8 +214,8 @@ function scnFriendly(e) {
 
 async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-vars
   const { apiGet, apiPost } = await import("./lib/client.js");
-  const sceneId = window.WsCatalog && window.WsCatalog.__backendSceneId
-    ? await window.WsCatalog.__backendSceneId(item.sid)
+  const sceneId = WsCatalog && WsCatalog.__backendSceneId
+    ? await WsCatalog.__backendSceneId(item.sid)
     : null;
   if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
   const t0 = Date.now();
@@ -236,7 +239,7 @@ async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-v
     throw scnFriendly({ code: last.error_code || "", message: last.error_text || `任务以「${last.status}」结束且没有产出正文（${last.current_step || "—"}）` });
   }
   const paras = content.split(/\n{2,}|\n/).map((x, i) => ({ id: "p" + (i + 1), beat: null, text: x.trim() })).filter(p => p.text);
-  const hit = item.sid && window.WsCatalog ? window.WsCatalog.sceneById(item.sid) : null;
+  const hit = item.sid && WsCatalog ? WsCatalog.sceneById(item.sid) : null;
   const reactive = ((hit && hit.scene.kind) || item.kind || "").includes("反应");
   const qc = scnQC(paras, reactive);
   const secs = Math.round((Date.now() - t0) / 1000);
@@ -260,10 +263,10 @@ async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-v
 /* ---- 归档：写入写作器正文 + 字数回写 + 场景卡置 done ---- */
 function scnEscape(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function scnAdoptToDoc(sid, draft) {
-  if (!sid || !window.WsCatalog) return { ok: false, reason: "没有场景卡" };
+  if (!sid || !WsCatalog) return { ok: false, reason: "没有场景卡" };
   const html = (draft || []).map(p => "<p>" + scnEscape(p.parts.map(x => x.text).join("")) + "</p>").join("");
   const text = (draft || []).map(p => p.parts.map(x => x.text).join("")).join("");
-  const key = window.wsKey ? window.wsKey("wr-doc:" + sid) : "wr-doc:" + sid;
+  const key = wsKey ? wsKey("wr-doc:" + sid) : "wr-doc:" + sid;
   let existing = "";
   try { existing = localStorage.getItem(key) || ""; } catch (e) {}
   const hasReal = existing && existing.replace(/<[^>]+>/g, "").replace(/\s/g, "").length > 0 && !existing.includes("在这里开始写这一场");
@@ -276,12 +279,12 @@ function scnAdoptToDoc(sid, draft) {
     if (window.WrDocs) window.WrDocs.save(sid, html);
     else localStorage.setItem(key, html);
   } catch (e) { return { ok: false, reason: "写入失败" }; }
-  const hit = window.WsCatalog.sceneById(sid);
+  const hit = WsCatalog.sceneById(sid);
   const prev = hit && typeof hit.scene.words === "number" ? hit.scene.words : 0;
   const count = text.replace(/\s/g, "").length;
-  try { window.WsCatalog.recordSceneWords(sid, count, prev); } catch (e) {}
+  try { WsCatalog.recordSceneWords(sid, count, prev); } catch (e) {}
   try {
-    window.WsCatalog.set(window.WsCatalog.get().map(c => ({
+    WsCatalog.set(WsCatalog.get().map(c => ({
       ...c, scenes: (c.scenes || []).map(s => s.sid === sid ? { ...s, state: "done" } : s),
     })));
   } catch (e) {}
@@ -301,7 +304,7 @@ function scnReQC(draft, kind) {
 function scnPickList(queuedSids) {
   const q = new Set(queuedSids || []);
   try {
-    return (window.WsCatalog ? window.WsCatalog.get() : []).map(c => ({
+    return (WsCatalog ? WsCatalog.get() : []).map(c => ({
       id: c.id, n: c.n, title: c.title,
       scenes: (c.scenes || []).map(s => ({
         sid: s.sid, title: s.title, kind: s.kind, state: s.state,

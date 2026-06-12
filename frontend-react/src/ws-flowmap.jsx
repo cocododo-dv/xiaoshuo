@@ -1,7 +1,9 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { ARR_CHAPTERS } from "./ws-author-data.jsx";
-import { S2_STEPS } from "./ws-snow.jsx";
+import { S2_STEPS, s2StepSummary } from "./ws-snow.jsx";
+import { WsWorks } from "./ws-works.jsx";
+import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 
 /* global React, I, window */
 const { useState: useStFM, useEffect: useEfFM, useRef: useRefFM, useMemo: useMemoFM } = React;
@@ -47,13 +49,13 @@ const fmt = (n) => (n || 0).toLocaleString("en-US");
    ========================================================== */
 function fmDerive() {
   try {
-    const isTide = (() => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
-    const work = window.WsWorks ? window.WsWorks.active() : null;
+    const isTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
+    const work = WsWorks ? WsWorks.active() : null;
     /* 章节目录：单一真相源（与主页 / 写作器 / 成稿中心同源），缺席才回落静态种子 */
-    const ARR = window.WsCatalog ? window.WsCatalog.get() : window.ARR_CHAPTERS;
+    const ARR = WsCatalog ? WsCatalog.get() : ARR_CHAPTERS;
     /* 雪花十步：元数据来自 S2_STEPS，状态读构思工作台的持久化真相（按作品） */
-    const live = window.s2StepSummary ? window.s2StepSummary() : null;
-    const STEPS = (window.S2_STEPS || []).map((s, i) => ({ ...s, state: live && live.steps && live.steps[i] ? live.steps[i].s : s.state }));
+    const live = s2StepSummary ? s2StepSummary() : null;
+    const STEPS = (S2_STEPS || []).map((s, i) => ({ ...s, state: live && live.steps && live.steps[i] ? live.steps[i].s : s.state }));
     /* 控制塔引擎（LF2/LF3 现行引擎）目前只覆盖潮汐档案种子；
        已裁决的设定冲突（lf7 桥）从体检里自动消失 */
     const LF = isTide ? window.LF2_BOOK : null;
@@ -295,7 +297,7 @@ function fmDerive() {
 function WsFlowmap({ go }) {
   go = go || (() => {});
   /* 订阅目录变化：编排 / 写作 / 成稿的改动会重新派生流程模型 */
-  const fmCat = window.useCatalogChapters ? window.useCatalogChapters() : null;
+  const fmCat = useCatalogChapters ? useCatalogChapters() : null;
   const M = useMemoFM(fmDerive, [fmCat]);
   const [sel, setSel] = useStFM("writer");
   const [playing, setPlaying] = useStFM(false);

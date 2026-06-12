@@ -1,13 +1,16 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
-import { LF2_ACTS, LF2_BOOK, LF2_CANON, LF2_CHAPTERS, LF2_LOOPS, LF2_NEXT, LF2_TARGET, LF2_THREADS, lf2Derive } from "./lf2-data.jsx";
+import { LF2_ACTS, LF2_BOOK, LF2_CANON, LF2_CHAPTERS, LF2_LOOPS, LF2_NEXT, LF2_TARGET, LF2_THREADS, lf2Derive, lf2SyncFromCatalog } from "./lf2-data.jsx";
 import { LF3_AUDIT, LF3_CAUSAL, LF3_ORPHANS, lf3Brief, lf3Issues } from "./lf3-data.jsx";
 import { Lf3Atlas } from "./lf3-atlas.jsx";
 import { Lf3Audit, Lf3Memory } from "./lf3-console.jsx";
 import { Lf3Generating, Lf3Preview } from "./lf3-app.jsx";
 import { Lf4Brief } from "./lf4-console.jsx";
 import { Lf5Guard } from "./lf5-guard.jsx";
+import { lf7ApplyCanon, Lf7Bridge, lf7Dispatch9, lf7ArchiveCh9 } from "./lf7-bridge.jsx";
+import { WsCatalog, WsDemoTag } from "./ws-catalog.jsx";
+import { WsWorks } from "./ws-works.jsx";
 
 /* global React, ReactDOM, I, LF2_BOOK, LF2_NEXT, LF2_LOOPS, LF2_CANON, LF2_TARGET, LF2_CHAPTERS, LF2_ACTS, LF2_THREADS, LF3_AUDIT, LF3_ORPHANS, LF3_CAUSAL,
    lf2Derive, lf3Issues, lf3Brief, Lf3Atlas, Lf5Guard, Lf3Memory, Lf4Brief, Lf3Audit, Lf3Generating, Lf3Preview */
@@ -272,7 +275,7 @@ function Lf6Tower({ go, standalone }) {
   const [loops, setLoops] = useApp6(() => JSON.parse(JSON.stringify(LF2_LOOPS)));
   const [canon, setCanon] = useApp6(() => {
     const seed = JSON.parse(JSON.stringify(LF2_CANON));
-    return window.lf7ApplyCanon ? window.lf7ApplyCanon(seed) : seed;  // 应用已裁决（收件箱 / 上一轮归档）
+    return lf7ApplyCanon ? lf7ApplyCanon(seed) : seed;  // 应用已裁决（收件箱 / 上一轮归档）
   });
   const [sel, setSel] = useApp6(null);
   const [tab, setTab] = useApp6("board");
@@ -297,7 +300,7 @@ function Lf6Tower({ go, standalone }) {
 
   useEffect6(() => {
     const bump = () => setCatPing(p => p + 1);
-    const un = window.WsCatalog ? window.WsCatalog.subscribe(bump) : null;
+    const un = WsCatalog ? WsCatalog.subscribe(bump) : null;
     window.addEventListener("lf:bridge-changed", bump);
     return () => { if (un) un(); window.removeEventListener("lf:bridge-changed", bump); };
   }, []);
@@ -305,7 +308,7 @@ function Lf6Tower({ go, standalone }) {
   /* 收件箱侧裁决 → 塔内同步锁定（同一拍板对象，裁决一处两处消失） */
   useEffect6(() => {
     const sync = () => {
-      const ruled = window.Lf7Bridge ? window.Lf7Bridge.ruled() : {};
+      const ruled = Lf7Bridge ? Lf7Bridge.ruled() : {};
       setCanon(cs => {
         let changed = false;
         const next = cs.map(c => (c.status === "conflict" && ruled[c.id]) ? (changed = true, { ...c, status: "locked", pinned: true, drift: false, fresh: false }) : c);
@@ -335,7 +338,7 @@ function Lf6Tower({ go, standalone }) {
   const resolveLoop = (id) => { setLoops(ls => ls.map(l => l.id === id ? { ...l, state: "closed", pinned: false } : l)); setSel(null); flash("已标记回收，悬念债结清"); try { window.lf2LoopOp && window.lf2LoopOp("resolve", id); } catch (e) {} };
   const resolveCanon = (id) => {
     setCanon(cs => cs.map(c => c.id === id ? { ...c, status: "locked", pinned: true } : c));
-    try { if (window.Lf7Bridge) window.Lf7Bridge.ruleCanon(id); } catch (e) {}  // 同步消掉收件箱里的同一条
+    try { if (Lf7Bridge) Lf7Bridge.ruleCanon(id); } catch (e) {}  // 同步消掉收件箱里的同一条
     try { window.lf2CanonOp && window.lf2CanonOp("lock", id); } catch (e) {}
   };
   const pinCanon = (id) => { setCanon(cs => cs.map(c => c.id === id ? { ...c, pinned: !c.pinned } : c)); try { window.lf2CanonOp && window.lf2CanonOp("pin", id); } catch (e) {} };
@@ -354,7 +357,7 @@ function Lf6Tower({ go, standalone }) {
     } else if (it.kind === "orphan") {
       markLoaded(it.id);
       const o = (LF3_ORPHANS || []).find(x => x.id === it.ref.id);
-      if (o && window.Lf7Bridge) window.Lf7Bridge.onceTask("task-orph-" + o.id, {
+      if (o && Lf7Bridge) Lf7Bridge.onceTask("task-orph-" + o.id, {
         kind: "qc", priority: 2,
         title: `补铺垫：${o.reveal}`,
         where: `第 1–${o.revealCh - 1} 章 · 回写前文`, source: "长篇控制塔",
@@ -369,7 +372,7 @@ function Lf6Tower({ go, standalone }) {
     } else if (it.kind === "causal") {
       markLoaded(it.id);
       const k = (typeof LF3_CAUSAL !== "undefined" ? LF3_CAUSAL : []).find(x => x.id === it.ref.id);
-      if (k && window.Lf7Bridge) window.Lf7Bridge.onceTask("task-caus-" + k.id, {
+      if (k && Lf7Bridge) Lf7Bridge.onceTask("task-caus-" + k.id, {
         kind: "qc", priority: 2,
         title: `补前因：${k.effect}`,
         where: `第 ${k.effectCh} 章之前 · 承重因果`, source: "长篇控制塔",
@@ -416,7 +419,7 @@ function Lf6Tower({ go, standalone }) {
     /* 塔台化：塔不再直接生成正文 —— 把契约封装、第 9 章拆成 3 场入列 AI 起草台（唯一执行器） */
     setTimeout(() => {
       let res = null;
-      try { res = window.lf7Dispatch9 ? window.lf7Dispatch9() : null; } catch (e) {}
+      try { res = lf7Dispatch9 ? lf7Dispatch9() : null; } catch (e) {}
       setGen("idle");
       flash(res
         ? `第 ${LF2_NEXT} 章已按契约拆成 ${res.sids.length} 场、入列 AI 起草台 —— ${brief.enforce.length} 条强约束随每场预检在场`
@@ -430,9 +433,9 @@ function Lf6Tower({ go, standalone }) {
   /* 演示捷径：不想真跑三次生成时，把余下场次标记成稿 */
   const simulate = () => {
     try {
-      if (!window.WsCatalog) return;
+      if (!WsCatalog) return;
       const fill = [1680, 1890, 1660];
-      window.WsCatalog.set(window.WsCatalog.get().map(c => {
+      WsCatalog.set(WsCatalog.get().map(c => {
         if (parseInt(c.n, 10) !== 9) return c;
         const scenes = (c.scenes || []).map((s, i) => s.state === "done" ? s : { ...s, state: "done", words: s.words || fill[i] || 1500 });
         const cur = scenes.reduce((a, s) => a + (s.words || 0), 0);
@@ -446,14 +449,14 @@ function Lf6Tower({ go, standalone }) {
     setFixDone(s => new Set(s).add(id));
     /* 裁决产物化：不只 toast，生成可追踪的修复任务进待办收件箱 */
     try {
-      if (window.Lf7Bridge && id === "d1") window.Lf7Bridge.onceTask("task-aud-d1", {
+      if (Lf7Bridge && id === "d1") Lf7Bridge.onceTask("task-aud-d1", {
         kind: "qc", priority: 2,
         title: "回写第 9 章：办公室位置统一为「地下档案室」",
         where: "第 9 章 · 段 12", source: "长篇控制塔 · 草稿审计",
         detail: "第 9 章草稿写「三楼档案室」，与第 6 章确立的「地下档案室」冲突。裁决已记录；回写正文后这条即可划掉。",
         actions: [{ label: "回写作台修改", intent: "primary", op: "nav", to: "writer" }, { label: "知道了", intent: "quiet", op: "resolve" }],
       });
-      if (window.Lf7Bridge && id === "d2") window.Lf7Bridge.onceTask("task-aud-d2", {
+      if (Lf7Bridge && id === "d2") Lf7Bridge.onceTask("task-aud-d2", {
         kind: "idea", priority: 2,
         title: "第 10 章给阿恪一次成长点（选择或代价）",
         where: "第 10 章 · 规划", source: "长篇控制塔 · 草稿审计",
@@ -477,8 +480,8 @@ function Lf6Tower({ go, standalone }) {
        新发现的冲突跨会话登记，待办收件箱同步出现同一条待裁决 */
     let wrote = false;
     try {
-      if (window.Lf7Bridge) window.Lf7Bridge.addCanonConflict({ id: "c7", subject: "周岚 · 办公室", value: "地下档案室", source: 6, status: "conflict", drift: true, conflictCh: 9, conflictText: "第 9 章「三楼档案室」与第 6 章「地下档案室」不一致", critical: false, pinned: false, fresh: true });
-      wrote = window.lf7ArchiveCh9 ? window.lf7ArchiveCh9() : false;
+      if (Lf7Bridge) Lf7Bridge.addCanonConflict({ id: "c7", subject: "周岚 · 办公室", value: "地下档案室", source: 6, status: "conflict", drift: true, conflictCh: 9, conflictText: "第 9 章「三楼档案室」与第 6 章「地下档案室」不一致", critical: false, pinned: false, fresh: true });
+      wrote = lf7ArchiveCh9 ? lf7ArchiveCh9() : false;
     } catch (e) {}
     setHasDraft(false); setConsoleTab("brief"); setFixDone(new Set()); setNewDone(new Set()); setAuditPlay(false); setArm(null);
     setSel({ type: "canon", id: "c7" }); setTab("canon");
@@ -504,8 +507,8 @@ function Lf6Tower({ go, standalone }) {
 
   /* 演示闭环复位：可重新走一轮「规划→交接→生成→审计→归档」 */
   const resetLoop = () => {
-    try { if (window.Lf7Bridge) window.Lf7Bridge.resetLoop9(); } catch (e) {}
-    try { if (window.lf2SyncFromCatalog) window.lf2SyncFromCatalog(); } catch (e) {}
+    try { if (Lf7Bridge) Lf7Bridge.resetLoop9(); } catch (e) {}
+    try { if (lf2SyncFromCatalog) lf2SyncFromCatalog(); } catch (e) {}
     setHasDraft(false); setConsoleTab("brief"); setFixDone(new Set()); setNewDone(new Set()); setArm(null);
     flash("演示已复位：第 9 章回到待交接，可重新走一轮闭环");
   };
@@ -521,9 +524,9 @@ function Lf6Tower({ go, standalone }) {
 
   // —— 派生量 ——
   /* 塔台化：起草台执行进度（塔只看不写正文） */
-  const archived9 = !!(window.Lf7Bridge && window.Lf7Bridge.isArchived(9));
-  const handoff9 = !archived9 && !!(window.Lf7Bridge && window.Lf7Bridge.state().handoff9);
-  const ch9 = (() => { try { return handoff9 ? ((window.WsCatalog ? window.WsCatalog.get() : []).find(c => parseInt(c.n, 10) === 9) || null) : null; } catch (e) { return null; } })();
+  const archived9 = !!(Lf7Bridge && Lf7Bridge.isArchived(9));
+  const handoff9 = !archived9 && !!(Lf7Bridge && Lf7Bridge.state().handoff9);
+  const ch9 = (() => { try { return handoff9 ? ((WsCatalog ? WsCatalog.get() : []).find(c => parseInt(c.n, 10) === 9) || null) : null; } catch (e) { return null; } })();
   const sc9 = ch9 ? (ch9.scenes || []) : [];
   const done9 = sc9.filter(s => s.state === "done").length;
   const dispatched = handoff9 && sc9.length > 0 && done9 < sc9.length;
@@ -576,8 +579,8 @@ function Lf6Tower({ go, standalone }) {
         <div className="lf3-brand">
           <span className="lf3-brand-mark"><I.Radar size={20} /></span>
           <div>
-            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {window.WsDemoTag && <window.WsDemoTag note="悬念债 / 设定锚点 / 故事线 / 人物弧线已接后端锚点库，契约与裁决为真实数据；「生成 / 草稿审计」流程仍为演示模拟（接真见起草引擎管线）。" />}</div>
-            <div className="lf3-brand-title">{window.WsWorks ? window.WsWorks.active().title : "潮汐档案"}<span className="lf3-brand-genre">{window.WsWorks ? window.WsWorks.active().genre : "悬疑 · 长篇"}</span></div>
+            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {WsDemoTag && <WsDemoTag note="悬念债 / 设定锚点 / 故事线 / 人物弧线已接后端锚点库，契约与裁决为真实数据；「生成 / 草稿审计」流程仍为演示模拟（接真见起草引擎管线）。" />}</div>
+            <div className="lf3-brand-title">{WsWorks ? WsWorks.active().title : "潮汐档案"}<span className="lf3-brand-genre">{WsWorks ? WsWorks.active().genre : "悬疑 · 长篇"}</span></div>
           </div>
         </div>
 
@@ -800,7 +803,7 @@ function Lf6Tower({ go, standalone }) {
 /* 非潮汐作品：控制塔的悬念债 / 设定锚点 / 故事线还没有数据，
    给引导态而不是把另一部书的演示数据硬塞过来。 */
 function Lf6Empty({ go }) {
-  const work = window.WsWorks ? window.WsWorks.active() : { title: "这部作品" };
+  const work = WsWorks ? WsWorks.active() : { title: "这部作品" };
   const rows = [
     ["Radar", "悬念债", "每个埋下的钩子何时回收，逾期会被点名"],
     ["Anchor", "设定锚点", "人物年龄、物件、时间线等不许漂移的既定事实"],
@@ -838,10 +841,10 @@ function Lf6Empty({ go }) {
 function WsLongform6(props) {
   /* FE-ALIGN F4：有后端锚点数据的作品点亮全塔（tide 由 seed 维护）；
      还没有锚点的作品保持引导态。 */
-  const isTide = (() => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
+  const isTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
   const hasTower = isTide || (() => { try { return !!(window.lf2HasTowerData && window.lf2HasTowerData()); } catch (e) { return false; } })();
   if (!hasTower) return <Lf6Empty go={props.go} />;
-  if (window.lf2SyncFromCatalog) window.lf2SyncFromCatalog();  // 章节/进度与目录同源
+  if (lf2SyncFromCatalog) lf2SyncFromCatalog();  // 章节/进度与目录同源
   return <Lf6Tower {...props} />;
 }
 Object.assign(window, { Lf6Tower, WsLongform6, Lf6Skyline });

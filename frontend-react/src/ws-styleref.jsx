@@ -1,5 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { WsDemoTag } from "./ws-catalog.jsx";
+import { WsWorks } from "./ws-works.jsx";
+import { rvPush } from "./ws-review.jsx";
 
 /* global React, I */
 const { useState: useStSR } = React;
@@ -320,7 +323,7 @@ function WsStyleRef({ go }) {
         <aside className="sr-books">
           <header className="sr-books-head">
             <div>
-              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {window.WsDemoTag && <window.WsDemoTag note="书库/导入/删除/抽取启动已接后端 style-reference v2（LLM 未启用时启动抽取会给明确引导）。维度矩阵/画像/回测/注入展示的是 LLM 抽取产物，启用前为演示数据。" />}</div>
+              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {WsDemoTag && <WsDemoTag note="书库/导入/删除/抽取启动已接后端 style-reference v2（LLM 未启用时启动抽取会给明确引导）。维度矩阵/画像/回测/注入展示的是 LLM 抽取产物，启用前为演示数据。" />}</div>
               <h2 className="text-serif" style={{fontSize:18, margin:"4px 0 0"}}>参考书库</h2>
             </div>
             <button className="btn btn-accent btn-sm" onClick={() => window.srImportBook && window.srImportBook()}><I.Plus size={13} /></button>
@@ -1001,7 +1004,7 @@ function SrApply({ go }) {
                   <div className="sr-stack-body">
                     <div className="sr-stack-top">
                       <span className={`pill pill-${l.tone} text-xs`}><span className="pill-dot" />{l.label}</span>
-                      <span className="sr-stack-target text-serif">{l.scope === "project" && window.WsWorks ? window.WsWorks.active().title : l.target}</span>
+                      <span className="sr-stack-target text-serif">{l.scope === "project" && WsWorks ? WsWorks.active().title : l.target}</span>
                       {l.onstage && <span className="sr-stack-onstage">+ 在场 {l.onstage.join("、")}</span>}
                       <span className="sr-stack-frags">{l.frags} fragments</span>
                     </div>
@@ -1142,10 +1145,10 @@ function SrApply({ go }) {
         </div>
 
         <button className="btn btn-accent btn-lg" style={{width:"100%"}} disabled={!!applied} onClick={() => {
-          if (!window.rvPush) return;
-          const workTitle = window.WsWorks ? window.WsWorks.active().title : "当前作品";
+          if (!rvPush) return;
+          const workTitle = WsWorks ? WsWorks.active().title : "当前作品";
           const scopeName = scope === "project" ? `项目《${workTitle}》` : scope === "scene" ? "场景 CH08 · SC01" : "角色 林岑 POV";
-          window.rvPush({
+          rvPush({
             kind: "decision", priority: 1,
             title: `参考画像「冷峻短句」应用到${scopeName}`,
             where: "风格参考 · 注入应用", source: "风格参考",

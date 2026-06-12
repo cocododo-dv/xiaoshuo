@@ -321,7 +321,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - [x] F4（源 D3）lf6 控制塔可视化接锚点/审计 API — commit 见 git log `FE-ALIGN F4`
 - [x] F5（源 D2）ws-styleref 接 style_reference v2 — commit 见 git log `FE-ALIGN F5`
 - [x] F6（源 D1）ws-scene 起草引擎接 scenes run 管线 — commit 见 git log `FE-ALIGN F6`
-- [ ] F7（源 D6）window.* 兼容赋值清理 — commit `______`
+- [x] F7（源 D6）window.* 兼容赋值清理 — commit 见 git log `FE-ALIGN F7`
 
 ### F1 明细
 
@@ -457,3 +457,38 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 验证：smoke-f6.mjs 3/3（最小场景卡投递真管线 → 结构化引导；UI 点「开始
   起草」得到明确报错而非假进度；若环境 LLM 可用则断言真实正文 ≥100 字）；
   pytest 全量 861 passed；run-smokes 六套全过；build 绿。
+
+### F7 明细
+
+- codemod `scripts/codemod-window.mjs`（一次性，留档可复跑）：window.* 跨模块
+  **读访问** → 显式 ESM import，共 414 处 / 28 文件。安全规则：只处理
+  main.jsx 装配清单内模块（+ ws-app 殿后）；只转换「定义模块加载序更早 +
+  已 ESM 导出」的符号（防环）；`window.X =` 注册面、浏览器原生、`__` 运行时
+  信箱一律保留。
+- 按规则保留的 36 处（划入「确属运行时注入」的探测面）：load-order 29
+  （如 ct-* 引用 ws-snow 的 s2 系、ws-writer 引用 LIB_*、ws-catalog 引用
+  SnowSync——皆为后载模块，window 探测是正确形态）+ no-export 7
+  （lf2LoopOp/lf2CanonOp 等授权接缝，本就设计为 `window.X && window.X()`
+  可选探测）。`Object.assign(window, …)` 注册保留——冒烟脚本与接缝依赖它。
+- window.claude 活探测仅剩 2 处（ws-snow 候选生成→失败回退静态候选集 /
+  ws-writer 内联改写），属 LLM 耦合点 → 记 DEFERRED D8；ws-scene-run 头注释
+  同步改为「后端 scenes run 管线」。
+- 验证：build 绿 + run-smokes 六套 + smoke-f2..f6 + **smoke-acceptance 7/7**
+  全过；后端全量 861 passed（F7 零后端改动）。
+
+## F 系列收口
+
+- 全部七阶段完成；每阶段独立提交；后端最终 861 passed / 12 skipped；
+  React build 绿；run-smokes + f2–f6 + acceptance 全绿。
+- WsDemoTag 现存 4 处 = 起草台（演示队列场标注，真实场已走真管线）/
+  风格参考（LLM 产物 stage）/ 控制塔（生成/草稿审计模拟）/ 成稿中心已移除
+  （F2 接真）——逐处与下表对应。
+
+### 新增遗留（DEFERRED，F 系列产生）
+
+| # | 事项 | 原因 / 现状 |
+|---|---|---|
+| D8 | window.claude 活探测 2 处（ws-snow 步骤候选生成 / ws-writer 内联改写） | 宿主 API 不存在时优雅回退（静态候选 / 报错）；接真需为两者建后端 LLM 节点（registry+models.yaml+prompts.yaml 三件套），独立小阶段可完成 |
+| D9 | 起草 note（作者自由改写指令）不进后端管线 | scenes run 提示词由 config/prompts.yaml 组装；起草日志已明示改用写作台·深改姿态 |
+| D10 | LF3 演示层（ORPHANS/CAUSAL/CLUES/RETRIEVE/AUDIT 流程模拟） | 与「生成/草稿审计」同属起草管线可视化，待管线在真实 LLM 环境跑通后再投影 |
+| D11 | 雪花 history（步骤快照日志）不跨会话 | 体积大（每条含全量快照），revs/confirmRevs 已随存 fe_meta |

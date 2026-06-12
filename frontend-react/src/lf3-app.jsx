@@ -1,8 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
-import { LF2_BOOK, LF2_CANON, LF2_LOOPS, LF2_NEXT, LF2_TARGET, lf2Derive } from "./lf2-data.jsx";
-import { LF3_AUDIT, LF3_BUDGET_CAP, LF3_RETRIEVE, lf3Brief, lf3Issues } from "./lf3-data.jsx";
+import { LF2_BOOK, LF2_CANON, LF2_LOOPS, LF2_NEXT, LF2_TARGET, lf2Derive, LF2_CHAPTERS, LF2_THREADS, LF2_ACTS } from "./lf2-data.jsx";
+import { LF3_AUDIT, LF3_BUDGET_CAP, LF3_RETRIEVE, lf3Brief, lf3Issues, LF3_ORPHANS } from "./lf3-data.jsx";
 import { Lf3Atlas } from "./lf3-atlas.jsx";
 import { Lf3Guard } from "./lf3-guard.jsx";
 import { Lf3ConsolePane } from "./lf3-console.jsx";
@@ -114,7 +114,7 @@ function Lf3Tower({ go, standalone }) {
   const runScan = () => {
     if (scan === "scanning") return;
     setScan("scanning");
-    setTimeout(() => { setScan("idle"); flash(`已重扫全书 ${LF2_BOOK.written} 章 · ${d.driftConflicts.length} 处漂移 · ${d.overdue.length} 处逾期 · ${window.LF3_ORPHANS.length} 处空降 · ${d.fading.length} 项记忆淡出`); }, 1700);
+    setTimeout(() => { setScan("idle"); flash(`已重扫全书 ${LF2_BOOK.written} 章 · ${d.driftConflicts.length} 处漂移 · ${d.overdue.length} 处逾期 · ${LF3_ORPHANS.length} 处空降 · ${d.fading.length} 项记忆淡出`); }, 1700);
   };
 
   const heartIdx = gen === "generating" ? 2 : hasDraft ? 3 : 1;
@@ -174,7 +174,7 @@ function Lf3Tower({ go, standalone }) {
 
       <div className="lf3-body" onClick={(e) => e.stopPropagation()}>
         <div className="lf3-paper">
-          <Lf3Atlas chapters={window.LF2_CHAPTERS} threads={window.LF2_THREADS} loops={loops.filter(l => l.state !== "closed")} canon={canon} now={d.now} horizon={d.horizon} acts={window.LF2_ACTS} selected={sel} onSelect={select} scanning={scan === "scanning"} />
+          <Lf3Atlas chapters={LF2_CHAPTERS} threads={LF2_THREADS} loops={loops.filter(l => l.state !== "closed")} canon={canon} now={d.now} horizon={d.horizon} acts={LF2_ACTS} selected={sel} onSelect={select} scanning={scan === "scanning"} />
           <Lf3Guard tab={tab} setTab={setTab} issues={issues} doneIds={doneIds} d={d} loops={loops} canon={canon} now={d.now}
             sel={sel} onSelect={select} onAct={act} onPinLoop={pinLoop} onSchedule={schedule} onResolveLoop={resolveLoop}
             onResolveCanon={resolveCanon} onPinCanon={pinCanon} onWrite={write} />
@@ -209,7 +209,7 @@ function Lf3Generating({ brief }) {
 }
 
 function Lf3Preview({ brief, pinnedFacts, onClose }) {
-  const facts = window.LF3_RETRIEVE.filter(f => pinnedFacts.has(f.id));
+  const facts = LF3_RETRIEVE.filter(f => pinnedFacts.has(f.id));
   const total = brief.enforce.length + facts.length;
   return (
     <div className="lf3-modal-scrim" onClick={onClose}>

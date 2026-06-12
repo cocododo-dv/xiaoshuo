@@ -1,6 +1,9 @@
-import { wsKey } from "./ws-works.jsx";
+import { wsKey, WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
+import { LF2_CANON } from "./lf2-data.jsx";
+import { rvPush } from "./ws-review.jsx";
+import { scnQueueLoad, scnQueueSave } from "./ws-scene-run.jsx";
 
 /* global window */
 /* ==========================================================
@@ -15,9 +18,9 @@ import { apiGet, apiPost } from "./lib/client.js";
    ========================================================== */
 
 const LF7_LS = "lf7_bridge_v1";
-const lf7Key = () => (window.wsKey ? window.wsKey(LF7_LS) : LF7_LS);
+const lf7Key = () => (wsKey ? wsKey(LF7_LS) : LF7_LS);
 const LF7_MIGRATED_LS = "lf7_bridge_migrated_v1";
-const lf7ProjectId = () => { try { return window.WsWorks ? window.WsWorks.activeId() : null; } catch (e) { return null; } };
+const lf7ProjectId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 const lf7IsTide = () => lf7ProjectId() === "tide";
 
 function lf7Emit() {
@@ -137,7 +140,7 @@ const Lf7Bridge = {
   },
   extraCanon() {
     /* 后端 findings 中超出 LF2_CANON 静态种子的条目（归档新增），还原为 canon 条目形状 */
-    const base = new Set(((window.LF2_CANON || [])).map(c => c.id));
+    const base = new Set(((LF2_CANON || [])).map(c => c.id));
     return lf7Findings
       .filter(f => !base.has(f.finding_id))
       .map(f => {
@@ -156,20 +159,20 @@ const Lf7Bridge = {
   },
   /* —— 拍板产物化：dedupe_key 唯一索引保证同一事项只有一张卡 —— */
   onceTask(key, payload) {
-    if (window.rvPush) window.rvPush({ ...(payload || {}), dedupeKey: key });
+    if (rvPush) rvPush({ ...(payload || {}), dedupeKey: key });
     return true; // 去重由后端唯一索引静默完成
   },
   /* —— 归档登记：以目录章状态为准（写回链 P7 后端化） —— */
   isArchived(ch) {
     try {
-      const chapter = (window.WsCatalog ? window.WsCatalog.get() : []).find(c => parseInt(c.n, 10) === parseInt(ch, 10));
+      const chapter = (WsCatalog ? WsCatalog.get() : []).find(c => parseInt(c.n, 10) === parseInt(ch, 10));
       return !!(chapter && ["draft", "review", "approved"].includes(chapter.state));
     } catch (e) { return false; }
   },
   markArchived(ch) {
     /* 真实归档动作走 lf7ArchiveCh9 / 契约 transition；这里仅触发刷新（保留签名） */
     void ch;
-    try { if (window.WsCatalog && window.WsCatalog.__refresh) window.WsCatalog.__refresh(); } catch (e) {}
+    try { if (WsCatalog && WsCatalog.__refresh) WsCatalog.__refresh(); } catch (e) {}
     lf7Emit();
   },
   /* —— 演示闭环复位：不再移植（等价能力 = 后端 reset_author_state 工具） —— */
@@ -191,7 +194,7 @@ function lf7SaveLocal(patch) {
 function lf7ArchivedMap() {
   const out = {};
   try {
-    (window.WsCatalog ? window.WsCatalog.get() : []).forEach(c => {
+    (WsCatalog ? WsCatalog.get() : []).forEach(c => {
       if (["draft", "review", "approved"].includes(c.state)) out[parseInt(c.n, 10)] = true;
     });
   } catch (e) {}
@@ -199,7 +202,7 @@ function lf7ArchivedMap() {
 }
 function lf7ChapterIdByNo(no) {
   try {
-    const chapter = (window.WsCatalog ? window.WsCatalog.get() : []).find(c => parseInt(c.n, 10) === parseInt(no, 10));
+    const chapter = (WsCatalog ? WsCatalog.get() : []).find(c => parseInt(c.n, 10) === parseInt(no, 10));
     return chapter ? chapter.backendId : null;
   } catch (e) { return null; }
 }
@@ -225,7 +228,7 @@ function lf7PendingCanon() {
       return { id: f.finding_id, subject: meta.subject || f.text, value: meta.value || "（待统一）", source: meta.source, conflictCh: meta.source, conflictText: f.text, drift: !!meta.drift };
     });
   }
-  const base = window.LF2_CANON || [];
+  const base = LF2_CANON || [];
   const ruled = Lf7Bridge.ruled();
   const openIds = new Set(lf7Findings.filter(f => f.status === "open").map(f => f.finding_id));
   const extras = Lf7Bridge.extraCanon().filter(x => x.status === "conflict" && !base.some(c => c.id === x.id));
@@ -262,23 +265,23 @@ const LF7_CH9_PLAN = {
 };
 
 function lf7Dispatch9() {
-  if (!lf7IsTide() || !window.WsCatalog) return null;
+  if (!lf7IsTide() || !WsCatalog) return null;
   if (Lf7Bridge.isArchived(9)) return null;
   try {
-    const chs = window.WsCatalog.get();
+    const chs = WsCatalog.get();
     const i = chs.findIndex(c => parseInt(c.n, 10) === 9);
     const existing = i >= 0 ? chs[i] : null;
     /* 已经下发过 / 已有实质内容的第 9 章不重复覆盖 */
     if (!(existing && existing.state !== "planned")) {
       const plan = { ...LF7_CH9_PLAN, scenes: LF7_CH9_PLAN.scenes.map(s => ({ ...s })) };
-      window.WsCatalog.set(i >= 0 ? chs.map((c, j) => (j === i ? plan : c)) : [...chs, plan]);
+      WsCatalog.set(i >= 0 ? chs.map((c, j) => (j === i ? plan : c)) : [...chs, plan]);
     }
     /* 入列起草台（唯一执行器）：取回盖戳后的 sid 送进队列 */
-    const ch9 = window.WsCatalog.get().find(c => parseInt(c.n, 10) === 9);
+    const ch9 = WsCatalog.get().find(c => parseInt(c.n, 10) === 9);
     const sids = ch9 ? (ch9.scenes || []).map(s => s.sid).filter(Boolean) : [];
-    if (window.scnQueueLoad && window.scnQueueSave) {
-      const q = window.scnQueueLoad();
-      window.scnQueueSave([...sids.filter(x => !q.includes(x)), ...q]);
+    if (scnQueueLoad && scnQueueSave) {
+      const q = scnQueueLoad();
+      scnQueueSave([...sids.filter(x => !q.includes(x)), ...q]);
     }
     lf7SaveLocal({ handoff9: { at: Date.now(), sids } });
     return { sids, ch: 9 };
@@ -314,14 +317,14 @@ const LF7_CH9 = {
 };
 
 function lf7ArchiveCh9() {
-  if (!lf7IsTide() || !window.WsCatalog) return false;
+  if (!lf7IsTide() || !WsCatalog) return false;
   if (Lf7Bridge.isArchived(9)) return false;
   try {
-    const chs = window.WsCatalog.get();
+    const chs = WsCatalog.get();
     const i = chs.findIndex(c => parseInt(c.n, 10) === 9);
     if (i >= 0 && chs[i].state !== "planned") {
       /* 塔台化路径：起草台逐场写完的第 9 章，章级审计通过后置为草稿（进成稿中心待审） */
-      window.WsCatalog.set(chs.map((c, j) => (j === i ? {
+      WsCatalog.set(chs.map((c, j) => (j === i ? {
         ...c, state: "draft", current: false,
         drama: { ...(c.drama || {}), notes: "控制塔章级审计通过后归档；「三楼/地下」漂移已裁决并送下一轮交接复核。" },
       } : c)));
@@ -332,7 +335,7 @@ function lf7ArchiveCh9() {
     const next = i >= 0
       ? chs.map((c, j) => (j === i ? { ...LF7_CH9 } : c))
       : [...chs, { ...LF7_CH9 }];
-    window.WsCatalog.set(next);
+    WsCatalog.set(next);
     Lf7Bridge.markArchived(9);
     return true;
   } catch (e) { return false; }

@@ -2,6 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
+import { WsWorks, wsKey } from "./ws-works.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 
 /* global React, ReactDOM, I */
 /* ==========================================================
@@ -38,7 +40,7 @@ const RV_DONE_LS = "ws_review_done_v1";
 const RV_MIGRATED_LS = "ws_review_migrated_v1";
 const RV_LEGACY_LS = "ws_review_v1";
 
-const rvActiveId = () => { try { return window.WsWorks ? window.WsWorks.activeId() : null; } catch (e) { return null; } };
+const rvActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 
 function rvAgo(t) {
   const m = Math.floor((Date.now() - t) / 60000);
@@ -151,7 +153,7 @@ async function rvMigrateLegacy(pid) {
   try {
     const flagKey = RV_MIGRATED_LS + "::" + pid;
     if (localStorage.getItem(flagKey)) return;
-    const raw = localStorage.getItem((window.wsKey ? window.wsKey(RV_LEGACY_LS) : RV_LEGACY_LS));
+    const raw = localStorage.getItem((wsKey ? wsKey(RV_LEGACY_LS) : RV_LEGACY_LS));
     const st = raw ? JSON.parse(raw) : null;
     const custom = (st && st.custom) || [];
     for (const it of custom) {
@@ -254,7 +256,7 @@ function useReviewBadge() {
     window.addEventListener("ws:work-changed", bump);
     window.addEventListener("ws:snow-saved", bump);   // 派生项跟雪花存盘同步
     window.addEventListener("lf:bridge-changed", bump); // 控制塔裁决同步
-    const un = window.WsCatalog ? window.WsCatalog.subscribe(bump) : null;  // 目录变动同步
+    const un = WsCatalog ? WsCatalog.subscribe(bump) : null;  // 目录变动同步
     return () => {
       window.removeEventListener("ws:review-changed", bump);
       window.removeEventListener("ws:work-changed", bump);
@@ -270,7 +272,7 @@ function useReviewBadge() {
 try { rvFetch(); } catch (e) {}
 window.addEventListener("ws:work-changed", () => { try { rvFetchDebounced(); } catch (e) {} });
 window.addEventListener("ws:trash-changed", () => { try { rvFetchDebounced(); } catch (e) {} });
-try { if (window.WsCatalog) window.WsCatalog.subscribe(() => rvFetchDebounced()); } catch (e) {}
+try { if (WsCatalog) WsCatalog.subscribe(() => rvFetchDebounced()); } catch (e) {}
 /* 进入待办视图时刷新一轮（外部投递的卡即时可见） */
 window.addEventListener("hashchange", () => {
   try { if ((location.hash || "").includes("review")) rvFetchDebounced(); } catch (e) {}
@@ -390,24 +392,24 @@ function WsReview({ go }) {
   /* —— 待办动作的真实效果：写穿目录单一真相源，返回逆操作供撤销 —— */
   const inversesRef = React.useRef({});
   const runEffect = (eff) => {
-    if (!eff || !window.WsCatalog) return null;
+    if (!eff || !WsCatalog) return null;
     try {
       if (eff.type === "renameChapter") {
-        const old = window.WsCatalog.get().find(c => c.id === eff.ch);
+        const old = WsCatalog.get().find(c => c.id === eff.ch);
         if (!old) return null;
         const inverse = { type: "renameChapter", ch: eff.ch, title: old.title };
-        window.WsCatalog.set(window.WsCatalog.get().map(c => c.id === eff.ch ? { ...c, title: eff.title } : c));
+        WsCatalog.set(WsCatalog.get().map(c => c.id === eff.ch ? { ...c, title: eff.title } : c));
         return inverse;
       }
       if (eff.type === "insertScene") {
-        const ch = window.WsCatalog.get().find(c => c.id === eff.ch);
+        const ch = WsCatalog.get().find(c => c.id === eff.ch);
         if (!ch) return null;
         const at = Math.max(0, Math.min(eff.at != null ? eff.at : ch.scenes.length, ch.scenes.length));
-        window.WsCatalog.set(window.WsCatalog.get().map(c => c.id !== eff.ch ? c : { ...c, scenes: [...c.scenes.slice(0, at), { ...eff.scene }, ...c.scenes.slice(at)] }));
+        WsCatalog.set(WsCatalog.get().map(c => c.id !== eff.ch ? c : { ...c, scenes: [...c.scenes.slice(0, at), { ...eff.scene }, ...c.scenes.slice(at)] }));
         return { type: "removeSceneAt", ch: eff.ch, at };
       }
       if (eff.type === "removeSceneAt") {
-        window.WsCatalog.set(window.WsCatalog.get().map(c => c.id !== eff.ch ? c : { ...c, scenes: c.scenes.filter((_, i) => i !== eff.at) }));
+        WsCatalog.set(WsCatalog.get().map(c => c.id !== eff.ch ? c : { ...c, scenes: c.scenes.filter((_, i) => i !== eff.at) }));
         return null;
       }
     } catch (e) {}

@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { wsKey, WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
 /* ==========================================================
@@ -13,7 +14,7 @@ import { I } from "./icons.jsx";
    ========================================================== */
 const { useState: useDX, useEffect: useDXE } = React;
 
-const dxKey = (base) => (window.wsKey ? window.wsKey(base) : base);
+const dxKey = (base) => (wsKey ? wsKey(base) : base);
 
 /* ---- 决定日志 / 忽略清单（按场景持久化）---- */
 function wrDxLog(sid) {
@@ -68,7 +69,7 @@ const WR_DEEP_CURATED = {
   ],
 };
 function wrDeepCurated(sid) {
-  try { if (window.WsWorks && window.WsWorks.activeId() !== "tide") return []; } catch (e) {}
+  try { if (WsWorks && WsWorks.activeId() !== "tide") return []; } catch (e) {}
   return WR_DEEP_CURATED[sid] || [];
 }
 

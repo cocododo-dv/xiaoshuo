@@ -1,6 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { CT_LAYERS, CT_STATE, CT_TRACK, ctBlastRadius, ctLayer } from "./ct-data.jsx";
+import { WsWorks, wsKey } from "./ws-works.jsx";
 
 /* global React, I, CT_LAYERS, CT_TRACK, CT_STATE, ctLayer, ctBlastRadius */
 /* ==========================================================
@@ -185,11 +186,11 @@ function ctHealthColor(s) {
    ========================================================== */
 function ctReadScenes() {
   /* 种子只属于「潮汐档案」；其它作品空列表时不再回退到别人的小说 */
-  const isTide = (() => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
+  const isTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
   const seed = (isTide && window.S2_SCENE_SEED) ? JSON.parse(JSON.stringify(window.S2_SCENE_SEED)) : { lines: [], list: [] };
   let premise = isTide && window.S2_PREMISE ? { ...window.S2_PREMISE } : { f: "", t: "" };
   try {
-    const stored = JSON.parse(localStorage.getItem(window.wsKey ? window.wsKey("ws_snow_state_v2") : "ws_snow_state_v2") || "{}");
+    const stored = JSON.parse(localStorage.getItem(wsKey ? wsKey("ws_snow_state_v2") : "ws_snow_state_v2") || "{}");
     const s = stored && stored.scaffolds && stored.scaffolds.scenes;
     if (s) {
       if (Array.isArray(s.list) && s.list.length) seed.list = s.list;

@@ -1,4 +1,5 @@
 import { apiGet } from "./lib/client.js";
+import { WsWorks } from "./ws-works.jsx";
 
 /* global window */
 /* ==========================================================
@@ -494,7 +495,7 @@ const LIB_BY_ID = {};
 const LIB_KIND_LABEL = { location: "地点", item: "物品", faction: "机构", concept: "概念" };
 const LIB_CAT_ACCENT = { people: "crimson", world: "gold", events: "slate" };
 
-const libActiveId = () => { try { return window.WsWorks ? window.WsWorks.activeId() : null; } catch (e) { return null; } };
+const libActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 
 /* 关系 id 缓存（编辑层 diff 删边用）：refPair "a|b" → relation_id */
 let LIB_RELATIONS = [];

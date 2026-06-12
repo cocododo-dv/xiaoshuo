@@ -1,6 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { WsCatalog } from "./ws-catalog.jsx";
+import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
+import { wsKey, WsWorks } from "./ws-works.jsx";
+import { rvPush } from "./ws-review.jsx";
 
 /* global React, I */
 const { useState: useSt9, useRef: useRef9, useEffect: useEf9 } = React;
@@ -131,7 +133,7 @@ const M_BODY = {
 function manuDocParas(sid) {
   if (!sid) return null;
   let raw = null;
-  try { raw = localStorage.getItem(window.wsKey ? window.wsKey("wr-doc:" + sid) : "wr-doc:" + sid); } catch (e) {}
+  try { raw = localStorage.getItem(wsKey ? wsKey("wr-doc:" + sid) : "wr-doc:" + sid); } catch (e) {}
   if (raw == null) return null;
   const div = document.createElement("div");
   div.innerHTML = raw;
@@ -239,10 +241,10 @@ const M_TONE = {
 function WsManuscripts({ go }) {
   /* 章节列表派生自 WsCatalog（与主页 / 写作器 / 编排台同源）；
      ver / at / by 等演示装饰仅对「潮汐档案」种子章节生效。 */
-  const isTide = !window.WsWorks || window.WsWorks.activeId() === "tide";
+  const isTide = !WsWorks || WsWorks.activeId() === "tide";
   const M_DECOR = isTide ? Object.fromEntries(M_CH.map(c => [c.id, c])) : {};
   /* 订阅目录：批准 / 退回等动作写穿 WsCatalog 后这里自动刷新 */
-  const catChs = window.useCatalogChapters ? window.useCatalogChapters() : (window.WsCatalog ? window.WsCatalog.get() : null);
+  const catChs = useCatalogChapters ? useCatalogChapters() : (WsCatalog ? WsCatalog.get() : null);
   const chs = catChs
     ? catChs.filter(c => c.state !== "planned").map(c => {
         const deco = M_DECOR[c.id] || {};
@@ -257,7 +259,7 @@ function WsManuscripts({ go }) {
       })
     : M_CH;
 
-  const work = window.WsWorks ? window.WsWorks.active() : null;
+  const work = WsWorks ? WsWorks.active() : null;
   const book = {
     title: work ? work.title : M_BOOK.title,
     kind: work ? work.genre : M_BOOK.kind,
@@ -283,8 +285,8 @@ function WsManuscripts({ go }) {
   const body = catPicked ? manuBuildBody(catPicked, isTide) : (isTide ? M_BODY[pickedId] : null);
   /* 状态流转：全部写穿目录单一真相源；批准时盖上真实时间戳 */
   const setChapterState = (id, state) => {
-    if (!window.WsCatalog) return;
-    window.WsCatalog.set(window.WsCatalog.get().map(c => (c.id === id ? { ...c, state, ...(state === "approved" ? { approvedAt: Date.now() } : {}) } : c)));
+    if (!WsCatalog) return;
+    WsCatalog.set(WsCatalog.get().map(c => (c.id === id ? { ...c, state, ...(state === "approved" ? { approvedAt: Date.now() } : {}) } : c)));
   };
   /* 送审闸门：由控制塔下发的章，章级审计（跨场连续性）未过时不默认放行 */
   const auditPending = (c) => { try { return !!(c && isTide && parseInt(c.n, 10) === 9 && window.Lf7Bridge && !window.Lf7Bridge.isArchived(9) && window.Lf7Bridge.state().handoff9); } catch (e) { return false; } };
@@ -299,7 +301,7 @@ function WsManuscripts({ go }) {
   /* 退回小修 = 理由 + 定位 + 待办，三者缺一不可；可顺手直达写作台深改姿态 */
   const doReturn = ({ reason, sid, sceneTitle, openDeep }) => {
     setChapterState(picked.id, "draft");
-    if (window.rvPush) window.rvPush({
+    if (rvPush) rvPush({
       kind: "qc", priority: 1,
       title: `第 ${picked.n} 章退回小修：${picked.title}`,
       where: `第 ${picked.n} 章${sceneTitle ? " · " + sceneTitle : ""}`,

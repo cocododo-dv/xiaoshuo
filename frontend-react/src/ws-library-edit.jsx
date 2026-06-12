@@ -1,8 +1,9 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { LIB_BY_ID, LIB_CATS } from "./ws-library-data.jsx";
+import { LIB_BY_ID, LIB_CATS, LIB_ENTRIES } from "./ws-library-data.jsx";
 import { LIB_REL_TYPES, LIB_relType } from "./ws-library-derive.jsx";
 import { apiDelete, apiPatch, apiPost } from "./lib/client.js";
+import { wsKey, WsWorks } from "./ws-works.jsx";
 
 /* global React, I, LIB_CATS, LIB_REL_TYPES, LIB_relType */
 const { useState: useEdSt } = React;
@@ -15,10 +16,10 @@ const { useState: useEdSt } = React;
 
 const LIB_EDIT_KEY = "ws-lib-edits-v1";
 const LIB_ADD_KEY  = "ws-lib-additions-v1";
-const LIB_K = (k) => (window.wsKey ? window.wsKey(k) : k);  // per-work namespace
+const LIB_K = (k) => (wsKey ? wsKey(k) : k);  // per-work namespace
 const LIB_MIGRATED_KEY = "ws-lib-migrated-v1";
 
-const libProjectId = () => { try { return window.WsWorks ? window.WsWorks.activeId() : null; } catch (e) { return null; } };
+const libProjectId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 const libApiBase = () => `/api/v2/projects/${libProjectId()}/library`;
 const libRefetch = () => { try { if (window.LIB_refetch) window.LIB_refetch(); } catch (e) {} };
 const libToast = (e, fallback) => { try { window.alert((e && e.message) || fallback); } catch (e2) {} };
@@ -399,7 +400,7 @@ function DossierCreate({ onCreate, onCancel }) {
    供正文实体高亮 / @提及等运行时消费，保证与资料库页面同源。 */
 const LIB_seedOn = () => true;
 function LIB_live() {
-  const entries = (window.LIB_ENTRIES || []).slice();
+  const entries = (LIB_ENTRIES || []).slice();
   const byId = entries.reduce((m, e) => { m[e.id] = e; return m; }, {});
   return { entries, byId };
 }

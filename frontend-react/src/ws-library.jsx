@@ -6,7 +6,8 @@ import { LIB_REL_TYPES, LIB_SORTS, LIB_buildBacklinks, LIB_connections, LIB_degr
 import { LibGraph } from "./ws-library-graph.jsx";
 import { LibTimeline } from "./ws-library-timeline.jsx";
 import { LibOverview } from "./ws-library-overview.jsx";
-import { DossierCreate, DossierEdit, LIB_applyEdit, LIB_loadAdds, LIB_loadEdits, LIB_newEntry, LIB_persist, LIB_persistAdds } from "./ws-library-edit.jsx";
+import { DossierCreate, DossierEdit, LIB_applyEdit, LIB_loadAdds, LIB_loadEdits, LIB_newEntry, LIB_persist, LIB_persistAdds, LIB_seedOn } from "./ws-library-edit.jsx";
+import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I, LIB_CATS, LIB_ENTRIES, LIB_BY_ID, LibGraph, LibTimeline, LibOverview, LIB_loadEdits, LIB_persist, LIB_applyEdit, DossierEdit, DossierCreate, LIB_loadAdds, LIB_persistAdds, LIB_newEntry, LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_health, LIB_SORTS, LIB_sortWithPin, LIB_isCited, LIB_nextAction, LIB_groupConnections, LIB_REL_TYPES */
 const { useState: useLb, useMemo: useLbMemo, useRef: useLbRef, useEffect: useLbEffect } = React;
@@ -32,7 +33,7 @@ function WsLibrary({ go }) {
   const pendingEdit = useLbRef(null);   /* 新建后自动进入编辑态的目标 id */
 
   /* single source of truth — (种子按作品门控 + 用户新建) 再叠加编辑覆盖层 */
-  const rawEntries = useLbMemo(() => [...(window.LIB_seedOn && !window.LIB_seedOn() ? [] : LIB_ENTRIES), ...adds], [adds]);
+  const rawEntries = useLbMemo(() => [...(LIB_seedOn && !LIB_seedOn() ? [] : LIB_ENTRIES), ...adds], [adds]);
   const entries    = useLbMemo(() => rawEntries.map(e => LIB_applyEdit(e, edits)), [rawEntries, edits]);
   const byId       = useLbMemo(() => entries.reduce((m, e) => { m[e.id] = e; return m; }, {}), [entries]);
   const backlinks  = useLbMemo(() => LIB_buildBacklinks(entries), [entries]);
@@ -169,7 +170,7 @@ function WsLibrary({ go }) {
         <header className="page-header">
           <div>
             <div className="page-eyebrow">档案库</div>
-            <h1 className="page-title">{(window.WsWorks ? window.WsWorks.active().title : "潮汐档案")} · 故事圣经</h1>
+            <h1 className="page-title">{(WsWorks ? WsWorks.active().title : "潮汐档案")} · 故事圣经</h1>
             <p className="page-subtitle">人物、世界、大事记、参考与知识，全部互相关联。改动这里会影响后续的候选生成。</p>
           </div>
           <div className="flex gap-2" style={{ alignItems: "center" }}>
@@ -561,18 +562,18 @@ function wsTrashAgo(t) {
 }
 function WsTrash() {
   const [, force] = React.useState(0);
-  React.useEffect(() => (window.WsTrashStore ? window.WsTrashStore.subscribe(() => force(n => n + 1)) : undefined), []);
-  const items = window.WsTrashStore ? window.WsTrashStore.list() : [];
+  React.useEffect(() => (WsTrashStore ? WsTrashStore.subscribe(() => force(n => n + 1)) : undefined), []);
+  const items = WsTrashStore ? WsTrashStore.list() : [];
 
   const restore = (id) => {
-    const ok = window.WsTrashStore.restore(id);
+    const ok = WsTrashStore.restore(id);
     if (!ok) window.alert("恢复失败：原章节已不存在，且当前作品没有可承接的章节。");
   };
   const purge = (id) => {
-    if (window.confirm("彻底删除？该条目（含其正文与旁注）将无法找回。")) window.WsTrashStore.purge(id);
+    if (window.confirm("彻底删除？该条目（含其正文与旁注）将无法找回。")) WsTrashStore.purge(id);
   };
   const clearAll = () => {
-    if (items.length && window.confirm(`清空回收站？${items.length} 条内容将无法找回。`)) window.WsTrashStore.clear();
+    if (items.length && window.confirm(`清空回收站？${items.length} 条内容将无法找回。`)) WsTrashStore.clear();
   };
 
   return (

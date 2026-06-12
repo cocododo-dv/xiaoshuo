@@ -53,8 +53,8 @@ function WsPalette({ open, onClose, run, theme }) {
     const cmds = [];
 
     // 作品 — 切换 / 新建（数据来自 WsWorks store）
-    const works = (window.WsWorks ? window.WsWorks.list() : []);
-    const activeId = (window.WsWorks ? window.WsWorks.activeId() : null);
+    const works = (WsWorks ? WsWorks.list() : []);
+    const activeId = (WsWorks ? WsWorks.activeId() : null);
     works.forEach(w => {
       if (w.id === activeId) return;
       cmds.push({ g: "作品", icon: "BookOpen", label: `切换到《${w.title}》`, hint: w.genre,
@@ -90,9 +90,9 @@ function WsPalette({ open, onClose, run, theme }) {
     /* 场景跳转：派生自 WsCatalog（与大纲 / 主页同源），缺席时回退静态表 */
     const palScenes = (() => {
       try {
-        if (!window.WsCatalog) return PAL_SCENES;
+        if (!WsCatalog) return PAL_SCENES;
         const out = [];
-        window.WsCatalog.get().forEach(c => (c.scenes || []).forEach(s => {
+        WsCatalog.get().forEach(c => (c.scenes || []).forEach(s => {
           out.push({ ch: c.n, chTitle: c.title, id: s.sid, title: s.title, state: s.state === "writing" ? "active" : (s.state || "todo") });
         }));
         // 在写的场景排最前，最多 12 条，避免淹没命令列表

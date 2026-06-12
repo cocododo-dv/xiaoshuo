@@ -1,10 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
-import { CT_LAYERS, CT_STATE, CT_TRACK, ctBlastRadius, ctLayer } from "./ct-data.jsx";
+import { CT_LAYERS, CT_STATE, CT_TRACK, ctBlastRadius, ctLayer, ctLayerName } from "./ct-data.jsx";
 import { CTStructureMap, CTWeaveMap } from "./ct-map.jsx";
 import { CTContinuity, CTDownstream, CTInspector, CTQualityMatrix, CTSpinePanel } from "./ct-panels.jsx";
 import { CTLiveEdit, CT_INITIAL_SIGNALS, ctDerive } from "./ct-edit.jsx";
+import { WsWorks } from "./ws-works.jsx";
 
 /* global React, ReactDOM, I, CT_LAYERS, CT_TRACK, CT_STATE,
    CTStructureMap, CTSpinePanel, CTInspector, CTQualityMatrix, CTContinuity, CTDownstream, CTLiveEdit,
@@ -36,7 +37,7 @@ function ctApplyWorkbench(d, wb, skipKey) {
     const state = w.stale ? "stale" : (CT_WB_STATE[w.state] || l.state);
     const out = { ...l, state };
     if (w.stale) {
-      const names = w.staleAncestors.map(a => (window.ctLayerName ? window.ctLayerName(a) : a)).join("、");
+      const names = w.staleAncestors.map(a => (ctLayerName ? ctLayerName(a) : a)).join("、");
       out.staleReason = `上游 ${names} 在本层确认后已改动，需同步复核一致性。`;
     } else {
       delete out.staleReason;
@@ -132,7 +133,7 @@ function ControlTower({ onOpenStep, go }) {
           {!embedded && <span className="ct-brand-mark">汐</span>}
           <div className="ct-brand-text">
             <div className="ct-brand-eyebrow">构思 · 控制塔</div>
-            <h1 className="ct-brand-title">{window.WsWorks ? window.WsWorks.active().title : "潮汐档案"} · 雪花结构总览</h1>
+            <h1 className="ct-brand-title">{WsWorks ? WsWorks.active().title : "潮汐档案"} · 雪花结构总览</h1>
           </div>
         </div>
         <div className="ct-metrics">

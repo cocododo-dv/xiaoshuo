@@ -1,5 +1,6 @@
 import React from "react";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { WsWorks } from "./ws-works.jsx";
 
 /* global React */
 /* ==========================================================
@@ -269,8 +270,8 @@ Object.assign(window, {
 const LF2_BEATS = { 1: "开端", 2: "触发", 5: "中点", 7: "情节点一", 12: "情节点二", 18: "危机", 22: "高潮", 24: "结局" };
 function lf2SyncFromCatalog() {
   try {
-    if (!window.WsCatalog || !window.WsWorks || window.WsWorks.activeId() !== "tide") return;
-    const cat = window.WsCatalog.get();
+    if (!WsCatalog || !WsWorks || WsWorks.activeId() !== "tide") return;
+    const cat = WsCatalog.get();
     if (!cat.length) return;
     const total = Math.max(24, cat.length);
     const rows = cat.map((c, i) => {
@@ -307,7 +308,7 @@ const lf2ParseFe = (a) => { try { return (JSON.parse(a.note || "{}") || {}).fe |
 
 async function lf2SyncFromTower() {
   let workId = null;
-  try { workId = window.WsWorks && window.WsWorks.activeId(); } catch (e) {}
+  try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
   if (!workId) return;
   let data = null;
   try {

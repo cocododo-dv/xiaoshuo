@@ -1,8 +1,10 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
-import { WsCatalog } from "./ws-catalog.jsx";
+import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
+import { wsKey, WsWorks } from "./ws-works.jsx";
+import { wrDeepUnmark, wrDeepScan, wrDxLog, wrDeepMark, wrDeepAdopt, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, WrDeepDrawer } from "./ws-deep.jsx";
 
 /* global React, I */
 /* ==========================================================
@@ -97,10 +99,10 @@ function wrBuildHTML() {
 }
 
 /* ---- 正文持久化：每个场景一份文档，按作品隔离 ---- */
-const wrDocKey = (sid) => (window.wsKey ? window.wsKey("wr-doc:" + sid) : "wr-doc:" + sid);
+const wrDocKey = (sid) => (wsKey ? wsKey("wr-doc:" + sid) : "wr-doc:" + sid);
 const WR_DOC_PLACEHOLDER = "<p>在这里开始写这一场……</p>";
 function wrSeedHTML(sid) {
-  const isTide = !window.WsWorks || window.WsWorks.activeId() === "tide";
+  const isTide = !WsWorks || WsWorks.activeId() === "tide";
   return isTide && sid === "ch08s3" ? wrBuildHTML() : WR_DOC_PLACEHOLDER;
 }
 function wrCountOf(el) { return el ? el.innerText.replace(/\s/g, "").length : 0; }
@@ -109,13 +111,13 @@ function wrCleanHTML(el) {
   if (!el) return "";
   if (!el.querySelector || !el.querySelector("mark.wr-dx, .wr-dx-para")) return el.innerHTML;
   const clone = el.cloneNode(true);
-  if (window.wrDeepUnmark) window.wrDeepUnmark(clone);
+  if (wrDeepUnmark) wrDeepUnmark(clone);
   return clone.innerHTML;
 }
 
 /* 目录 → 大纲形状（写作器本地渲染用） */
 function wrFromCatalog() {
-  const cat = window.WsCatalog ? window.WsCatalog.get() : null;
+  const cat = WsCatalog ? WsCatalog.get() : null;
   if (!cat) return WR_CHAPTERS;
   return cat.map(c => ({
     id: c.id, n: c.n, title: c.title, state: c.state,
@@ -124,7 +126,7 @@ function wrFromCatalog() {
   }));
 }
 function wrInitialScene() {
-  if (window.WsCatalog) { const w = window.WsCatalog.writingScene(); return w ? w.scene.sid : null; }
+  if (WsCatalog) { const w = WsCatalog.writingScene(); return w ? w.scene.sid : null; }
   return "ch08s3";
 }
 
@@ -275,8 +277,8 @@ const WR_SCENE_CTX = {
   },
 };
 function wrCtx(sceneId) {
-  if (WR_SCENE_CTX[sceneId] && (!window.WsWorks || window.WsWorks.activeId() === "tide")) return WR_SCENE_CTX[sceneId];
-  const hit = window.WsCatalog ? window.WsCatalog.sceneById(sceneId) : null;
+  if (WR_SCENE_CTX[sceneId] && (!WsWorks || WsWorks.activeId() === "tide")) return WR_SCENE_CTX[sceneId];
+  const hit = WsCatalog ? WsCatalog.sceneById(sceneId) : null;
   if (hit) {
     const c = hit.chapter, s = hit.scene;
     return {
@@ -313,16 +315,16 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   /* FE-ALIGN P3：目录改为后端异步装载 —— 冷启动直达写作器（刷新停在 #writer）时
      activeScene 可能初始化为 null；目录就绪后自动选中在写场景并刷新章节树 */
   useWE(() => {
-    if (!window.WsCatalog) return;
+    if (!WsCatalog) return;
     const sync = () => {
       setChapters(wrFromCatalog());
       setActiveScene(prev => {
         if (prev) return prev;
-        const w = window.WsCatalog.writingScene();
+        const w = WsCatalog.writingScene();
         return w && w.scene ? w.scene.sid : prev;
       });
     };
-    const un = window.WsCatalog.subscribe(sync);
+    const un = WsCatalog.subscribe(sync);
     if (!activeScene) sync();
     return un;
   }, []); // eslint-disable-line
@@ -395,7 +397,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
        字数 rollup 由保存响应回流目录/统计 */
     try { WrDocs.save(activeScene, wrCleanHTML(el)); } catch (e) {}
     const count = wrCountOf(el);
-    if (window.WsCatalog) { try { window.WsCatalog.recordSceneWords(activeScene, count, baselineRef.current); } catch (e) {} }
+    if (WsCatalog) { try { WsCatalog.recordSceneWords(activeScene, count, baselineRef.current); } catch (e) {} }
     baselineRef.current = count;
     dirtyRef.current = false;
     setSaved("已保存"); setSavedAt(Date.now());
@@ -492,7 +494,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       clearTimeout(saveTimer.current);
       if (dirtyRef.current && el && sid) {
         try { WrDocs.save(sid, wrCleanHTML(el)); } catch (e) {}
-        try { window.WsCatalog && window.WsCatalog.recordSceneWords(sid, wrCountOf(el), baselineRef.current); } catch (e) {}
+        try { WsCatalog && WsCatalog.recordSceneWords(sid, wrCountOf(el), baselineRef.current); } catch (e) {}
         dirtyRef.current = false;
       }
     };
@@ -505,7 +507,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       if (locateEntity(id)) return;
       pendingEntity.current = id;
       setActiveScene(prev => {
-        const w = window.WsCatalog ? window.WsCatalog.writingScene() : null;
+        const w = WsCatalog ? WsCatalog.writingScene() : null;
         const tgt = w ? w.scene.sid : "ch08s3";
         return prev === tgt ? prev : tgt;
       });
@@ -698,8 +700,8 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   /* ==================== 深改姿态 ==================== */
   const dxRescan = useWC(() => {
     const el = editorRef.current;
-    if (!el || !activeScene || !window.wrDeepScan) return;
-    const issues = window.wrDeepScan(el, activeScene);
+    if (!el || !activeScene || !wrDeepScan) return;
+    const issues = wrDeepScan(el, activeScene);
     setDxIssues(issues);
     setDxActive(a => issues.some(i => i.key === a) ? a : (issues[0] ? issues[0].key : null));
   }, [activeScene]);
@@ -710,11 +712,11 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     if (!el) return;
     if (posture === "deep" && activeScene) {
       persistDoc();
-      setDxLog(window.wrDxLog ? window.wrDxLog(activeScene) : []);
+      setDxLog(wrDxLog ? wrDxLog(activeScene) : []);
       dxRescan();
       setRightOpen(true);
     } else {
-      if (window.wrDeepUnmark) window.wrDeepUnmark(el);
+      if (wrDeepUnmark) wrDeepUnmark(el);
       setDxIssues([]);
     }
   }, [posture, activeScene]); // eslint-disable-line
@@ -723,7 +725,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   useWE(() => {
     const el = editorRef.current;
     if (!el) return;
-    if (posture === "deep" && window.wrDeepMark) window.wrDeepMark(el, dxIssues, dxActive);
+    if (posture === "deep" && wrDeepMark) wrDeepMark(el, dxIssues, dxActive);
   }, [dxIssues, dxActive, posture]);
 
   const locateDxPara = (pid, flash) => {
@@ -742,32 +744,32 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   };
   const dxAdopt = (issue, cand) => {
     const el = editorRef.current;
-    if (!el || !window.wrDeepAdopt) return;
+    if (!el || !wrDeepAdopt) return;
     dxUndoRef.current = { sid: activeScene, html: wrCleanHTML(el) };
-    if (!window.wrDeepAdopt(el, issue, cand)) { dxUndoRef.current = null; return; }
+    if (!wrDeepAdopt(el, issue, cand)) { dxUndoRef.current = null; return; }
     wrHighlightEntities(el);
     recount();
     persistDoc();
-    setDxLog(window.wrDxPushLog(activeScene, `采纳「${cand.label}」 · ${issue.title}`));
+    setDxLog(wrDxPushLog(activeScene, `采纳「${cand.label}」 · ${issue.title}`));
     dxRescan();
   };
   const dxIgnore = (issue) => {
-    if (window.wrDxAddSkip) window.wrDxAddSkip(activeScene, issue.key);
-    setDxLog(window.wrDxPushLog(activeScene, `忽略 · ${issue.title}`));
+    if (wrDxAddSkip) wrDxAddSkip(activeScene, issue.key);
+    setDxLog(wrDxPushLog(activeScene, `忽略 · ${issue.title}`));
     dxRescan();
   };
   const dxUndo = () => {
     const u = dxUndoRef.current, el = editorRef.current;
     if (!u || !el || u.sid !== activeScene) return;
-    if (window.wrDeepUnmark) window.wrDeepUnmark(el);
+    if (wrDeepUnmark) wrDeepUnmark(el);
     el.innerHTML = u.html;
     wrHighlightEntities(el);
     dxUndoRef.current = null;
     recount(); persistDoc();
-    setDxLog(window.wrDxPushLog(activeScene, "撤销上一次采纳"));
+    setDxLog(wrDxPushLog(activeScene, "撤销上一次采纳"));
     dxRescan();
   };
-  const dxRescanAll = () => { if (window.wrDxClearSkips) window.wrDxClearSkips(activeScene); dxRescan(); };
+  const dxRescanAll = () => { if (wrDxClearSkips) wrDxClearSkips(activeScene); dxRescan(); };
   const dxEditDraft = (issue) => { setPosture("draft"); setTimeout(() => locateDxPara(issue.pid, true), 80); };
   /* ================== /深改姿态 ================== */
 
@@ -792,7 +794,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   /* 大纲结构操作 → 全部写穿 WsCatalog（单一真相源），再刷新本地映射 */
   const refreshChapters = () => setChapters(wrFromCatalog());
   const reorderScene = (chId, from, to) => {
-    if (window.WsCatalog) { window.WsCatalog.moveScene(chId, from, to); refreshChapters(); return; }
+    if (WsCatalog) { WsCatalog.moveScene(chId, from, to); refreshChapters(); return; }
     setChapters(prev => prev.map(c => {
       if (c.id !== chId) return c;
       const scenes = c.scenes.slice();
@@ -802,21 +804,21 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     }));
   };
   const renameScene = (chId, sid, title) => {
-    if (window.WsCatalog) { window.WsCatalog.renameScene(chId, sid, title); refreshChapters(); return; }
+    if (WsCatalog) { WsCatalog.renameScene(chId, sid, title); refreshChapters(); return; }
     setChapters(prev => prev.map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.map(s => s.id === sid ? { ...s, title } : s) }));
   };
   const deleteScene = (chId, sid) => {
-    if (window.WsCatalog) {
+    if (WsCatalog) {
       // 进回收站（正文文档保留在存储里，恢复时一并回来；彻底删除时由回收站清理）
-      const hit = window.WsCatalog.sceneById(sid);
-      if (hit && window.WsTrashStore) {
-        window.WsTrashStore.push({
+      const hit = WsCatalog.sceneById(sid);
+      if (hit && WsTrashStore) {
+        WsTrashStore.push({
           kind: "场景",
           title: `CH ${hit.chapter.n} · ${hit.scene.title}`,
           payload: { type: "scene", chId: hit.chapter.id, index: hit.index, scene: hit.scene },
         });
       }
-      window.WsCatalog.removeScene(chId, sid);
+      WsCatalog.removeScene(chId, sid);
       const next = wrFromCatalog();
       setChapters(next);
       if (activeScene === sid) {
@@ -832,23 +834,23 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     setChapters(prev => prev.map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.filter(s => s.id !== sid) }));
   };
   const addScene = (chId) => {
-    if (window.WsCatalog) { window.WsCatalog.addScene(chId, "新场景"); refreshChapters(); return; }
+    if (WsCatalog) { WsCatalog.addScene(chId, "新场景"); refreshChapters(); return; }
     const nid = "sc" + Date.now();
     setChapters(prev => prev.map(c => c.id !== chId ? c : { ...c, scenes: [...c.scenes, { id: nid, title: "新场景", state: "todo" }] }));
   };
   /* 空白作品：创建第一章 + 开场，立刻可写 */
   const createFirstChapter = () => {
-    if (!window.WsCatalog) return;
-    window.WsCatalog.addChapter();
+    if (!WsCatalog) return;
+    WsCatalog.addChapter();
     const next = wrFromCatalog();
     setChapters(next);
-    const w = window.WsCatalog.writingScene();
+    const w = WsCatalog.writingScene();
     if (w) setActiveScene(w.scene.sid);
   };
   // active-scene meta derived from live chapter order (stamps update on reorder)
   const sceneMeta = (id) => {
     if (!id) return { stamp: "", title: "", type: "", goal: "" };
-    const hit = window.WsCatalog ? window.WsCatalog.sceneById(id) : null;
+    const hit = WsCatalog ? WsCatalog.sceneById(id) : null;
     for (const c of chapters) {
       const i = c.scenes.findIndex(s => s.id === id);
       if (i >= 0) {
@@ -1001,8 +1003,8 @@ function WriterRoom({ t, setTweak, onExit, go }) {
 
       <div className={`wr-scrim wr-scrim-drawer ${drawerOpen ? "show" : ""}`} onClick={() => { setLeftOpen(false); setRightOpen(false); }} />
       <WrOutline open={leftOpen} activeScene={activeScene} chapters={chapters} onReorder={reorderScene} onRename={renameScene} onDelete={deleteScene} onAdd={addScene} onPick={(id) => { setActiveScene(id); if (!coexist) setLeftOpen(false); }} onClose={() => setLeftOpen(false)} />
-      {posture === "deep" && window.WrDeepDrawer
-        ? <window.WrDeepDrawer open={rightOpen} issues={dxIssues} activeKey={dxActive} onPick={dxPick} onAdopt={dxAdopt} onIgnore={dxIgnore} onRescan={dxRescanAll} onEditDraft={dxEditDraft} onUndo={dxUndo} canUndo={!!(dxUndoRef.current && dxUndoRef.current.sid === activeScene)} log={dxLog} onClose={() => setRightOpen(false)} />
+      {posture === "deep" && WrDeepDrawer
+        ? <WrDeepDrawer open={rightOpen} issues={dxIssues} activeKey={dxActive} onPick={dxPick} onAdopt={dxAdopt} onIgnore={dxIgnore} onRescan={dxRescanAll} onEditDraft={dxEditDraft} onUndo={dxUndo} canUndo={!!(dxUndoRef.current && dxUndoRef.current.sid === activeScene)} log={dxLog} onClose={() => setRightOpen(false)} />
         : <WrContext open={rightOpen} tab={rightTab} setTab={setRightTab} onClose={() => setRightOpen(false)} onOpenAI={() => { setRightOpen(false); setTrayOpen(true); }} place={tw.aiPlace} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} scene={activeScene} editorRef={editorRef} />}
       <div className={`wr-scrim wr-scrim-tray ${trayOpen ? "show" : ""}`} onClick={() => setTrayOpen(false)} />
       <WrTray open={trayOpen} onClose={() => setTrayOpen(false)} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} />
@@ -1292,13 +1294,13 @@ function WrCtxContract({ scene }) {
   const [open, setOpen] = useWS(false);
   const data = (() => {
     try {
-      if (window.WsWorks && window.WsWorks.activeId() !== "tide") return null;
+      if (WsWorks && WsWorks.activeId() !== "tide") return null;
       if (!window.lf3Brief || !window.LF2_LOOPS || !window.LF2_CANON) return null;
       const b = window.lf3Brief(window.LF2_LOOPS, window.LF2_CANON, {});
       if (!b || !b.enforce || !b.enforce.length) return null;
       let assigned = null;
-      if (scene && window.WsCatalog) {
-        const hit = window.WsCatalog.sceneById(scene);
+      if (scene && WsCatalog) {
+        const hit = WsCatalog.sceneById(scene);
         if (hit && Array.isArray(hit.scene.contract) && hit.scene.contract.length) {
           assigned = b.all.filter(it => hit.scene.contract.includes(it.id));
           if (!assigned.length) assigned = null;
@@ -1443,8 +1445,8 @@ const WR_NOTES_SEED = {
   ch08s3: "· 周岚到场需在 SC 04 完成，本场只暗示其将至（电梯声）。\n· 阿恪电话的时间最好移到 SC 04 开头，避免和周岚出场撞。\n· 「No.31」这个数字以后一定要回收 —— 三十一个死者，No.31 残片。",
   ch08s4: "· 馆长的语气先客气、后施压，留一句让林岑后背发凉的话。\n· 备份单别让馆长看见 —— 给一个「攥紧 / 塞进袖口」的小动作。",
 };
-function wrNotesKey(scene) { return window.wsKey ? window.wsKey("wr-notes:" + scene) : "wr-notes:" + scene; }
-const wrNotesSeed = (sid) => ((!window.WsWorks || window.WsWorks.activeId() === "tide") ? (WR_NOTES_SEED[sid] || "") : "");
+function wrNotesKey(scene) { return wsKey ? wsKey("wr-notes:" + scene) : "wr-notes:" + scene; }
+const wrNotesSeed = (sid) => ((!WsWorks || WsWorks.activeId() === "tide") ? (WR_NOTES_SEED[sid] || "") : "");
 function WrCtxNotes({ scene }) {
   const [val, setVal] = useWS("");
   const [saved, setSaved] = useWS(true);

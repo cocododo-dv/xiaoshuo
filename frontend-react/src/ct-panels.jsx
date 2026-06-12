@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { CT_CONTINUITY, CT_LAYERS, CT_MATERIALIZE, CT_RUBRIC_DIMS, CT_SPINE, CT_STATE, CT_TRACK, ctBlastRadius, ctLayer, ctLayerName } from "./ct-data.jsx";
 import { ctHealthColor } from "./ct-map.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 
 /* global React, I, CT_LAYERS, CT_TRACK, CT_STATE, CT_SPINE, CT_CONTINUITY, CT_MATERIALIZE, CT_RUBRIC_DIMS, ctLayer, ctLayerName, ctBlastRadius, ctHealthColor */
 /* ==========================================================
@@ -303,7 +304,7 @@ function CTDownstream({ layerMap, onSelect, onWriteScene, onOpenStep }) {
   const [written, setWritten] = React.useState(null);
   React.useEffect(() => {
     const refresh = () => force(n => n + 1);
-    const un = window.WsCatalog ? window.WsCatalog.subscribe(refresh) : null;
+    const un = WsCatalog ? WsCatalog.subscribe(refresh) : null;
     window.addEventListener("ws:snow-saved", refresh);
     return () => { if (un) un(); window.removeEventListener("ws:snow-saved", refresh); };
   }, []);
@@ -314,7 +315,7 @@ function CTDownstream({ layerMap, onSelect, onWriteScene, onOpenStep }) {
   const getState = (k) => (layerMap && layerMap[k] ? layerMap[k] : ctLayer(k)).state;
   const gateOk = CT_MATERIALIZE.gateLayers.every(k => getState(k) === "approved");
   const sidOf = (chTitle, scTitle) => (window.s2Materialize ? window.s2Materialize.sid(chTitle, scTitle) : null);
-  const catCount = (() => { try { return window.WsCatalog.get().length; } catch (e) { return 0; } })();
+  const catCount = (() => { try { return WsCatalog.get().length; } catch (e) { return 0; } })();
 
   const writeIn = () => {
     if (!preview.ok) return;

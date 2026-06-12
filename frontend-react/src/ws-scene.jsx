@@ -1,6 +1,9 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
+import { WsCatalog, WsDemoTag } from "./ws-catalog.jsx";
+import { scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnRunSave, scnAdoptToDoc, scnPickList } from "./ws-scene-run.jsx";
+import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
 const { useState: useSt8, useEffect: useEf8, useRef: useRef8, useMemo: useMemo8 } = React;
@@ -250,8 +253,8 @@ function scnSidOf(n) {
 
 /* 章节编排「交给 AI」入列：从目录场景卡派生一条队列项 */
 function scnFromCatalog(sid) {
-  if (!sid || !window.WsCatalog) return null;
-  const hit = window.WsCatalog.sceneById(sid);
+  if (!sid || !WsCatalog) return null;
+  const hit = WsCatalog.sceneById(sid);
   if (!hit) return null;
   const { chapter: c, scene: s, index } = hit;
   const beats = [];
@@ -276,12 +279,12 @@ function WsSceneDemo({ go, t, demo = true }) {
   const initRef = useRef8(null);
   if (!initRef.current) {
     const p = window.__scnEnqueue; window.__scnEnqueue = null;
-    const sids = (window.scnQueueLoad ? window.scnQueueLoad() : []).slice();
+    const sids = (scnQueueLoad ? scnQueueLoad() : []).slice();
     if (p && p.sid && !sids.includes(p.sid)) sids.unshift(p.sid);
     const items = sids.map(sid => scnFromCatalog(sid)).filter(Boolean);
     const runs0 = {};
-    items.forEach(it => { const r = window.scnRunLoad ? window.scnRunLoad(it.sid) : null; if (r) runs0[it.id] = r; });
-    if (window.scnQueueSave) window.scnQueueSave(items.map(i => i.sid));
+    items.forEach(it => { const r = scnRunLoad ? scnRunLoad(it.sid) : null; if (r) runs0[it.id] = r; });
+    if (scnQueueSave) scnQueueSave(items.map(i => i.sid));
     initRef.current = { items, runs0 };
   }
   const [extras, setExtras] = useSt8(initRef.current.items);
@@ -301,10 +304,10 @@ function WsSceneDemo({ go, t, demo = true }) {
     setExtras(x => {
       if (x.some(y => y.id === it.id)) return x;
       const nx = [it, ...x];
-      if (window.scnQueueSave) window.scnQueueSave(nx.map(i => i.sid));
+      if (scnQueueSave) scnQueueSave(nx.map(i => i.sid));
       return nx;
     });
-    const r = window.scnRunLoad ? window.scnRunLoad(sid) : null;
+    const r = scnRunLoad ? scnRunLoad(sid) : null;
     if (r) setRuns(m => ({ ...m, ["cq-" + sid]: r }));
     setPicked("cq-" + sid);
   };
@@ -340,7 +343,7 @@ function WsSceneDemo({ go, t, demo = true }) {
       const r = runs[base.id];
       if (!r) return base;
       /* 阈值变动时对已生成稿实时重算质检（风险标记 / 指标 / 判词） */
-      const reqc = (r.state === "ready" || r.state === "archived") && r.draft && window.scnReQC ? window.scnReQC(r.draft, base.kind) : null;
+      const reqc = (r.state === "ready" || r.state === "archived") && r.draft && scnReQC ? scnReQC(r.draft, base.kind) : null;
       const merged = {
         ...base, ...r, ...(reqc || {}),
         stageIdx: r.state === "running" ? 1 : r.state === "ready" ? 4 : r.state === "archived" ? 5 : 0,
@@ -382,7 +385,7 @@ function WsSceneDemo({ go, t, demo = true }) {
       return { ...m, [id]: { ...cur, progress: Math.min(0.92, (cur.progress || 0) + 0.045) } };
     }), 700);
     try {
-      const res = await window.scnRun(sc, note, note ? prevText : "");
+      const res = await scnRun(sc, note, note ? prevText : "");
       clearInterval(tick);
       if (runSeq.current[id] !== token) return;
       setRuns(m => {
@@ -390,7 +393,7 @@ function WsSceneDemo({ go, t, demo = true }) {
         const prevAtt = ((m[id] && m[id].attempts) || []).map(a => a.time && a.time.startsWith("本次") ? { ...a, time: stamp, result: "退回重写", tone: "slate" } : a);
         const attempts = [{ n: attempt, time: "本次 · 待裁决", result: "待裁决", tone: "gold", note: note ? "按指令改写" : "初稿", cmp: note ? { verdict: "作者改写指令：" + note } : undefined }, ...prevAtt].slice(0, 8);
         const nr = { ...(m[id] || {}), ...res, state: "ready", progress: 1, attempt, attempts, at: Date.now() };
-        if (window.scnRunSave) window.scnRunSave(sc.sid, nr);
+        if (scnRunSave) scnRunSave(sc.sid, nr);
         return { ...m, [id]: nr };
       });
     } catch (e) {
@@ -411,11 +414,11 @@ function WsSceneDemo({ go, t, demo = true }) {
     if (sc && sc.fromCard) {
       const r = runs[sc.id];
       if (!r || !r.draft || r.state !== "ready") return;
-      const res = window.scnAdoptToDoc(sc.sid, r.draft);
+      const res = scnAdoptToDoc(sc.sid, r.draft);
       if (!res.ok) { if (res.reason && res.reason !== "已取消") window.alert("归档失败：" + res.reason); return; }
       const nr = { ...r, state: "archived", justArchived: true, archivedAt: new Date().toLocaleString("zh-CN") };
       setRuns(m => ({ ...m, [sc.id]: nr }));
-      if (window.scnRunSave) window.scnRunSave(sc.sid, nr);
+      if (scnRunSave) scnRunSave(sc.sid, nr);
       return;
     }
     setOutcomes(o => ({ ...o, [pickedId]: "archived" }));
@@ -474,7 +477,7 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, outcomes, dx
   return (
     <aside className="scn2-queue">
       <header className="scn2-queue-head">
-        <div className="page-eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>AI 起草台 {demo && window.WsDemoTag && <window.WsDemoTag note="队列里的 CH07/CH08 演示场是模拟数据；从目录加入的场景走后端 scenes run 真管线（预检 → 起草 → 双层质检，LLM 未就绪会给明确引导），归档写回你的正文。" />}</div>
+        <div className="page-eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>AI 起草台 {demo && WsDemoTag && <WsDemoTag note="队列里的 CH07/CH08 演示场是模拟数据；从目录加入的场景走后端 scenes run 真管线（预检 → 起草 → 双层质检，LLM 未就绪会给明确引导），归档写回你的正文。" />}</div>
         <h2 className="text-serif scn2-queue-title">运行队列</h2>
         <p className="scn2-queue-sub">从章节编排的场景卡入列 · 一场一裁</p>
       </header>
@@ -636,13 +639,13 @@ function Preflight({ scene }) {
      若本场场景卡带 contract 指派（由塔下发时逐场分解），优先展示指派项 */
   const longRange = useMemo8(() => {
     try {
-      if (window.WsWorks && window.WsWorks.activeId() !== "tide") return null;
+      if (WsWorks && WsWorks.activeId() !== "tide") return null;
       if (!window.lf3Brief || !window.LF2_LOOPS || !window.LF2_CANON) return null;
       const b = window.lf3Brief(window.LF2_LOOPS, window.LF2_CANON, {});
       if (!b || !b.enforce || !b.enforce.length) return null;
       let assigned = null;
-      if (scene.sid && window.WsCatalog) {
-        const hit = window.WsCatalog.sceneById(scene.sid);
+      if (scene.sid && WsCatalog) {
+        const hit = WsCatalog.sceneById(scene.sid);
         if (hit && Array.isArray(hit.scene.contract) && hit.scene.contract.length) {
           assigned = b.all.filter(it => hit.scene.contract.includes(it.id));
           if (!assigned.length) assigned = null;
@@ -1120,7 +1123,7 @@ function AttemptCompare({ attempt, scene, onClose }) {
 
 /* ============================ 选场入列 ============================ */
 function ScenePicker({ queued, onPick, onClose }) {
-  const chs = window.scnPickList ? window.scnPickList(queued) : [];
+  const chs = scnPickList ? scnPickList(queued) : [];
   const stLabel = { done: "已完成", writing: "在写", todo: "待写" };
   const batchOf = (c) => c.scenes.filter(s => !s.queued && s.sid && s.state !== "done");
   return (
@@ -1212,11 +1215,11 @@ function SceneTweaks({ t, setTweak }) {
 /* 运行队列：演示流水线只在《潮汐档案》呈现；任何作品都可从自己的章节目录
    加场入列——那是真实起草：Claude 读雪花构思 + 场景卡，质检后写回正文。 */
 function WsScene(props) {
-  const isTide = (() => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
+  const isTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
   if (isTide) return <WsSceneDemo {...props} demo={true} />;
-  const hasCatalog = (() => { try { return window.WsCatalog && window.WsCatalog.get().length > 0; } catch (e) { return false; } })();
+  const hasCatalog = (() => { try { return WsCatalog && WsCatalog.get().length > 0; } catch (e) { return false; } })();
   if (hasCatalog) return <WsSceneDemo {...props} demo={false} />;
-  const work = window.WsWorks ? window.WsWorks.active() : { title: "这部作品" };
+  const work = WsWorks ? WsWorks.active() : { title: "这部作品" };
   return (
     <div className="page" data-screen-label="scene · empty">
       <div style={{ display: "grid", placeItems: "center", minHeight: "70vh", textAlign: "center" }}>

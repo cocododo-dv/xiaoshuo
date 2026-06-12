@@ -25,8 +25,8 @@ const CAT_LS = "arr.chapters.v2";            // v2：目录收敛后的新键；
 const CAT_DAY_LS = "ws_words_today_v1";     // 每日写作字数 { d, n }
 const CAT_STREAK_LS = "ws_streak_v1";       // 连续写作天数 { last, streak }，按作品
 
-const catKey = (base) => (window.wsKey ? window.wsKey(base) : base);
-const catActiveId = () => { try { return window.WsWorks ? window.WsWorks.activeId() : "tide"; } catch (e) { return "tide"; } };
+const catKey = (base) => (wsKey ? wsKey(base) : base);
+const catActiveId = () => { try { return WsWorks ? WsWorks.activeId() : "tide"; } catch (e) { return "tide"; } };
 
 /* ---- 种子作品 ②「盐镇来信」的章节种子（ARR 形状的精简版）---- */
 const CAT_SALT_CHAPTERS = [
@@ -122,7 +122,7 @@ function catStamp(list) {
 }
 
 function catSeedFor(workId) {
-  if (workId === "tide") return (typeof ARR_CHAPTERS !== "undefined" ? ARR_CHAPTERS : window.ARR_CHAPTERS) || [];
+  if (workId === "tide") return (typeof ARR_CHAPTERS !== "undefined" ? ARR_CHAPTERS : ARR_CHAPTERS) || [];
   if (workId === "salt") return CAT_SALT_CHAPTERS;
   return []; // 新建作品：空白结构，由写作器 / 编排台引导建章
 }
@@ -132,14 +132,14 @@ function catSeedFor(workId) {
    经 WsWorks.__applyDerived 注入，WsWorks.update 的回写路径已删除）；
    chaptersWritten 在目录统一（P3）前仍取本地目录 rollup。 */
 function catPushTotals() {
-  if (!window.WsWorks) return;
+  if (!WsWorks) return;
   const id = catActiveId();
   if (!id || id === "__loading__") return; // 启动占位作品（列表尚未从后端返回）
   const chs = catLoad(id);
   const written = chs.filter(c => ((c.words && c.words.cur) || 0) > 0).length;
   apiGet(`/api/v2/projects/${id}/writing-stats`).then((stats) => {
-    if (!stats || !window.WsWorks.__applyDerived) return;
-    const w = window.WsWorks.list().find(x => x.id === id);
+    if (!stats || !WsWorks.__applyDerived) return;
+    const w = WsWorks.list().find(x => x.id === id);
     const next = {
       wordsTotal: stats.words_total || 0,
       wordsToday: stats.words_today || 0,
@@ -150,7 +150,7 @@ function catPushTotals() {
        而本函数又监听该事件，无守卫会形成异步自激循环 */
     if (w && (w.wordsTotal !== next.wordsTotal || w.wordsToday !== next.wordsToday
       || w.streak !== next.streak || w.chaptersWritten !== next.chaptersWritten)) {
-      window.WsWorks.__applyDerived(id, next);
+      WsWorks.__applyDerived(id, next);
     }
   }).catch(() => {
     /* 后端不可达：保持现值（缓存影子），不再做本地回写 */
@@ -642,7 +642,7 @@ const WsCatalog = {
   totals() {
     const chs = this.get();
     const words = chs.reduce((s, c) => s + ((c.words && c.words.cur) || 0), 0);
-    const active = window.WsWorks ? window.WsWorks.active() : null;
+    const active = WsWorks ? WsWorks.active() : null;
     return {
       words,
       written: chs.filter(c => ((c.words && c.words.cur) || 0) > 0).length,
@@ -740,7 +740,7 @@ const WsTrashStore = {
     apiPost(`/api/v2/trash/${encodeURIComponent(id)}/restore`, {}).then(() => {
       trashFetch();
       if (String(id).startsWith("work:")) {
-        if (window.WsWorks && window.WsWorks.__refresh) window.WsWorks.__refresh();
+        if (WsWorks && WsWorks.__refresh) WsWorks.__refresh();
       } else {
         catFetch(catActiveId(), { migrate: false });
       }

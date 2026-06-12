@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { CT_CONTINUITY, CT_LAYERS, CT_RUBRIC_DIMS, CT_SPINE, ctLayer, ctLayerName } from "./ct-data.jsx";
-import { ctHealthColor } from "./ct-map.jsx";
+import { ctHealthColor, ctReadScenes } from "./ct-map.jsx";
 
 /* global React, I, CT_LAYERS, CT_CONTINUITY, CT_SPINE, CT_RUBRIC_DIMS, ctLayer, ctLayerName, ctHealthColor */
 /* ==========================================================
@@ -129,7 +129,7 @@ const CT_ORIG_DIMS = Object.fromEntries(CT_LAYERS.map(l => {
 function ctSceneLive(base) {
   const dims = { ...base.health.dims };
   const flags = [];
-  const read = window.ctReadScenes;
+  const read = ctReadScenes;
   const scenes = read ? read() : { list: [], lines: [] };
   const list = scenes.list || [], lines = scenes.lines || [];
   if (!list.length || !window.s2PacingRuns) return { health: base.health, structFlags: flags };

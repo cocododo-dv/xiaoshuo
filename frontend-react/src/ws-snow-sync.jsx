@@ -1,4 +1,6 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { WsWorks } from "./ws-works.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 
 /* global window */
 /* ==========================================================
@@ -31,7 +33,7 @@ const SNOW_STEPS = [
 const FE_BY_BE = Object.fromEntries(SNOW_STEPS.map(([fe, be]) => [be, fe]));
 
 const snowCacheKey = (workId) => "ws_snow_state_v2::" + workId;
-const activeWork = () => { try { return (window.WsWorks && window.WsWorks.activeId()) || ""; } catch (e) { return ""; } };
+const activeWork = () => { try { return (WsWorks && WsWorks.activeId()) || ""; } catch (e) { return ""; } };
 
 /* ---------- FE → BE：规范字段（喂完备性闸门 / scene plans 同步） ---------- */
 const txt = (v) => (typeof v === "string" ? v.trim() : "");
@@ -310,7 +312,7 @@ const SnowSync = {
   async materialize(workId) {
     const id = workId || activeWork();
     const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/materialize`, {});
-    try { if (window.WsCatalog && window.WsCatalog.reset) window.WsCatalog.reset(); } catch (e) {}
+    try { if (WsCatalog && WsCatalog.reset) WsCatalog.reset(); } catch (e) {}
     return data;
   },
 };

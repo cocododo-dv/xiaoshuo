@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { ControlTower } from "./ct-app.jsx";
+import { wsKey, WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
 /* ==========================================================
@@ -223,8 +224,8 @@ function s2MaterializePreview(scaffolds) {
 }
 
 function s2MaterializeApply(preview) {
-  if (!window.WsCatalog || !preview || !preview.ok) return null;
-  const cur = window.WsCatalog.get();
+  if (!WsCatalog || !preview || !preview.ok) return null;
+  const cur = WsCatalog.get();
   const next = cur.slice();
   const wasEmpty = cur.length === 0;
   let newCh = 0, newSc = 0, skipSc = 0;
@@ -253,14 +254,14 @@ function s2MaterializeApply(preview) {
       .map(s => ({ title: s.title, kind: s.kind, state: "todo", goal: s.goal, obstacle: s.obstacle, turn: s.turn }));
     if (fresh.length) { next[idx] = { ...ch, scenes: [...(ch.scenes || []), ...fresh] }; newSc += fresh.length; }
   });
-  window.WsCatalog.set(next);
+  WsCatalog.set(next);
   return { newCh, newSc, skipSc };
 }
 
 /* 物化后回查：预览里的某一场在目录里的真实 sid（写正文深链用） */
 function s2MaterializedSid(chTitle, scTitle) {
   try {
-    const ch = window.WsCatalog.get().find(c => (c.title || "").trim() === (chTitle || "").trim());
+    const ch = WsCatalog.get().find(c => (c.title || "").trim() === (chTitle || "").trim());
     if (!ch) return null;
     const s = (ch.scenes || []).find(x => (x.title || "").trim() === (scTitle || "").trim());
     return s ? { sid: s.sid, chId: ch.id, chTitle: ch.title } : null;
@@ -796,10 +797,10 @@ function s2SnapAncestors(key, revs) {
 /* v2：重构前的旧代码未按作品门控种子，曾把 tide 种子原样持久化到其它作品的
    v1 键下（污染）。v2 起换键，并对 v1 做一次性迁移：纯种子拷贝丢弃，
    真·用户创作（与种子有任何差异）才迁移。旧 v1 键保留不删。 */
-const s2Key = () => (window.wsKey ? window.wsKey("ws_snow_state_v2") : "ws_snow_state_v2");
+const s2Key = () => (wsKey ? wsKey("ws_snow_state_v2") : "ws_snow_state_v2");
 function s2Load(key) { try { return JSON.parse(localStorage.getItem(key || s2Key())) || {}; } catch (e) { return {}; } }
 /* 种子内容只属于「潮汐档案」；其它作品（含新建）从空白十步开始 */
-const s2SeedOn = () => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } };
+const s2SeedOn = () => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } };
 function s2BlankScaffolds() {
   return {
     audience: { genre: "", reader: "", pleasure: "", source: "", exclude: "" },
@@ -1105,7 +1106,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
 
   /* export the whole snowflake as a Markdown outline (real download) */
   const exportOutline = () => {
-    const workTitle = (() => { try { return window.WsWorks ? window.WsWorks.active().title : "潮汐档案"; } catch (e) { return "未命名作品"; } })();
+    const workTitle = (() => { try { return WsWorks ? WsWorks.active().title : "潮汐档案"; } catch (e) { return "未命名作品"; } })();
     const lines = [`# 雪花大纲 · ${workTitle}`, "", `> 导出于 ${new Date().toLocaleString("zh-CN")} · 已确认 ${doneCount}/10${staleCount ? ` · ${staleCount} 需复核` : ""}`, ""];
     S2_STEPS.forEach(s => {
       const text = s2Content(drafts[s.key], scaffolds[s.key]).trim();
@@ -1922,10 +1923,10 @@ function S2ChapterOutline({ scaffold, onScaffold }) {
   const [adopted, setAdopted] = useSS(null);
   const adoptable = chapters.filter(c => (c.title || "").trim() && !c.title.includes("待补"));
   const adopt = () => {
-    if (!window.WsCatalog || !adoptable.length) return;
-    const existing = window.WsCatalog.get().length;
+    if (!WsCatalog || !adoptable.length) return;
+    const existing = WsCatalog.get().length;
     if (existing && !window.confirm(`章节编排已有 ${existing} 章。把大纲中的 ${adoptable.length} 章并入目录？（同名章自动跳过）`)) return;
-    setAdopted(window.WsCatalog.adoptOutline(adoptable));
+    setAdopted(WsCatalog.adoptOutline(adoptable));
   };
   return (
     <div className="sf-scaffold sf-chapters">
@@ -2065,8 +2066,8 @@ function S2SceneList({ scaffold, onScaffold, refs }) {
   const [adoptedSc, setAdoptedSc] = useSS(null);
   const adoptableSc = list.filter(s => ((s.event || s.place || "")).trim());
   const adoptScenes = () => {
-    if (!window.WsCatalog || !adoptableSc.length) return;
-    const cur = window.WsCatalog.currentChapter();
+    if (!WsCatalog || !adoptableSc.length) return;
+    const cur = WsCatalog.currentChapter();
     if (!cur) { window.alert("目录里还没有章节——先在第 7 步「长篇大纲」采用章节，或在编排台建一章。"); return; }
     if (!window.confirm(`把 ${adoptableSc.length} 场并入当前章《${cur.title}》？（同名场自动跳过，之后可在编排台分配到各章）`)) return;
     const existing = new Set((cur.scenes || []).map(s => (s.title || "").trim()));
@@ -2081,7 +2082,7 @@ function S2SceneList({ scaffold, onScaffold, refs }) {
       }))
       .filter(s => !existing.has(s.title));
     if (fresh.length) {
-      window.WsCatalog.set(window.WsCatalog.get().map(c => c.id !== cur.id ? c : { ...c, scenes: [...c.scenes, ...fresh] }));
+      WsCatalog.set(WsCatalog.get().map(c => c.id !== cur.id ? c : { ...c, scenes: [...c.scenes, ...fresh] }));
     }
     setAdoptedSc(fresh.length);
   };
@@ -3208,7 +3209,7 @@ function S2Styles() {
    工作台，总览给引导态，避免把别的书的结构图硬塞过来。 */
 /* 非潮汐作品的总览引导态：结构图谱会随十步确认逐步点亮 */
 function SnowOverviewEmpty({ go, onSteps }) {
-  const work = window.WsWorks ? window.WsWorks.active() : { title: "这部作品" };
+  const work = WsWorks ? WsWorks.active() : { title: "这部作品" };
   return (
     <div className="page" data-screen-label="snowflake · overview empty">
       <div style={{ display: "grid", placeItems: "center", minHeight: "70vh", textAlign: "center" }}>
@@ -3226,7 +3227,7 @@ function SnowOverviewEmpty({ go, onSteps }) {
 }
 
 function WsConstruct({ go }) {
-  const ctIsTide = (() => { try { return !window.WsWorks || window.WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
+  const ctIsTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
   const [mode, setMode] = useSS(ctIsTide ? "overview" : "steps");
   const [step, setStep] = useSS("paragraph");
   // 深链：从流程图 / 命令面板跳到某一步。优先读挂起目标（避免跨视图挂载竞态），再监听实时事件。

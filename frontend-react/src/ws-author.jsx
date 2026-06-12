@@ -5,6 +5,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { ArrThreadLoom, ArrThreadMini, arrDeriveThreads } from "./ws-author-loom.jsx";
 import { ArrPacingLens } from "./ws-author-pacing.jsx";
 import { ArrDoctor } from "./ws-author-doctor.jsx";
+import { wsKey, WsWorks } from "./ws-works.jsx";
 
 /* global React, I, ARR_ACTS, ARR_CHAPTERS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
 const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA } = React;
@@ -17,7 +18,7 @@ const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA 
    ========================================================== */
 
 /* ---- tiny persistence (per-work namespaced) ---- */
-const arrK = (k) => (window.wsKey ? window.wsKey(k) : k);
+const arrK = (k) => (wsKey ? wsKey(k) : k);
 const arrLsGet = (k, d) => { try { const v = localStorage.getItem(arrK(k)); return v == null ? d : JSON.parse(v); } catch (_) { return d; } };
 const arrLsSet = (k, v) => { try { localStorage.setItem(arrK(k), JSON.stringify(v)); } catch (_) {} };
 
@@ -664,7 +665,7 @@ function WsAuthor() {
   const [pickedScene, setPickedScene] = useStA("0");
   const [chapters, setChapters] = useStA(() => {
     // 单一真相源：WsCatalog（与主页 / 写作器 / 成稿中心同源）；缺席时回退到旧逻辑
-    if (window.WsCatalog) return arrStampIds(window.WsCatalog.get());
+    if (WsCatalog) return arrStampIds(WsCatalog.get());
     const saved = arrLsGet("arr.chapters", null);
     return arrStampIds(Array.isArray(saved) && saved.length ? saved : ARR_CHAPTERS);
   });
@@ -675,7 +676,7 @@ function WsAuthor() {
   useEfA(() => arrLsSet("arr.lens", lens), [lens]);
   useEfA(() => arrLsSet("arr.picked", pickedId), [pickedId]);
   useEfA(() => {
-    if (window.WsCatalog) window.WsCatalog.set(chapters);  // 写穿单一真相源（同一持久化键）
+    if (WsCatalog) WsCatalog.set(chapters);  // 写穿单一真相源（同一持久化键）
     else arrLsSet("arr.chapters", chapters);
   }, [chapters]);
 
@@ -685,9 +686,9 @@ function WsAuthor() {
   /* 空白作品：还没有任何章节，先引导建立结构 */
   if (!chapters.length) {
     const createFirst = () => {
-      if (!window.WsCatalog) return;
-      window.WsCatalog.addChapter();
-      const next = arrStampIds(window.WsCatalog.get());
+      if (!WsCatalog) return;
+      WsCatalog.addChapter();
+      const next = arrStampIds(WsCatalog.get());
       setChapters(next);
       if (next.length) setPickedId(next[next.length - 1].id);
     };
@@ -858,7 +859,7 @@ function WsAuthor() {
   };
   const resetData = () => {
     if (typeof window !== "undefined" && !window.confirm("重置为示例数据？当前的编辑、新建与排序都会清除。") ) return;
-    const seed = window.WsCatalog ? window.WsCatalog.reset() : ARR_CHAPTERS;
+    const seed = WsCatalog ? WsCatalog.reset() : ARR_CHAPTERS;
     setChapters(arrStampIds(seed));
     setPickedId(seed[0] ? (seed.find(c => c.current) || seed[0]).id : null);
   };
@@ -872,7 +873,7 @@ function WsAuthor() {
             <header className="arr-ov-head">
               <div>
                 <div className="page-eyebrow" style={{ margin: 0 }}>章节编排</div>
-                <h1 className="arr-ov-title text-serif">全书编排 · {window.WsWorks ? window.WsWorks.active().title : "潮汐档案"}</h1>
+                <h1 className="arr-ov-title text-serif">全书编排 · {WsWorks ? WsWorks.active().title : "潮汐档案"}</h1>
               </div>
               <div className="arr-ov-head-r">
                 <button className="btn btn-quiet btn-sm" onClick={resetData} title="重置为示例数据"><I.Refresh size={13} /></button>

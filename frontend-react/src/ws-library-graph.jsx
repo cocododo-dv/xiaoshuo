@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { LIB_BY_ID, LIB_CATS, LIB_ENTRIES } from "./ws-library-data.jsx";
 import { LIB_REL_TYPES, LIB_relType } from "./ws-library-derive.jsx";
+import { wsKey } from "./ws-works.jsx";
 
 /* global React, I, LIB_CATS, LIB_ENTRIES, LIB_BY_ID, LIB_relType, LIB_REL_TYPES */
 const { useMemo: useGMemo, useState: useGSt, useRef: useGRef } = React;
@@ -134,10 +135,10 @@ function LibGraph({ selId, onSelect, onOpen, entries, byId }) {
 
   /* ---- 自定义节点位置（拖拽重排，本地记忆） ---- */
   const [posOv, setPosOv] = useGSt(() => {
-    try { return JSON.parse(localStorage.getItem(window.wsKey ? window.wsKey("ws-lib-graph-pos-v1") : "ws-lib-graph-pos-v1") || "{}"); }
+    try { return JSON.parse(localStorage.getItem(wsKey ? wsKey("ws-lib-graph-pos-v1") : "ws-lib-graph-pos-v1") || "{}"); }
     catch (e) { return {}; }
   });
-  const persistPos = (next) => { try { localStorage.setItem(window.wsKey ? window.wsKey("ws-lib-graph-pos-v1") : "ws-lib-graph-pos-v1", JSON.stringify(next)); } catch (e) {} };
+  const persistPos = (next) => { try { localStorage.setItem(wsKey ? wsKey("ws-lib-graph-pos-v1") : "ws-lib-graph-pos-v1", JSON.stringify(next)); } catch (e) {} };
   const pos = useGMemo(() => ({ ...layout, ...posOv }), [layout, posOv]);
   const hasCustom = Object.keys(posOv).length > 0;
   const resetLayout = () => { setPosOv({}); persistPos({}); };

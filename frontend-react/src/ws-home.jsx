@@ -1,7 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { useActiveWork } from "./ws-works.jsx";
+import { useActiveWork, wsKey } from "./ws-works.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
+import { RV_KINDS, rvOpenItems, rvMarkResolved } from "./ws-review.jsx";
 
 /* global React, I, useActiveWork, useCatalogChapters */
 /* ==========================================================
@@ -19,7 +20,7 @@ const HOME_CHAP_ST = { approved: "定稿", review: "送审", draft: "草稿", wr
 
 function WsHome({ go }) {
   const work = useActiveWork();
-  const chapters = window.useCatalogChapters ? useCatalogChapters() : [];
+  const chapters = useCatalogChapters ? useCatalogChapters() : [];
   const isBlank = chapters.length === 0;
 
   if (isBlank) return <WsHomeBlank work={work} go={go} />;
@@ -49,7 +50,7 @@ function WsHomeFull({ work: p, go, chapters }) {
   ] : (home.gos || []);
 
   /* —— 进度（与切换器 / 成稿中心同源）—— */
-  const totals = window.WsCatalog ? window.WsCatalog.totals() : { words: p.wordsTotal, written: p.chaptersWritten, planned: chapters.length };
+  const totals = WsCatalog ? WsCatalog.totals() : { words: p.wordsTotal, written: p.chaptersWritten, planned: chapters.length };
   const pct = Math.min(100, Math.round((totals.words / Math.max(1, p.wordsTarget)) * 100));
   const dayPct = Math.min(100, Math.round((p.wordsToday / Math.max(1, p.wordsTargetDay)) * 100));
 
@@ -64,7 +65,7 @@ function WsHomeFull({ work: p, go, chapters }) {
   const liveLines = (() => {
     try {
       if (!curScene || !curScene.sid) return null;
-      const raw = localStorage.getItem(window.wsKey ? window.wsKey("wr-doc:" + curScene.sid) : "wr-doc:" + curScene.sid);
+      const raw = localStorage.getItem(wsKey ? wsKey("wr-doc:" + curScene.sid) : "wr-doc:" + curScene.sid);
       if (raw == null) return null;
       const div = document.createElement("div");
       div.innerHTML = raw;
@@ -88,14 +89,14 @@ function WsHomeFull({ work: p, go, chapters }) {
 
   // 与「待办收件箱」同源（store）：取优先级最高的几条，主页只做速览；
   // 在这里「标记处理」会真实落盘，徽标与收件箱同步消失。
-  const RK = window.RV_KINDS || {};
+  const RK = RV_KINDS || {};
   const [todos, setTodos] = React.useState(() =>
-    (window.rvOpenItems ? window.rvOpenItems() : (window.RV_SEED || []))
+    (rvOpenItems ? rvOpenItems() : (window.RV_SEED || []))
       .slice().sort((a, b) => a.priority - b.priority).slice(0, 3)
       .map(it => ({ id: it.id, kind: it.kind, title: it.title, where: it.where }))
   );
   const dismissTodo = (id) => {
-    if (window.rvMarkResolved) { try { window.rvMarkResolved([id]); } catch (e) {} }
+    if (rvMarkResolved) { try { rvMarkResolved([id]); } catch (e) {} }
     setTodos(prev => prev.filter(x => x.id !== id));
   };
   const decisionsLeft = todos.filter(t => t.kind === "decision").length;

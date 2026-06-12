@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { WsWorks } from "./ws-works.jsx";
+import { WsWorks, useActiveWork } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 
 /* global React, I */
@@ -121,9 +121,9 @@ function Segmented({ options, value, onChange }) {
 
 /* ===== 项目 — 读写当前作品（WsWorks），状态来自目录汇总 ===== */
 function ProjectSettings() {
-  const work = window.useActiveWork ? window.useActiveWork() : { id: "", title: "", genre: "", sub: "", wordsTarget: 0, wordsTargetDay: 0, streak: 0 };
-  const totals = window.WsCatalog ? window.WsCatalog.totals() : { words: 0, written: 0, planned: 0, today: 0 };
-  const save = (patch) => { if (window.WsWorks && work.id) window.WsWorks.update(work.id, patch); };
+  const work = useActiveWork ? useActiveWork() : { id: "", title: "", genre: "", sub: "", wordsTarget: 0, wordsTargetDay: 0, streak: 0 };
+  const totals = WsCatalog ? WsCatalog.totals() : { words: 0, written: 0, planned: 0, today: 0 };
+  const save = (patch) => { if (WsWorks && work.id) WsWorks.update(work.id, patch); };
   const num = (e) => { const n = parseInt(e.target.value, 10); return Number.isFinite(n) && n > 0 ? n : null; };
   const pct = work.wordsTarget ? Math.min(100, Math.round((totals.words / work.wordsTarget) * 100)) : 0;
 
@@ -286,9 +286,9 @@ function AppearSettings({ t, setTweak }) {
 
 /* ===== 数据 & 安全 — 真实动作 ===== */
 function DataSettings({ go }) {
-  const work = window.WsWorks ? window.WsWorks.active() : { id: "", title: "—" };
-  const isSeed = window.WsWorks ? window.WsWorks.isSeed(work.id) : true;
-  const worksN = window.WsWorks ? window.WsWorks.list().length : 1;
+  const work = WsWorks ? WsWorks.active() : { id: "", title: "—" };
+  const isSeed = WsWorks ? WsWorks.isSeed(work.id) : true;
+  const worksN = WsWorks ? WsWorks.list().length : 1;
 
   const resetWork = () => {
     if (!window.confirm(
@@ -310,7 +310,7 @@ function DataSettings({ go }) {
 
   const deleteWork = () => {
     if (!window.confirm(`删除《${work.title}》？\n这部作品会连同全部数据进入回收站，可在「回收站」里整体恢复。`)) return;
-    window.WsWorks.remove(work.id);
+    WsWorks.remove(work.id);
     if (go) go("home");
   };
 
