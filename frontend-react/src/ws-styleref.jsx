@@ -251,7 +251,7 @@ const SR_PARA_DIST = [
 ];
 
 /* ---- books ---- */
-const SR_BOOKS = [
+let SR_BOOKS = [
   { id: "b1", title: "呐喊 · 短篇集", author: "鲁迅", chars: 81200, status: "ready",   profiles: 1, run: "16/16 抽取完成", color: "crimson" },
   { id: "b2", title: "断魂枪 · 月牙儿", author: "老舍", chars: 52400, status: "extracting", profiles: 0, run: "11/16 抽取中", color: "gold" },
   { id: "b3", title: "边城（节选）", author: "沈从文", chars: 30100, status: "ready",   profiles: 1, run: "12/16（题材层语料不足）", color: "slate" },
@@ -291,10 +291,23 @@ function WsStyleRef({ go }) {
   const [headerBusy, setHeaderBusy] = useStSR(null);
   const book = SR_BOOKS.find(b => b.id === bookId) || SR_BOOKS[0];
 
+  /* FE-ALIGN F5 授权接缝：书库由后端背书，变化时重渲染 */
+  const [, setSrPing] = useStSR(0);
+  React.useEffect(() => {
+    const f = () => setSrPing(p => p + 1);
+    window.addEventListener("sr:books-changed", f);
+    return () => window.removeEventListener("sr:books-changed", f);
+  }, []);
+
   const busyRef = React.useRef(null);
   const runHeaderAction = (id) => {
     if (headerBusy) return;
     setHeaderBusy(id);
+    /* 真实书走后端动作（LLM 未启用时弹明确引导）；演示书保留原模拟节奏 */
+    if (book && book.real && window.srBookAction) {
+      window.srBookAction(id, book.id).finally(() => setHeaderBusy(null));
+      return;
+    }
     clearTimeout(busyRef.current);
     busyRef.current = setTimeout(() => setHeaderBusy(null), 1400);
   };
@@ -307,10 +320,10 @@ function WsStyleRef({ go }) {
         <aside className="sr-books">
           <header className="sr-books-head">
             <div>
-              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {window.WsDemoTag && <window.WsDemoTag note="演示流水线：学习进度/画像为模拟数据。后端 style-reference 子系统已就绪（画像合成后会向待办投递绑定决策卡），视图接真见 PROGRESS.md 遗留项。" />}</div>
+              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {window.WsDemoTag && <window.WsDemoTag note="书库/导入/删除/抽取启动已接后端 style-reference v2（LLM 未启用时启动抽取会给明确引导）。维度矩阵/画像/回测/注入展示的是 LLM 抽取产物，启用前为演示数据。" />}</div>
               <h2 className="text-serif" style={{fontSize:18, margin:"4px 0 0"}}>参考书库</h2>
             </div>
-            <button className="btn btn-accent btn-sm"><I.Plus size={13} /></button>
+            <button className="btn btn-accent btn-sm" onClick={() => window.srImportBook && window.srImportBook()}><I.Plus size={13} /></button>
           </header>
 
           <ul className="sr-book-list">
@@ -329,7 +342,7 @@ function WsStyleRef({ go }) {
             ))}
           </ul>
 
-          <div className="sr-books-import">
+          <div className="sr-books-import" style={{ cursor: "pointer" }} onClick={() => window.srImportBook && window.srImportBook()}>
             <I.FileInput size={16} />
             <div>
               <div className="fw-600 text-sm">导入参考书</div>
@@ -1530,7 +1543,119 @@ const srCss = `
 }
 `;
 
-Object.assign(window, { WsStyleRef });
+/* ==========================================================
+   FE-ALIGN F5：参考书库接 style_reference v2。
+   - 书库列表/导入/删除/重跑/重分类走真实 API（无 LLM 即可用的部分）；
+   - 后端有真实书时列表以后端为准，否则保留演示书（流水线展示）；
+   - 矩阵/画像/回测/注入各 stage 的内容仍为演示——它们展示的是 LLM
+     抽取产物（findings/profile），LLM 关闭时无真实数据可渲染（账本记录）。
+   ========================================================== */
+const SR_DEMO_BOOKS = SR_BOOKS.slice();
+let SR_REAL = false;
+
+function srMapStatus(s) {
+  if (s === "ready") return "ready";
+  if (/extract|run/i.test(s || "")) return "extracting";
+  return "pending";
+}
+
+async function srSyncBooks() {
+  let rows = [];
+  try {
+    const { apiGet } = await import("./lib/client.js");
+    rows = ((await apiGet("/api/v2/style-reference/books")) || {}).books || [];
+  } catch (e) { return; }
+  if (!rows.length) {
+    if (SR_REAL) { SR_BOOKS = SR_DEMO_BOOKS.slice(); SR_REAL = false; window.dispatchEvent(new CustomEvent("sr:books-changed")); }
+    return;
+  }
+  const colors = ["crimson", "gold", "slate", "sage"];
+  SR_BOOKS = rows.map((b, i) => ({
+    id: b.book_id,
+    title: b.title,
+    author: b.author_label || "未署名",
+    chars: b.total_chars || 0,
+    status: srMapStatus(b.status),
+    profiles: 0,
+    run: b.status === "ready" ? "已导入 · 待抽取" : b.status,
+    color: colors[i % colors.length],
+    real: true,
+  }));
+  SR_REAL = true;
+  window.dispatchEvent(new CustomEvent("sr:books-changed"));
+}
+
+/* 导入参考书：文件选择 → POST import-upload（multipart，带幂等键） */
+function srImportBook() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".txt,.md,.epub,.docx";
+  input.onchange = async () => {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const title = (window.prompt("书名（用于书库显示）", f.name.replace(/\.[^.]+$/, "")) || "").trim();
+    if (!title) return;
+    try {
+      const { buildUrl, getOperatorRef } = await import("./lib/client.js");
+      const fd = new FormData();
+      fd.append("file", f, f.name);
+      fd.append("title", title);
+      fd.append("cloud_policy", "local_only");
+      const res = await fetch(buildUrl("/api/v2/style-reference/books/import-upload"), {
+        method: "POST",
+        headers: { "X-Idempotency-Key": "sr-import-" + Date.now().toString(36), "X-Operator-Ref": getOperatorRef() },
+        body: fd,
+      });
+      const body = await res.json();
+      if (!body.ok) throw new Error((body.error && body.error.message) || "导入失败");
+      await srSyncBooks();
+      window.alert(`已导入《${title}》（${(((body.data || {}).book || {}).total_chars || 0).toLocaleString()} 字）。`);
+    } catch (e) { window.alert("导入失败：" + (e.message || e)); }
+  };
+  input.click();
+}
+
+/* 头部动作（真实书）：重跑抽取 / 重新分类。LLM 未启用时给明确引导。 */
+async function srBookAction(action, bookId) {
+  try {
+    const { apiPost } = await import("./lib/client.js");
+    if (action === "rerun") {
+      await apiPost(`/api/v2/style-reference/books/${bookId}/runs`, {});
+      window.alert("抽取已启动，可在维度矩阵查看进度。");
+    } else if (action === "reclassify") {
+      await apiPost(`/api/v2/style-reference/books/${bookId}/reclassify`, {});
+      window.alert("已重新分类段落。");
+    }
+  } catch (e) {
+    if (e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || /llm/i.test(e.code || ""))) {
+      window.alert("风格抽取需要先启用 LLM：请到「系统设置 → 模型与接入」配置并开启后重试。");
+    } else {
+      window.alert("操作失败：" + (e.message || e));
+    }
+  }
+  await srSyncBooks();
+}
+
+async function srDeleteBook(bookId) {
+  const { buildUrl, getOperatorRef } = await import("./lib/client.js");
+  const res = await fetch(buildUrl(`/api/v2/style-reference/books/${bookId}`), {
+    method: "DELETE",
+    // book_id 由内容 checksum 决定（同内容重导=同 id），删除键必须带熵，
+    // 否则幂等层会重放上一次的成功响应而不真正执行
+    headers: { "X-Idempotency-Key": `sr-del-${bookId}-${Date.now().toString(36)}`, "X-Operator-Ref": getOperatorRef() },
+  });
+  const body = await res.json();
+  if (!body.ok) throw new Error((body.error && body.error.message) || "删除失败");
+  await srSyncBooks();
+  return true;
+}
+
+setTimeout(() => srSyncBooks(), 800); // 启动水合
+window.addEventListener("hashchange", () => {
+  if ((location.hash || "").indexOf("styleref") >= 0) srSyncBooks();
+});
+
+Object.assign(window, { WsStyleRef, srSyncBooks, srImportBook, srBookAction, srDeleteBook });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsStyleRef };

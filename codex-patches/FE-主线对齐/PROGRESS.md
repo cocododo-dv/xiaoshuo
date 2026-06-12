@@ -319,7 +319,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - [x] F2（源 D4）author-draft 修订历史 + 成稿对比接真 — commit 见 git log `FE-ALIGN F2`
 - [x] F3（源 D5）ws-snow 接 snowflake-workspace v2 — commit 见 git log `FE-ALIGN F3`
 - [x] F4（源 D3）lf6 控制塔可视化接锚点/审计 API — commit 见 git log `FE-ALIGN F4`
-- [ ] F5（源 D2）ws-styleref 接 style_reference v2 — commit `______`
+- [x] F5（源 D2）ws-styleref 接 style_reference v2 — commit 见 git log `FE-ALIGN F5`
 - [ ] F6（源 D1）ws-scene 起草引擎接 scenes run 管线 — commit `______`
 - [ ] F7（源 D6）window.* 兼容赋值清理 — commit `______`
 
@@ -409,3 +409,26 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 验证：smoke-f4.mjs 5/5（seed 19 条 → 水合 → 塔渲染 → POST 新锚点刷新可见 →
   排期写回 PATCH 落库）；run-smokes 六套全过；后端全量 858 passed；build 绿。
   期间教训：8009 验证后端是旧进程时新 kind 会 400——改后端后必须重启验证服务。
+
+### F5 明细
+
+- ws-styleref.jsx 数据层接 style_reference v2（零后端改动）：
+  - `srSyncBooks()`：GET books → SR_BOOKS（后端有真实书则以后端为准，
+    否则保留演示书做流水线展示）；启动/`#styleref` hashchange 水合。
+  - `srImportBook()`：文件选择 → POST import-upload（multipart + 幂等键
+    + X-Operator-Ref）；`srBookAction()`：重跑抽取/重新分类——LLM 未启用
+    （STYLE_REFERENCE_LLM_REQUIRED）弹「去设置启用」引导，LLM 启用但任务
+    路由未配置则透传真实错误（两类都是诚实降级，无假进度）；
+    `srDeleteBook()`：DELETE（删除键带时间熵，见下）。
+- **踩坑记录（重要）**：style_reference 的 `book_id` 由内容 checksum 决定
+  （同文重导 = 同 id）。删除请求的幂等键若只含 book_id，跨轮次会撞键——
+  幂等层直接**重放上一次的成功响应而不执行删除**。删除键必须带熵；
+  冒烟样本文本也要掺入唯一串避免跨轮 checksum 冲突。
+- **授权视图改动（记录在案）**：WsStyleRef 加 `sr:books-changed` 重渲染
+  订阅；两处导入入口（+ 按钮 / 导入卡）补 onClick；`runHeaderAction` 真实书
+  分流到 `srBookAction`（演示书保留原模拟节奏）；页级 DemoTag 收窄
+  （书库/导入/删除/抽取启动已真；矩阵/画像/回测/注入为 LLM 抽取产物，
+  启用前保留演示——记录在案的剩余演示区）。
+- 验证：smoke-f5.mjs 4/4 连跑两轮（multipart 导入 → 视图渲染真实书且演示书
+  退场 → LLM 不可用启动抽取得明确引导 → 删除回落）；run-smokes 六套全过；
+  后端全量 858 passed；build 绿。
