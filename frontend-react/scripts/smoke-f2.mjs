@@ -91,10 +91,17 @@ await check("④ UI：成稿中心「对比」渲染真实 diff", async () => {
   if (!/\+\d+ 句/.test(stat)) throw new Error(`stat missing: ${stat}`);
 });
 
-// 清理：冒烟作品软删进回收站，不留在书架上
-await page.evaluate(async () => {
-  try { window.WsWorks.remove(window.WsWorks.activeId()); await new Promise(r => setTimeout(r, 800)); } catch (e) {}
-});
+// 清理：软删 + 回收站彻底清除（残留会污染 run-smokes 批跑的回收站用例）
+await page.evaluate(async (apiBase) => {
+  try {
+    const id = window.WsWorks.activeId();
+    window.WsWorks.remove(id);
+    await new Promise(r => setTimeout(r, 1000));
+    await fetch(`${apiBase}/api/v2/trash/${encodeURIComponent("work:" + id)}`, {
+      method: "DELETE", headers: { "X-Idempotency-Key": "smoke-purge-" + id },
+    });
+  } catch (e) {}
+}, API);
 
 await browser.close();
 const uniq = [...new Set(errors)];

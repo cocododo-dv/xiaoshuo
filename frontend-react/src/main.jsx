@@ -31,6 +31,7 @@ import "./ws-writer.jsx";
 import "./ws-review.jsx";
 import "./ws-home.jsx";
 import "./ws-snow.jsx";
+import "./ws-snow-sync.jsx"; // FE-ALIGN F3：构思 ↔ snowflake-workspace v2 同步（store 层新增，不在原型清单内）
 import "./ws-flowmap.jsx";
 import "./ws-styleref-val.jsx";
 import "./ws-styleref.jsx";

@@ -579,10 +579,20 @@ const WsCatalog = {
     this.set([...chs.map(c => ({ ...c, current: false })), ch]);
     return this.get().find(c => c.id === id);
   },
-  /* —— 雪花大纲 → 目录：经 set() 的 diff 引擎在后端建章（不在前端造本地行）。
-     注：构思视图接 v2 工作台后改走 materialize 主路径（P8）；当前雪花数据在
-     本地，后端无 scene plans，materialize 必然 409，故直接走目录批量建章。 */
+  /* —— 雪花大纲 → 目录。FE-ALIGN F3：构思已接 v2 工作台——后端闸门全过
+     （ready_to_materialize）时走 materialize 主路径（approved scene plans →
+     ChapterGoal/SceneCard，成功后目录重拉）；闸门未满足则沿用目录批量建章兜底。 */
   adoptOutline(list) {
+    try {
+      if (window.SnowSync && window.SnowSync.readyToMaterialize()) {
+        const n = (list || []).filter(c => (c.title || "").trim() && !c.title.includes("待补")).length;
+        window.SnowSync.materialize().catch(() => {});
+        return n; // 乐观计数：物化结果以重拉后的目录为准
+      }
+    } catch (e) {}
+    return this.__adoptByDiff(list);
+  },
+  __adoptByDiff(list) {
     const cur = this.get();
     const existing = new Set(cur.map(c => (c.title || "").trim()));
     const fresh = (list || []).filter(c => {

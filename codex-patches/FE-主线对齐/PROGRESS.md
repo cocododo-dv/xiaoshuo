@@ -317,7 +317,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 
 - [x] F1（源 D7）utcnow 严格单调根治负载敏感 flaky — commit 见 git log `FE-ALIGN F1`
 - [x] F2（源 D4）author-draft 修订历史 + 成稿对比接真 — commit 见 git log `FE-ALIGN F2`
-- [ ] F3（源 D5）ws-snow 接 snowflake-workspace v2 — commit `______`
+- [x] F3（源 D5）ws-snow 接 snowflake-workspace v2 — commit 见 git log `FE-ALIGN F3`
 - [ ] F4（源 D3）lf6 控制塔可视化接锚点/审计 API — commit `______`
 - [ ] F5（源 D2）ws-styleref 接 style_reference v2 — commit `______`
 - [ ] F6（源 D1）ws-scene 起草引擎接 scenes run 管线 — commit `______`
@@ -354,3 +354,35 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 验证：后端全量 857 passed / 12 skipped；`smoke-f2.mjs` 4/4
   （两次保存→版本列表≥3→旧版内容取回→UI 真 diff 渲染）；run-smokes 六套全过；
   `npm run build` 绿。
+
+### F3 明细
+
+- 新增 store `ws-snow-sync.jsx`（main.jsx 入口追加导入，注释标注非原型清单）：
+  `ws_snow_state_v2::<work>` 退化为后端真相的写穿缓存。
+  - 上行：监听 `ws:snow-saved`（detail=存储键）→ 按步 diff →
+    `PATCH …/snowflake-workspace/steps/{key}`（force=true）。draft 同时带
+    **规范字段**（FE 形状映射：audience→book_brief、logline→one_sentence_summary、
+    paragraph→one_paragraph_summary（五句脊）、characters→character_sheets、
+    synopsis→short_synopsis、backstory→character_synopses、outline→long_synopsis、
+    profile→character_bibles、scenes→scene_list、planning→scene_details
+    （list+plans 合并成 GCS/RDD 行））与 **fe_* 键**（fe_text/fe_scaffold/
+    fe_checks/fe_state/fe_t，merge_step_draft 保留未知键 → 无损往返）；
+    revs/confirmRevs 经 book_brief 的 fe_meta 随存。
+  - fe_state 变 done 时顺手 POST approve（前序闸门不满足则静默跳过）。
+  - 水合：启动 / `#snowflake`/`#home` hashchange / `ws:work-changed` →
+    GET workspace；fe_* 优先，无 fe_* 时从规范字段反推原型形状（兼容
+    seed/真管线项目）；本地 `_t` 不旧于服务端则本地为准；非雪花项目
+    （PROJECT_NOT_SNOWFLAKE 409）静默退出。
+- `WsCatalog.adoptOutline` 升级（D5/简报核对发现的正解落地）：
+  `ready_to_materialize` 时走 **materialize 主路径**（POST materialize →
+  目录 reset 重拉），否则沿用目录批量建章兜底（原逻辑改名 `__adoptByDiff`）。
+- **授权视图改动（记录在案）**：ws-snow.jsx 两处保存事件补 `detail: myKey`
+  （同步器需知道写的是哪个作品的键）+ 一个 `ws:snow-hydrated` 监听 effect
+  （水合落盘后重读缓存刷新组件状态）。视图契约（方法/形状/事件语义）未变。
+- 遗留（账本口径）：history（步骤快照日志）不上行——体积大（每条含全量
+  drafts+scaffolds 快照）、跨会话价值低；revs/confirmRevs 已随存。
+- 验证：smoke-f3.mjs 4/4（上行 PATCH+规范字段 → approve → 清缓存跨会话
+  水合 → 构思视图展示水合内容）；run-smokes 六套全过（一次批跑失败定位为
+  此前冒烟残留的回收站作品污染 phase4 用例，purge 后复跑全绿；f2/f3 冒烟
+  清理步骤已改为软删+回收站彻底清除）；后端全量 857 passed（F3 零后端改动）；
+  build 绿。

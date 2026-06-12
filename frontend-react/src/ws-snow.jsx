@@ -1060,7 +1060,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   /* persist to localStorage (debounced) */
   useSE(() => {
     const id = setTimeout(() => {
-      try { localStorage.setItem(myKey, JSON.stringify({ drafts, scaffolds, checks, states, revs, confirmRevs, history, _t: Date.now() })); setSavedAt(Date.now()); window.dispatchEvent(new CustomEvent("ws:snow-saved")); } catch (e) {}
+      try { localStorage.setItem(myKey, JSON.stringify({ drafts, scaffolds, checks, states, revs, confirmRevs, history, _t: Date.now() })); setSavedAt(Date.now()); window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: myKey })); } catch (e) {}
     }, 450);
     return () => clearTimeout(id);
   }, [drafts, scaffolds, checks, states, revs, confirmRevs, history]);
@@ -1069,7 +1069,24 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const latestRef = useSR();
   latestRef.current = { drafts, scaffolds, checks, states, revs, confirmRevs, history };
   useSE(() => () => {
-    try { localStorage.setItem(myKey, JSON.stringify({ ...latestRef.current, _t: Date.now() })); window.dispatchEvent(new CustomEvent("ws:snow-saved")); } catch (e) {}
+    try { localStorage.setItem(myKey, JSON.stringify({ ...latestRef.current, _t: Date.now() })); window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: myKey })); } catch (e) {}
+  }, []);
+
+  /* FE-ALIGN F3 授权接缝：后端水合（SnowSync）落盘后重读缓存，刷新本组件状态 */
+  useSE(() => {
+    const onHyd = (e) => {
+      if (!e.detail || myKey !== "ws_snow_state_v2::" + e.detail) return;
+      const s = s2Load(myKey);
+      setDrafts({ ...s2DefaultDrafts(), ...(s.drafts || {}) });
+      setScaffolds(s2MergeScaffolds(s.scaffolds));
+      setChecks(s2MergeChecks(s.checks));
+      setStates({ ...s2DefaultStates(), ...(s.states || {}) });
+      setRevs({ ...Object.fromEntries(S2_STEPS.map(x => [x.key, 0])), ...(s.revs || {}) });
+      setConfirmRevs({ ...(s.confirmRevs || {}) });
+      sigRef.current = null;
+    };
+    window.addEventListener("ws:snow-hydrated", onHyd);
+    return () => window.removeEventListener("ws:snow-hydrated", onHyd);
   }, []);
 
   const resetAll = () => {
