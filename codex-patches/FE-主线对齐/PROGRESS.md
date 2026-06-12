@@ -662,3 +662,59 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 | # | 事项 | 原因 / 现状 |
 |---|---|---|
 | D13 | 章级审计的「违约判定」LLM 节点 + 流程动画的逐条裁定语气 + 静态路径的 d1/d2/n1/n3 演示动作 | 确定性扫描只能诚实声明「检出/未检出」；判定「草稿违反了契约第 N 条」需要 LLM 审计节点（性质同 styleref 提取/起草引擎：三件套 + 真实 LLM 环境）。回执管道（H2）与裁决产物化（P7 onceTask）都已就绪，接上节点即闭环 |
+
+---
+
+## 维护轮 · 重构后全链路猎虫（2026-06-12）
+
+> 流程：基线回归（后端全量 + Vue 单测 + React build + 18 套冒烟）→ API 边界探针 /
+> 空白书漫游 / 15 视图巡检 → Vue E2E（重构期间从未跑过的面）→ 修复 → 定点+全量复验。
+
+### 修复 1 · v2 创建类端点幂等键被静默忽略（后端契约 bug）
+
+- 探针发现：同一 X-Idempotency-Key 重放 `POST catalog/chapters` 建出**两个不同的章**。
+  catalog.py 文件头声称「写端点全部要求幂等键（中间件统一拦截）」，实际不存在该中间件
+  ——`IDEMPOTENCY_KEY_REQUIRED` 只在 `execute_with_idempotency` 里抛，而 catalog/library/
+  longform_tower 的写端点根本没接它。前端 client.js 每次变更调用都带键，后端却不兑现。
+- 修复：8 个「会创建新行」的端点接 `execute_with_idempotency`（必填 + 同键重放同响应）：
+  catalog 建章/建场景、library 实体/关系/时间线/人物、longform 锚点/audit finding。
+  PATCH/move/软删/恢复按天然幂等语义不强制（catalog.py 头注释已改为与实现一致）。
+- 测试：3 条回归（重放同 id / 缺键 400 / 换载荷 409；catalog+library+tower 各覆盖）；
+  test_library.py / test_longform_tower.py 两个旧文件的裸 POST 补 `_idem()` 头。
+  冒烟脚本的裸 fetch 全部本就带键，零改动。
+
+### 修复 2 · style_reference 路径导入空标题产出无名书
+
+- Vue E2E reference-learning 揪出：标题留空时 `ingest_path` 原样落空串，
+  书列表显示「—」。修复：ingest_path 空标题回退 `path.stem`，ingest_upload
+  回退文件名 stem（无文件名时「未命名参考书」）。+1 回归测试。
+
+### 修复 3 · Vue E2E 两个 spec 适配现实（重构期间无人跑过 test:e2e）
+
+- chapter-batch：作者工作台章节列表已是 VirtualList（5/18 warm-paper 重构引入），
+  视口外的行不进 DOM——spec 经 API 建的 CH910 排序在末尾，直接 click 挂死 120s。
+  补 `scrollVirtualListTo` 滚动定位助手（与 author-trash 等已适配 spec 同思路）。
+- reference-learning：抽取 run 自 PR-3 起强制要求 LLM（STYLE_REFERENCE_LLM_REQUIRED
+  诚实降级），spec 还停留在「offline placeholder 产 8 findings」的旧设计。重构为双轨：
+  无 LLM 环境断言「明确引导 + 零假 findings」（与 React smoke-f5 同语义）；
+  完整链路轨 `test.skip(!LLM_LIVE)`，counts 按 PR-23 全 4 层 / 16 sub_dim 更新
+  （该轨需真实 LLM 环境验证，记录在案）。
+
+### 修复 4 · 冒烟泄漏测试书污染共享 dev 库（测试卫生）
+
+- 视图截图巡检揪出 dev 库 16 本残留测试书（P2冒烟之书 ×4、验收之书 ×4、诊断 ×6 等）
+  ＋探针对 tide 档案的不完整还原。smoke-phase2 / smoke-acceptance 补「软删 + 回收站
+  彻底清除」清理段（沿用 f2/f3 模式）；api-probe 改为先取原值再完整还原；
+  历史残留 15 本已清（「盛有式」来源不明，保留待人工确认）。
+
+### 验证矩阵（全绿）
+
+- 后端全量：**874 passed**（870 基线 + 3 幂等回归 + 1 ingest 回归）。
+  alembic current == head（20260612_0052）。
+- React 端：build 绿；run-smokes 六套 + f2–f6 + g1/g2/g4/g5 + h1/h2 + acceptance
+  18 套全过（修复后 phase2/acceptance 复跑零残留）；15 视图截图零 console 错误；
+  空白书 15 视图空态零错误 + 激活作品被外部软删后 UI 正常兜底。
+- Vue 端：59 文件 / 536 单测 + smoke ok；Playwright E2E 20 passed + 1 skipped
+  （完整 LLM 链路轨，需 LLM 环境）。
+- API 边界探针 18 项全过（畸形载荷信封 / 跨项目越权拒绝 / 幂等重放 / 陈旧 revision
+  409 / 双重软删 / 超长与 emoji 输入 / 派生卡 resolve 409）。

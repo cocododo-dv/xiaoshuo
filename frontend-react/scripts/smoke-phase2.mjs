@@ -96,6 +96,16 @@ await check("档案更新走 PATCH profile（改简介后端可读回）", async
   await page.waitForTimeout(600);
 });
 
+
+// 清理：本轮与历史泄漏的「P2冒烟之书」软删 + 回收站彻底清除（残留会污染共享 dev 库）
+try {
+  const res = await fetch(`${API}/api/v2/projects`).then(r => r.json());
+  for (const w of (res.data.items || []).filter(i => i.title === "P2冒烟之书")) {
+    await fetch(`${API}/api/v2/projects/${w.project_id}`, { method: "DELETE", headers: { "X-Idempotency-Key": "p2-clean-" + w.project_id } });
+    await fetch(`${API}/api/v2/trash/${encodeURIComponent("work:" + w.project_id)}`, { method: "DELETE", headers: { "X-Idempotency-Key": "p2-purge-" + w.project_id } });
+  }
+} catch (e) {}
+
 await browser.close();
 const uniq = [...new Set(errors)];
 if (uniq.length) { console.log(`\n${uniq.length} page errors:`); uniq.slice(0, 10).forEach(e => console.log(" -", e.slice(0, 300))); }

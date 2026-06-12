@@ -17,6 +17,23 @@ async function postJson(request, path, body, idempotencyKey) {
   return response.json();
 }
 
+// 章节列表是 VirtualList(视口外行不渲染)：向下滚动直到目标行进入虚拟窗口。
+async function scrollVirtualListTo(page, listTestId, rowTestId) {
+  const list = page.getByTestId(listTestId);
+  await expect(list).toBeVisible();
+  const target = page.getByTestId(rowTestId);
+  for (let i = 0; i < 40 && !(await target.count()); i++) {
+    const atBottom = await list.evaluate((el) => {
+      const before = el.scrollTop;
+      el.scrollTop = before + el.clientHeight;
+      return el.scrollTop === before;
+    });
+    await page.waitForTimeout(120); // 等虚拟窗口重算
+    if (atBottom) break;
+  }
+  await expect(target).toBeVisible();
+}
+
 test("launches a chapter batch run, shows where it stopped, and resumes from persisted progress", async ({
   page,
   request,
@@ -110,6 +127,7 @@ test("launches a chapter batch run, shows where it stopped, and resumes from per
   await configureConnection(page, { apiBase: API_BASE, operatorRef: OPERATOR_REF });
   await switchToAdvancedMode(page);
   await page.getByTestId("nav-author").click();
+  await scrollVirtualListTo(page, "author-chapter-virtual-list", "author-chapter-select-CH910");
   await page.getByTestId("author-chapter-select-CH910").click();
 
   await page.getByTestId("author-run-chapter-button").click();

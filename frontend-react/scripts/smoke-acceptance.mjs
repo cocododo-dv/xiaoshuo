@@ -157,6 +157,13 @@ await check("⑦ 回收站：删整部 → 恢复 → 数据无损", async () =>
   if (tree.chapters[0].title !== "验收·定稿章题") throw new Error("catalog lost");
 });
 
+
+// 清理：验收书不留库（软删 + 回收站彻底清除）
+try {
+  await fetch(`${API}/api/v2/projects/${pid}`, { method: "DELETE", headers: { "X-Idempotency-Key": "acc-clean-" + pid } });
+  await fetch(`${API}/api/v2/trash/${encodeURIComponent("work:" + pid)}`, { method: "DELETE", headers: { "X-Idempotency-Key": "acc-purge-" + pid } });
+} catch (e) {}
+
 await browser.close();
 const uniq = [...new Set(errors)];
 if (uniq.length) { console.log(`\n${uniq.length} page errors:`); uniq.slice(0, 10).forEach(e => console.log(" -", e.slice(0, 300))); }

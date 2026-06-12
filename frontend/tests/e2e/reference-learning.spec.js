@@ -1,11 +1,10 @@
 /**
- * PR-11 — style_reference 完整 E2E 链路:
- *   导入 corpus → run → findings 审阅 → synthesize →
- *   apply Profile(MIXED + intensity + sub_dim)→ ReviewInbox 审批 →
- *   KnowledgeConsole 验 metrics panel
+ * PR-11 — style_reference E2E 链路（维护轮 2026-06-12 重构为双轨）:
  *
- * 沿用真后端 + 真 LLM offline placeholder(NOVEL_SYSTEM_LLM_ENABLED=false);
- * 测试中所有 click/fill 走 Playwright 的 expect 重试机制,容忍后端短暂延时。
+ * 抽取/合成自 PR-3 起强制要求 LLM（STYLE_REFERENCE_LLM_REQUIRED 诚实降级，
+ * 与 React 端 smoke-f5 同语义），无 LLM 环境跑「导入 + 降级引导」轨；
+ * 完整链路轨仅在 NOVEL_SYSTEM_LLM_ENABLED=true 的环境运行
+ * （counts 按 PR-23 的全 4 层 / 16 sub_dim 契约更新）。
  */
 import { expect, test } from "@playwright/test";
 import path from "node:path";
@@ -15,6 +14,7 @@ import { configureConnection } from "./helpers.js";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const fixturePath = path.resolve(scriptDir, "fixtures", "reference-learning.md");
+const LLM_LIVE = (process.env.NOVEL_SYSTEM_LLM_ENABLED || "").toLowerCase() === "true";
 
 async function openImportForm(page) {
   const pathInput = page.getByTestId("reference-import-path");
@@ -25,35 +25,51 @@ async function openImportForm(page) {
   await expect(pathInput).toBeVisible();
 }
 
-test("style_reference 完整链路 — 导入 → run → 审阅 → synthesize → apply MIXED → ReviewInbox → metrics", async ({ page }) => {
-  test.setTimeout(120000);
-
-  await page.goto("/");
-  await configureConnection(page, { operatorRef: "ops.reference.e2e" });
-
-  // 1) 进入 ReferenceLearningView,确认根可见
+async function importFixture(page) {
   await page.getByTestId("nav-reference").click();
   await expect(page.getByTestId("reference-learning-view")).toBeVisible();
   await page.waitForLoadState("networkidle");
 
-  // 2) 导入 fixture
   await openImportForm(page);
   await page.getByTestId("reference-import-path").fill(fixturePath);
   await expect(page.getByTestId("reference-import-submit")).toBeEnabled();
   await page.getByTestId("reference-import-submit").click();
+  // 标题留空时后端从文件名推导（ingest title fallback）
   await expect(page.getByTestId("reference-book-list")).toContainText("reference-learning");
+}
 
-  // 3) 启动 run + 等 findings 出现
+test("导入参考书 → 无 LLM 启动抽取得到明确引导（诚实降级，不出假 findings）", async ({ page }) => {
+  test.skip(LLM_LIVE, "LLM 已启用的环境走完整链路用例");
+  test.setTimeout(60000);
+
+  await page.goto("/");
+  await configureConnection(page, { operatorRef: "ops.reference.e2e" });
+  await importFixture(page);
+
+  await page.getByTestId("reference-start-run").click();
+  await expect(page.locator(".view-error")).toContainText("LLM");
+  await expect(page.locator('article[data-testid^="reference-finding-"]')).toHaveCount(0);
+});
+
+test("style_reference 完整链路 — 导入 → run → 审阅 → synthesize → apply MIXED → ReviewInbox → metrics", async ({ page }) => {
+  test.skip(!LLM_LIVE, "完整抽取链路需要 NOVEL_SYSTEM_LLM_ENABLED=true 的环境");
+  test.setTimeout(120000);
+
+  await page.goto("/");
+  await configureConnection(page, { operatorRef: "ops.reference.e2e" });
+  await importFixture(page);
+
+  // 3) 启动 run + 等 findings 出现（PR-23 后默认全 4 层 → 16 sub_dim）
   await page.getByTestId("reference-start-run").click();
   await expect(page.locator('article[data-testid^="reference-finding-"]'))
-    .toHaveCount(8, { timeout: 30000 });
+    .toHaveCount(16, { timeout: 60000 });
 
-  // 4) 审阅:approve 前 4 个,reject 后 4 个
+  // 4) 审阅:approve 前 8 个,reject 后 8 个
   const approveButtons = page.locator('[data-testid^="reference-approve-"]');
   const rejectButtons = page.locator('[data-testid^="reference-reject-"]');
-  await expect(approveButtons).toHaveCount(8);
-  for (let i = 0; i < 4; i++) await approveButtons.nth(0).click();
-  for (let i = 0; i < 4; i++) await rejectButtons.nth(0).click();
+  await expect(approveButtons).toHaveCount(16);
+  for (let i = 0; i < 8; i++) await approveButtons.nth(0).click();
+  for (let i = 0; i < 8; i++) await rejectButtons.nth(0).click();
 
   // 5) synthesize → 等 profile 出现
   await page.getByTestId("reference-advance-run").click();
