@@ -95,6 +95,40 @@ class SnowflakeWorkspaceLLMService:
             ),
         )
 
+    # FE-ALIGN G5：构思视图的「生成 3 条候选」——提示词由模板组装，
+    # 上下文/草稿折叠文本由前端随请求带入（原型形状只在前端存在）。
+    def step_candidates(
+        self,
+        *,
+        project: StoryProject,
+        step_key: str,
+        context_text: str,
+        current_draft: str,
+        target_chars: int,
+    ) -> WorkspaceLLMResult:
+        step_definition = get_step_definition(step_key)
+        guidance = step_guidance(step_key)
+        prompt_payload = {
+            "project": _project_prompt_payload(project),
+            "step_key": step_key,
+            "step_label": step_definition.get("label"),
+            "step_english_label": step_definition.get("english_label"),
+            "step_description": step_definition.get("description"),
+            "step_instruction": guidance.get("instruction"),
+            "upstream_context": context_text,
+            "current_draft_text": current_draft,
+            "target_chars": target_chars,
+        }
+        return self._run_structured_task(
+            task_key="snowflake_step_candidates",
+            template_name="snowflake_step_candidates",
+            project_id=project.project_id,
+            step_ref=step_key,
+            prompt_payload=prompt_payload,
+            fallback_payload={"candidates": []},
+            normalize_output=_normalize_candidates_output,
+        )
+
     def assistant_reply(
         self,
         *,
@@ -570,6 +604,28 @@ def _prompt_hash(
             }
         ),
     ).hex
+
+
+def _normalize_candidates_output(output: dict[str, Any]) -> dict[str, Any]:
+    """FE-ALIGN G5：候选数组裁剪到原型契约形状（≤4 条；label/tag/notes 限长）。"""
+    items = output.get("candidates") if isinstance(output, dict) else None
+    normalized: list[dict[str, Any]] = []
+    for item in (items or [])[:4]:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        notes = item.get("notes") if isinstance(item.get("notes"), list) else []
+        normalized.append(
+            {
+                "label": str(item.get("label") or f"方向 {len(normalized) + 1}").strip()[:8],
+                "tag": str(item.get("tag") or "AI 候选").strip()[:16],
+                "text": text,
+                "notes": [str(n).strip()[:10] for n in notes[:3] if str(n).strip()],
+            }
+        )
+    return {"candidates": normalized}
 
 
 def _normalize_full_step_output(

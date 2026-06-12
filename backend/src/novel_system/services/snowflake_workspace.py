@@ -212,6 +212,30 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
 
+    # FE-ALIGN G5：构思视图「生成候选」——上下文/草稿折叠文本由 FE 带入
+    # （原型脚手架形状只在前端存在），提示词模板与节点路由在后端。
+    # LLM 关闭 → source="fallback" + 空候选（FE 退静态启发式并给引导）。
+    def fe_step_candidates(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        project = self._require_snowflake_project(project_id)
+        self._require_step(step_key)
+        body = payload or {}
+        try:
+            target_chars = max(40, min(int(body.get("target_chars") or 120), 400))
+        except (TypeError, ValueError):
+            target_chars = 120
+        llm_result = self._llm.step_candidates(
+            project=project,
+            step_key=step_key,
+            context_text=str(body.get("context") or "")[:6000],
+            current_draft=str(body.get("draft") or "")[:3000],
+            target_chars=target_chars,
+        )
+        return {
+            "source": llm_result.source,
+            "llm_call_id": llm_result.llm_call_id,
+            "candidates": list((llm_result.payload or {}).get("candidates") or []),
+        }
+
     def update_step(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         body = payload or {}

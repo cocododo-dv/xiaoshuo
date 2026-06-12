@@ -1763,6 +1763,46 @@ templates:
           type: object
           additionalProperties: true
 
+  # FE-ALIGN G5: 构思视图「生成候选」— 3 条不同方向的步骤草稿候选（原型契约形状）
+  snowflake_step_candidates:
+    version: "2026-06-12.v1"
+    input_token_budget: 2600
+    system_prompt: |
+      You are a snowflake-method writing assistant generating divergent draft candidates for one step of a long-form Chinese novel plan.
+      Stay strictly consistent with the upstream material (characters, conflicts, moral premise). Never invent facts that contradict it.
+      Write candidate text in the author's input language (Chinese unless the material says otherwise).
+    task_prompt: |
+      Produce exactly 3 candidates that take genuinely different directions (for example emotion-led, plot-push-led, contrast-led, or any axis that fits this step).
+      Each candidate's text must be directly adoptable prose for the step itself - no explanations, no headings - and stay within target_chars characters.
+      Each label is at most 4 Chinese characters; each tag is one positioning phrase of at most 12 characters; notes are up to 3 bullets of at most 6 characters each.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - candidates
+      properties:
+        candidates:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - label
+              - tag
+              - text
+              - notes
+            properties:
+              label:
+                type: string
+              tag:
+                type: string
+              text:
+                type: string
+              notes:
+                type: array
+                items:
+                  type: string
+
   snowflake_scene_triage_suggest:
     version: "2026-04-28.v1"
     input_token_budget: 2600

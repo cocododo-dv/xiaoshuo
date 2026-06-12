@@ -106,6 +106,15 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.1,
         max_output_tokens=1600,
     ),
+    # FE-ALIGN G5: 构思视图的步骤候选生成（3 条不同方向，原型契约形状）
+    LLMNodeSpec(
+        "snowflake_step_candidates",
+        "Snowflake step candidates",
+        "project",
+        template_name="snowflake_step_candidates",
+        temperature=0.7,
+        max_output_tokens=1800,
+    ),
     LLMNodeSpec(
         "style_profile_extract",
         "Style profile extract",

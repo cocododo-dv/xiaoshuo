@@ -1550,7 +1550,7 @@ const WR_KBD = { fontFamily: "var(--font-mono)", fontSize: "10px", padding: "1px
 
 /* ==========================================================
    Inline rewrite — select prose, summon a toolbar, rewrite the
-   selection in-place via the real model (window.claude.complete).
+   selection in-place via the backend passage-patch pipeline (G4).
    ========================================================== */
 const WR_RW_ACTIONS = [
   { id: "polish",   label: "润色",   instr: "在不改变原意与人称的前提下润色这段文字，使其更精炼、更有文学质感" },

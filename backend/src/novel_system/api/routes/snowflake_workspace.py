@@ -62,6 +62,19 @@ def generate_workspace_step(
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/fe-candidates")
+def generate_workspace_step_fe_candidates(
+    project_id: str,
+    step_key: str,
+    payload: dict[str, Any] | None,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    result = SnowflakeWorkspaceService(session).fe_step_candidates(project_id, step_key, payload or {})
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.patch("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}")
 def update_workspace_step(
     project_id: str,

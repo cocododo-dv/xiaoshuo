@@ -504,7 +504,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - [x] G2（源 D11）雪花 history 轻量跨会话 — commit 见 git log `FE-ALIGN G2`
 - [x] G3（源 D9）起草 note 进 scenes run 管线 — commit 见 git log `FE-ALIGN G3`
 - [x] G4（源 D8）写作台内联改写接 passages/patch-candidates — commit 见 git log `FE-ALIGN G4`
-- [ ] G5（源 D8）雪花候选生成接后端 LLM 节点 — commit `______`
+- [x] G5（源 D8）雪花候选生成接后端 LLM 节点 — commit 见 git log `FE-ALIGN G5`
 
 ### G1 明细
 
@@ -569,3 +569,38 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 验证：pytest 7 条 guards（含 G4 离线全链 + accept）；全量 865 passed；
   smoke-g4 3/3（真实端点 + no-model 降级 + 视图可达）；run-smokes 六套
   全过；build 绿。window.claude 活探测仅剩雪花候选 1 处（G5 销）。
+
+### G5 明细
+
+- 新 LLM 节点 `snowflake_step_candidates` 三件套齐备（registry +
+  config/models.yaml task_routing + config/prompts.yaml 模板，
+  structured_schema=[{label,tag,text,notes}]，temp 0.7）。
+- 端点 `POST …/snowflake-workspace/steps/{step_key}/fe-candidates`：
+  上下文/草稿折叠文本由 FE 随请求带入（**与简报「后端折叠」的差异，
+  以代码为准记录**：原型脚手架形状只在前端存在，后端持有提示词模板与
+  路由——同 passages/patch 的分工），复用 `_run_structured_task`
+  （LLM 关 → source=fallback 空候选；路由缺失 → sync_missing 引导）。
+- FE：`s2GenerateCands` 弃 window.claude 改走端点；fallback/空 → 抛
+  「去系统设置启用 LLM」引导（默认展示的本地启发式候选 s2GenericCands
+  不受影响，不冒充生成成功）；FE→BE 步骤键映射正源迁至 ws-snow 的
+  `S2_BE_STEPS`，ws-snow-sync 改引用（消除双份漂移）。
+- **window.claude 引用归零**（代码 + 注释，grep 验证）——D8 销账。
+- 验证：pytest 4 条（fallback 语义/非法步骤/normalize 裁剪/三件套铁律）
+  全量 869 passed；smoke-g5 3/3；run-smokes + f2/f3/f4/f5/f6/g1 +
+  **smoke-acceptance 7/7** 全过；build 绿。
+
+## G 系列收口
+
+- G1–G5 全部完成，每阶段独立提交；后端最终 869 passed / 12 skipped；
+  build 绿；全部冒烟（六套批跑 + f2–f6 + g1/g2/g4/g5 + acceptance）绿。
+- D8（window.claude ×2）、D9（note 进管线）、D10（LF3 三层投影）、
+  D11（journal 跨会话）全部销账。
+- 仍为演示的区域（每处有 DemoTag + 账本记录）：起草台演示队列场、
+  风格参考 LLM 产物 stage、控制塔「生成/草稿审计」流程模拟与记忆预算池
+  （D12，见下）。
+
+### 新增遗留（DEFERRED，G 系列产生）
+
+| # | 事项 | 原因 / 现状 |
+|---|---|---|
+| D12 | 控制塔「生成/草稿审计」流程模拟 + LF3_RETRIEVE 记忆预算池 | 展示的是起草管线在真实 LLM 环境下的运行产物（交接回执/逐条审计/预算分配）；管线已可真跑（F6/G3），待 LLM 环境就绪后把真实 run 产物投影进塔（替换 LF3_AUDIT 静态） |

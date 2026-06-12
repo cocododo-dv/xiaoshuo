@@ -1,6 +1,7 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { S2_BE_STEPS } from "./ws-snow.jsx";
 
 /* global window */
 /* ==========================================================
@@ -18,18 +19,8 @@ import { WsCatalog } from "./ws-catalog.jsx";
      快照日志）留本地（体积大、跨会话价值低，账本记录）。
    ========================================================== */
 
-const SNOW_STEPS = [
-  ["audience", "book_brief"],
-  ["logline", "one_sentence_summary"],
-  ["paragraph", "one_paragraph_summary"],
-  ["characters", "character_sheets"],
-  ["synopsis", "short_synopsis"],
-  ["backstory", "character_synopses"],
-  ["outline", "long_synopsis"],
-  ["profile", "character_bibles"],
-  ["scenes", "scene_list"],
-  ["planning", "scene_details"],
-];
+// G5：FE→BE 步骤键映射统一以 ws-snow 的 S2_BE_STEPS 为正源（避免双份漂移）
+const SNOW_STEPS = S2_BE_STEPS;
 const FE_BY_BE = Object.fromEntries(SNOW_STEPS.map(([fe, be]) => [be, fe]));
 
 const snowCacheKey = (workId) => "ws_snow_state_v2::" + workId;

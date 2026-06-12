@@ -675,10 +675,10 @@ function s2GenericCands(draft) {
   ];
 }
 
-/* ---- AI candidate generation (real, via window.claude) ----
-   Gather the confirmed upstream layers as context, ask Claude for 3
-   divergent candidates in strict JSON, parse defensively. Falls back to
-   the static set on any failure so the step never breaks. */
+/* ---- AI candidate generation (后端节点 snowflake_step_candidates，G5) ----
+   Gather the confirmed upstream layers as context and let the backend
+   template produce 3 divergent candidates. The default static set keeps
+   the step usable when the LLM is unavailable. */
 const S2_ID_LETTERS = ["A", "B", "C", "D"];
 
 // fold one step's content (draft, else scaffold) to a short context line
@@ -739,15 +739,52 @@ function s2ParseCands(raw) {
   })).filter(c => c.text);
 }
 
+/* FE→BE 步骤键映射（正源；ws-snow-sync 复用同一份避免漂移） */
+const S2_BE_STEPS = [
+  ["audience", "book_brief"],
+  ["logline", "one_sentence_summary"],
+  ["paragraph", "one_paragraph_summary"],
+  ["characters", "character_sheets"],
+  ["synopsis", "short_synopsis"],
+  ["backstory", "character_synopses"],
+  ["outline", "long_synopsis"],
+  ["profile", "character_bibles"],
+  ["scenes", "scene_list"],
+  ["planning", "scene_details"],
+];
+const S2_BE_KEY = Object.fromEntries(S2_BE_STEPS);
+
+/* FE-ALIGN G5：候选生成走后端节点 snowflake_step_candidates（提示词模板在
+   config/prompts.yaml）；上下文/草稿折叠文本随请求带入（原型脚手架形状只在
+   前端）。LLM 不可用 → 抛引导（默认展示的本地启发式候选不受影响）。 */
 async function s2GenerateCands(active, data, drafts, scaffolds) {
-  if (!(window.claude && typeof window.claude.complete === "function")) {
-    throw new Error("AI 接口不可用（请在支持的环境中运行）");
+  const { apiPost } = await import("./lib/client.js");
+  let workId = null;
+  try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+  const beKey = S2_BE_KEY[active.key];
+  if (!workId || !beKey) throw new Error("作品尚未就绪，稍后重试");
+  let res = null;
+  try {
+    res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/fe-candidates`, {
+      context: s2UpstreamContext(active.key, drafts, scaffolds),
+      draft: ((drafts || {})[active.key] || ""),
+      target_chars: data.target || 120,
+    });
+  } catch (e) {
+    throw new Error("AI 候选生成失败：" + ((e && e.message) || e));
   }
-  const prompt = s2GenPrompt(active, data, s2UpstreamContext(active.key, drafts, scaffolds), (drafts || {})[active.key]);
-  const raw = await window.claude.complete(prompt);
-  const cands = s2ParseCands(raw);
-  if (!cands.length) throw new Error("未能解析出候选");
-  return cands;
+  const cands = (res && res.candidates) || [];
+  if (res && res.source === "fallback") {
+    throw new Error("AI 候选需要可用的 LLM：请到「系统设置 → 模型与接入」启用后重试（当前展示的是本地启发式候选）。");
+  }
+  if (!cands.length) throw new Error("未能解析出候选，请重试一次");
+  return cands.map((c, i) => ({
+    id: S2_ID_LETTERS[i] || String(i + 1),
+    label: (c.label || `方向 ${i + 1}`).toString().slice(0, 8),
+    tag: (c.tag || "AI 候选").toString().slice(0, 16),
+    text: (c.text || "").toString().trim(),
+    notes: Array.isArray(c.notes) ? c.notes.slice(0, 3) : [],
+  })).filter(c => c.text);
 }
 
 /* ---- downstream staleness (the fractal method's cheap-backtracking core) ----
@@ -3246,10 +3283,10 @@ function WsConstruct({ go }) {
   return <WsSnowflake key={step} go={go} initialStep={step} onOverview={() => setMode("overview")} />;
 }
 
-Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_SCENE_SEED: S2_SCAFFOLD_SEED.scenes, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState,
+Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, S2_SCENE_SEED: S2_SCAFFOLD_SEED.scenes, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState,
   s2Materialize: { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState } });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSnowflake, WsConstruct, S2_STEPS, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState };
+export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState };
 export const S2_SCENE_SEED = S2_SCAFFOLD_SEED.scenes;
 export const s2Materialize = { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState };
