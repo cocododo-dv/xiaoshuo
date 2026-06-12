@@ -122,6 +122,42 @@ const Lf7Bridge = {
     });
     return out;
   },
+  /* —— 章级审计回执（FE-ALIGN H2）：契约+产出+锚点在场确定性扫描 ——
+     正文存在 → 还原 LF3_AUDIT 形状（honored=命中带真实引用句；未检出/到期
+     承诺归 introduced 区待人工核对；drifted 恒空——违约判定属 LLM 审计 D13）；
+     无正文 → null（lf6 回落静态演示）。 */
+  async auditReceipt(chNo) {
+    const pid = lf7ProjectId();
+    const chapterId = lf7ChapterIdByNo(chNo);
+    if (!pid || !chapterId) return null;
+    let r = null;
+    try { r = await apiGet(`/api/v2/projects/${pid}/longform/chapters/${chapterId}/audit-receipt`); } catch (e) { return null; }
+    if (!r || !r.has_text) return null;
+    return {
+      ch: r.chapter_no || chNo,
+      real: true,
+      words: r.words_total,
+      contractStatus: (r.contract || {}).status || "",
+      honored: (r.anchor_hits || []).map((h, i) => ({
+        id: "rh-" + (h.id || i), label: "锚点在场", tone: "sage",
+        text: `${h.subject} = ${h.value}`, evidence: h.evidence, at: h.at,
+      })),
+      drifted: [],
+      introduced: [
+        ...(r.anchor_misses || []).map((m, i) => ({
+          id: "rm-" + (m.id || i), kind: "未检出", tone: "gold",
+          text: `${m.subject} = ${m.value}`,
+          note: "本章正文未检出该锚点值——人工核对，必要时回写作台补写。",
+          actions: ["人工核对"],
+        })),
+        ...(r.pending || []).map((p, i) => ({
+          id: "rp-" + (p.id || i), kind: "到期承诺", tone: "gold",
+          text: p.title, note: p.note || "本章为计划回收章——待人工核对落点。",
+          actions: ["人工核对回收落点"],
+        })),
+      ],
+    };
+  },
   /* —— 归档时新发现的冲突：直接建 finding（后端同事务产待办卡） —— */
   addCanonConflict(entry) {
     const pid = lf7ProjectId();

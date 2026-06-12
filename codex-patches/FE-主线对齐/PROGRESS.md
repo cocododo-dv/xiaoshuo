@@ -613,7 +613,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 > 「检出（真实引用句）/未检出（待人工核对）」，违约判定留给 LLM 审计（D13）。
 
 - [x] H1（源 D12）LF3_RETRIEVE 记忆池接锚点库 — commit 见 git log `FE-ALIGN H1`
-- [ ] H2（源 D12）章级审计回执接真实产物 — commit `______`
+- [x] H2（源 D12）章级审计回执接真实产物 — commit 见 git log `FE-ALIGN H2`
 
 ### H1 明细
 
@@ -630,3 +630,35 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 验证：smoke-h1.mjs 4/4（seed 24/5 faded → 投影 5 条且 canon 不被污染 →
   塔记忆面板渲染 → POST+PATCH faded 新条目刷新可见）；smoke-f4 回归过；
   run-smokes 六套全过；后端全量 869 passed；build 绿。
+
+### H2 明细
+
+- 后端 `GET …/longform/chapters/{chapter_id}/audit-receipt`
+  （LongformTowerService.audit_receipt，纯确定性无 LLM）：契约段（真）+
+  产出段（场景卡 state/words + 各场 author-draft 正文剥 HTML，占位文档
+  不算正文）+ 锚点在场扫描（pinned 设定锚点的 value 子串检索 → 命中摘
+  **真实引用句** + 「场次 · 段 N」定位；未命中归 misses；promise 锚点
+  payoff==本章序归 pending 到期承诺）。章序经 display_order 推导。
+  测试 1 条（无正文 has_text=False / 命中带引用句 / 未检出 / 到期承诺）。
+- FE `Lf7Bridge.auditReceipt(chNo)`：还原 LF3_AUDIT 形状——honored=命中
+  （真实证据句），introduced=未检出+到期承诺（待人工核对语义），
+  **drifted 恒空**（违约判定属 LLM 审计，D13）；无正文返回 null。
+- **授权视图改动（记录在案）**：lf6 增 realAud 状态 + 拉取 effect
+  （挂载/lf:bridge-changed/beginAudit 刷新，章号取 LF2_NEXT）；
+  `aud` 与三处 audit 消费（页签/审计动画/归档动画）改为「真回执优先、
+  无正文回落静态演示」。d1/d2/n1/n3 硬编码动作只随静态路径出现。
+  DemoTag 收窄至「违约级判定 + 流程动画裁定语气」。
+- 验证：pytest 全量 870 passed；smoke-h2.mjs 4/4（锚点命中真实引用句 /
+  未检出 / 到期承诺 / 桥形状还原 + drifted 恒空）；run-smokes 六套 +
+  smoke-acceptance 7/7 全过；build 绿。
+
+## H 系列收口（D12 销账）
+
+- H1/H2 完成；后端最终 870 passed / 12 skipped；全部冒烟绿。
+- 控制塔最后的演示残余收敛为 **D13**：
+
+### 新增遗留（DEFERRED，H 系列产生）
+
+| # | 事项 | 原因 / 现状 |
+|---|---|---|
+| D13 | 章级审计的「违约判定」LLM 节点 + 流程动画的逐条裁定语气 + 静态路径的 d1/d2/n1/n3 演示动作 | 确定性扫描只能诚实声明「检出/未检出」；判定「草稿违反了契约第 N 条」需要 LLM 审计节点（性质同 styleref 提取/起草引擎：三件套 + 真实 LLM 环境）。回执管道（H2）与裁决产物化（P7 onceTask）都已就绪，接上节点即闭环 |

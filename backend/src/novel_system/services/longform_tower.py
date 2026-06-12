@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -39,6 +40,45 @@ CONTRACT_TRANSITIONS = {
     "dispatched": {"archived"},
     "archived": set(),
 }
+
+
+# ---------------- 审计回执的确定性扫描工具（FE-ALIGN H2） ----------------
+def _anchor_fe(anchor: LongformAnchor) -> dict[str, Any]:
+    try:
+        parsed = json.loads(anchor.note or "{}")
+        fe = parsed.get("fe") if isinstance(parsed, dict) else None
+        return fe if isinstance(fe, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _draft_paragraphs(content: str | None) -> list[str]:
+    """正文（HTML 或纯文本）→ 段落列表（剥标签；占位文档不算正文）。"""
+    raw = str(content or "")
+    if not raw.strip():
+        return []
+    text = re.sub(r"</p\s*>|<br\s*/?>", "\n", raw, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    paras = [p.strip() for p in text.split("\n") if p.strip()]
+    if len(paras) == 1 and paras[0].startswith("在这里开始写"):
+        return []
+    return paras
+
+
+def _scan_value(paragraphs: list[dict[str, Any]], value: str) -> dict[str, Any] | None:
+    """value 子串在章正文中的首个命中：返回包含它的真实句子与位置。"""
+    needle = value.strip()
+    if not needle:
+        return None
+    for para in paragraphs:
+        text = str(para.get("text") or "")
+        if needle not in text:
+            continue
+        for sentence in re.split(r"(?<=[。！？；…!?])", text):
+            if needle in sentence and sentence.strip():
+                return {"sentence": sentence.strip(), "scene_title": para["scene_title"], "idx": para["idx"]}
+        return {"sentence": text[:80], "scene_title": para["scene_title"], "idx": para["idx"]}
+    return None
 
 
 def _anchor_payload(anchor: LongformAnchor) -> dict[str, Any]:
@@ -362,6 +402,104 @@ class LongformTowerService:
             card.state = "resolved"
         self.session.flush()
         return _finding_payload(finding)
+
+    # ---------------- 章级审计回执（FE-ALIGN H2，纯确定性） ----------------
+    # 诚实口径：扫描只声明「检出（带真实引用句）/未检出（待人工核对）」，
+    # 不机器判定「违约」——违约判定属 LLM 审计节点（D13）。
+    def audit_receipt(self, project_id: str, chapter_id: str) -> dict[str, Any]:
+        from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard
+
+        project = self._require_project(project_id)
+        chapter = self.session.get(ChapterGoal, chapter_id)
+        if chapter is None or (chapter.project_id and chapter.project_id != project.project_id):
+            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
+        contract = self.get_or_create_contract(project_id, chapter_id)
+
+        scenes = self.session.scalars(
+            select(SceneCard)
+            .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
+            .order_by(SceneCard.scene_seq.asc())
+        ).all()
+        scene_rows: list[dict[str, Any]] = []
+        paragraphs: list[dict[str, Any]] = []  # {scene_title, idx, text}
+        words_total = 0
+        for scene in scenes:
+            draft = self.session.scalars(
+                select(AuthorDraft).where(
+                    AuthorDraft.object_type == "scene",
+                    AuthorDraft.object_id == scene.scene_id,
+                    AuthorDraft.status == "current",
+                )
+            ).first()
+            paras = _draft_paragraphs(draft.content if draft else "")
+            title = str((scene.writer_brief_json or {}).get("title") or scene.scene_goal or scene.scene_id)
+            for idx, text in enumerate(paras, start=1):
+                paragraphs.append({"scene_title": title, "idx": idx, "text": text})
+            words = sum(len(p.replace(" ", "")) for p in paras)
+            words_total += words
+            scene_rows.append(
+                {
+                    "scene_id": scene.scene_id,
+                    "title": title,
+                    "state": scene.state,
+                    "words": words,
+                    "has_draft": bool(paras),
+                }
+            )
+
+        chapter_no = self._chapter_ordinal(project.project_id, chapter_id)
+        anchors = self.session.scalars(
+            select(LongformAnchor).where(
+                LongformAnchor.project_id == project.project_id,
+                LongformAnchor.status == "pinned",
+            ).order_by(LongformAnchor.created_at)
+        ).all()
+        hits: list[dict[str, Any]] = []
+        misses: list[dict[str, Any]] = []
+        pending: list[dict[str, Any]] = []
+        for anchor in anchors:
+            fe = _anchor_fe(anchor)
+            if anchor.kind == "promise":
+                if fe.get("payoff") == chapter_no and str(fe.get("state") or "open") != "closed":
+                    pending.append({"kind": "promise", "id": fe.get("id") or anchor.anchor_id, "title": str(fe.get("title") or anchor.text), "note": "本章为计划回收章——是否落地待人工核对"})
+                continue
+            if anchor.kind not in {"fact", "trait", "setting", "timeline"}:
+                continue
+            subject = str(fe.get("subject") or "").strip()
+            value = str(fe.get("value") or "").strip()
+            if not value:
+                continue
+            hit = _scan_value(paragraphs, value)
+            entry = {"id": fe.get("id") or anchor.anchor_id, "subject": subject or anchor.text, "value": value}
+            if hit is not None:
+                hits.append({**entry, "evidence": hit["sentence"], "at": f"{hit['scene_title']} · 段 {hit['idx']}"})
+            else:
+                misses.append(entry)
+
+        return {
+            "chapter_id": chapter_id,
+            "chapter_no": chapter_no,
+            "contract": contract,
+            "scenes": scene_rows,
+            "words_total": words_total,
+            "has_text": bool(paragraphs),
+            "anchor_hits": hits,
+            "anchor_misses": misses,
+            "pending": pending,
+        }
+
+    def _chapter_ordinal(self, project_id: str, chapter_id: str) -> int:
+        from novel_system.db.models import ChapterGoal
+
+        rows = self.session.scalars(
+            select(ChapterGoal.chapter_id)
+            .where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
+            .order_by(ChapterGoal.display_order.asc(), ChapterGoal.created_at.asc())
+        ).all()
+        for index, cid in enumerate(rows, start=1):
+            if cid == chapter_id:
+                return index
+        return 0
 
     def transition_contract(self, project_id: str, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         project = self._require_project(project_id)

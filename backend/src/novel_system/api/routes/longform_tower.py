@@ -82,6 +82,14 @@ def transition_chapter_contract(
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.get("/api/v2/projects/{project_id}/longform/chapters/{chapter_id}/audit-receipt")
+def get_chapter_audit_receipt(project_id: str, chapter_id: str, request: Request, session: Session = Depends(get_session)):
+    """FE-ALIGN H2：章级审计回执（契约+产出+锚点在场确定性扫描，无 LLM）。"""
+    result = LongformTowerService(session).audit_receipt(project_id, chapter_id)
+    session.commit()  # get_or_create_contract 可能补建契约行
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.get("/api/v2/projects/{project_id}/longform/audit")
 def list_project_audit(
     project_id: str,

@@ -158,3 +158,42 @@ def test_anchor_fe_kinds_promise_thread_arc(client):
     assert patched.status_code == 200
     import json
     assert json.loads(patched.json()["data"]["note"])["fe"]["payoff"] == 15
+
+
+def test_audit_receipt_deterministic_scan(client, session):
+    """FE-ALIGN H2：审计回执 = 契约 + 产出 + 锚点在场扫描（检出带真实引用句 / 未检出待人工核对）。"""
+    import json as _json
+
+    pid = _create_project(client)
+    cid = _chapter(client, pid)
+    # 契约 + 锚点：一条会命中（铜），一条不会（28 岁），一条到期承诺（本章号=1）
+    client.put(f"/api/v2/projects/{pid}/longform/chapters/{cid}/contract", json={"constraints": [{"text": "盐钟材质保持为铜"}]})
+    base = f"/api/v2/projects/{pid}/longform/anchors"
+    _post(client, base, {"kind": "setting", "text": "盐钟 · 材质 = 铜", "note": _json.dumps({"fe": {"id": "c2", "subject": "盐钟 · 材质", "value": "铜"}}, ensure_ascii=False)})
+    _post(client, base, {"kind": "trait", "text": "林岑 · 年龄 = 28 岁", "note": _json.dumps({"fe": {"id": "c1", "subject": "林岑 · 年龄", "value": "28 岁"}}, ensure_ascii=False)})
+    _post(client, base, {"kind": "promise", "text": "楼梯间的第二组脚印", "note": _json.dumps({"fe": {"id": "l6", "title": "楼梯间的第二组脚印", "setup": 2, "payoff": 1, "state": "open"}}, ensure_ascii=False)})
+
+    # 无正文：has_text=False（FE 据此回落演示静态）
+    empty = client.get(f"/api/v2/projects/{pid}/longform/chapters/{cid}/audit-receipt").json()["data"]
+    assert empty["has_text"] is False
+
+    # 用目录建章自动带的首场写正文（含「铜」，不含「28 岁」）
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    scene_id = tree["chapters"][0]["scenes"][0]["scene_id"]
+    ensure = client.post(f"/api/v1/author-drafts/scene/{scene_id}/ensure", headers={"X-Idempotency-Key": "rcpt-ensure"})
+    draft = ensure.json()["data"]["draft"]
+    save = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": "<p>她把铜制的盐钟扣回掌心。</p><p>夜班的灯还亮着。</p>", "base_revision_no": draft["revision_no"]},
+    )
+    assert save.status_code == 200, save.text
+
+    receipt = client.get(f"/api/v2/projects/{pid}/longform/chapters/{cid}/audit-receipt").json()["data"]
+    assert receipt["has_text"] is True
+    assert receipt["chapter_no"] == 1
+    assert receipt["contract"]["status"] in {"drafting", "ready"}
+    assert receipt["scenes"][0]["has_draft"] is True and receipt["scenes"][0]["words"] > 0
+    hits = {h["id"]: h for h in receipt["anchor_hits"]}
+    assert "c2" in hits and "铜" in hits["c2"]["evidence"] and "段 1" in hits["c2"]["at"]
+    assert [m["id"] for m in receipt["anchor_misses"]] == ["c1"]
+    assert receipt["pending"] and receipt["pending"][0]["id"] == "l6"

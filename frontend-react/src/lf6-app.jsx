@@ -427,8 +427,21 @@ function Lf6Tower({ go, standalone }) {
     }, 1900);
   };
 
-  /* 章级审计：起草台交齐全部场次后，由你在塔上启动 */
-  const beginAudit = () => { setHasDraft(true); setConsoleTab("audit"); setAuditPlay(true); };
+  /* FE-ALIGN H2 授权接缝：真实审计回执（确定性扫描）——本章有正文时替换静态演示 */
+  const [realAud, setRealAud] = useApp6(null);
+  useEffect6(() => {
+    let on = true;
+    const pull = () => { try { if (Lf7Bridge && Lf7Bridge.auditReceipt) Lf7Bridge.auditReceipt(LF2_NEXT).then(r => { if (on) setRealAud(r); }).catch(() => {}); } catch (e) {} };
+    pull();
+    window.addEventListener("lf:bridge-changed", pull);
+    return () => { on = false; window.removeEventListener("lf:bridge-changed", pull); };
+  }, []);
+
+  /* 章级审计：起草台交齐全部场次后，由你在塔上启动（先刷新真实回执再播放） */
+  const beginAudit = () => {
+    try { if (Lf7Bridge && Lf7Bridge.auditReceipt) Lf7Bridge.auditReceipt(LF2_NEXT).then(r => setRealAud(r)).catch(() => {}); } catch (e) {}
+    setHasDraft(true); setConsoleTab("audit"); setAuditPlay(true);
+  };
 
   /* 演示捷径：不想真跑三次生成时，把余下场次标记成稿 */
   const simulate = () => {
@@ -560,7 +573,7 @@ function Lf6Tower({ go, standalone }) {
     { label: "张力健康", val: d.tensionHealth, tone: d.tensionHealth >= 80 ? "sage" : d.tensionHealth >= 65 ? "gold" : "rose" },
   ];
 
-  const aud = LF3_AUDIT;
+  const aud = realAud || LF3_AUDIT; // H2：真实回执优先（本章有正文时），否则静态演示
   const driftPending = aud.drifted.filter(x => !fixDone.has(x.id)).length;
   const jumpChip = (c) => {
     if (c.key === "fade") { flash(`${d.fading.length} 项关键设定/悬念正在淡出 AI 上下文 —— 右侧机器房「AI 工作记忆」可一键重新钉入。`); return; }
@@ -579,7 +592,7 @@ function Lf6Tower({ go, standalone }) {
         <div className="lf3-brand">
           <span className="lf3-brand-mark"><I.Radar size={20} /></span>
           <div>
-            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {WsDemoTag && <WsDemoTag note="悬念债 / 锚点 / 故事线 / 弧线（锚点库）与空降 / 断链 / 认知态（审计层）均为后端真实数据，契约与裁决同源；「生成 / 草稿审计」流程模拟与记忆预算池仍为演示（待起草管线在真实 LLM 环境跑通）。" />}</div>
+            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {WsDemoTag && <WsDemoTag note="悬念债 / 锚点 / 线 / 弧（锚点库）、空降 / 断链 / 认知态（审计层）、记忆预算池（faded 锚点）均为后端真实数据；章级审计回执在本章有正文时为确定性扫描真回执（契约 / 产出 / 锚点在场），违约级判定与流程动画的逐条裁定语气仍属演示（待 LLM 审计节点）。" />}</div>
             <div className="lf3-brand-title">{WsWorks ? WsWorks.active().title : "潮汐档案"}<span className="lf3-brand-genre">{WsWorks ? WsWorks.active().genre : "悬疑 · 长篇"}</span></div>
           </div>
         </div>
@@ -787,14 +800,14 @@ function Lf6Tower({ go, standalone }) {
           </div>
           {consoleTab === "brief"
             ? <Lf4Brief brief={brief} pinnedFacts={pinnedFacts} onToggleMode={toggleMode} onPromoteFact={promoteFact} onCopy={copy} onPreview={() => setPreview(true)} onGenerate={generate} gen={gen} />
-            : <Lf3Audit audit={LF3_AUDIT} fixDone={fixDone} onFix={fixDrift} newDone={newDone} onArchiveNew={archiveNew} onArchive={startArchive} />}
+            : <Lf3Audit audit={aud} fixDone={fixDone} onFix={fixDrift} newDone={newDone} onArchiveNew={archiveNew} onArchive={startArchive} />}
         </aside>
       </div>
 
       {toast && ReactDOM.createPortal(<div className="lf3-toast"><span className="lf3-toast-dot"><I.Check size={13} /></span>{toast}</div>, document.body)}
       {gen === "generating" && ReactDOM.createPortal(<Lf6Generating brief={brief} />, document.body)}
-      {auditPlay && hasDraft && ReactDOM.createPortal(<Lf6Auditing audit={LF3_AUDIT} onClose={() => setAuditPlay(false)} />, document.body)}
-      {archivePlay && ReactDOM.createPortal(<Lf6Archiving audit={LF3_AUDIT} onDone={() => { setArchivePlay(false); archive(); }} />, document.body)}
+      {auditPlay && hasDraft && ReactDOM.createPortal(<Lf6Auditing audit={aud} onClose={() => setAuditPlay(false)} />, document.body)}
+      {archivePlay && ReactDOM.createPortal(<Lf6Archiving audit={aud} onDone={() => { setArchivePlay(false); archive(); }} />, document.body)}
       {preview && ReactDOM.createPortal(<Lf3Preview brief={brief} pinnedFacts={pinnedFacts} onClose={() => setPreview(false)} />, document.body)}
     </div>
   );
