@@ -126,3 +126,35 @@ def test_run_full_forwards_author_note_to_orchestrator(client, session, monkeypa
     assert response.status_code == 200, response.text
     assert captured == {"scene_id": scene_id, "author_note": "雨景贯穿全场。"}
 
+
+
+def test_passage_patch_candidate_for_fe_scene_offline(client, session) -> None:
+    """FE-ALIGN G4：内联改写端点对 FE 目录场景可用；LLM 关闭走离线确定性客户端。"""
+    scene_id = _seed_fe_scene(session)
+    response = client.post(
+        "/api/v1/passages/patch-candidates",
+        json={
+            "object_type": "scene",
+            "object_id": scene_id,
+            "scene_id": scene_id,
+            "source_excerpt": "她把证据袋放回原处，转身解释了三句。",
+            "issue_dimension": "把这段改得更凝练，让动作自己说话",
+        },
+        headers={"X-Idempotency-Key": "fe-patch-g4"},
+    )
+    assert response.status_code == 200, response.text
+    cand = response.json()["data"]["candidate"]
+    assert cand["patch_id"]
+    options = cand["replacement_options"]
+    assert len(options) >= 2
+    assert all(o.get("replacement_text") for o in options)
+    # 离线兜底有明确标记——前端据此按「模型不可用」处理，不冒充真实改写
+    assert "offline deterministic" in (cand.get("rationale") or "")
+
+    accept = client.post(
+        f"/api/v1/passage-patch-candidates/{cand['patch_id']}/accept",
+        json={"selected_option_id": options[0]["option_id"]},
+        headers={"X-Idempotency-Key": "fe-patch-g4-accept"},
+    )
+    assert accept.status_code == 200
+    assert accept.json()["data"]["candidate"]["author_decision"] == "accepted"

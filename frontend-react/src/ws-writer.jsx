@@ -306,6 +306,8 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const tw = { ...WRITER_TWEAK_DEFAULTS, ...(t || {}) };
 
   const [activeScene, setActiveScene] = useWS(wrInitialScene);
+  /* FE-ALIGN G4 授权接缝：当前在写场景镜像到模块级（inline rewrite 的后端定位） */
+  useWE(() => { WR_ACTIVE_SID = activeScene; return () => { WR_ACTIVE_SID = null; }; }, [activeScene]);
   const [entityPop, setEntityPop] = useWS(null);
   const [mention, setMention] = useWS(null);     /* @ 档案选择器 { query, x, y } */
   const [mentionIdx, setMentionIdx] = useWS(0);
@@ -1583,23 +1585,52 @@ function wrParseVariants(out) {
     .trim());
   return parts.filter(Boolean).slice(0, 3);
 }
+/* FE-ALIGN G4：内联改写接后端 passages/patch-candidates（writer_passage_patch
+   节点；提示词由 config/prompts.yaml 组装，指令/语气走 issue_dimension 自由文本）。
+   采纳/弃用经 accept/reject 回传——这是作者偏好画像的学习闭环。 */
+let WR_ACTIVE_SID = null;   // 当前在写场景（WriterRoom 镜像）
+let wrPatchLast = null;     // { patchId, options } —— 待裁决的最近一次候选
+
 async function wrRewriteMulti(text, instr) {
-  if (!(window.claude && typeof window.claude.complete === "function")) {
+  const { apiPost } = await import("./lib/client.js");
+  let sceneId = null;
+  try {
+    const sid = WR_ACTIVE_SID || (((WsCatalog && WsCatalog.writingScene()) || {}).scene || {}).sid;
+    sceneId = sid && WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
+  } catch (e) {}
+  if (!sceneId) { const err = new Error("no-scene"); err.code = "no-model"; throw err; }
+  let cand = null;
+  try {
+    const data = await apiPost("/api/v1/passages/patch-candidates", {
+      object_type: "scene",
+      object_id: sceneId,
+      scene_id: sceneId,
+      source_excerpt: String(text || "").slice(0, 2000),
+      issue_dimension: instr,
+    });
+    cand = data && data.candidate;
+  } catch (e) {
+    const err = new Error("no-model"); err.code = "no-model"; err.detail = e && e.message; throw err;
+  }
+  const options = (cand && cand.replacement_options) || [];
+  // 离线兜底产物是确定性占位改写——按「模型不可用」如实处理，不冒充真实改写
+  if (!options.length || /offline deterministic/i.test((cand && cand.rationale) || "")) {
     const err = new Error("no-model"); err.code = "no-model"; throw err;
   }
-  const prompt = `你是一位资深中文小说编辑。请给出 3 个取向不同的改写版本。严格遵守：
-- 每个版本之间用单独一行的 ~~~ 分隔；总共 3 个版本
-- 每个版本只含改写后的正文，不要编号、标签、引号或任何解释
-- 保持与原文一致的人称（限知视角 · 林岑）与时态
-- 保持冷峻、克制、以短句为主的文风；字数与原文相近（除非要求更短）
+  wrPatchLast = { patchId: cand.patch_id, options };
+  return options.slice(0, 3).map(o => String(o.replacement_text || "").trim()).filter(Boolean);
+}
 
-要求：${instr}
-
-原文：
-${text}`;
-  const out = await window.claude.complete(prompt);
-  const variants = wrParseVariants(out);
-  return variants.length ? variants : [(out || "").trim()];
+/* 候选裁决回传（替换=accept 选中项 / 关闭未采纳=reject）；幂等：决一次即清 */
+function wrPatchDecide(pickIdx, accepted) {
+  const last = wrPatchLast;
+  if (!last) return;
+  wrPatchLast = null;
+  import("./lib/client.js").then(({ apiPost }) => {
+    const opt = last.options[pickIdx] || last.options[0] || {};
+    if (accepted) apiPost(`/api/v1/passage-patch-candidates/${last.patchId}/accept`, { selected_option_id: opt.option_id || "" }).catch(() => {});
+    else apiPost(`/api/v1/passage-patch-candidates/${last.patchId}/reject`, {}).catch(() => {});
+  }).catch(() => {});
 }
 
 function WrInlineRewrite({ editorRef, onCommit }) {
@@ -1694,7 +1725,7 @@ function WrInlineRewrite({ editorRef, onCommit }) {
     lastInstr.current = instr;
     setPhase("loading");
     try { const arr = await wrRewriteMulti(selRef.current, instr); setResults(arr); setPick(0); setPhase("result"); }
-    catch (err) { setErrMsg(err && err.code === "no-model" ? "当前环境未接入模型，无法实时改写。" : "改写失败，请稍后重试。"); setPhase("error"); }
+    catch (err) { setErrMsg(err && err.code === "no-model" ? "实时改写需要可用的 LLM：请到「系统设置 → 模型与接入」启用后重试。" : "改写失败，请稍后重试。"); setPhase("error"); }
   };
   const doReplace = () => {
     const range = rangeRef.current;
@@ -1709,10 +1740,11 @@ function WrInlineRewrite({ editorRef, onCommit }) {
       } catch (e) {}
       const sel = window.getSelection(); if (sel) sel.removeAllRanges();
       onCommit && onCommit();
+      wrPatchDecide(pick, true); // G4：采纳回传（学习偏好）
     }
     close();
   };
-  const close = () => { setPhase("idle"); setRect(null); setResults([]); setPick(0); setErrMsg(""); setCustom(""); setAnnoText(""); annoElRef.current = null; revElRef.current = null; };
+  const close = () => { wrPatchDecide(0, false); /* G4：未采纳即弃用回传（已裁决则 no-op） */ setPhase("idle"); setRect(null); setResults([]); setPick(0); setErrMsg(""); setCustom(""); setAnnoText(""); annoElRef.current = null; revElRef.current = null; };
 
   const unwrapAnno = (m) => {
     const parent = m && m.parentNode; if (!parent) return;
@@ -1870,7 +1902,7 @@ function WrInlineRewrite({ editorRef, onCommit }) {
   );
 }
 
-Object.assign(window, { WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, wrSeedHTML, wrNotesSeed });
+Object.assign(window, { WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, wrSeedHTML, wrNotesSeed, wrRewriteMulti, wrPatchDecide });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, wrSeedHTML, wrNotesSeed };

@@ -503,7 +503,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - [x] G1（源 D10）LF3 空降/断链/线索不公平接审计 findings — commit 见 git log `FE-ALIGN G1`
 - [x] G2（源 D11）雪花 history 轻量跨会话 — commit 见 git log `FE-ALIGN G2`
 - [x] G3（源 D9）起草 note 进 scenes run 管线 — commit 见 git log `FE-ALIGN G3`
-- [ ] G4（源 D8）写作台内联改写接 passages/patch-candidates — commit `______`
+- [x] G4（源 D8）写作台内联改写接 passages/patch-candidates — commit 见 git log `FE-ALIGN G4`
 - [ ] G5（源 D8）雪花候选生成接后端 LLM 节点 — commit `______`
 
 ### G1 明细
@@ -552,3 +552,20 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 测试 3 条：author_note_instruction 格式/截断；run/jobs 载荷往返；
   run/full 经 stub Orchestrator 断言转发。全量 864 passed。
 - 验证：smoke-f6 回归 3/3（G3 后端重启 8009 后）；build 绿。
+
+### G4 明细
+
+- `wrRewriteMulti` 弃 window.claude → `POST /api/v1/passages/patch-candidates`
+  （现成 writer_passage_patch 节点；指令+语气滑杆并入 issue_dimension 自由
+  文本；场景定位 = 当前在写 sid → 后端 scene_id）。
+- 候选裁决闭环：替换 → accept（带 selected_option_id）；关闭未采纳 →
+  reject——这是作者偏好画像（AuthorPreferenceProfile）的学习入口；
+  幂等（裁决一次即清，close 的 reject 对已裁决 no-op）。
+- 诚实降级：离线确定性占位（rationale 标记 offline deterministic）按
+  「模型不可用」处理不冒充真实改写；错误文案升级为「去系统设置启用 LLM」。
+- **授权视图改动（记录在案）**：WriterRoom 增 1 行 activeScene → 模块级
+  WR_ACTIVE_SID 镜像 effect；doReplace/close 各 1 行裁决回传；
+  wrRewriteMulti/wrPatchDecide 进 window 注册表（冒烟驱动面）。
+- 验证：pytest 7 条 guards（含 G4 离线全链 + accept）；全量 865 passed；
+  smoke-g4 3/3（真实端点 + no-model 降级 + 视图可达）；run-smokes 六套
+  全过；build 绿。window.claude 活探测仅剩雪花候选 1 处（G5 销）。
