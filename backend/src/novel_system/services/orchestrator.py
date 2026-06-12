@@ -47,6 +47,11 @@ class Orchestrator:
         self.version_manager.recover_stuck_jobs()
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
+        if state is None:
+            # FE 目录直接建的场景没有运行时状态行（scenes POST 才会建）：按同一约定补建
+            state = SceneRunState(scene_id=scene_id, scene_status="ready")
+            self.session.add(state)
+            self.session.flush()
         contract = self.execution_contract_service.get_or_create(scene_id, actor_ref="orchestrator")
         if contract.status != "active":
             detail_reason = "scene execution contract is not ready for drafting"

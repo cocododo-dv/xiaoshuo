@@ -401,6 +401,11 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     scene = AuthorLifecycleService(session).require_active_scene(scene_id)
     chapter = session.get(ChapterGoal, scene.chapter_id)
     state = session.get(SceneRunState, scene_id)
+    if state is None:
+        # FE 目录直接建的场景没有运行时状态行：按 scenes POST 的约定补建
+        state = SceneRunState(scene_id=scene_id, scene_status="ready")
+        session.add(state)
+        session.flush()
     runtime_service = ChapterRuntimeService(session)
     chapter_state = runtime_service.chapter_state_payload(scene.chapter_id)
     run_preflight = SceneRunPreflightService(session).build(scene, chapter_state)

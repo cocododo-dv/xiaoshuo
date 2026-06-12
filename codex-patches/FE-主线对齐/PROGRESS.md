@@ -320,7 +320,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - [x] F3（源 D5）ws-snow 接 snowflake-workspace v2 — commit 见 git log `FE-ALIGN F3`
 - [x] F4（源 D3）lf6 控制塔可视化接锚点/审计 API — commit 见 git log `FE-ALIGN F4`
 - [x] F5（源 D2）ws-styleref 接 style_reference v2 — commit 见 git log `FE-ALIGN F5`
-- [ ] F6（源 D1）ws-scene 起草引擎接 scenes run 管线 — commit `______`
+- [x] F6（源 D1）ws-scene 起草引擎接 scenes run 管线 — commit 见 git log `FE-ALIGN F6`
 - [ ] F7（源 D6）window.* 兼容赋值清理 — commit `______`
 
 ### F1 明细
@@ -432,3 +432,28 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 验证：smoke-f5.mjs 4/4 连跑两轮（multipart 导入 → 视图渲染真实书且演示书
   退场 → LLM 不可用启动抽取得明确引导 → 删除回落）；run-smokes 六套全过；
   后端全量 858 passed；build 绿。
+
+### F6 明细
+
+- `scnRun` 重写（ws-scene-run.jsx）：window.claude.complete（宿主 API，不存在）
+  → 后端 scenes run 管线。`POST /api/v1/scenes/{id}/run/jobs` 投递 →
+  轮询 `GET /api/v1/run-jobs/{id}`（终态 completed/blocked/failed/cancelled，
+  5 分钟超时）→ `GET …/workbench` 取产出（final → style → neutral 回退）→
+  本地确定性复检（scnQC 保留，戏剧拍 beat 后端不标，按「未标注」如实呈现）。
+  需人工审阅的 blocked 终态若已有草稿照实取回呈现并注明闸门状态。
+- 诚实降级（scnFriendly）：执行契约缺字段 → 引导「补全场景卡 / 走构思物化
+  主路径」（带 missing_fields）；LLM 不可用 → 引导去系统设置；其余透传真实
+  错误。预检 blocked 的 job 直接报前置检查未通过。无任何假进度/假输出。
+- 后端守卫（小修）：`Orchestrator.run_scene` 与 workbench 路由对 FE 目录
+  直接建的场景（无 SceneRunState 行）按 scenes POST 约定补建运行态行，
+  保证 409 结构化引导而不是 AttributeError 500。
+  测试 `test_fe_scene_run_guards.py` 3 条（workbench 200 / run-full 409
+  SCENE_EXECUTION_CONTRACT_BLOCKED 带 missing_fields / run-jobs 建任务不 500）。
+- 已知差距（记录在案）：作者自由改写指令（note）与上一版草稿暂不进入后端
+  管线（管线提示词由 config/prompts.yaml 组装）；起草日志中明确提示改用
+  写作台·深改姿态。scnBuildPrompt 保留作提示词参考。
+- DemoTag 更新：起草台标注改为「目录场景走 scenes run 真管线，LLM 未就绪
+  给明确引导」。
+- 验证：smoke-f6.mjs 3/3（最小场景卡投递真管线 → 结构化引导；UI 点「开始
+  起草」得到明确报错而非假进度；若环境 LLM 可用则断言真实正文 ≥100 字）；
+  pytest 全量 861 passed；run-smokes 六套全过；build 绿。

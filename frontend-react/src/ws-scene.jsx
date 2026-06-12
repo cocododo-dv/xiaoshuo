@@ -474,7 +474,7 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, outcomes, dx
   return (
     <aside className="scn2-queue">
       <header className="scn2-queue-head">
-        <div className="page-eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>AI 起草台 {demo && window.WsDemoTag && <window.WsDemoTag note="队列里的 CH07/CH08 演示场是模拟数据；从目录加入的场景是真实起草，会写回你的正文。" />}</div>
+        <div className="page-eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>AI 起草台 {demo && window.WsDemoTag && <window.WsDemoTag note="队列里的 CH07/CH08 演示场是模拟数据；从目录加入的场景走后端 scenes run 真管线（预检 → 起草 → 双层质检，LLM 未就绪会给明确引导），归档写回你的正文。" />}</div>
         <h2 className="text-serif scn2-queue-title">运行队列</h2>
         <p className="scn2-queue-sub">从章节编排的场景卡入列 · 一场一裁</p>
       </header>

@@ -191,28 +191,67 @@ function scnQC(paras, reactive) {
   };
 }
 
-/* ---- 完整一跑：提示词 → Claude → 解析 → 质检 ---- */
-async function scnRun(item, note, prevText) {
-  if (!(window.claude && typeof window.claude.complete === "function")) {
-    throw new Error("AI 接口不可用（请在支持 window.claude 的环境运行）");
+/* ---- 完整一跑：后端 scenes run 管线（FE-ALIGN F6）----
+   投递 run job（POST run/jobs）→ 轮询 run-jobs/{id} → workbench 取产出
+   → 本地确定性复检。失败/阻塞给明确引导（执行契约缺字段 / LLM 未启用 /
+   预检不过），不装假进度。scnBuildPrompt 保留作提示词参考（管线内由
+   后端 config/prompts.yaml 组装）。 */
+function scnFriendly(e) {
+  const code = (e && e.code) || "";
+  const msg = (e && e.message) || String(e || "");
+  if (code === "SCENE_EXECUTION_CONTRACT_BLOCKED") {
+    const miss = (((e && e.details) || {}).missing_fields || []).join("、");
+    return new Error(`这一场的执行契约还缺关键字段${miss ? `（${miss}）` : ""}——先在章节编排把场景卡补全，或走「构思 → 物化」主路径生成完整场景卡。`);
   }
+  if (/LLM/i.test(code) || /llm|provider|api.?key/i.test(msg)) {
+    return new Error("AI 起草需要可用的 LLM：请到「系统设置 → 模型与接入」配置并启用后重试。原始信息：" + msg);
+  }
+  return new Error("起草失败：" + msg);
+}
+
+async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-vars
+  const { apiGet, apiPost } = await import("./lib/client.js");
+  const sceneId = window.WsCatalog && window.WsCatalog.__backendSceneId
+    ? await window.WsCatalog.__backendSceneId(item.sid)
+    : null;
+  if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
   const t0 = Date.now();
-  const raw = await window.claude.complete(scnBuildPrompt(item, note, prevText));
-  const paras = scnParseDraft(raw);
+  let job;
+  try { job = await apiPost(`/api/v1/scenes/${sceneId}/run/jobs`, {}); } catch (e) { throw scnFriendly(e); }
+  const TERMINAL = ["completed", "blocked", "failed", "cancelled"];
+  let last = job;
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (!TERMINAL.includes(last.status)) {
+    if (Date.now() > deadline) throw new Error("起草超时（5 分钟）——后台任务可能仍在运行，稍后可在质检台查看产出。");
+    await new Promise(r => setTimeout(r, 2000));
+    try { last = await apiGet(`/api/v1/run-jobs/${job.job_id}`); } catch (e) {}
+  }
+  /* 终态后先看产出：需人工审阅的 blocked 也可能已有草稿，照实呈现 */
+  let wb = null;
+  try { wb = await apiGet(`/api/v1/scenes/${sceneId}/workbench`); } catch (e) {}
+  const content = (wb && ((wb.final_scene && wb.final_scene.content)
+    || (wb.style_draft && wb.style_draft.content)
+    || (wb.neutral_draft && wb.neutral_draft.content))) || "";
+  if (!content.trim()) {
+    throw scnFriendly({ code: last.error_code || "", message: last.error_text || `任务以「${last.status}」结束且没有产出正文（${last.current_step || "—"}）` });
+  }
+  const paras = content.split(/\n{2,}|\n/).map((x, i) => ({ id: "p" + (i + 1), beat: null, text: x.trim() })).filter(p => p.text);
   const hit = item.sid && window.WsCatalog ? window.WsCatalog.sceneById(item.sid) : null;
   const reactive = ((hit && hit.scene.kind) || item.kind || "").includes("反应");
   const qc = scnQC(paras, reactive);
   const secs = Math.round((Date.now() - t0) / 1000);
   const tm = (off) => new Date(t0 + off * 1000).toTimeString().slice(0, 8);
+  const pipeState = wb && wb.scene_run_state ? wb.scene_run_state.scene_status : last.status;
   qc.log = [
-    { t: tm(0), who: "system", text: `预检通过：场景卡三槽 · 上游构思已折叠进上下文` },
-    { t: tm(1), who: "sonnet", text: `起草开始 · 目标 700–1100 字${note ? " · 带改写指令" : ""}` },
-    { t: tm(secs), who: "sonnet", text: `起草完成 ${qc.words} 字 · 用时 ${secs}s` },
-    { t: tm(secs + 1), who: "qc", text: `质检完成：短句率 ${qc.metrics[0].val} · 句式重复 ${qc.metrics[1].val} · ${qc.verdict.risks}` },
-  ];
+    { t: tm(0), who: "system", text: "已投递后端起草任务（scenes run 管线：预检 → 蓝图 → 起草 → 硬/软双层质检）" },
+    note ? { t: tm(0), who: "system", text: "注意：自由改写指令暂不进入后端管线——带指令深改请用写作台·深改姿态" } : null,
+    { t: tm(secs), who: "pipeline", text: `管线结束 · 任务 ${last.status} · 场景状态 ${pipeState} · ${qc.words} 字 · 用时 ${secs}s` },
+    last.status === "blocked" ? { t: tm(secs), who: "pipeline", text: "管线把这稿停在人工审阅/重写闸门——草稿已取回，可在此采纳或回管线处理" } : null,
+    { t: tm(secs + 1), who: "qc", text: `本地复检：短句率 ${qc.metrics[0].val} · 句式重复 ${qc.metrics[1].val} · ${qc.verdict.risks}` },
+  ].filter(Boolean);
   qc.cost = [
-    { k: "起草", v: `Claude · ${secs}s` },
-    { k: "质检", v: "本地确定性 · <1s" },
+    { k: "起草", v: `后端管线 · ${secs}s` },
+    { k: "质检", v: "硬/软双层 + 本地复检" },
     { k: "字数", v: String(qc.words), mono: true },
   ];
   return qc;
