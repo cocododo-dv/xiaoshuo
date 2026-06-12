@@ -4,6 +4,10 @@ from __future__ import annotations
 import uuid
 
 
+def _idem() -> dict:
+    return {"X-Idempotency-Key": f"twr-test-{uuid.uuid4().hex[:10]}"}
+
+
 def _create_project(client) -> dict:
     response = client.post(
         "/api/v1/projects",
@@ -25,11 +29,11 @@ def test_anchor_crud_and_fade(client) -> None:
     project = _create_project(client)
     base = f"/api/v2/projects/{project['project_id']}/longform/anchors"
 
-    missing = client.post(base, json={"kind": "fact", "text": "  "})
+    missing = client.post(base, json={"kind": "fact", "text": "  "}, headers=_idem())
     assert missing.status_code == 400
     assert missing.json()["error"]["code"] == "TOWER_ANCHOR_TEXT_REQUIRED"
 
-    created = client.post(base, json={"kind": "trait", "text": "林岑 28 岁", "source_ref": "character:CHAR_LC"})
+    created = client.post(base, json={"kind": "trait", "text": "林岑 28 岁", "source_ref": "character:CHAR_LC"}, headers=_idem())
     assert created.status_code == 200, created.text
     anchor = created.json()["data"]
     assert anchor["status"] == "pinned"
@@ -62,6 +66,7 @@ def test_contract_gates_and_transitions(client) -> None:
     anchor = client.post(
         f"/api/v2/projects/{project['project_id']}/longform/anchors",
         json={"kind": "fact", "text": "档案室在地下,不在三楼"},
+        headers=_idem(),
     ).json()["data"]
 
     updated = client.put(
@@ -117,12 +122,12 @@ def test_audit_findings_gate_archive(client) -> None:
     client.post(f"{contract_base}/transition", json={"status": "dispatched"})
 
     # 登记一条审计发现(漂移)
-    created = client.post(audit_base, json={"kind": "drift", "severity": "block", "text": "档案室写成了三楼", "evidence": "第 2 场"})
+    created = client.post(audit_base, json={"kind": "drift", "severity": "block", "text": "档案室写成了三楼", "evidence": "第 2 场"}, headers=_idem())
     assert created.status_code == 200, created.text
     finding = created.json()["data"]
     assert finding["status"] == "open"
 
-    bad_kind = client.post(audit_base, json={"kind": "vibes", "text": "x"})
+    bad_kind = client.post(audit_base, json={"kind": "vibes", "text": "x"}, headers=_idem())
     assert bad_kind.status_code == 400
     assert bad_kind.json()["error"]["code"] == "TOWER_AUDIT_KIND_INVALID"
 
@@ -158,7 +163,7 @@ def test_audit_force_archive_with_open_findings(client) -> None:
     client.put(contract_base, json={"constraints": [{"text": "x"}]})
     client.post(f"{contract_base}/transition", json={"status": "ready"})
     client.post(f"{contract_base}/transition", json={"status": "dispatched"})
-    client.post(audit_base, json={"kind": "stall", "text": "中段三场原地踏步"})
+    client.post(audit_base, json={"kind": "stall", "text": "中段三场原地踏步"}, headers=_idem())
 
     forced = client.post(f"{contract_base}/transition", json={"status": "archived", "force": True})
     assert forced.status_code == 200

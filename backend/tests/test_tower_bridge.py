@@ -197,3 +197,27 @@ def test_audit_receipt_deterministic_scan(client, session):
     assert "c2" in hits and "铜" in hits["c2"]["evidence"] and "段 1" in hits["c2"]["at"]
     assert [m["id"] for m in receipt["anchor_misses"]] == ["c1"]
     assert receipt["pending"] and receipt["pending"][0]["id"] == "l6"
+
+
+def test_anchor_create_honors_idempotency_replay(client):
+    """FE-ALIGN 修复：锚点/审计创建端点兑现幂等键（重放不建重复行）。"""
+    pid = _create_project(client)
+    key = "tb-idem-anchor-1"
+    body = {"kind": "fact", "text": "幂等锚点", "note": "{\"fe\": {\"id\": \"idem1\"}}"}
+    first = client.post(f"/api/v2/projects/{pid}/longform/anchors", json=body, headers={"X-Idempotency-Key": key})
+    replay = client.post(f"/api/v2/projects/{pid}/longform/anchors", json=body, headers={"X-Idempotency-Key": key})
+    assert first.status_code == replay.status_code == 200, replay.text
+    assert replay.headers.get("X-Idempotency-Status") == "replayed"
+    assert replay.json()["data"]["anchor_id"] == first.json()["data"]["anchor_id"]
+    anchors = client.get(f"/api/v2/projects/{pid}/longform/anchors").json()["data"]["anchors"]
+    assert sum(1 for a in anchors if a["text"] == "幂等锚点") == 1
+
+    cid = _chapter(client, pid)
+    audit_key = "tb-idem-audit-1"
+    audit_body = {"kind": "drift", "severity": "warn", "text": "幂等 finding", "meta": {"subject": "s", "value": "v"}}
+    f1 = client.post(f"/api/v2/projects/{pid}/longform/chapters/{cid}/audit", json=audit_body, headers={"X-Idempotency-Key": audit_key})
+    f2 = client.post(f"/api/v2/projects/{pid}/longform/chapters/{cid}/audit", json=audit_body, headers={"X-Idempotency-Key": audit_key})
+    assert f1.status_code == f2.status_code == 200, f2.text
+    assert f2.json()["data"]["finding_id"] == f1.json()["data"]["finding_id"]
+    findings = client.get(f"/api/v2/projects/{pid}/longform/chapters/{cid}/audit").json()["data"]["findings"]
+    assert sum(1 for f in findings if f["text"] == "幂等 finding") == 1

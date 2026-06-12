@@ -1,7 +1,9 @@
 """FE-ALIGN Phase 3: 目录 API（v2）—— 章节/场景树的唯一真相源。
 
-对应原型 WsCatalog（design/ws-catalog.jsx）；写端点全部要求幂等键（中间件统一拦截）。
-import 端点仅供 localStorage 一次性迁移使用，admin token 保护（loopback 免 token）。
+对应原型 WsCatalog（design/ws-catalog.jsx）；创建类端点（建章/建场景）经
+execute_with_idempotency 兑现幂等键（必填 + 同键重放同响应）；PATCH/move/软删/恢复
+按天然幂等语义不强制。import 端点仅供 localStorage 一次性迁移使用，admin token 保护
+（loopback 免 token）。
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from sqlalchemy.orm import Session
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.services.catalog import CatalogService
+from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.system_config import require_admin_token
 
 router = APIRouter(tags=["catalog"])
@@ -38,9 +41,17 @@ def create_catalog_chapter(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = CatalogService(session).create_chapter(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=_req_id(request))
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/catalog/chapters",
+        payload=payload,
+        action=lambda: CatalogService(session).create_chapter(project_id, payload or {}),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}")
@@ -64,9 +75,17 @@ def create_catalog_scene(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = CatalogService(session).create_scene(project_id, chapter_id, payload or {})
-    session.commit()
-    return ok(result, req_id=_req_id(request))
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/scenes",
+        payload=payload,
+        action=lambda: CatalogService(session).create_scene(project_id, chapter_id, payload or {}),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/catalog/scenes/{scene_id}")

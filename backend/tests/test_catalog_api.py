@@ -188,3 +188,57 @@ def test_draft_save_updates_scene_words_and_returns_rollup(client, session):
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     assert tree["chapters"][0]["words"]["cur"] == 19
     assert tree["chapters"][0]["scenes"][0]["words"] == 19
+
+
+def test_create_chapter_idempotency_contract(client):
+    """FE-ALIGN 修复：目录创建端点必须兑现幂等键（重放同响应、缺键 400、换载荷 409）。"""
+    project = _create_project(client)
+    pid = project["project_id"]
+
+    key = "catalog-idem-replay-1"
+    first = client.post(
+        f"/api/v2/projects/{pid}/catalog/chapters",
+        json={"title": "幂等章"},
+        headers={"X-Idempotency-Key": key},
+    )
+    assert first.status_code == 200, first.text
+    replay = client.post(
+        f"/api/v2/projects/{pid}/catalog/chapters",
+        json={"title": "幂等章"},
+        headers={"X-Idempotency-Key": key},
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.headers.get("X-Idempotency-Status") == "replayed"
+    assert replay.json()["data"]["chapter"]["chapter_id"] == first.json()["data"]["chapter"]["chapter_id"]
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    assert sum(1 for ch in tree["chapters"] if ch["title"] == "幂等章") == 1
+
+    missing = client.post(f"/api/v2/projects/{pid}/catalog/chapters", json={"title": "无键章"})
+    assert missing.status_code == 400
+    assert missing.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+    reused = client.post(
+        f"/api/v2/projects/{pid}/catalog/chapters",
+        json={"title": "另一个标题"},
+        headers={"X-Idempotency-Key": key},
+    )
+    assert reused.status_code == 409
+    assert reused.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD"
+
+    chapter_id = first.json()["data"]["chapter"]["chapter_id"]
+    scene_key = "catalog-idem-scene-1"
+    scene_first = client.post(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chapter_id}/scenes",
+        json={"title": "幂等场"},
+        headers={"X-Idempotency-Key": scene_key},
+    )
+    scene_replay = client.post(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chapter_id}/scenes",
+        json={"title": "幂等场"},
+        headers={"X-Idempotency-Key": scene_key},
+    )
+    assert scene_first.status_code == scene_replay.status_code == 200
+    assert (
+        scene_replay.json()["data"]["scene"]["scene_id"]
+        == scene_first.json()["data"]["scene"]["scene_id"]
+    )

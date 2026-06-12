@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import uuid
 
+
+def _idem() -> dict:
+    return {"X-Idempotency-Key": f"lib-test-{uuid.uuid4().hex[:10]}"}
+
 from novel_system.db.models import StoryCharacter
 
 
@@ -48,6 +52,7 @@ def test_library_overview_merges_characters_and_entities(client, session) -> Non
     created = client.post(
         f"/api/v2/projects/{project['project_id']}/library/entities",
         json={"kind": "location", "name": "盐场", "summary": "故事的秩序中心", "tags": ["第一幕"]},
+        headers=_idem(),
     )
     assert created.status_code == 200, created.text
     entity = created.json()["data"]
@@ -70,6 +75,7 @@ def test_library_entity_validation_and_update(client) -> None:
     missing_name = client.post(
         f"/api/v2/projects/{project['project_id']}/library/entities",
         json={"kind": "location", "name": "  "},
+        headers=_idem(),
     )
     assert missing_name.status_code == 400
     assert missing_name.json()["error"]["code"] == "LIBRARY_ENTITY_NAME_REQUIRED"
@@ -77,6 +83,7 @@ def test_library_entity_validation_and_update(client) -> None:
     bad_kind = client.post(
         f"/api/v2/projects/{project['project_id']}/library/entities",
         json={"kind": "spaceship", "name": "X"},
+        headers=_idem(),
     )
     assert bad_kind.status_code == 400
     assert bad_kind.json()["error"]["code"] == "LIBRARY_ENTITY_KIND_INVALID"
@@ -84,6 +91,7 @@ def test_library_entity_validation_and_update(client) -> None:
     entity = client.post(
         f"/api/v2/projects/{project['project_id']}/library/entities",
         json={"kind": "item", "name": "旧工牌"},
+        headers=_idem(),
     ).json()["data"]
 
     updated = client.patch(
@@ -103,6 +111,7 @@ def test_library_relations_validate_refs_and_scope(client, session) -> None:
     entity = client.post(
         f"/api/v2/projects/{project['project_id']}/library/entities",
         json={"kind": "location", "name": "祖屋"},
+        headers=_idem(),
     ).json()["data"]
 
     relation = client.post(
@@ -113,6 +122,7 @@ def test_library_relations_validate_refs_and_scope(client, session) -> None:
             "kind": "lives_in",
             "note": "三代同堂的老宅",
         },
+        headers=_idem(),
     )
     assert relation.status_code == 200, relation.text
     relation_body = relation.json()["data"]
@@ -121,6 +131,7 @@ def test_library_relations_validate_refs_and_scope(client, session) -> None:
     bad_ref = client.post(
         f"/api/v2/projects/{project['project_id']}/library/relations",
         json={"from_ref": "scene:SC01", "to_ref": entity["ref"]},
+        headers=_idem(),
     )
     assert bad_ref.status_code == 400
     assert bad_ref.json()["error"]["code"] == "LIBRARY_RELATION_REF_INVALID"
@@ -128,6 +139,7 @@ def test_library_relations_validate_refs_and_scope(client, session) -> None:
     self_loop = client.post(
         f"/api/v2/projects/{project['project_id']}/library/relations",
         json={"from_ref": entity["ref"], "to_ref": entity["ref"]},
+        headers=_idem(),
     )
     assert self_loop.status_code == 400
     assert self_loop.json()["error"]["code"] == "LIBRARY_RELATION_SELF_LOOP"

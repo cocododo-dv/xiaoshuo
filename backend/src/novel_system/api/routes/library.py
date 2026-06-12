@@ -8,9 +8,14 @@ from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
+from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.library import LibraryService
 
 router = APIRouter(tags=["library"])
+
+
+def _operator(request: Request) -> str:
+    return getattr(request.state, "operator_ref", None) or "operator"
 
 
 @router.get("/api/v2/projects/{project_id}/library")
@@ -26,9 +31,17 @@ def create_library_entity(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = LibraryService(session).create_entity(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/library/entities",
+        payload=payload,
+        action=lambda: LibraryService(session).create_entity(project_id, payload or {}),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/library/entities/{entity_id}")
@@ -51,9 +64,17 @@ def create_library_relation(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = LibraryService(session).create_relation(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/library/relations",
+        payload=payload,
+        action=lambda: LibraryService(session).create_relation(project_id, payload or {}),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.delete("/api/v2/projects/{project_id}/library/relations/{relation_id}")
@@ -85,9 +106,17 @@ def create_library_timeline_event(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = LibraryService(session).create_timeline_event(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/library/timeline",
+        payload=payload,
+        action=lambda: LibraryService(session).create_timeline_event(project_id, payload or {}),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/library/timeline/{event_id}")
@@ -127,9 +156,17 @@ def create_library_character(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = LibraryService(session).create_character(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/library/characters",
+        payload=payload,
+        action=lambda: LibraryService(session).create_character(project_id, payload or {}),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/library/characters/{character_id}")
