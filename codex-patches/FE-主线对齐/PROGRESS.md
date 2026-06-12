@@ -502,7 +502,7 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 
 - [x] G1（源 D10）LF3 空降/断链/线索不公平接审计 findings — commit 见 git log `FE-ALIGN G1`
 - [x] G2（源 D11）雪花 history 轻量跨会话 — commit 见 git log `FE-ALIGN G2`
-- [ ] G3（源 D9）起草 note 进 scenes run 管线 — commit `______`
+- [x] G3（源 D9）起草 note 进 scenes run 管线 — commit 见 git log `FE-ALIGN G3`
 - [ ] G4（源 D8）写作台内联改写接 passages/patch-candidates — commit `______`
 - [ ] G5（源 D8）雪花候选生成接后端 LLM 节点 — commit `______`
 
@@ -538,3 +538,17 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 验证：smoke-g2.mjs 3/3（journal 上行 fe_meta 且 snap 剥离 → 清缓存重载
   还原 → 视图无误渲染且无可回滚按钮）；smoke-f3 回归 4/4；后端全量
   861 passed（零后端改动）；build 绿。
+
+### G3 明细
+
+- 链路：`POST run/jobs` / `POST run/full` 接受可选 `author_note`（≤500 字）→
+  job payload_json 随行（serialize_job 曝光）→ worker →
+  `Orchestrator.run_scene(author_note=…)` → `generate_style_draft` 的
+  extra_instruction 追加 `author_note_instruction()` 段（管线本就有该注入
+  通道，模板零改动；空 note 完全无变化）。run/full 的幂等载荷含 note
+  （不同指令=不同请求哈希）。
+- FE：scnRun 上行 author_note；起草日志由「指令不进管线」改为
+  「改写指令已随任务下发（注入风格生成阶段）」。D9 销账。
+- 测试 3 条：author_note_instruction 格式/截断；run/jobs 载荷往返；
+  run/full 经 stub Orchestrator 断言转发。全量 864 passed。
+- 验证：smoke-f6 回归 3/3（G3 后端重启 8009 后）；build 绿。

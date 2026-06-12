@@ -34,7 +34,7 @@ class SceneRunJobService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create_job(self, scene_id: str, *, actor_ref: str = "operator") -> ChapterRunJob:
+    def create_job(self, scene_id: str, *, actor_ref: str = "operator", author_note: str | None = None) -> ChapterRunJob:
         scene = AuthorLifecycleService(self.session).require_active_scene(scene_id)
         run_preflight = SceneRunPreflightService(self.session).build(scene, {})
         can_run = bool(run_preflight.get("can_run"))
@@ -42,6 +42,8 @@ class SceneRunJobService:
         status = "queued" if can_run else "blocked"
         first_blocker = _first_preflight_blocker(run_preflight)
         now = utcnow()
+        # FE-ALIGN G3：作者改写指令随任务下发（风格生成阶段注入提示词）
+        note = str(author_note or "").strip()[:500]
         job = ChapterRunJob(
             job_id=f"scene_run_{scene_id}_{uuid4().hex[:10]}",
             chapter_id=scene.chapter_id,
@@ -54,6 +56,7 @@ class SceneRunJobService:
                 "stage_order": SCENE_RUN_STAGE_ORDER,
                 "lock_wait_ms": 0,
                 "run_preflight_status": run_preflight.get("overall_status"),
+                **({"author_note": note} if note else {}),
             },
             result_summary_json={
                 "scene_id": scene_id,
@@ -102,6 +105,7 @@ class SceneRunJobService:
             "needs_human_review": bool(summary.get("needs_human_review")),
             "error_code": job.error_code,
             "error_text": job.error_text,
+            "author_note": payload.get("author_note") or "",
             "run_preflight": summary.get("run_preflight"),
             "result_summary": summary,
         }
@@ -228,7 +232,7 @@ def _run_scene_job_worker(job_id: str) -> None:
         scene_id = str((job.payload_json or {}).get("scene_id") or "")
         service.mark_running(job, current_step="neutral_running")
         session.commit()
-        result = Orchestrator(session).run_scene(scene_id)
+        result = Orchestrator(session).run_scene(scene_id, author_note=str((job.payload_json or {}).get("author_note") or "") or None)
         state = session.get(SceneRunState, scene_id)
         scene_status = result.get("scene_status") if isinstance(result, dict) else state.scene_status if state else ""
         if scene_status == "archived":

@@ -75,6 +75,18 @@ def versioned_scene_artifact_id(prefix: str, scene_id: str, bundle: dict[str, An
     return f"{prefix}_{scene_id}_{suffix}"
 
 
+def author_note_instruction(author_note: str | None) -> str:
+    """FE-ALIGN G3：作者改写指令 → 风格生成提示词附加段（空 note 不产生任何变化）。"""
+    note = str(author_note or "").strip()[:500]
+    if not note:
+        return ""
+    return (
+        "\n\n## Author Rewrite Instruction (highest priority, from the author)\n"
+        f"{note}\n"
+        "Apply this instruction while still honoring the approved facts and structure above."
+    )
+
+
 class OfflineNeutralClient:
     def generate(self, request: LLMRequest) -> LLMResponse:
         scene_id = _extract_scene_id(request)
@@ -255,6 +267,7 @@ class SceneGenerationService:
         *,
         neutral_draft_row_id: str,
         neutral_content: str,
+        author_note: str | None = None,
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -268,7 +281,10 @@ class SceneGenerationService:
             neutral_content=neutral_content,
             source_label="Approved Neutral Draft",
             source_row_id=neutral_draft_row_id,
-            extra_instruction="Apply the style prompt template without changing the approved facts.",
+            extra_instruction=(
+                "Apply the style prompt template without changing the approved facts."
+                + author_note_instruction(author_note)
+            ),
             source_draft_row_id=neutral_draft_row_id,
             source_draft_content=neutral_content,
             client_kind="style",

@@ -43,7 +43,7 @@ class Orchestrator:
         self.planning_service = planning_service or NearFinalPlanningService(session, llm_runner=llm_runner)
         self.near_final_service = near_final_service or NearFinalAcceptanceService(session, llm_runner=llm_runner)
 
-    def run_scene(self, scene_id: str, from_step: str = "bundle", resume: bool = False) -> dict:
+    def run_scene(self, scene_id: str, from_step: str = "bundle", resume: bool = False, author_note: str | None = None) -> dict:
         self.version_manager.recover_stuck_jobs()
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -118,6 +118,7 @@ class Orchestrator:
             bundle,
             neutral_draft_row_id=neutral_generation.row_id,
             neutral_content=neutral_content,
+            author_note=author_note,
         )
         soft_qc = self.soft_qc_engine.evaluate(
             scene_id=scene_id,

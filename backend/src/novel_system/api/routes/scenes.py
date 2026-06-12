@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -150,16 +150,18 @@ def _create_scene(session: Session, payload: dict) -> dict:
 
 
 @router.post("/api/v1/scenes/{scene_id}/run/full")
-def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session)):
+def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
+    # FE-ALIGN G3：作者改写指令随请求下发（注入风格生成提示词；幂等键随 note 变化）
+    author_note = str((payload or {}).get("author_note") or "").strip()[:500] or None
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/run/full",
-        payload={"scene_id": scene_id},
-        action=lambda: Orchestrator(session).run_scene(scene_id),
+        payload={"scene_id": scene_id, **({"author_note": author_note} if author_note else {})},
+        action=lambda: Orchestrator(session).run_scene(scene_id, author_note=author_note),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -316,10 +318,10 @@ def rollback_auto_rewrite_run(run_id: str, request: Request, session: Session = 
 
 
 @router.post("/api/v1/scenes/{scene_id}/run/jobs")
-def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session)):
+def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     service = SceneRunJobService(session)
-    job = service.create_job(scene_id, actor_ref=actor_ref)
+    job = service.create_job(scene_id, actor_ref=actor_ref, author_note=(payload or {}).get("author_note"))
     payload = service.serialize_job(job)
     session.commit()
     if start and job.status == "queued":

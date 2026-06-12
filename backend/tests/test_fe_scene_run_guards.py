@@ -73,3 +73,56 @@ def test_run_jobs_creates_job_without_500(client, session) -> None:
     assert job["job_id"]
     poll = client.get(f"/api/v1/run-jobs/{job['job_id']}")
     assert poll.status_code == 200
+
+
+def test_author_note_instruction_formatting() -> None:
+    from novel_system.services.scene_generation import author_note_instruction
+
+    assert author_note_instruction(None) == ""
+    assert author_note_instruction("   ") == ""
+    block = author_note_instruction("结尾改成开放式，少给一句解释。")
+    assert "Author Rewrite Instruction" in block
+    assert "结尾改成开放式" in block
+    # 超长截断（500 字上限）
+    long_note = "改" * 800
+    assert author_note_instruction(long_note).count("改") == 500
+
+
+def test_run_jobs_carries_author_note(client, session) -> None:
+    scene_id = _seed_fe_scene(session)
+    response = client.post(
+        f"/api/v1/scenes/{scene_id}/run/jobs?start=false",
+        json={"author_note": "把对话压短，多留白。"},
+        headers={"X-Idempotency-Key": "fe-run-note-job"},
+    )
+    assert response.status_code == 200, response.text
+    job = response.json()["data"]
+    assert job["author_note"] == "把对话压短，多留白。"
+    poll = client.get(f"/api/v1/run-jobs/{job['job_id']}").json()["data"]
+    assert poll["author_note"] == "把对话压短，多留白。"
+
+
+def test_run_full_forwards_author_note_to_orchestrator(client, session, monkeypatch) -> None:
+    from novel_system.api.routes import scenes as scenes_routes
+
+    captured = {}
+
+    class _StubOrchestrator:
+        def __init__(self, _session):
+            pass
+
+        def run_scene(self, scene_id, author_note=None):
+            captured["scene_id"] = scene_id
+            captured["author_note"] = author_note
+            return {"scene_status": "stubbed"}
+
+    monkeypatch.setattr(scenes_routes, "Orchestrator", _StubOrchestrator)
+    scene_id = _seed_fe_scene(session)
+    response = client.post(
+        f"/api/v1/scenes/{scene_id}/run/full",
+        json={"author_note": "雨景贯穿全场。"},
+        headers={"X-Idempotency-Key": "fe-run-note-full"},
+    )
+    assert response.status_code == 200, response.text
+    assert captured == {"scene_id": scene_id, "author_note": "雨景贯穿全场。"}
+

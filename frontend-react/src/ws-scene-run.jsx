@@ -220,7 +220,9 @@ async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-v
   if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
   const t0 = Date.now();
   let job;
-  try { job = await apiPost(`/api/v1/scenes/${sceneId}/run/jobs`, {}); } catch (e) { throw scnFriendly(e); }
+  // G3：作者改写指令随任务下发（后端注入风格生成阶段的提示词）
+  const body = note && String(note).trim() ? { author_note: String(note).trim().slice(0, 500) } : {};
+  try { job = await apiPost(`/api/v1/scenes/${sceneId}/run/jobs`, body); } catch (e) { throw scnFriendly(e); }
   const TERMINAL = ["completed", "blocked", "failed", "cancelled"];
   let last = job;
   const deadline = Date.now() + 5 * 60 * 1000;
@@ -247,7 +249,7 @@ async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-v
   const pipeState = wb && wb.scene_run_state ? wb.scene_run_state.scene_status : last.status;
   qc.log = [
     { t: tm(0), who: "system", text: "已投递后端起草任务（scenes run 管线：预检 → 蓝图 → 起草 → 硬/软双层质检）" },
-    note ? { t: tm(0), who: "system", text: "注意：自由改写指令暂不进入后端管线——带指令深改请用写作台·深改姿态" } : null,
+    note ? { t: tm(0), who: "system", text: "改写指令已随任务下发（注入风格生成阶段，优先级最高）" } : null,
     { t: tm(secs), who: "pipeline", text: `管线结束 · 任务 ${last.status} · 场景状态 ${pipeState} · ${qc.words} 字 · 用时 ${secs}s` },
     last.status === "blocked" ? { t: tm(secs), who: "pipeline", text: "管线把这稿停在人工审阅/重写闸门——草稿已取回，可在此采纳或回管线处理" } : null,
     { t: tm(secs + 1), who: "qc", text: `本地复检：短句率 ${qc.metrics[0].val} · 句式重复 ${qc.metrics[1].val} · ${qc.verdict.risks}` },
