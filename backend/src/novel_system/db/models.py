@@ -303,6 +303,7 @@ class LongformAnchor(Base):
     """
 
     __tablename__ = "longform_anchors"
+    __table_args__ = (Index("ix_longform_anchors_project", "project_id"),)
 
     anchor_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
@@ -323,6 +324,7 @@ class ChapterContract(Base):
     """
 
     __tablename__ = "chapter_contracts"
+    __table_args__ = (Index("ix_chapter_contracts_project", "project_id", "chapter_id"),)
 
     contract_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
@@ -345,6 +347,7 @@ class ChapterAuditFinding(Base):
     """
 
     __tablename__ = "chapter_audit_findings"
+    __table_args__ = (Index("ix_chapter_audit_project_chapter", "project_id", "chapter_id"),)
 
     finding_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
@@ -369,6 +372,7 @@ class LibraryEntity(Base):
     """
 
     __tablename__ = "library_entities"
+    __table_args__ = (Index("ix_library_entities_project", "project_id"),)
 
     entity_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
@@ -387,6 +391,7 @@ class LibraryRelation(Base):
     """资料库关系边。端点用带前缀的 ref:"character:<id>" 或 "entity:<id>"。"""
 
     __tablename__ = "library_relations"
+    __table_args__ = (Index("ix_library_relations_project", "project_id"),)
 
     relation_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
@@ -406,6 +411,7 @@ class TimelineEvent(Base):
     """
 
     __tablename__ = "timeline_events"
+    __table_args__ = (Index("ix_timeline_events_project", "project_id"),)
 
     event_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
@@ -1263,6 +1269,9 @@ class ReviewItem(Base):
     __tablename__ = "review_items"
     __table_args__ = (
         CheckConstraint("status IN ('pending','approved','rejected')", name="ck_review_items_status"),
+        # onceTask: 同一作品同一 dedupe_key 只允许一张卡（NULL 不参与唯一性）。
+        # 镜像迁移 0050 的唯一索引，使测试的 create_all 与生产迁移同样强制该唯一性。
+        Index("ux_review_items_project_dedupe", "project_id", "dedupe_key", unique=True),
     )
 
     review_id: Mapped[str] = mapped_column(String, primary_key=True)
