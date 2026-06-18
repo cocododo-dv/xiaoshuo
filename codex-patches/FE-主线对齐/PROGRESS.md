@@ -718,3 +718,82 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
   （完整 LLM 链路轨，需 LLM 环境）。
 - API 边界探针 18 项全过（畸形载荷信封 / 跨项目越权拒绝 / 幂等重放 / 陈旧 revision
   409 / 双重软删 / 超长与 emoji 输入 / 派生卡 resolve 409）。
+
+## AI 模型接入重建(2026-06-12,前后端)
+
+> 决策:① 前后端一起做;② 主流厂商各写原生 adapter(if/elif → 注册表);
+> ③ 节点路由呈现 = 简化分工槽位 + 高级矩阵入口。设计稿无此页,属授权新建
+> (AISettings 原实现是 localStorage 假偏好,Haiku/Sonnet/Opus 写死三选一)。
+
+### 后端
+
+- **Adapter Registry 重构(零行为变化)**:`services/llm_providers/` 新包
+  (base/registry/presets + 12 个 adapter)。llm_client.py 4 个 if/elif 分发点
+  (_build_http_request/_build_headers/_extract_output_text/_extract_finish_reason
+  + protocol_hint)改为委托 adapter;原 6 家 build/parse 逐字搬入,现有测试
+  断言零改动作 golden 锁。SUPPORTED_PROVIDERS / DEFAULT_PROVIDER_BASE_URLS /
+  _provider_catalog / base_url 补 /v1 集合 / api_mode 默认值全部改为注册表派生。
+- **新原生 adapter ×6**(API 细节均经官方文档核验,2026-06):
+  qwen_dashscope(百炼兼容模式;JSON 模式与思考互斥→json_object 时强制
+  enable_thinking=false)、moonshot(thinking 只发 enabled 不发 disabled,
+  k2.7-code 收 disabled 报错)、minimax(兼容端点无 response_format→省略靠
+  解析兜底;max_completion_tokens)、doubao_ark(thinking enabled/disabled;
+  无数据面 /models→预设回退)、xai(reasoning_effort none/low/medium/high;
+  grok-4.3 现役)、ollama 原生(/api/chat + format json/schema + /api/tags
+  列模型 + prompt_eval_count usage 钩子)。第三方中转(OpenRouter/SiliconFlow/
+  OneAPI/自定义)走 openai_compatible 预设。
+- **预设目录 + 新端点 ×3**:`GET /llm/provider-presets`(公开)、
+  `GET /llm/providers/{id}/models`(实时拉取,失败回退预设,source 标记)、
+  `POST /llm/role-routes`(分工槽位批量展开)。test_provider/_probe_completion
+  改走 adapter 钩子,**顺带修复** anthropic(x-api-key+version)/gemini(?key=)
+  探活一直用错 Bearer 的旧 bug。
+- **角色分工槽位**:`llm_node_registry.py::ROLE_SLOTS`(写作主力=scene_generation
+  +rewrite+snowflake 13 节点 / 审稿质检=quality+evaluation+writer_review+
+  deep_review 22 / 提炼整理=reference+style_reference+project 19;恰好覆盖全部
+  active 节点)。save_llm_role_routes 用 default_task_config_payload 展开保留
+  节点级温度/预算;激活校验仅限触达节点(允许渐进配置);llm_overview 增
+  role_slots(含从 node_routes 反推 current,槽内不一致 → mixed)。
+- 测试:+35(test_llm_providers_registry 9 / test_llm_client_adapters 11 /
+  test_llm_role_routes 11 + system_config 扩展)。**全量 909 passed**。
+
+### 前端(React)
+
+- client.js 增 `apiAdminGet/apiAdminPost`(X-Admin-Token;令牌 LS 键与 Vue
+  共享);新 store `ws-ai-providers.jsx`(function-store + subscribe;管理面
+  低频写 → 写后重拉,无乐观)。
+- `ws-settings-ai.jsx` 重建「设置 → AI 模型」:接入状态条(readiness +
+  管理令牌 Row)/ 模型服务卡片(测试连接/设默认/启停/编辑)/ 添加流程
+  (预设分组选择 → 预填 base_url → 密钥 → 拉取模型 → 试连 → 保存 →
+  缺失路由一键补齐)/ 模型分工三槽位(应用前 confirm 覆写提示)/
+  高级路由折叠矩阵(分组+就绪红绿点+补齐按钮)/ AI 行为本地偏好保留。
+  ws-settings.jsx 仅余 import 接缝;Section/Row/Toggle/Segmented/usePref 导出复用。
+- 冒烟:`smoke-ai-settings.mjs` 入 run-smokes(渲染/预设/免密钥添加/分工
+  生效断言 node_routes/补齐幂等/探活失败不崩)。**run-smokes 七套全过**;build 绿。
+
+### 遗留(记录在案)
+
+- 高级路由矩阵当前为只读展示+补齐;逐节点 provider/model 行内编辑与温度/
+  预算微调仍在旧 Vue 高级界面(SystemConfigView),按需求再平移。
+- 真实厂商 key 的手工验收(Phase 8 序列:presets → 保存真 key → models →
+  probe check_completion → role-routes → 触发真实生成节点看 LlmCall 审计)
+  待用户提供各家 key 后走查;adapter 形状已有 MockTransport golden 锁。
+- minimax/doubao thinking 参数按 2026-06 官方文档实现;厂商如改版,改对应
+  adapter 单文件即可。
+
+### 模型接入 · 真实流量优化(2026-06-12,基于 gcli2api 审计数据)
+
+- 依据 dev 库 LlmCall 审计(296 次真实调用)定位三处问题并修复:
+  1. **重试零退避**:gcli2api 限流(No capacity)时三连击同一错误,单次调用
+     被拖到 290-358s。llm_client 增 `retry_backoff_seconds` 指数退避
+     (×0.8-1.2 抖动,封顶 30s,429 优先尊重 Retry-After;默认 0 保测试节奏),
+     runner 生产侧默认 1.5s,可由 models 配置 `job_runtime.llm_retry_backoff_seconds` 调。
+  2. **裸 KeyError 审计行**(writer_scene_story_diagnosis,16ms 即败):缺路由
+     在 llm_enabled=False 分支会绕过引导错误。统一为 LLM_ROUTE_NOT_CONFIGURED
+     (原始 KeyError 仍经 original_error 重抛,场景编排契约不变;
+     test_scene_generation 两处审计断言随契约更新)。
+  3. **根因——运行时配置读取吞 SQLAlchemyError**:sqlite 瞬时锁会让
+     load_active_config_payload 返回 None → LLM 被误判未启用。三个 loader
+     增 50/150ms 两次重试(持续失败仍安静兜底)。
+- 测试:+5(退避×3 / 瞬时重试×1 / runner 退避配置×1)。**全量 914 passed**。
+- 实机验证(dev 8000 + gcli2api):probe 连接 257ms + 48 模型 + 最小生成通过;
+  GET providers/gcli2api/models 实时拉取 source=live 442ms。

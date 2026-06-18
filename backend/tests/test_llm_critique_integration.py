@@ -1,0 +1,92 @@
+"""Blueprint §8 — wire the independent LLM editor critic into production.
+
+``llm_auto_critique`` (a 6-dimension semantic editor pass) was fully implemented but had
+ZERO callers because the runner interface it expected — ``run_task(task_name, prompt_text,
+system_prompt)`` — existed only on a test fake, never on the production ``LLMNodeRunner``.
+These tests cover the now-real wiring:
+
+- ``LLMNodeRunner.run_task`` assembles an ad-hoc request and uses the resolved client.
+- the ``auto_critique_llm`` route resolves (models.yaml task_routing).
+- the orchestrator path degrades to rule-only when the runner is absent (opt-in default).
+- the LLM editor's issues are merged into the rewrite brief when a runner is present.
+"""
+
+from __future__ import annotations
+
+
+class _FakeResponse:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.structured_output = None
+
+
+def test_run_task_assembles_request_and_uses_client(session) -> None:
+    from novel_system.services.llm_task_runner import LLMNodeRunner
+
+    captured: dict = {}
+
+    class _Client:
+        def generate(self, request):
+            captured["request"] = request
+            return _FakeResponse('{"should_rewrite": false, "issues": []}')
+
+    runner = LLMNodeRunner(session, llm_client=_Client())
+    resp = runner.run_task(
+        task_name="auto_critique_llm",
+        prompt_text="SCENE TEXT",
+        system_prompt="CRITIC SYSTEM",
+    )
+    assert resp.text  # the injected client's response is returned verbatim
+    req = captured["request"]
+    assert req.messages[0]["content"] == "CRITIC SYSTEM"
+    assert req.messages[1]["content"] == "SCENE TEXT"
+
+
+def test_auto_critique_llm_aliases_to_existing_route(session) -> None:
+    """The §8 critic borrows the soft_qc route via run_task alias — no dedicated node, so
+    it never pollutes active node_routing nor trips the sync-activation guard."""
+    from novel_system.services.llm_task_runner import _AD_HOC_ROUTE_ALIASES, LLMNodeRunner
+
+    assert _AD_HOC_ROUTE_ALIASES["auto_critique_llm"] == "soft_qc"
+    cfg = LLMNodeRunner(session).task_config("soft_qc")
+    assert getattr(cfg, "model", None), "soft_qc (critic alias target) did not resolve"
+
+
+def test_llm_critique_degrades_to_rule_only_without_runner() -> None:
+    from novel_system.services.auto_critique import auto_critique, llm_auto_critique
+
+    text = "她觉得心里一紧，她意识到自己其实早就明白了一切。"
+    rule = auto_critique(text)
+    hybrid = llm_auto_critique(text, llm_runner=None)
+    assert hybrid.directives == rule.directives
+    assert hybrid.should_rewrite == rule.should_rewrite
+
+
+def test_llm_critique_merges_editor_issues() -> None:
+    from novel_system.services.auto_critique import llm_auto_critique
+
+    class _Runner:
+        def run_task(self, *, task_name, prompt_text, system_prompt):
+            return _FakeResponse(
+                '{"should_rewrite": true, "issues": ['
+                '{"dimension": "conflict_credibility", '
+                '"directive": "raise the cost of the reconciliation", '
+                '"evidence": "they simply hugged and moved on"}]}'
+            )
+
+    result = llm_auto_critique("Some otherwise clean prose.", llm_runner=_Runner())
+    assert result.should_rewrite is True
+    assert any("conflict_credibility" in directive for directive in result.directives)
+
+
+def test_llm_critique_runner_error_degrades_gracefully() -> None:
+    """A failing critic runner must never propagate — degrade to the rule-based result."""
+    from novel_system.services.auto_critique import auto_critique, llm_auto_critique
+
+    class _BrokenRunner:
+        def run_task(self, *, task_name, prompt_text, system_prompt):
+            raise RuntimeError("LLM down")
+
+    text = "她觉得很难过，她意识到自己错了。"
+    hybrid = llm_auto_critique(text, llm_runner=_BrokenRunner())
+    assert hybrid.directives == auto_critique(text).directives

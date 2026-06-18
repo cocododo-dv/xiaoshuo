@@ -19,6 +19,10 @@ class Settings:
     llm_api_key: str | None = None
     llm_timeout_seconds: float = 30.0
     llm_enabled: bool = False
+    # §8 opt-in: layer an independent LLM "editor" critic on top of the rule-based pass.
+    llm_auto_critique_enabled: bool = False
+    # §2 opt-in: extract narrative events from finished prose (not just the spec).
+    llm_event_extraction_enabled: bool = False
     admin_token: str | None = None
     config_secret: str | None = None
     auto_create_tables: bool = False
@@ -77,6 +81,8 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_api_key = os.environ.get("NOVEL_SYSTEM_LLM_API_KEY")
     llm_timeout_seconds = _get_float_env("NOVEL_SYSTEM_LLM_TIMEOUT_SECONDS", 30.0)
     llm_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_ENABLED", False)
+    llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
+    llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
     admin_token = os.environ.get("NOVEL_SYSTEM_ADMIN_TOKEN")
     config_secret = os.environ.get("NOVEL_SYSTEM_CONFIG_SECRET")
     auto_create_tables = _get_bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", False)
@@ -107,6 +113,8 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_api_key=llm_api_key,
         llm_timeout_seconds=llm_timeout_seconds,
         llm_enabled=llm_enabled,
+        llm_auto_critique_enabled=llm_auto_critique_enabled,
+        llm_event_extraction_enabled=llm_event_extraction_enabled,
         admin_token=admin_token,
         config_secret=config_secret,
         auto_create_tables=auto_create_tables,

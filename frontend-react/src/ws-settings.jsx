@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks, useActiveWork } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { AISettings } from "./ws-settings-ai.jsx";
 
 /* global React, I */
 const { useState: useSt6 } = React;
@@ -206,47 +207,7 @@ function WritingSettings() {
   );
 }
 
-/* ===== AI 模型 — 全局持久化 ===== */
-function AISettings() {
-  const [primary, setPrimary] = usePref("aiPrimary", "haiku");
-  const [reviewer, setReviewer] = usePref("aiReviewer", "sonnet");
-  const [candN, setCandN] = usePref("aiCandN", 3);
-  const [allowRef, setAllowRef] = usePref("aiAllowRef", true);
-  const [strict, setStrict] = usePref("aiStrict", "normal");
-  return (
-    <>
-      <Section title="模型" desc="选择用于候选生成与改写的模型。">
-        <Row label="主力模型" hint="日常的续写、改写与候选生成。">
-          <Segmented options={[
-            { value: "haiku",   label: "Haiku" },
-            { value: "sonnet",  label: "Sonnet" },
-            { value: "opus",    label: "Opus" },
-          ]} value={primary} onChange={setPrimary} />
-        </Row>
-        <Row label="审稿模型" hint="QC、设定冲突检测、参考相似度。">
-          <Segmented options={[
-            { value: "haiku", label: "Haiku" },
-            { value: "sonnet", label: "Sonnet" },
-          ]} value={reviewer} onChange={setReviewer} />
-        </Row>
-      </Section>
-
-      <Section title="AI 行为">
-        <Row label="生成候选数" hint="每次「再生」产出的候选条数。">
-          <Segmented options={[{value:2,label:"2"},{value:3,label:"3"},{value:5,label:"5"}]} value={candN} onChange={setCandN} />
-        </Row>
-        <Row label="允许引用参考画像" hint="关闭后所有生成不再受参考画像影响。"><Toggle on={allowRef} onChange={setAllowRef} /></Row>
-        <Row label="复刻检查严格度">
-          <Segmented options={[
-            { value: "lax",    label: "宽松" },
-            { value: "normal", label: "标准" },
-            { value: "strict", label: "严格" },
-          ]} value={strict} onChange={setStrict} />
-        </Row>
-      </Section>
-    </>
-  );
-}
+/* ===== AI 模型 — 真实模型接入(ws-settings-ai.jsx,FE 模型接入重建) ===== */
 
 /* ===== 外观 — 直接接 tweaks（与「调节舒适度」同一份状态） ===== */
 function AppearSettings({ t, setTweak }) {
@@ -340,5 +301,6 @@ function DataSettings({ go }) {
 
 Object.assign(window, { WsSettings });
 
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSettings };
+/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留）。
+   Section/Row/Toggle/Segmented/usePref 供 ws-settings-ai.jsx 复用。 */
+export { WsSettings, Section, Row, Toggle, Segmented, usePref };

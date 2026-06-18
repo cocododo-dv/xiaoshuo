@@ -20,6 +20,15 @@ CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe continuity budget aft
 SCENE_SPLIT_RECOMMENDATION = "Split the scene and retry generation with a smaller continuity scope."
 NODE_ROUTE_FALLBACKS: dict[str, tuple[str, ...]] = llm_node_route_fallbacks()
 
+# Advisory ad-hoc passes (run_task) borrow an existing *registered* route instead of a
+# dedicated node, so they never pollute active node_routing nor trip the sync-activation
+# guard (which would reject a routeless pseudo-node with a missing provider_id). The
+# borrowed node sits in the same provider/model tier as the conceptual task.
+_AD_HOC_ROUTE_ALIASES: dict[str, str] = {
+    "auto_critique_llm": "soft_qc",          # §8 independent LLM editor critic
+    "narrative_event_extract": "extraction",  # §2 prose event extraction
+}
+
 
 @dataclass(slots=True)
 class LLMNodeResult:
@@ -100,6 +109,7 @@ class LLMNodeRunner:
         offline_client_factory: Callable[[], Any],
         source_draft_row_id: str | None = None,
         source_draft_content: str | None = None,
+        temperature_override: float | None = None,
     ) -> LLMNodeResult:
         llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
@@ -111,47 +121,48 @@ class LLMNodeRunner:
             try:
                 task_config = self.task_config(node_id)
             except KeyError as exc:
-                if self.settings.llm_enabled:
-                    request_summary = {
-                        "node_id": node_id,
-                        "template_name": _template_name(prompt, node_id),
-                        "template_version": _template_version(prompt),
-                        "bundle_id": bundle_id,
-                        "bundle_hash": bundle_hash,
-                        "source_draft_row_id": source_draft_row_id,
-                        "recommended_action": "Configure this node in System Config > LLM node routes, or run sync-missing.",
-                    }
-                    response_summary = {
-                        "message": f"LLM node route is not configured: {node_id}",
-                        "node_id": node_id,
-                        "error_code": "LLM_ROUTE_NOT_CONFIGURED",
-                        "retryable": False,
-                        "recommended_action": "Open System Config > LLM and sync missing active node routes.",
-                    }
-                    self._persist_call(
-                        llm_call_id=llm_call_id,
-                        scene_id=scene_id,
-                        chapter_id=chapter_id,
-                        step=step,
-                        request=None,
-                        task_config=None,
-                        prompt=prompt,
-                        request_summary=request_summary,
-                        response_summary=response_summary,
-                        started_at=started_at,
-                        error_code="LLM_ROUTE_NOT_CONFIGURED",
-                    )
-                    raise LLMNodeExecutionError(
-                        llm_call_id=llm_call_id,
-                        error_code="LLM_ROUTE_NOT_CONFIGURED",
-                        message=f"LLM node route is not configured: {node_id}",
-                        request_summary=request_summary,
-                        response_summary=response_summary,
-                        original_error=exc,
-                        retryable=False,
-                    ) from exc
-                raise
-            request = self._build_request(prompt, user_prompt=user_prompt, node_id=node_id, task_config=task_config)
+                # 不论 llm_enabled 与否都给统一的引导错误:离线模式缺路由同样是
+                # 配置缺口;旧的裸 KeyError 审计行(error_code="KeyError")对排障无用,
+                # 且运行时配置读取瞬时失败时会被误判为离线而落入该分支。
+                request_summary = {
+                    "node_id": node_id,
+                    "template_name": _template_name(prompt, node_id),
+                    "template_version": _template_version(prompt),
+                    "bundle_id": bundle_id,
+                    "bundle_hash": bundle_hash,
+                    "source_draft_row_id": source_draft_row_id,
+                    "recommended_action": "Configure this node in System Config > LLM node routes, or run sync-missing.",
+                }
+                response_summary = {
+                    "message": f"LLM node route is not configured: {node_id}",
+                    "node_id": node_id,
+                    "error_code": "LLM_ROUTE_NOT_CONFIGURED",
+                    "retryable": False,
+                    "recommended_action": "Open System Config > LLM and sync missing active node routes.",
+                }
+                self._persist_call(
+                    llm_call_id=llm_call_id,
+                    scene_id=scene_id,
+                    chapter_id=chapter_id,
+                    step=step,
+                    request=None,
+                    task_config=None,
+                    prompt=prompt,
+                    request_summary=request_summary,
+                    response_summary=response_summary,
+                    started_at=started_at,
+                    error_code="LLM_ROUTE_NOT_CONFIGURED",
+                )
+                raise LLMNodeExecutionError(
+                    llm_call_id=llm_call_id,
+                    error_code="LLM_ROUTE_NOT_CONFIGURED",
+                    message=f"LLM node route is not configured: {node_id}",
+                    request_summary=request_summary,
+                    response_summary=response_summary,
+                    original_error=exc,
+                    retryable=False,
+                ) from exc
+            request = self._build_request(prompt, user_prompt=user_prompt, node_id=node_id, task_config=task_config, temperature_override=temperature_override)
             final_budget = finalize_request_budget(
                 system_prompt=request.messages[0]["content"],
                 user_prompt=request.messages[1]["content"],
@@ -256,6 +267,39 @@ class LLMNodeRunner:
             request_summary=request_summary,
         )
 
+    def run_task(
+        self,
+        *,
+        task_name: str,
+        prompt_text: str,
+        system_prompt: str,
+        temperature_override: float | None = None,
+    ) -> LLMResponse:
+        """Ad-hoc single-shot LLM call for auxiliary advisory passes (§8 LLM critic,
+        §2 prose event extraction).
+
+        Unlike ``run``, this is NOT persisted as a scene draft and never blocks the
+        pipeline: callers must opt-in (guard on settings) and wrap the call so that any
+        raised exception degrades to a no-op. The offline factory is intentionally
+        unavailable — a misconfigured/disabled call fails fast into the caller's
+        try/except rather than silently returning stub text.
+        """
+        route_node = _AD_HOC_ROUTE_ALIASES.get(task_name, task_name)
+        task_config = self.task_config(route_node)
+        prompt = {"system_prompt": system_prompt, "token_budget": {}}
+        request = self._build_request(
+            prompt,
+            user_prompt=prompt_text,
+            node_id=route_node,
+            task_config=task_config,
+            temperature_override=temperature_override,
+        )
+
+        def _offline_unavailable() -> Any:
+            raise RuntimeError("run_task requires an enabled LLM client (advisory pass)")
+
+        return self._client(offline_client_factory=_offline_unavailable).generate(request)
+
     def task_config(self, node_id: str) -> Any:
         routing = self._routing()
         node_routing = getattr(routing, "node_routing", None)
@@ -287,6 +331,7 @@ class LLMNodeRunner:
         user_prompt: str,
         node_id: str,
         task_config: Any,
+        temperature_override: float | None = None,
     ) -> LLMRequest:
         return LLMRequest(
             model=task_config.model,
@@ -294,7 +339,7 @@ class LLMNodeRunner:
                 {"role": "system", "content": prompt["system_prompt"]},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=task_config.temperature,
+            temperature=temperature_override if temperature_override is not None else task_config.temperature,
             max_output_tokens=task_config.max_output_tokens,
             response_format=task_config.response_format,
             provider=task_config.provider,
@@ -306,6 +351,10 @@ class LLMNodeRunner:
             api_mode=getattr(task_config, "api_mode", "responses"),
             credential_mode=getattr(task_config, "credential_mode", None),
             provider_options=getattr(task_config, "provider_options", {}),
+            # §7 anti-mean sampling — read decoding-level penalties from task routing config
+            frequency_penalty=getattr(task_config, "frequency_penalty", None),
+            presence_penalty=getattr(task_config, "presence_penalty", None),
+            top_p=getattr(task_config, "top_p", None),
         )
 
     @staticmethod
@@ -354,8 +403,19 @@ class LLMNodeRunner:
             base_url=self.settings.llm_base_url,
             api_key=self.settings.llm_api_key,
             timeout_seconds=self.settings.llm_timeout_seconds,
+            retry_backoff_seconds=self._retry_backoff_seconds(),
             provider_configs=self._runtime_provider_configs(),
         )
+
+    def _retry_backoff_seconds(self) -> float:
+        """生产默认 1.5s 指数退避;models 配置 job_runtime.llm_retry_backoff_seconds 可调。"""
+        try:
+            value = self._routing().job_runtime.get("llm_retry_backoff_seconds")
+            if value is not None:
+                return max(0.0, float(value))
+        except Exception:
+            pass
+        return 1.5
 
     def _runtime_provider_configs(self) -> dict[str, Any]:
         if self._provider_configs is None:

@@ -1595,6 +1595,7 @@ def test_workspace_v2_flags_weak_scene_pressure_even_when_required_fields_are_pr
         "goal": "Talk to the witness.",
         "conflict": "They argue.",
         "setback": "She succeeds.",
+        "cost_requirement": "She loses something.",
     }
     weak_reactive = {
         **scene_step["draft"]["scenes"][1],
@@ -1603,6 +1604,7 @@ def test_workspace_v2_flags_weak_scene_pressure_even_when_required_fields_are_pr
         "reaction": "She is upset.",
         "dilemma": "Stay or leave.",
         "decision": "She decides.",
+        "cost_requirement": "She gives up something.",
     }
 
     response = client.patch(

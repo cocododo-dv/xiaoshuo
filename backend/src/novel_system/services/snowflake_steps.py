@@ -1056,6 +1056,14 @@ def _weak_scene_pressure_flags(scene: dict[str, Any], scene_type: str) -> list[s
     crucible = _text(scene.get("scene_crucible") or scene.get("crucible"))
     if crucible and _looks_generic(crucible):
         flags.append("weak_crucible_pressure")
+
+    # Blueprint §4: "「代价」字段是关键 — AI 最常见的毛病是免费选择。
+    # 角色做了决定但什么都没牺牲 = 注水。"
+    # Tracked as a pressure flag so it consistently triggers "maybe" status
+    # and a fix-step prompt, without distorting the base score formula.
+    if not _has_value(scene.get("cost_requirement")):
+        flags.append("missing_cost_requirement")
+
     if scene_type == "reactive":
         reaction = _text(scene.get("reaction"))
         dilemma = _text(scene.get("dilemma"))
@@ -1117,6 +1125,7 @@ def _diagnostic_fix_steps(
         "weak_reaction_specificity": "用身体反应、行为或迟来的意识替代直接说情绪。",
         "fake_dilemma": "重写困境，让两个选项都有真实且明确的代价。",
         "weak_decision_next_goal": "让决定触发下一场的具体目标。",
+        "missing_cost_requirement": "写出角色为这个选择付出了什么——什么信任被消耗、什么可能性被关闭、什么代价不可逆。免费选择 = 注水。",
     }
     steps.extend(weak_labels[flag] for flag in pressure_flags or [] if flag in weak_labels)
     return _unique(steps)

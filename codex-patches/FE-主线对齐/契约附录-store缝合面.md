@@ -88,3 +88,26 @@
 ## WsDemoTag（`design/ws-catalog.jsx` 末尾）
 
 视图接通真实 API 后删除该视图里的 `<WsDemoTag />`；未接通的必须保留。全部摘除是 Phase 8 验收项之一。
+
+## WsAiProviders（`frontend-react/src/ws-ai-providers.jsx`，模型接入重建新增）
+
+> 注:AISettings 原型实现是 localStorage 假偏好,经授权整体重建为真实接入面;
+> 视图层 = `ws-settings-ai.jsx`(设置 → AI 模型),`ws-settings.jsx` 仅余一行 import 接缝。
+
+| 方法 | 语义 | 对接 |
+|---|---|---|
+| `subscribe(fn)` / `state()` / `useAiProviders()` | 订阅 + 状态快照(loading/overview/presets/busy/probes/adminConfigured) | — |
+| `refresh()` | 拉 overview(providers/node_routes/role_slots/readiness/missing_active_routes) | `GET /api/v1/system-config/llm` + `GET /api/v1/system-config`(runtime.admin_configured) |
+| `loadPresets()` | 厂商预设目录(国内/国际/中转/本地/自定义 分组) | `GET /api/v1/system-config/llm/provider-presets`(新增,公开) |
+| `saveProvider(payload)` | 新增/编辑模型服务(upsert;写后重拉,无乐观) | `POST /api/v1/system-config/llm/providers`(admin) |
+| `setDefault(id)` / `probe(id, extra)` | 默认服务 / 连接测试(结果留 probes[id]) | `…/providers/{id}/default`、`…/providers/{id}/probe`(admin) |
+| `fetchModels(id)` | 实时拉模型列表,失败回退预设(`source: live\|preset`) | `GET /api/v1/system-config/llm/providers/{id}/models`(新增,admin) |
+| `testDraft(payload)` | 保存前草稿试连/拉模型(添加流程) | `POST /api/v1/system-config/test-provider`(admin) |
+| `saveRoleRoutes(assignments, activate)` | 分工槽位(写作主力/审稿质检/提炼整理)按组批量展开节点路由;激活校验仅限触达节点(渐进配置) | `POST /api/v1/system-config/llm/role-routes`(新增,admin) |
+| `saveNodeRoutes(payload)` / `syncMissing(payload)` | 高级路由整表 / 一键补齐缺失 | `…/llm/node-routes`、`…/llm/node-routes/sync-missing`(admin) |
+| `setAdminToken(v)` / `adminToken()` | 管理令牌(与 Vue 高级界面共享 LS 键 `novel-system-admin-token`) | 经 client.js 新增 `apiAdminGet/apiAdminPost` 注入 `X-Admin-Token` |
+
+后端适配层:`services/llm_providers/`(adapter registry,12 种 provider_type:
+原 6 家 + qwen_dashscope / moonshot / minimax / doubao_ark / xai / ollama 原生);
+角色槽位定义在 `llm_node_registry.py::ROLE_SLOTS`(drafting/review/extraction,
+覆盖全部 54 个 active 节点)。冒烟:`scripts/smoke-ai-settings.mjs`(入 run-smokes)。

@@ -29,12 +29,21 @@ from novel_system.services.llm_client import (
     SUPPORTED_PROVIDERS,
     parse_model_routing_config,
 )
+from novel_system.services.llm_providers import (
+    adapter_registry,
+    get_provider_preset,
+    provider_catalog as adapter_provider_catalog,
+    provider_preset_payloads,
+)
 from novel_system.services.llm_node_registry import (
     active_llm_node_ids,
     default_task_config_payload,
+    get_role_slot_spec,
     llm_node_catalog,
     llm_node_statuses,
     reserved_llm_node_ids,
+    role_slot_catalog,
+    role_slot_node_ids,
 )
 from novel_system.services.prompt_builder import PromptConfigurationError, parse_prompt_templates
 
@@ -55,24 +64,45 @@ def repo_config_dir() -> Path:
     return Path(__file__).resolve().parents[4] / "config"
 
 
+_TRANSIENT_DB_RETRY_DELAYS = (0.05, 0.15)
+
+
+def _read_with_transient_retry(reader):
+    """运行时配置读取对 sqlite 瞬时锁重试两次再放弃。
+
+    这里吞错返回 None 意味着「视为未配置」——LLM 会被误判为未启用,缺路由
+    分支也会走错;一次写入高峰期的 database-is-locked 不该有这种副作用。
+    """
+    last_error: SQLAlchemyError | None = None
+    for delay in (*_TRANSIENT_DB_RETRY_DELAYS, None):
+        try:
+            return reader()
+        except SQLAlchemyError as exc:
+            last_error = exc
+            if delay is not None:
+                time.sleep(delay)
+    del last_error
+    return None
+
+
 def load_active_config_payload(category: str) -> dict[str, Any] | None:
-    try:
+    def _read():
         with SessionLocal() as session:
             snapshot = _active_snapshot(session, category)
             if snapshot is None:
                 return None
             return dict(snapshot.parsed_json or {})
-    except SQLAlchemyError:
-        return None
+
+    return _read_with_transient_retry(_read)
 
 
 def load_active_config_yaml(category: str) -> str | None:
-    try:
+    def _read():
         with SessionLocal() as session:
             snapshot = _active_snapshot(session, category)
             return snapshot.yaml_raw if snapshot is not None else None
-    except SQLAlchemyError:
-        return None
+
+    return _read_with_transient_retry(_read)
 
 
 def apply_active_api_config(settings):
@@ -112,14 +142,17 @@ def apply_active_api_config(settings):
 
 
 def load_secret_value(secret_id: str) -> str | None:
-    try:
+    def _read():
         with SessionLocal() as session:
             secret = session.get(SystemSecret, secret_id)
             if secret is None:
                 return None
-            return _decrypt_secret(secret.encrypted_value)
-    except (SQLAlchemyError, DomainError, InvalidToken):
-        return None
+            try:
+                return _decrypt_secret(secret.encrypted_value)
+            except (DomainError, InvalidToken):
+                return None
+
+    return _read_with_transient_retry(_read)
 
 
 def llm_provider_api_key_secret_id(provider_id: str) -> str:
@@ -305,15 +338,54 @@ class SystemConfigService:
         if credential_mode == "api_key":
             provider_secret = load_secret_value(llm_provider_api_key_secret_id(provider_id)) if provider_id else None
             api_key = provider_payload.get("api_key") or provider_secret or load_secret_value(LLM_API_KEY_SECRET_ID)
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         timeout_value = provider_payload.get("timeout_seconds")
         timeout_seconds = _float_value(10.0 if timeout_value is None else timeout_value, "timeout_seconds")
         requested_model = _requested_probe_model(provider_payload)
         should_check_completion = bool(requested_model) and _bool_value(provider_payload.get("check_completion", False))
         trust_env = _httpx_trust_env_for_base_url(base_url)
+        adapter = adapter_registry()[provider]
+        provider_options = dict(provider_payload.get("provider_options") or {})
+        list_request = adapter.list_models_request(base_url=base_url, api_key=api_key, provider_options=provider_options)
         started_at = time.perf_counter()
+        if list_request is None:
+            checks: dict[str, Any] = {
+                "connection": {
+                    "ok": None,
+                    "status_code": None,
+                    "message": "该服务不提供模型列表接口，跳过连接检查",
+                }
+            }
+            if should_check_completion and requested_model:
+                completion_result = _probe_completion(
+                    provider=provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                    provider_options=provider_options,
+                    model=str(requested_model),
+                    api_mode=str(provider_payload.get("api_mode") or "chat"),
+                    timeout_seconds=timeout_seconds,
+                )
+                checks["completion"] = completion_result
+                return {
+                    "ok": completion_result["ok"] is True,
+                    "status_code": completion_result.get("status_code"),
+                    "latency_ms": int((time.perf_counter() - started_at) * 1000),
+                    "message": completion_result["message"]
+                    if completion_result["ok"] is not True
+                    else f"模型 {requested_model} 已通过最小生成探测（该服务不提供模型列表接口）",
+                    "available_models": [],
+                    "checks": checks,
+                }
+            return {
+                "ok": False,
+                "status_code": None,
+                "latency_ms": int((time.perf_counter() - started_at) * 1000),
+                "message": "该服务不提供模型列表接口；请填写模型名并勾选生成探测",
+                "available_models": [],
+                "checks": checks,
+            }
         try:
-            response = httpx.get(f"{base_url}/models", headers=headers, timeout=timeout_seconds, trust_env=trust_env)
+            response = httpx.get(list_request.url, headers=list_request.headers, timeout=timeout_seconds, trust_env=trust_env)
         except httpx.RequestError as exc:
             return {
                 "ok": False,
@@ -344,7 +416,8 @@ class SystemConfigService:
                 completion_result = _probe_completion(
                     provider=provider,
                     base_url=base_url,
-                    headers=headers,
+                    api_key=api_key,
+                    provider_options=provider_options,
                     model=str(requested_model),
                     api_mode=str(provider_payload.get("api_mode") or "chat"),
                     timeout_seconds=timeout_seconds,
@@ -371,7 +444,7 @@ class SystemConfigService:
                 "checks": checks,
             }
 
-        model_ids = _extract_model_ids(response)
+        model_ids = _normalize_provider_model_ids(adapter.normalize_listed_model_ids(_extract_model_ids(response)))
         if requested_model:
             model_ok = requested_model in model_ids
             checks["model"] = {
@@ -394,7 +467,8 @@ class SystemConfigService:
             completion_result = _probe_completion(
                 provider=provider,
                 base_url=base_url,
-                headers=headers,
+                api_key=api_key,
+                provider_options=provider_options,
                 model=str(requested_model),
                 api_mode=str(provider_payload.get("api_mode") or "chat"),
                 timeout_seconds=timeout_seconds,
@@ -488,6 +562,7 @@ class SystemConfigService:
             "missing_active_routes": missing_active_routes,
             "blocked_routes": blocked_routes,
             "readiness": _llm_readiness_summary(providers=providers, node_routes=node_routes),
+            "role_slots": _role_slot_overview(node_routes),
             "api_snapshot": api_payload.get("active_snapshot"),
             "models_snapshot": models_payload.get("active_snapshot"),
         }
@@ -767,6 +842,185 @@ class SystemConfigService:
         probe_payload["timeout_seconds"] = llm_payload.get("timeout_seconds", 30.0)
         probe_payload.update(payload or {})
         return self.test_provider(payload=probe_payload)
+
+    def llm_provider_presets(self) -> dict[str, Any]:
+        return {
+            "presets": provider_preset_payloads(),
+            "provider_catalog": _provider_catalog(),
+        }
+
+    def list_llm_provider_models(self, *, provider_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        llm_payload = self._current_api_llm_payload()
+        provider = self.llm_overview()["providers"].get(provider_id)
+        if provider is None:
+            raise DomainError("CONFIG_PROVIDER_NOT_FOUND", f"provider {provider_id} was not found", status_code=404)
+
+        provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
+        adapter = adapter_registry().get(provider_type)
+        if adapter is None:
+            raise DomainError("CONFIG_PROVIDER_UNSUPPORTED", f"unsupported provider {provider_type}", status_code=422)
+        base_url = _normalize_provider_base_url(provider.get("base_url"), provider_type)
+        credential_mode = str(provider.get("credential_mode") or "api_key")
+        api_key = None
+        if credential_mode == "api_key":
+            api_key = load_secret_value(llm_provider_api_key_secret_id(provider_id)) or load_secret_value(LLM_API_KEY_SECRET_ID)
+        timeout_value = payload.get("timeout_seconds") or llm_payload.get("timeout_seconds") or 10.0
+        timeout_seconds = _float_value(timeout_value, "timeout_seconds")
+        provider_options = dict(provider.get("provider_options") or {})
+
+        configured_models = _normalize_provider_model_ids(provider.get("models") or [])
+        preset = get_provider_preset(provider_type)
+        preset_models = list(preset.common_models) if preset is not None else []
+        fallback_models = list(dict.fromkeys([*configured_models, *preset_models]))
+
+        def _fallback(message: str, *, status_code: int | None = None) -> dict[str, Any]:
+            return {
+                "provider_id": provider_id,
+                "provider_type": provider_type,
+                "ok": bool(fallback_models),
+                "source": "preset",
+                "available_models": fallback_models,
+                "status_code": status_code,
+                "message": message,
+            }
+
+        list_request = adapter.list_models_request(base_url=base_url, api_key=api_key, provider_options=provider_options)
+        if list_request is None:
+            return _fallback("该服务不提供模型列表接口，已返回预设/已配置模型")
+
+        started_at = time.perf_counter()
+        try:
+            response = httpx.get(
+                list_request.url,
+                headers=list_request.headers,
+                timeout=timeout_seconds,
+                trust_env=_httpx_trust_env_for_base_url(base_url),
+            )
+        except httpx.RequestError as exc:
+            return _fallback(f"模型列表拉取失败：{exc}")
+        if not response.is_success:
+            return _fallback(f"模型列表拉取失败：{_provider_error_summary(response)}", status_code=response.status_code)
+
+        model_ids = _normalize_provider_model_ids(adapter.normalize_listed_model_ids(_extract_model_ids(response)))
+        return {
+            "provider_id": provider_id,
+            "provider_type": provider_type,
+            "ok": True,
+            "source": "live",
+            "available_models": model_ids,
+            "status_code": response.status_code,
+            "latency_ms": int((time.perf_counter() - started_at) * 1000),
+            "message": f"已从服务实时拉取 {len(model_ids)} 个模型",
+        }
+
+    def save_llm_role_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
+        assignments = payload.get("assignments")
+        if not isinstance(assignments, dict) or not assignments:
+            raise DomainError("CONFIG_ROLE_ASSIGNMENTS_REQUIRED", "assignments must be a non-empty mapping", status_code=422)
+
+        overview = self.llm_overview()
+        providers = overview["providers"]
+
+        current_models = dict(self._category_payload("models").get("parsed") or {})
+        node_routing = dict(current_models.get("node_routing") or {})
+        task_routing = dict(current_models.get("task_routing") or {})
+        role_assignments = dict(current_models.get("role_assignments") or {})
+
+        applied: dict[str, dict[str, Any]] = {}
+        for slot_id, binding in assignments.items():
+            slot = get_role_slot_spec(str(slot_id))
+            if slot is None:
+                raise DomainError("CONFIG_ROLE_SLOT_UNKNOWN", f"unknown role slot {slot_id}", status_code=422)
+            if not isinstance(binding, dict):
+                raise DomainError("CONFIG_ROLE_ASSIGNMENT_INVALID", f"assignment for {slot_id} must be a mapping", status_code=422)
+            provider_id = _optional_text(binding.get("provider_id"))
+            if not provider_id or provider_id not in providers:
+                raise DomainError(
+                    "CONFIG_PROVIDER_NOT_FOUND",
+                    f"role slot {slot_id} references unknown provider {provider_id or '(missing)'}",
+                    status_code=404 if provider_id else 422,
+                )
+            provider = providers[provider_id]
+            if not _provider_view_ready(provider):
+                raise DomainError(
+                    "CONFIG_ROUTE_PROVIDER_NOT_READY",
+                    f"provider {provider_id} is not ready; enable it and configure credentials first",
+                    status_code=422,
+                )
+            models = _normalize_provider_model_ids(provider.get("models") or [])
+            model = _optional_text(binding.get("model")) or (models[0] if models else None)
+            if not model:
+                raise DomainError(
+                    "CONFIG_ROUTE_MODEL_MISSING",
+                    f"provider {provider_id} has no models; probe or fill the model list first",
+                    status_code=422,
+                )
+            if models and model not in models:
+                raise DomainError(
+                    "CONFIG_ROUTE_MODEL_MISSING",
+                    f"model {model} is not listed by provider {provider_id}",
+                    status_code=422,
+                )
+
+            provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
+            account_id = _optional_text(provider.get("account_id"))
+            api_mode = _optional_text(provider.get("api_mode")) or "responses"
+            credential_mode = _optional_text(provider.get("credential_mode"))
+            slot_node_ids = role_slot_node_ids(slot.slot_id)
+            for node_id in slot_node_ids:
+                node_routing[node_id] = default_task_config_payload(
+                    node_id,
+                    provider_id=provider_id,
+                    provider=provider_type,
+                    model=model,
+                    account_id=account_id,
+                    api_mode=api_mode,
+                    credential_mode=credential_mode,
+                )
+            role_assignments[slot.slot_id] = {"provider_id": provider_id, "model": model}
+            applied[slot.slot_id] = {
+                "provider_id": provider_id,
+                "model": model,
+                "node_ids": slot_node_ids,
+            }
+
+        config_payload = {
+            "model_profiles": dict(current_models.get("model_profiles") or {}),
+            "task_routing": task_routing,
+            "node_routing": node_routing,
+            "retry_budget": dict(current_models.get("retry_budget") or {}),
+            "job_runtime": dict(current_models.get("job_runtime") or {}),
+            "role_assignments": role_assignments,
+        }
+        routing_config = parse_model_routing_config(config_payload)
+        activate = _bool_value(payload.get("activate", True))
+        if activate:
+            # 只校验本次触达的槽内节点:允许「先把写作主力分出去」的渐进配置,
+            # 未触达节点保持原状(与今日的默认 repo 路由同等待遇)。
+            touched_node_ids = {node_id for entry in applied.values() for node_id in entry["node_ids"]}
+            _validate_activating_node_route_bindings(
+                node_routing={
+                    node_id: task_config
+                    for node_id, task_config in routing_config.node_routing.items()
+                    if node_id in touched_node_ids
+                },
+                providers=providers,
+            )
+        snapshot = self._store_config_snapshot(
+            category="models",
+            parsed=config_payload,
+            validation={"ok": True, "message": "models config is valid"},
+            status="active" if activate else "draft",
+            active=activate,
+            actor_ref=actor_ref,
+        )
+        self.session.commit()
+        return {
+            "snapshot": _serialize_snapshot(snapshot),
+            "applied": applied,
+            "overview": self.llm_overview(),
+        }
 
     def _category_payload(self, category: str) -> dict[str, Any]:
         active = _active_snapshot(self.session, category)
@@ -1081,7 +1335,8 @@ def _normalize_provider_base_url(value: Any, provider: Any | None = None) -> str
             base_url = base_url[: -len(suffix)].rstrip("/")
             break
     provider_name = str(provider or "").strip()
-    if provider_name in {"openai", "openai_compatible", "deepseek"}:
+    adapter = adapter_registry().get(provider_name)
+    if adapter is not None and adapter.appends_v1_to_bare_host:
         try:
             parts = urlsplit(base_url)
         except ValueError:
@@ -1126,45 +1381,14 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "base_url": base_url,
         "enabled": _bool_value(payload.get("enabled", True)),
         "credential_mode": credential_mode,
-        "api_mode": str(payload.get("api_mode") or ("responses" if provider_type in {"openai", "openai_compatible"} else "chat")),
+        "api_mode": str(payload.get("api_mode") or adapter_registry()[provider_type].default_api_mode),
         "models": _normalize_provider_model_ids(models),
         "provider_options": dict(provider_options),
     }
 
 
 def _provider_catalog() -> dict[str, dict[str, Any]]:
-    return {
-        "openai_compatible": {
-            "label": "本地 / OpenAI 兼容",
-            "credential_modes": ["none", "api_key"],
-            "default_base_url": DEFAULT_PROVIDER_BASE_URLS["openai_compatible"],
-        },
-        "openai": {
-            "label": "OpenAI",
-            "credential_modes": ["api_key"],
-            "default_base_url": DEFAULT_PROVIDER_BASE_URLS["openai"],
-        },
-        "anthropic": {
-            "label": "Claude / Anthropic",
-            "credential_modes": ["api_key"],
-            "default_base_url": DEFAULT_PROVIDER_BASE_URLS["anthropic"],
-        },
-        "deepseek": {
-            "label": "DeepSeek",
-            "credential_modes": ["api_key"],
-            "default_base_url": DEFAULT_PROVIDER_BASE_URLS["deepseek"],
-        },
-        "zhipu_glm": {
-            "label": "智谱 GLM",
-            "credential_modes": ["api_key"],
-            "default_base_url": DEFAULT_PROVIDER_BASE_URLS["zhipu_glm"],
-        },
-        "gemini": {
-            "label": "Gemini / Google",
-            "credential_modes": ["api_key"],
-            "default_base_url": DEFAULT_PROVIDER_BASE_URLS["gemini"],
-        },
-    }
+    return adapter_provider_catalog()
 
 
 def _none_secret_status() -> dict[str, Any]:
@@ -1334,6 +1558,30 @@ def _llm_readiness_summary(
         ],
         "ready": active_provider_count > 0 and len(ready_routes) > 0 and not blocked_routes,
     }
+
+
+def _role_slot_overview(node_routes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """槽位目录 + 从 node_routes 反推当前生效绑定(槽内全节点一致才算)。"""
+    slots: list[dict[str, Any]] = []
+    for entry in role_slot_catalog():
+        bindings = {
+            (
+                _optional_text((node_routes.get(node_id) or {}).get("provider_id")),
+                _optional_text((node_routes.get(node_id) or {}).get("model")),
+            )
+            for node_id in entry["node_ids"]
+        }
+        if len(bindings) == 1:
+            provider_id, model = next(iter(bindings))
+            current = (
+                {"provider_id": provider_id, "model": model, "mixed": False}
+                if provider_id or model
+                else None
+            )
+        else:
+            current = {"provider_id": None, "model": None, "mixed": True}
+        slots.append({**entry, "current": current})
+    return slots
 
 
 def _validate_activating_node_route_bindings(
@@ -1536,12 +1784,25 @@ def _probe_completion(
     *,
     provider: str,
     base_url: str,
-    headers: dict[str, str],
+    api_key: str | None,
+    provider_options: dict[str, Any] | None,
     model: str,
     api_mode: str,
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    if provider not in {"openai", "openai_compatible", "deepseek", "zhipu_glm"}:
+    adapter = adapter_registry().get(provider)
+    probe = (
+        adapter.completion_probe_request(
+            base_url=base_url,
+            model=model,
+            api_mode=api_mode,
+            api_key=api_key,
+            provider_options=provider_options,
+        )
+        if adapter is not None
+        else None
+    )
+    if probe is None:
         return {
             "ok": None,
             "status_code": None,
@@ -1549,33 +1810,11 @@ def _probe_completion(
             "endpoint": None,
             "message": f"completion check skipped for provider {provider}",
         }
-    normalized_api_mode = "responses" if provider in {"openai", "openai_compatible"} and api_mode == "responses" else "chat"
-    endpoint = "/responses" if normalized_api_mode == "responses" else "/chat/completions"
-    if normalized_api_mode == "responses":
-        request_json = {
-            "model": model,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "ping"}],
-                }
-            ],
-            "temperature": 0,
-            "max_output_tokens": 8,
-        }
-    else:
-        request_json = {
-            "model": model,
-            "messages": [{"role": "user", "content": "ping"}],
-            "temperature": 0,
-            "max_tokens": 8,
-            "stream": False,
-        }
     try:
         response = httpx.post(
-            f"{base_url}{endpoint}",
-            headers=headers,
-            json=request_json,
+            probe.url,
+            headers=probe.headers,
+            json=probe.payload,
             timeout=timeout_seconds,
             trust_env=_httpx_trust_env_for_base_url(base_url),
         )
@@ -1583,19 +1822,19 @@ def _probe_completion(
         return {
             "ok": False,
             "status_code": None,
-            "api_mode": normalized_api_mode,
-            "endpoint": endpoint,
+            "api_mode": probe.api_mode,
+            "endpoint": probe.endpoint,
             "message": str(exc),
         }
     result = {
         "ok": response.is_success,
         "status_code": response.status_code,
         "model": model,
-        "api_mode": normalized_api_mode,
-        "endpoint": endpoint,
-        "message": "minimal completion succeeded" if response.is_success else _completion_error_summary(response, api_mode=normalized_api_mode, endpoint=endpoint),
+        "api_mode": probe.api_mode,
+        "endpoint": probe.endpoint,
+        "message": "minimal completion succeeded" if response.is_success else _completion_error_summary(response, api_mode=probe.api_mode, endpoint=probe.endpoint),
     }
-    if response.status_code == 404 and normalized_api_mode == "responses":
+    if response.status_code == 404 and probe.api_mode == "responses":
         result["next_action"] = "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider"
     return result
 

@@ -18,6 +18,7 @@ from novel_system.db.models import (
     SceneCard,
     SceneMemory,
     SceneRunState,
+    VolumeSummary,
 )
 from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
@@ -222,6 +223,50 @@ class BundleBuilder:
             )
             inline_digests["character_contract"] = character_contract
 
+        narrative_state = self._narrative_state_digest(scene)
+        if narrative_state:
+            inline_digests["narrative_state"] = narrative_state
+
+        info_asymmetry = self._information_asymmetry_digest(scene)
+        if info_asymmetry:
+            inline_digests["information_asymmetry"] = info_asymmetry
+
+        pov_coloring = self._pov_voice_coloring(scene, voice_profile)
+        if pov_coloring:
+            inline_digests["pov_voice_coloring"] = pov_coloring
+
+        voice_fp = self._voice_fingerprint_prompt(scene)
+        if voice_fp:
+            inline_digests["voice_fingerprint"] = voice_fp
+
+        char_psych = self._character_psychology_prompt(scene)
+        if char_psych:
+            inline_digests["character_psychology"] = char_psych
+
+        arc_weights = self._character_arc_weights_prompt(scene)
+        if arc_weights:
+            inline_digests["character_arc_weights"] = arc_weights
+
+        rel_matrix = self._relationship_matrix_prompt(scene)
+        if rel_matrix:
+            inline_digests["relationship_matrix"] = rel_matrix
+
+        tension_prompt = self._tension_prompt(scene)
+        if tension_prompt:
+            inline_digests["tension_pacing"] = tension_prompt
+
+        theme_prompt = self._theme_and_expression_budget(scene)
+        if theme_prompt:
+            inline_digests["theme_expression_budget"] = theme_prompt
+
+        chapter_transition = self._chapter_transition_buffer(scene)
+        if chapter_transition:
+            inline_digests["chapter_transition_buffer"] = chapter_transition
+
+        similar_scenes = self._similar_scene_context(scene)
+        if similar_scenes:
+            inline_digests["similar_scene"] = similar_scenes
+
         if previous_memory:
             source_version_refs["scene_memory_prev"] = previous_memory.scene_id
             ordered_injections.append(
@@ -373,6 +418,12 @@ class BundleBuilder:
                 ensure_ascii=False,
                 sort_keys=True,
             )
+            # §9 Defect B: extract drift_ptype_priority from guidance for "show" correction
+            for row in longform_guidance:
+                rec = row.recommendation_json or {}
+                if "drift_ptype_priority" in rec:
+                    inline_digests["_drift_ptype_priority"] = rec["drift_ptype_priority"]
+                    break
 
         world_rules = self.resolver.resolve_active_world_rules(self.session, scene)
         if world_rules:
@@ -387,6 +438,10 @@ class BundleBuilder:
                 {"slot": "foreshadow", "ref_id": open_foreshadows[0].foreshadow_id, "digest_key": "foreshadow"}
             )
             inline_digests["foreshadow"] = self._combined_text(open_foreshadows, "text")
+
+        foreshadow_directives = self._foreshadow_directives(scene)
+        if foreshadow_directives:
+            inline_digests["foreshadow_directives"] = foreshadow_directives
 
         scene_summary = self.resolver.resolve_scene_summary(self.session, scene)
         if scene_summary:
@@ -403,6 +458,18 @@ class BundleBuilder:
                 {"slot": "chapter_summary", "ref_id": chapter_summary.chapter_id, "digest_key": "chapter_summary"}
             )
             inline_digests["chapter_summary"] = chapter_summary.content
+
+        # §2 summary tower: far-horizon volume atmosphere (read-only, NOT a fact source)
+        volume_summary = self._latest_volume_summary(scene)
+        if volume_summary is not None:
+            source_version_refs["volume_summary_row_id"] = volume_summary.row_id
+            ordered_injections.append(
+                {"slot": "volume_summary", "ref_id": volume_summary.row_id, "digest_key": "volume_summary"}
+            )
+            inline_digests["volume_summary"] = (
+                "【卷级远景氛围 — 仅供语气/基调延续，严禁当作事实来源；事实一律以权威状态为准】\n"
+                + (volume_summary.atmosphere_summary or "")
+            )
 
         projection = BundleSnapshotHashProjection(
             contract_version="BSHASH_v1",
@@ -458,6 +525,78 @@ class BundleBuilder:
             .order_by(GenerationPlanningArtifact.created_at.desc(), GenerationPlanningArtifact.row_id.desc())
         ).scalars().first()
 
+    def _foreshadow_directives(self, scene: SceneCard) -> str | None:
+        try:
+            from novel_system.services.foreshadow_lifecycle import ForeshadowLifecycleService
+            service = ForeshadowLifecycleService(self.session)
+            return service.format_foreshadow_directives(scene.scene_id)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _tension_prompt(scene: SceneCard) -> str | None:
+        try:
+            from novel_system.services.tension_curve import TensionCurveService
+            service = TensionCurveService.__new__(TensionCurveService)
+            return service.format_tension_prompt(scene)
+        except Exception:
+            return None
+
+    def _theme_and_expression_budget(self, scene: SceneCard) -> str | None:
+        """Blueprint §12: inject controlling idea + expression spectrum budget.
+
+        Combines the theme prompt (controlling idea + counterpoint map) with
+        the expression spectrum frequency budget, so the model knows which
+        expression levels are still available and which are exhausted.
+        """
+        try:
+            from novel_system.services.theme_anchor import ThemeAnchorService
+            project_id = scene.project_id
+            if not project_id:
+                return None
+
+            svc = ThemeAnchorService(self.session)
+            parts: list[str] = []
+
+            # Theme prompt (controlling idea + counterpoint)
+            theme_text = svc.format_theme_prompt(project_id)
+            if theme_text:
+                parts.append(theme_text)
+
+            # Expression spectrum budget
+            budget_warnings = svc.check_expression_budget(project_id)
+            if budget_warnings:
+                parts.append("\n## Expression Spectrum Budget (§12)")
+                for w in budget_warnings:
+                    status_icon = "🚫" if w["status"] == "exhausted" else "⚠️"
+                    parts.append(f"  {status_icon} {w['message']}")
+                parts.append(
+                    "  Prefer the most implicit expression available: "
+                    "结构映射 > 意象渗透 > 行动体现 > 对话暗示 > 直接议论"
+                )
+            elif not parts:
+                return None
+
+            return "\n".join(parts)
+        except Exception:
+            return None
+
+    def _narrative_state_digest(self, scene: SceneCard) -> str | None:
+        """Inject authoritative character state from event log into the prompt."""
+        try:
+            from novel_system.services.narrative_event_log import NarrativeEventLog
+            log = NarrativeEventLog(self.session)
+            project_id = scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id
+            text = log.format_state_for_prompt(
+                project_id,
+                scene.scene_seq or 0,
+                pov_character_id=scene.pov_character_id,
+                onstage_character_ids=scene.onstage_chars_json,
+            )
+            return text if text else None
+        except Exception:
+            return None
+
     def _literary_freshness_budget(self, scene: SceneCard) -> dict[str, Any] | None:
         rows = self.session.execute(
             select(FinalScene)
@@ -504,10 +643,48 @@ class BundleBuilder:
                 "rotate image fields, and end on a hard action instead of explanation."
             ),
         }
+        try:
+            from novel_system.services.self_repetition import SelfRepetitionDetector, format_semantic_repetition_guidance
+            detector = SelfRepetitionDetector(self.session)
+            repeated_ngrams = detector.top_repeated_ngrams(scene.chapter_id, lookback_scenes=6, top_n=8)
+            if repeated_ngrams:
+                budget["avoid_recent_ngrams"] = repeated_ngrams
+            corpus_texts, corpus_ids = detector._load_corpus(scene.scene_id, scene.chapter_id, lookback_scenes=6)
+            if corpus_texts:
+                from novel_system.services.self_repetition import check_semantic_repetition
+                sem_hits = check_semantic_repetition(
+                    scene.scene_goal or scene.hook or "",
+                    corpus_texts, corpus_ids,
+                )
+                if sem_hits:
+                    budget["semantic_repetition_alert"] = format_semantic_repetition_guidance(sem_hits)
+            # §9 blueprint: whole-book banned expression list (LifetimeExpressionRegistry)
+            from novel_system.services.self_repetition import LifetimeExpressionRegistry
+            lifetime_reg = LifetimeExpressionRegistry(self.session)
+            lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(scene.project_id)
+            if lifetime_guidance:
+                budget["lifetime_banned_expressions"] = lifetime_guidance
+        except Exception:  # noqa: S110 — non-critical enrichment
+            pass
         return {
             "source_final_scene_ids": [row.row_id for row in source_rows],
             "budget": budget,
         }
+
+    def _latest_volume_summary(self, scene: SceneCard) -> VolumeSummary | None:
+        """§2: most recent active volume atmosphere summary for the scene's project."""
+        project_id = scene.project_id
+        if not project_id:
+            return None
+        return self.session.execute(
+            select(VolumeSummary)
+            .where(
+                VolumeSummary.project_id == project_id,
+                VolumeSummary.active_flag == 1,
+                VolumeSummary.runtime_eligible == 1,
+            )
+            .order_by(VolumeSummary.volume_seq.desc(), VolumeSummary.row_id.desc())
+        ).scalars().first()
 
     def _approved_runtime_author_preference_profile(self) -> AuthorPreferenceProfile | None:
         return self.session.execute(
@@ -538,3 +715,229 @@ class BundleBuilder:
             .order_by(LongformStructureGuidance.created_at.asc(), LongformStructureGuidance.guidance_id.asc())
         ).scalars().all()
         return [row for row in rows if (row.scope_type, row.scope_ref_id) in scope_pairs]
+
+    def _chapter_transition_buffer(self, scene: SceneCard) -> str | None:
+        """Blueprint §3: inject last 500-1000 chars of previous chapter as continuity anchor.
+
+        Only fires for the first scene of a chapter (scene_seq == 1).
+        Uses ChapterGoal.display_order (or chapter_id alphabetical) to find the previous chapter.
+        """
+        try:
+            if scene.scene_seq and scene.scene_seq > 1:
+                return None
+            current_chapter = self.session.get(ChapterGoal, scene.chapter_id)
+            if current_chapter is None:
+                return None
+            current_order = current_chapter.display_order
+            if current_order is not None:
+                prev_chapter = self.session.execute(
+                    select(ChapterGoal)
+                    .where(
+                        ChapterGoal.project_id == scene.project_id,
+                        ChapterGoal.display_order < current_order,
+                    )
+                    .order_by(ChapterGoal.display_order.desc())
+                ).scalars().first()
+            else:
+                prev_chapter = self.session.execute(
+                    select(ChapterGoal)
+                    .where(
+                        ChapterGoal.project_id == scene.project_id,
+                        ChapterGoal.chapter_id < scene.chapter_id,
+                    )
+                    .order_by(ChapterGoal.chapter_id.desc())
+                ).scalars().first()
+            if prev_chapter is None:
+                return None
+            last_final = self.session.execute(
+                select(FinalScene)
+                .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+                .where(
+                    FinalScene.chapter_id == prev_chapter.chapter_id,
+                    FinalScene.status.in_(("approved", "near_final_ready")),
+                    SceneCard.trashed_flag == 0,
+                )
+                .order_by(SceneCard.scene_seq.desc(), FinalScene.created_at.desc())
+            ).scalars().first()
+            if last_final and last_final.content:
+                tail = last_final.content[-800:]
+                return f"## Chapter Transition Buffer (previous chapter ending — maintain tone continuity)\n\n{tail}"
+            return None
+        except Exception:
+            return None
+
+    def _similar_scene_context(self, scene: SceneCard) -> str | None:
+        """Blueprint §3 Track 3: semantic retrieval for atmosphere/echo material."""
+        try:
+            from novel_system.services.vector_store import InMemoryVectorStore
+            collection_name = f"scenes_{scene.project_id or scene.chapter_id.rsplit('_', 1)[0]}"
+            store = InMemoryVectorStore()
+            approved_scenes = self.session.execute(
+                select(FinalScene)
+                .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+                .where(
+                    FinalScene.status.in_(("approved", "near_final_ready")),
+                    SceneCard.trashed_flag == 0,
+                    SceneCard.scene_id != scene.scene_id,
+                    SceneCard.project_id == scene.project_id,
+                )
+                .order_by(SceneCard.scene_seq.asc())
+            ).scalars().all()
+            if not approved_scenes or len(approved_scenes) < 2:
+                return None
+            documents = [
+                {"id": fs.scene_id, "text": (fs.content or "")[:600]}
+                for fs in approved_scenes
+                if fs.content
+            ]
+            if not documents:
+                return None
+            store.write_collection(collection_name, documents)
+            query_text = scene.scene_goal or ""
+            if scene.location:
+                query_text += f" {scene.location}"
+            results = store.query(collection_name, query_text, top_k=2)
+            if not results:
+                return None
+            lines = [
+                "## Similar Scene Context (§3 Track 3 — inspiration only, NOT fact-authoritative)",
+                "These excerpts are for atmosphere/echo reference. They may be imprecise.",
+                "Do NOT copy facts, character states, or plot points from them.",
+                "Use them only for tonal resonance, imagery contrast, or emotional echoing.",
+            ]
+            for item in results:
+                lines.append(f"\n[scene {item.get('id', '?')}]\n{item.get('text', '')[:400]}")
+            return "\n".join(lines)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _pov_voice_coloring(scene: SceneCard, voice_profile) -> str | None:
+        """Blueprint §2: POV-conditional narration coloring (自由间接引语)."""
+        try:
+            from novel_system.services.pov_voice_coloring import build_pov_coloring, format_pov_coloring_prompt
+            pov_id = scene.pov_character_id
+            if not pov_id:
+                return None
+            voice_content = voice_profile.content if voice_profile else None
+            bible = {}
+            brief = scene.writer_brief_json or {}
+            if isinstance(brief, dict):
+                bible = brief.get("character_bible", {}) or {}
+            directive = build_pov_coloring(pov_id, voice_content, bible)
+            return format_pov_coloring_prompt(directive)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _character_psychology_prompt(scene: SceneCard) -> str | None:
+        """Blueprint §11: three-layer character psychology model."""
+        try:
+            from novel_system.services.character_psychology import extract_psychology_from_bible, format_psychology_prompt
+            from novel_system.services.tension_curve import get_scene_tension
+            pov_id = scene.pov_character_id
+            if not pov_id:
+                return None
+            brief = scene.writer_brief_json or {}
+            bible = brief.get("character_bible", {}) or {}
+            psych = extract_psychology_from_bible(pov_id, bible)
+            tension = get_scene_tension(scene)
+            return format_psychology_prompt(psych, tension_level=tension)
+        except Exception:
+            return None
+
+    def _character_arc_weights_prompt(self, scene: SceneCard) -> str | None:
+        """Blueprint §11: interpolate decision weights based on story progress.
+
+        Calculates progress as chapter_order/total_chapters (global arc position),
+        then interpolates between the story-phase weight snapshots for the POV character.
+        """
+        try:
+            from novel_system.services.character_arc import CharacterArcService
+            pov_id = scene.pov_character_id
+            if not pov_id:
+                return None
+            project_id = (
+                scene.project_id
+                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
+            )
+            # Calculate global progress: chapter_order / total_chapters
+            chapter = self.session.get(ChapterGoal, scene.chapter_id)
+            if chapter is None or chapter.display_order is None:
+                return None
+            from sqlalchemy import func as sa_func
+            total_chapters = self.session.execute(
+                sa_func.count(ChapterGoal.chapter_id)
+            ).scalar() or 1
+            # Refine with scene_seq within the chapter for sub-chapter granularity
+            total_scenes_in_chapter = self.session.execute(
+                sa_func.count(SceneCard.scene_id)
+                .where(SceneCard.chapter_id == scene.chapter_id, SceneCard.trashed_flag == 0)
+            ).scalar() or 1
+            chapter_progress = (chapter.display_order or 0) / max(total_chapters, 1)
+            scene_fraction = ((scene.scene_seq or 1) - 1) / max(total_scenes_in_chapter, 1)
+            # Combine: chapter-level coarse + scene-level fine adjustment
+            progress = chapter_progress + scene_fraction / max(total_chapters, 1)
+            progress = max(0.0, min(1.0, progress))
+
+            arc_svc = CharacterArcService(self.session)
+            return arc_svc.format_weights_at_progress_for_prompt(project_id, pov_id, progress)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _voice_fingerprint_prompt(scene: SceneCard) -> str | None:
+        """Blueprint §11: structured voice fingerprint for onstage characters."""
+        try:
+            from novel_system.services.voice_fingerprint import extract_fingerprint_from_bible, format_voice_fingerprint_prompt
+            pov_id = scene.pov_character_id
+            if not pov_id:
+                return None
+            brief = scene.writer_brief_json or {}
+            bible = brief.get("character_bible", {}) or {}
+            fp = extract_fingerprint_from_bible(pov_id, bible)
+            return format_voice_fingerprint_prompt(fp)
+        except Exception:
+            return None
+
+    def _relationship_matrix_prompt(self, scene: SceneCard) -> str | None:
+        """Blueprint §11: relationship dynamics matrix for onstage characters."""
+        try:
+            from novel_system.services.relationship_matrix import RelationshipMatrixService
+            project_id = (
+                scene.project_id
+                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
+            )
+            onstage = scene.onstage_chars_json or []
+            if len(onstage) < 2:
+                return None
+            svc = RelationshipMatrixService(self.session)
+            matrix = svc.build_matrix(project_id, scene.scene_seq or 0, onstage)
+            if not matrix.edges:
+                return None
+            prompt = svc.format_for_prompt(matrix)
+            opportunities = svc.tension_opportunities(matrix)
+            if opportunities:
+                prompt += "\n\n### Tension Opportunities\n" + "\n".join(f"- {o}" for o in opportunities[:3])
+            return prompt
+        except Exception:
+            return None
+
+    def _information_asymmetry_digest(self, scene: SceneCard) -> str | None:
+        """Blueprint §2/§11: inject information gaps between onstage characters."""
+        try:
+            from novel_system.services.narrative_event_log import NarrativeEventLog
+            log = NarrativeEventLog(self.session)
+            project_id = (
+                scene.project_id
+                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
+            )
+            onstage = scene.onstage_chars_json or []
+            if len(onstage) < 2:
+                return None
+            text = log.information_asymmetry_digest(
+                project_id, scene.scene_seq or 0, onstage,
+            )
+            return text if text else None
+        except Exception:
+            return None

@@ -404,6 +404,49 @@ def test_literary_quality_chapter_set_review_reports_missing_payoff_chapter_ids(
     assert checks["missing_payoff_chapter_ids"] == ["LQSET_MISSING"]
 
 
+def test_literary_quality_detects_perception_filter() -> None:
+    text = (
+        "她注意到窗外的雨已经停了。"
+        "走廊里有人在争吵，选择公开证据还是保护证人。"
+        "代价是暴露自己的位置。她推开门走出去。"
+    )
+    signals, findings = analyze_literary_quality(text)
+    assert signals["perception_filter"]["risk"] is True
+    assert any(f["dimension"] == "perception_filter" for f in findings)
+
+
+def test_literary_quality_expanded_model_voice_catches_chinese_cliches() -> None:
+    text = (
+        "她微微一笑，缓缓说道："
+        "“你要选择哪一个？”"
+        "他必须在公开和保护之间做出选择，"
+        "代价是暴露位置。"
+        "他推开门。"
+    )
+    signals, findings = analyze_literary_quality(text)
+    assert signals["model_voice"]["risk"] is True
+
+
+def test_literary_quality_dimension_weights_sum_to_one() -> None:
+    from novel_system.services.literary_quality import DIMENSION_WEIGHTS
+    assert abs(sum(DIMENSION_WEIGHTS.values()) - 1.0) < 1e-9
+
+
+def test_self_repetition_dimension_defaults_to_no_risk() -> None:
+    signals, _ = analyze_literary_quality("She opened the door. He must choose.")
+    assert signals["self_repetition"]["risk"] is False
+    assert signals["self_repetition"]["score"] == 1.0
+
+
+def test_external_signals_override_defaults() -> None:
+    signals, _ = analyze_literary_quality(
+        "She opened the door.",
+        external_signals={"self_repetition": {"risk": True, "score": 0.3, "evidence": "repeated phrase"}},
+    )
+    assert signals["self_repetition"]["risk"] is True
+    assert signals["self_repetition"]["score"] == 0.3
+
+
 def _seed_cross_scene_template_reuse(session) -> None:
     chapter_id = "LQ300"
     session.add(

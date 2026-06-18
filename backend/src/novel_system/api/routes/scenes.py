@@ -398,6 +398,185 @@ def scene_generation_history(scene_id: str, request: Request, session: Session =
     )
 
 
+@router.get("/api/v1/scenes/{scene_id}/style-candidates")
+def get_scene_style_candidates(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    """Blueprint §6/§14: retrieve all Best-of-N style draft candidates for human terminal selection.
+
+    Returns all style draft candidates with their adversarial quality scores,
+    allowing the author to pick 'the one with life' from the available options.
+    """
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    from novel_system.services.literary_quality import adversarial_rank_score
+    drafts = list(session.execute(
+        select(SceneDraft)
+        .where(
+            SceneDraft.scene_id == scene_id,
+            SceneDraft.stage == "style_draft",
+        )
+        .order_by(SceneDraft.created_at.desc())
+    ).scalars().all())
+    state = session.get(SceneRunState, scene_id)
+    selected_row_id = state.current_style_draft_row_id if state else None
+    candidates = []
+    for idx, d in enumerate(drafts):
+        score = adversarial_rank_score(d.content) if d.content else 0.0
+        candidates.append({
+            "row_id": d.row_id,
+            "adversarial_score": round(score, 3),
+            "content_preview": (d.content or "")[:500],
+            "content": d.content,
+            "selected": d.row_id == selected_row_id,
+            "created_at": str(d.created_at) if d.created_at else None,
+        })
+    candidates.sort(key=lambda c: c["adversarial_score"], reverse=True)
+    # §6 Defect D: surface dispersion and criticality as author-facing quality signals
+    dispersion_score = state.candidate_dispersion_score if state else None
+    criticality_info = None
+    if state and state.criticality_level:
+        criticality_info = {
+            "level": state.criticality_level,
+            "reasons": state.criticality_reasons_json or [],
+        }
+    return ok(
+        {
+            "scene_id": scene_id,
+            "candidates": candidates,
+            "total": len(candidates),
+            "dispersion_score": dispersion_score,
+            "dispersion_signal": (
+                "low" if dispersion_score is not None and dispersion_score < 0.15
+                else "adequate" if dispersion_score is not None
+                else None
+            ),
+            "criticality": criticality_info,
+        },
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.get("/api/v1/scenes/{scene_id}/orchestration-signals")
+def get_scene_orchestration_signals(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    """§0: surface orchestration-layer decisions at the right resolution.
+
+    Aggregates the author-facing quality signals the engine computes but normally
+    keeps internal: Best-of-N dispersion + scene criticality (§6), foreshadow debt
+    health (§5), theme expression budget (§12), and active style-drift correction (§9).
+    One read for the workbench to render its "编排信号" panel.
+    """
+    scene = session.get(SceneCard, scene_id)
+    if scene is None:
+        return ok({"scene_id": scene_id, "available": False}, req_id=getattr(request.state, "request_id", None))
+
+    project_id = (
+        scene.project_id
+        or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
+    )
+    state = session.get(SceneRunState, scene_id)
+
+    # §6 dispersion + criticality
+    dispersion_score = state.candidate_dispersion_score if state else None
+    signals: dict[str, Any] = {
+        "scene_id": scene_id,
+        "available": True,
+        "dispersion": {
+            "score": dispersion_score,
+            "signal": (
+                "low" if dispersion_score is not None and dispersion_score < 0.15
+                else "adequate" if dispersion_score is not None else None
+            ),
+        },
+        "criticality": (
+            {"level": state.criticality_level, "reasons": state.criticality_reasons_json or []}
+            if state and state.criticality_level else None
+        ),
+    }
+
+    # §5 foreshadow debt health (best-effort — never fail the whole panel)
+    try:
+        from novel_system.services.foreshadow_lifecycle import ForeshadowLifecycleService
+        health = ForeshadowLifecycleService(session).project_health_report(project_id)
+        signals["foreshadow_health"] = {
+            "total_open": health.total_open,
+            "with_planned_reinforcement": health.with_planned_reinforcement,
+            "without_planned_reinforcement": health.without_planned_reinforcement,
+            "overdue_count": len(health.overdue),
+            "overdue_ids": health.overdue,
+        }
+    except Exception:
+        signals["foreshadow_health"] = None
+
+    # §12 theme expression budget
+    try:
+        from novel_system.services.theme_anchor import ThemeAnchorService
+        signals["theme_budget"] = ThemeAnchorService(session).check_expression_budget(project_id)
+    except Exception:
+        signals["theme_budget"] = None
+
+    # §9 active style-drift correction for this chapter
+    try:
+        from novel_system.db.models import LongformStructureGuidance as _LSG
+        drift_rows = list(session.execute(
+            select(_LSG).where(
+                _LSG.scope_type.in_(("chapter", "global")),
+                _LSG.scope_ref_id.in_((scene.chapter_id, "global")),
+                _LSG.guidance_id.like("drift_%"),
+                _LSG.status == "approved",
+            )
+        ).scalars().all())
+        drift_dims: list[str] = []
+        for row in drift_rows:
+            rec = row.recommendation_json or {}
+            for d in (rec.get("drift_dimensions") or []):
+                if isinstance(d, dict) and d.get("dimension"):
+                    drift_dims.append(d["dimension"])
+        signals["style_drift"] = {
+            "active": bool(drift_rows),
+            "drifted_dimensions": drift_dims,
+        }
+    except Exception:
+        signals["style_drift"] = None
+
+    return ok(signals, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select")
+def select_style_candidate(
+    scene_id: str,
+    row_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Blueprint §6/§14: human terminal selection — author picks a candidate.
+
+    Sets the selected candidate as the current style draft, so subsequent
+    auto-critique / soft QC / archival will operate on the human-chosen version.
+    """
+    def _select(session: Session) -> dict[str, Any]:
+        AuthorLifecycleService(session).require_active_scene(scene_id)
+        draft = session.get(SceneDraft, row_id)
+        if draft is None or draft.scene_id != scene_id:
+            raise DomainError(
+                "CANDIDATE_NOT_FOUND",
+                f"Style draft candidate {row_id} not found for scene {scene_id}",
+                status_code=404,
+            )
+        state = session.get(SceneRunState, scene_id)
+        if state is None:
+            raise DomainError("SCENE_STATE_NOT_FOUND", "Scene run state not found", status_code=404)
+        state.current_style_draft_row_id = row_id
+        session.flush()
+        return {"scene_id": scene_id, "selected_row_id": row_id, "message": "Candidate selected for human terminal review"}
+
+    result = execute_with_idempotency(
+        session=session,
+        request=request,
+        path_template="/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select",
+        path_params={"scene_id": scene_id, "row_id": row_id},
+        action=lambda: _select(session),
+    )
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.get("/api/v1/scenes/{scene_id}/workbench")
 def scene_workbench(scene_id: str, request: Request, session: Session = Depends(get_session)):
     scene = AuthorLifecycleService(session).require_active_scene(scene_id)

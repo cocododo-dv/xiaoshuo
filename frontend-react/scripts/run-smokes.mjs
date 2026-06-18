@@ -11,7 +11,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
 const API = process.argv[3] || "http://127.0.0.1:8009";
 
-const SMOKES = ["smoke-phase2.mjs", "smoke-phase3.mjs", "smoke-phase4.mjs", "smoke-phase5.mjs", "smoke-phase6.mjs", "smoke-phase7.mjs"];
+const SMOKES = ["smoke-phase2.mjs", "smoke-phase3.mjs", "smoke-phase4.mjs", "smoke-phase5.mjs", "smoke-phase6.mjs", "smoke-phase7.mjs", "smoke-ai-settings.mjs"];
 const BACKEND_DIR = path.resolve(HERE, "../../backend");
 
 // 各套用例都会改动 demo 数据（裁决/插场/改题），套间 reseed 保独立性

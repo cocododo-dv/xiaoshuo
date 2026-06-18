@@ -5,6 +5,7 @@ import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { wrDeepUnmark, wrDeepScan, wrDxLog, wrDeepMark, wrDeepAdopt, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, WrDeepDrawer } from "./ws-deep.jsx";
+import { OrchestrationSignals } from "./ws-signals.jsx";
 
 /* global React, I */
 /* ==========================================================
@@ -964,6 +965,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
               {am.card
                 ? <WrSceneCard card={am.card} onEdit={go ? () => go("author") : null} />
                 : <div className="wr-goal"><span className="wr-goal-k">本场目标</span><span className="wr-goal-v">{am.goal}</span></div>}
+              <OrchestrationSignals sceneId={activeScene} />
               {posture === "deep" && <div className="wr-deep-note"><span className="dot" />深改姿态 · 正文只读 · 点击高亮句直达诊断</div>}
             </header>
             <div className="wr-editor" ref={editorRef} contentEditable={posture !== "deep"} suppressContentEditableWarning spellCheck={false} onInput={() => { onInput(); detectMention(); }} onKeyDown={onEditorKeyDown} onKeyUp={() => { updateActive(); detectMention(); }} onMouseOver={onEditorOver} onMouseOut={onEditorOut} onClick={(e) => {

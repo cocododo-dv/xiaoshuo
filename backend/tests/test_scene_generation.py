@@ -24,7 +24,7 @@ from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.orchestrator import Orchestrator
-from novel_system.services.scene_generation import SceneGenerationService
+from novel_system.services.scene_generation import SceneGenerationService, StyleGenerationResult
 
 
 class FakeSceneClient:
@@ -616,10 +616,11 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
     state = session.get(SceneRunState, "CH100_SC01")
 
     assert [llm_call.step for llm_call in llm_calls] == ["neutral_draft", "hard_qc", "style_draft"]
-    assert llm_calls[-1].error_code == "KeyError"
+    # 缺路由统一为引导性错误码(原为裸 "KeyError");原始 KeyError 仍向上抛(见 raises)
+    assert llm_calls[-1].error_code == "LLM_ROUTE_NOT_CONFIGURED"
     assert attempt.status == "failed"
     assert attempt.details_json["llm_call_id"] == llm_calls[-1].llm_call_id
-    assert attempt.details_json["error_code"] == "KeyError"
+    assert attempt.details_json["error_code"] == "LLM_ROUTE_NOT_CONFIGURED"
     assert state.current_style_draft_row_id is None
 
 
@@ -662,3 +663,61 @@ def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch)
     assert final_scene.content == style_draft.content
     assert final_scene.generation_llm_call_id == style_draft.generation_llm_call_id
     assert result["current_bundle_id"]
+
+
+def test_generate_style_draft_candidates_returns_sorted_list(session) -> None:
+    _seed_scene(session)
+    fake_client = FakeSceneClient()
+    service = SceneGenerationService(session, llm_client=fake_client)
+    bundle_builder = BundleBuilder(session)
+    bundle = bundle_builder.build("CH100_SC01")
+
+    neutral = service.generate_neutral_draft("CH100_SC01", bundle)
+    candidates = service.generate_style_draft_candidates(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id=neutral.row_id,
+        neutral_content=neutral.content,
+        n_candidates=3,
+    )
+    session.commit()
+
+    assert len(candidates) >= 1
+    assert all(isinstance(c, StyleGenerationResult) for c in candidates)
+    assert all(c.content for c in candidates)
+
+    attempts = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "style_draft")
+    ).scalars().all()
+    candidate_indices = [a.details_json.get("candidate_index") for a in attempts if a.details_json.get("candidate_index") is not None]
+    assert len(candidate_indices) >= 1
+
+    state = session.get(SceneRunState, "CH100_SC01")
+    assert state.current_style_draft_row_id == candidates[0].row_id
+
+
+def test_adversarial_rank_score_lower_for_ai_heavy_text() -> None:
+    from novel_system.services.literary_quality import adversarial_rank_score
+
+    clean_text = (
+        "She opened the door. He must choose the archive or save the child. "
+        "The cost was his position. He left."
+    )
+    ai_heavy_text = (
+        "She suddenly realized the moon was somehow meaningful. "
+        "Everything changed forever. As if fate."
+    )
+    assert adversarial_rank_score(clean_text) > adversarial_rank_score(ai_heavy_text)
+
+
+def test_candidate_dispersion_detects_identical_vs_diverse() -> None:
+    from novel_system.services.literary_quality import candidate_dispersion
+
+    same = ["She opened the door." * 3, "She opened the door." * 3]
+    assert candidate_dispersion(same) == 0.0
+
+    diverse = [
+        "She ran through the fog, choosing to reveal the hidden letters.",
+        "He opened the safe and left the key on the windowsill.",
+    ]
+    assert candidate_dispersion(diverse) > 0.0

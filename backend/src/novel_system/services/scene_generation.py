@@ -62,6 +62,26 @@ ANTI_TEMPLATE_GATE_DIMENSIONS = {
     "expository_dialogue",
 }
 
+# §6.3 multi-strategy diversification prompts for low-dispersion retry
+_DIVERSIFICATION_PROMPT = (
+    "[DIVERSIFICATION] 前一轮生成的候选在表达上高度相似。请刻意尝试不同的叙述入口：\n"
+    "换一种感官开场（如果之前用了视觉，试听觉或触觉）、\n"
+    "换一种时间结构（如果之前是顺叙，试倒叙或插叙的片段）、\n"
+    "换一种节奏（如果之前是长句铺陈，试短句切入）。\n"
+    "保持场景spec的所有结构要求不变，只改变'怎么去'。\n\n"
+)
+# §6.3 style emphasis rotation prefixes — rotate which style dimension the LLM focuses on
+_STYLE_EMPHASIS_ROTATION: list[str] = [
+    (
+        "[风格强调·禁忌优先] 本次生成请特别关注参考风格中的禁忌模式——"
+        "绝对避开被标记为禁忌的表达方式,并让'不做什么'成为本次风格选择的首要约束。\n\n"
+    ),
+    (
+        "[风格强调·节奏指标优先] 本次生成请严格对齐风格参考中的硬指标锚点——"
+        "句长分布、感官词频率、对话比例等量化基线。让数字说话,节奏先行。\n\n"
+    ),
+]
+
 
 def versioned_scene_artifact_id(prefix: str, scene_id: str, bundle: dict[str, Any]) -> str:
     bundle_id = str(bundle.get("bundle_id") or "")
@@ -192,7 +212,7 @@ class SceneGenerationService:
             )
             raise
 
-        prompt = self._inject_style_reference(prompt, scene, task_type="scene_generation")
+        prompt = self._inject_style_reference(prompt, scene, task_type="scene_generation", bundle=bundle)
 
         try:
             node_result = self._llm_runner.run(
@@ -290,6 +310,251 @@ class SceneGenerationService:
             client_kind="style",
             attempt_details_extra={"source_neutral_draft_row_id": neutral_draft_row_id},
         )
+
+    def generate_style_draft_candidates(
+        self,
+        scene_id: str,
+        bundle: dict[str, Any],
+        *,
+        neutral_draft_row_id: str,
+        neutral_content: str,
+        author_note: str | None = None,
+        n_candidates: int = 3,
+    ) -> list[StyleGenerationResult]:
+        """Generate N style-draft candidates sorted by adversarial quality (best first)."""
+        from novel_system.services.literary_quality import adversarial_rank_score, get_dimension_weights
+
+        scene = self.session.get(SceneCard, scene_id)
+        state = self.session.get(SceneRunState, scene_id)
+
+        # §6 dynamic quality weights — project-level style profile can shift
+        # which adversarial dimensions matter most for this particular work.
+        _project_weights = get_dimension_weights(
+            scene.project_id, self.session,
+        ) if scene and scene.project_id else None
+
+        try:
+            task_config = self._llm_runner.task_config("style_draft")
+            base_temp = task_config.temperature
+        except KeyError:
+            base_temp = 0.7
+
+        if n_candidates <= 1:
+            temperatures = [base_temp]
+        else:
+            spread = 0.05
+            temperatures = [
+                round(base_temp + spread * (2 * i / (n_candidates - 1) - 1), 3)
+                for i in range(n_candidates)
+            ]
+            temperatures = [max(0.0, min(2.0, t)) for t in temperatures]
+
+        candidates: list[tuple[StyleGenerationResult, float]] = []
+        for idx, temp in enumerate(temperatures):
+            cand_row_id = versioned_scene_artifact_id("draft_style_cand", scene_id, bundle) + f"_{idx}"
+            try:
+                result = self._run_style_generation(
+                    scene=scene,
+                    state=state,
+                    bundle=bundle,
+                    row_id=cand_row_id,
+                    stage="style_draft",
+                    llm_step="style_draft",
+                    neutral_content=neutral_content,
+                    source_label="Approved Neutral Draft",
+                    source_row_id=neutral_draft_row_id,
+                    extra_instruction=(
+                        "Apply the style prompt template without changing the approved facts."
+                        + author_note_instruction(author_note)
+                    ),
+                    source_draft_row_id=neutral_draft_row_id,
+                    source_draft_content=neutral_content,
+                    client_kind="style",
+                    temperature_override=temp,
+                    attempt_details_extra={
+                        "source_neutral_draft_row_id": neutral_draft_row_id,
+                        "candidate_index": idx,
+                        "temperature_override": temp,
+                        "n_candidates": n_candidates,
+                    },
+                )
+                score = adversarial_rank_score(result.content, weights=_project_weights)
+                candidates.append((result, score))
+            except (DomainError, LLMNodeExecutionError):
+                _LOGGER.warning("candidate %d/%d failed for scene %s", idx + 1, n_candidates, scene_id)
+                continue
+
+        if not candidates:
+            return [self.generate_style_draft(
+                scene_id, bundle,
+                neutral_draft_row_id=neutral_draft_row_id,
+                neutral_content=neutral_content,
+                author_note=author_note,
+            )]
+
+        candidates.sort(key=lambda pair: pair[1], reverse=True)
+
+        if len(candidates) >= 2:
+            dispersion = _candidate_dispersion([c.content for c, _ in candidates])
+            _LOGGER.info(
+                "best-of-N dispersion=%.3f for scene %s (%d candidates)",
+                dispersion, scene_id, len(candidates),
+            )
+            if dispersion < 0.15:
+                _LOGGER.warning(
+                    "low candidate dispersion (%.3f) for scene %s — retrying with wider temperature spread (§6.3)",
+                    dispersion, scene_id,
+                )
+                # §6.3: low dispersion means sampling didn't explore the tail — retry with +0.1 spread
+                wider_spread = 0.15
+                wider_temps = [
+                    round(base_temp + wider_spread * (2 * i / (n_candidates - 1) - 1), 3)
+                    for i in range(n_candidates)
+                ]
+                wider_temps = [max(0.0, min(2.0, t)) for t in wider_temps]
+                retry_candidates: list[tuple[StyleGenerationResult, float]] = []
+                for idx, temp in enumerate(wider_temps):
+                    retry_row_id = versioned_scene_artifact_id("draft_style_cand", scene_id, bundle) + f"_retry_{idx}"
+                    try:
+                        result = self._run_style_generation(
+                            scene=scene, state=state, bundle=bundle,
+                            row_id=retry_row_id, stage="style_draft", llm_step="style_draft",
+                            neutral_content=neutral_content, source_label="Approved Neutral Draft",
+                            source_row_id=neutral_draft_row_id,
+                            extra_instruction=(
+                                "Apply the style prompt template without changing the approved facts."
+                                + author_note_instruction(author_note)
+                            ),
+                            source_draft_row_id=neutral_draft_row_id,
+                            source_draft_content=neutral_content,
+                            client_kind="style", temperature_override=temp,
+                            attempt_details_extra={
+                                "source_neutral_draft_row_id": neutral_draft_row_id,
+                                "candidate_index": idx, "temperature_override": temp,
+                                "n_candidates": n_candidates, "dispersion_retry": True,
+                            },
+                        )
+                        retry_candidates.append((result, adversarial_rank_score(result.content, weights=_project_weights)))
+                    except (DomainError, LLMNodeExecutionError):
+                        _LOGGER.warning("dispersion retry candidate %d failed for scene %s", idx, scene_id)
+                if retry_candidates:
+                    all_candidates = candidates + retry_candidates
+                    all_candidates.sort(key=lambda pair: pair[1], reverse=True)
+                    candidates = all_candidates
+                    retry_dispersion = _candidate_dispersion([c.content for c, _ in candidates])
+                    _LOGGER.info(
+                        "post-retry dispersion=%.3f for scene %s (%d total candidates)",
+                        retry_dispersion, scene_id, len(candidates),
+                    )
+
+                # §6.3 multi-strategy diversification: when temperature widening alone
+                # doesn't break the attractor basin, apply prompt variation and style
+                # emphasis rotation to generate 2 additional exploratory candidates.
+                post_temp_dispersion = _candidate_dispersion([c.content for c, _ in candidates])
+                if post_temp_dispersion < 0.15:
+                    _LOGGER.warning(
+                        "dispersion still low (%.3f) after temperature retry for scene %s "
+                        "— applying multi-strategy diversification (§6.3 enhanced)",
+                        post_temp_dispersion, scene_id,
+                    )
+                    diversify_candidates: list[tuple[StyleGenerationResult, float]] = []
+                    # Strategy 1: prompt variation — inject a diversification instruction
+                    # that nudges the LLM to explore different sensory openings, time
+                    # structures, and rhythmic patterns.
+                    div_row_id = (
+                        versioned_scene_artifact_id("draft_style_cand", scene_id, bundle)
+                        + "_div_prompt"
+                    )
+                    try:
+                        result = self._run_style_generation(
+                            scene=scene, state=state, bundle=bundle,
+                            row_id=div_row_id, stage="style_draft", llm_step="style_draft",
+                            neutral_content=neutral_content, source_label="Approved Neutral Draft",
+                            source_row_id=neutral_draft_row_id,
+                            extra_instruction=(
+                                "Apply the style prompt template without changing the approved facts."
+                                + author_note_instruction(author_note)
+                            ),
+                            source_draft_row_id=neutral_draft_row_id,
+                            source_draft_content=neutral_content,
+                            client_kind="style",
+                            temperature_override=round(base_temp + 0.10, 3),
+                            extra_system_prefix=_DIVERSIFICATION_PROMPT,
+                            attempt_details_extra={
+                                "source_neutral_draft_row_id": neutral_draft_row_id,
+                                "candidate_index": "div_prompt",
+                                "temperature_override": round(base_temp + 0.10, 3),
+                                "n_candidates": n_candidates,
+                                "diversification_strategy": "prompt_variation",
+                            },
+                        )
+                        diversify_candidates.append((result, adversarial_rank_score(result.content, weights=_project_weights)))
+                    except (DomainError, LLMNodeExecutionError):
+                        _LOGGER.warning("prompt-variation candidate failed for scene %s", scene_id)
+
+                    # Strategy 2: style emphasis rotation — if a style profile is bound,
+                    # prepend an emphasis instruction that shifts the LLM's attention to a
+                    # different style dimension (forbidden patterns or metric anchors)
+                    # compared to the balanced default.
+                    for rot_idx, emphasis_prefix in enumerate(_STYLE_EMPHASIS_ROTATION):
+                        div_style_row_id = (
+                            versioned_scene_artifact_id("draft_style_cand", scene_id, bundle)
+                            + f"_div_style_{rot_idx}"
+                        )
+                        try:
+                            result = self._run_style_generation(
+                                scene=scene, state=state, bundle=bundle,
+                                row_id=div_style_row_id, stage="style_draft", llm_step="style_draft",
+                                neutral_content=neutral_content, source_label="Approved Neutral Draft",
+                                source_row_id=neutral_draft_row_id,
+                                extra_instruction=(
+                                    "Apply the style prompt template without changing the approved facts."
+                                    + author_note_instruction(author_note)
+                                ),
+                                source_draft_row_id=neutral_draft_row_id,
+                                source_draft_content=neutral_content,
+                                client_kind="style",
+                                temperature_override=round(base_temp + 0.05 * (rot_idx + 1), 3),
+                                extra_system_prefix=emphasis_prefix,
+                                attempt_details_extra={
+                                    "source_neutral_draft_row_id": neutral_draft_row_id,
+                                    "candidate_index": f"div_style_{rot_idx}",
+                                    "temperature_override": round(base_temp + 0.05 * (rot_idx + 1), 3),
+                                    "n_candidates": n_candidates,
+                                    "diversification_strategy": "style_emphasis_rotation",
+                                    "emphasis_index": rot_idx,
+                                },
+                            )
+                            diversify_candidates.append((result, adversarial_rank_score(result.content, weights=_project_weights)))
+                        except (DomainError, LLMNodeExecutionError):
+                            _LOGGER.warning(
+                                "style-emphasis-rotation candidate %d failed for scene %s",
+                                rot_idx, scene_id,
+                            )
+
+                    if diversify_candidates:
+                        all_candidates = candidates + diversify_candidates
+                        all_candidates.sort(key=lambda pair: pair[1], reverse=True)
+                        candidates = all_candidates
+                        final_div_dispersion = _candidate_dispersion([c.content for c, _ in candidates])
+                        _LOGGER.info(
+                            "post-diversification dispersion=%.3f for scene %s "
+                            "(%d total candidates, %d from multi-strategy)",
+                            final_div_dispersion, scene_id, len(candidates),
+                            len(diversify_candidates),
+                        )
+
+        best_result = candidates[0][0]
+        state.current_style_draft_row_id = best_result.row_id
+        state.current_bundle_id = bundle["bundle_id"]
+        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+        # §6 Defect D: persist dispersion score for author-facing quality signal
+        if len(candidates) >= 2:
+            final_dispersion = _candidate_dispersion([c.content for c, _ in candidates])
+            state.candidate_dispersion_score = round(final_dispersion, 4)
+        self.session.flush()
+
+        return [result for result, _ in candidates]
 
     def generate_style_patch(
         self,
@@ -516,6 +781,8 @@ class SceneGenerationService:
         client_kind: str,
         patch_brief: list[str] | None = None,
         attempt_details_extra: dict[str, Any] | None = None,
+        temperature_override: float | None = None,
+        extra_system_prefix: str | None = None,
     ) -> StyleGenerationResult:
         fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
@@ -540,7 +807,13 @@ class SceneGenerationService:
             )
             raise
 
-        prompt = self._inject_style_reference(prompt, scene, task_type="scene_generation")
+        prompt = self._inject_style_reference(prompt, scene, task_type="scene_generation", bundle=bundle)
+
+        # §6.3 diversification: prepend caller-supplied system prefix (prompt variation / style emphasis)
+        if extra_system_prefix and prompt is not None:
+            injected = dict(prompt)
+            injected["system_prompt"] = extra_system_prefix + (prompt.get("system_prompt") or "")
+            prompt = injected
 
         user_prompt = self._build_style_user_prompt(
             prompt["user_prompt"],
@@ -564,6 +837,7 @@ class SceneGenerationService:
                 offline_client_factory=lambda: OfflineStyleClient(patch_mode=client_kind == "patch"),
                 source_draft_row_id=source_draft_row_id,
                 source_draft_content=source_draft_content,
+                temperature_override=temperature_override,
             )
             style_content = _extract_scene_text(node_result.response)
         except LLMNodeExecutionError as exc:
@@ -806,6 +1080,7 @@ class SceneGenerationService:
         scene: SceneCard | None,
         *,
         task_type: str = "scene_generation",
+        bundle: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """PR-8 §5.1 — 把 active StyleProfile 注入到 prompt["system_prompt"] 头部。
 
@@ -825,7 +1100,15 @@ class SceneGenerationService:
         if not project_id and not character_ids and not scene_id:
             return prompt
         try:
-            fragments = InjectionService(self.session).fragments_for(
+            svc = InjectionService(self.session)
+            # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
+            # when drift guidance includes structured dimension data) so the few-shot
+            # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
+            if bundle and isinstance(bundle, dict):
+                drift_priority = (bundle.get("inline_digests") or {}).get("_drift_ptype_priority")
+                if drift_priority and isinstance(drift_priority, list):
+                    svc.drift_ptype_priority = drift_priority
+            fragments = svc.fragments_for(
                 project_id, task_type, character_ids=character_ids, scene_id=scene_id,
             )
             prefix = fragments.to_system_prompt_prefix()
@@ -962,6 +1245,32 @@ class SceneGenerationService:
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         state.total_attempt_count += 1
         self.session.flush()
+
+
+def _candidate_dispersion(texts: list[str]) -> float:
+    """Measure pairwise surface dissimilarity of candidate texts (0=identical, 1=fully disjoint).
+
+    Blueprint §6.3: dispersion is a necessary condition for surprise — if candidates
+    are highly similar, sampling hasn't explored the tail.
+    Uses character-level 4-gram Jaccard distance averaged over all pairs.
+    """
+    if len(texts) < 2:
+        return 1.0
+
+    def _char_ngrams(text: str, n: int = 4) -> set[str]:
+        return {text[i:i + n] for i in range(max(0, len(text) - n + 1))}
+
+    ngram_sets = [_char_ngrams(t) for t in texts]
+    distances: list[float] = []
+    for i in range(len(ngram_sets)):
+        for j in range(i + 1, len(ngram_sets)):
+            a, b = ngram_sets[i], ngram_sets[j]
+            union = len(a | b)
+            if union == 0:
+                distances.append(0.0)
+            else:
+                distances.append(1.0 - len(a & b) / union)
+    return sum(distances) / len(distances) if distances else 0.0
 
 
 def _extract_scene_text(response: LLMResponse) -> str:

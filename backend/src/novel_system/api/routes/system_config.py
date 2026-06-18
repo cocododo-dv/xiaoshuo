@@ -68,6 +68,13 @@ class LlmNodeRouteSyncRequest(BaseModel):
     activate: bool = True
 
 
+class LlmRoleRoutesRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    assignments: dict[str, Any]
+    activate: bool = True
+
+
 @router.get("/api/v1/system-config")
 def system_config_overview(request: Request, session: Session = Depends(get_session)):
     return ok(SystemConfigService(session).overview(), req_id=getattr(request.state, "request_id", None))
@@ -210,4 +217,85 @@ def probe_system_config_llm_provider(
     return ok(
         SystemConfigService(session).probe_llm_provider(provider_id=provider_id, payload=payload.model_dump(mode="json", exclude_none=True) if payload else {}),
         req_id=None,
+    )
+
+
+@router.get("/api/v1/system-config/llm/provider-presets")
+def list_system_config_llm_provider_presets(request: Request, session: Session = Depends(get_session)):
+    return ok(
+        SystemConfigService(session).llm_provider_presets(),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.get("/api/v1/system-config/llm/providers/{provider_id}/models")
+def list_system_config_llm_provider_models(
+    provider_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    require_admin_token(x_admin_token, client_host=_client_host(request))
+    return ok(
+        SystemConfigService(session).list_llm_provider_models(provider_id=provider_id),
+        req_id=None,
+    )
+
+
+@router.post("/api/v1/system-config/llm/role-routes")
+def save_system_config_llm_role_routes(
+    payload: LlmRoleRoutesRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    require_admin_token(x_admin_token, client_host=_client_host(request))
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    return ok(
+        SystemConfigService(session).save_llm_role_routes(
+            payload=payload.model_dump(mode="json", exclude_none=True),
+            actor_ref=actor_ref,
+        ),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
+# ── §2 Event Sourcing Reconciliation ──────────────────────────────────
+
+
+class ReconciliationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    up_to_scene_seq: int | None = None
+    create_review_items: bool = False
+
+
+@router.post("/api/v1/system-config/reconcile")
+def run_event_reconciliation(
+    payload: ReconciliationRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    """§2 Event sourcing reconciliation: detect drift between NarrativeEvent
+    log projections and entity table state.  Returns all drift findings."""
+    require_admin_token(x_admin_token, client_host=_client_host(request))
+    from novel_system.services.event_reconciliation import EventReconciliationService
+
+    svc = EventReconciliationService(session)
+    findings = svc.reconcile_project(
+        payload.project_id,
+        up_to_scene_seq=payload.up_to_scene_seq,
+        create_review_items=payload.create_review_items,
+    )
+    session.commit()
+    return ok(
+        {
+            "project_id": payload.project_id,
+            "drift_count": len(findings),
+            "blocking_count": sum(1 for f in findings if f.severity == "block"),
+            "findings": [f.to_dict() for f in findings],
+        },
+        req_id=getattr(request.state, "request_id", None),
     )

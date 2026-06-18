@@ -9,11 +9,13 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     ChapterGoal,
+    FinalScene,
     QcReport,
     SceneBlueprint,
     SceneCard,
     SceneExecutionContract,
     SceneRunState,
+    SnowflakeArtifact,
     StoryProject,
     StyleReferenceInjectionBinding,
     StyleReferenceProfile,
@@ -65,7 +67,15 @@ class SceneExecutionContractService:
             return latest
 
         payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
-        status = "active" if not missing_fields else "blocked"
+
+        # §4 Causal readiness — check reverse causal skeleton prerequisites.
+        causal_warning = self._check_causal_readiness(scene, project)
+        if causal_warning:
+            payload["causal_readiness_warning"] = causal_warning
+            missing_fields.append("causal_prerequisite(advisory)")
+
+        blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
+        status = "active" if not blocking_fields else "blocked"
 
         rows = self.session.execute(
             select(SceneExecutionContract).where(
@@ -173,7 +183,29 @@ class SceneExecutionContractService:
                 blueprint_json.get("price_paid"),
                 scene.exit_change,
             ),
+            "cost_requirement": _first_text(
+                brief.get("cost_requirement"),
+                blueprint_json.get("cost_requirement"),
+                brief.get("price_paid"),
+                brief.get("stakes"),
+                blueprint_json.get("price_paid"),
+                scene.exit_change,
+            ),
+            "function_tag": _first_text(
+                brief.get("function_tag"),
+                blueprint_json.get("function_tag"),
+            ),
+            "tension_target": brief.get("tension_target") or blueprint_json.get("tension_target"),
+            "causal_prerequisite_scene_id": _first_text(
+                brief.get("causal_prerequisite_scene_id"),
+                blueprint_json.get("causal_prerequisite_scene_id"),
+            ),
+            "downstream_obligations": brief.get("downstream_obligations") or blueprint_json.get("downstream_obligations") or [],
             "reference_rules": reference_rules,
+            # Internal marker: True if scene_crucible comes from explicit spec, not fallback
+            "_has_explicit_crucible": bool(
+                _first_text(brief.get("scene_crucible"), blueprint_json.get("scene_crucible"))
+            ),
         }
         mode_payload: dict[str, Any]
         if scene_mode == "reactive":
@@ -232,21 +264,32 @@ class SceneExecutionContractService:
         missing_fields = self._missing_fields(payload)
         return payload, missing_fields
 
-    @staticmethod
-    def _missing_fields(payload: dict[str, Any]) -> list[str]:
+    def _missing_fields(self, payload: dict[str, Any]) -> list[str]:
         missing = []
-        for field in ("scene_mode", "pov_character_id", "scene_crucible"):
-            if not _has_text(payload.get(field)):
-                missing.append(field)
+        for f in ("scene_mode", "pov_character_id", "scene_crucible"):
+            if not _has_text(payload.get(f)):
+                missing.append(f)
         scene_mode = str(payload.get("scene_mode") or "proactive")
         if scene_mode == "reactive":
-            for field in ("reaction", "dilemma", "decision"):
-                if not _has_text(payload.get(field)):
-                    missing.append(field)
+            for f in ("reaction", "dilemma", "decision"):
+                if not _has_text(payload.get(f)):
+                    missing.append(f)
         else:
-            for field in ("goal", "conflict", "setback_or_victory"):
-                if not _has_text(payload.get(field)):
-                    missing.append(field)
+            for f in ("goal", "conflict", "setback_or_victory"):
+                if not _has_text(payload.get(f)):
+                    missing.append(f)
+        # §4 cost_requirement — blocking for scenes with explicit structured specs
+        # (scene_crucible in writer_brief or blueprint), advisory for simple/legacy scenes.
+        # Blueprint §4: "「代价」字段是关键 — AI 最常见的毛病是免费选择"
+        if not _has_text(payload.get("cost_requirement")):
+            is_explicit = payload.get("_has_explicit_crucible", False)
+            missing.append("cost_requirement" if is_explicit else "cost_requirement(advisory)")
+        # §10 function_tag — advisory but tracked for rhythm enforcement
+        if not _has_text(payload.get("function_tag")):
+            missing.append("function_tag(advisory)")
+        # §10 tension_target — advisory
+        if payload.get("tension_target") is None:
+            missing.append("tension_target(advisory)")
         return missing
 
     def _latest_blueprint(self, scene_id: str) -> SceneBlueprint | None:
@@ -321,6 +364,78 @@ class SceneExecutionContractService:
         if style_profile is not None:
             return [style_profile.profile_id]
         return []
+
+    def _check_causal_readiness(
+        self, scene: SceneCard, project: StoryProject | None,
+    ) -> str | None:
+        """§4 Causal readiness: check the reverse causal skeleton for unresolved
+        prerequisites at this scene's position.  Returns a prompt-injectable
+        warning string, or None if no skeleton exists or all prerequisites met."""
+        if project is None:
+            return None
+        try:
+            from novel_system.services.reverse_causal_skeleton import (
+                ReverseCausalSkeleton,
+                CausalLink,
+                validate_scene_causal_readiness,
+            )
+            # Load causal skeleton from the scene_details or long_synopsis artifact
+            for step_key in ("scene_details", "long_synopsis"):
+                art = self.session.execute(
+                    select(SnowflakeArtifact).where(
+                        SnowflakeArtifact.project_id == project.project_id,
+                        SnowflakeArtifact.step_key == step_key,
+                    ).order_by(SnowflakeArtifact.version.desc())
+                ).scalars().first()
+                if art and art.artifact_json and art.artifact_json.get("causal_skeleton"):
+                    skeleton_data = art.artifact_json["causal_skeleton"]
+                    break
+            else:
+                return None  # no skeleton found
+
+            # Reconstruct skeleton from JSON
+            chain_data = skeleton_data.get("chain", [])
+            if not chain_data:
+                return None
+            chain = [
+                CausalLink(
+                    step_index=link.get("step_index", i),
+                    description=link.get("description", ""),
+                    why_necessary=link.get("why_necessary", ""),
+                    character_state_before=link.get("state_before") or link.get("character_state_before"),
+                    character_state_after=link.get("state_after") or link.get("character_state_after"),
+                    depends_on_index=link.get("depends_on_index"),
+                )
+                for i, link in enumerate(chain_data)
+            ]
+            skeleton = ReverseCausalSkeleton(
+                controlling_idea=skeleton_data.get("controlling_idea", ""),
+                ending_state=skeleton_data.get("ending_state", ""),
+                chain=chain,
+            )
+
+            # Determine completed scenes (those with FinalScene)
+            completed_seqs = [
+                row[0] for row in
+                self.session.execute(
+                    select(SceneCard.scene_seq).join(
+                        FinalScene, FinalScene.scene_id == SceneCard.scene_id
+                    ).where(SceneCard.project_id == project.project_id)
+                ).all()
+            ]
+
+            readiness = validate_scene_causal_readiness(
+                skeleton, scene.scene_seq,
+                completed_scenes=completed_seqs,
+                strict=False,  # advisory by default — author can enable strict per-project
+            )
+            if readiness.unresolved:
+                return readiness.format_for_prompt()
+            return None
+
+        except Exception:
+            # Causal readiness is advisory — never block on internal errors
+            return None
 
     def _require_scene(self, scene_id: str) -> SceneCard:
         scene = self.session.get(SceneCard, scene_id)

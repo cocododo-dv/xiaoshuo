@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from typing import Any
@@ -30,28 +31,126 @@ QUALITY_DIMENSIONS: tuple[str, ...] = (
     "dialogue_as_report",
     "over_explained_motive",
     "false_poetic_closure",
+    "perception_filter",
+    "self_repetition",
+    "conflict_too_clean",
 )
 
 DIMENSION_WEIGHTS = {
-    "model_voice": 0.09,
+    "model_voice": 0.08,
     "image_homogeneity": 0.05,
     "repetitive_action": 0.05,
-    "expository_dialogue": 0.07,
-    "no_choice_scene": 0.08,
-    "summary_ending": 0.06,
-    "choice_pressure": 0.08,
-    "ending_drive": 0.08,
+    "expository_dialogue": 0.05,
+    "no_choice_scene": 0.07,
+    "summary_ending": 0.05,
+    "choice_pressure": 0.07,
+    "ending_drive": 0.07,
     "template_action_reuse": 0.06,
     "image_field_reuse": 0.03,
     "syntax_monotony": 0.03,
     "false_clarity": 0.02,
     "valid_ambiguity": 0.00,
-    "painless_scene": 0.10,
+    "painless_scene": 0.06,
     "decorative_imagery": 0.05,
-    "dialogue_as_report": 0.07,
+    "dialogue_as_report": 0.06,
     "over_explained_motive": 0.04,
-    "false_poetic_closure": 0.04,
+    "false_poetic_closure": 0.03,
+    "perception_filter": 0.03,
+    "self_repetition": 0.04,
+    "conflict_too_clean": 0.06,
+    # sum = 1.00 (0.08+0.05+0.05+0.05+0.07+0.05+0.07+0.07+0.06+0.03+0.03+0.02+0+0.06+0.05+0.06+0.04+0.03+0.03+0.04+0.06)
 }
+
+STYLE_WEIGHT_ADJUSTMENTS: dict[str, dict[str, float]] = {
+    "hard_boiled": {"perception_filter": 0.5, "dialogue_as_report": 1.5},
+    "literary": {"syntax_monotony": 0.5, "decorative_imagery": 0.5},
+    "thriller": {"template_action_reuse": 1.5, "ending_drive": 1.5},
+    "wuxia": {"image_homogeneity": 0.8, "decorative_imagery": 0.7},
+}
+"""Multipliers applied to base weights per writing style, then renormalized to sum=1.0."""
+
+
+def _renormalize_weights(weights: dict[str, float]) -> dict[str, float]:
+    """Renormalize weight dict so values sum to 1.0, preserving relative ratios."""
+    total = sum(weights.values())
+    if total <= 0.0:
+        return dict(DIMENSION_WEIGHTS)
+    return {dim: round(w / total, 6) for dim, w in weights.items()}
+
+
+def get_dimension_weights(
+    project_id: str | None = None,
+    session: Session | None = None,
+    *,
+    style_profile: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    """Return effective quality-dimension weights for a project.
+
+    Resolution order:
+    1. If *style_profile* is given and contains ``quality_weight_overrides``
+       (a dict mapping dimension names to multiplier floats), those multipliers
+       are applied to ``DIMENSION_WEIGHTS`` and the result is renormalized.
+    2. If *project_id* and *session* are given, the function looks up the
+       project's active ``StyleReferenceInjectionBinding`` to find a
+       ``StyleReferenceProfile`` whose ``profile_json`` might contain
+       ``quality_weight_overrides`` or ``style_tag`` (mapped through
+       ``STYLE_WEIGHT_ADJUSTMENTS``).
+    3. Falls back to the static ``DIMENSION_WEIGHTS`` constant.
+    """
+    overrides: dict[str, float] | None = None
+    style_tag: str | None = None
+
+    # --- explicit style_profile dict (e.g. passed from caller) ---
+    if style_profile:
+        overrides = style_profile.get("quality_weight_overrides")
+        if not overrides:
+            style_tag = style_profile.get("style_tag")
+
+    # --- DB lookup for project-bound profile ---
+    if overrides is None and style_tag is None and project_id and session:
+        try:
+            from novel_system.db.models import (
+                StyleReferenceInjectionBinding,
+                StyleReferenceProfile,
+            )
+            binding = session.execute(
+                select(StyleReferenceInjectionBinding)
+                .where(
+                    StyleReferenceInjectionBinding.scope == "project",
+                    StyleReferenceInjectionBinding.scope_ref_id == project_id,
+                    StyleReferenceInjectionBinding.status == "active",
+                )
+                .order_by(StyleReferenceInjectionBinding.created_at.desc())
+            ).scalars().first()
+            if binding is not None:
+                profile = session.get(StyleReferenceProfile, binding.profile_id)
+                if profile is not None:
+                    pj = profile.profile_json or {}
+                    overrides = pj.get("quality_weight_overrides")
+                    if not overrides:
+                        style_tag = pj.get("style_tag")
+        except Exception:
+            pass  # DB lookup is best-effort; fall back to defaults
+
+    # --- apply overrides as multipliers ---
+    if isinstance(overrides, dict) and overrides:
+        adjusted = {
+            dim: base * overrides.get(dim, 1.0)
+            for dim, base in DIMENSION_WEIGHTS.items()
+        }
+        return _renormalize_weights(adjusted)
+
+    # --- apply style_tag through STYLE_WEIGHT_ADJUSTMENTS ---
+    if style_tag and style_tag in STYLE_WEIGHT_ADJUSTMENTS:
+        multipliers = STYLE_WEIGHT_ADJUSTMENTS[style_tag]
+        adjusted = {
+            dim: base * multipliers.get(dim, 1.0)
+            for dim, base in DIMENSION_WEIGHTS.items()
+        }
+        return _renormalize_weights(adjusted)
+
+    return dict(DIMENSION_WEIGHTS)
+
 
 SEVERITY_RANK = {"blocking": 0, "revision": 1, "taste": 2, "info": 3}
 QUALITY_TEXT_LAYERS = {
@@ -77,6 +176,21 @@ MODEL_VOICE_TERMS = (
     "仿佛命运",
     "气氛十分尴尬",
     "一切都变得",
+    "微微一笑",
+    "心中一紧",
+    "不禁",
+    "心头一热",
+    "深吸一口气",
+    "缓缓说道",
+    "淡淡地说",
+    "轻轻地",
+    "默默地",
+    "眼中闪过",
+    "嘴角微扬",
+    "语气平淡",
+    "脸上露出",
+    "声音低沉",
+    "嘴角勾起",
 )
 
 EXPOSITORY_DIALOGUE_TERMS = (
@@ -319,6 +433,11 @@ FALSE_CLARITY_TERMS = (
     "突然意识到",
     "真相必须",
     "一切都变得",
+    "心中了然",
+    "恍然大悟",
+    "这一刻她明白",
+    "这一刻他明白",
+    "答案已经明确",
 )
 
 COST_TERMS = (
@@ -431,6 +550,30 @@ POETIC_CLOSURE_ACTION_TERMS = (
     "转身",
     "按下",
     "握住",
+)
+
+PERCEPTION_FILTER_TERMS = (
+    "she noticed",
+    "he noticed",
+    "she felt",
+    "he felt",
+    "she realized",
+    "he realized",
+    "she sensed",
+    "he sensed",
+    "她觉得",
+    "他觉得",
+    "她看到",
+    "他看到",
+    "她注意到",
+    "他注意到",
+    "她感到",
+    "他感到",
+    "她意识到",
+    "他意识到",
+    "似乎感觉到",
+    "好像听到",
+    "仿佛看到",
 )
 
 
@@ -587,7 +730,10 @@ class LiteraryQualityService:
         payoff_reveal_checks = _chapter_set_payoff_reveal_checks(chapters, source_rows)
         safety_findings = _reference_safety_findings(source_rows, protected_terms)
         repeated_patterns = _chapter_set_repeated_patterns(source_rows, scene_items)
-        scores = _chapter_set_scores(mean_score, payoff_reveal_checks, safety_findings, len(chapters))
+        scores = _chapter_set_scores(
+            mean_score, payoff_reveal_checks, safety_findings, len(chapters),
+            source_rows=source_rows, chapters=chapters,
+        )
         return {
             "chapter_ids": chapter_ids,
             "summary": {
@@ -763,7 +909,11 @@ class LiteraryQualityService:
         return "\n\n".join(parts)
 
 
-def analyze_literary_quality(text: str) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+def analyze_literary_quality(
+    text: str,
+    *,
+    external_signals: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
     normalized = _compact_ws(text)
     signals: dict[str, dict[str, Any]] = {}
     findings: list[dict[str, str]] = []
@@ -807,9 +957,16 @@ def analyze_literary_quality(text: str) -> tuple[dict[str, dict[str, Any]], list
     )
     _add_ending_drive_signal(signals, findings, normalized)
     _add_painless_scene_signal(signals, findings, normalized)
+    _add_conflict_too_clean_signal(signals, findings, normalized)
     _add_decorative_imagery_signal(signals, findings, normalized)
     _add_over_explained_motive_signal(signals, findings, normalized)
     _add_false_poetic_closure_signal(signals, findings, normalized)
+    _add_perception_filter_signal(signals, findings, normalized)
+
+    if external_signals:
+        for dim, signal in external_signals.items():
+            if dim in QUALITY_DIMENSIONS:
+                signals[dim] = signal
 
     for dimension in QUALITY_DIMENSIONS:
         signals.setdefault(dimension, {"risk": False, "score": 1.0, "evidence": ""})
@@ -848,7 +1005,75 @@ def fingerprint_literary_quality(text: str) -> dict[str, Any]:
         "summary_ending": [term for term in SUMMARY_ENDING_TERMS if term.lower() in _ending_slice(normalized).lower()],
         "dialogue_exposition": _top_counter(dialogue_exposition, limit=6),
         "choice_pressure": [term for term in PRESSURE_TERMS if term.lower() in lowered],
+        "perception_filter": [term for term in PERCEPTION_FILTER_TERMS if term.lower() in lowered],
     }
+
+
+ADVERSARIAL_DIMS: tuple[str, ...] = (
+    "model_voice",
+    "false_clarity",
+    "over_explained_motive",
+    "template_action_reuse",
+    "syntax_monotony",
+    "repetitive_action",
+    "image_homogeneity",
+    "image_field_reuse",
+    "decorative_imagery",
+    "false_poetic_closure",
+    "expository_dialogue",
+    "dialogue_as_report",
+    "perception_filter",
+    "self_repetition",
+    # §4/§8: structural cost & conflict dimensions
+    "painless_scene",
+    "no_choice_scene",
+    "choice_pressure",
+    "conflict_too_clean",
+)
+
+
+def adversarial_rank_score(
+    text: str,
+    *,
+    weights: dict[str, float] | None = None,
+) -> float:
+    """0-1 score across adversarial dims only. Higher = fewer AI-flavor signals.
+
+    *weights* — optional dimension weight dict (e.g. from :func:`get_dimension_weights`).
+    When ``None``, the static ``DIMENSION_WEIGHTS`` constant is used.
+    """
+    if not text or not text.strip():
+        return 0.0
+    effective = weights if weights is not None else DIMENSION_WEIGHTS
+    signals, _ = analyze_literary_quality(text)
+    total_w = sum(effective.get(d, 0.0) for d in ADVERSARIAL_DIMS)
+    if total_w <= 0.0:
+        return 1.0
+    return round(
+        sum(signals.get(d, {}).get("score", 1.0) * effective.get(d, 0.0) for d in ADVERSARIAL_DIMS) / total_w,
+        4,
+    )
+
+
+def candidate_dispersion(texts: list[str]) -> float:
+    """Average pairwise Jaccard distance between fingerprint token sets. 0 = identical."""
+    if len(texts) < 2:
+        return 0.0
+    fingerprints: list[set[str]] = []
+    for text in texts:
+        fp = fingerprint_literary_quality(text)
+        tokens: set[str] = set()
+        for key in ("action_templates", "image_fields", "syntax_shapes"):
+            for row in fp.get(key, []):
+                tokens.add(f"{key}:{row.get('value', '')}")
+        fingerprints.append(tokens)
+    distances: list[float] = []
+    for i in range(len(fingerprints)):
+        for j in range(i + 1, len(fingerprints)):
+            union = fingerprints[i] | fingerprints[j]
+            intersection = fingerprints[i] & fingerprints[j]
+            distances.append(1.0 - (len(intersection) / len(union)) if union else 0.0)
+    return round(sum(distances) / len(distances), 4) if distances else 0.0
 
 
 def _validate_quality_filters(*, risk_type: str | None, min_severity: str | None) -> None:
@@ -1228,22 +1453,230 @@ def _chapter_set_scores(
     payoff_reveal_checks: dict[str, Any],
     safety_findings: list[dict[str, Any]],
     chapter_count: int,
+    *,
+    source_rows: list[dict[str, Any]] | None = None,
+    chapters: list[ChapterGoal] | None = None,
 ) -> dict[str, Any]:
-    denominator = max(1, chapter_count)
-    arc_score = round(
-        (
-            payoff_reveal_checks["has_forced_choice_count"]
-            + payoff_reveal_checks["has_cost_count"]
-            + payoff_reveal_checks["has_next_pull_count"]
-        )
-        / (denominator * 3),
-        4,
+    arc_score = _evaluate_cross_chapter_arc(
+        payoff_reveal_checks,
+        chapter_count,
+        source_rows=source_rows,
+        chapters=chapters,
     )
     return {
         "literary_quality": mean_score,
         "cross_chapter_arc": arc_score,
         "reference_safety": 0.0 if safety_findings else 1.0,
     }
+
+
+def _evaluate_cross_chapter_arc(
+    payoff_reveal_checks: dict[str, Any],
+    chapter_count: int,
+    *,
+    source_rows: list[dict[str, Any]] | None = None,
+    chapters: list[ChapterGoal] | None = None,
+) -> float:
+    """Enhanced cross-chapter arc evaluation.
+
+    Instead of just counting keyword presence, analyze:
+    1. **Arc progression** (0-1): do chapters show different decision / pressure
+       patterns?  Same pressure+cost terms everywhere means static arcs.
+    2. **Foreshadow health** (0-1): ratio of foreshadow lifecycle signals that
+       are "touched" or "resolved" vs stale (open for too many chapters).
+    3. **Theme expression variety** (0-1): Shannon entropy over the distribution
+       of theme expression levels used across chapters.
+    4. **Tension dynamics** (0-1): normalised standard deviation of tension
+       targets across chapters (higher = more dynamic, better).
+
+    Final score: weighted average of these 4 sub-scores plus the legacy payoff
+    baseline (to stay backward-compatible for projects with no source content).
+    """
+    denominator = max(1, chapter_count)
+
+    # --- legacy baseline: payoff keyword coverage ---
+    payoff_score = (
+        payoff_reveal_checks["has_forced_choice_count"]
+        + payoff_reveal_checks["has_cost_count"]
+        + payoff_reveal_checks["has_next_pull_count"]
+    ) / (denominator * 3)
+
+    # When no rich source content is available, fall back to the legacy score
+    if not source_rows or not chapters or chapter_count < 2:
+        return round(payoff_score, 4)
+
+    # Build per-chapter combined text
+    by_chapter: dict[str, str] = {}
+    for row in source_rows:
+        cid = row.get("chapter_id", "")
+        by_chapter[cid] = by_chapter.get(cid, "") + "\n" + str(row.get("content") or "")
+
+    chapter_texts: list[str] = []
+    for ch in chapters:
+        raw = by_chapter.get(ch.chapter_id, "")
+        fallback = "\n".join([
+            ch.chapter_goal or "",
+            ch.main_plot_push or "",
+            ch.emotional_target or "",
+            ch.ending_effect or "",
+            raw,
+        ])
+        chapter_texts.append(_compact_ws(raw or fallback))
+
+    arc_progression = _arc_progression_score(chapter_texts)
+    foreshadow_health = _foreshadow_health_score(chapter_texts)
+    theme_variety = _theme_variety_score(chapters)
+    tension_dynamics = _tension_dynamics_score(chapters)
+
+    # Weighted combination: payoff baseline still counts, but structural
+    # sub-scores contribute the majority when available.
+    combined = (
+        0.30 * payoff_score
+        + 0.25 * arc_progression
+        + 0.15 * foreshadow_health
+        + 0.15 * theme_variety
+        + 0.15 * tension_dynamics
+    )
+    return round(combined, 4)
+
+
+def _arc_progression_score(chapter_texts: list[str]) -> float:
+    """Measure how different chapters' pressure/cost term sets are from each other.
+
+    If every chapter uses exactly the same pressure and cost vocabulary the arc
+    is *static* (score 0). Maximum diversity across pairs yields score 1.
+    """
+    if len(chapter_texts) < 2:
+        return 1.0
+
+    per_chapter_terms: list[set[str]] = []
+    combined_terms = (*PRESSURE_TERMS, *COST_TERMS)
+    for text in chapter_texts:
+        lowered = text.lower()
+        present = {t for t in combined_terms if t.lower() in lowered}
+        per_chapter_terms.append(present)
+
+    # Average pairwise Jaccard distance
+    distances: list[float] = []
+    for i in range(len(per_chapter_terms)):
+        for j in range(i + 1, len(per_chapter_terms)):
+            union = per_chapter_terms[i] | per_chapter_terms[j]
+            intersection = per_chapter_terms[i] & per_chapter_terms[j]
+            if union:
+                distances.append(1.0 - len(intersection) / len(union))
+            else:
+                distances.append(0.0)
+    return sum(distances) / len(distances) if distances else 0.0
+
+
+def _foreshadow_health_score(chapter_texts: list[str]) -> float:
+    """Score how well foreshadowing terms progress across chapters.
+
+    A "foreshadow" is a next-pull term from an earlier chapter that later
+    appears as a choice/cost term. Healthy lifecycle: open -> touched -> resolved.
+    Terms that stay open for more than half the chapters are considered stale.
+    """
+    if len(chapter_texts) < 2:
+        return 1.0
+
+    # Track which chapters each next-pull term appears in
+    pull_term_chapters: dict[str, list[int]] = {}
+    for idx, text in enumerate(chapter_texts):
+        lowered = text.lower()
+        for term in CHAPTER_SET_NEXT_PULL_TERMS:
+            if term.lower() in lowered:
+                pull_term_chapters.setdefault(term, []).append(idx)
+
+    # Track which chapters resolve or touch those terms via choice/cost vocab
+    resolution_terms = (*CHOICE_TERMS, *COST_TERMS)
+    resolution_chapters: dict[str, list[int]] = {}
+    for idx, text in enumerate(chapter_texts):
+        lowered = text.lower()
+        for term in resolution_terms:
+            if term.lower() in lowered:
+                resolution_chapters.setdefault(term, []).append(idx)
+
+    if not pull_term_chapters:
+        return 0.5  # no foreshadowing detected at all: neutral
+
+    total_pulls = len(pull_term_chapters)
+    healthy = 0
+    stale_threshold = len(chapter_texts) // 2
+
+    for term, intro_chapters in pull_term_chapters.items():
+        first_intro = min(intro_chapters)
+        # Check if any resolution term appears in a later chapter
+        resolved = False
+        for _res_term, res_chs in resolution_chapters.items():
+            if any(ch > first_intro for ch in res_chs):
+                resolved = True
+                break
+        if resolved:
+            healthy += 1
+        elif len(chapter_texts) - first_intro > stale_threshold:
+            # Stale: introduced early, never resolved, still too many chapters ago
+            pass  # counts against health
+        else:
+            healthy += 0.5  # recently introduced, not yet stale
+
+    return healthy / total_pulls if total_pulls > 0 else 0.5
+
+
+def _theme_variety_score(chapters: list[ChapterGoal]) -> float:
+    """Shannon entropy over theme/emotional expression levels across chapters.
+
+    Uses ``emotional_target`` from chapter goals as the expression channel.
+    Higher entropy = theme expressed through more diverse emotional tones.
+    """
+    if not chapters:
+        return 0.0
+
+    levels: list[str] = []
+    for ch in chapters:
+        target = (ch.emotional_target or "").strip().lower()
+        if target:
+            levels.append(target)
+
+    if len(levels) < 2:
+        return 0.5  # too little data to assess diversity
+
+    # Shannon entropy, normalised to [0, 1]
+    counter = Counter(levels)
+    total = len(levels)
+    entropy = -sum((c / total) * math.log2(c / total) for c in counter.values() if c > 0)
+    max_entropy = math.log2(len(counter)) if len(counter) > 1 else 1.0
+    return entropy / max_entropy if max_entropy > 0 else 0.0
+
+
+def _tension_dynamics_score(chapters: list[ChapterGoal]) -> float:
+    """Normalised standard deviation of tension indicators across chapters.
+
+    Uses ``ending_effect`` length as a rough proxy for tension target intensity
+    (chapters ending on high-tension cliffhangers tend to have longer ending
+    effect descriptions). A flat curve (all same length) scores low; varied
+    curves score higher.
+    """
+    if not chapters or len(chapters) < 2:
+        return 0.5
+
+    # Proxy: length of ending_effect + main_plot_push as tension indicator
+    values: list[float] = []
+    for ch in chapters:
+        tension_proxy = len(ch.ending_effect or "") + len(ch.main_plot_push or "")
+        values.append(float(tension_proxy))
+
+    if not values:
+        return 0.5
+
+    mean = sum(values) / len(values)
+    if mean <= 0:
+        return 0.5
+
+    variance = sum((v - mean) ** 2 for v in values) / len(values)
+    std = math.sqrt(variance)
+    # Coefficient of variation, capped at 1.0
+    cv = min(std / mean, 1.0) if mean > 0 else 0.0
+    return cv
 
 
 def _string_list(value: Any) -> list[str]:
@@ -1354,6 +1787,80 @@ def _add_dialogue_as_report_signal(
     signals["dialogue_as_report"] = {"risk": False, "score": 1.0, "evidence": ""}
 
 
+# §8: conflict-too-clean detection terms
+CONFLICT_TERMS = (
+    "争吵", "怒", "愤怒", "质问", "反对", "拒绝", "吼", "骂", "指责", "控诉",
+    "冲突", "对峙", "反驳", "顶嘴", "争执", "不满", "激烈", "摔", "推开",
+    "quarrel", "anger", "confront", "refuse", "accuse", "clash", "demand",
+)
+RECONCILIATION_TERMS = (
+    "理解", "原谅", "接受", "点头", "叹气", "妥协", "释然", "握手", "拥抱",
+    "和好", "笑了", "放下", "释怀", "微笑", "柔和", "温和", "缓和", "谅解",
+    "understand", "forgive", "accept", "nod", "sigh", "compromise", "smile",
+    "relent", "soften", "reconcile",
+)
+
+
+def _add_conflict_too_clean_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    """Blueprint §8: detect conflict that resolves too cleanly.
+
+    Checks if conflict-indicating terms and reconciliation terms co-occur
+    within a short text window (~300 chars), and if reconciliation terms
+    outnumber or match conflict terms — this signals 'too-clean' resolution.
+    """
+    lowered = text.lower()
+    conflict_hits = [t for t in CONFLICT_TERMS if t.lower() in lowered]
+    reconcile_hits = [t for t in RECONCILIATION_TERMS if t.lower() in lowered]
+
+    if not conflict_hits or not reconcile_hits:
+        signals["conflict_too_clean"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+
+    # Check proximity: do conflict and reconciliation co-occur within 300 chars?
+    proximity_count = 0
+    for ct in conflict_hits:
+        ct_lower = ct.lower()
+        pos = 0
+        while True:
+            idx = lowered.find(ct_lower, pos)
+            if idx < 0:
+                break
+            window = lowered[max(0, idx - 150):idx + len(ct_lower) + 150]
+            if any(rt.lower() in window for rt in reconcile_hits):
+                proximity_count += 1
+            pos = idx + len(ct_lower)
+
+    if proximity_count == 0:
+        signals["conflict_too_clean"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+
+    # If reconciliation ≥ conflict in a scene, the conflict resolves too cleanly
+    if len(reconcile_hits) >= len(conflict_hits):
+        evidence = _excerpt(text, conflict_hits[0])
+        score = max(0.0, 1.0 - (len(reconcile_hits) / max(len(conflict_hits), 1)) * 0.5)
+        signals["conflict_too_clean"] = {"risk": True, "score": round(score, 2), "evidence": evidence}
+        findings.append(
+            _finding(
+                "conflict_too_clean",
+                "revision",
+                (
+                    f"Conflict resolves too cleanly: {len(conflict_hits)} conflict signals "
+                    f"vs {len(reconcile_hits)} reconciliation signals in close proximity. "
+                    "Characters understand each other too quickly."
+                ),
+                evidence,
+                "Leave residual friction: an unspoken resentment, a half-lie accepted, "
+                "or agreement that costs something the character didn't want to give.",
+            )
+        )
+    else:
+        signals["conflict_too_clean"] = {"risk": False, "score": 1.0, "evidence": ""}
+
+
 def _add_painless_scene_signal(
     signals: dict[str, dict[str, Any]],
     findings: list[dict[str, str]],
@@ -1440,6 +1947,28 @@ def _add_false_poetic_closure_signal(
             "The ending closes with poetic certainty rather than a hard next-scene action.",
             evidence,
             "End on a visible action, object transfer, refusal, departure, or irreversible reveal instead of abstract resonance.",
+        )
+    )
+
+
+def _add_perception_filter_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    term = _first_present_term(text, PERCEPTION_FILTER_TERMS)
+    if not term:
+        signals["perception_filter"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+    evidence = _excerpt(text, term)
+    signals["perception_filter"] = {"risk": True, "score": 0.0, "evidence": evidence}
+    findings.append(
+        _finding(
+            "perception_filter",
+            "revision",
+            "The narration routes sensation through a perception verb instead of rendering the stimulus directly.",
+            evidence,
+            "Delete the perception verb and let the stimulus land as action, object, or sensory detail.",
         )
     )
 

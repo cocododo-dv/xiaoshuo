@@ -378,7 +378,156 @@ def _deterministic_quality_issues(scene: SceneCard, bundle: dict[str, Any], cont
     )
     if listing_issue is not None:
         issues.append(listing_issue)
+    issues.extend(_event_log_consistency_issues(scene, content))
+    issues.extend(_theme_relevance_issues(scene))
+    issues.extend(_tension_curve_issues(scene))
     return issues
+
+
+def _theme_relevance_issues(scene: SceneCard) -> list[dict[str, Any]]:
+    """Blueprint §12 / §13 Step 6: check scene relevance to controlling idea."""
+    try:
+        from novel_system.services.theme_anchor import ThemeAnchorService
+        from novel_system.db.session import SessionLocal
+        session = SessionLocal()
+        try:
+            project_id = (
+                scene.project_id
+                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
+            )
+            svc = ThemeAnchorService(session)
+            idea = svc.get_controlling_idea(project_id)
+            if not idea:
+                return []
+            check = svc.check_scene_relevance(scene, idea)
+            if check.relevant:
+                return []
+            return [{
+                "issue_key": "theme_relevance_warning",
+                "severity": "low",
+                "message": (
+                    f"Scene has no visible connection to the controlling idea: '{idea}'. "
+                    f"{check.suggestion}"
+                ),
+                "details": {
+                    "controlling_idea": idea,
+                    "connection": check.connection,
+                },
+            }]
+        finally:
+            session.close()
+    except Exception:
+        return []
+
+
+def _tension_curve_issues(scene: SceneCard) -> list[dict[str, Any]]:
+    """Blueprint §10: surface tension curve violations as QC issues.
+
+    Checks the scene's chapter for adjacent function-tag repeats and
+    tension-level monotony. Issues are low-severity (informational) —
+    they don't block generation but appear in the QC report so the
+    author/system can address rhythm problems.
+    """
+    try:
+        from novel_system.services.tension_curve import TensionCurveService
+        from novel_system.db.session import SessionLocal
+        session = SessionLocal()
+        try:
+            svc = TensionCurveService(session)
+            report = svc.validate_chapter(scene.chapter_id)
+            issues: list[dict[str, Any]] = []
+            for v in report.violations:
+                # Only surface violations relevant to the current scene
+                if v.scene_id != scene.scene_id:
+                    continue
+                issue_key = (
+                    "tension_adjacent_tag_repeat"
+                    if v.violation_type == "adjacent_tag_repeat"
+                    else "tension_monotony"
+                )
+                issues.append({
+                    "issue_key": issue_key,
+                    "severity": "low",
+                    "message": f"§10 rhythm issue: {v.message}",
+                    "details": {
+                        "violation_type": v.violation_type,
+                        "scene_id": v.scene_id,
+                        "chapter_id": report.chapter_id,
+                    },
+                })
+            # Also check hook violations for chapter-ending scenes
+            if getattr(scene, "is_chapter_last", 0) == 1:
+                hook_violations = svc.validate_chapter_hooks(scene.chapter_id)
+                for hv in hook_violations:
+                    if hv.scene_id != scene.scene_id:
+                        continue
+                    issues.append({
+                        "issue_key": "tension_hook_type_missing",
+                        "severity": "low",
+                        "message": f"§10 hook issue: {hv.message}",
+                        "details": {
+                            "violation_type": hv.violation_type,
+                            "scene_id": hv.scene_id,
+                        },
+                    })
+            return issues
+        finally:
+            session.close()
+    except Exception:
+        return []
+
+
+def _event_log_consistency_issues(scene: SceneCard, content: str) -> list[dict[str, Any]]:
+    """Blueprint §15/§13 Step 6: check hard facts from event log against generated text."""
+    try:
+        from novel_system.services.narrative_event_log import NarrativeEventLog, check_spec_constraints
+        from novel_system.db.session import SessionLocal
+        session = SessionLocal()
+        try:
+            log = NarrativeEventLog(session)
+            project_id = (
+                scene.project_id
+                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
+            )
+            issues: list[dict[str, Any]] = []
+
+            # --- Event log fact consistency (§15: hard facts only) ---
+            report = log.check_consistency(
+                content, project_id, scene.scene_id,
+                character_ids=scene.onstage_chars_json or [],
+            )
+            if report.violations:
+                # §15: keyword violations block (high); advisory LLM flags inform (medium).
+                issues.extend(
+                    {
+                        "issue_key": (
+                            "event_log_consistency_violation"
+                            if getattr(v, "source", "keyword") == "keyword"
+                            else "event_log_consistency_llm_flag"
+                        ),
+                        "severity": "high" if getattr(v, "source", "keyword") == "keyword" else "medium",
+                        "message": (
+                            f"Event log contradiction: {v.entity_id}.{v.fact_key} "
+                            f"expected '{v.expected}' but text suggests '{v.actual}'"
+                            + ("" if getattr(v, "source", "keyword") == "keyword" else " (LLM advisory — human spot-check)")
+                        ),
+                        "details": {
+                            "entity_id": v.entity_id,
+                            "fact_key": v.fact_key,
+                            "expected": v.expected,
+                            "actual": v.actual,
+                            "evidence": v.evidence,
+                            "source": getattr(v, "source", "keyword"),
+                        },
+                    }
+                    for v in report.violations
+                )
+
+            return issues
+        finally:
+            session.close()
+    except Exception:
+        return []
 
 
 def _dedupe_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -136,6 +136,9 @@ task_routing:
     temperature: 0.8
     max_output_tokens: 6000
     response_format: json_object
+    # §7 anti-mean sampling: decoding-level penalties to counteract repetition at source
+    frequency_penalty: 0.3
+    presence_penalty: 0.15
   soft_qc:
     provider: openai_compatible
     model: gpt-5-mini

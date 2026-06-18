@@ -27,6 +27,11 @@ class LLMNodeSpec:
     # PR-8 §5.1 — 长文续写专用:每 N 字符重新拉取 [STYLE_REFERENCE] 注入,
     # 防止风格漂移。0 = 不刷新(默认),仅 long_form_continuation 节点启用。
     refresh_every_chars: int = 0
+    # §7 anti-mean sampling — decoding-level penalties carried into DB node routing so the
+    # System-Config UI route keeps them instead of silently dropping to None on the DB path.
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
+    top_p: float | None = None
 
     def catalog_entry(self, order: int) -> dict[str, Any]:
         return {
@@ -46,6 +51,9 @@ class LLMNodeSpec:
             "model_profile": self.model_profile,
             "fallback_route_ids": list(self.fallback_route_ids),
             "refresh_every_chars": self.refresh_every_chars,
+            "frequency_penalty": self.frequency_penalty,
+            "presence_penalty": self.presence_penalty,
+            "top_p": self.top_p,
             "order": order,
         }
 
@@ -75,6 +83,14 @@ class LLMNodeSpec:
             payload["credential_mode"] = credential_mode
         if self.model_profile:
             payload["model_profile"] = self.model_profile
+        # §7 carry decoding-level sampling penalties into the route payload so DB-stored
+        # node routing (System-Config UI) preserves them instead of dropping them to None.
+        if self.frequency_penalty is not None:
+            payload["frequency_penalty"] = self.frequency_penalty
+        if self.presence_penalty is not None:
+            payload["presence_penalty"] = self.presence_penalty
+        if self.top_p is not None:
+            payload["top_p"] = self.top_p
         return payload
 
 
@@ -318,6 +334,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="stylize",
         temperature=0.8,
         max_output_tokens=6000,
+        frequency_penalty=0.3,
+        presence_penalty=0.15,
     ),
     LLMNodeSpec(
         "style_patch",
@@ -326,6 +344,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         template_name="stylize",
         temperature=0.8,
         max_output_tokens=6000,
+        frequency_penalty=0.3,
+        presence_penalty=0.15,
     ),
     LLMNodeSpec(
         "scene_literary_rewrite",
@@ -357,6 +377,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         model_profile="quality_strong",
         refresh_every_chars=8000,
         fallback_route_ids=("neutral_draft", "style_draft", "stylize"),
+        frequency_penalty=0.3,
+        presence_penalty=0.15,
     ),
     LLMNodeSpec(
         "hard_qc",
@@ -662,3 +684,74 @@ def default_task_config_payload(
         api_mode=api_mode,
         credential_mode=credential_mode,
     )
+
+
+# ---- 角色分工槽位(writer-facing routing) ---------------------------------
+# 写作者视角的三个分工槽位,按节点分组批量路由;覆盖全部 active 节点
+# (local 组 requires_llm=False 不入槽)。前端「设置 → AI 模型 → 分工」用。
+
+
+@dataclass(frozen=True, slots=True)
+class RoleSlotSpec:
+    slot_id: str
+    label_zh: str
+    description_zh: str
+    groups: tuple[str, ...]
+
+    def catalog_entry(self) -> dict[str, Any]:
+        return {
+            "slot_id": self.slot_id,
+            "label_zh": self.label_zh,
+            "description_zh": self.description_zh,
+            "groups": list(self.groups),
+            "node_ids": role_slot_node_ids(self.slot_id),
+        }
+
+
+ROLE_SLOTS: tuple[RoleSlotSpec, ...] = (
+    RoleSlotSpec(
+        "drafting",
+        "写作主力",
+        "续写、初稿、风格化、改写与构思生成",
+        ("scene_generation", "rewrite", "snowflake"),
+    ),
+    RoleSlotSpec(
+        "review",
+        "审稿质检",
+        "QC、验收评审、文学评估与写作者诊断",
+        ("quality", "evaluation", "writer_review", "deep_review"),
+    ),
+    RoleSlotSpec(
+        "extraction",
+        "提炼整理",
+        "资料抽取、风格画像与项目级提炼",
+        ("reference", "style_reference", "project"),
+    ),
+)
+
+
+def role_slot_specs() -> tuple[RoleSlotSpec, ...]:
+    return ROLE_SLOTS
+
+
+def get_role_slot_spec(slot_id: str) -> RoleSlotSpec | None:
+    for slot in ROLE_SLOTS:
+        if slot.slot_id == slot_id:
+            return slot
+    return None
+
+
+def role_slot_node_ids(slot_id: str) -> list[str]:
+    slot = get_role_slot_spec(slot_id)
+    if slot is None:
+        raise KeyError(slot_id)
+    groups = set(slot.groups)
+    return [
+        spec.node_id
+        for spec in _NODE_SPECS
+        if spec.group in groups and spec.status == "active" and spec.requires_llm
+    ]
+
+
+def role_slot_catalog() -> list[dict[str, Any]]:
+    return [slot.catalog_entry() for slot in ROLE_SLOTS]

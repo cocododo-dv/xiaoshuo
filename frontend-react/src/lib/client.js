@@ -236,6 +236,43 @@ export async function apiPut(path, body = {}) {
   }
 }
 
+/* ---- 管理面(X-Admin-Token)变体 ----
+   系统配置写接口需要管理令牌;无令牌配置的本地后端对 loopback 放行,
+   此时 adminToken 传空即可。令牌存取由调用方(WsAiProviders)负责。 */
+
+export async function apiAdminGet(path, adminToken = "") {
+  const clientRequestId = buildClientRequestId();
+  try {
+    const headers = { "X-Client-Request-Id": clientRequestId };
+    if (adminToken) headers["X-Admin-Token"] = adminToken;
+    const response = await fetch(buildUrl(path), { headers });
+    return parseEnvelope(response, clientRequestId);
+  } catch (error) {
+    throw normalizeRequestError(error, clientRequestId);
+  }
+}
+
+export async function apiAdminPost(path, body = {}, adminToken = "") {
+  const clientRequestId = buildClientRequestId();
+  try {
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Idempotency-Key": buildIdempotencyKey(path),
+      "X-Operator-Ref": getOperatorRef(),
+      "X-Client-Request-Id": clientRequestId,
+    };
+    if (adminToken) headers["X-Admin-Token"] = adminToken;
+    const response = await fetch(buildUrl(path), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    return parseEnvelope(response, clientRequestId);
+  } catch (error) {
+    throw normalizeRequestError(error, clientRequestId);
+  }
+}
+
 export async function apiDelete(path) {
   const clientRequestId = buildClientRequestId();
   try {
