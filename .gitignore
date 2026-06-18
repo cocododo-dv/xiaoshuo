@@ -39,3 +39,11 @@ output/playwright/
 snowflake-ui-*.png
 output/playwright/longzu-full-cloud-qa-*/
 output/playwright/runner-logs/
+
+# Vite 预览/构建日志(任意目录)
+.vite-preview.log
+*.vite-preview.log
+
+# 本地参考资料(非项目文件):AI 工具文档转储,不入仓库
+/CLAUDE-FABLE-5.md
+/Claude-Code-完全指南.md
