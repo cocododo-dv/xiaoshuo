@@ -16,3 +16,19 @@ metric_anchor_block_ratio: 0.1
 few_shot_k: 3
 few_shot_quote_max_chars: 120
 few_shot_block_max_chars: 480
+
+# 立项 C — Strategy C(RAG)三粒度向量召回预算(services/style_reference/rag.py)。
+# 召回 + rerank 全程无 LLM(§11 风险6:inject<50ms);rerank 用 query 字符覆盖率
+# × 粒度权重(确定性)。snippet 引用参考书原文,故注入时红线段必随注并按下列上限截断。
+rag_top_k: 3                  # 每粒度(sentence/paragraph/scene)向量召回条数
+rag_inject_max: 5             # 合并去重后注入到 prompt 的总条数上限
+rag_quote_max_chars: 100      # 单条样例截断(防注入大段原文)
+rag_block_max_chars: 600      # 整个 [风格检索样例] block 上限
+rag_scene_target_chars: 600   # scene 粒度:连续段落累加到该字数封一块
+rag_min_sentence_chars: 8     # 过短句(标点/语气词)不入 sentence 索引
+rag_min_paragraph_chars: 8    # 过短段不入 paragraph 索引
+rag_context_query_max_chars: 2000  # 续写防漂移:取最近 N 字作检索 query
+# 粒度权重(覆盖率已长度归一,权重仅微调 "更完整肌理优先")
+rag_weight_sentence: 1.0
+rag_weight_paragraph: 1.1
+rag_weight_scene: 1.15

@@ -594,6 +594,7 @@ function srAdaptFinding(f) {
     conf: f.confidence,
     statement: f.statement,
     review: f.status || "pending",
+    vote: f.user_vote || null,   // 立项 B — 回显当前用户已投的票(跨刷新持久)
     evidence: (f.evidence || []).map(e => ({
       p: e.paragraph_id || null,
       quote: e.quote_text || "",
@@ -632,6 +633,9 @@ function SrMatrix({ go, book }) {
     : SR_FINDINGS[cell];
   const onReviewFinding = realMode
     ? (findingId, decision) => { if (window.srReviewFinding) window.srReviewFinding(findingId, decision, book.id).catch(() => {}); }
+    : null;
+  const onVoteFinding = realMode
+    ? (findingId, vote) => { if (window.srFindingFeedback) window.srFindingFeedback(findingId, vote, book.id).catch(() => {}); }
     : null;
 
   // 2D keyboard navigation across the matrix (skip cells are not selectable)
@@ -798,10 +802,10 @@ function SrMatrix({ go, book }) {
             </div>
           )}
           {findings && (kindFilter === "all" || kindFilter === "obs") && findings.observations.map(o => (
-            <FindingCard key={o.id} kind="obs" finding={o} onReview={onReviewFinding ? (d) => onReviewFinding(o.id, d) : null} />
+            <FindingCard key={o.id} kind="obs" finding={o} onReview={onReviewFinding ? (d) => onReviewFinding(o.id, d) : null} onVote={onVoteFinding ? (v) => onVoteFinding(o.id, v) : null} />
           ))}
           {findings && (kindFilter === "all" || kindFilter === "fp") && findings.forbidden_patterns.map(f => (
-            <FindingCard key={f.id} kind="fp" finding={f} onReview={onReviewFinding ? (d) => onReviewFinding(f.id, d) : null} />
+            <FindingCard key={f.id} kind="fp" finding={f} onReview={onReviewFinding ? (d) => onReviewFinding(f.id, d) : null} onVote={onVoteFinding ? (v) => onVoteFinding(f.id, v) : null} />
           ))}
         </div>
       </aside>
@@ -809,13 +813,19 @@ function SrMatrix({ go, book }) {
   );
 }
 
-function FindingCard({ kind, finding, onReview }) {
+function FindingCard({ kind, finding, onReview, onVote }) {
   const isFp = kind === "fp";
   const [review, setReview] = useStSR(finding.review || "pending");
-  const [vote, setVote] = useStSR(null);
-  // deep 重载后 finding.review 变化 → 同步（同 key 实例不会重跑 initializer）
+  const [vote, setVote] = useStSR(finding.vote || null);
+  // deep 重载后 finding.review / vote 变化 → 同步(同 key 实例不会重跑 initializer)
   React.useEffect(() => { setReview(finding.review || "pending"); }, [finding.review]);
+  React.useEffect(() => { setVote(finding.vote || null); }, [finding.vote]);
   const setReviewBoth = (next) => { setReview(next); if (onReview) onReview(next); };
+  // 立项 B — 投票:真模式发 up/down(无 un-vote 语义,可改向,后端幂等),演示模式本地 toggle。
+  const castVote = (v) => {
+    if (onVote) { setVote(v); onVote(v); }
+    else { setVote(vote === v ? null : v); }
+  };
   return (
     <article className={`sr-finding ${isFp ? "is-fp" : ""} rev-${review}`}>
       <header className="sr-finding-head">
@@ -857,8 +867,8 @@ function FindingCard({ kind, finding, onReview }) {
       <footer className="sr-finding-foot">
         <span className="text-xs text-muted">这条画像准吗？</span>
         <div className="sr-vote">
-          <button className={`sr-vote-btn ${vote==="up"?"on":""}`} onClick={()=>setVote(vote==="up"?null:"up")} aria-label="赞">👍</button>
-          <button className={`sr-vote-btn ${vote==="down"?"on":""}`} onClick={()=>setVote(vote==="down"?null:"down")} aria-label="踩">👎</button>
+          <button className={`sr-vote-btn ${vote==="up"?"on":""}`} onClick={()=>castVote("up")} aria-label="赞">👍</button>
+          <button className={`sr-vote-btn ${vote==="down"?"on":""}`} onClick={()=>castVote("down")} aria-label="踩">👎</button>
         </div>
         <span className="text-xs text-subtle" style={{marginLeft:"auto"}}>反馈聚合后更新 confidence</span>
       </footer>
@@ -1068,6 +1078,8 @@ function SrApply({ go, book }) {
   const [applied, setApplied] = useStSR(null); // 已创建的审核条目描述
   const [intensity, setIntensity] = useStSR(80);
   const [scope, setScope] = useStSR("project");
+  const [scopeRefId, setScopeRefId] = useStSR(null);   // 立项 A — scene/character 级绑定目标 id
+  const [scopeOpts, setScopeOpts] = useStSR({ scene: [], character: [] });
   const [banned, setBanned] = useStSR(SR_BANNED_INIT);
   const [bannedInput, setBannedInput] = useStSR("");
   const [bannedScope, setBannedScope] = useStSR("generation");
@@ -1091,8 +1103,36 @@ function SrApply({ go, book }) {
   const realProfileId = deep && deep.profileId;
   const realMode = !!realProfileId;
   const realBindings = (deep && deep.bindings) || [];
-  // 真模式下场景/角色级绑定缺少目标选择器，先只支持项目级；演示模式三档均可视
-  React.useEffect(() => { if (realMode && scope !== "project") setScope("project"); }, [realMode]);
+  // 立项 A — 当前活动项目 id(空安全:works 列表为空时 active() 可能 undefined)
+  const activeProjId = (WsWorks && WsWorks.active && WsWorks.active() && WsWorks.active().id) || null;
+  // 立项 A — scope 切换时清空已选目标(避免把 A scope 的目标误用到 B scope)
+  React.useEffect(() => { setScopeRefId(null); }, [scope]);
+  // 立项 A — 真模式按当前活动项目加载场景/角色选项(直取后端,不依赖 catalog 缓存状态)。
+  // 依赖含 activeProjId:切换活动项目时刷新选项,避免跨项目数据陈旧。
+  React.useEffect(() => {
+    if (!realMode || !activeProjId) { setScopeOpts({ scene: [], character: [] }); return; }
+    const pid = activeProjId;
+    let alive = true;
+    (async () => {
+      try {
+        const { apiGet } = await import("./lib/client.js");
+        const [cat, lib] = await Promise.all([
+          apiGet(`/api/v2/projects/${pid}/catalog`).catch(() => null),
+          apiGet(`/api/v2/projects/${pid}/library`).catch(() => null),
+        ]);
+        if (!alive) return;
+        const scenes = [];
+        ((cat && cat.chapters) || []).forEach(c => (c.scenes || []).forEach(s => {
+          if (s && s.scene_id) scenes.push({ id: s.scene_id, label: `${c.no ? c.no + "章·" : ""}${s.title || s.scene_id}` });
+        }));
+        const chars = ((lib && lib.characters) || []).map(c => ({
+          id: c.character_id || c.id, label: c.name || c.display_name || c.character_id,
+        })).filter(c => c.id);
+        setScopeOpts({ scene: scenes, character: chars });
+      } catch { if (alive) setScopeOpts({ scene: [], character: [] }); }
+    })();
+    return () => { alive = false; };
+  }, [realMode, activeProjId]);
 
   /* ---- 真注入预览（dryrun，不写盘，debounce 350ms）---- */
   const [preview, setPreview] = useStSR(null);
@@ -1348,17 +1388,30 @@ function SrApply({ go, book }) {
         <div className="card-flat">
           <div className="ctx-head" style={{marginBottom: 10}}><I.GitBranch size={13} /><span>应用范围</span></div>
           <div className="sr-scope">
-            {[["project","项目"],["scene","场景"],["character","角色"]].map(([id, name]) => {
-              const lockNonProject = realMode && id !== "project";
-              return (
-                <button key={id}
-                  className={`sr-scope-btn ${scope === id ? "is-active" : ""} ${lockNonProject ? "is-disabled" : ""}`}
-                  disabled={lockNonProject}
-                  title={lockNonProject ? "场景 / 角色级绑定需在对应场景页发起（即将支持）" : undefined}
-                  onClick={() => !lockNonProject && setScope(id)}>{name}</button>
-              );
-            })}
+            {[["project","项目"],["scene","场景"],["character","角色"]].map(([id, name]) => (
+              <button key={id}
+                className={`sr-scope-btn ${scope === id ? "is-active" : ""}`}
+                onClick={() => setScope(id)}>{name}</button>
+            ))}
           </div>
+          {/* 立项 A — scene/character 级目标选择器(真模式):选中 id 作为 effect.scope_ref_id */}
+          {realMode && scope !== "project" && (
+            <div className="sr-scope-target" style={{marginTop: 8}}>
+              <select className="sr-select" value={scopeRefId || ""}
+                onChange={(e) => setScopeRefId(e.target.value || null)}
+                style={{width:"100%", padding:"6px 8px"}}>
+                <option value="">{`选择${scope === "scene" ? "场景" : "角色"}…`}</option>
+                {(scopeOpts[scope] || []).map(o => (
+                  <option key={o.id} value={o.id}>{o.label}</option>
+                ))}
+              </select>
+              {(scopeOpts[scope] || []).length === 0 && (
+                <p className="text-xs text-muted" style={{marginTop:4}}>
+                  {scope === "scene" ? "当前项目暂无场景(先在目录/构思生成场景)" : "当前项目暂无角色(先在构思补充角色)"}
+                </p>
+              )}
+            </div>
+          )}
           {realMode ? (
             <ul className="sr-bindings">
               {realBindings.length === 0 && (
@@ -1387,10 +1440,19 @@ function SrApply({ go, book }) {
           )}
         </div>
 
-        <button className="btn btn-accent btn-lg" style={{width:"100%"}} disabled={!!applied} onClick={() => {
+        <button className="btn btn-accent btn-lg" style={{width:"100%"}}
+          disabled={!!applied || (realMode && scope !== "project" && !scopeRefId)} onClick={() => {
           if (!rvPush) return;
-          const workTitle = WsWorks ? WsWorks.active().title : "当前作品";
-          const scopeName = scope === "project" ? `项目《${workTitle}》` : scope === "scene" ? "场景 CH08 · SC01" : "角色 林岑 POV";
+          const _act = (WsWorks && WsWorks.active && WsWorks.active()) || null;
+          const workTitle = (_act && _act.title) || "当前作品";
+          const projId = activeProjId;
+          const selOpt = scope !== "project" ? (scopeOpts[scope] || []).find(o => o.id === scopeRefId) : null;
+          const selLabel = selOpt ? selOpt.label : (scopeRefId || "");
+          const scopeName = scope === "project" ? `项目《${workTitle}》`
+            : scope === "scene" ? (realMode ? `场景 ${selLabel}` : "场景 CH08 · SC01")
+            : (realMode ? `角色 ${selLabel}` : "角色 林岑 POV");
+          // 立项 A — scope_ref_id:项目级用 project_id,场景/角色级用所选目标 id(显式传,不靠后端回退)
+          const effScopeRefId = scope === "project" ? projId : scopeRefId;
           if (realMode) {
             const profileTitle = (deep && deep.profile && deep.profile.title) || `${book.author || "参考"}风格画像`;
             rvPush({
@@ -1398,13 +1460,13 @@ function SrApply({ go, book }) {
               title: `参考画像「${profileTitle}」应用到${scopeName}`,
               where: "风格参考 · 注入应用", source: "风格参考",
               detail: `策略 ${strategy === "mixed" ? "A+B 混合" : strategy} · 强度 ${intensity}% · ${selectedDims.length} 维。批准后画像绑定到该范围、作为生成期默认润色基线，可随时回风格参考解绑。`,
-              dedupe_key: `style-apply:${realProfileId}:${scope}:${strategy}`,
+              dedupe_key: `style-apply:${realProfileId}:${scope}:${effScopeRefId || "_"}:${strategy}`,
               actions: [
                 { label: "批准应用", intent: "primary", op: "resolve",
                   effect: {
                     type: "bind_style_profile",
                     profile_id: realProfileId,
-                    scope, task_type: taskType, strategy, intensity,
+                    scope, scope_ref_id: effScopeRefId, task_type: taskType, strategy, intensity,
                     sub_dimensions: selectedDims,
                     include_positive: true, include_forbidden: true, include_metric: strategy !== "C",
                   } },
@@ -2105,6 +2167,14 @@ async function srReviewFinding(findingId, decision, bookId) {
   return true;
 }
 
+/* 立项 B — finding 用户反馈(👍/👎):聚合后按阈值调档 confidence,强制重载使 deep 体现。 */
+async function srFindingFeedback(findingId, vote, bookId) {
+  const { apiPost } = await import("./lib/client.js");
+  await apiPost(`/api/v2/style-reference/findings/${findingId}/user-feedback`, { vote });
+  await srLoadDeep(bookId, { force: true });
+  return true;
+}
+
 /* 画像预览：生成 3 段示例 + 自跑回测（需 LLM）。 */
 async function srPreviewSamples(profileId) {
   const { apiPost } = await import("./lib/client.js");
@@ -2119,7 +2189,7 @@ window.addEventListener("hashchange", () => {
 Object.assign(window, {
   WsStyleRef, srSyncBooks, srImportBook, srBookAction, srDeleteBook,
   srLoadDeep, srDeepFor, srInjectionPreview, srUnbind,
-  srSynthesize, srReviewFinding, srPreviewSamples,
+  srSynthesize, srReviewFinding, srFindingFeedback, srPreviewSamples,
 });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */

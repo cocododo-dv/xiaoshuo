@@ -130,6 +130,16 @@ class ProfileSynthesizer:
             },
             source_finding_ids_json=[f.finding_id for f in findings],
         )
+        # 立项 C — profile 就绪即建三粒度 RAG 索引(Strategy C 召回的数据底座)。
+        # 容错:向量后端不可用(如 Windows 原生 chroma)或失败均不阻断 synthesize。
+        try:
+            from novel_system.services.style_reference.rag import build_rag_index
+
+            build_rag_index(self.session, profile, book_id=book_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "rag index build failed for profile %s", profile.profile_id, exc_info=True
+            )
         return profile
 
     # ------------------------------------------------------------------ LLM

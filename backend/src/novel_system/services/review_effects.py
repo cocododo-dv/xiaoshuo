@@ -90,10 +90,20 @@ def _bind_style_profile(session: Session, project_id: str, payload: dict[str, An
     profile_id = str(payload.get("profile_id") or "").strip()
     if not profile_id:
         raise DomainError("REVIEW_EFFECT_INVALID", "bind_style_profile requires profile_id", status_code=400)
+    scope_value = str(payload.get("scope") or "project")
+    raw_scope_ref = str(payload.get("scope_ref_id") or "").strip()
+    # 立项 A — scene/character 级绑定必须显式带目标 id;缺失则拒绝(否则静默回退
+    # project_id 会落成「场景级绑定却指向项目」的脏数据)。项目级缺省回退 project_id。
+    if scope_value in ("scene", "character") and not raw_scope_ref:
+        raise DomainError(
+            "REVIEW_EFFECT_INVALID",
+            f"bind_style_profile scope={scope_value} requires scope_ref_id",
+            status_code=400,
+        )
     result = MaterializationService(session).apply_profile(
         profile_id,
-        scope=BindingScope(str(payload.get("scope") or "project")),
-        scope_ref_id=str(payload.get("scope_ref_id") or project_id),
+        scope=BindingScope(scope_value),
+        scope_ref_id=raw_scope_ref or project_id,
         task_type=TaskType(str(payload.get("task_type") or "scene_generation")),
         strategy=InjectionStrategy(str(payload.get("strategy") or "A")),
         config_json=_style_injection_config(payload) or None,

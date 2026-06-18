@@ -170,12 +170,108 @@
   逐段 std 且脱离 ~0.5 退化区,mean 不变);metrics 测试改造为块间语义(+ 单块 std=0 用例);
   黄金 expected 重生成(std 收紧,mean 不变);伪华丽腔/既有量化用例全绿。
 
-**剩余工作 → 已升级为独立立项**:见 `docs/style-reference-phase3-backlog.md`(三个相互独立、可在全新会话单独开工的立项):
-- **立项 A** 场景/角色级 apply 绑定目标选择器(纯前端取数 + 填 effect.scope_ref_id;后端已就绪;中偏小)
-- **立项 B** finding 👍👎 反馈聚合 → confidence 持续校准(后端端点+存储+聚合+前端接线;需定聚合规则;中)
-- **立项 C** 策略 C(RAG)三粒度向量召回(Phase 3 大件,需 vector_store 索引 + rerank + 评测;大)
+### 第八轮(2026-06-18,立项 C — Strategy C(RAG)三粒度向量召回)
 
-主线(审查 → 三轮后端加固 → 黄金语料/本地通道 → 三轮前端真化 → 量化容差校准)已收口;以上为 Phase 3 增量,建议独立排期而非主线顺延。
+把 C 策略从"退化变体"(positive 全文 + forbidden 摘要 + 不注 metric,**无真实召回**)升级为
+真实三粒度 RAG 召回,并修复"假防漂移"缺陷(续写循环每段重注入但**不传已生成正文**,导致 RAG
+每次召回相同 → 防漂移对 RAG 形同虚设)。
+
+- **核心模块** `services/style_reference/rag.py`(新增):
+  - 三粒度索引(sentence 切句 / paragraph 全段 / scene 连续段落按 1500… 实为 600 字窗口聚合),
+    建立在既有 `vector_store` 抽象上(memory 确定性 / chroma 走 WSL);collection 命名
+    `style_ref_rag_{profile_id}_{granularity}`。
+  - **召回 + 确定性 rerank**(无 LLM,守 §11 风险6 inject<50ms):统一打分 = query 字符覆盖率
+    `|set(query)∩set(snippet)|/|set(query)|`(长度归一,跨粒度可比)× 粒度权重;排序均带
+    `snippet_id` 稳定 tiebreaker;`retrieve_per_granularity` 供 hit@k 独立测量,`retrieve`
+    合并去重截断供注入。`style_ref_rag_rerank` LLM 节点仅作离线/预览 hook 落地(registry 标
+    `reserved` + prompt 模板),**不在热路径调用**。
+- **C 分支真召回**:`injection._render` 加 `context_text`;`_render_rag` 按 context_text(为空回退
+  profile 叙事概述)检索 → `render_rag_block` 渲染 `[风格检索样例]`;`SystemPromptFragments` 加
+  `rag_block` 字段并入 `to_system_prompt_prefix`;**rag_block 非空时红线段强制随注**(§11 风险11);
+  空召回优雅退化。多层叠加路径沿用既有决定丢弃 rag(同 few-shot,多书样例混叠稀释)。
+- **防漂移接线**:`scene_generation._inject_style_reference` 加 `context_text`,经
+  `InjectionService.context_text` 实例属性透传;长文续写循环首段传 `source_content[-2000:]`,
+  后续段传累计 `existing_continuation` 尾部 → RAG 召回随上下文变化(防漂移真实生效)。
+- **生命周期**:`profile_synthesizer.synthesize` 末尾建索引(容错:向量后端不可用/失败不阻断);
+  `cleanup.purge_derived_data` 删 profile 三粒度 collection。
+- **配置**:`injection_budget.yaml` 加 rag.* 预算(top_k/inject_max/quote_max/block_max/scene_target/
+  权重等);`models.yaml` + `prompts.yaml` + `llm_node_registry.py` 落地 `style_ref_rag_rerank`(reserved)。
+- **测试** `tests/test_style_reference_rag.py`(21 用例,memory 确定性):索引构建三粒度计数 / 切句 /
+  scene 聚合 / 三粒度召回命中 / 合并去重截断 / 确定性 / 渲染红线契约 / 删除 / **C 注入红线随注** /
+  **防漂移随上下文变化** / 无索引优雅退化 / purge 删索引;补强后增:**local_only 跳过 RAG** /
+  非 active profile 退化 / 向量后端不可用退化 / 红线 iff 风格块活跃 / drift snippet id 集合差异 /
+  inject_max 边界。全后端 1233 passed + 15 skipped(Windows chroma)。
+- **对抗审查(5 视角)+ 修复**:正确性 / 反抄袭红线 / 确定性性能 / 防漂移设计(verdict=clean)/ 测试充分性。
+  采纳并修复 3 项:(1)跨粒度 rerank tiebreaker 改用粒度 rank(`_GRAN_RANK`,由细到粗)替代字母序;
+  (2)`local_only` 书 C 策略跳过 RAG(原文不送云端,附录 B;positive 抽象特征仍注入;B/few-shot 同类
+  张力记为独立跟进);(3)多层叠加丢弃 rag_block 在 `_cap_fragments`/`_merge_fragments` 补设计注释
+  (同 few_shot,per-profile 原文混叠稀释)。核实驳回 4 项误报(红线触发已含 positive / `[-N:]` 切片
+  本即确定 / profile active 由调用方保证 / rfind 截断已防负值)。
+
+### 第九轮(2026-06-18,立项 B — finding 用户反馈聚合 → confidence 持续校准回路)
+
+设计 §5 标注的 🆕「持续校准回路」:用户对 finding 投 👍/👎 → 持久化 → 聚合更新该 finding 的 confidence。
+
+- **数据层**:迁移 `20260618_0058` 新表 `style_reference_finding_feedback`(feedback_id PK / finding_id FK
+  ondelete=CASCADE / operator_ref / vote;**uq(finding_id, operator_ref) 一人一票**)+ `style_reference_findings`
+  加 `base_confidence` 列(合成基线,NULL=未经反馈)。全链 upgrade/downgrade 实测通过。
+- **聚合规则**(`config/style_reference/feedback.yaml`,可外置):`net = #up − #down`(去重用户);
+  `net ≥ promote_net(2)` 升一档 / `net ≤ demote_net(-2)` 降一档,clamp 到 low/medium/high。**温和校准**
+  (仅 ±1 档);base_confidence 首次反馈回填且永不覆盖 → **net 回阈值内 confidence 可逆回基线**。
+- **服务/仓库**:`finding_feedback.apply_feedback`(回填 base → upsert → 聚合 → 调档写回);
+  `repository.upsert_finding_feedback`(一人一票,确定性 feedback_id;**SAVEPOINT 兜底并发竞态**)
+  + `aggregate_finding_feedback`。
+- **路由**:`POST /findings/{id}/user-feedback`(`_with_idem` 幂等,operator_ref 入幂等 payload 分区)。
+- **前端**:`srFindingFeedback` helper + FindingCard 投票按钮接线(真模式发后端 up/down、演示本地 toggle);
+  `_serialize_finding` 补 `base_confidence`(前端可展示漂移)。
+- **测试** `tests/test_style_reference_finding_feedback.py`(16 用例):持久化 / 一人一票幂等 / 改向 /
+  升降档 / clamp / **可逆回 base** / net=0 复位 / 404 / 非法 vote / 路由幂等不翻倍 / **fp finding 投票** /
+  **purge 级联删反馈** / base 不被覆盖。迁移头部哨兵测试同步 0057→0058。`vite build` 通过。
+- **对抗审查(5 视角)+ 修复**:正确性 / 聚合可逆性 / 迁移安全 / 数据完整性 / 测试+前端。采纳并修复 6 项:
+  (1)`upsert` 捕获 IntegrityError → SAVEPOINT 回退 + 退更新(跨后端并发健壮);(2)operator_ref 入幂等 payload
+  (防不同用户同 vote 误归因重放);(3)`_load_thresholds` 校验 promote>demote,非法则告警+回退默认;
+  (4)**purge_derived_data 显式删反馈行 + FK ondelete=CASCADE**(SQLite 未启 FK pragma,显式删为有效兜底);
+  (5)`_serialize_finding` 补 base_confidence;(6)补 fp/net=0/幂等不翻倍/purge 级联测试。
+  核实驱回:并发 race(SQLite 串行写已规避,SAVEPOINT 已兜底跨后端)、enum vs str(与 review_finding 既有
+  约定一致)、`_actor` 'operator' 回退(全系统既定)、downgrade batch(实测直接 drop 通过)。
+
+### 第十轮(2026-06-18,立项 A — 场景/角色级 apply 绑定目标选择器)
+
+注入应用页(`SrApply`)此前真模式只支持项目级绑定(scope 选择器的「场景/角色」被 `lockNonProject` 禁用,
+因缺目标选择器 → `scope_ref_id` 无来源)。本轮补齐前端目标选择器,解锁场景/角色级真绑定。后端早已就绪
+(`review_effects._bind_style_profile` 转发 `scope_ref_id`;`resolve_active_binding` 优先级 scene>character>project)。
+
+- **前端**(仅 `ws-styleref.jsx` 的 `SrApply`):新增 `scopeRefId`/`scopeOpts` state;真模式按当前活动项目经
+  `apiGet` 拉 `/catalog`(场景 {scene_id,title})与 `/library`(角色 {character_id,name})填选项(自包含,
+  不依赖 catalog 缓存);移除「真模式强制项目级」逻辑,解除 `lockNonProject`;scope=场景/角色时渲染目标下拉;
+  effect 补 `scope_ref_id`(项目级=project_id,场景/角色级=选中 id),dedupe_key 含之;apply 按钮在未选目标时禁用。
+- **后端防御**:`_bind_style_profile` 对 scope=scene/character 缺 `scope_ref_id` **抛 400**(防静默回退 project_id
+  落成「场景级绑定却指向项目」脏数据);项目级仍回退 project_id。
+- **测试**:`test_style_reference_hardening.py` 新增端到端验收 `test_bind_style_profile_effect_scene_and_character_scope`
+  (scene/character effect → binding scope+scope_ref_id 正确;resolve 命中 scene **与** character 级)+
+  `test_bind_style_profile_effect_scene_requires_scope_ref_id`(缺 ref → 400)。`vite build` 通过。
+- **对抗审查(3 视角)+ 修复**:前端正确性 / 边界UX / 后端契约。采纳 4 项:(1)`WsWorks.active()` 空安全
+  (projId/workTitle 防 works 空列表崩溃);(2)`activeProjId` 入 loader 依赖 + null 重置(防切换活动项目后选项陈旧、
+  跨项目数据污染);(3)后端 scene/character 缺 scope_ref_id 抛错;(4)测试补角色级 resolve 命中 + 缺 ref 守卫。
+  核实驳回:`book&&book.id` dep(实为稳定字符串)、selLabel 罕见回显、`c.id` 无害 fallback。
+
+### 第十一轮(2026-06-18,立项 B 收尾 — 投票高亮跨刷新持久化)
+
+闭合第十轮审查标记的 HIGH UX 缺口:此前 FindingCard 投票高亮是本地 state,刷新后丢失(虽 confidence
+调档已持久且可见,但用户看不到「我已投过票」)。本轮按 operator 回显:`repository.operator_votes_for_findings`
+(单查询批量取该 operator 对一组 finding 的票)→ 深层端点 `GET /runs/{id}/findings` 经 `_actor` 取 operator,
+`_serialize_finding` 加 `user_vote` 字段 → 前端 `srAdaptFinding` 映射 `vote` + FindingCard 从 `finding.vote`
+初始化并随 deep 重载同步。17 用例(+`test_deep_findings_returns_operator_user_vote`:投票后该 operator 回显
+user_vote、他人为空)。`vite build` + 全后端绿。**持续校准回路 UX 完整闭合。**
+
+**剩余工作 → 独立立项**(已全部完成):
+- ~~**立项 A** 场景/角色级 apply 绑定目标选择器~~ — **已完成(第十轮)**。
+- ~~**立项 B** finding 👍👎 反馈聚合 → confidence 持续校准~~ — **已完成(第九轮)**。
+- ~~**立项 C** 策略 C(RAG)三粒度向量召回~~ — **已完成(第八轮)**。可选增强:LLM rerank 接非实时路径
+  (`style_ref_rag_rerank` hook 已就绪);hit@5 在真实黄金语料 + chroma(WSL)上的正式评测。
+
+主线(审查 → 三轮后端加固 → 黄金语料/本地通道 → 三轮前端真化 → 量化容差校准 → 立项 C RAG → 立项 B 校准回路
+→ 立项 A 场景/角色绑定)**全部收口;Phase 3 backlog 三个立项 A/B/C 均已完成**。
 
 ## 九、2026-05-31 收口勘误
 

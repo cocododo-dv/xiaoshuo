@@ -91,6 +91,13 @@ class FindingReviewRequest(BaseModel):
     comment: str | None = None
 
 
+class FindingFeedbackRequest(BaseModel):
+    """立项 B — finding 用户反馈(👍/👎)。"""
+
+    model_config = ConfigDict(extra="forbid")
+    vote: str  # up / down
+
+
 class ApplyProfileRequest(ApplyConfigMixin):
     scope: str
     scope_ref_id: str | None = None
@@ -158,7 +165,9 @@ def _serialize_run(run) -> dict[str, Any]:
     }
 
 
-def _serialize_finding(finding, *, evidence: list | None = None) -> dict[str, Any]:
+def _serialize_finding(
+    finding, *, evidence: list | None = None, user_vote: str | None = None
+) -> dict[str, Any]:
     payload = {
         "finding_id": finding.finding_id,
         "book_id": finding.book_id,
@@ -168,12 +177,17 @@ def _serialize_finding(finding, *, evidence: list | None = None) -> dict[str, An
         "finding_kind": finding.finding_kind,
         "statement": finding.statement,
         "confidence": finding.confidence,
+        # 立项 B — 合成基线(NULL=未经反馈调整);前端可据此展示 confidence 漂移。
+        "base_confidence": finding.base_confidence,
         "status": finding.status,
         "review_id": finding.review_id,
     }
     # PR-23 — 仅 ?include=evidence 时输出;不带 include 的调用方零回归
     if evidence is not None:
         payload["evidence"] = evidence
+    # 立项 B — 当前请求 operator 对该 finding 的票(None=未投);供前端回显投票高亮(跨刷新)
+    if user_vote is not None:
+        payload["user_vote"] = user_vote
     return payload
 
 
@@ -603,6 +617,10 @@ def list_run_findings(
                     "span": [quote.span_start, quote.span_end] if quote else None,
                 }
             )
+    # 立项 B — 批量取当前 operator 的票,回显投票高亮(跨刷新持久)
+    vote_map = repo.operator_votes_for_findings(
+        [f.finding_id for f in findings], _actor(request)
+    )
     return ok(
         {
             "findings": [
@@ -613,6 +631,7 @@ def list_run_findings(
                         if evidence_map is not None
                         else None
                     ),
+                    user_vote=vote_map.get(f.finding_id),
                 )
                 for f in findings
             ]
@@ -691,6 +710,35 @@ def review_finding(
         method="POST",
         path_template=f"{PATH_PREFIX}/findings/{{finding_id}}/review",
         payload={"finding_id": finding_id, **body},
+        action=_do,
+    )
+
+
+@router.post(f"{PATH_PREFIX}/findings/{{finding_id}}/user-feedback")
+def user_feedback_finding(
+    finding_id: str,
+    payload: FindingFeedbackRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """立项 B — finding 用户反馈(👍/👎)聚合 → 调档 confidence。一人一票(幂等)。"""
+    body = payload.model_dump(mode="json")
+
+    def _do() -> dict[str, Any]:
+        from novel_system.services.style_reference.finding_feedback import apply_feedback
+
+        return apply_feedback(
+            session, finding_id, operator_ref=_actor(request), vote=body["vote"]
+        )
+
+    return _with_idem(
+        session,
+        request,
+        method="POST",
+        path_template=f"{PATH_PREFIX}/findings/{{finding_id}}/user-feedback",
+        # operator_ref 入幂等 payload:幂等记录按 (finding, operator) 分区,
+        # 避免不同用户相同 finding+vote 共享幂等键导致误归因重放。
+        payload={"finding_id": finding_id, "operator_ref": _actor(request), **body},
         action=_do,
     )
 

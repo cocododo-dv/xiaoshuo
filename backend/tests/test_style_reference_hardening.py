@@ -800,6 +800,61 @@ def test_bind_style_profile_effect_forwards_injection_config():
         assert binding.config_json.get("include_metric") is True
 
 
+def test_bind_style_profile_effect_scene_and_character_scope():
+    """立项 A — apply 决策卡 scope=scene/character + scope_ref_id 落成对应 scope 的真 binding,
+    且 resolve_active_binding(scene_id=...) 命中场景级绑定(scene > character > project 优先级)。"""
+    from novel_system.services.review_effects import run_effect
+    from novel_system.services.style_reference.injection import InjectionService
+
+    book_id = _seed_book("scoperef", cloud_policy="segments_only", with_paragraphs=False)
+    profile_id = _seed_profile_for_book("scoperef", book_id)
+    with SessionLocal() as session:
+        scene_res = run_effect(session, "proj_scoperef", {
+            "type": "bind_style_profile", "profile_id": profile_id,
+            "scope": "scene", "scope_ref_id": "ch08s1",
+            "task_type": "scene_generation", "strategy": "C",
+        })
+        char_res = run_effect(session, "proj_scoperef", {
+            "type": "bind_style_profile", "profile_id": profile_id,
+            "scope": "character", "scope_ref_id": "scoperef_CHAR01",
+            "task_type": "scene_generation", "strategy": "B",
+        })
+        session.commit()
+        repo = StyleReferenceRepository(session)
+        sb = repo.get_binding(scene_res["binding_id"])
+        cb = repo.get_binding(char_res["binding_id"])
+        assert sb.scope == "scene" and sb.scope_ref_id == "ch08s1"
+        assert cb.scope == "character" and cb.scope_ref_id == "scoperef_CHAR01"
+        # 注入选取:scene_id 命中场景级绑定(优先级最高)
+        picked = InjectionService(session).resolve_active_binding(
+            "proj_scoperef", "scene_generation",
+            character_ids=["scoperef_CHAR01"], scene_id="ch08s1",
+        )
+        assert picked is not None
+        assert picked.scope == "scene" and picked.scope_ref_id == "ch08s1"
+        # 角色级单独命中:scene 不匹配时,character_ids 命中角色级绑定
+        picked_char = InjectionService(session).resolve_active_binding(
+            "proj_scoperef", "scene_generation",
+            character_ids=["scoperef_CHAR01"], scene_id="other_scene",
+        )
+        assert picked_char is not None
+        assert picked_char.scope == "character" and picked_char.scope_ref_id == "scoperef_CHAR01"
+
+
+def test_bind_style_profile_effect_scene_requires_scope_ref_id():
+    """立项 A — scene/character 级绑定缺 scope_ref_id 应拒绝(防静默回退 project_id 成脏数据)。"""
+    from novel_system.services.review_effects import run_effect
+
+    book_id = _seed_book("scoperefreq", cloud_policy="segments_only", with_paragraphs=False)
+    profile_id = _seed_profile_for_book("scoperefreq", book_id)
+    with SessionLocal() as session:
+        with pytest.raises(DomainError) as exc:
+            run_effect(session, "proj_scoperefreq", {
+                "type": "bind_style_profile", "profile_id": profile_id, "scope": "scene",
+            })
+        assert exc.value.status_code == 400
+
+
 def test_bind_style_profile_effect_without_config_stays_empty():
     """无 config 的简单 bind(synthesize 默认决策卡路径)config_json 保持空,零回归。"""
     from novel_system.services.review_effects import run_effect

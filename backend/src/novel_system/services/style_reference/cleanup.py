@@ -14,6 +14,7 @@ from novel_system.db.models import (
     StyleReferenceEvidence,
     StyleReferenceExtraction,
     StyleReferenceFinding,
+    StyleReferenceFindingFeedback,
     StyleReferenceInjectionBinding,
     StyleReferenceProfile,
     StyleReferenceQuote,
@@ -41,6 +42,16 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     profile_ids = [p.profile_id for p in repo.list_profiles(book_id=book_id)]
     findings = repo.list_findings(book_id=book_id)
     finding_ids = [f.finding_id for f in findings]
+
+    # 立项 C — 删除每个 profile 的三粒度 RAG 向量索引(向量后端,独立于 DB 事务)。
+    # delete_rag_index 内部已容错;此处再兜底 import 失败,清理不阻断派生数据删除。
+    try:
+        from novel_system.services.style_reference.rag import delete_rag_index
+
+        for _pid in profile_ids:
+            delete_rag_index(_pid)
+    except Exception:  # noqa: BLE001
+        pass
 
     counts: dict[str, int] = {}
 
@@ -91,6 +102,13 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
         "profiles",
     )
     if finding_ids:
+        # 立项 B — 删 finding 前先删其用户反馈(FK 未在 SQLite 强制,需显式清理防孤儿)
+        _exec(
+            delete(StyleReferenceFindingFeedback).where(
+                StyleReferenceFindingFeedback.finding_id.in_(finding_ids)
+            ),
+            "finding_feedback",
+        )
         _exec(
             delete(StyleReferenceEvidence).where(
                 StyleReferenceEvidence.finding_id.in_(finding_ids)

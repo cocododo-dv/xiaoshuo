@@ -20,6 +20,7 @@ Strategy 实现摘要:
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -34,6 +35,8 @@ from novel_system.services.style_reference.schemas import (
     InjectionStrategy,
     SystemPromptFragments,
 )
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BUDGET = {
     "system_prompt_max_tokens": 800,
@@ -84,8 +87,10 @@ def _cap_fragments(frag: "SystemPromptFragments", budget: int) -> "SystemPromptF
     """PR-16 叠加专属:按 ratio(0.6/0.3/0.1)硬截 3 block(不管 strategy)。
 
     anti_plagiarism_block 是红线段,**永不截断**,原样保留。
-    few_shot_block 在叠加路径不传(多本书样例混叠只会稀释风格信号),
-    构造时默认为空即为丢弃。
+    few_shot_block 与 rag_block(立项 C)在叠加路径**均不传**:二者都引用某一
+    profile/book 的原文样例,多层(可能跨书/跨 profile)混叠只会稀释风格信号——
+    RAG 检索是 per-profile 的,叠加时与 few_shot 同样丢弃,构造默认空即为丢弃。
+    (单层路径才走 strategy 全语义,RAG 在那里正常注入。)
     """
     return SystemPromptFragments(
         positive_block=_truncate_lines(frag.positive_block, int(budget * 0.6)),
@@ -113,7 +118,11 @@ def _merge_forbidden_blocks(*blocks: str) -> str:
 
 def _merge_fragments(layers_frags: list["SystemPromptFragments"]) -> "SystemPromptFragments":
     """PR-19 — 多层合并(由泛到具体):positive 顺序拼 / forbidden 全层去重 /
-    metric 最具体优先(反向取首个非空)/ strategy 取最具体层。"""
+    metric 最具体优先(反向取首个非空)/ strategy 取最具体层。
+
+    few_shot_block 与 rag_block(立项 C)不在此合并:它们已在上游 `_cap_fragments`
+    阶段丢弃(per-profile 原文样例多层混叠稀释风格信号,详见该函数注释),故合并产物
+    不含二者。RAG 仅在单层路径注入。"""
     positive = "\n\n".join(
         f.positive_block for f in layers_frags if f.positive_block.strip()
     )
@@ -213,6 +222,10 @@ class InjectionService:
         # fragments_for() to override the default ptype priority with dimension-targeted
         # exemplars ("show, don't tell" drift correction).
         self.drift_ptype_priority: list[str] | None = None
+        # 立项 C — Strategy C(RAG)的检索 query 来源:续写最新上下文。
+        # 由调用方(scene_generation._inject_style_reference)在 fragments_for() 前设置,
+        # 续写循环按 refresh_every_chars 周期性刷新此值 → RAG 召回随上下文变化(§12 防漂移)。
+        self.context_text: str | None = None
 
     # --------------------------------------------------------------- public
     def fragments_for(
@@ -292,6 +305,7 @@ class InjectionService:
         return self._render(
             profile, strategy, binding.config_json or {},
             drift_ptype_priority=self.drift_ptype_priority,
+            context_text=self.context_text,
         )
 
     def _budget_total(self) -> int:
@@ -437,6 +451,7 @@ class InjectionService:
         config: dict[str, Any],
         *,
         drift_ptype_priority: list[str] | None = None,
+        context_text: str | None = None,
     ) -> SystemPromptFragments:
         sub_dims_raw = config.get("sub_dimensions")
         sub_dims = [str(s) for s in sub_dims_raw] if sub_dims_raw else None
@@ -444,13 +459,17 @@ class InjectionService:
         forbidden = self._render_forbidden(profile, sub_dims=sub_dims)
         metric = self._render_metric(profile)
         few_shot = ""
+        rag_block = ""
 
         if strategy == InjectionStrategy.B:
             positive, forbidden, metric = self._apply_budget(positive, forbidden, metric)
             few_shot = self._render_few_shot(profile, drift_ptype_priority=drift_ptype_priority)
         elif strategy == InjectionStrategy.C:
+            # 立项 C — 真召回:positive 全文 + forbidden 摘要 + RAG 检索片段(metric 不注)。
+            # 空召回(无索引/无 query)时 rag_block="",C 优雅退化到 positive + forbidden 摘要。
             forbidden = self._summarize_forbidden(forbidden, max_chars=200)
             metric = ""
+            rag_block = self._render_rag(profile, context_text=context_text)
         elif strategy == InjectionStrategy.MIXED:
             # PR-9 §"intensity 语义" — 0-100 缩放 ratio:0 → 0.3x, 50 → 0.9x, 100 → 1.5x;
             # 但三块截断额之和封顶 system_prompt_max_tokens(配置语义是 max,
@@ -481,7 +500,13 @@ class InjectionService:
         # §A.5 / §11 风险 11 — 抄袭事前预防红线段:任一风格 block 非空时必随注入,
         # 不参与任何预算截断;few-shot 引用原文片段,更必须带红线
         anti_plagiarism = ""
-        if positive.strip() or forbidden.strip() or metric.strip() or few_shot.strip():
+        if (
+            positive.strip()
+            or forbidden.strip()
+            or metric.strip()
+            or few_shot.strip()
+            or rag_block.strip()
+        ):
             anti_plagiarism = self._render_anti_plagiarism(profile)
 
         return SystemPromptFragments(
@@ -489,9 +514,50 @@ class InjectionService:
             forbidden_block=forbidden,
             metric_anchor_block=metric,
             few_shot_block=few_shot,
+            rag_block=rag_block,
             anti_plagiarism_block=anti_plagiarism,
             strategy=strategy,
         )
+
+    def _render_rag(self, profile, *, context_text: str | None) -> str:
+        """Strategy C — 按 context_text 从三粒度索引检索参考风格片段,渲染 rag_block。
+
+        query 来源:续写最新上下文(context_text);为空时回退用 profile 叙事概述
+        (narrative_summary),保证非续写场景(项目初始化)也能召回。无索引/空召回 →
+        空串(C 优雅退化)。全程无 LLM(§11 风险 6:inject < 50ms,库内拼装)。
+
+        反抄袭/隐私(附录 B):RAG 注入的是参考书**原文片段**(段/句/景),最终随用户
+        生成 prompt 送往云端 LLM。``cloud_policy=local_only`` 的书禁止把原文/派生内容
+        送云端,故此处直接跳过 RAG(positive/forbidden 抽象特征仍由其它 block 注入,
+        不受影响)。注:Strategy B(few-shot)注入 quote 原文存在同类张力,属既有行为,
+        本次不改其语义,留作独立跟进。
+        """
+        from novel_system.services.style_reference.rag import (
+            RagRetriever,
+            load_rag_config,
+            render_rag_block,
+        )
+
+        book = self.repo.get_book(getattr(profile, "book_id", None))
+        if book is not None and getattr(book, "cloud_policy", None) == "local_only":
+            return ""
+
+        cfg = load_rag_config()
+        query = (context_text or "").strip()
+        if not query:
+            query = ((profile.profile_json or {}).get("narrative_summary") or "").strip()
+        if not query:
+            return ""
+        max_q = int(cfg.get("rag_context_query_max_chars", 2000))
+        query = query[-max_q:]
+        try:
+            snippets = RagRetriever(self.session).retrieve(profile.profile_id, query)
+        except Exception:  # noqa: BLE001 — 召回失败不阻断生成
+            logger.warning(
+                "rag retrieve failed for profile %s", profile.profile_id, exc_info=True
+            )
+            return ""
+        return render_rag_block(snippets, config=cfg)
 
     def _render_few_shot(self, profile, *, drift_ptype_priority: list[str] | None = None) -> str:
         """Strategy B few-shot:从 profile.scene_samples_index 直读样例引文。

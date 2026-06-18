@@ -30,6 +30,11 @@
 
 ## 立项 A：场景 / 角色级 apply 绑定目标选择器
 
+> ✅ **已完成(2026-06-18,见 progress 第十轮)**。`SrApply` 解除 lockNonProject,真模式经 apiGet
+> 拉 `/catalog` 场景 + `/library` 角色填目标下拉,选中 id 入 effect.scope_ref_id;后端 `_bind_style_profile`
+> 加 scene/character 缺 ref 抛错守卫;端到端验收测试 + 3 视角审查(采纳 4 修复)。**Phase 3 立项 A/B/C 全部完成。**
+> 下文为原立项书,保留作实现参照。
+
 ### 背景与动机
 注入应用页（`SrApply`）当前**只支持项目级真绑定**。scope 选择器里的「场景 / 角色」
 在真模式被禁用（`ws-styleref.jsx` 里 `lockNonProject = realMode && id !== "project"`），
@@ -73,6 +78,12 @@
 
 ## 立项 B：finding 用户反馈聚合（👍 / 👎 持续校准回路）
 
+> ✅ **已完成(2026-06-18,见 progress 第九轮)**。迁移 0058 新表 `style_reference_finding_feedback`
+> (一人一票 uq)+ findings.base_confidence 列;`finding_feedback.apply_feedback` 聚合 net 按
+> `feedback.yaml`(promote_net=2/demote_net=-2)±1 档调 confidence,base 保留可逆;路由
+> `POST /findings/{id}/user-feedback`(幂等);前端 `srFindingFeedback` + FindingCard 接线;
+> 16 用例 + 5 视角审查(采纳 6 修复)。下文为原立项书,保留作实现参照。
+
 ### 背景与动机
 设计 §5 把 `POST /findings/{finding_id}/user-feedback` 列为 Phase 3 的 🆕 项，**当前后端未实现**；
 维度矩阵 finding 卡（`FindingCard`）的 👍👎 投票按钮目前仅本地 state（`vote`），不落盘、不聚合。
@@ -114,6 +125,12 @@
 ---
 
 ## 立项 C：策略 C（RAG）三粒度向量召回
+
+> ✅ **已完成(2026-06-18,见 progress 第八轮)**。`services/style_reference/rag.py` 落地三粒度
+> 索引 + 确定性召回/rerank(无 LLM,守 inject<50ms)+ C 分支真召回 + 防漂移按上下文重召回 +
+> 生命周期(synthesize 建 / purge 删)+ 14 用例。后续可选:LLM rerank 接非实时路径
+> (`style_ref_rag_rerank` hook 已就绪)、真实黄金语料 + chroma(WSL)上的 hit@5 正式评测。
+> 下文为原立项书,保留作实现参照。
 
 ### 背景与动机
 注入策略 A（System Prompt）/ B（Few-shot，已真实读 `scene_samples_index`）已实装；

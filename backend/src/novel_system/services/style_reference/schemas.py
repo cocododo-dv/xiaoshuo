@@ -89,6 +89,13 @@ class FindingStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class FeedbackVote(str, Enum):
+    """立项 B — finding 用户反馈票向。来源:style_reference_finding_feedback.vote。"""
+
+    UP = "up"
+    DOWN = "down"
+
+
 class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -606,6 +613,9 @@ class SystemPromptFragments(BaseModel):
     forbidden_block: str = ""
     metric_anchor_block: str = ""
     few_shot_block: str = ""
+    # 立项 C — Strategy C(RAG)按当前上下文检索的参考风格片段块;与 few_shot_block
+    # 同性质(引用原文),非空时调用方保证红线段必随注。
+    rag_block: str = ""
     anti_plagiarism_block: str = ""
     strategy: InjectionStrategy = InjectionStrategy.A
 
@@ -617,6 +627,7 @@ class SystemPromptFragments(BaseModel):
                 self.forbidden_block,
                 self.metric_anchor_block,
                 self.few_shot_block,
+                self.rag_block,
             )
             if block.strip()
         ]

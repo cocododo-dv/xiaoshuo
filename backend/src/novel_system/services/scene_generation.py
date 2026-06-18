@@ -668,7 +668,11 @@ class SceneGenerationService:
         segment_count = 1
         if refresh_every_chars > 0:
             segment_count = max(1, (target_chars + refresh_every_chars - 1) // refresh_every_chars)
-        active_prompt = self._inject_style_reference(prompt, scene, task_type="long_form_continuation")
+        # 立项 C §12 — 首段注入用源稿尾部作 RAG query;后续每段按已生成正文刷新(防漂移)
+        active_prompt = self._inject_style_reference(
+            prompt, scene, task_type="long_form_continuation",
+            context_text=(source_content or "")[-2000:],
+        )
         continuation_parts: list[str] = []
         llm_call_ids: list[str] = []
 
@@ -712,7 +716,12 @@ class SceneGenerationService:
                 )
                 self._raise_original_runner_error(exc)
             if segment_index + 1 < segment_count:
-                active_prompt = self._inject_style_reference(prompt, scene, task_type="long_form_continuation")
+                # 防漂移:用累计已生成正文尾部重做 RAG 召回 → 样例随上下文变化
+                accumulated = "".join(continuation_parts)
+                active_prompt = self._inject_style_reference(
+                    prompt, scene, task_type="long_form_continuation",
+                    context_text=(f"{source_content}\n{accumulated}".strip())[-2000:],
+                )
 
         content = "".join(continuation_parts)
         row_id = versioned_scene_artifact_id("draft_long_form_continuation", scene_id, bundle)
@@ -1081,11 +1090,16 @@ class SceneGenerationService:
         *,
         task_type: str = "scene_generation",
         bundle: dict[str, Any] | None = None,
+        context_text: str | None = None,
     ) -> dict[str, Any] | None:
         """PR-8 §5.1 — 把 active StyleProfile 注入到 prompt["system_prompt"] 头部。
 
         无 binding / project_id / profile 时 no-op;注入失败时 warn log 降级,
         不阻断 LLM 生成。
+
+        立项 C §12 — ``context_text``(续写最新正文)透传给 Strategy C(RAG),
+        作为三粒度检索 query;长文续写循环按 refresh 周期刷新此值 → 召回随上下文变化
+        (防漂移)。其余策略忽略此参数。
         """
         if prompt is None or scene is None:
             return prompt
@@ -1108,6 +1122,9 @@ class SceneGenerationService:
                 drift_priority = (bundle.get("inline_digests") or {}).get("_drift_ptype_priority")
                 if drift_priority and isinstance(drift_priority, list):
                     svc.drift_ptype_priority = drift_priority
+            # 立项 C — RAG 检索 query 来源(续写防漂移按最新正文重召回)
+            if context_text:
+                svc.context_text = context_text
             fragments = svc.fragments_for(
                 project_id, task_type, character_ids=character_ids, scene_id=scene_id,
             )

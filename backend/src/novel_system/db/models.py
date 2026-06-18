@@ -1889,6 +1889,9 @@ class StyleReferenceFinding(Base):
     # 在 create_finding 时自动填充
     statement_hash: Mapped[str] = mapped_column(String)
     confidence: Mapped[str] = mapped_column(String, default="medium")
+    # 立项 B — 合成时的基线置信度。NULL = 尚无用户反馈(confidence 即基线);
+    # 首次反馈时由应用层回填为当时的 confidence,使反馈调档可重算/可逆。
+    base_confidence: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="pending")
     review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
@@ -2047,3 +2050,33 @@ class StyleReferenceMetricEvent(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class StyleReferenceFindingFeedback(Base):
+    """立项 B — finding 的用户反馈(👍/👎)持续校准回路。
+
+    一人(operator_ref)对一条 finding 仅一票(uq 约束);改向投票 = 更新该行 vote。
+    聚合 net = #up − #down(去重用户),按 config/style_reference/feedback.yaml 阈值
+    在 finding.base_confidence 基础上 ±1 档写回 finding.confidence。
+    """
+
+    __tablename__ = "style_reference_finding_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "finding_id",
+            "operator_ref",
+            name="uq_style_reference_finding_feedback_finding_operator",
+        ),
+        Index("ix_sr_finding_feedback_finding", "finding_id"),
+    )
+
+    feedback_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # ondelete CASCADE:删除 finding 时 DB 级联清理反馈(若 FK 强制);purge_derived_data
+    # 另有显式删除兜底(SQLite 默认未启用 PRAGMA foreign_keys,故二者并存)。
+    finding_id: Mapped[str] = mapped_column(
+        ForeignKey("style_reference_findings.finding_id", ondelete="CASCADE")
+    )
+    operator_ref: Mapped[str] = mapped_column(String)
+    vote: Mapped[str] = mapped_column(String)  # "up" | "down"
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
