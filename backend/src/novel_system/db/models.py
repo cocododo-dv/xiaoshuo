@@ -224,6 +224,12 @@ class SnowflakeScenePlan(Base):
     must_include_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     exit_change: Mapped[str | None] = mapped_column(Text, nullable=True)
     hook: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tension_target: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    function_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    involved_foreshadowing_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    causal_prerequisite_scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    cost_requirement: Mapped[str | None] = mapped_column(Text, nullable=True)
+    downstream_obligations_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     target_length_band: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="draft")
     source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -467,6 +473,8 @@ class SceneCard(Base):
     # （正文保存时更新；排序复用既有 scene_seq，不另建 display_order）。
     state: Mapped[str] = mapped_column(String, default="todo")
     words_current: Mapped[int] = mapped_column(Integer, default=0)
+    # §16 "breathing gap" — author-facing slider; 0.0=free-flow, 1.0=full-rigor, NULL=auto (criticality-based)
+    constraint_intensity: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     trashed_flag: Mapped[int] = mapped_column(Integer, default=0)
     trashed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     trashed_by: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -531,6 +539,11 @@ class SceneRunState(Base):
     attempt_budget: Mapped[int] = mapped_column(Integer, default=4)
     repeat_issue_key: Mapped[str | None] = mapped_column(String, nullable=True)
     repeat_issue_count: Mapped[int] = mapped_column(Integer, default=0)
+    # §6 dispersion signal — last Best-of-N candidate Jaccard dispersion (0.0–1.0)
+    candidate_dispersion_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    # §6 criticality classification result for this run
+    criticality_level: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    criticality_reasons_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
@@ -1161,12 +1174,43 @@ class ChapterMemory(Base):
     chapter_id: Mapped[str] = mapped_column(String)
     aggregate_stage: Mapped[str] = mapped_column(String)
     content: Mapped[str] = mapped_column(Text)
+    # §2 summary tower: "事实从日志查，氛围从摘要读". memory_kind labels how the
+    # content may be used downstream — "mixed" (legacy, both), "factual" (state
+    # cross-reference only), "atmosphere" (tone/mood far-horizon, never as facts).
+    memory_kind: Mapped[str] = mapped_column(String, default="mixed")
     source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     active_flag: Mapped[int] = mapped_column(Integer, default=0)
     runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
     runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
     effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class VolumeSummary(Base):
+    """§2 summary tower — volume/book-level far-horizon ATMOSPHERE summary.
+
+    Blueprint §2: the summary tower is a read-only auxiliary layer supplying
+    far-horizon tone/atmosphere context. It must NEVER be a fact-bearing source —
+    facts are projected from the event log. This rolls up chapter memories into a
+    volume-level digest used as far-horizon mood context for generation.
+    """
+    __tablename__ = "volume_summaries"
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String)
+    volume_seq: Mapped[int] = mapped_column(Integer)
+    chapter_id_start: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_id_end: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Atmosphere-only far-horizon context (tone, mood, thematic arc). NOT facts.
+    atmosphere_summary: Mapped[str] = mapped_column(Text, default="")
+    # Optional structured factual digest derived from event log (state milestones).
+    factual_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_flag: Mapped[int] = mapped_column(Integer, default=1)
+    runtime_eligible: Mapped[int] = mapped_column(Integer, default=1)
+    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="direct_read")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
 class ChapterRollingNote(Base):
@@ -1469,10 +1513,16 @@ class ForeshadowTracker(Base):
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
     foreshadow_id: Mapped[str] = mapped_column(String)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    # Blueprint §5: project-level foreshadow tracking for cross-chapter lifecycle
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     chapter_id: Mapped[str] = mapped_column(String)
     scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
     text: Mapped[str] = mapped_column(Text)
     tracker_status: Mapped[str] = mapped_column(String, default="open")
+    theme_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    reinforce_plan_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True, default=list)
+    plant_method: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payoff_method: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
     active_flag: Mapped[int] = mapped_column(Integer, default=0)
     runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
@@ -1606,6 +1656,41 @@ class OperationLog(Base):
     object_ref: Mapped[str] = mapped_column(String)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class NarrativeEvent(Base):
+    """Append-only narrative event log — the single source of truth for story state.
+
+    Every fact about characters, locations, relationships, and information flow
+    is recorded as an event tied to a scene. Character state at any point is
+    reconstructed by replaying events up to that scene.
+    """
+    __tablename__ = "narrative_events"
+
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, index=True)
+    scene_id: Mapped[str] = mapped_column(String, index=True)
+    chapter_id: Mapped[str] = mapped_column(String, index=True)
+    scene_seq: Mapped[int] = mapped_column(Integer, default=0)
+    event_type: Mapped[str] = mapped_column(String, index=True)
+    entity_type: Mapped[str] = mapped_column(String)
+    entity_id: Mapped[str] = mapped_column(String, index=True)
+    fact_key: Mapped[str] = mapped_column(String)
+    fact_value: Mapped[str] = mapped_column(String)
+    confidence: Mapped[str] = mapped_column(String, default="high")
+    causal_predecessor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Blueprint §2: each event carries theme tags for theme-aware queries
+    theme_tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=list)
+    # Blueprint §2: forward-pointing obligation IDs (foreshadow / causal obligations)
+    obligation_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=list)
+    source_text_excerpt: Mapped[str | None] = mapped_column(String, nullable=True)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+    __table_args__ = (
+        Index("ix_narrative_events_entity_scene", "entity_id", "scene_seq"),
+        Index("ix_narrative_events_project_scene", "project_id", "scene_seq"),
+    )
 
 
 class ReconcileFault(Base):
