@@ -1865,6 +1865,15 @@ class StyleReferenceInjectionBinding(Base):
             "ix_style_reference_injection_bindings_task_type",
             "task_type",
         ),
+        # 并发 apply 的「先查后建」竞态兜底:同 (profile, scope, scope_ref, task)
+        # 不允许重复 binding(否则注入选取顺序不确定)
+        UniqueConstraint(
+            "profile_id",
+            "scope",
+            "scope_ref_id",
+            "task_type",
+            name="uq_style_reference_injection_bindings_target",
+        ),
     )
 
     binding_id: Mapped[str] = mapped_column(String, primary_key=True)

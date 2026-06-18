@@ -40,7 +40,7 @@ def _ingest_with_finding(book_seed: str) -> tuple[str, str]:
             file_name=f"book_{book_seed}.txt",
             title="测试书",
             author_label="作者",
-            cloud_policy="local_only",
+            cloud_policy="segments_only",
         )
         book_id = result.book.book_id
         repo = StyleReferenceRepository(session)

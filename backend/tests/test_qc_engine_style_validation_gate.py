@@ -28,7 +28,7 @@ def _seed_style_binding(
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         repo.create_book(
-            book_id=book_id, title="t", source_kind="upload", cloud_policy="local_only",
+            book_id=book_id, title="t", source_kind="upload", cloud_policy="segments_only",
             text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
         )
         repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
@@ -125,7 +125,7 @@ def _seed_character_binding_with_term(*, seed: str, character_id: str, term: str
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         repo.create_book(
-            book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="local_only",
+            book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="segments_only",
             text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
         )
         repo.create_run(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done")
@@ -161,7 +161,7 @@ def _seed_scene_binding_with_term(*, seed: str, scene_id: str, term: str) -> Non
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         repo.create_book(
-            book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="local_only",
+            book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="segments_only",
             text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
         )
         repo.create_run(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done")

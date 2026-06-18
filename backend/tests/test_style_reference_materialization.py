@@ -41,7 +41,7 @@ def _seed_profile_with_findings(seed: str) -> str:
             file_name=f"b_{seed}.txt",
             title="t",
             author_label="a",
-            cloud_policy="local_only",
+            cloud_policy="segments_only",
         )
         book_id = result.book.book_id
         repo = StyleReferenceRepository(session)

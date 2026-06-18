@@ -70,7 +70,10 @@ class MaterializationService:
         scope_ref_id: str | None,
         task_type: TaskType | str = TaskType.SCENE_GENERATION,
         strategy: InjectionStrategy | str = InjectionStrategy.A,
+        config_json: dict[str, Any] | None = None,
     ) -> MaterializeResult:
+        """``config_json`` 落入 binding(intensity / sub_dimensions / include 开关),
+        由 InjectionService._render 在注入时消费——前端强度滑块的端到端落点。"""
         profile = self.repo.get_profile(profile_id)
         if profile is None:
             raise DomainError(
@@ -137,6 +140,7 @@ class MaterializationService:
             scope_ref_id=scope_ref_id,
             task_type=task_type,
             strategy=strategy,
+            config_json=config_json,
         )
 
         return MaterializeResult(
@@ -184,14 +188,20 @@ class MaterializationService:
         scope_ref_id: str | None,
         task_type: TaskType | str,
         strategy: InjectionStrategy | str,
+        config_json: dict[str, Any] | None = None,
     ) -> str:
         scope_value = _enum_value(scope)
         task_type_value = _enum_value(task_type)
         strategy_value = _enum_value(strategy)
-        # 同 (profile, scope, scope_ref_id, task_type) 已存在则复用
+        # 同 (profile, scope, scope_ref_id, task_type) 已存在则复用,
+        # 重复 apply 更新 strategy / config(滑块调整后重新应用即生效)
         existing = self.repo.list_bindings(profile_id=profile_id, task_type=task_type_value)
         for b in existing:
             if b.scope == scope_value and b.scope_ref_id == scope_ref_id:
+                b.strategy = strategy_value
+                if config_json is not None:
+                    b.config_json = config_json
+                self.session.flush()
                 return b.binding_id
         binding = self.repo.create_binding(
             binding_id=f"sr_bind_{uuid.uuid4().hex[:12]}",
@@ -200,7 +210,7 @@ class MaterializationService:
             scope_ref_id=scope_ref_id,
             task_type=task_type_value,
             strategy=strategy_value,
-            config_json={},
+            config_json=config_json or {},
             status=BindingStatus.ACTIVE.value,
         )
         return binding.binding_id

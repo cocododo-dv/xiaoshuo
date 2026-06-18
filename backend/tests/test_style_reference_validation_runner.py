@@ -23,15 +23,21 @@ from novel_system.services.style_reference.validation import (
 from novel_system.services.style_reference.validation.runner import _EXECUTOR
 
 
-def _seed_profile(seed: str, *, with_forbidden: bool = False) -> str:
-    """建一个最小 profile + 1 个 quote。"""
+def _seed_profile(
+    seed: str, *, with_forbidden: bool = False, cloud_policy: str = "segments_only"
+) -> str:
+    """建一个最小 profile + 1 个 quote。
+
+    cloud_policy 默认 segments_only(允许语义路);local_only 会按附录 B
+    策略跳过语义 LLM 检查,专门用例单独覆盖。
+    """
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
         book_id = f"sr_book_{seed}"
         run_id = f"sr_run_{seed}"
         profile_id = f"sr_profile_{seed}"
         repo.create_book(
-            book_id=book_id, title="t", source_kind="upload", cloud_policy="local_only",
+            book_id=book_id, title="t", source_kind="upload", cloud_policy=cloud_policy,
             text_checksum=f"chk_{seed}", total_chars=10, status="ready",
             stats_json={"metrics": {"avg_sentence_length": {"mean": 10.0, "std": 3.0}}},
         )

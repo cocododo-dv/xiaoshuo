@@ -288,6 +288,51 @@ const SR_SUBDIM_TIP = {
 /* ---- extraction cost / coverage trend (last 14 runs) ---- */
 const SR_TREND = [3, 5, 4, 8, 6, 9, 12, 10, 14, 11, 13, 16, 12, 16];
 
+/* ==========================================================
+   深层页真后端：hook + 真实数据映射器
+   有真书(book.real)→ 懒加载并订阅 sr:deep-changed；映射器把
+   stats_json / findings 映成各 stage 需要的形状，缺数据返 null → 调用方回退演示。
+   ========================================================== */
+function useSrDeep(book) {
+  const isReal = !!(book && book.real);
+  const [deep, setDeep] = React.useState(() => (isReal && window.srDeepFor ? window.srDeepFor(book.id) : null));
+  React.useEffect(() => {
+    if (!isReal) { setDeep(null); return; }
+    const sync = () => setDeep(window.srDeepFor ? window.srDeepFor(book.id) : null);
+    sync();
+    if (window.srLoadDeep) window.srLoadDeep(book.id);
+    window.addEventListener("sr:deep-changed", sync);
+    return () => window.removeEventListener("sr:deep-changed", sync);
+  }, [isReal, book && book.id]);
+  return deep;
+}
+
+const SR_PARA_LABEL = {
+  narration: "叙述", dialogue: "对话", description_env: "环境", psychology: "心理",
+  action: "动作", description_char: "人物", transition: "转场", flashback: "闪回",
+};
+const SR_INPUT_LABEL = { skip: "语料不足", low: "偏少", medium: "适中", high: "充足" };
+
+function srStatsOf(deep) { return (deep && deep.book && deep.book.stats_json) || null; }
+
+/* stats_json.metrics（26 项）按 SR_METRICS 的展示名/单位取真实 mean/std；缺项跳过 */
+function srRealMetrics(stats) {
+  const m = (stats && stats.metrics) || {};
+  return SR_METRICS.map(d => {
+    const real = m[d.key];
+    if (!real || real.mean == null) return null;
+    return { ...d, mean: Number(real.mean), std: Number(real.std) };
+  }).filter(Boolean);
+}
+
+/* stats_json.paragraph_type_distribution → [{type,key,v}]（降序） */
+function srRealParaDist(stats) {
+  const dist = (stats && stats.paragraph_type_distribution) || {};
+  return Object.entries(dist)
+    .map(([key, v]) => ({ type: SR_PARA_LABEL[key] || key, key, v: Number(v) || 0 }))
+    .sort((a, b) => b.v - a.v);
+}
+
 function WsStyleRef({ go }) {
   const [bookId, setBookId] = useStSR("b1");
   const [stage, setStage] = useStSR("matrix");
@@ -407,10 +452,10 @@ function WsStyleRef({ go }) {
 
           <div className="sr-stage-body">
             {stage === "overview"   && <SrOverview book={book} go={setStage} />}
-            {stage === "matrix"     && <SrMatrix go={setStage} />}
+            {stage === "matrix"     && <SrMatrix go={setStage} book={book} />}
             {stage === "profile"    && <SrProfile book={book} go={setStage} />}
             {stage === "validation" && <window.SrValidation book={book} go={setStage} />}
-            {stage === "apply"      && <SrApply go={setStage} />}
+            {stage === "apply"      && <SrApply go={setStage} book={book} />}
           </div>
         </section>
       </div>
@@ -433,23 +478,35 @@ function SrBookState({ s }) {
 
 /* ============ Stage: Overview ============ */
 function SrOverview({ book, go }) {
+  const deep = useSrDeep(book);
+  const stats = srStatsOf(deep);
+  const realMetricsArr = stats ? srRealMetrics(stats) : [];
+  const metrics = realMetricsArr.length ? realMetricsArr : SR_METRICS;
+  const realInput = stats && stats.input_assessment;
+  const inputRows = SR_LAYERS.map(l => ({ id: l.id, name: l.name, level: (realInput && realInput[l.id]) || l.input }));
+  const realDistArr = stats ? srRealParaDist(stats) : [];
+  const dist = realDistArr.length ? realDistArr : SR_PARA_DIST;
+  const distMax = Math.max(...dist.map(d => d.v), 0.01);
+  const calib = (stats && stats.classifier_calibration) || null;
+  const isReal = !!stats;
+
   return (
     <div className="sr-overview">
       <div className="sr-ov-grid">
         <div className="card sr-ov-metrics">
           <div className="card-head">
-            <div><div className="card-title">硬指标基线</div><div className="card-sub">全文计算 · 25+ 项 · 用于抽取对齐与回测阈值</div></div>
-            <span className="pill"><span className="pill-dot" />MetricsEngine</span>
+            <div><div className="card-title">硬指标基线</div><div className="card-sub">全文计算 · {metrics.length} 项 · 用于抽取对齐与回测阈值</div></div>
+            <span className={`pill ${isReal ? "pill-sage" : ""}`}><span className="pill-dot" />{isReal ? "实时" : "MetricsEngine"}</span>
           </div>
           <div className="sr-metric-grid">
-            {SR_METRICS.map(m => (
+            {metrics.map(m => (
               <div key={m.key} className="sr-metric">
                 <div className="sr-metric-name">{m.name}</div>
                 <div className="sr-metric-val tab-num">
-                  {m.pct ? (m.mean*100).toFixed(0) + "%" : m.mean}
+                  {m.pct ? (m.mean*100).toFixed(0) + "%" : (Math.round(m.mean * 10) / 10)}
                   {m.unit && !m.pct && <span className="sr-metric-unit"> {m.unit}</span>}
                 </div>
-                <div className="sr-metric-std tab-num">σ {m.std}</div>
+                <div className="sr-metric-std tab-num">σ {Math.round(m.std * 10) / 10}</div>
               </div>
             ))}
           </div>
@@ -458,11 +515,11 @@ function SrOverview({ book, go }) {
         <div className="card">
           <div className="card-head"><div><div className="card-title">输入量评估</div><div className="card-sub">按层设阈值</div></div></div>
           <div className="sr-input-list">
-            {SR_LAYERS.map(l => (
+            {inputRows.map(l => (
               <div key={l.id} className="sr-input-row">
                 <span className="sr-input-name">{l.name}</span>
-                <span className={`sr-input-level lv-${l.input}`}>
-                  {l.input === "skip" ? "语料不足" : l.input === "high" ? "充足" : l.input === "medium" ? "适中" : "偏少"}
+                <span className={`sr-input-level lv-${l.level}`}>
+                  {SR_INPUT_LABEL[l.level] || l.level}
                 </span>
               </div>
             ))}
@@ -470,22 +527,22 @@ function SrOverview({ book, go }) {
           <div className="sr-calib">
             <div className="ctx-head" style={{marginBottom: 8}}><I.Target size={13} /><span>分类器校准</span></div>
             <ul className="meta-rows">
-              <li><span>锚定集</span><strong>前 200 段 · 强模型</strong></li>
-              <li><span>快模型一致率</span><strong className="tab-num">0.87</strong></li>
-              <li><span>是否降级</span><strong style={{color:"var(--sage)"}}>否</strong></li>
+              <li><span>锚定集</span><strong>{calib ? `前 ${calib.anchor_size} 段 · 强模型` : "前 200 段 · 强模型"}</strong></li>
+              <li><span>快模型一致率</span><strong className="tab-num">{calib && calib.fast_model_agreement != null ? Number(calib.fast_model_agreement).toFixed(2) : "—"}</strong></li>
+              <li><span>是否降级</span><strong style={{color: calib && calib.fallback_to_strong ? "var(--gold)" : "var(--sage)"}}>{calib ? (calib.fallback_to_strong ? "是" : "否") : "否"}</strong></li>
             </ul>
           </div>
         </div>
       </div>
 
       <div className="card">
-        <div className="card-head"><div><div className="card-title">段落类型分布</div><div className="card-sub">8 类 · LLM 分类器 + 锚定校准</div></div></div>
+        <div className="card-head"><div><div className="card-title">段落类型分布</div><div className="card-sub">8 类 · {isReal ? "本书实测" : "LLM 分类器 + 锚定校准"}</div></div></div>
         <div className="sr-dist">
-          {SR_PARA_DIST.map(d => (
+          {dist.map(d => (
             <div key={d.key} className="sr-dist-row">
               <span className="sr-dist-label">{d.type}</span>
               <div className="sr-dist-bar">
-                <div className="sr-dist-fill" style={{width: (d.v*100/0.34) + "%"}} />
+                <div className="sr-dist-fill" style={{width: (d.v / distMax * 100) + "%"}} />
               </div>
               <span className="sr-dist-val tab-num">{(d.v*100).toFixed(0)}%</span>
             </div>
@@ -530,14 +587,55 @@ function SrTrendChart({ data }) {
 }
 
 /* ============ Stage: Dimension Matrix ============ */
-function SrMatrix({ go }) {
+/* 真实 finding(后端形状)→ FindingCard 期望形状 */
+function srAdaptFinding(f) {
+  return {
+    id: f.finding_id,
+    conf: f.confidence,
+    statement: f.statement,
+    review: f.status || "pending",
+    evidence: (f.evidence || []).map(e => ({
+      p: e.paragraph_id || null,
+      quote: e.quote_text || "",
+      kind: e.anchor_kind,
+      synthetic: !!e.is_synthetic,
+      note: null,
+      dims: null,
+    })),
+  };
+}
+
+function SrMatrix({ go, book }) {
+  const deep = useSrDeep(book);
+  const realInput = (deep && deep.book && deep.book.stats_json && deep.book.stats_json.input_assessment) || null;
+  const realMode = !!(deep && deep.runId && deep.dimCounts && Object.keys(deep.dimCounts).length > 0);
   const [cell, setCell] = useStSR("language.sentence_structure");
   const [kindFilter, setKindFilter] = useStSR("all");
   const [hover, setHover] = useStSR(null);
-  const findings = SR_FINDINGS[cell];
+  const [synthBusy, setSynthBusy] = useStSR(false);
+
+  // 有效单元数据：真模式叠加 dimCounts + input_assessment(skip)，否则用 SR_LAYERS 演示值
+  const cellData = (layerId, sub) => {
+    const path = `${layerId}.${sub.id}`;
+    if (!realMode) return { path, name: sub.name, conf: sub.conf, obs: sub.obs, fp: sub.fp, q: sub.q, skip: sub.conf === "skip" };
+    if (realInput && realInput[layerId] === "skip") return { path, name: sub.name, conf: "skip", obs: 0, fp: 0, q: 0, skip: true };
+    const dc = deep.dimCounts[path];
+    if (!dc) return { path, name: sub.name, conf: "low", obs: 0, fp: 0, q: 0, skip: false };
+    return { path, name: sub.name, conf: dc.conf, obs: dc.obs, fp: dc.fp, q: dc.q, skip: false };
+  };
+  const cellsByLayer = SR_LAYERS.map(l => ({ layer: l, cells: l.subs.map(s => cellData(l.id, s)) }));
+
+  // 抽屉 findings：真模式取 deep.findingsByDim[cell] 适配，否则 SR_FINDINGS
+  const realGroup = realMode ? deep.findingsByDim[cell] : null;
+  const findings = realMode
+    ? (realGroup ? { observations: realGroup.observations.map(srAdaptFinding), forbidden_patterns: realGroup.forbidden_patterns.map(srAdaptFinding) } : null)
+    : SR_FINDINGS[cell];
+  const onReviewFinding = realMode
+    ? (findingId, decision) => { if (window.srReviewFinding) window.srReviewFinding(findingId, decision, book.id).catch(() => {}); }
+    : null;
 
   // 2D keyboard navigation across the matrix (skip cells are not selectable)
-  const grid = SR_LAYERS.map(l => l.subs.map(s => ({ path: `${l.id}.${s.id}`, skip: s.conf === "skip" })));
+  const grid = cellsByLayer.map(row => row.cells.map(c => ({ path: c.path, skip: c.skip })));
   React.useEffect(() => {
     const inField = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
     const findRC = (p) => {
@@ -561,16 +659,31 @@ function SrMatrix({ go }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cell]);
+  }, [cell, realMode]);
 
   const cellMeta = (() => {
-    for (const l of SR_LAYERS) {
-      for (const s of l.subs) {
-        if (`${l.id}.${s.id}` === cell) return { layer: l, sub: s };
-      }
-    }
+    for (const row of cellsByLayer) for (const c of row.cells) if (c.path === cell) return { layer: row.layer, cell: c };
     return null;
   })();
+
+  const totals = realMode
+    ? Object.values(deep.dimCounts).reduce((a, d) => ({ obs: a.obs + d.obs, fp: a.fp + d.fp, q: a.q + d.q }), { obs: 0, fp: 0, q: 0 })
+    : { obs: 52, fp: 14, q: 140 };
+  const hasProfile = !!(deep && deep.profileId);
+
+  const onSynth = async () => {
+    if (!realMode || !deep.runId || hasProfile) { go && go("profile"); return; }
+    if (synthBusy) return;
+    setSynthBusy(true);
+    try {
+      await window.srSynthesize(deep.runId, book.id);
+      go && go("profile");
+    } catch (e) {
+      if (e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED")) {
+        window.alert("合成风格画像需要启用 LLM（系统设置 → 模型与接入）。");
+      } else { window.alert("合成失败：" + ((e && e.message) || e)); }
+    } finally { setSynthBusy(false); }
+  };
 
   return (
     <div className="sr-matrix-wrap">
@@ -593,43 +706,43 @@ function SrMatrix({ go }) {
         </div>
 
         <div className="sr-matrix">
-          {SR_LAYERS.map(l => (
+          {cellsByLayer.map(({ layer: l, cells }) => (
             <div key={l.id} className="sr-matrix-row">
               <div className="sr-matrix-rowhead">
                 <span className="sr-matrix-abbr">{l.abbr}</span>
                 <span className="sr-matrix-layer">{l.name}</span>
               </div>
               <div className="sr-matrix-cells">
-                {l.subs.map(s => {
-                  const path = `${l.id}.${s.id}`;
-                  const tip = SR_SUBDIM_TIP[path];
+                {cells.map(c => {
+                  const tip = SR_SUBDIM_TIP[c.path];
+                  const confLabel = c.conf === "high" ? "高置信" : c.conf === "medium" ? "中置信" : "低置信";
                   return (
                     <button
-                      key={s.id}
-                      className={`sr-cell conf-${s.conf} ${cell === path ? "is-active" : ""}`}
-                      onClick={() => s.conf !== "skip" && setCell(path)}
-                      onMouseEnter={() => s.conf !== "skip" && setHover(path)}
+                      key={c.path}
+                      className={`sr-cell conf-${c.conf} ${cell === c.path ? "is-active" : ""}`}
+                      onClick={() => !c.skip && setCell(c.path)}
+                      onMouseEnter={() => !c.skip && setHover(c.path)}
                       onMouseLeave={() => setHover(null)}
-                      disabled={s.conf === "skip"}
+                      disabled={c.skip}
                     >
-                      <span className="sr-cell-name">{s.name}</span>
-                      {s.conf === "skip" ? (
+                      <span className="sr-cell-name">{c.name}</span>
+                      {c.skip ? (
                         <span className="sr-cell-skip">语料不足</span>
                       ) : (
                         <span className="sr-cell-stats">
-                          <span className="sr-cell-stat"><b>{s.obs}</b>观察</span>
-                          <span className="sr-cell-stat"><b>{s.q}</b>引文</span>
-                          {s.fp > 0 && <span className="sr-cell-stat fp"><b>{s.fp}</b>禁忌</span>}
+                          <span className="sr-cell-stat"><b>{c.obs}</b>观察</span>
+                          <span className="sr-cell-stat"><b>{c.q}</b>引文</span>
+                          {c.fp > 0 && <span className="sr-cell-stat fp"><b>{c.fp}</b>禁忌</span>}
                         </span>
                       )}
-                      {hover === path && tip && (
+                      {hover === c.path && !c.skip && (
                         <span className="sr-cell-tip">
                           <span className="sr-cell-tip-conf">
-                            <span className={`conf-dot conf-${s.conf}`} />
-                            {s.conf === "high" ? "高置信" : s.conf === "medium" ? "中置信" : "低置信"} · {s.obs} 观察 / {s.q} 引文 / {s.fp} 禁忌
+                            <span className={`conf-dot conf-${c.conf}`} />
+                            {confLabel} · {c.obs} 观察 / {c.q} 引文 / {c.fp} 禁忌
                           </span>
-                          <span className="sr-cell-tip-metric">{tip.metric}</span>
-                          <span className="sr-cell-tip-quote">「{tip.sample}」</span>
+                          {!realMode && tip && <span className="sr-cell-tip-metric">{tip.metric}</span>}
+                          {!realMode && tip && <span className="sr-cell-tip-quote">「{tip.sample}」</span>}
                           <span className="sr-cell-tip-hint">点击查看全部证据 →</span>
                         </span>
                       )}
@@ -642,11 +755,14 @@ function SrMatrix({ go }) {
         </div>
 
         <div className="sr-matrix-foot">
-          <div className="sr-matrix-foot-stat"><b className="tab-num">52</b> 观察</div>
-          <div className="sr-matrix-foot-stat"><b className="tab-num">14</b> 禁忌模式</div>
-          <div className="sr-matrix-foot-stat"><b className="tab-num">140</b> 引文样本</div>
+          <div className="sr-matrix-foot-stat"><b className="tab-num">{totals.obs}</b> 观察</div>
+          <div className="sr-matrix-foot-stat"><b className="tab-num">{totals.fp}</b> 禁忌模式</div>
+          <div className="sr-matrix-foot-stat"><b className="tab-num">{totals.q}</b> 引文样本</div>
           <div className="flex-1" />
-          <button className="btn btn-accent btn-sm" onClick={() => go && go("profile")}><I.Sparkles size={13} /> 合成风格画像</button>
+          <button className="btn btn-accent btn-sm" disabled={synthBusy} onClick={onSynth}>
+            {synthBusy ? <><span className="sr-spin" style={{display:"inline-flex"}}><I.Refresh size={13} /></span> 合成中…</>
+              : <><I.Sparkles size={13} /> {hasProfile ? "查看风格画像" : "合成风格画像"}</>}
+          </button>
         </div>
       </div>
 
@@ -655,11 +771,11 @@ function SrMatrix({ go }) {
         {cellMeta && (
           <header className="sr-findings-head">
             <div>
-              <div className="text-muted text-xs" style={{letterSpacing:"0.12em"}}>{cellMeta.layer.name} · {cellMeta.sub.name}</div>
-              <h3 className="text-serif" style={{fontSize:17, margin:"3px 0 0"}}>{cellMeta.sub.name}</h3>
+              <div className="text-muted text-xs" style={{letterSpacing:"0.12em"}}>{cellMeta.layer.name} · {cellMeta.cell.name}</div>
+              <h3 className="text-serif" style={{fontSize:17, margin:"3px 0 0"}}>{cellMeta.cell.name}</h3>
             </div>
-            <span className={`pill pill-${cellMeta.sub.conf === "high" ? "sage" : cellMeta.sub.conf === "medium" ? "gold" : "slate"} text-xs`}>
-              <span className="pill-dot" />{cellMeta.sub.conf === "high" ? "高置信" : cellMeta.sub.conf === "medium" ? "中置信" : "低置信"}
+            <span className={`pill pill-${cellMeta.cell.conf === "high" ? "sage" : cellMeta.cell.conf === "medium" ? "gold" : "slate"} text-xs`}>
+              <span className="pill-dot" />{cellMeta.cell.conf === "high" ? "高置信" : cellMeta.cell.conf === "medium" ? "中置信" : "低置信"}
             </span>
           </header>
         )}
@@ -678,14 +794,14 @@ function SrMatrix({ go }) {
           {!findings && (
             <div className="empty-state" style={{padding: 30}}>
               <I.Quote size={24} />
-              <div className="mt-2 text-muted text-sm">该维度暂无展开数据</div>
+              <div className="mt-2 text-muted text-sm">{realMode ? "该维度暂无 finding（语料不足或尚未抽出）。" : "该维度暂无展开数据"}</div>
             </div>
           )}
           {findings && (kindFilter === "all" || kindFilter === "obs") && findings.observations.map(o => (
-            <FindingCard key={o.id} kind="obs" finding={o} />
+            <FindingCard key={o.id} kind="obs" finding={o} onReview={onReviewFinding ? (d) => onReviewFinding(o.id, d) : null} />
           ))}
           {findings && (kindFilter === "all" || kindFilter === "fp") && findings.forbidden_patterns.map(f => (
-            <FindingCard key={f.id} kind="fp" finding={f} />
+            <FindingCard key={f.id} kind="fp" finding={f} onReview={onReviewFinding ? (d) => onReviewFinding(f.id, d) : null} />
           ))}
         </div>
       </aside>
@@ -693,10 +809,13 @@ function SrMatrix({ go }) {
   );
 }
 
-function FindingCard({ kind, finding }) {
+function FindingCard({ kind, finding, onReview }) {
   const isFp = kind === "fp";
   const [review, setReview] = useStSR(finding.review || "pending");
   const [vote, setVote] = useStSR(null);
+  // deep 重载后 finding.review 变化 → 同步（同 key 实例不会重跑 initializer）
+  React.useEffect(() => { setReview(finding.review || "pending"); }, [finding.review]);
+  const setReviewBoth = (next) => { setReview(next); if (onReview) onReview(next); };
   return (
     <article className={`sr-finding ${isFp ? "is-fp" : ""} rev-${review}`}>
       <header className="sr-finding-head">
@@ -711,8 +830,8 @@ function FindingCard({ kind, finding }) {
           {review === "approved" ? "已通过" : review === "rejected" ? "已驳回" : "待审"}
         </span>
         <div className="flex gap-1" style={{marginLeft:"auto"}}>
-          <button className={`sr-rev-btn ${review==="approved"?"on-ok":""}`} title="通过" onClick={()=>setReview(review==="approved"?"pending":"approved")}><I.Check size={13} /></button>
-          <button className={`sr-rev-btn ${review==="rejected"?"on-no":""}`} title="驳回" onClick={()=>setReview(review==="rejected"?"pending":"rejected")}><I.X size={13} /></button>
+          <button className={`sr-rev-btn ${review==="approved"?"on-ok":""}`} title="通过" onClick={()=>setReviewBoth(review==="approved"?"pending":"approved")}><I.Check size={13} /></button>
+          <button className={`sr-rev-btn ${review==="rejected"?"on-no":""}`} title="驳回" onClick={()=>setReviewBoth(review==="rejected"?"pending":"rejected")}><I.X size={13} /></button>
         </div>
       </header>
       <p className="sr-finding-statement text-serif">{finding.statement}</p>
@@ -750,20 +869,44 @@ function FindingCard({ kind, finding }) {
 /* ============ Stage: Profile ============ */
 function SrProfile({ book, go }) {
   const [tab, setTab] = useStSR("summary");
+  const deep = useSrDeep(book);
+  const profile = deep && deep.profile;
+  const pj = (profile && profile.profile_json) || null;
+  const real = !!pj;
+  const dimMeta = (path) => { for (const l of SR_LAYERS) for (const s of l.subs) if (`${l.id}.${s.id}` === path) return { abbr: l.abbr, name: s.name }; return { abbr: "·", name: path }; };
+  const cov = (profile && profile.coverage_json) || {};
+  const subDims = (pj && pj.sub_dimensions) || null;
+  const realDimRows = subDims ? Object.entries(subDims).map(([path, d]) => ({ path, ...dimMeta(path), conf: (d && d.confidence) || "low", obs: (d && d.observation_count) || 0, fp: (d && d.forbidden_pattern_count) || 0, q: (d && d.quote_count) || 0 })) : null;
+  const baseline = (pj && pj.metrics_baseline) || null;
+  const realBaseline = baseline ? SR_METRICS.map(m => { const b = baseline[m.key]; if (!b || b.mean == null) return null; return { ...m, mean: Number(b.mean), std: Number(b.std) }; }).filter(Boolean).slice(0, 6) : null;
+  const sampleIdx = (pj && pj.scene_samples_index) || null;
+  const features = (pj && pj.style_features) || [];
+  const demoDimRows = SR_LAYERS.filter(l => l.input !== "skip").flatMap(l => l.subs.filter(s => s.conf !== "skip").map(s => ({ path: `${l.id}.${s.id}`, abbr: l.abbr, name: s.name, conf: s.conf, obs: s.obs, fp: s.fp, q: s.q })));
+  const dimRows = realDimRows || demoDimRows;
+
   return (
     <div className="sr-profile">
       <div className="sr-profile-main">
         <div className="card">
           <div className="card-head">
             <div>
-              <div className="card-title">{book.author}风格画像 · v3</div>
-              <div className="card-sub">由 52 观察 / 14 禁忌 / 140 引文聚合 · 12 维有效</div>
+              <div className="card-title">{real ? (profile.title || `${book.author}风格画像`) : `${book.author}风格画像 · v3`}</div>
+              <div className="card-sub">{real ? `${cov.findings_count || 0} finding / ${cov.quotes_count || 0} 引文聚合 · ${cov.sub_dim_count || 0} 维` : "由 52 观察 / 14 禁忌 / 140 引文聚合 · 12 维有效"}</div>
             </div>
-            <span className="pill pill-sage"><span className="pill-dot" />已就绪</span>
+            <span className={`pill ${real && profile.status !== "active" ? "pill-gold" : "pill-sage"}`}><span className="pill-dot" />{real ? (profile.status === "active" ? "已就绪" : profile.status) : "已就绪"}</span>
           </div>
           <p className="sr-profile-summary text-serif">
-            冷峻、克制、白描见长。短句为骨，逗号顿连推进节奏，少用关联词与抒情排比。比喻具象、取自乡土器物，喻体之后即收，不作解释。叙述者多为限知的「我」，与事件保持冷静距离；对话后接动作而非心理剖白。整体以白描叠加细节制造反讽与悲悯，不依赖形容词堆砌。
+            {real
+              ? (pj.narrative_summary || "（该画像尚无叙述性概述。）")
+              : "冷峻、克制、白描见长。短句为骨，逗号顿连推进节奏，少用关联词与抒情排比。比喻具象、取自乡土器物，喻体之后即收，不作解释。叙述者多为限知的「我」，与事件保持冷静距离；对话后接动作而非心理剖白。整体以白描叠加细节制造反讽与悲悯，不依赖形容词堆砌。"}
           </p>
+          {real && features.length > 0 && (
+            <div style={{margin: "2px 0 4px"}}>
+              {features.slice(0, 8).map((f, i) => (
+                <span key={i} className="sr-pd-path" style={{display:"inline-block", margin:"2px 6px 2px 0", padding:"2px 8px", background:"var(--paper-2)", borderRadius:6, fontSize:12}}>{f}</span>
+              ))}
+            </div>
+          )}
 
           <div className="sr-profile-tabs">
             <button className={`sr-pt ${tab === "summary" ? "is-active" : ""}`} onClick={() => setTab("summary")}>维度摘要</button>
@@ -772,17 +915,18 @@ function SrProfile({ book, go }) {
 
           {tab === "summary" && (
             <div className="sr-profile-dims">
-              {SR_LAYERS.filter(l => l.input !== "skip").flatMap(l => l.subs.filter(s => s.conf !== "skip").map(s => (
-                <div key={`${l.id}.${s.id}`} className="sr-pd-row">
-                  <span className="sr-pd-path">{l.abbr} · {s.name}</span>
-                  <span className={`sr-pd-conf conf-dot conf-${s.conf}`} />
-                  <span className="sr-pd-counts">{s.obs} 观察 · {s.fp} 禁忌 · {s.q} 引文</span>
+              {dimRows.map(row => (
+                <div key={row.path} className="sr-pd-row">
+                  <span className="sr-pd-path">{row.abbr} · {row.name}</span>
+                  <span className={`sr-pd-conf conf-dot conf-${row.conf}`} />
+                  <span className="sr-pd-counts">{row.obs} 观察 · {row.fp} 禁忌 · {row.q} 引文</span>
                 </div>
-              )))}
+              ))}
+              {realDimRows && realDimRows.length === 0 && <div className="text-xs text-muted" style={{padding:"8px 2px"}}>画像暂无维度摘要。</div>}
             </div>
           )}
 
-          {tab === "preview" && <SrPreview />}
+          {tab === "preview" && <SrPreview profileId={real ? profile.profile_id : null} />}
         </div>
       </div>
 
@@ -790,10 +934,10 @@ function SrProfile({ book, go }) {
         <div className="card-flat">
           <div className="ctx-head" style={{marginBottom: 10}}><I.Target size={13} /><span>指标基线</span></div>
           <div className="sr-baseline">
-            {SR_METRICS.slice(0, 5).map(m => (
+            {(realBaseline && realBaseline.length ? realBaseline : SR_METRICS.slice(0, 5)).map(m => (
               <div key={m.key} className="sr-baseline-row">
                 <span className="text-sm">{m.name}</span>
-                <span className="tab-num fw-600">{m.pct ? (m.mean*100).toFixed(0)+"%" : m.mean} <span className="text-muted text-xs">±{m.std}</span></span>
+                <span className="tab-num fw-600">{m.pct ? (m.mean*100).toFixed(0)+"%" : (Math.round(m.mean*10)/10)} <span className="text-muted text-xs">±{Math.round(m.std*10)/10}</span></span>
               </div>
             ))}
           </div>
@@ -803,10 +947,20 @@ function SrProfile({ book, go }) {
         <div className="card-flat">
           <div className="ctx-head" style={{marginBottom: 10}}><I.Quote size={13} /><span>场景样例索引</span></div>
           <ul className="sr-sample-index">
-            <li><span>对话</span><b className="tab-num">10</b></li>
-            <li><span>动作</span><b className="tab-num">6</b></li>
-            <li><span>心理</span><b className="tab-num">8</b></li>
-            <li><span>环境</span><b className="tab-num">14</b></li>
+            {sampleIdx ? (
+              Object.entries(sampleIdx).filter(([, ids]) => (ids || []).length).length === 0
+                ? <li><span className="text-muted text-xs">暂无样例索引</span></li>
+                : Object.entries(sampleIdx).filter(([, ids]) => (ids || []).length).map(([t, ids]) => (
+                    <li key={t}><span>{SR_PARA_LABEL[t] || t}</span><b className="tab-num">{(ids || []).length}</b></li>
+                  ))
+            ) : (
+              <>
+                <li><span>对话</span><b className="tab-num">10</b></li>
+                <li><span>动作</span><b className="tab-num">6</b></li>
+                <li><span>心理</span><b className="tab-num">8</b></li>
+                <li><span>环境</span><b className="tab-num">14</b></li>
+              </>
+            )}
           </ul>
           <p className="text-xs text-muted mt-2">Few-shot 注入 O(1) 直读，不绕段落表。</p>
         </div>
@@ -817,30 +971,50 @@ function SrProfile({ book, go }) {
   );
 }
 
-function SrPreview() {
-  const samples = [
-    { kind: "对话", verdict: "pass", text: "「茴香豆的茴字，怎样写的？」他显出极高兴的样子，将两个指头的长指甲敲着柜台。", q: 0.92, s: 8.5, plag: "通过" },
-    { kind: "环境", verdict: "partial", text: "灰白的天压在屋檐上，巷子空着，只有风把一张旧报纸卷起来，又放下。", q: 0.81, s: 7.2, plag: "通过" },
-    { kind: "动作", verdict: "pass", text: "他没有应声，弯下腰，把那枚铜板从砖缝里抠出来，又用袖子擦了擦。", q: 0.88, s: 8.1, plag: "通过" },
+function SrPreview({ profileId }) {
+  const demo = [
+    { kind: "对话", verdict: "pass", text: "「茴香豆的茴字，怎样写的？」他显出极高兴的样子，将两个指头的长指甲敲着柜台。" },
+    { kind: "环境", verdict: "partial", text: "灰白的天压在屋檐上，巷子空着，只有风把一张旧报纸卷起来，又放下。" },
+    { kind: "动作", verdict: "pass", text: "他没有应声，弯下腰，把那枚铜板从砖缝里抠出来，又用袖子擦了擦。" },
   ];
+  const [samples, setSamples] = useStSR(null);
+  const [loading, setLoading] = useStSR(false);
+  const [err, setErr] = useStSR(null);
+  const run = React.useCallback(() => {
+    if (!profileId) return;
+    setLoading(true); setErr(null);
+    window.srPreviewSamples(profileId)
+      .then(r => setSamples((r && r.samples) || []))
+      .catch(e => setErr(e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED")
+        ? "预览生成需要启用 LLM（系统设置 → 模型与接入）。"
+        : ((e && e.message) || "预览生成失败")))
+      .finally(() => setLoading(false));
+  }, [profileId]);
+  React.useEffect(() => { if (profileId) run(); }, [profileId, run]);
+
+  const list = profileId
+    ? (samples || []).map(s => ({ kind: SR_PARA_LABEL[s.paragraph_type] || s.paragraph_type, verdict: s.verdict || "partial", text: s.sample_text || "", error: s.error }))
+    : demo;
+
   return (
     <div className="sr-preview">
       <div className="sr-preview-head">
-        <span className="text-muted text-sm">apply 前自动生成 3 段示例 + 自跑回测</span>
-        <button className="btn btn-quiet btn-sm"><I.Refresh size={13} /> 重新生成</button>
+        <span className="text-muted text-sm">{profileId ? "生成 3 段示例 + 自跑回测（sync_only）" : "apply 前自动生成 3 段示例 + 自跑回测"}</span>
+        <button className="btn btn-quiet btn-sm" disabled={loading || !profileId} onClick={run}>
+          {loading ? <><span className="sr-spin" style={{display:"inline-flex"}}><I.Refresh size={13} /></span> 生成中…</> : <><I.Refresh size={13} /> 重新生成</>}
+        </button>
       </div>
-      {samples.map((s, i) => (
+      {err && <div className="sr-fewshot-warn"><I.Info size={13} /><span>{err}</span></div>}
+      {profileId && !loading && !err && samples && samples.length === 0 && (
+        <div className="text-xs text-muted" style={{padding:"10px 2px"}}>暂无预览样例。</div>
+      )}
+      {list.map((s, i) => (
         <article key={i} className="sr-pv-card">
           <header className="sr-pv-head">
             <span className="pill text-xs"><span className="pill-dot" />{s.kind}</span>
-            <VerdictPill v={s.verdict} />
-            <div className="sr-pv-scores">
-              <span title="量化对齐">量 {(s.q*100).toFixed(0)}%</span>
-              <span title="语义评分">义 {s.s}</span>
-              <span title="抄袭检测">抄 {s.plag}</span>
-            </div>
+            {s.error ? <span className="pill pill-rose text-xs"><span className="pill-dot" />生成失败</span> : <VerdictPill v={s.verdict} />}
           </header>
-          <p className="sr-pv-text text-serif">{s.text}</p>
+          {s.text && <p className="sr-pv-text text-serif">{s.text}</p>}
         </article>
       ))}
     </div>
@@ -887,7 +1061,7 @@ const SR_BANNED_INIT = [
   { term: "潮汐之子", hint: "源书专名", scope: "extraction", source: "user" },
 ];
 
-function SrApply({ go }) {
+function SrApply({ go, book }) {
   const [sub, setSub] = useStSR("strategy");
   const [strategy, setStrategy] = useStSR("mixed");
   const [taskType, setTaskType] = useStSR("scene_generation");
@@ -902,6 +1076,41 @@ function SrApply({ go }) {
     SR_LAYERS.forEach(l => l.input !== "skip" && l.subs.forEach(s => s.conf !== "skip" && all.push(`${l.id}.${s.id}`)));
     return all;
   });
+
+  /* ---- 真后端深层数据：有真画像则注入应用走真后端，否则回退演示 ---- */
+  const isRealBook = !!(book && book.real);
+  const [deep, setDeep] = useStSR(() => (isRealBook ? srDeepFor(book.id) : null));
+  React.useEffect(() => {
+    if (!isRealBook) { setDeep(null); return; }
+    const sync = () => setDeep(window.srDeepFor ? window.srDeepFor(book.id) : null);
+    sync();
+    if (window.srLoadDeep) window.srLoadDeep(book.id);
+    window.addEventListener("sr:deep-changed", sync);
+    return () => window.removeEventListener("sr:deep-changed", sync);
+  }, [isRealBook, book && book.id]);
+  const realProfileId = deep && deep.profileId;
+  const realMode = !!realProfileId;
+  const realBindings = (deep && deep.bindings) || [];
+  // 真模式下场景/角色级绑定缺少目标选择器，先只支持项目级；演示模式三档均可视
+  React.useEffect(() => { if (realMode && scope !== "project") setScope("project"); }, [realMode]);
+
+  /* ---- 真注入预览（dryrun，不写盘，debounce 350ms）---- */
+  const [preview, setPreview] = useStSR(null);
+  const [previewErr, setPreviewErr] = useStSR(null);
+  const previewTimer = React.useRef(null);
+  React.useEffect(() => {
+    if (!realMode) { setPreview(null); setPreviewErr(null); return; }
+    clearTimeout(previewTimer.current);
+    previewTimer.current = setTimeout(() => {
+      window.srInjectionPreview(realProfileId, {
+        strategy, task_type: taskType, intensity,
+        sub_dimensions: selectedDims,
+        include_positive: true, include_forbidden: true, include_metric: strategy !== "C",
+      }).then(r => { setPreview(r); setPreviewErr(null); })
+        .catch(e => { setPreview(null); setPreviewErr((e && e.message) || "注入预览失败"); });
+    }, 350);
+    return () => clearTimeout(previewTimer.current);
+  }, [realMode, realProfileId, strategy, taskType, intensity, selectedDims]);
 
   const toggleDim = (path) => setSelectedDims(prev => prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]);
   const task = SR_TASKS.find(t => t.id === taskType) || SR_TASKS[1];
@@ -1083,31 +1292,37 @@ function SrApply({ go }) {
       {/* Right: bundle preview + bindings */}
       <aside className="sr-apply-side">
         <div className="card-flat sr-bundle">
-          <div className="ctx-head" style={{marginBottom: 10}}><I.FileText size={13} /><span>SystemPromptFragments · 有序</span></div>
-          <div className="sr-bundle-frag">
-            <div className="sr-frag-label"><span className="sr-frag-ord">1</span> narrative_summary</div>
-            <p className="sr-frag-text">冷峻克制白描，短句为骨，逗号顿连…</p>
-          </div>
-          <div className="sr-bundle-frag">
-            <div className="sr-frag-label danger"><span className="sr-frag-ord">2</span><I.Ban size={11} /> banned_pattern_block</div>
-            <p className="sr-frag-text">禁：排比抒情长句 · 陈词滥调比喻 · 比喻后解释…</p>
-          </div>
-          <div className="sr-bundle-frag">
-            <div className="sr-frag-label"><span className="sr-frag-ord">3</span> observations_by_dim · {Math.max(2, obsCount)} 条</div>
-            <p className="sr-frag-text">句式：短句独立成段 / 词汇：乡土具象…</p>
-          </div>
-          <div className="sr-bundle-frag fixed">
-            <div className="sr-frag-label lock"><span className="sr-frag-ord">4</span><I.ShieldCheck size={11} /> anti_plagiarism_block · 固定</div>
-            <p className="sr-frag-text">严禁复制原文表达、人物、桥段与标志性意象。</p>
-          </div>
-          <div className="sr-budget-bar">
-            <div className="sr-budget-track">
-              <div className="sr-budget-fill" style={{width: (totalTokens / 3000 * 100) + "%"}} />
-            </div>
-            <div className="sr-budget-legend">
-              <span className="tab-num">{totalTokens}</span> / 3000 tok 预算
-            </div>
-          </div>
+          <div className="ctx-head" style={{marginBottom: 10}}><I.FileText size={13} /><span>SystemPromptFragments · {realMode ? "实时预览" : "有序"}</span></div>
+          {realMode ? (
+            <SrBundleReal preview={preview} previewErr={previewErr} />
+          ) : (
+            <>
+              <div className="sr-bundle-frag">
+                <div className="sr-frag-label"><span className="sr-frag-ord">1</span> narrative_summary</div>
+                <p className="sr-frag-text">冷峻克制白描，短句为骨，逗号顿连…</p>
+              </div>
+              <div className="sr-bundle-frag">
+                <div className="sr-frag-label danger"><span className="sr-frag-ord">2</span><I.Ban size={11} /> banned_pattern_block</div>
+                <p className="sr-frag-text">禁：排比抒情长句 · 陈词滥调比喻 · 比喻后解释…</p>
+              </div>
+              <div className="sr-bundle-frag">
+                <div className="sr-frag-label"><span className="sr-frag-ord">3</span> observations_by_dim · {Math.max(2, obsCount)} 条</div>
+                <p className="sr-frag-text">句式：短句独立成段 / 词汇：乡土具象…</p>
+              </div>
+              <div className="sr-bundle-frag fixed">
+                <div className="sr-frag-label lock"><span className="sr-frag-ord">4</span><I.ShieldCheck size={11} /> anti_plagiarism_block · 固定</div>
+                <p className="sr-frag-text">严禁复制原文表达、人物、桥段与标志性意象。</p>
+              </div>
+              <div className="sr-budget-bar">
+                <div className="sr-budget-track">
+                  <div className="sr-budget-fill" style={{width: (totalTokens / 3000 * 100) + "%"}} />
+                </div>
+                <div className="sr-budget-legend">
+                  <span className="tab-num">{totalTokens}</span> / 3000 tok 预算
+                </div>
+              </div>
+            </>
+          )}
           <div className="sr-bundle-meta">
             <span>策略 {strategy === "mixed" ? "A+B" : strategy}</span>
             <span>·</span>
@@ -1133,32 +1348,83 @@ function SrApply({ go }) {
         <div className="card-flat">
           <div className="ctx-head" style={{marginBottom: 10}}><I.GitBranch size={13} /><span>应用范围</span></div>
           <div className="sr-scope">
-            {[["project","项目"],["scene","场景"],["character","角色"]].map(([id, name]) => (
-              <button key={id} className={`sr-scope-btn ${scope === id ? "is-active" : ""}`} onClick={() => setScope(id)}>{name}</button>
-            ))}
+            {[["project","项目"],["scene","场景"],["character","角色"]].map(([id, name]) => {
+              const lockNonProject = realMode && id !== "project";
+              return (
+                <button key={id}
+                  className={`sr-scope-btn ${scope === id ? "is-active" : ""} ${lockNonProject ? "is-disabled" : ""}`}
+                  disabled={lockNonProject}
+                  title={lockNonProject ? "场景 / 角色级绑定需在对应场景页发起（即将支持）" : undefined}
+                  onClick={() => !lockNonProject && setScope(id)}>{name}</button>
+              );
+            })}
           </div>
-          <ul className="sr-bindings">
-            <li><span className="pill pill-crimson text-xs"><span className="pill-dot" />项目</span><span className="text-sm">潮汐档案 · 全局</span><I.Check size={13} style={{color:"var(--sage)"}} /></li>
-            <li><span className="pill pill-gold text-xs"><span className="pill-dot" />角色</span><span className="text-sm">林岑 POV</span><button className="btn btn-quiet btn-sm">解绑</button></li>
-            <li><span className="pill pill-sage text-xs"><span className="pill-dot" />场景</span><span className="text-sm">CH08 · SC01</span><button className="btn btn-quiet btn-sm">解绑</button></li>
-          </ul>
+          {realMode ? (
+            <ul className="sr-bindings">
+              {realBindings.length === 0 && (
+                <li className="text-xs text-muted" style={{padding:"6px 2px", display:"block"}}>暂无已批准的绑定 · 应用并在收件箱批准后出现在此。</li>
+              )}
+              {realBindings.map(b => {
+                const tone = b.scope === "project" ? "crimson" : b.scope === "character" ? "gold" : b.scope === "scene" ? "sage" : "slate";
+                const sname = b.scope === "project" ? "项目" : b.scope === "character" ? "角色" : b.scope === "scene" ? "场景" : b.scope;
+                return (
+                  <li key={b.binding_id}>
+                    <span className={`pill pill-${tone} text-xs`}><span className="pill-dot" />{sname}</span>
+                    <span className="text-sm">{b.scope_ref_id || "—"} · {b.strategy === "mixed" ? "A+B" : b.strategy}</span>
+                    <button className="btn btn-quiet btn-sm" onClick={() => {
+                      window.srUnbind && window.srUnbind(b.binding_id, book.id).catch(e => window.alert("解绑失败：" + ((e && e.message) || e)));
+                    }}>解绑</button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <ul className="sr-bindings">
+              <li><span className="pill pill-crimson text-xs"><span className="pill-dot" />项目</span><span className="text-sm">潮汐档案 · 全局</span><I.Check size={13} style={{color:"var(--sage)"}} /></li>
+              <li><span className="pill pill-gold text-xs"><span className="pill-dot" />角色</span><span className="text-sm">林岑 POV</span><button className="btn btn-quiet btn-sm">解绑</button></li>
+              <li><span className="pill pill-sage text-xs"><span className="pill-dot" />场景</span><span className="text-sm">CH08 · SC01</span><button className="btn btn-quiet btn-sm">解绑</button></li>
+            </ul>
+          )}
         </div>
 
         <button className="btn btn-accent btn-lg" style={{width:"100%"}} disabled={!!applied} onClick={() => {
           if (!rvPush) return;
           const workTitle = WsWorks ? WsWorks.active().title : "当前作品";
           const scopeName = scope === "project" ? `项目《${workTitle}》` : scope === "scene" ? "场景 CH08 · SC01" : "角色 林岑 POV";
-          rvPush({
-            kind: "decision", priority: 1,
-            title: `参考画像「冷峻短句」应用到${scopeName}`,
-            where: "风格参考 · 注入应用", source: "风格参考",
-            detail: `策略 ${strategy === "mixed" ? "A+B 混合" : strategy} · 强度 ${intensity}% · 注入预算 ${totalTokens} tok。批准后画像将作为该范围的默认润色基线，可随时回风格参考解绑。`,
-            actions: [
-              { label: "批准应用", intent: "primary", op: "resolve" },
-              { label: "回风格参考调整", intent: "ghost", op: "nav", to: "styleref" },
-              { label: "丢弃", intent: "quiet", op: "resolve" },
-            ],
-          });
+          if (realMode) {
+            const profileTitle = (deep && deep.profile && deep.profile.title) || `${book.author || "参考"}风格画像`;
+            rvPush({
+              kind: "decision", priority: 1,
+              title: `参考画像「${profileTitle}」应用到${scopeName}`,
+              where: "风格参考 · 注入应用", source: "风格参考",
+              detail: `策略 ${strategy === "mixed" ? "A+B 混合" : strategy} · 强度 ${intensity}% · ${selectedDims.length} 维。批准后画像绑定到该范围、作为生成期默认润色基线，可随时回风格参考解绑。`,
+              dedupe_key: `style-apply:${realProfileId}:${scope}:${strategy}`,
+              actions: [
+                { label: "批准应用", intent: "primary", op: "resolve",
+                  effect: {
+                    type: "bind_style_profile",
+                    profile_id: realProfileId,
+                    scope, task_type: taskType, strategy, intensity,
+                    sub_dimensions: selectedDims,
+                    include_positive: true, include_forbidden: true, include_metric: strategy !== "C",
+                  } },
+                { label: "回风格参考调整", intent: "ghost", op: "nav", to: "styleref" },
+                { label: "丢弃", intent: "quiet", op: "resolve" },
+              ],
+            });
+          } else {
+            rvPush({
+              kind: "decision", priority: 1,
+              title: `参考画像「冷峻短句」应用到${scopeName}`,
+              where: "风格参考 · 注入应用", source: "风格参考",
+              detail: `策略 ${strategy === "mixed" ? "A+B 混合" : strategy} · 强度 ${intensity}% · 注入预算 ${totalTokens} tok。（演示画像：导入真实参考书并合成画像后，应用将创建携带配置的真实绑定决策。）`,
+              actions: [
+                { label: "批准应用", intent: "primary", op: "resolve" },
+                { label: "回风格参考调整", intent: "ghost", op: "nav", to: "styleref" },
+                { label: "丢弃", intent: "quiet", op: "resolve" },
+              ],
+            });
+          }
           setApplied(scopeName);
         }}>
           <I.Check size={15} /> {applied ? "已进入审核" : `应用到${scope === "project" ? "项目" : scope === "scene" ? "场景" : "角色"} · 进审核`}
@@ -1182,6 +1448,52 @@ function StratCard({ id, cur, on, title, desc }) {
       <span className="sr-strat-title">{title}</span>
       <span className="sr-strat-desc">{desc}</span>
     </button>
+  );
+}
+
+/* 真实注入预览（dryrun）的 SystemPromptFragments 渲染 */
+function SrBundleReal({ preview, previewErr }) {
+  if (previewErr) {
+    return <div className="sr-fewshot-warn"><I.Info size={13} /><span>注入预览：{previewErr}</span></div>;
+  }
+  if (!preview) {
+    return <div className="text-xs text-muted" style={{padding:"10px 2px"}}>正在生成注入预览…</div>;
+  }
+  const f = preview.fragments || {};
+  const clip = (t) => { const s = String(t || "").replace(/\n+/g, " · ").trim(); return s.length > 130 ? s.slice(0, 130) + "…" : s; };
+  const ordered = [
+    ["positive_block", "narrative / observations", false],
+    ["forbidden_block", "banned_pattern_block", true],
+    ["metric_anchor_block", "metric_anchor_block", false],
+    ["few_shot_block", "few_shot_block", false],
+  ];
+  const present = ordered.filter(([k]) => f[k] && String(f[k]).trim());
+  const hasAnti = !!(f.anti_plagiarism_block && String(f.anti_plagiarism_block).trim());
+  const prefixLen = (preview.prefix || "").length;
+  if (present.length === 0 && !hasAnti) {
+    return <div className="text-xs text-muted" style={{padding:"10px 2px"}}>该画像暂无可注入内容——需先抽取并合成出观察后再应用。</div>;
+  }
+  return (
+    <>
+      {present.map(([k, label, danger], i) => (
+        <div key={k} className="sr-bundle-frag">
+          <div className={`sr-frag-label ${danger ? "danger" : ""}`}><span className="sr-frag-ord">{i + 1}</span>{danger && <I.Ban size={11} />} {label}</div>
+          <p className="sr-frag-text">{clip(f[k])}</p>
+        </div>
+      ))}
+      <div className="sr-bundle-frag fixed">
+        <div className="sr-frag-label lock"><span className="sr-frag-ord">★</span><I.ShieldCheck size={11} /> anti_plagiarism_block · 固定</div>
+        <p className="sr-frag-text">{clip(f.anti_plagiarism_block || "严禁复制原文表达、人物、桥段与标志性意象。")}</p>
+      </div>
+      <div className="sr-budget-bar">
+        <div className="sr-budget-track">
+          <div className="sr-budget-fill" style={{width: Math.min(100, prefixLen / 800 * 100) + "%"}} />
+        </div>
+        <div className="sr-budget-legend">
+          <span className="tab-num">{prefixLen}</span> / 800 字 注入预算
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -1603,7 +1915,9 @@ function srImportBook() {
       const fd = new FormData();
       fd.append("file", f, f.name);
       fd.append("title", title);
-      fd.append("cloud_policy", "local_only");
+      // segments_only:抽取按段落分批送 LLM(从不整本上送)。local_only 会被后端
+      // 策略层拒绝一切云端抽取(STYLE_REFERENCE_CLOUD_POLICY_BLOCKED),仅适合纯本地场景。
+      fd.append("cloud_policy", "segments_only");
       const res = await fetch(buildUrl("/api/v2/style-reference/books/import-upload"), {
         method: "POST",
         headers: { "X-Idempotency-Key": "sr-import-" + Date.now().toString(36), "X-Operator-Ref": getOperatorRef() },
@@ -1623,20 +1937,50 @@ async function srBookAction(action, bookId) {
   try {
     const { apiPost } = await import("./lib/client.js");
     if (action === "rerun") {
-      await apiPost(`/api/v2/style-reference/books/${bookId}/runs`, {});
-      window.alert("抽取已启动，可在维度矩阵查看进度。");
+      // 后台模式：立即返回 run_id，按 coverage_json.progress 轮询(2.5s),
+      // 全 16 维抽取可达数分钟,同步等待会撞 HTTP 超时
+      const res = await apiPost(`/api/v2/style-reference/books/${bookId}/runs`, { background: true });
+      const runId = res && res.run_id;
+      window.alert("抽取已在后台启动（按层推进），完成后会提示。");
+      if (runId) srPollRun(runId);
     } else if (action === "reclassify") {
       await apiPost(`/api/v2/style-reference/books/${bookId}/reclassify`, {});
       window.alert("已重新分类段落。");
     }
   } catch (e) {
-    if (e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || /llm/i.test(e.code || ""))) {
+    if (e && e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED") {
+      window.alert("这本书的云端策略是「仅本地」，风格抽取需要把段落送 LLM 分析。请删除后以「按段落送云」策略重新导入。");
+    } else if (e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || /llm/i.test(e.code || ""))) {
       window.alert("风格抽取需要先启用 LLM：请到「系统设置 → 模型与接入」配置并开启后重试。");
     } else {
       window.alert("操作失败：" + (e.message || e));
     }
   }
   await srSyncBooks();
+}
+
+/* 后台抽取轮询：层粒度进度，完成/失败时提示并刷新书库。最长轮询 20 分钟。 */
+async function srPollRun(runId) {
+  const { apiGet } = await import("./lib/client.js");
+  const startedAt = Date.now();
+  const tick = async () => {
+    if (Date.now() - startedAt > 20 * 60 * 1000) return;
+    let run = null;
+    try { run = ((await apiGet(`/api/v2/style-reference/runs/${runId}`)) || {}).run || null; } catch (e) { /* 网络抖动下一轮再试 */ }
+    const status = run && run.status;
+    if (status === "done") {
+      await srSyncBooks();
+      window.alert("风格抽取完成，维度矩阵已可查看。");
+      return;
+    }
+    if (status === "failed" || status === "cancelled") {
+      await srSyncBooks();
+      window.alert(status === "failed" ? "风格抽取失败，可重试或查看系统日志。" : "风格抽取已取消。");
+      return;
+    }
+    setTimeout(tick, 2500);
+  };
+  setTimeout(tick, 2500);
 }
 
 async function srDeleteBook(bookId) {
@@ -1653,12 +1997,130 @@ async function srDeleteBook(bookId) {
   return true;
 }
 
+/* ==========================================================
+   深层页真后端 store（按 book 懒加载 profile + bindings）
+   有真画像 → 注入应用走真后端；无（演示书 / 未合成）→ 回退演示。
+   范式同 srSyncBooks：内存缓存 + 懒加载 + 防重 + window 事件广播。
+   ========================================================== */
+const SR_DEEP = {};            // bookId -> { profileId, profile, bindings, loaded, error }
+const SR_DEEP_FETCHING = {};
+
+function srDeepFor(bookId) { return SR_DEEP[bookId] || null; }
+
+async function srLoadDeep(bookId, { force = false } = {}) {
+  if (!bookId) return null;
+  if (!force && SR_DEEP[bookId]) return SR_DEEP[bookId];
+  if (SR_DEEP_FETCHING[bookId]) return SR_DEEP_FETCHING[bookId];
+  SR_DEEP_FETCHING[bookId] = (async () => {
+    const out = {
+      book: null, runId: null, run: null,
+      findingsByDim: {}, dimCounts: {},
+      profileId: null, profile: null, bindings: [],
+      loaded: true, error: null,
+    };
+    try {
+      const { apiGet } = await import("./lib/client.js");
+      // 1. 书详情（stats_json：metrics / input_assessment / 段型分布 / 分类器校准）
+      try {
+        const r = await apiGet(`/api/v2/style-reference/books/${encodeURIComponent(bookId)}`);
+        out.book = (r && r.book) || null;
+      } catch (e) { /* 详情失败不致命 */ }
+      // 2. 最新 run（优先 done，否则最新一条）
+      try {
+        const rr = await apiGet(`/api/v2/style-reference/books/${encodeURIComponent(bookId)}/runs`);
+        const runs = (rr && rr.runs) || [];
+        out.run = runs.find(r => r.status === "done") || runs[0] || null;
+        out.runId = out.run ? out.run.run_id : null;
+      } catch (e) { /* 无 run 列表则矩阵走演示 */ }
+      // 3. 该 run 的 findings（含证据）→ 按 sub_dim 分组 + 计数
+      if (out.runId) {
+        try {
+          const fr = await apiGet(`/api/v2/style-reference/runs/${out.runId}/findings?include=evidence`);
+          for (const f of (fr && fr.findings) || []) {
+            const dim = f.sub_dimension;
+            if (!out.findingsByDim[dim]) out.findingsByDim[dim] = { observations: [], forbidden_patterns: [] };
+            (f.finding_kind === "forbidden_pattern" ? out.findingsByDim[dim].forbidden_patterns : out.findingsByDim[dim].observations).push(f);
+          }
+          for (const [dim, g] of Object.entries(out.findingsByDim)) {
+            const confs = g.observations.map(o => o.confidence);
+            const conf = confs.includes("high") ? "high" : confs.includes("medium") ? "medium" : "low";
+            const q = [...g.observations, ...g.forbidden_patterns].reduce((s, f) => s + ((f.evidence || []).length), 0);
+            out.dimCounts[dim] = { obs: g.observations.length, fp: g.forbidden_patterns.length, q, conf };
+          }
+        } catch (e) { /* findings 失败则矩阵走演示 */ }
+      }
+      // 4. profile + bindings
+      try {
+        const pr = await apiGet(`/api/v2/style-reference/profiles?book_id=${encodeURIComponent(bookId)}`);
+        const profiles = (pr && pr.profiles) || [];
+        const chosen = profiles.find(p => p.status === "active") || profiles[profiles.length - 1] || null;
+        out.profileId = chosen ? chosen.profile_id : null;
+        out.profile = chosen;
+        if (chosen) {
+          try {
+            const b = await apiGet(`/api/v2/style-reference/profiles/${chosen.profile_id}/bindings`);
+            out.bindings = (b && b.bindings) || [];
+          } catch (e) { /* 绑定拉取失败不致命 */ }
+        }
+      } catch (e) { /* profile 失败则画像/应用走演示 */ }
+    } catch (e) {
+      out.error = (e && e.message) || String(e);
+    } finally {
+      SR_DEEP[bookId] = out;
+      delete SR_DEEP_FETCHING[bookId];
+      window.dispatchEvent(new CustomEvent("sr:deep-changed"));
+    }
+    return SR_DEEP[bookId];
+  })();
+  return SR_DEEP_FETCHING[bookId];
+}
+
+/* dryrun 注入预览（不写盘）：返回真实 fragments + prefix。失败抛 ApiRequestError。 */
+async function srInjectionPreview(profileId, body) {
+  const { apiPost } = await import("./lib/client.js");
+  return apiPost(`/api/v2/style-reference/profiles/${profileId}/injection-preview`, body);
+}
+
+/* 解绑：DELETE binding 后强制重载该 book 的深层数据。 */
+async function srUnbind(bindingId, bookId) {
+  const { apiDelete } = await import("./lib/client.js");
+  await apiDelete(`/api/v2/style-reference/bindings/${bindingId}`);
+  await srLoadDeep(bookId, { force: true });
+  return true;
+}
+
+/* 合成画像：POST synthesize（需 LLM）后强制重载。LLM 未启用时抛 ApiRequestError(409)。 */
+async function srSynthesize(runId, bookId) {
+  const { apiPost } = await import("./lib/client.js");
+  const r = await apiPost(`/api/v2/style-reference/runs/${runId}/synthesize`, {});
+  await srLoadDeep(bookId, { force: true });
+  return r;
+}
+
+/* finding 审核（approved / rejected / pending）后强制重载。 */
+async function srReviewFinding(findingId, decision, bookId) {
+  const { apiPost } = await import("./lib/client.js");
+  await apiPost(`/api/v2/style-reference/findings/${findingId}/review`, { decision });
+  await srLoadDeep(bookId, { force: true });
+  return true;
+}
+
+/* 画像预览：生成 3 段示例 + 自跑回测（需 LLM）。 */
+async function srPreviewSamples(profileId) {
+  const { apiPost } = await import("./lib/client.js");
+  return apiPost(`/api/v2/style-reference/profiles/${profileId}/preview`, {});
+}
+
 setTimeout(() => srSyncBooks(), 800); // 启动水合
 window.addEventListener("hashchange", () => {
   if ((location.hash || "").indexOf("styleref") >= 0) srSyncBooks();
 });
 
-Object.assign(window, { WsStyleRef, srSyncBooks, srImportBook, srBookAction, srDeleteBook });
+Object.assign(window, {
+  WsStyleRef, srSyncBooks, srImportBook, srBookAction, srDeleteBook,
+  srLoadDeep, srDeepFor, srInjectionPreview, srUnbind,
+  srSynthesize, srReviewFinding, srPreviewSamples,
+});
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsStyleRef };

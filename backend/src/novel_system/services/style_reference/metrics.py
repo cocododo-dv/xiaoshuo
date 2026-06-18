@@ -147,14 +147,34 @@ class MetricsEngine:
     def compute_with_variance(
         self, paragraphs: list[ParagraphRecord]
     ) -> dict[str, tuple[float, float]]:
+        """返回 {metric: (mean, std)}。
+
+        - **mean** 为全文单值(== ``compute_all``,逐段值的均值),不随分块变化;
+        - **std** 为**块间标准差**(块 ≈ 场景大小,见 ``_chunk_by_chars``),而非逐段标准差。
+
+        为何用块间 std(2026-06 校准修正):逐段 std 噪声极大——段落短、且
+        paragraph_type 比例指标逐段取 0/1(段级 std 高达 ~0.5)——使
+        ``tolerance = max(std×1.25, floor)`` 宽到几乎不拦截(原作互比 26 项零超容差)。
+        回测对照的是「整段生成文本(≈一个场景/块)的单值」,故 tolerance 应反映
+        **作者自身块到块的自然波动**,即块间 std。这样量化门才真正有区分力,
+        同时 floor 防止低波动指标过紧。
+        """
         if not paragraphs:
             return {name: (0.0, 0.0) for name in METRIC_NAMES}
+        means = self.compute_all(paragraphs)
+        chunks = _chunk_by_chars(paragraphs, _VARIANCE_CHUNK_CHARS)
         result: dict[str, tuple[float, float]] = {}
         for name in METRIC_NAMES:
-            values = [self._per_paragraph(name, p) for p in paragraphs]
-            mean = statistics.fmean(values)
-            std = statistics.pstdev(values) if len(values) > 1 else 0.0
-            result[name] = (mean, std)
+            if len(chunks) > 1:
+                chunk_values = [
+                    statistics.fmean(self._per_paragraph(name, p) for p in chunk)
+                    for chunk in chunks
+                ]
+                std = statistics.pstdev(chunk_values)
+            else:
+                # 单块(短语料):无块间样本,std=0 → tolerance 落到 floor
+                std = 0.0
+            result[name] = (means[name], std)
         return result
 
     # ------------------------------------------------------------------ private
@@ -205,6 +225,37 @@ class MetricsEngine:
                 words = self._sensory_lexicon.get(sense, [])
                 return _density_per_1k_words(p.text, words)
         raise ValueError(f"unknown metric: {name}")
+
+
+# 块间方差的目标块大小(字符)。≈ 一个场景的长度,与回测对照的「单段生成文本」
+# 同粒度;语料按段落累积到该字数即切块,余段并入最后一块。
+_VARIANCE_CHUNK_CHARS = 1500
+
+
+def _chunk_by_chars(
+    paragraphs: list[ParagraphRecord], target_chars: int
+) -> list[list[ParagraphRecord]]:
+    """把段落按累计字数切成 ≈target_chars 的块(块间 std 的样本单位)。
+
+    末尾不足 target_chars 的残块:若已有其它块则并入最后一块(避免短尾块拉偏
+    方差),否则自成一块。整体字数 < target_chars 时返回单块。
+    """
+    chunks: list[list[ParagraphRecord]] = []
+    current: list[ParagraphRecord] = []
+    current_chars = 0
+    for p in paragraphs:
+        current.append(p)
+        current_chars += p.char_count
+        if current_chars >= target_chars:
+            chunks.append(current)
+            current = []
+            current_chars = 0
+    if current:
+        if chunks:
+            chunks[-1].extend(current)  # 残尾并入最后一块
+        else:
+            chunks.append(current)
+    return chunks
 
 
 # ---------------------------------------------------------------------------

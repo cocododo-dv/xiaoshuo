@@ -9,13 +9,14 @@ const { useState: useStSRV } = React;
    Three-way concurrent validation:
      quantitative (自适应阈值) / semantic (radar) / plagiarism (n-gram)
      + forbidden_pattern hits
-   Lives in same bundle scope → can read SR_METRICS etc.
+   真后端：有真画像 → POST /validate（sync 内联 / async 轮询 /reports）；
+   无（演示书/未合成）→ 回退演示数据。
    ========================================================== */
 
 const SRV_SAMPLE_TEXT =
   "他没有应声，弯下腰，把那枚铜板从砖缝里抠出来，又用袖子擦了擦。天色已经暗下去，巷口的风把一张旧报纸卷起来，贴在墙根，又慢慢滑落。他站直了，望了望那扇关着的门，终于没有敲，转身走进了愈来愈浓的暮色里。";
 
-/* ---- quantitative report (自适应 tolerance) ---- */
+/* ---- demo quantitative report (自适应 tolerance) ---- */
 const SRV_QUANT = [
   { name: "平均句长",      target: 16.8, std: 11.2, actual: 18.2, unit: "字" },
   { name: "句长标准差",    target: 11.2, std: 3.1,  actual: 10.4, unit: "" },
@@ -32,7 +33,7 @@ const SRV_FLOORS = {
   "比喻密度/千": 1.0, "文言词比率": 0.03, "视觉感官/千": 1.5, "破折号/千": 0.8,
 };
 
-/* ---- semantic radar (6 axes) ---- */
+/* ---- demo semantic radar (6 axes) ---- */
 const SRV_RADAR = [
   { axis: "语言贴合", v: 0.86 },
   { axis: "叙事贴合", v: 0.78 },
@@ -59,18 +60,166 @@ const SRV_PLAG = {
   ],
 };
 
-window.SrValidation = function SrValidation({ book, go }) {
-  const [mode, setMode] = useStSRV("async_full");
-  const [done, setDone] = useStSRV(true);
-  const [running, setRunning] = useStSRV(false);
+/* ---- 真实 report 字段映射 ---- */
+const SRV_METRIC_META = {
+  avg_sentence_length: { name: "平均句长", unit: "字" },
+  sentence_length_std: { name: "句长标准差", unit: "" },
+  short_sentence_ratio: { name: "短句率", pct: true },
+  long_sentence_ratio: { name: "长句率", pct: true },
+  punctuation_density_per_1k: { name: "标点密度/千", unit: "" },
+  dash_em_density_per_1k: { name: "破折号/千", unit: "" },
+  ellipsis_density_per_1k: { name: "省略号/千", unit: "" },
+  semicolon_density_per_1k: { name: "分号/千", unit: "" },
+  question_density_per_1k: { name: "问号/千", unit: "" },
+  classical_word_ratio: { name: "文言词比率", pct: true },
+  colloquial_marker_ratio: { name: "口语标记率", pct: true },
+  metaphor_density_per_1k: { name: "比喻密度/千", unit: "" },
+  personification_density_per_1k: { name: "拟人密度/千", unit: "" },
+  dialogue_ratio: { name: "对话占比", pct: true },
+  psychology_ratio: { name: "心理占比", pct: true },
+  description_env_ratio: { name: "环境占比", pct: true },
+  description_char_ratio: { name: "人物占比", pct: true },
+  action_ratio: { name: "动作占比", pct: true },
+  narration_ratio: { name: "叙述占比", pct: true },
+  transition_ratio: { name: "转场占比", pct: true },
+  flashback_ratio: { name: "闪回占比", pct: true },
+  sensory_visual_per_1k: { name: "视觉感官/千", unit: "" },
+  sensory_auditory_per_1k: { name: "听觉感官/千", unit: "" },
+  sensory_olfactory_per_1k: { name: "嗅觉感官/千", unit: "" },
+  sensory_tactile_per_1k: { name: "触觉感官/千", unit: "" },
+  sensory_gustatory_per_1k: { name: "味觉感官/千", unit: "" },
+};
+const SRV_SEMANTIC_AXIS = {
+  language: "语言贴合", narrative: "叙事贴合", scene: "场景贴合", theme: "主题贴合",
+  coherence: "连贯性", originality: "原创度", emotion: "情感基调", style: "风格贴合",
+};
 
-  const verdict = computeVerdict();
-
-  const run = () => {
-    setRunning(true);
-    setDone(false);
-    setTimeout(() => { setRunning(false); setDone(true); }, 1400);
+/* 后端 ValidationReport / report → 组件统一形状；缺数据返 null */
+function srvNormalize(rep) {
+  if (!rep) return null;
+  const quant = (rep.quantitative_json || []).map(q => {
+    const meta = SRV_METRIC_META[q.metric] || { name: q.metric, unit: "" };
+    return {
+      name: meta.name, pct: !!meta.pct, unit: meta.unit || "",
+      target: q.target_mean, std: q.target_std, actual: q.actual,
+      tolerance: q.tolerance, passed: q.passed, deviation: q.deviation_ratio,
+    };
+  });
+  const semantic = (rep.semantic_json || []).map(s => ({
+    axis: SRV_SEMANTIC_AXIS[s.dimension] || s.dimension,
+    v: Math.max(0, Math.min(1, (Number(s.score) || 0) / 10)),
+    score: Number(s.score) || 0,
+    explanation: s.explanation || "",
+  }));
+  const plag = rep.plagiarism_json || {};
+  const hits = plag.hits || [];
+  const maxRun = hits.reduce((m, h) => Math.max(m, h.matched_length || 0), 0);
+  const plagiarism = {
+    passed: plag.passed !== false,
+    ngram: plag.ngram_size || 8,
+    threshold: plag.threshold_chars || 12,
+    maxRun,
+    flags: hits.map(h => ({ run: h.matched_length, text: h.matched_text, source: "与参考语料重叠", level: "hit" })),
   };
+  const forbidden = (rep.forbidden_hits_json || []).map(f => ({
+    statement: f.pattern_statement, triggered: true, excerpt: f.matched_excerpt,
+    severity: f.severity, note: f.severity === "error" ? "硬性禁忌触发" : "",
+  }));
+  return {
+    verdict: rep.verdict, mode_executed: rep.mode_executed,
+    quant, semantic, plagiarism, forbidden,
+    semanticPending: rep.mode_executed === "sync_only" && semantic.length === 0,
+  };
+}
+
+function srvVerdictMeta(v) {
+  switch (v) {
+    case "pass": return { kind: "pass", label: "通过", sub: "四路校验达标" };
+    case "plagiarism": return { kind: "plagiarism", label: "抄袭风险", sub: "最长重叠超阈值，直接进审核" };
+    case "fail": return { kind: "fail", label: "未通过", sub: "触发硬性禁忌或多路不达标" };
+    case "partial": return { kind: "partial", label: "部分通过", sub: "建议带修改重试一轮" };
+    default: return { kind: "partial", label: "待定", sub: "" };
+  }
+}
+
+window.SrValidation = function SrValidation({ book, go }) {
+  const isReal = !!(book && book.real);
+  const [deep, setDeep] = useStSRV(() => (isReal && window.srDeepFor ? window.srDeepFor(book.id) : null));
+  React.useEffect(() => {
+    if (!isReal) { setDeep(null); return; }
+    const sync = () => setDeep(window.srDeepFor ? window.srDeepFor(book.id) : null);
+    sync();
+    if (window.srLoadDeep) window.srLoadDeep(book.id);
+    window.addEventListener("sr:deep-changed", sync);
+    return () => window.removeEventListener("sr:deep-changed", sync);
+  }, [isReal, book && book.id]);
+  const profileId = deep && deep.profileId;
+  const realMode = !!profileId;
+
+  const [mode, setMode] = useStSRV("async_full");
+  const [text, setText] = useStSRV(SRV_SAMPLE_TEXT);
+  const [running, setRunning] = useStSRV(false);
+  const [report, setReport] = useStSRV(null);   // 归一化的真实报告
+  const [done, setDone] = useStSRV(false);
+  const [err, setErr] = useStSRV(null);
+  const pollRef = React.useRef(null);
+  React.useEffect(() => () => clearTimeout(pollRef.current), []);
+
+  // 演示模式：进入即展示演示报告；真模式：等用户运行
+  const demoMode = !realMode;
+  const showReport = demoMode || (done && !!report);
+
+  const run = async () => {
+    if (demoMode) { setRunning(true); setDone(false); setTimeout(() => { setRunning(false); setDone(true); }, 1400); return; }
+    if (running) return;
+    setRunning(true); setDone(false); setErr(null); setReport(null);
+    clearTimeout(pollRef.current);
+    try {
+      const { apiPost, apiGet } = await import("./lib/client.js");
+      const resp = await apiPost(`/api/v2/style-reference/profiles/${profileId}/validate`, {
+        generated_text: text, target_kind: "manual", mode,
+      });
+      if (resp && resp.sync_result) {
+        setReport(srvNormalize(resp.sync_result)); setRunning(false); setDone(true); return;
+      }
+      const rid = resp && resp.report_id;
+      if (!rid) throw new Error("校验未返回 report_id");
+      const startedAt = Date.now();
+      const poll = async () => {
+        if (Date.now() - startedAt > 60000) { setRunning(false); setErr("校验超时，请重试。"); return; }
+        let rep = null;
+        try { rep = ((await apiGet(`/api/v2/style-reference/reports/${rid}`)) || {}).report || null; } catch (e) { /* 抖动下一轮 */ }
+        if (rep && rep.verdict) { setReport(srvNormalize(rep)); setRunning(false); setDone(true); return; }
+        pollRef.current = setTimeout(poll, 1200);
+      };
+      pollRef.current = setTimeout(poll, 800);
+    } catch (e) {
+      setRunning(false);
+      setErr(e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED")
+        ? "全量三路的语义评分需启用 LLM；可改用「同步快路径」（量化 + 抄袭，无需 LLM）。"
+        : ((e && e.message) || "回测失败"));
+    }
+  };
+
+  const verdict = report ? srvVerdictMeta(report.verdict)
+    : (demoMode ? computeVerdict() : { kind: "partial", label: "待回测", sub: "运行回测查看结论" });
+
+  // 四路汇总
+  const sum = report ? {
+    quant: report.quant.length ? Math.round(report.quant.filter(q => q.passed).length / report.quant.length * 100) + "%" : "—",
+    semantic: report.semantic.length ? (report.semantic.reduce((s, x) => s + x.score, 0) / report.semantic.length).toFixed(1) : (report.semanticPending ? "异步" : "—"),
+    plag: report.plagiarism.passed ? "通过" : "命中",
+    forbidden: report.forbidden.length,
+  } : null;
+
+  // 真实改写建议：触发禁忌 + 最大偏离量化项
+  const rewriteHints = report ? (() => {
+    const hints = [];
+    report.forbidden.slice(0, 2).forEach(f => hints.push({ tone: "gold", label: "禁忌", text: `触发「${f.statement}」${f.excerpt ? `：「${f.excerpt}」` : ""}，建议改具象。` }));
+    const worst = report.quant.filter(q => !q.passed).sort((a, b) => (b.deviation || 0) - (a.deviation || 0))[0];
+    if (worst) hints.push({ tone: "slate", label: "量化", text: `${worst.name} 实测 ${worst.pct ? (worst.actual * 100).toFixed(0) + "%" : (Math.round(worst.actual * 10) / 10)}，偏离目标 ${(worst.deviation || 0).toFixed(2)}×。` });
+    return hints;
+  })() : null;
 
   return (
     <div className="srv">
@@ -78,23 +227,24 @@ window.SrValidation = function SrValidation({ book, go }) {
         {/* Input */}
         <div className="card">
           <div className="card-head">
-            <div><div className="card-title">回测输入</div><div className="card-sub">粘贴或选择一段生成文本，对 {book.author}画像三路并发校验</div></div>
+            <div><div className="card-title">回测输入</div><div className="card-sub">粘贴一段生成文本，对 {book.author}画像{realMode ? "三路并发校验" : "（演示）"}</div></div>
             <div className="seg">
               <button className={`seg-btn ${mode==="sync_only"?"is-active":""}`} onClick={()=>setMode("sync_only")}>同步快路径</button>
               <button className={`seg-btn ${mode==="async_full"?"is-active":""}`} onClick={()=>setMode("async_full")}>全量三路</button>
             </div>
           </div>
-          <textarea className="srv-input textarea" defaultValue={SRV_SAMPLE_TEXT} />
+          <textarea className="srv-input textarea" value={text} onChange={e=>setText(e.target.value)} />
           <div className="srv-input-foot">
             <div className="srv-mode-hint">
               {mode === "sync_only"
                 ? <span><I.Zap size={12} /> 仅量化 + 抄袭，毫秒级返回（qc 落盘 gate 用），语义后台异步补算</span>
                 : <span><I.Beaker size={12} /> 量化 + 语义 + 抄袭 + 禁忌 四路并发，语义走 LLM</span>}
             </div>
-            <button className="btn btn-accent" onClick={run} disabled={running}>
+            <button className="btn btn-accent" onClick={run} disabled={running || (realMode && !text.trim())}>
               {running ? <><span className="step-spin-dark" style={{width:13,height:13}} /> 回测中…</> : <><I.Play size={13} /> 运行回测</>}
             </button>
           </div>
+          {err && <div className="srv-mode-hint" style={{marginTop:8, color:"var(--rose)"}}><span><I.AlertTriangle size={12} /> {err}</span></div>}
         </div>
 
         {/* Report */}
@@ -102,16 +252,22 @@ window.SrValidation = function SrValidation({ book, go }) {
           <div className="card srv-running">
             <div className="srv-run-rows">
               <div className="srv-run-row"><span className="step-spin-dark" /><span>量化对齐 · 本地计算</span></div>
-              <div className="srv-run-row"><span className="step-spin-dark" /><span>语义评分 · critic LLM</span></div>
-              <div className="srv-run-row"><span className="step-spin-dark" /><span>抄袭检测 · Rabin-Karp</span></div>
+              {mode === "async_full" && <div className="srv-run-row"><span className="step-spin-dark" /><span>语义评分 · critic LLM</span></div>}
+              <div className="srv-run-row"><span className="step-spin-dark" /><span>抄袭检测 · 规范化 n-gram</span></div>
               <div className="srv-run-row"><span className="step-spin-dark" /><span>禁忌检查 · 逐条判定</span></div>
             </div>
           </div>
         )}
-        {done && !running && <window.ValidationReportCard verdict={verdict} mode={mode} />}
+        {!running && realMode && !report && (
+          <div className="card" style={{padding:"32px 20px", textAlign:"center"}}>
+            <I.Beaker size={26} style={{color:"var(--ink-3)"}} />
+            <div className="text-muted text-sm mt-2">粘贴生成文本后点「运行回测」，对该画像做{mode === "sync_only" ? "量化 + 抄袭" : "四路"}校验。</div>
+          </div>
+        )}
+        {showReport && !running && <window.ValidationReportCard report={report} mode={mode} />}
       </div>
 
-      {/* Side: verdict + auto-rewrite */}
+      {/* Side: verdict + summary + rewrite */}
       <aside className="srv-side">
         <div className={`srv-verdict v-${verdict.kind}`}>
           <div className="srv-verdict-icon">
@@ -124,29 +280,33 @@ window.SrValidation = function SrValidation({ book, go }) {
           <div className="srv-verdict-sub">{verdict.sub}</div>
         </div>
 
-        <div className="card-flat">
-          <div className="ctx-head" style={{marginBottom:10}}><I.Target size={13} /><span>四路汇总</span></div>
-          <ul className="srv-summary">
-            <li><span>量化对齐</span><b className="srv-sum-val ok">{Math.round(quantPassRate()*100)}%</b></li>
-            <li><span>语义评分</span><b className="srv-sum-val ok">8.2</b></li>
-            <li><span>抄袭检测</span><b className="srv-sum-val ok">通过</b></li>
-            <li><span>禁忌触发</span><b className="srv-sum-val warn">1 项（轻）</b></li>
-          </ul>
-        </div>
+        {(sum || demoMode) && (
+          <div className="card-flat">
+            <div className="ctx-head" style={{marginBottom:10}}><I.Target size={13} /><span>四路汇总</span></div>
+            <ul className="srv-summary">
+              <li><span>量化对齐</span><b className="srv-sum-val ok">{sum ? sum.quant : Math.round(quantPassRate()*100) + "%"}</b></li>
+              <li><span>语义评分</span><b className="srv-sum-val ok">{sum ? sum.semantic : "8.2"}</b></li>
+              <li><span>抄袭检测</span><b className={`srv-sum-val ${sum ? (sum.plag === "通过" ? "ok" : "warn") : "ok"}`}>{sum ? sum.plag : "通过"}</b></li>
+              <li><span>禁忌触发</span><b className={`srv-sum-val ${(sum ? sum.forbidden : 1) > 0 ? "warn" : "ok"}`}>{sum ? `${sum.forbidden} 项` : "1 项（轻）"}</b></li>
+            </ul>
+          </div>
+        )}
 
-        <div className="card-flat srv-rewrite">
-          <div className="ctx-head" style={{marginBottom:10}}><I.Wand size={13} /><span>自动改写建议</span></div>
-          <div className="srv-rewrite-item">
-            <span className="pill pill-gold text-xs"><span className="pill-dot" />禁忌</span>
-            <p>把「愈来愈浓的暮色」改为具象动作或物件，避免成语化抒情。</p>
+        {(rewriteHints ? rewriteHints.length > 0 : demoMode) && (
+          <div className="card-flat srv-rewrite">
+            <div className="ctx-head" style={{marginBottom:10}}><I.Wand size={13} /><span>改写建议</span></div>
+            {(rewriteHints || [
+              { tone: "gold", label: "禁忌", text: "把「愈来愈浓的暮色」改为具象动作或物件，避免成语化抒情。" },
+              { tone: "slate", label: "量化", text: "对话占比 5%（目标 23%±9），可在段中补一句短对话。" },
+            ]).map((h, i) => (
+              <div key={i} className="srv-rewrite-item">
+                <span className={`pill pill-${h.tone} text-xs`}><span className="pill-dot" />{h.label}</span>
+                <p>{h.text}</p>
+              </div>
+            ))}
+            <p className="text-xs text-muted mt-2" style={{textAlign:"center"}}>partial 由生成期 qc 链路自动重试（最多 2 轮）；fail / 抄袭 直接进审核。</p>
           </div>
-          <div className="srv-rewrite-item">
-            <span className="pill pill-slate text-xs"><span className="pill-dot" />量化</span>
-            <p>对话占比 5%（目标 23%±9），可在段中补一句短对话。</p>
-          </div>
-          <button className="btn btn-primary btn-sm" style={{width:"100%", marginTop:8}}><I.Refresh size={13} /> 带建议重写（最多 2 轮）</button>
-          <p className="text-xs text-muted mt-2" style={{textAlign:"center"}}>partial 自动重试；fail / 抄袭 直接进审核。</p>
-        </div>
+        )}
 
         <button className="btn btn-accent btn-lg" style={{width:"100%"}} onClick={() => go && go("apply")}>
           <I.ArrowRight size={15} /> 进入注入应用
@@ -159,18 +319,31 @@ window.SrValidation = function SrValidation({ book, go }) {
 };
 
 /* ============ ValidationReportCard ============ */
-window.ValidationReportCard = function ValidationReportCard({ verdict, mode }) {
+window.ValidationReportCard = function ValidationReportCard({ report, mode }) {
+  const quant = report ? report.quant : SRV_QUANT;
+  const quantPass = quant.filter(quantItemPass).length;
+  const plag = report ? report.plagiarism : SRV_PLAG;
+  const forbidden = report ? report.forbidden : SRV_FORBIDDEN;
+  const forbiddenHits = forbidden.filter(f => f.triggered).length;
+  const semantic = report ? report.semantic : SRV_RADAR;
+  const semanticPending = report ? report.semanticPending : (mode === "sync_only");
+  const semanticMean = semantic.length ? (semantic.reduce((s, d) => s + (d.score != null ? d.score : d.v * 10), 0) / semantic.length) : null;
+
   return (
     <div className="vrc">
       {/* Quantitative */}
       <div className="card">
         <div className="card-head">
           <div><div className="card-title">量化对齐</div><div className="card-sub">自适应阈值 = max(σ × 1.25, 绝对下限)</div></div>
-          <span className="pill pill-sage"><span className="pill-dot" />{SRV_QUANT.filter(passQuant).length} / {SRV_QUANT.length} 通过</span>
+          <span className="pill pill-sage"><span className="pill-dot" />{quantPass} / {quant.length} 通过</span>
         </div>
-        <div className="vrc-quant">
-          {SRV_QUANT.map((m, i) => <QuantBar key={i} m={m} />)}
-        </div>
+        {quant.length === 0 ? (
+          <div className="text-xs text-muted" style={{padding:"10px 2px"}}>该画像无量化基线（需先合成画像）。</div>
+        ) : (
+          <div className="vrc-quant">
+            {quant.map((m, i) => <QuantBar key={i} m={m} />)}
+          </div>
+        )}
       </div>
 
       <div className="vrc-row">
@@ -178,38 +351,49 @@ window.ValidationReportCard = function ValidationReportCard({ verdict, mode }) {
         <div className="card">
           <div className="card-head">
             <div><div className="card-title">语义评分</div><div className="card-sub">critic LLM · 强制引用证据</div></div>
-            {mode === "sync_only"
+            {semanticPending
               ? <span className="pill pill-slate text-xs"><span className="pill-dot" />异步补算中</span>
-              : <span className="pill pill-sage text-xs"><span className="pill-dot" />8.2 / 10</span>}
+              : (semanticMean != null
+                  ? <span className="pill pill-sage text-xs"><span className="pill-dot" />{semanticMean.toFixed(1)} / 10</span>
+                  : <span className="pill pill-slate text-xs"><span className="pill-dot" />无评分</span>)}
           </div>
-          {mode === "sync_only" ? (
+          {semanticPending ? (
             <div className="vrc-async">
               <span className="step-spin-dark" />
               <span className="text-muted text-sm">语义路径后台运行中，完成后入库供审核查看…</span>
             </div>
+          ) : semantic.length >= 3 ? (
+            <RadarChart data={semantic} />
+          ) : semantic.length > 0 ? (
+            <div className="vrc-radar-legend" style={{padding:"6px 0"}}>
+              {semantic.map((d, i) => (
+                <div key={i} className="vrc-radar-leg"><span className="vrc-radar-leg-name">{d.axis}</span><span className="vrc-radar-leg-val tab-num">{(d.score != null ? d.score : d.v * 10).toFixed(1)}</span></div>
+              ))}
+            </div>
           ) : (
-            <RadarChart data={SRV_RADAR} />
+            <div className="vrc-async"><span className="text-muted text-sm">本次未产出语义评分。</span></div>
           )}
         </div>
 
         {/* Plagiarism */}
         <div className="card">
           <div className="card-head">
-            <div><div className="card-title">抄袭检测</div><div className="card-sub">Rabin-Karp · {SRV_PLAG.ngram}-gram · 阈值 {SRV_PLAG.threshold} 字</div></div>
-            <span className={`pill ${SRV_PLAG.passed ? "pill-sage" : "pill-crimson"}`}><span className="pill-dot" />{SRV_PLAG.passed ? "通过" : "命中"}</span>
+            <div><div className="card-title">抄袭检测</div><div className="card-sub">规范化 n-gram · {plag.ngram}-gram · 阈值 {plag.threshold} 字</div></div>
+            <span className={`pill ${plag.passed ? "pill-sage" : "pill-crimson"}`}><span className="pill-dot" />{plag.passed ? "通过" : "命中"}</span>
           </div>
           <div className="vrc-plag-meter">
             <div className="vrc-plag-track">
-              <div className="vrc-plag-fill" style={{width: (SRV_PLAG.maxRun / SRV_PLAG.threshold * 100) + "%"}} />
+              <div className="vrc-plag-fill" style={{width: Math.min(100, (plag.maxRun / plag.threshold * 100)) + "%", background: plag.passed ? "var(--sage)" : "var(--crimson)"}} />
               <div className="vrc-plag-threshold" style={{left: "100%"}} />
             </div>
             <div className="vrc-plag-legend">
-              <span>最长连续重叠 <b className="tab-num">{SRV_PLAG.maxRun}</b> 字</span>
-              <span className="text-muted">阈值 {SRV_PLAG.threshold} 字</span>
+              <span>最长连续重叠 <b className="tab-num">{plag.maxRun}</b> 字</span>
+              <span className="text-muted">阈值 {plag.threshold} 字</span>
             </div>
           </div>
           <div className="vrc-plag-flags">
-            {SRV_PLAG.flags.map((f, i) => (
+            {plag.flags.length === 0 && <div className="text-xs text-muted" style={{padding:"4px 2px"}}>未发现超阈值重叠。</div>}
+            {plag.flags.map((f, i) => (
               <div key={i} className={`vrc-plag-flag lv-${f.level}`}>
                 <span className="vrc-plag-run">{f.run} 字</span>
                 <div className="vrc-plag-body">
@@ -217,6 +401,7 @@ window.ValidationReportCard = function ValidationReportCard({ verdict, mode }) {
                   <p className="vrc-plag-src">{f.source}</p>
                 </div>
                 {f.level === "ok" && <span className="pill pill-sage text-xs"><span className="pill-dot" />安全</span>}
+                {f.level === "hit" && <span className="pill pill-crimson text-xs"><span className="pill-dot" />超阈值</span>}
               </div>
             ))}
           </div>
@@ -227,40 +412,44 @@ window.ValidationReportCard = function ValidationReportCard({ verdict, mode }) {
       <div className="card">
         <div className="card-head">
           <div><div className="card-title">禁忌模式检查</div><div className="card-sub">对每条 forbidden_pattern 判断是否触发</div></div>
-          <span className={`pill ${SRV_FORBIDDEN.some(f=>f.triggered) ? "pill-gold" : "pill-sage"}`}>
-            <span className="pill-dot" />{SRV_FORBIDDEN.filter(f=>f.triggered).length} 触发 / {SRV_FORBIDDEN.length}
+          <span className={`pill ${forbiddenHits ? "pill-gold" : "pill-sage"}`}>
+            <span className="pill-dot" />{forbiddenHits} 触发{report ? "" : ` / ${forbidden.length}`}
           </span>
         </div>
-        <ul className="vrc-forbidden">
-          {SRV_FORBIDDEN.map((f, i) => (
-            <li key={i} className={`vrc-fb ${f.triggered ? "is-hit" : ""}`}>
-              <span className="vrc-fb-mark">
-                {f.triggered ? <I.AlertTriangle size={14} /> : <I.Check size={14} />}
-              </span>
-              <div className="vrc-fb-body">
-                <span className="vrc-fb-statement">{f.statement}</span>
-                {f.triggered && (
-                  <div className="vrc-fb-hit">
-                    <span className="vrc-fb-excerpt text-serif">「{f.excerpt}」</span>
-                    <span className="vrc-fb-note">{f.note}</span>
-                  </div>
-                )}
-              </div>
-              <span className={`pill text-xs ${f.triggered ? "pill-gold" : "pill-sage"}`}>
-                <span className="pill-dot" />{f.triggered ? "触发" : "清白"}
-              </span>
-            </li>
-          ))}
-        </ul>
+        {forbidden.length === 0 ? (
+          <div className="text-xs text-muted" style={{padding:"10px 2px"}}><I.Check size={13} style={{verticalAlign:"-2px", color:"var(--sage)"}} /> 未触发任何禁忌模式。</div>
+        ) : (
+          <ul className="vrc-forbidden">
+            {forbidden.map((f, i) => (
+              <li key={i} className={`vrc-fb ${f.triggered ? "is-hit" : ""}`}>
+                <span className="vrc-fb-mark">
+                  {f.triggered ? <I.AlertTriangle size={14} /> : <I.Check size={14} />}
+                </span>
+                <div className="vrc-fb-body">
+                  <span className="vrc-fb-statement">{f.statement}</span>
+                  {f.triggered && f.excerpt && (
+                    <div className="vrc-fb-hit">
+                      <span className="vrc-fb-excerpt text-serif">「{f.excerpt}」</span>
+                      {f.note && <span className="vrc-fb-note">{f.note}</span>}
+                    </div>
+                  )}
+                </div>
+                <span className={`pill text-xs ${f.triggered ? (f.severity === "error" ? "pill-crimson" : "pill-gold") : "pill-sage"}`}>
+                  <span className="pill-dot" />{f.triggered ? (f.severity === "error" ? "硬触发" : "触发") : "清白"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );
 };
 
-/* ---- helpers ---- */
-function tol(m) { return Math.max(m.std * 1.25, SRV_FLOORS[m.name] || 0.1); }
-function passQuant(m) { return Math.abs(m.actual - m.target) <= tol(m); }
-function quantPassRate() { return SRV_QUANT.filter(passQuant).length / SRV_QUANT.length; }
+/* ---- helpers（demo verdict / 量化通过判定）---- */
+function tol(m) { return m.tolerance != null ? m.tolerance : Math.max(m.std * 1.25, SRV_FLOORS[m.name] || 0.1); }
+function quantItemPass(m) { return m.passed != null ? m.passed : Math.abs(m.actual - m.target) <= tol(m); }
+function quantPassRate() { return SRV_QUANT.filter(quantItemPass).length / SRV_QUANT.length; }
 function computeVerdict() {
   if (!SRV_PLAG.passed) return { kind: "plagiarism", label: "抄袭风险", sub: "最长重叠超阈值，直接进审核" };
   const hardForbidden = SRV_FORBIDDEN.some(f => f.triggered && f.severity === "error");
@@ -270,17 +459,16 @@ function computeVerdict() {
   return { kind: "partial", label: "部分通过", sub: "建议带修改重写一轮" };
 }
 
-/* ---- QuantBar: target band + actual marker ---- */
+/* ---- QuantBar: target band + actual marker（真实项带 tolerance/passed，演示项现算）---- */
 function QuantBar({ m }) {
   const t = tol(m);
-  // map to a track: center on target, ±2.5*tol visible range
   const range = t * 2.6;
   const lo = m.target - range, hi = m.target + range;
   const toPct = (v) => Math.max(2, Math.min(98, ((v - lo) / (hi - lo)) * 100));
   const bandLo = toPct(m.target - t), bandHi = toPct(m.target + t);
   const actualPct = toPct(m.actual);
-  const pass = passQuant(m);
-  const fmt = (v) => m.pct ? (v*100).toFixed(0) + "%" : v.toFixed(m.pct ? 2 : 1);
+  const pass = quantItemPass(m);
+  const fmt = (v) => m.pct ? (v*100).toFixed(0) + "%" : v.toFixed(1);
   return (
     <div className="qbar">
       <div className="qbar-head">
@@ -297,7 +485,7 @@ function QuantBar({ m }) {
       </div>
       <div className="qbar-foot">
         <span>目标 {fmt(m.target)} ± {m.pct ? (t*100).toFixed(0)+"%" : t.toFixed(1)}</span>
-        <span className={pass ? "ok" : "off"}>偏离 {(Math.abs(m.actual - m.target) / t).toFixed(2)}×</span>
+        <span className={pass ? "ok" : "off"}>偏离 {(Math.abs(m.actual - m.target) / (t || 1e-6)).toFixed(2)}×</span>
       </div>
     </div>
   );
@@ -338,7 +526,7 @@ function RadarChart({ data }) {
         {data.map((d, i) => (
           <div key={i} className="vrc-radar-leg">
             <span className="vrc-radar-leg-name">{d.axis}</span>
-            <span className="vrc-radar-leg-val tab-num">{(d.v*10).toFixed(1)}</span>
+            <span className="vrc-radar-leg-val tab-num">{(d.score != null ? d.score : d.v * 10).toFixed(1)}</span>
           </div>
         ))}
       </div>

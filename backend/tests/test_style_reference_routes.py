@@ -51,7 +51,7 @@ def _import_book(client: TestClient) -> str:
     resp = client.post(
         f"{PREFIX}/books/import-upload",
         files=files,
-        data={"title": "测试", "cloud_policy": "local_only"},
+        data={"title": "测试", "cloud_policy": "segments_only"},
         headers={"X-Idempotency-Key": "imp_1"},
     )
     assert resp.status_code == 200, resp.text
@@ -156,7 +156,7 @@ def test_import_upload_happy(client: TestClient) -> None:
 def test_import_upload_idempotency_replay(client: TestClient) -> None:
     files = {"file": ("a.txt", io.BytesIO(SAMPLE_TXT), "text/plain")}
     headers = {"X-Idempotency-Key": "imp_dup"}
-    data = {"title": "x", "cloud_policy": "local_only"}
+    data = {"title": "x", "cloud_policy": "segments_only"}
     r1 = client.post(
         f"{PREFIX}/books/import-upload", files=files, data=data, headers=headers
     )

@@ -34,7 +34,8 @@ SAMPLE_TEXT = """这是叙述段落 0,介绍清晨场景与人物心情,长度�
 """
 
 
-def _ingest(book_seed: str = "s") -> str:
+def _ingest(book_seed: str = "s", *, cloud_policy: str = "segments_only") -> str:
+    """默认 segments_only(允许云端抽取);local_only 的拒绝行为有专门用例。"""
     with SessionLocal() as session:
         service = IngestService(session, llm_enabled=False)
         result = service.ingest_upload(
@@ -42,7 +43,7 @@ def _ingest(book_seed: str = "s") -> str:
             file_name=f"book_{book_seed}.txt",
             title="t",
             author_label="t",
-            cloud_policy="local_only",
+            cloud_policy=cloud_policy,
         )
         session.commit()
         return result.book.book_id

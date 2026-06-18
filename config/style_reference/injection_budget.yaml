@@ -7,3 +7,12 @@ system_prompt_max_tokens: 800
 positive_block_ratio: 0.6
 forbidden_block_ratio: 0.3
 metric_anchor_block_ratio: 0.1
+
+# Strategy B few-shot 样例(2026-06 加固轮:B 从「预算变体」升级为真 few-shot)
+# few_shot_k:最多注入的样例段数(按 paragraph_type 各取 1,优先级见 injection.py)
+# few_shot_quote_max_chars:单条样例截断上限
+# few_shot_block_max_chars:整个 [风格样例] 块上限(在 system_prompt 预算之外,
+#   随样例必附反抄袭红线段,该块不参与三块 ratio 分配)
+few_shot_k: 3
+few_shot_quote_max_chars: 120
+few_shot_block_max_chars: 480

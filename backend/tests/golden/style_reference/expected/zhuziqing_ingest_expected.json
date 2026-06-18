@@ -1,0 +1,151 @@
+{
+  "input_assessment": {
+    "language": "skip",
+    "narrative": "skip",
+    "scene": "skip",
+    "theme": "skip"
+  },
+  "metrics": {
+    "action_ratio": {
+      "mean": 0.0,
+      "sample_count": 52,
+      "std": 0.0
+    },
+    "avg_sentence_length": {
+      "mean": 20.80088458793908,
+      "sample_count": 52,
+      "std": 2.3246911387393316
+    },
+    "classical_word_ratio": {
+      "mean": 0.23146871433574262,
+      "sample_count": 52,
+      "std": 0.10663358106033947
+    },
+    "colloquial_marker_ratio": {
+      "mean": 0.057006188313423696,
+      "sample_count": 52,
+      "std": 0.0324898476626736
+    },
+    "dash_em_density_per_1k": {
+      "mean": 1.8833133227823946,
+      "sample_count": 52,
+      "std": 1.347761156017822
+    },
+    "description_char_ratio": {
+      "mean": 0.019230769230769232,
+      "sample_count": 52,
+      "std": 0.05714285714285714
+    },
+    "description_env_ratio": {
+      "mean": 0.057692307692307696,
+      "sample_count": 52,
+      "std": 0.06316973309446834
+    },
+    "dialogue_ratio": {
+      "mean": 0.3076923076923077,
+      "sample_count": 52,
+      "std": 0.12149188895378078
+    },
+    "ellipsis_density_per_1k": {
+      "mean": 0.0,
+      "sample_count": 52,
+      "std": 0.0
+    },
+    "flashback_ratio": {
+      "mean": 0.038461538461538464,
+      "sample_count": 52,
+      "std": 0.041347539857606946
+    },
+    "long_sentence_ratio": {
+      "mean": 0.2228423887527922,
+      "sample_count": 52,
+      "std": 0.07076123280341702
+    },
+    "metaphor_density_per_1k": {
+      "mean": 2.299999894883137,
+      "sample_count": 52,
+      "std": 2.4344146322489215
+    },
+    "narration_ratio": {
+      "mean": 0.15384615384615385,
+      "sample_count": 52,
+      "std": 0.10594200187258451
+    },
+    "personification_density_per_1k": {
+      "mean": 0.0,
+      "sample_count": 52,
+      "std": 0.0
+    },
+    "psychology_ratio": {
+      "mean": 0.07692307692307693,
+      "sample_count": 52,
+      "std": 0.046620301602461445
+    },
+    "punctuation_density_per_1k": {
+      "mean": 152.5656153613337,
+      "sample_count": 52,
+      "std": 20.846796761264056
+    },
+    "question_density_per_1k": {
+      "mean": 0.0,
+      "sample_count": 52,
+      "std": 0.0
+    },
+    "semicolon_density_per_1k": {
+      "mean": 0.0,
+      "sample_count": 52,
+      "std": 0.0
+    },
+    "sensory_auditory_per_1k": {
+      "mean": 2.2734123286094188,
+      "sample_count": 52,
+      "std": 0.7800728817330654
+    },
+    "sensory_gustatory_per_1k": {
+      "mean": 0.3367227885413219,
+      "sample_count": 52,
+      "std": 0.25415025469981006
+    },
+    "sensory_olfactory_per_1k": {
+      "mean": 0.21516781926833636,
+      "sample_count": 52,
+      "std": 0.3442685108293382
+    },
+    "sensory_tactile_per_1k": {
+      "mean": 2.0926693454306204,
+      "sample_count": 52,
+      "std": 0.9166349859365576
+    },
+    "sensory_visual_per_1k": {
+      "mean": 26.119749164570628,
+      "sample_count": 52,
+      "std": 16.957305661589533
+    },
+    "sentence_length_std": {
+      "mean": 7.483825625884834,
+      "sample_count": 52,
+      "std": 2.1142757870646434
+    },
+    "short_sentence_ratio": {
+      "mean": 0.2934510787890253,
+      "sample_count": 52,
+      "std": 0.11567494583290445
+    },
+    "transition_ratio": {
+      "mean": 0.34615384615384615,
+      "sample_count": 52,
+      "std": 0.08306355393589349
+    }
+  },
+  "paragraph_type_distribution": {
+    "description_char": 0.0192,
+    "description_env": 0.0577,
+    "dialogue": 0.3077,
+    "flashback": 0.0385,
+    "narration": 0.1538,
+    "psychology": 0.0769,
+    "transition": 0.3462
+  },
+  "paragraphs_count": 52,
+  "total_chars": 8296
+}

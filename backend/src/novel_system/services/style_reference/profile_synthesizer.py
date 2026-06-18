@@ -27,6 +27,7 @@ from novel_system.services.llm_client import LLMRequest, load_model_routing_conf
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.errors import LLMRequiredError, StyleReferenceError
+from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     ProfileStatus,
@@ -75,6 +76,8 @@ class ProfileSynthesizer:
         book = self.repo.get_book(book_id)
         if book is None:
             raise SynthesizeError(f"book {book_id!r} not found")
+        # 附录 B — local_only 的书禁止把 finding/quote 派生内容送往云端 LLM
+        ensure_cloud_llm_allowed(book, operation="synthesize_profile")
 
         findings = self.repo.list_findings(book_id=book_id, run_id=run_id)
         # PR-23 — 被驳回的 finding 不进聚合 payload / source_finding_ids_json;

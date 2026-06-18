@@ -8,47 +8,50 @@
 ```
 backend/tests/golden/style_reference/
 ├── corpus/
-│   ├── luxun_short_stories.txt        # 主力测试集
-│   ├── laoshe_short_stories.txt       # 对照测试集
-│   └── shenxc_biancheng_excerpt.txt   # 短篇下限测试
+│   ├── luxun_short_stories.txt   # 主力测试集:鲁迅短篇 11 篇,约 66,000 字
+│   ├── zhuziqing_essays.txt      # 对照测试集:朱自清散文 4 篇,约 8,300 字
+│   └── luxun_kongyiji.txt        # 下限测试集:单篇《孔乙己》,约 2,600 字(全层 skip)
 ├── expected/
-│   └── (待 PR-3+ 落 expected JSON,如 luxun_profile_metrics.json 等)
+│   ├── luxun_ingest_expected.json      # 主力集 ingest 期望(26 metrics + input_assessment 等)
+│   └── zhuziqing_ingest_expected.json  # 对照集 ingest 期望
 └── README.md
 ```
 
-## 当前状态:占位语料
+## 语料来源与版权
 
-PR-2 仅落 **placeholder 合成中文文本**作为占位,**不是真实公版作品**。
-每份 placeholder 文件头部已显式标注"占位语料,真实公版 corpus 待提供"。
+全部为**公有领域**作品,2026-06-13 取自中文维基文库(zh.wikisource.org,
+REST API `page/html` + zh-hans 变体转换,HTMLParser 提取 <p> 正文并滤除
+许可证/导航噪声):
 
-PR-2 单测在 placeholder 上验证 ingest / metrics / segmentation 链路通畅,
-**不**在 placeholder 上验证文学质量或风格还原度。
+- **鲁迅**(1881–1936,卒逾 50/70 年,两岸与美国均已进入公有领域;
+  所收各篇均发表于 1930 年以前):《狂人日记》《孔乙己》《药》《明天》
+  《一件小事》《头发的故事》《风波》《故乡》《阿Q正传》《祝福》《在酒楼上》
+- **朱自清**(1898–1948,卒逾 50 年,大中华区公有领域;所收各篇发表于
+  1923–1927,美国亦公有领域):《背影》《荷塘月色》《温州的踪迹》《航船中的文明》
 
-## 真实 corpus 待提供
+**硬约束(《手册》§9.2 / 附录 C B9)**:本目录严禁出现当代受版权保护 IP
+的文本或关键词;`test_style_reference_golden.py` 内置关键词守卫用例,
+命中即 fail。
 
-用户后续将以独立 commit 替换 placeholder 为真实公版作品。推荐源材料如下,
-全部公版或开放授权,可放心放入仓库:
+## 期望文件再生成
 
-| 文件 | 推荐源材料 | 字数目标 | 获取建议 |
-|---|---|---|---|
-| luxun_short_stories.txt | 《孔乙己》《故乡》《祝福》《阿Q正传》 | ~80k | 中国哲学书电子化计划 (ctext.org) / 维基文库 zh.wikisource.org |
-| laoshe_short_stories.txt | 《断魂枪》《月牙儿》 | ~50k | 中国哲学书电子化计划 / Project Gutenberg 中文区 (gutenberg.org) |
-| shenxc_biancheng_excerpt.txt | 《边城》节选 | ~30k | 维基文库 / 公版作品归档库 |
+corpus 或 metrics 算法**有意**变更后,重新生成 expected:
 
-**严禁**使用当代 IP(江南、龙族、路明非、路鸣泽、昂热、恺撒等 — 见 §9.2)。
-CI 后续会加 grep 守卫拒绝这些关键词进入 golden 目录。
+```powershell
+cd backend
+python tests/golden/style_reference/regen_expected.py
+```
 
-## 替换 placeholder 的步骤
+(脚本在隔离临时库上跑真实 ingest 管线——启发式分类,无 LLM,结果确定。)
 
-1. 从推荐源下载 TXT(确认编码为 UTF-8,统一 LF 换行)
-2. 替换 corpus/ 下对应同名文件,**保留头部首行 `# 来源:<url>` 元数据**
-3. 跑 `python -m pytest backend/tests/test_style_reference_metrics.py -v` 确认指标计算稳定
-4. 跑 `backend/tests/test_style_reference_ingest.py` 确认 input_assessment 进入预期等级
+## 本地私有语料验证(不入仓库)
 
-## 文件命名约定
+想用自己的书(如受版权保护的当代小说)验证摄取/统计/抄袭检测,
+设环境变量指向本地 TXT(UTF-8 或 GB18030)后单独跑:
 
-- `corpus/`:**输入语料**(原始 TXT)
-- `expected/`:**预期输出**(JSON,后续 PR-3+ 落地)
-  - `<author>_profile_metrics.json` — 期望的硬指标 ± tolerance
-  - `<author>_sub_dim_keywords.json` — 每 sub_dim 期望出现的关键词
-  - `faux_*.txt` — 故意构造的反例文本(如"伪张爱玲腔"),必须 validation fail
+```powershell
+$env:NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS = "C:\path\to\本地参考书.txt"
+python -m pytest tests/test_style_reference_local_corpus.py -v
+```
+
+未设该变量时这些用例自动跳过;本地书内容永不进入仓库。

@@ -124,3 +124,28 @@ def test_compact_ws_collapses_whitespace() -> None:
     assert compact_ws("  hello   world\n\n!") == "hello world !"
     assert compact_ws("") == ""
     assert compact_ws(None) == ""  # type: ignore[arg-type]
+
+
+def test_split_paragraphs_falls_back_to_single_newline_for_chapter_blob() -> None:
+    """单换行分段的网文 TXT(无空行):空行切分退化为整章一段时,
+    自动改按单换行切分。"""
+    # 20 个 200 字"段落"以单换行连接,仅章节间有空行 → 空行切分平均段长 4000+
+    para = "这是一个标准长度的中文叙述段落,用来模拟网络下载文本的常见排版习惯。" * 5
+    chapter = "\n".join(para for _ in range(20))
+    text = f"第一章\n{chapter}\n\n第二章\n{chapter}"
+    paragraphs = split_paragraphs(text)
+    assert len(paragraphs) >= 40, "应按单换行切出全部段落"
+    bodies = [body for _s, _e, body in paragraphs]
+    assert all(len(b) < 1000 for b in bodies)
+    # offset 仍须回指原文
+    for start, end, body in paragraphs[:5]:
+        assert text[start:end] == body
+
+
+def test_split_paragraphs_keeps_blank_line_mode_for_normal_text() -> None:
+    """正常空行分段文本不触发兜底(黄金语料路径零影响)。"""
+    text = "第一段内容。\n\n第二段内容,稍微长一点。\n\n第三段。"
+    paragraphs = split_paragraphs(text)
+    assert [b for _s, _e, b in paragraphs] == [
+        "第一段内容。", "第二段内容,稍微长一点。", "第三段。",
+    ]

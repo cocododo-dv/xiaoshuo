@@ -157,12 +157,26 @@ def execute_with_idempotency(
         session.commit()
         return result, None
     except DomainError:
-        record.status = "failed"
-        session.commit()
+        _rollback_and_mark_failed(
+            session,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            attempt_no=record.attempt_no,
+            now_iso=now.isoformat(),
+            lease_expires_at=lease_expires_at,
+            actor_ref=actor_ref,
+        )
         raise
     except OperationalError as exc:
-        record.status = "failed"
-        session.commit()
+        _rollback_and_mark_failed(
+            session,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            attempt_no=record.attempt_no,
+            now_iso=now.isoformat(),
+            lease_expires_at=lease_expires_at,
+            actor_ref=actor_ref,
+        )
         if is_database_busy_error(exc):
             raise DomainError(
                 "DATABASE_BUSY",
@@ -172,9 +186,66 @@ def execute_with_idempotency(
             ) from exc
         raise
     except Exception as exc:
-        record.status = "failed"
-        session.commit()
+        _rollback_and_mark_failed(
+            session,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            attempt_no=record.attempt_no,
+            now_iso=now.isoformat(),
+            lease_expires_at=lease_expires_at,
+            actor_ref=actor_ref,
+        )
         raise DomainError("INTERNAL_ERROR", str(exc), status_code=500) from exc
+
+
+def _rollback_and_mark_failed(
+    session: Session,
+    *,
+    idempotency_key: str,
+    request_hash: str,
+    attempt_no: int,
+    now_iso: str,
+    lease_expires_at: str,
+    actor_ref: str,
+) -> None:
+    """action 失败时**先回滚**半成品写入,再单独落失败标记。
+
+    旧实现直接 ``record.status="failed"; session.commit()``,会把 action 已
+    flush 的部分行连同失败标记一起提交(半提交)。回滚会连带撤销本请求内
+    创建的 record 与 started 日志,故此处重建 failed record + 失败审计日志。
+    """
+    session.rollback()
+    record = session.get(IdempotencyKey, idempotency_key)
+    if record is None:
+        record = IdempotencyKey(
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            status="failed",
+            worker_id="http",
+            attempt_no=attempt_no,
+            heartbeat_at=now_iso,
+            lease_expires_at=lease_expires_at,
+        )
+        session.add(record)
+    else:
+        record.status = "failed"
+        record.request_hash = request_hash
+        record.attempt_no = attempt_no
+        record.heartbeat_at = now_iso
+        record.lease_expires_at = lease_expires_at
+    session.add(
+        OperationLog(
+            event_type="idempotency_failed",
+            object_type="idempotency_key",
+            object_ref=idempotency_key,
+            payload_json={
+                "request_hash": request_hash,
+                "attempt_no": attempt_no,
+                "actor_ref": actor_ref,
+            },
+        )
+    )
+    session.commit()
 
 
 def _prepare_operator_action_context(session: Session, *, path_template: str, payload: Any) -> dict[str, Any] | None:

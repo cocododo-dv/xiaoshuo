@@ -90,7 +90,94 @@
 - 前端 composable:`frontend/src/composables/useFocusTrap.js`
 - 宿主视图:`frontend/src/views/KnowledgeConsoleView.vue`(metrics 面板)、`ReferenceLearningView.vue`
 
-## 八、2026-05-31 收口勘误
+## 八、2026-06-12 防线加固(审查修复轮)
+
+针对模块审查发现的「防线静默失效」问题集中修复(`tests/test_style_reference_hardening.py` 24 用例覆盖):
+
+- **反抄袭事前预防接线**:`SystemPromptFragments` 新增 `anti_plagiarism_block` 第 4 块(§A.5 红线模板 + banned_terms scope=generation 填充,配置缺失有内置兜底);任一风格 block 非空时必随注入、永不参与预算截断;多层叠加时 banned_terms 取全层并集。前端 SrApply 面板展示的「第 4 块」自此为真实契约。
+- **抄袭检测升级**:语料从 profile quotes 扩为**全书段落**(`_load_plagiarism_corpus`,按 checksum 进程内小缓存);匹配前做规范化(去空白/标点、统一小写,Unicode P*/S*),防「插空格/换标点」绕过;倒排索引建在 generated 侧,全书语料复杂度 O(n+m) 不变。
+- **cloud_policy 强制执行**(新 `policy.py`):`local_only` 的书在 start_run / reclassify / synthesize / preview 一律 409 `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`;导入分类强制降级启发式;async_full 语义路跳过。此前该字段只存不查。
+- **校验语义闭合**:sync 快路径补上 quantitative(§4.3 设计对齐,qc gate 自此有量化对照);semantic 路**尝试执行但失败**时 PASS 封顶 PARTIAL(空集不再静默折叠成满分);sync/preview 的 report 落盘 quantitative_json。
+- **卡死回收**:RUNNING 超 60 分钟的僵尸 run 在下次同书启动时自动降级 FAILED(`failure_reason=stale_running_reaped`);pending 超 10 分钟的 async report 在轮询端点惰性降级 fail;报告序列化新增 `status` 字段(pending/done)。
+- **错误与边界**:`LLMRequiredError` / `CloudPolicyBlockedError` 继承 DomainError → 409 + author_action(原 LLMRequired 落通用 500);上传体积上限 10MB(413);注入截断改行边界感知(损失过半时退回字符截断);MIXED intensity 三块截断额之和封顶 `system_prompt_max_tokens`(原 1.5x 溢出预算)。
+- **测试夹具勘误**:既有夹具中装饰性的 `cloud_policy="local_only"` 统一改 `segments_only`(local_only 拒绝行为由专门用例覆盖)。
+
+**遗留(本轮明确不做)**:start_run 后台任务化 + 进度轮询(架构改动大);黄金语料扩容到真实规模 + expected 指标(需外部公版语料);前端 intensity 滑块 apply 端到端打通;few-shot(B)/RAG(C) 真实现(现为预算变体);binding UNIQUE 约束 + apply 事务化(需 migration)。
+
+### 第二轮(同日,清遗留)
+
+- **幂等层半提交修复(全应用级)**:`execute_with_idempotency` 原失败路径直接 `record.status="failed"; commit()`,会把 action 已 flush 的半成品一并提交;现改为**先 rollback 再单独落失败标记**(`_rollback_and_mark_failed`,补 `idempotency_failed` 审计日志)。materialization 等所有幂等端点的部分失败自此整体回滚。
+- **start_run 后台化**:`StartRunRequest.background=true` → 立即返回 RUNNING + run_id,抽取在单 worker 线程独立 session 执行(`_RUN_EXECUTOR`);层粒度进度写 `coverage_json.progress`(layers_total/done/current_layer),层边界协作响应 cancel。inline 模式(默认)保持单事务零回归。React 端 rerun 改走 background + 2.5s 轮询(`srPollRun`,20 分钟上限),完成/失败提示。
+- **前端 cloud_policy 勘误(关键)**:`srImportBook` 原硬编码 `local_only`——配合策略强制执行会卡死一切 UI 导入书的抽取;改默认 `segments_only`,并对 `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED` 给专门文案。
+- **apply 注入配置端到端(后端面)**:`ApplyProfileRequest` 新增 intensity / sub_dimensions / include_* → `MaterializationService.apply_profile(config_json=...)` 落 binding.config_json(MIXED 注入路径既有消费);重复 apply 复用 binding 并更新 strategy/config。React apply 深层页仍为原型绑定(未调 /apply),滑块前端接线待 styleref 深层 store 化。
+- **binding 目标唯一约束**:ORM + migration `20260612_0053`(先按 created_at 去重再 batch 重建加 UNIQUE(profile_id, scope, scope_ref_id, task_type)),并发 apply 竞态从「应用层先查后建」升级为 DB 兜底。
+- **Strategy B 真 few-shot**:新增 `SystemPromptFragments.few_shot_block`(第 5 块):B 策略从 `scene_samples_index` 直读样例引文(每 paragraph_type 取 1,k/单条/整块上限入 `injection_budget.yaml`),few-shot 在场时红线段强制随注;叠加路径不传 few-shot(多书样例混叠稀释信号)。C 策略 RAG 仍未实现。
+- 测试:`test_style_reference_hardening.py` 扩至 30 用例(后台 run 完成/进度、半提交防护、唯一约束、few-shot、apply config);migration 契约测试 head 更新至 `20260612_0053`。全量 944 通过。
+
+### 第三轮(2026-06-13,黄金语料落地 + 本地私有语料通道)
+
+- **黄金语料从占位变真实**(§9.2):维基文库(REST `page/html` + zh-hans 变体)抓取公版全文,HTMLParser 提取 `<p>` 正文(修复了正则剥标签被 data-mw 属性内 `/>` 截断的噪声问题)。主力集鲁迅短篇 11 篇 66,352 字(language/scene high · narrative medium · theme low),对照集朱自清散文 4 篇 8,296 字(全 skip,作指标对照),下限集单篇孔乙己 2,637 字(全层 skip)。来源与版权依据记录在 golden README;原 老舍/沈从文 占位文件删除(两者版权状态存疑,设计文档原推荐有误)。
+- **expected 体系**:`regen_expected.py` 在隔离临时库跑真实 ingest(启发式分类,确定性)生成 26 metrics + input_assessment + 段型分布期望 JSON;`test_style_reference_golden.py` 8 用例:语料规模/篇目、**高特异性 IP 关键词守卫**(龙族/路明非/路鸣泽/楚子航;「江南」为通用地名在公版文本合法出现 2 次,不入守卫)、ingest 输出全量回归(rel 1e-9)、下限集全 skip、抄原书段落(含标点微改)必判 plagiarism、原创文本 pass、伪华丽腔句长锚点必超容差。
+- **校准观察(设计风险 9 应验)**:段落级 std 使自适应容差整体偏宽——鲁迅 vs 朱自清整书均值对照 26 项指标**零项**超容差(如 avg_sentence_length std 16.3 → 容差 20.4)。量化 gate 现状只拦极端偏差;后续可考虑用「分块均值的 std」替代「段落级 std」收紧容差。
+- **本地私有语料通道**(用户用《龙族》验证的合规出口):`test_style_reference_local_corpus.py`,`NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS` 指向本地 TXT 时运行(未设自动 skip),书内容只进当次临时库。实测《龙族》(3.7MB GB18030):摄取/26 指标/四层 high、自抄 40 字+插空格→plagiarism 命中、原创→pass。
+- **切分器退化兜底**(《龙族》实测暴露):单换行分段的网文 TXT 在空行切分下整章并为一「段」(3.7MB 仅 116 段,段级统计失真);`split_paragraphs` 平均段长 >1500 字时自动改按单换行切分(修复后 26,677 段),黄金语料与既有路径零影响。
+- 全量 954 通过 / 15 跳过(12 chroma + 3 本地语料未设环境变量)。
+
+### 第四轮(2026-06-13,React 注入应用 stage 真后端化)
+
+把 `frontend-react/src/ws-styleref.jsx` 的「注入应用」深层页从演示接到真后端——用户点名的最大假象(apply 按钮的卡片 action 无 `effect`,批准什么都不做)修复。
+
+- **后端 effect 扩展**:`review_effects.py:_bind_style_profile` 原只转发 scope/strategy,现新增 `_style_injection_config` 把 intensity / sub_dimensions / include_* 组装为 config_json 传给 `apply_profile`(上轮已支持),与 `ApplyProfileRequest.injection_config` 同构。即「apply 决策卡批准」与「直接 /apply」落同样 binding.config_json。
+- **前端深层 store**(范式同 srSyncBooks):`SR_DEEP` 按 bookId 懒加载 profile(`GET /profiles?book_id`)+ bindings,`sr:deep-changed` 事件广播;`srInjectionPreview`(dryrun)/`srUnbind`(DELETE binding)helper。
+- **apply 按钮真化**:真书有就绪画像 → `realMode`。apply 推送决策卡,主 action 携带 `effect:{type:"bind_style_profile", profile_id, scope, task_type, strategy, intensity, sub_dimensions, include_*}`;收件箱批准 → 后端事务执行 effect → 真 bind(项目级 scope_ref_id 默认取卡片 project_id)。无画像(演示书/未合成)→ 回退原型卡(无 effect)。
+- **真注入预览**:右侧 SystemPromptFragments 卡在 realMode 下拉 `POST /profiles/{id}/injection-preview`(debounce 350ms),渲染**真实** positive/forbidden/metric/few_shot/anti_plagiarism 五块 + 注入字数预算;空画像显示「需先抽取合成」。
+- **真绑定列表 + 解绑**:realMode 渲染 `GET /profiles/{id}/bindings`,解绑走 `DELETE /bindings/{id}` 后强制重载。场景/角色级 scope 因缺目标选择器暂禁用(只支持项目级真绑定,有 title 提示)。
+- 测试:`run_effect` config 转发单测 ×2(hardening,32→ 含)、**review-items HTTP 往返**(`test_review_cards.py::test_resolve_bind_style_profile_forwards_injection_config`:建卡→resolve→断言带 config 的 binding)。`npx vite build` 通过。全量后端 **1209 通过 / 15 跳过 / 0 失败**(1224 收集)。
+
+### 第五轮(2026-06-13,概览 / 维度矩阵 / 风格画像三深层页真后端化)
+
+把剩余展示页接到真后端,采用「有真数据显真、否则演示」双模(同书库 SR_REAL 范式)。
+
+- **后端新增**`GET /books/{id}/runs`(按 created_at 倒序 + status 过滤):矩阵在**合成画像之前**就需要定位最新 run + 其 findings,此前无 list-runs 端点只能从 profile.run_id 反推(合成后才有)。
+- **深层 store 扩展**(`srLoadDeep`):一次拉齐 book 详情(stats_json)/ 最新 run / 该 run 的 findings(`?include=evidence`,按 sub_dim 分组 + obs/fp/quote 计数 + 置信度聚合)/ profile / bindings,组装富 `deep` 对象;新增 `srSynthesize` / `srReviewFinding` / `srPreviewSamples` helper;`useSrDeep(book)` hook 统一懒加载 + 订阅 `sr:deep-changed`。
+- **概览页(无需 LLM,全真可验证)**:硬指标基线(stats_json.metrics 26 项按展示名取真实 mean/std)、输入量评估(input_assessment 四层)、段落类型分布(真实占比,动态归一)、分类器校准(anchor_size / 一致率 / 是否降级)全部读真实 ingest 产物。**任意导入书(含启发式分类)即全真**。
+- **维度矩阵页**:单元格置信度/观察/引文/禁忌数叠加真实 dimCounts,skip 由 input_assessment 判定;findings 抽屉读真实 finding + 证据,审核(通过/驳回)走 `POST /findings/{id}/review`;「合成风格画像」按钮真调 `POST /runs/{id}/synthesize`(LLM 未启用→409 引导);合计数实时。无 findings(未抽取/无 LLM)→ 回退演示。
+- **风格画像页**:概述/维度摘要/指标基线/场景样例索引读真实 profile_json(narrative_summary / sub_dimensions / metrics_baseline / scene_samples_index / style_features);预览 tab 真调 `POST /profiles/{id}/preview`(3 段示例 + sync_only verdict)。无画像 → 回退演示。
+- 数据形状逐一核对后端序列化器(profile_synthesizer 的 sub_dimensions 键名 observation_count/forbidden_pattern_count/quote_count/confidence 等);后端 `test_list_book_runs_*` 测试 + `npx vite build` 三页分别通过。
+
+### 第六轮(2026-06-13,回测校验页真后端化 → 深层页套件收口)
+
+`ws-styleref-val.jsx`(`window.SrValidation` + `ValidationReportCard`)整文件重构为真后端:
+
+- **输入 + 双路径运行**:受控 textarea + sync_only / async_full 切换;运行真调 `POST /profiles/{id}/validate`。sync_only 直接用响应的 `sync_result` 渲染(量化 + 抄袭,**无需 LLM**);async_full 拿 `report_id` 后轮询 `GET /reports/{id}`(≤60s)直到 verdict 落定。LLM 未启用 → 引导改用同步快路径。
+- **report 归一化映射**(`srvNormalize`):quantitative_json(target_mean/std/actual/**tolerance**/passed/deviation_ratio,26 metric key → 中文名 + pct 标记)→ 量化条(真实项直接用后端 tolerance/passed,演示项现算);semantic_json(dimension/score 0-10)→ 雷达(≥3 轴)或评分列表;plagiarism_json(hits/matched_length/ngram_size/threshold_chars)→ 重叠计 + flags;forbidden_hits_json(pattern_statement/matched_excerpt/severity)→ 禁忌触发列表(硬触发标红)。verdict 直接用后端结论。
+- **四路汇总 / 改写建议**真实派生(通过率、语义均分、抄袭、禁忌数;建议从触发禁忌 + 最大偏离量化项现算)。无画像 / 演示书 → 全回退原型演示数据。
+- 数据形状对照 schema 逐一核对(QuantitativeReportItem / SemanticReportItem / PlagiarismReport / ForbiddenHit / ValidateResponse);`vite build` 通过。
+
+**至此深层页套件全部真后端化**:书库 · 概览 · 维度矩阵+审核 · 风格画像+预览 · 注入应用 · 回测校验,均「有真数据显真、否则演示」。
+
+### 第七轮(2026-06-13,量化容差收紧 — 核心引擎校准)
+
+修掉第三轮发现的核心缺陷:`MetricsEngine.compute_with_variance` 的 std 原按**逐段**计算,
+噪声极大——段落短、且 paragraph_type 比例指标逐段取 0/1(段级 std 退化到 ~0.5)——使
+`tolerance = max(std×1.25, floor)` 宽到几乎不拦截(原作互比 26 项零超容差,量化门形同虚设)。
+
+- **修法(最小且有原则)**:mean 不变(仍 == `compute_all` 全文单值,黄金 expected 的 mean 不变),
+  只把 **std 改为块间标准差**——`_chunk_by_chars(paragraphs, 1500)` 把语料按累计字数切成
+  ≈场景大小的块,std = 块间波动。回测对照的是「整段生成文本(≈一个块)的单值」,故 tolerance
+  应反映**作者自身块到块的自然波动**,这才有区分力;floor 仍兜底低波动指标。
+- **验证**:`test_chunk_variance_tightens_std_vs_paragraph_level`(真实鲁迅语料:块间 std 严格 <
+  逐段 std 且脱离 ~0.5 退化区,mean 不变);metrics 测试改造为块间语义(+ 单块 std=0 用例);
+  黄金 expected 重生成(std 收紧,mean 不变);伪华丽腔/既有量化用例全绿。
+
+**剩余工作 → 已升级为独立立项**:见 `docs/style-reference-phase3-backlog.md`(三个相互独立、可在全新会话单独开工的立项):
+- **立项 A** 场景/角色级 apply 绑定目标选择器(纯前端取数 + 填 effect.scope_ref_id;后端已就绪;中偏小)
+- **立项 B** finding 👍👎 反馈聚合 → confidence 持续校准(后端端点+存储+聚合+前端接线;需定聚合规则;中)
+- **立项 C** 策略 C(RAG)三粒度向量召回(Phase 3 大件,需 vector_store 索引 + rerank + 评测;大)
+
+主线(审查 → 三轮后端加固 → 黄金语料/本地通道 → 三轮前端真化 → 量化容差校准)已收口;以上为 Phase 3 增量,建议独立排期而非主线顺延。
+
+## 九、2026-05-31 收口勘误
 
 - 运行时已下线旧 `/api/v1/reference-books/*` 入口，应用仅保留 `/api/v2/style-reference/*` 作为参考书学习主公开面。
 - `POST /api/v2/style-reference/books/{book_id}/reclassify` 已从占位状态改为真实执行：会重跑段落分类、回写 `classifier_calibration` / `paragraph_type_distribution`，并清理旧 runs / findings / profiles / bindings / validation reports / banned terms / 相关 ReviewItem。

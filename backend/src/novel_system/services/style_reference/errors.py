@@ -6,6 +6,8 @@ PR-1 落地完整错误层级,后续 PR 直接 raise。
 
 from __future__ import annotations
 
+from novel_system.services.errors import DomainError
+
 
 class StyleReferenceError(Exception):
     """所有 style_reference 模块异常的基类。"""
@@ -75,17 +77,57 @@ class EmptyBookError(StyleReferenceError):
         self.stage = stage
 
 
-class LLMRequiredError(StyleReferenceError):
+class LLMRequiredError(StyleReferenceError, DomainError):
     """操作需要启用 LLM 但当前 NOVEL_SYSTEM_LLM_ENABLED=false。
 
-    extractor / synthesize 等语义抽取操作必须有 LLM;UI 应捕获此异常并提示用户
-    在 SystemConfig 启用 LLM provider。
+    extractor / synthesize 等语义抽取操作必须有 LLM。同时继承 DomainError,
+    使 API 层自动映射为 409 + author_action 引导(而非通用 500),前端可据此
+    跳转 SystemConfig 启用 LLM provider。
     """
 
     def __init__(self, operation: str) -> None:
-        super().__init__(
+        DomainError.__init__(
+            self,
+            "STYLE_REFERENCE_LLM_REQUIRED",
             f"operation {operation!r} requires NOVEL_SYSTEM_LLM_ENABLED=true; "
             "see SystemConfig to enable LLM provider",
+            status_code=409,
+            details={
+                "operation": operation,
+                "author_action": {
+                    "action": "enable_llm_provider_in_system_config",
+                    "view": "systemConfig",
+                    "label": "前往系统配置启用 LLM",
+                },
+            },
         )
         self.operation = operation
         self.next_action = "enable_llm_provider_in_system_config"
+
+
+class CloudPolicyBlockedError(StyleReferenceError, DomainError):
+    """书籍 cloud_policy=local_only 时禁止任何把书籍内容送往云端 LLM 的操作。
+
+    与 LLMRequiredError 同理继承 DomainError,API 层映射 409 + author_action。
+    """
+
+    def __init__(self, *, book_id: str, operation: str) -> None:
+        DomainError.__init__(
+            self,
+            "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED",
+            f"book {book_id!r} has cloud_policy=local_only; "
+            f"operation {operation!r} would send book content to a cloud LLM and is blocked",
+            status_code=409,
+            details={
+                "book_id": book_id,
+                "operation": operation,
+                "cloud_policy": "local_only",
+                "author_action": {
+                    "action": "review_cloud_policy",
+                    "view": "styleref",
+                    "label": "该参考书为「仅本地」策略,需调整云端策略后才能执行此操作",
+                },
+            },
+        )
+        self.book_id = book_id
+        self.operation = operation

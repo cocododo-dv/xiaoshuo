@@ -96,12 +96,34 @@ def _bind_style_profile(session: Session, project_id: str, payload: dict[str, An
         scope_ref_id=str(payload.get("scope_ref_id") or project_id),
         task_type=TaskType(str(payload.get("task_type") or "scene_generation")),
         strategy=InjectionStrategy(str(payload.get("strategy") or "A")),
+        config_json=_style_injection_config(payload) or None,
     )
     return {
         "profile_id": result.profile_id,
         "binding_id": result.binding_id,
         "review_ids": result.review_ids,
     }
+
+
+def _style_injection_config(payload: dict[str, Any]) -> dict[str, Any]:
+    """从决策卡 effect 载荷抽取注入配置(intensity / 维度 / include 开关)→
+    binding.config_json。与 routes.style_reference.ApplyProfileRequest.injection_config
+    同构,使「apply 决策卡批准」与「直接 /apply」落同样的 config。"""
+    config: dict[str, Any] = {}
+    intensity = payload.get("intensity")
+    if intensity is not None:
+        try:
+            config["intensity"] = max(0, min(100, int(intensity)))
+        except (TypeError, ValueError):
+            pass
+    sub_dimensions = payload.get("sub_dimensions")
+    if isinstance(sub_dimensions, list) and sub_dimensions:
+        config["sub_dimensions"] = [str(s) for s in sub_dimensions]
+    for key in ("include_positive", "include_forbidden", "include_metric"):
+        value = payload.get(key)
+        if value is not None:
+            config[key] = bool(value)
+    return config
 
 
 def _create_entity(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:

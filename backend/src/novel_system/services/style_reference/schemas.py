@@ -589,11 +589,15 @@ class ValidateResponse(BaseModel):
 
 
 class SystemPromptFragments(BaseModel):
-    """注入到 LLM system_prompt 头部的 3 块文本 + strategy 回填(PR-8 §5.1)。
+    """注入到 LLM system_prompt 头部的 4 块文本 + strategy 回填(PR-8 §5.1)。
 
     InjectionService.fragments_for() 返回此结构;scene_generation 调
     `to_system_prompt_prefix()` 拿到最终拼接字符串后 prepend 到
-    messages[0]["content"]。所有 block 默认 empty,允许任一为空。
+    messages[0]["content"]。风格 block 默认 empty,允许任一为空。
+
+    ``anti_plagiarism_block`` 是 §A.5 抄袭事前预防红线段(设计 §11 风险 11):
+    只要任一风格 block 非空(即确实在注入参考风格),红线段**必须**一并注入,
+    且**永不参与预算截断**。三个风格 block 全空时整体 no-op,红线段也不输出。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -601,16 +605,25 @@ class SystemPromptFragments(BaseModel):
     positive_block: str = ""
     forbidden_block: str = ""
     metric_anchor_block: str = ""
+    few_shot_block: str = ""
+    anti_plagiarism_block: str = ""
     strategy: InjectionStrategy = InjectionStrategy.A
 
     def to_system_prompt_prefix(self) -> str:
         blocks = [
             block
-            for block in (self.positive_block, self.forbidden_block, self.metric_anchor_block)
+            for block in (
+                self.positive_block,
+                self.forbidden_block,
+                self.metric_anchor_block,
+                self.few_shot_block,
+            )
             if block.strip()
         ]
         if not blocks:
             return ""
+        if self.anti_plagiarism_block.strip():
+            blocks.append(self.anti_plagiarism_block)
         return "[STYLE_REFERENCE]\n" + "\n\n".join(blocks) + "\n[/STYLE_REFERENCE]\n\n"
 
 

@@ -32,6 +32,7 @@ from novel_system.services.style_reference.errors import (
     LLMRequiredError,
     StyleReferenceError,
 )
+from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     PreviewGeneratedSample,
@@ -83,6 +84,10 @@ class PreviewService:
         profile = self.repo.get_profile(profile_id)
         if profile is None:
             raise PreviewError(f"profile {profile_id!r} not found")
+        # 附录 B — local_only 的书禁止把种子引文送往云端 LLM
+        ensure_cloud_llm_allowed(
+            self.repo.get_book(profile.book_id), operation="generate_preview"
+        )
 
         profile_json = profile.profile_json or {}
         samples_index: dict[str, list[str]] = profile_json.get("scene_samples_index") or {}
@@ -134,7 +139,7 @@ class PreviewService:
                 target_kind=ValidationTargetKind.MANUAL.value,
                 target_ref_id=None,
                 verdict=report.verdict.value,
-                quantitative_json=[],
+                quantitative_json=report.quantitative_json,
                 semantic_json=[],
                 plagiarism_json=report.plagiarism_json,
                 forbidden_hits_json=report.forbidden_hits_json,

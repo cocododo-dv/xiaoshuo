@@ -213,17 +213,36 @@ def test_sentence_length_std_zero_for_single_sentence() -> None:
     assert result["sentence_length_std"] == 0.0
 
 
-def test_compute_with_variance_std_nonzero_when_paragraphs_differ() -> None:
+def test_compute_with_variance_std_is_chunk_level() -> None:
+    """std 现为块间标准差(块 ≈1500 字),非逐段 std。
+
+    校准修正(2026-06):逐段 0/1 的段级 std 噪声过大(~0.5)使
+    tolerance=max(std×1.25, floor) 宽到几乎不拦截;改用块间 std。
+    两块 dialogue 占比 [1.0, 0.0] → std=0.5;mean 仍为全文逐段均值。
+    paragraph_type 比例与文本内容无关,只用 char_count 控分块、type 定占比。
+    """
+    long = "话" * 800  # 单段 800 字;两段累计 ≥1500 切一块
+    paragraphs = [
+        ParagraphRecord(text=long, paragraph_type="dialogue"),
+        ParagraphRecord(text=long, paragraph_type="dialogue"),   # 块1:全对话 → 1.0
+        ParagraphRecord(text=long, paragraph_type="narration"),
+        ParagraphRecord(text=long, paragraph_type="narration"),  # 块2:全叙述 → 0.0
+    ]
+    mean, std = _engine().compute_with_variance(paragraphs)["dialogue_ratio"]
+    assert mean == pytest.approx(0.5, rel=1e-3)
+    assert std == pytest.approx(0.5, rel=1e-3)
+
+
+def test_compute_with_variance_single_chunk_std_zero() -> None:
+    """短语料(不足一块)无块间样本 → std=0,由 tolerance floor 兜底。"""
     paragraphs = [
         ParagraphRecord(text="对话。", paragraph_type="dialogue"),
-        ParagraphRecord(text="叙述。", paragraph_type="narration"),
+        ParagraphRecord(text="叙述文字。", paragraph_type="narration"),
         ParagraphRecord(text="对话。", paragraph_type="dialogue"),
     ]
-    result = _engine().compute_with_variance(paragraphs)
-    # dialogue_ratio 跨段是 [1.0, 0.0, 1.0],std > 0
-    mean, std = result["dialogue_ratio"]
-    assert mean == pytest.approx(2 / 3, rel=1e-3)
-    assert std > 0
+    mean, std = _engine().compute_with_variance(paragraphs)["dialogue_ratio"]
+    assert mean == pytest.approx(2 / 3, rel=1e-3)  # mean 不受分块影响
+    assert std == 0.0
 
 
 def test_explicit_sensory_lexicon_injected() -> None:

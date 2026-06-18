@@ -2,7 +2,9 @@
 
 InjectionService 给定 `project_id` 与 `task_type`,从 `style_reference_injection_bindings`
 查 active binding,再读 profile.profile_json + 关联 forbidden_pattern findings,
-按 binding.strategy 拼成 :class:`SystemPromptFragments`(3 block + strategy 回填)。
+按 binding.strategy 拼成 :class:`SystemPromptFragments`(3 风格 block +
+anti_plagiarism 红线段 + strategy 回填)。红线段(§A.5)在任一风格 block 非空时
+必随注入且永不截断。
 
 调用方(scene_generation / chapter_draft 等)拿到 fragments 后调
 ``fragments.to_system_prompt_prefix()`` 得到字符串,prepend 到 LLM
@@ -22,7 +24,10 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from novel_system.services.style_reference.config_loader import load_yaml_config
+from novel_system.services.style_reference.config_loader import (
+    load_text_template,
+    load_yaml_config,
+)
 from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
@@ -36,6 +41,14 @@ _DEFAULT_BUDGET = {
     "forbidden_block_ratio": 0.3,
     "metric_anchor_block_ratio": 0.1,
 }
+
+# 配置文件缺失时的红线兜底:抄袭事前预防段不允许因部署缺配置而消失(§11 风险 11)
+_FALLBACK_ANTI_PLAGIARISM = """## 严格禁止
+- 复用或微改任何参考样本中的完整句子
+- 直接搬运超过 5 个连续字符的独特表达(常用词、人名、地名除外)
+- 参考样本中的意象可重复使用,但承载这些意象的句子必须完全重写
+- 若你不确定某个表达是否来自参考样本,默认认为是,改写它
+{banned_terms_list}"""
 
 
 def _load_budget() -> dict[str, Any]:
@@ -53,12 +66,32 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max_chars - 1] + "…"
 
 
+def _truncate_lines(text: str, max_chars: int) -> str:
+    """行边界感知截断:block 都是「标题行 + '- xxx' 条目行」结构,
+    在最后一个完整行处截断,避免把一条禁忌/特征截成半句送给 LLM。
+
+    行边界截断会损失超过一半预算时(单条目超长的退化情形),回退为
+    字符截断——半句好过整块丢失。"""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    cut = text.rfind("\n", 0, max_chars)
+    if cut <= max_chars // 2:
+        return _truncate(text, max_chars)
+    return text[:cut]
+
+
 def _cap_fragments(frag: "SystemPromptFragments", budget: int) -> "SystemPromptFragments":
-    """PR-16 叠加专属:按 ratio(0.6/0.3/0.1)硬截 3 block(不管 strategy)。"""
+    """PR-16 叠加专属:按 ratio(0.6/0.3/0.1)硬截 3 block(不管 strategy)。
+
+    anti_plagiarism_block 是红线段,**永不截断**,原样保留。
+    few_shot_block 在叠加路径不传(多本书样例混叠只会稀释风格信号),
+    构造时默认为空即为丢弃。
+    """
     return SystemPromptFragments(
-        positive_block=_truncate(frag.positive_block, int(budget * 0.6)),
-        forbidden_block=_truncate(frag.forbidden_block, int(budget * 0.3)),
-        metric_anchor_block=_truncate(frag.metric_anchor_block, int(budget * 0.1)),
+        positive_block=_truncate_lines(frag.positive_block, int(budget * 0.6)),
+        forbidden_block=_truncate_lines(frag.forbidden_block, int(budget * 0.3)),
+        metric_anchor_block=_truncate_lines(frag.metric_anchor_block, int(budget * 0.1)),
+        anti_plagiarism_block=frag.anti_plagiarism_block,
         strategy=frag.strategy,
     )
 
@@ -94,8 +127,35 @@ def _merge_fragments(layers_frags: list["SystemPromptFragments"]) -> "SystemProm
         positive_block=positive,
         forbidden_block=forbidden,
         metric_anchor_block=metric,
+        anti_plagiarism_block=_merge_anti_plagiarism(
+            *[f.anti_plagiarism_block for f in layers_frags]
+        ),
         strategy=layers_frags[-1].strategy,
     )
+
+
+def _merge_anti_plagiarism(*blocks: str) -> str:
+    """多层叠加时合并红线段:模板正文取首个非空(各层同模板),
+    banned_terms 条目行('- xxx')取**全层并集**——叠加注入引用了多本书的
+    风格,任何一层的禁用专有名词都必须保留。"""
+    non_empty = [b for b in blocks if b.strip()]
+    if not non_empty:
+        return ""
+    if len(non_empty) == 1:
+        return non_empty[0]
+    base = non_empty[0]
+    base_lines = base.splitlines()
+    seen = {s.strip() for s in base_lines if s.strip().startswith("- ")}
+    extra: list[str] = []
+    for block in non_empty[1:]:
+        for line in block.splitlines():
+            s = line.strip()
+            if s.startswith("- ") and s not in seen:
+                seen.add(s)
+                extra.append(s)
+    if not extra:
+        return base
+    return base + "\n" + "\n".join(extra)
 
 
 def ordered_character_ids(pov_id, onstage_ids) -> list[str]:
@@ -149,6 +209,10 @@ class InjectionService:
         self._last_binding_id: str | None = None
         self._last_base_binding_id: str | None = None
         self._last_layer_count: int = 0
+        # §9 Defect B: drift-corrective few-shot context — set by caller before
+        # fragments_for() to override the default ptype priority with dimension-targeted
+        # exemplars ("show, don't tell" drift correction).
+        self.drift_ptype_priority: list[str] | None = None
 
     # --------------------------------------------------------------- public
     def fragments_for(
@@ -225,7 +289,10 @@ class InjectionService:
             strategy = InjectionStrategy(binding.strategy)
         except ValueError:
             strategy = InjectionStrategy.A
-        return self._render(profile, strategy, binding.config_json or {})
+        return self._render(
+            profile, strategy, binding.config_json or {},
+            drift_ptype_priority=self.drift_ptype_priority,
+        )
 
     def _budget_total(self) -> int:
         return int(_load_budget().get("system_prompt_max_tokens", 800))
@@ -368,20 +435,26 @@ class InjectionService:
         profile,
         strategy: InjectionStrategy,
         config: dict[str, Any],
+        *,
+        drift_ptype_priority: list[str] | None = None,
     ) -> SystemPromptFragments:
         sub_dims_raw = config.get("sub_dimensions")
         sub_dims = [str(s) for s in sub_dims_raw] if sub_dims_raw else None
         positive = self._render_positive(profile)
         forbidden = self._render_forbidden(profile, sub_dims=sub_dims)
         metric = self._render_metric(profile)
+        few_shot = ""
 
         if strategy == InjectionStrategy.B:
             positive, forbidden, metric = self._apply_budget(positive, forbidden, metric)
+            few_shot = self._render_few_shot(profile, drift_ptype_priority=drift_ptype_priority)
         elif strategy == InjectionStrategy.C:
             forbidden = self._summarize_forbidden(forbidden, max_chars=200)
             metric = ""
         elif strategy == InjectionStrategy.MIXED:
-            # PR-9 §"intensity 语义" — 0-100 缩放 ratio:0 → 0.3x, 50 → 0.9x, 100 → 1.5x
+            # PR-9 §"intensity 语义" — 0-100 缩放 ratio:0 → 0.3x, 50 → 0.9x, 100 → 1.5x;
+            # 但三块截断额之和封顶 system_prompt_max_tokens(配置语义是 max,
+            # 高 intensity 不允许溢出预算 50%,超出部分按比例回缩)
             try:
                 intensity = max(0, min(100, int(config.get("intensity", 50))))
             except (TypeError, ValueError):
@@ -392,25 +465,120 @@ class InjectionService:
             p_ratio = float(budget.get("positive_block_ratio", 0.6))
             f_ratio = float(budget.get("forbidden_block_ratio", 0.3))
             m_ratio = float(budget.get("metric_anchor_block_ratio", 0.1))
-            if not config.get("include_positive", True):
-                positive = ""
-            else:
-                positive = _truncate(positive, int(total * p_ratio * scale))
-            if not config.get("include_forbidden", True):
-                forbidden = ""
-            else:
-                forbidden = _truncate(forbidden, int(total * f_ratio * scale))
-            if not config.get("include_metric", False):
-                metric = ""
-            else:
-                metric = _truncate(metric, int(total * m_ratio * scale))
+            caps = {
+                "positive": int(total * p_ratio * scale) if config.get("include_positive", True) else 0,
+                "forbidden": int(total * f_ratio * scale) if config.get("include_forbidden", True) else 0,
+                "metric": int(total * m_ratio * scale) if config.get("include_metric", False) else 0,
+            }
+            cap_sum = sum(caps.values())
+            if cap_sum > total > 0:
+                shrink = total / cap_sum
+                caps = {k: int(v * shrink) for k, v in caps.items()}
+            positive = _truncate_lines(positive, caps["positive"]) if caps["positive"] else ""
+            forbidden = _truncate_lines(forbidden, caps["forbidden"]) if caps["forbidden"] else ""
+            metric = _truncate_lines(metric, caps["metric"]) if caps["metric"] else ""
+
+        # §A.5 / §11 风险 11 — 抄袭事前预防红线段:任一风格 block 非空时必随注入,
+        # 不参与任何预算截断;few-shot 引用原文片段,更必须带红线
+        anti_plagiarism = ""
+        if positive.strip() or forbidden.strip() or metric.strip() or few_shot.strip():
+            anti_plagiarism = self._render_anti_plagiarism(profile)
 
         return SystemPromptFragments(
             positive_block=positive,
             forbidden_block=forbidden,
             metric_anchor_block=metric,
+            few_shot_block=few_shot,
+            anti_plagiarism_block=anti_plagiarism,
             strategy=strategy,
         )
+
+    def _render_few_shot(self, profile, *, drift_ptype_priority: list[str] | None = None) -> str:
+        """Strategy B few-shot:从 profile.scene_samples_index 直读样例引文。
+
+        每种段落类型最多取 1 条,按对风格感最有信息量的类型优先;
+        样例引用原文,因此调用方(_render)保证红线段必随注入。
+
+        §9 Defect B — drift_ptype_priority: when drift correction is active, the caller
+        passes a re-ordered priority list (from style_drift_detector.drift_corrective_ptype_priority)
+        so the few-shot exemplars "show" the correct baseline for drifted dimensions
+        rather than just "telling" the model to adjust.
+        """
+        budget = _load_budget()
+        k = int(budget.get("few_shot_k", 3))
+        quote_max = int(budget.get("few_shot_quote_max_chars", 120))
+        block_max = int(budget.get("few_shot_block_max_chars", 480))
+        if k <= 0:
+            return ""
+        samples_index: dict[str, Any] = (
+            (profile.profile_json or {}).get("scene_samples_index") or {}
+        )
+        if not isinstance(samples_index, dict) or not samples_index:
+            return ""
+        # §9: drift-corrective priority overrides static default when active
+        if drift_ptype_priority:
+            # Merge: drift-relevant types first, then remaining types in default order
+            _default_order = [
+                "dialogue", "description_env", "action", "psychology",
+                "narration", "description_char", "transition", "flashback",
+            ]
+            seen = set(drift_ptype_priority)
+            preferred = tuple(drift_ptype_priority) + tuple(p for p in _default_order if p not in seen)
+        else:
+            preferred = (
+                "dialogue",
+                "description_env",
+                "action",
+                "psychology",
+                "narration",
+                "description_char",
+                "transition",
+                "flashback",
+            )
+        header = (
+            "[风格样例 — 漂移修正](以下样例针对检测到的风格偏移维度;体会句式与节奏;严禁照抄)"
+            if drift_ptype_priority
+            else "[风格样例](体会句式与节奏;严禁照抄或微改其中任何句子)"
+        )
+        lines = [header]
+        picked = 0
+        for ptype in preferred:
+            if picked >= k:
+                break
+            quote_ids = samples_index.get(ptype) or []
+            if not quote_ids:
+                continue
+            quote = self.repo.get_quote(str(quote_ids[0]))
+            text = (getattr(quote, "quote_text", "") or "").strip() if quote else ""
+            if not text:
+                continue
+            lines.append(f"- ({ptype})「{_truncate(text, quote_max)}」")
+            picked += 1
+        if picked == 0:
+            return ""
+        return _truncate_lines("\n".join(lines), block_max)
+
+    def _render_anti_plagiarism(self, profile) -> str:
+        """渲染 §A.5 红线段:固定模板 + banned_terms(scope=generation)填充。
+
+        模板文件缺失时使用内置兜底——红线段不允许因部署缺配置而消失。
+        """
+        try:
+            template = load_text_template("anti_plagiarism_template")
+        except FileNotFoundError:
+            template = _FALLBACK_ANTI_PLAGIARISM
+        terms = [
+            (t.term or "").strip()
+            for t in self.repo.list_banned_terms(profile.profile_id, scope="generation")
+        ]
+        terms = [t for t in terms if t]
+        if terms:
+            terms_text = "\n".join(f"- {t}" for t in terms)
+        else:
+            # 无自定义禁词时去掉「专有名词」引导句,只保留红线规则
+            template = template.split("此外,")[0].rstrip()
+            terms_text = ""
+        return template.replace("{banned_terms_list}", terms_text).strip()
 
     def _render_positive(self, profile) -> str:
         data = profile.profile_json or {}
@@ -502,15 +670,15 @@ class InjectionService:
         f_ratio = float(budget.get("forbidden_block_ratio", 0.3))
         m_ratio = float(budget.get("metric_anchor_block_ratio", 0.1))
         return (
-            _truncate(positive, int(total * p_ratio)),
-            _truncate(forbidden, int(total * f_ratio)),
-            _truncate(metric, int(total * m_ratio)),
+            _truncate_lines(positive, int(total * p_ratio)),
+            _truncate_lines(forbidden, int(total * f_ratio)),
+            _truncate_lines(metric, int(total * m_ratio)),
         )
 
     def _summarize_forbidden(self, forbidden: str, *, max_chars: int) -> str:
         if not forbidden:
             return ""
-        return _truncate(forbidden, max_chars)
+        return _truncate_lines(forbidden, max_chars)
 
 
 def _ts_to_int(ts: str | None) -> int:

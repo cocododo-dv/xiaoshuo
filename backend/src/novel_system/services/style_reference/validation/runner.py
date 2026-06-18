@@ -99,7 +99,7 @@ class ValidationOrchestrator:
             req=req,
             verdict=report.verdict.value,
             mode=ValidationMode.SYNC_ONLY,
-            quantitative_json=[],
+            quantitative_json=report.quantitative_json,
             semantic_json=[],
             plagiarism_json=report.plagiarism_json,
             forbidden_hits_json=report.forbidden_hits_json,
@@ -208,28 +208,47 @@ def _async_worker(
                 logger.warning("async_worker: profile %s vanished", profile_id)
                 return
 
-            quotes = [q.quote_text for q in bg_repo.list_quotes(profile.book_id)]
-            plag = check_plagiarism(generated_text, quotes)
+            # 语料 = 全书段落(+ 合成 quotes 不在段落表,此处不补:counter_example
+            # 是 LLM 生成的反例而非原文,不构成抄袭对照)
+            from novel_system.services.style_reference.validation import (
+                _load_plagiarism_corpus,
+            )
+
+            corpus = _load_plagiarism_corpus(bg_repo, profile.book_id)
+            plag = check_plagiarism(generated_text, corpus)
             forbid_local = check_forbidden_local(generated_text, profile_id, bg_session)
             quant = check_quantitative(generated_text, profile)
 
+            # 附录 B — local_only 的书跳过语义路(派生 statement 也不送云)
+            from novel_system.services.style_reference.policy import cloud_llm_allowed
+
+            book = bg_repo.get_book(profile.book_id)
+            policy_allows_llm = cloud_llm_allowed(book) if book is not None else True
+
             semantic: list = []
             forbid_sem: list = []
-            if llm_enabled and llm_client is not None:
+            semantic_degraded = False
+            if llm_enabled and llm_client is not None and policy_allows_llm:
                 try:
                     semantic = check_semantic(generated_text, profile, llm_client)
                 except Exception as exc:  # pylint: disable=broad-except
+                    semantic_degraded = True
                     logger.warning("async_worker semantic failed: %s", exc)
                 try:
                     forbid_sem = check_forbidden_semantic(
                         generated_text, profile, bg_session, llm_client
                     )
                 except Exception as exc:  # pylint: disable=broad-except
+                    semantic_degraded = True
                     logger.warning("async_worker forbidden_semantic failed: %s", exc)
 
             all_forbid = list(forbid_local) + list(forbid_sem)
             verdict = _compute_full_verdict(
-                quant=quant, semantic=semantic, plag=plag, forbid=all_forbid
+                quant=quant,
+                semantic=semantic,
+                plag=plag,
+                forbid=all_forbid,
+                semantic_degraded=semantic_degraded,
             )
 
             row = bg_repo.get_validation_report(report_id)

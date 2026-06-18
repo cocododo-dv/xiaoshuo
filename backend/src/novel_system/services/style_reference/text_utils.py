@@ -57,15 +57,35 @@ def compute_text_checksum(normalized_text: str) -> str:
     return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
 
 
+# 空行切段退化判据:平均段长超过该值视为「单换行分段的网文 TXT」
+# (正常中文段落几十到几百字;上千字说明空行其实是章节分隔)
+_SINGLE_NEWLINE_FALLBACK_AVG_CHARS = 1500
+
+
 def split_paragraphs(text: str) -> list[tuple[int, int, str]]:
     """按空行(`\\n\\s*\\n`)切段,返回 (start_offset, end_offset, body) 三元组列表。
 
     offset 是相对原文(已清洗)的字符位置,end_offset 不含尾字符。
     body 已 strip 首尾空白,但不剥内部换行。
+
+    退化兜底:大量网络下载 TXT 用**单换行**分段(无空行),空行切分会把
+    整章并成一「段」,污染段落级统计与分类。当空行切分的平均段长超过
+    ``_SINGLE_NEWLINE_FALLBACK_AVG_CHARS`` 时,自动改按单换行切分。
     """
+    paragraphs = _split_on(text, r"\n\s*\n")
+    if paragraphs:
+        avg_len = sum(len(body) for _s, _e, body in paragraphs) / len(paragraphs)
+        if avg_len > _SINGLE_NEWLINE_FALLBACK_AVG_CHARS:
+            fallback = _split_on(text, r"\n+")
+            if len(fallback) > len(paragraphs):
+                return fallback
+    return paragraphs
+
+
+def _split_on(text: str, separator_pattern: str) -> list[tuple[int, int, str]]:
     paragraphs: list[tuple[int, int, str]] = []
     offset = 0
-    for part in re.split(r"\n\s*\n", text):
+    for part in re.split(separator_pattern, text):
         stripped = part.strip()
         if not stripped:
             offset += len(part) + 2  # 跨过空行分隔(近似)

@@ -69,6 +69,20 @@ class ImportPathRequest(BaseModel):
 class StartRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     layers: list[str] | None = None
+    # True 时立即返回 RUNNING + run_id,抽取在后台线程执行;
+    # 调用方轮询 GET /runs/{run_id} 读 coverage_json.progress
+    background: bool = False
+
+
+class ApplyConfigMixin(BaseModel):
+    """apply 时落入 binding.config_json 的注入配置(MIXED 策略消费)。"""
+
+    model_config = ConfigDict(extra="forbid")
+    intensity: int | None = None          # 0-100,风格强度滑块
+    sub_dimensions: list[str] | None = None  # 维度多选(过滤 forbidden findings)
+    include_positive: bool | None = None
+    include_forbidden: bool | None = None
+    include_metric: bool | None = None
 
 
 class FindingReviewRequest(BaseModel):
@@ -77,12 +91,24 @@ class FindingReviewRequest(BaseModel):
     comment: str | None = None
 
 
-class ApplyProfileRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ApplyProfileRequest(ApplyConfigMixin):
     scope: str
     scope_ref_id: str | None = None
     task_type: str = "scene_generation"
     strategy: str = "A"
+
+    def injection_config(self) -> dict[str, Any]:
+        """非空注入配置 → binding.config_json(端到端打通 intensity 滑块)。"""
+        config: dict[str, Any] = {}
+        if self.intensity is not None:
+            config["intensity"] = max(0, min(100, int(self.intensity)))
+        if self.sub_dimensions:
+            config["sub_dimensions"] = [str(s) for s in self.sub_dimensions]
+        for key in ("include_positive", "include_forbidden", "include_metric"):
+            value = getattr(self, key)
+            if value is not None:
+                config[key] = bool(value)
+        return config
 
 
 class ValidateGeneratedRequest(BaseModel):
@@ -272,6 +298,11 @@ def import_book_path(
     )
 
 
+"""上传体积上限:参考书是纯文本,30 万字 UTF-8 约 1MB;10MB 已极宽裕,
+超限直接 413,避免 `file.read()` 把任意大文件整块载入内存。"""
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
 @router.post(f"{PATH_PREFIX}/books/import-upload")
 async def import_book_upload(
     request: Request,
@@ -281,7 +312,13 @@ async def import_book_upload(
     cloud_policy: str = Form(...),
     session: Session = Depends(get_session),
 ):
-    raw_bytes = await file.read()
+    raw_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_BYTES:
+        raise DomainError(
+            "STYLE_REFERENCE_UPLOAD_TOO_LARGE",
+            f"upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
+            status_code=413,
+        )
     payload: dict[str, Any] = {
         "file_name": file.filename,
         "title": title,
@@ -436,7 +473,9 @@ def start_run(
                 status_code=400,
             ) from exc
         orch = RunOrchestrator(session, llm_client=client, llm_enabled=enabled)
-        result = orch.start_extract_run(book_id, layers=layers)
+        result = orch.start_extract_run(
+            book_id, layers=layers, background=bool(body.get("background"))
+        )
         return {
             "run_id": result.run_id,
             "book_id": result.book_id,
@@ -459,6 +498,24 @@ def start_run(
         path_template=f"{PATH_PREFIX}/books/{{book_id}}/runs",
         payload={"book_id": book_id, **body},
         action=_do,
+    )
+
+
+@router.get(f"{PATH_PREFIX}/books/{{book_id}}/runs")
+def list_book_runs(
+    book_id: str,
+    request: Request,
+    status: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """列出某书的抽取 run(最新在前)。前端维度矩阵据此在合成画像前定位最新 run
+    及其 findings(无 list-runs 时只能从 profile.run_id 反推,合成前拿不到)。"""
+    repo = StyleReferenceRepository(session)
+    runs = repo.list_runs(book_id=book_id, status=status)
+    runs = sorted(runs, key=lambda r: (r.created_at or "", r.run_id), reverse=True)
+    return ok(
+        {"runs": [_serialize_run(r) for r in runs]},
+        req_id=_req_id(request),
     )
 
 
@@ -794,6 +851,7 @@ def apply_profile(
             scope_ref_id=body.get("scope_ref_id"),
             task_type=task_type,
             strategy=strategy,
+            config_json=payload.injection_config() or None,
         )
         return {
             "profile_id": result.profile_id,
@@ -866,6 +924,7 @@ def _serialize_validation_report(report) -> dict[str, Any]:
         "target_kind": report.target_kind,
         "target_ref_id": report.target_ref_id,
         "verdict": report.verdict,
+        "status": "pending" if not report.verdict else "done",
         "quantitative_json": report.quantitative_json or [],
         "semantic_json": report.semantic_json or [],
         "plagiarism_json": report.plagiarism_json or {},
@@ -873,6 +932,35 @@ def _serialize_validation_report(report) -> dict[str, Any]:
         "mode_executed": report.mode_executed,
         "created_at": report.created_at,
     }
+
+
+# async_full 的 pending report(verdict 空)超过该时长视为后台 worker 孤儿
+# (进程重启 / 线程池丢失),轮询端点上惰性降级为 fail,避免前端永久轮询。
+REPORT_PENDING_TIMEOUT_MINUTES = 10
+
+
+def _reap_orphan_report(session: Session, report) -> None:
+    if report.verdict:
+        return
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        created = datetime.fromisoformat(str(report.created_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=REPORT_PENDING_TIMEOUT_MINUTES)
+    if created < cutoff:
+        report.verdict = "fail"
+        report.forbidden_hits_json = list(report.forbidden_hits_json or []) + [
+            {
+                "severity": "error",
+                "pattern_statement": "async validation worker orphaned (timeout); degraded to fail",
+                "matched_excerpt": "",
+            }
+        ]
+        session.flush()
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/validate")
@@ -932,6 +1020,7 @@ def get_validation_report(
             f"validation report {report_id!r} not found",
             status_code=404,
         )
+    _reap_orphan_report(session, report)
     return ok({"report": _serialize_validation_report(report)}, req_id=_req_id(request))
 
 

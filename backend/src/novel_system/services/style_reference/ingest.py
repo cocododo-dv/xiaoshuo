@@ -39,6 +39,7 @@ from novel_system.services.style_reference.errors import (
     LLMRequiredError,
 )
 from novel_system.services.style_reference.metrics import MetricsEngine, ParagraphRecord
+from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import CloudPolicy
 from novel_system.services.style_reference.segmentation import (
@@ -177,6 +178,8 @@ class IngestService:
             )
         if not self._llm_enabled or self._llm_client is None:
             raise LLMRequiredError(operation="reclassify_book")
+        # 附录 B — local_only 的书禁止把段落送往云端 LLM 分类器
+        ensure_cloud_llm_allowed(book, operation="reclassify_book")
 
         paragraphs = self.repo.list_paragraphs(book_id)
         if not paragraphs:
@@ -233,11 +236,12 @@ class IngestService:
         if not paragraph_spans:
             raise EmptyBookError("segmentation")
 
-        # LLM / 启发式分类
+        # LLM / 启发式分类(local_only 的书强制走启发式,段落不出本机)
+        use_llm = self._llm_enabled and policy != CloudPolicy.LOCAL_ONLY
         seg_result = classify_paragraphs(
             paragraph_spans,
-            llm_enabled=self._llm_enabled,
-            llm_client=self._llm_client,
+            llm_enabled=use_llm,
+            llm_client=self._llm_client if use_llm else None,
         )
 
         stats_json = {
