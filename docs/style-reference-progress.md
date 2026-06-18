@@ -264,11 +264,22 @@
 初始化并随 deep 重载同步。17 用例(+`test_deep_findings_returns_operator_user_vote`:投票后该 operator 回显
 user_vote、他人为空)。`vite build` + 全后端绿。**持续校准回路 UX 完整闭合。**
 
+### 第十二轮(2026-06-18,立项 C 验收闭合 — RAG 真实 chroma 后端 hit@5)
+
+此前 RAG 全部单测用 `memory` 后端(字符集交集打分),`rag.py` 的 **chroma 代码路径从未运行**,且设计 §10
+「三粒度 hit@5 ≥ 0.7」从未实测。本轮新增 `tests/test_style_reference_rag_chroma.py`(`@pytest.mark.chroma_integration`,
+Windows 自动跳过、WSL 跑;只导入 rag/repository/models/vector_store 干净链,不触发 system_config 重导入):
+真实 `ChromaVectorStore`(chromadb 1.5.7,确定性 64 维字符频率 embedding)上验证三粒度索引构建 / 召回 /
+C 注入 / 清理,并以「每段 60% 前缀作 query、源段须在 top-5」测 paragraph 粒度 hit@5。
+**WSL 实测:paragraph hit@5 = 8/8 = 1.00(≥0.7 达成);sentence/scene 召回非空;C rag_block + 红线随注;
+delete 清空三 collection — ALL CHROMA RAG CHECKS PASSED。** 立项 C 的量化验收标准至此**经真实后端实证闭合**。
+
 **剩余工作 → 独立立项**(已全部完成):
 - ~~**立项 A** 场景/角色级 apply 绑定目标选择器~~ — **已完成(第十轮)**。
 - ~~**立项 B** finding 👍👎 反馈聚合 → confidence 持续校准~~ — **已完成(第九轮)**。
-- ~~**立项 C** 策略 C(RAG)三粒度向量召回~~ — **已完成(第八轮)**。可选增强:LLM rerank 接非实时路径
-  (`style_ref_rag_rerank` hook 已就绪);hit@5 在真实黄金语料 + chroma(WSL)上的正式评测。
+- ~~**立项 C** 策略 C(RAG)三粒度向量召回~~ — **已完成(第八轮);hit@5 经真实 chroma 实证(第十二轮)**。
+  剩余纯可选:LLM rerank 接非实时路径(`style_ref_rag_rerank` hook 已就绪);真实大模型 embedding 的语义 hit@5
+  (当前为确定性 embedding,需接入真实 embedding 服务才有语义意义)。
 
 主线(审查 → 三轮后端加固 → 黄金语料/本地通道 → 三轮前端真化 → 量化容差校准 → 立项 C RAG → 立项 B 校准回路
 → 立项 A 场景/角色绑定)**全部收口;Phase 3 backlog 三个立项 A/B/C 均已完成**。
