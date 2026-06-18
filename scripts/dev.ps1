@@ -311,6 +311,72 @@ function Test-DemoSeedSkipped {
     return Test-Path -LiteralPath $script:SkipDemoSeedMarker
 }
 
+function Show-StartupFailureDiagnostics {
+    param(
+        [string]$FailureMessage
+    )
+
+    Write-Host ""
+    Write-Host "==> Startup failed before all services became healthy." -ForegroundColor Red
+    if ($FailureMessage) {
+        Write-Host ("    {0}" -f $FailureMessage) -ForegroundColor Red
+    }
+
+    # Surface the backend's actual HTTP status + body. The most common failure is the
+    # backend answering with a non-200 (e.g. a 500 from a stale DB schema) — a plain
+    # "Timed out waiting for backend health" message hides that root cause.
+    try {
+        $resp = Invoke-WebRequest -UseBasicParsing $script:BackendHealthUrl -TimeoutSec 5
+        Write-Host ("Backend {0}: HTTP {1}" -f $script:BackendHealthUrl, $resp.StatusCode) -ForegroundColor Yellow
+    }
+    catch {
+        $probeError = $_
+        $statusCode = $null
+        $body = $null
+        $exception = $probeError.Exception
+        if (($exception -is [System.Net.WebException]) -and ($null -ne $exception.Response)) {
+            try { $statusCode = [int]([System.Net.HttpWebResponse]$exception.Response).StatusCode } catch {}
+            try {
+                $reader = New-Object System.IO.StreamReader($exception.Response.GetResponseStream())
+                $body = $reader.ReadToEnd()
+                $reader.Close()
+            }
+            catch {}
+        }
+        if (-not $body) {
+            $errorDetails = $probeError.ErrorDetails
+            if ($null -ne $errorDetails) { $body = $errorDetails.Message }
+        }
+        if ($statusCode) {
+            Write-Host ("Backend {0}: HTTP {1}" -f $script:BackendHealthUrl, $statusCode) -ForegroundColor Red
+        }
+        else {
+            Write-Host ("Backend {0} not reachable: {1}" -f $script:BackendHealthUrl, $exception.Message) -ForegroundColor Red
+        }
+        if ($body) { Write-Host ("Backend response: {0}" -f $body.Trim()) -ForegroundColor Red }
+    }
+
+    # Dump the tail of each service log so the underlying error is visible inline.
+    $logTargets = @(
+        @{ Label = "backend.err.log"; Path = $script:BackendErrLog },
+        @{ Label = "backend.out.log"; Path = $script:BackendOutLog },
+        @{ Label = "frontend-react.err.log"; Path = $script:ReactErrLog },
+        @{ Label = "frontend.err.log"; Path = $script:FrontendErrLog }
+    )
+    foreach ($target in $logTargets) {
+        if (Test-Path $target.Path) {
+            $tail = Get-Content -Path $target.Path -Tail 20 -ErrorAction SilentlyContinue
+            if ($tail) {
+                Write-Host ("----- {0} (last 20 lines) -----" -f $target.Label) -ForegroundColor Yellow
+                foreach ($line in $tail) { Write-Host $line }
+            }
+        }
+    }
+    Write-Host ("Full logs: {0}" -f $script:RunDir) -ForegroundColor Yellow
+    Write-Host ("Tip: a stale schema (`"no such column ...`") means migrations are behind — run: cd backend; python -m alembic upgrade head") -ForegroundColor Yellow
+    Write-Host ""
+}
+
 function Start-TrackedServices {
     Assert-CommandAvailable -Name "python"
     Assert-CommandAvailable -Name "npm.cmd"
@@ -356,6 +422,7 @@ function Start-TrackedServices {
         Wait-Until -Label "react frontend home" -Condition { Test-UrlHealthy -Url $script:ReactUrl } -TimeoutSeconds 60
     }
     catch {
+        try { Show-StartupFailureDiagnostics -FailureMessage $_.Exception.Message } catch {}
         Stop-TrackedServices
         throw
     }
@@ -370,6 +437,7 @@ function Start-TrackedServices {
         Start-Process $script:ReactUrl
     }
     catch {
+        Write-Host ("Could not auto-open a browser; open {0} manually." -f $script:ReactUrl) -ForegroundColor Yellow
     }
 }
 
