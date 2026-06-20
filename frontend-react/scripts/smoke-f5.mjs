@@ -66,6 +66,9 @@ await check("② 书库视图渲染真实书", async () => {
   const real = await page.evaluate(() => (window.SR_BOOKS || []).length);
   // SR_BOOKS 是模块内绑定，window 上没有——改从 DOM 断言演示书已被替换
   if (text.includes("呐喊 · 短篇集")) throw new Error("demo books still shown");
+  // 真实书的书库行必须暴露删除入口（按需 hover 显现，但 DOM 中常驻）
+  const hasDel = await page.evaluate((id) => !!document.querySelector(`.sr-book-del[data-sr-del="${id}"]`), bookId);
+  if (!hasDel) throw new Error("delete control missing in UI for real book");
 });
 
 await check("③ LLM 不可用：启动抽取 → 明确引导而非假进度", async () => {

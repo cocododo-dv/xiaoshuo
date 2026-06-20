@@ -201,6 +201,103 @@ def test_delete_book(client: TestClient) -> None:
     assert resp2.status_code == 404
 
 
+def test_delete_book_purges_entire_derived_chain(client: TestClient) -> None:
+    """删书路由必须级联清除「全部」派生数据,不留孤儿。
+
+    `_seed_full_chain` 覆盖 run/extraction/finding/2 quotes/2 evidences/profile;
+    本测试再补 binding / validation_report / banned_term / finding_feedback 四条
+    `purge_derived_data` 分支,删后逐表断言对该 book/profile/finding 零残留。
+    防止某条 delete 分支被悄悄删掉而 `test_delete_book`(无派生数据)仍通过。
+    """
+    from novel_system.db.models import (
+        StyleReferenceBannedTerm,
+        StyleReferenceEvidence,
+        StyleReferenceExtraction,
+        StyleReferenceFinding,
+        StyleReferenceFindingFeedback,
+        StyleReferenceInjectionBinding,
+        StyleReferenceParagraph,
+        StyleReferenceProfile,
+        StyleReferenceQuote,
+        StyleReferenceRun,
+        StyleReferenceValidationReport,
+    )
+    from novel_system.services.style_reference.finding_feedback import apply_feedback
+
+    book_id = _import_book(client)
+    run_id, finding_id, profile_id = _seed_full_chain(book_id)
+    suffix = book_id[-6:]
+
+    # 追加 _seed_full_chain 未覆盖的 profile / finding 级派生
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_binding(
+            binding_id=f"sr_bind_del_{suffix}",
+            profile_id=profile_id,
+            scope="project",
+            scope_ref_id="proj_del",
+            task_type="scene_generation",
+            strategy="A",
+            config_json={},
+            status="active",
+        )
+        repo.create_validation_report(
+            report_id=f"sr_rep_del_{suffix}",
+            profile_id=profile_id,
+            target_kind="manual",
+            target_ref_id=None,
+            verdict="pass",
+            quantitative_json=[],
+            semantic_json=[],
+            plagiarism_json={},
+            forbidden_hits_json=[],
+            mode_executed="async_full",
+        )
+        repo.create_banned_term(
+            term_id=f"sr_term_del_{suffix}",
+            profile_id=profile_id,
+            term="禁词",
+            replacement_hint=None,
+            source="user",
+            scope="generation",
+        )
+        apply_feedback(session, finding_id, operator_ref="u1", vote="up")
+        session.commit()
+
+    # 删前确认四类派生确有数据(否则后面的「零残留」断言会失去意义)
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        assert repo.list_finding_feedback(finding_id)
+        assert repo.list_bindings(profile_id=profile_id)
+        assert repo.list_validation_reports(profile_id=profile_id)
+        assert repo.list_banned_terms(profile_id)
+
+    resp = client.delete(
+        f"{PREFIX}/books/{book_id}",
+        headers={"X-Idempotency-Key": f"del_chain_{suffix}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["deleted"] is True
+    assert client.get(f"{PREFIX}/books/{book_id}").status_code == 404
+
+    # 全部派生表对该 book / profile / finding 零残留
+    with SessionLocal() as session:
+        def _count(model, column, value) -> int:
+            return session.query(model).filter(column == value).count()
+
+        assert _count(StyleReferenceParagraph, StyleReferenceParagraph.book_id, book_id) == 0
+        assert _count(StyleReferenceRun, StyleReferenceRun.book_id, book_id) == 0
+        assert _count(StyleReferenceExtraction, StyleReferenceExtraction.book_id, book_id) == 0
+        assert _count(StyleReferenceQuote, StyleReferenceQuote.book_id, book_id) == 0
+        assert _count(StyleReferenceFinding, StyleReferenceFinding.book_id, book_id) == 0
+        assert _count(StyleReferenceProfile, StyleReferenceProfile.book_id, book_id) == 0
+        assert _count(StyleReferenceEvidence, StyleReferenceEvidence.finding_id, finding_id) == 0
+        assert _count(StyleReferenceFindingFeedback, StyleReferenceFindingFeedback.finding_id, finding_id) == 0
+        assert _count(StyleReferenceInjectionBinding, StyleReferenceInjectionBinding.profile_id, profile_id) == 0
+        assert _count(StyleReferenceValidationReport, StyleReferenceValidationReport.profile_id, profile_id) == 0
+        assert _count(StyleReferenceBannedTerm, StyleReferenceBannedTerm.profile_id, profile_id) == 0
+
+
 def test_reclassify_llm_required_when_disabled(client: TestClient, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     book_id = _import_book(client)

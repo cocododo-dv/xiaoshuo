@@ -26,10 +26,16 @@ from novel_system.db.models import (
 def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     """删除 book 的全部派生数据,保留 paragraphs 与 book 本身。
 
-    覆盖 9 张派生表(validation reports → bindings → banned terms → profiles →
-    evidences → findings → extractions → quotes → runs,FK 反向顺序)+ 相关
-    ReviewItem(``review_style_ref_apply_*`` / ``review_style_ref_calib_*`` /
-    ``review_style_ref_finding_*`` 前缀)。
+    覆盖 10 张派生表(validation reports → bindings → banned terms → profiles →
+    finding_feedback → evidences → findings → extractions → quotes → runs,
+    FK 反向顺序)+ 相关 ReviewItem(``review_style_ref_apply_*`` /
+    ``review_style_ref_calib_*`` / ``review_style_ref_finding_*`` 前缀)+ 每个
+    profile 的三粒度 RAG 向量索引(向量后端,独立于 DB 事务)。
+
+    刻意不删 ``style_reference_metric_events``:纯运营遥测(无 book_id / FK 列),
+    由 ``cleanup_metric_events`` 的 90 天留存独立清理。删书后其 profile_id /
+    binding_id 字段可能悬空,但聚合按 event_kind/时间窗口分组、不回链已删 profile,
+    故不构成完整性问题。
 
     路由 ``delete_book`` 与 ``reclassify`` 共用;flush 但不 commit。
     返回 {表名: 删除行数} 摘要。

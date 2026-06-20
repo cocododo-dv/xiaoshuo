@@ -337,6 +337,7 @@ function WsStyleRef({ go }) {
   const [bookId, setBookId] = useStSR("b1");
   const [stage, setStage] = useStSR("matrix");
   const [headerBusy, setHeaderBusy] = useStSR(null);
+  const [delBusy, setDelBusy] = useStSR(null);
   const book = SR_BOOKS.find(b => b.id === bookId) || SR_BOOKS[0];
 
   /* FE-ALIGN F5 授权接缝：书库由后端背书，变化时重渲染 */
@@ -361,6 +362,33 @@ function WsStyleRef({ go }) {
   };
   React.useEffect(() => () => clearTimeout(busyRef.current), []);
 
+  /* 删除参考书（仅真实书）：confirm → DELETE 端点（级联清除全部衍生数据）→ 刷新书库。
+     删的若是当前选中书，切到刷新后剩余的第一本（srDeleteBook 内部已 srSyncBooks 重置 SR_BOOKS；
+     删光最后一本时书库回落演示书，next 即演示书首项）。 */
+  const onDeleteBook = async (b) => {
+    if (delBusy || !b || !window.srDeleteBook) return;
+    const ok = window.confirm(
+      `确认删除参考书《${b.title}》？\n\n` +
+      "将一并清除它的全部衍生数据（抽取 findings、证据引文、风格画像、注入绑定、回测报告），此操作不可恢复。"
+    );
+    if (!ok) return;
+    // 删的若是当前选中书，删后切到原位置的邻居（srDeleteBook 内部已 srSyncBooks 重置 SR_BOOKS）。
+    const wasActive = bookId === b.id;
+    const idx = SR_BOOKS.findIndex(x => x.id === b.id);
+    setDelBusy(b.id);
+    try {
+      await window.srDeleteBook(b.id);
+      if (wasActive && SR_BOOKS.length) {
+        const next = SR_BOOKS[Math.min(Math.max(idx, 0), SR_BOOKS.length - 1)];
+        if (next) setBookId(next.id);
+      }
+    } catch (e) {
+      window.alert("删除失败：" + ((e && e.message) || e));
+    } finally {
+      setDelBusy(null);
+    }
+  };
+
   return (
     <div className="sr-page" data-screen-label="styleref">
       <div className="sr-cols">
@@ -376,7 +404,7 @@ function WsStyleRef({ go }) {
 
           <ul className="sr-book-list">
             {SR_BOOKS.map(b => (
-              <li key={b.id}>
+              <li key={b.id} className="sr-book-item">
                 <button className={`sr-book ${bookId === b.id ? "is-active" : ""}`} onClick={() => setBookId(b.id)}>
                   <span className={`sr-book-spine spine-${b.color}`} />
                   <span className="sr-book-body">
@@ -386,6 +414,21 @@ function WsStyleRef({ go }) {
                   </span>
                   <SrBookState s={b.status} />
                 </button>
+                {b.real && (
+                  <button
+                    type="button"
+                    className={`sr-book-del${delBusy === b.id ? " is-busy" : ""}`}
+                    data-sr-del={b.id}
+                    title="删除这本参考书"
+                    aria-label={`删除参考书《${b.title}》`}
+                    disabled={!!delBusy}
+                    onClick={() => onDeleteBook(b)}
+                  >
+                    {delBusy === b.id
+                      ? <span className="sr-spin" style={{ display: "inline-flex" }}><I.Refresh size={13} /></span>
+                      : <I.Trash size={13} />}
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -1581,6 +1624,21 @@ const srCss = `
 .sr-book-title { font-size: 14.5px; font-weight: 600; }
 .sr-book-author { font-size: 12px; color: var(--ink-3); }
 .sr-book-run { font-size: 11px; color: var(--ink-4); margin-top: 2px; }
+.sr-book-item { position: relative; }
+.sr-book-del {
+  position: absolute; bottom: 9px; right: 11px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 27px; height: 27px; padding: 0;
+  border: 1px solid var(--line-1); border-radius: 7px;
+  background: var(--paper-0); color: var(--ink-4); cursor: pointer;
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--t-fast), color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+.sr-book-item:hover .sr-book-del,
+.sr-book-item:focus-within .sr-book-del,
+.sr-book-del.is-busy { opacity: 1; pointer-events: auto; }
+.sr-book-del:hover { color: var(--crimson); border-color: var(--crimson); background: var(--crimson-wash); }
+.sr-book-del:disabled { cursor: default; }
 .sr-books-import {
   display: flex; align-items: center; gap: 12px; margin: 0 10px 8px; padding: 12px 14px;
   border: 1px dashed var(--line-2); border-radius: 10px; color: var(--ink-3); cursor: pointer;
