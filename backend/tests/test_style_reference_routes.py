@@ -360,10 +360,14 @@ def test_start_run_llm_required_when_disabled(client: TestClient, monkeypatch) -
         json={},
         headers={"X-Idempotency-Key": "run_disabled"},
     )
-    # LLMRequiredError 走 default handler → 409 (StyleReferenceError 子类)
-    # 实际上 LLMRequiredError 不是 DomainError,会走 generic exception handler
-    # → 5xx;此测试关键是确认调用不返回 200
-    assert resp.status_code >= 400
+    # LLM 未启用 → LLMRequiredError(DomainError, status_code=409)→ 精确契约:
+    # 409 + 错误码 + author_action(镜像 test_style_reference_hardening::
+    # test_llm_required_maps_to_409_with_author_action)。弱断言 >= 400 会放过
+    # 「丢掉 DomainError 基类 → 退回通用 500、丢失 author_action 导航」的回归。
+    assert resp.status_code == 409
+    err = resp.json()["error"]
+    assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
+    assert err["details"]["author_action"]
 
 
 def test_get_run_happy(client: TestClient) -> None:
@@ -566,7 +570,12 @@ def test_synthesize_llm_required_when_disabled(client: TestClient, monkeypatch) 
         f"{PREFIX}/runs/{run_id}/synthesize",
         headers={"X-Idempotency-Key": "synth_disabled"},
     )
-    assert resp.status_code >= 400
+    # synthesize 委托 ProfileSynthesizer → LLMRequiredError(409)。钉精确契约,
+    # 不用弱 >= 400(否则 409 退化成通用 500、丢 author_action 也照样绿)。
+    assert resp.status_code == 409
+    err = resp.json()["error"]
+    assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
+    assert err["details"]["author_action"]
 
 
 def test_preview_llm_required_when_disabled(client: TestClient, monkeypatch) -> None:
@@ -577,4 +586,9 @@ def test_preview_llm_required_when_disabled(client: TestClient, monkeypatch) -> 
         f"{PREFIX}/profiles/{profile_id}/preview",
         headers={"X-Idempotency-Key": "preview_disabled"},
     )
-    assert resp.status_code >= 400
+    # preview 委托 PreviewService → LLMRequiredError(409)。钉精确契约,
+    # 不用弱 >= 400(否则 409 退化成通用 500、丢 author_action 也照样绿)。
+    assert resp.status_code == 409
+    err = resp.json()["error"]
+    assert err["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
+    assert err["details"]["author_action"]

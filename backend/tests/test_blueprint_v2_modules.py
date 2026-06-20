@@ -523,7 +523,9 @@ class TestPovVoiceColoring:
     def test_warrior_archetype_detection(self):
         from novel_system.services.pov_voice_coloring import build_pov_coloring
         directive = build_pov_coloring("将军林远", None, {"role": "将军"})
-        assert "threat" in " ".join(directive.attention_focus).lower() or len(directive.attention_focus) > 0
+        # warrior 原型应本能关注威胁:_ARCHETYPE_TRAITS["warrior"]["attention"] 首项即 "threats"。
+        # 删除原 `or len(...)>0` 逃逸子句——它会让 archetype 检测彻底失效+任何非空兜底仍判绿。
+        assert "threat" in " ".join(directive.attention_focus).lower()
 
     def test_format_includes_pov_constraint(self):
         from novel_system.services.pov_voice_coloring import build_pov_coloring, format_pov_coloring_prompt
