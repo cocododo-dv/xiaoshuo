@@ -72,9 +72,9 @@
       "std": 0.16118305338746608
     },
     "personification_density_per_1k": {
-      "mean": 0.0,
+      "mean": 0.07741494609137346,
       "sample_count": 904,
-      "std": 0.0
+      "std": 0.16704770545609232
     },
     "psychology_ratio": {
       "mean": 0.07079646017699115,

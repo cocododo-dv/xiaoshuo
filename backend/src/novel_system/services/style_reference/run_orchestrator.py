@@ -1,7 +1,7 @@
 """RunOrchestrator — Style Reference 抽取 run 编排。
 
-§14 PR-3:启动 run + LLMRequiredError + 按 layers 调度 LanguageExtractor /
-NarrativeExtractor;PR-3 内只支持 language / narrative;scene / theme 在 PR-6 加。
+§14:启动 run + LLMRequiredError + 按 layers 调度四层 extractor
+(language / narrative / scene / theme,见 _LAYER_EXTRACTOR_MAP),默认四层全跑。
 """
 
 from __future__ import annotations
@@ -120,7 +120,8 @@ class RunOrchestrator:
         if unknown:
             raise DomainError(
                 "STYLE_REFERENCE_LAYER_NOT_SUPPORTED",
-                f"PR-3 only supports language + narrative;{unknown!r} 推迟到 PR-6",
+                f"unsupported style-reference layer(s): {unknown!r}; "
+                f"supported = {[layer.value for layer in _LAYER_EXTRACTOR_MAP]}",
                 status_code=400,
             )
 

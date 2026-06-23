@@ -110,12 +110,22 @@ def test_metaphor_density() -> None:
     assert result["metaphor_density_per_1k"] > 0
 
 
-def test_personification_placeholder() -> None:
-    """PR-2 占位实现:personification 词表为空,density 应为 0。"""
-    text = "风在哭,树在笑,云在叹息。"
-    paragraphs = [ParagraphRecord(text=text, paragraph_type="narration")]
-    result = _engine().compute_all(paragraphs)
-    assert result["personification_density_per_1k"] == 0.0
+def test_personification_density() -> None:
+    """拟人密度:含拟人动词的文本应 >0,平实记叙文本应为 0。
+
+    词表填充后(原 PR-2 占位为空恒返 0),该子维不再静默失效。
+    """
+    vivid = "风在呜咽,落叶低语,远山沉睡,溪水翩跹起舞。"
+    plain = "我买了三个苹果,把它们放进篮子里,然后回家。"
+    vivid_d = _engine().compute_all(
+        [ParagraphRecord(text=vivid, paragraph_type="description_env")]
+    )["personification_density_per_1k"]
+    plain_d = _engine().compute_all(
+        [ParagraphRecord(text=plain, paragraph_type="narration")]
+    )["personification_density_per_1k"]
+    assert vivid_d > 0
+    assert plain_d == 0.0
+    assert vivid_d > plain_d
 
 
 def test_dialogue_ratio_by_paragraph_type() -> None:
