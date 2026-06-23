@@ -39,6 +39,29 @@ def _count_rows(session, model) -> int:
     return session.scalar(select(func.count()).select_from(model))
 
 
+def test_seed_demo_chapter_ending_scene_runs_to_final_scene_offline(session) -> None:
+    """回归守卫:种子章末场景 CH001_SC03(is_chapter_last=1)在离线确定性流水线下
+    必须跑到可审阅终稿(final_scene),而非停在蓝图 §10 章末 hook 硬门的 partial_rewrite。
+
+    interop-center E2E 的 replay 脚手架依赖这条产出真实 final_scene row。此前无任何
+    后端用例覆盖种子场景的真实流水线——质量地板 v2 收紧章末 hook QC 后,种子缺 hook
+    使该 E2E 静默翻红,却仍在后端全量测试里全绿。本测试封死该盲区。
+    """
+    from novel_system.services.orchestrator import Orchestrator
+
+    seed_demo(session)
+    session.commit()
+
+    result = Orchestrator(session).run_scene("CH001_SC03", author_note=None)
+    session.commit()
+
+    assert result["scene_status"] == "archived", result
+    final_row = result["current_final_scene_row_id"]
+    assert final_row and final_row.startswith("final_scene_CH001_SC03"), result
+    # hook 已声明 → §10 章末 hook 硬门不再把章末场景判成 partial_rewrite
+    assert result["hard_qc"]["branch"] != "rewrite_partial", result
+
+
 def test_seed_demo_creates_first_chapter_and_review_item(session) -> None:
     summary = seed_demo(session)
     session.commit()

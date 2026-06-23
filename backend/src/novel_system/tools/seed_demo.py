@@ -88,6 +88,11 @@ DEMO_SCENES = [
         "scene_goal": "让角色带着未解问题进入下一章",
         "beats_json": ["追到码头", "交换条件", "余波收束"],
         "must_include_text": "远处汽笛压住最后一句话",
+        # 章末场景(is_chapter_last=1)必须声明非空 hook,否则触发蓝图 §10 章末 hook
+        # 硬门(missing_hook_type)→ partial_rewrite、不产出 final_scene。该门当前仅校验
+        # hook 非空(classify_hook_type 对任意非空文本都会兜底归类),此处给一条语义贴合
+        # 的悬念 hook,既满足硬门又是合理的 demo 数据。
+        "hook": "汽笛压过最后一句话，他没说出口的秘密，到底会把两人引向怎样的命运。",
         "target_length_band": "medium",
         "scene_type": "cliffhanger",
         "is_chapter_last": 1,
