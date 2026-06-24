@@ -1,5 +1,6 @@
 param(
-    [string]$Distro = "Ubuntu-24.04"
+    [string]$Distro = "Ubuntu-24.04",
+    [switch]$IncludeLegacyVue
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,8 +53,17 @@ $windowsScript = Join-Path $repoRoot "scripts\verify_windows.ps1"
 $repoRootForWslPath = $repoRoot -replace "\\", "/"
 $sharedWslPython = ""
 
-Invoke-NativeCommand -Label "Windows verification lane" -FilePath "powershell" -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", $windowsScript)
-Invoke-NativeStep -Label "Seeded runtime-ops E2E lane" -WorkingDirectory $frontendDir -FilePath "npm.cmd" -ArgumentList @("run", "test:e2e")
+$windowsArgs = @("-ExecutionPolicy", "Bypass", "-File", $windowsScript)
+if ($IncludeLegacyVue) { $windowsArgs += "-IncludeLegacyVue" }
+Invoke-NativeCommand -Label "Windows verification lane" -FilePath "powershell" -ArgumentList $windowsArgs
+
+# Legacy Vue seeded Playwright E2E is no longer a default release gate (reversible).
+# Pass -IncludeLegacyVue to include it. The React mainline contract E2E uses
+# run-smokes.mjs (needs a separate seeded backend on :8009); wiring it into this lane
+# is a follow-up. Manual run:  cd frontend; node ../frontend-react/scripts/run-smokes.mjs
+if ($IncludeLegacyVue) {
+    Invoke-NativeStep -Label "Seeded runtime-ops E2E lane (legacy Vue)" -WorkingDirectory $frontendDir -FilePath "npm.cmd" -ArgumentList @("run", "test:e2e")
+}
 
 $repoRootWsl = (& wsl.exe -d $Distro wslpath -a "$repoRootForWslPath" | Out-String).Trim()
 if (-not $repoRootWsl) {

@@ -1,7 +1,9 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("start", "stop", "restart")]
-    [string]$Action
+    [string]$Action,
+    # Legacy Vue frontend (5173) is no longer started by default; pass -IncludeLegacyVue to start it too (reversible).
+    [switch]$IncludeLegacyVue
 )
 
 $ErrorActionPreference = "Stop"
@@ -390,7 +392,9 @@ function Start-TrackedServices {
     $script:BackendPort = Resolve-AvailablePort -PreferredPort $script:BackendPreferredPort -Label "Backend"
     $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
     $script:BackendHealthUrl = "$script:BackendUrl/api/v1/chapters"
-    Assert-PortAvailable -Port $script:FrontendPort -Label "Frontend"
+    if ($script:IncludeLegacyVue) {
+        Assert-PortAvailable -Port $script:FrontendPort -Label "Frontend"
+    }
     Assert-PortAvailable -Port $script:ReactPort -Label "React frontend"
 
     New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
@@ -405,11 +409,13 @@ function Start-TrackedServices {
         Set-Content -Path $script:BackendPidFile -Value $backendProcess.Id
         Set-Content -Path $script:BackendUrlFile -Value $script:BackendUrl
 
-        Write-Step -Message "Starting frontend on $script:FrontendUrl"
-        $frontendCommand = '$env:VITE_NOVEL_SYSTEM_API_BASE = ''{0}''; npm.cmd run dev -- --host 127.0.0.1 --port {1}' -f $script:BackendUrl, $script:FrontendPort
-        $frontendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $frontendCommand) -WorkingDirectory $script:FrontendDir -RedirectStandardOutput $script:FrontendOutLog -RedirectStandardError $script:FrontendErrLog -PassThru
-        Set-Content -Path $script:FrontendPidFile -Value $frontendProcess.Id
-        Set-Content -Path $script:FrontendUrlFile -Value $script:FrontendUrl
+        if ($script:IncludeLegacyVue) {
+            Write-Step -Message "Starting frontend on $script:FrontendUrl"
+            $frontendCommand = '$env:VITE_NOVEL_SYSTEM_API_BASE = ''{0}''; npm.cmd run dev -- --host 127.0.0.1 --port {1}' -f $script:BackendUrl, $script:FrontendPort
+            $frontendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $frontendCommand) -WorkingDirectory $script:FrontendDir -RedirectStandardOutput $script:FrontendOutLog -RedirectStandardError $script:FrontendErrLog -PassThru
+            Set-Content -Path $script:FrontendPidFile -Value $frontendProcess.Id
+            Set-Content -Path $script:FrontendUrlFile -Value $script:FrontendUrl
+        }
 
         Write-Step -Message "Starting React frontend on $script:ReactUrl"
         $reactCommand = '$env:VITE_NOVEL_SYSTEM_API_BASE = ''{0}''; npm.cmd run dev -- --host 127.0.0.1 --port {1}' -f $script:BackendUrl, $script:ReactPort
@@ -418,7 +424,9 @@ function Start-TrackedServices {
         Set-Content -Path $script:ReactUrlFile -Value $script:ReactUrl
 
         Wait-Until -Label "backend health" -Condition { Test-UrlHealthy -Url $script:BackendHealthUrl } -TimeoutSeconds 90
-        Wait-Until -Label "frontend home" -Condition { Test-UrlHealthy -Url $script:FrontendUrl } -TimeoutSeconds 60
+        if ($script:IncludeLegacyVue) {
+            Wait-Until -Label "frontend home" -Condition { Test-UrlHealthy -Url $script:FrontendUrl } -TimeoutSeconds 60
+        }
         Wait-Until -Label "react frontend home" -Condition { Test-UrlHealthy -Url $script:ReactUrl } -TimeoutSeconds 60
     }
     catch {
@@ -429,7 +437,12 @@ function Start-TrackedServices {
 
     Write-Host ("Backend:  {0}" -f $script:BackendUrl) -ForegroundColor Green
     Write-Host ("React:    {0}  (default)" -f $script:ReactUrl) -ForegroundColor Green
-    Write-Host ("Frontend: {0}  (legacy Vue)" -f $script:FrontendUrl) -ForegroundColor Green
+    if ($script:IncludeLegacyVue) {
+        Write-Host ("Frontend: {0}  (legacy Vue)" -f $script:FrontendUrl) -ForegroundColor Green
+    }
+    else {
+        Write-Host "Frontend: (legacy Vue) disabled by default; pass -IncludeLegacyVue to start-dev to enable." -ForegroundColor DarkGray
+    }
     Write-Host ("Logs:     {0}" -f $script:RunDir) -ForegroundColor Green
 
     # FE-ALIGN P8: React 前端是默认入口（Vue 降为备用）
@@ -464,6 +477,7 @@ $script:BackendPreferredPort = 8000
 $script:BackendPort = $script:BackendPreferredPort
 $script:FrontendPort = 5173
 $script:ReactPort = 5174
+$script:IncludeLegacyVue = [bool]$IncludeLegacyVue
 $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
 $script:BackendHealthUrl = "$script:BackendUrl/api/v1/chapters"
 $script:FrontendUrl = "http://127.0.0.1:5173"
