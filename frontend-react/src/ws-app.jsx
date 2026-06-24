@@ -14,13 +14,14 @@ import { WsAuthor } from "./ws-author.jsx";
 import { SceneTweaks, WsScene } from "./ws-scene.jsx";
 import { WsManuscripts } from "./ws-manuscripts.jsx";
 import { WsLongform6 } from "./lf6-app.jsx";
+import { WsQuality } from "./ws-quality.jsx";
 import { WsIndex, WsInterop } from "./ws-ops.jsx";
 import { WsSettings } from "./ws-settings.jsx";
 import { WsPalette } from "./ws-palette.jsx";
 
 /* global React, ReactDOM, I, useTweaks, TweaksPanel, TweakSection, TweakSlider, TweakToggle, TweakRadio,
    WsHome, WsReview, useReviewBadge, WsSnowflake, WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, SceneTweaks,
-   WsFlowmap, WsLibrary, WsTrash, WsStyleRef, WsAuthor, WsScene, WsManuscripts, WsLongform6,
+   WsFlowmap, WsLibrary, WsTrash, WsStyleRef, WsAuthor, WsScene, WsManuscripts, WsLongform6, WsQuality,
    WsIndex, WsInterop, WsSettings, WsPalette, WsWorks, useActiveWork, useWorks */
 const { useState: useAS, useEffect: useAE, useRef: useARef } = React;
 const wsPortal = ReactDOM.createPortal;
@@ -72,6 +73,7 @@ const WS_NAV_GROUPS = [
       { id: "scene",       label: "AI 起草台", icon: "Play" },
       { id: "manuscripts", label: "成稿中心", icon: "BookOpen" },
       { id: "longform",    label: "长篇控制塔", icon: "Radar" },
+      { id: "quality",     label: "文学质量", icon: "Microscope" },
     ],
   },
   {
@@ -198,6 +200,7 @@ function App() {
       case "scene":       return <WsScene go={go} t={t} />;
       case "manuscripts": return <WsManuscripts go={go} />;
       case "longform":    return <WsLongform6 go={go} />;
+      case "quality":     return <WsQuality go={go} />;
       case "index":       return <WsIndex go={go} />;
       case "interop":     return <WsInterop go={go} />;
       case "settings":    return <WsSettings go={go} t={t} setTweak={setTweak} />;
