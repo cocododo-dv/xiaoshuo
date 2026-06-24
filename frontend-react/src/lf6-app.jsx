@@ -305,6 +305,27 @@ function Lf6Tower({ go, standalone }) {
     return () => { if (un) un(); window.removeEventListener("lf:bridge-changed", bump); };
   }, []);
 
+  /* FE-ALIGN 缺口A：loops/canon 原先只在 useState 初始化器里对 LF2_* 做一次性深拷贝，
+     之后从不消费后端同步 —— 懒一步打开 / 切换作品后塔台读的是旧的静态种子。
+     这里挂载即主动水合锚点(anchors)/审计(audit)，并订阅 lf2:tower-synced 把 loops/canon
+     重置为最新全局，订阅 lf3:audit-synced 触发重渲染（空降/因果/线索经 ESM live binding 刷新）。 */
+  useEffect6(() => {
+    try { window.lf2SyncFromTower && window.lf2SyncFromTower(); } catch (e) {}
+    try { window.lf3SyncFromAudit && window.lf3SyncFromAudit(); } catch (e) {}
+    const reseat = () => {
+      setLoops(JSON.parse(JSON.stringify(LF2_LOOPS)));
+      const seed = JSON.parse(JSON.stringify(LF2_CANON));
+      setCanon(lf7ApplyCanon ? lf7ApplyCanon(seed) : seed);
+    };
+    const bumpAudit = () => setCatPing(p => p + 1);
+    window.addEventListener("lf2:tower-synced", reseat);
+    window.addEventListener("lf3:audit-synced", bumpAudit);
+    return () => {
+      window.removeEventListener("lf2:tower-synced", reseat);
+      window.removeEventListener("lf3:audit-synced", bumpAudit);
+    };
+  }, []);
+
   /* 收件箱侧裁决 → 塔内同步锁定（同一拍板对象，裁决一处两处消失） */
   useEffect6(() => {
     const sync = () => {
@@ -853,12 +874,24 @@ function Lf6Empty({ go }) {
 
 function WsLongform6(props) {
   /* FE-ALIGN F4：有后端锚点数据的作品点亮全塔（tide 由 seed 维护）；
-     还没有锚点的作品保持引导态。 */
-  const isTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
+     还没有锚点的作品保持引导态。
+     网关时序修复：挂载主动水合 anchors，并订阅 lf2:tower-synced / ws:work-changed
+     强制重判「引导态 vs 控制塔」——否则非 tide 作品的锚点异步到达后，网关已渲染
+     引导态且不会自动切回全塔。Lf6Tower 按 activeId key，换作品时干净重挂。 */
+  const [, lf6Force] = useApp6(0);
+  useEffect6(() => {
+    try { window.lf2SyncFromTower && window.lf2SyncFromTower(); } catch (e) {}
+    const bump = () => lf6Force(x => x + 1);
+    window.addEventListener("lf2:tower-synced", bump);
+    window.addEventListener("ws:work-changed", bump);
+    return () => { window.removeEventListener("lf2:tower-synced", bump); window.removeEventListener("ws:work-changed", bump); };
+  }, []);
+  const activeId = (() => { try { return WsWorks ? WsWorks.activeId() : "tide"; } catch (e) { return "tide"; } })();
+  const isTide = activeId === "tide";
   const hasTower = isTide || (() => { try { return !!(window.lf2HasTowerData && window.lf2HasTowerData()); } catch (e) { return false; } })();
   if (!hasTower) return <Lf6Empty go={props.go} />;
   if (lf2SyncFromCatalog) lf2SyncFromCatalog();  // 章节/进度与目录同源
-  return <Lf6Tower {...props} />;
+  return <Lf6Tower key={activeId} {...props} />;
 }
 Object.assign(window, { Lf6Tower, WsLongform6, Lf6Skyline });
 
