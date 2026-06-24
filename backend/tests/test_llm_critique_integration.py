@@ -90,3 +90,43 @@ def test_llm_critique_runner_error_degrades_gracefully() -> None:
     text = "她觉得很难过，她意识到自己错了。"
     hybrid = llm_auto_critique(text, llm_runner=_BrokenRunner())
     assert hybrid.directives == auto_critique(text).directives
+
+
+def test_auto_critique_gate_resolves_runner_when_flag_enabled(session, monkeypatch) -> None:
+    """§8 gate teeth (real code path): with llm_enabled + llm_auto_critique_enabled, the
+    orchestrator's extracted gate resolves the real critic runner. This drives the same
+    method run_scene calls — deleting the `and llm_auto_critique_enabled` clause flips the
+    OFF test below to red."""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", "true")
+    from novel_system.services.orchestrator import Orchestrator
+
+    orch = Orchestrator(session)
+    sentinel = object()
+    orch.llm_runner = sentinel
+    assert orch._resolve_auto_critique_runner() is sentinel
+
+
+def test_auto_critique_gate_suppressed_when_flag_disabled(session, monkeypatch) -> None:
+    """§8 default: flag OFF -> critic runner is None -> llm_auto_critique == rule-only,
+    and the injected runner is never called."""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", "false")
+    from novel_system.services.auto_critique import auto_critique, llm_auto_critique
+    from novel_system.services.orchestrator import Orchestrator
+
+    calls: list = []
+
+    class _Runner:
+        def run_task(self, *, task_name, prompt_text, system_prompt):
+            calls.append(task_name)
+            return _FakeResponse('{"should_rewrite": false, "issues": []}')
+
+    orch = Orchestrator(session)
+    orch.llm_runner = _Runner()
+    runner = orch._resolve_auto_critique_runner()
+    assert runner is None
+
+    text = "她觉得心里一紧，她意识到自己其实早就明白了一切。"
+    assert llm_auto_critique(text, llm_runner=runner).directives == auto_critique(text).directives
+    assert calls == []

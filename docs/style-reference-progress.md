@@ -74,7 +74,7 @@
 
 ## 六、已知遗留 / 剩余工作
 
-- **既有 flaky(非本系列引入)**:`test_qc_engine.py::test_run_scene_soft_qc_patch_repeat_waives_with_carry_note` —— 组合跑必现、单跑通过的 test-ordering 状态泄漏(PR-20 已用 `git stash` 在改动前代码上复现确认无关);根因未定位。
+- **既有 flaky → 已根治(2026-06-23 复核)**:`test_qc_engine.py::test_run_scene_soft_qc_patch_repeat_waives_with_carry_note` 等按 `created_at` 排序的断言。**根因**:Windows 粗粒度时钟(~15.6ms)下同 tick 多次插入产生 `created_at` 字符串碰撞,使 `order_by(created_at)` 退化为非确定序。**已根治**:`db/models.py` 进程内严格单调 `utcnow()`(commit 5c0c2a3)+ `order_by` 次级 tiebreaker `qc_report_id`(ad67a09);并由 `tests/test_utcnow_monotonic.py`(1 万次单调 + 跨线程唯一)永久守门。复测:目标 + 两个同形兄弟用例组合跑 **0/25 失败**。
 - **PR-23+ 候选**:
   - scheduled cleanup CLI(复用 `cleanup_metric_events` + OS cron,无依赖)/ 或 APScheduler(需依赖)
   - i18n(vue-i18n + 文案抽取,需依赖)

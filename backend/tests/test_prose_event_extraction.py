@@ -102,3 +102,76 @@ def test_extracted_events_logged_as_advisory(session) -> None:
     )
     assert logged.confidence == "extracted"
     assert logged.payload_json.get("source") == "prose"
+
+
+def test_orchestrator_prose_extraction_gate_open_when_flag_enabled(session, monkeypatch) -> None:
+    """§2 gate teeth (real code path): flag ON + runner present -> the orchestrator's
+    _record_prose_events extracts from prose and logs an advisory NarrativeEvent
+    (confidence=extracted, source=prose). Drives the REAL gate (orchestrator.py:648),
+    not a mirror — removing the `llm_event_extraction_enabled` guard flips the OFF test."""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", "true")
+    from sqlalchemy import select
+
+    from novel_system.db.models import NarrativeEvent
+    from novel_system.services.narrative_event_log import NarrativeEventLog
+    from novel_system.services.orchestrator import Orchestrator
+
+    runner = _Runner(
+        '{"events": [{"event_type":"character_state","entity_id":"林远",'
+        '"fact_key":"injury","fact_value":"右臂截断","evidence":"右臂被斩断"}]}'
+    )
+    orch = Orchestrator(session)
+    orch.llm_runner = runner
+    log = NarrativeEventLog(session)
+    base = {"project_id": "p_pe", "scene_id": "s_pe", "chapter_id": "c_pe"}
+    orch._record_prose_events(log, None, base, "林远的右臂被斩断了。")
+    session.flush()
+
+    assert runner.calls, "extractor never called -> gate stayed closed despite flag ON"
+    rows = (
+        session.execute(
+            select(NarrativeEvent).where(
+                NarrativeEvent.scene_id == "s_pe",
+                NarrativeEvent.confidence == "extracted",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].entity_id == "林远"
+    assert rows[0].fact_key == "injury"
+    assert rows[0].payload_json.get("source") == "prose"
+
+
+def test_orchestrator_prose_extraction_gate_closed_when_flag_disabled(session, monkeypatch) -> None:
+    """§2 default: flag OFF -> the gate short-circuits before touching the runner."""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", "false")
+    from sqlalchemy import select
+
+    from novel_system.db.models import NarrativeEvent
+    from novel_system.services.narrative_event_log import NarrativeEventLog
+    from novel_system.services.orchestrator import Orchestrator
+
+    runner = _Runner(
+        '{"events": [{"event_type":"character_state","entity_id":"林远",'
+        '"fact_key":"injury","fact_value":"x","evidence":"y"}]}'
+    )
+    orch = Orchestrator(session)
+    orch.llm_runner = runner
+    log = NarrativeEventLog(session)
+    base = {"project_id": "p_pe2", "scene_id": "s_pe2", "chapter_id": "c_pe2"}
+    orch._record_prose_events(log, None, base, "林远的右臂被斩断了。")
+    session.flush()
+
+    assert runner.calls == [], "runner called despite flag OFF -> gate broken"
+    rows = (
+        session.execute(
+            select(NarrativeEvent).where(NarrativeEvent.confidence == "extracted")
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []

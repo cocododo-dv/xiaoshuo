@@ -183,13 +183,7 @@ class Orchestrator:
         # rule-only on any runner error, never blocks (blueprint §8 + §15 honest-bounds).
         try:
             from novel_system.services.auto_critique import llm_auto_critique, format_critique_brief
-            from novel_system.settings import get_settings as _get_settings
-            _settings = _get_settings()
-            _critique_runner = (
-                self.llm_runner
-                if (_settings.llm_enabled and _settings.llm_auto_critique_enabled)
-                else None
-            )
+            _critique_runner = self._resolve_auto_critique_runner()
             critique = llm_auto_critique(
                 style_generation.content,
                 scene_context=self._scene_critique_context(scene, contract),
@@ -637,6 +631,16 @@ class Orchestrator:
             self.session.flush()
         except Exception:
             _LOGGER.debug("narrative event recording skipped", exc_info=True)
+
+    def _resolve_auto_critique_runner(self):
+        """§8 gate: the independent LLM editor critic is layered on ONLY when both
+        ``llm_enabled`` and ``llm_auto_critique_enabled`` are set (opt-in); otherwise the
+        critic runner is ``None`` and ``llm_auto_critique`` degrades to the rule-based pass.
+        Extracted from ``run_scene`` so the opt-in gate is unit-testable in isolation
+        (blueprint §8 + §15 honest-bounds)."""
+        from novel_system.settings import get_settings
+        settings = get_settings()
+        return self.llm_runner if (settings.llm_enabled and settings.llm_auto_critique_enabled) else None
 
     def _record_prose_events(self, log, scene: SceneCard, base: dict, content: str) -> None:
         """§2 (opt-in): extract events from the ACTUAL generated prose so model drift away

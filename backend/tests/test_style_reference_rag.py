@@ -318,3 +318,35 @@ def test_retrieve_inject_max_zero_returns_empty(session):
     rag.build_rag_index(session, profile, vector_store=store)
     r = rag.RagRetriever(session, vector_store=store)
     assert r.retrieve(profile.profile_id, "推开门", inject_max=0) == []
+
+
+# --------------------------------------------------------------------------- 召回质量地板(Windows memory 守门)
+
+
+def test_paragraph_recall_quality_floor_top1(session):
+    """召回质量地板(Windows memory 后端):每段取前 60% 文本作 query,源段应在
+    paragraph 粒度 rerank 后排第 1。阈值 top-1 命中率 ≥ 0.8(5 段至少 4 命中)。
+
+    这是 chroma_integration 里 ``assert hit_rate >= 0.7``
+    (test_style_reference_rag_chroma.py,Windows 跳过)的 memory 后端等价质量守门:
+    memory query 走字符集交集打分 + rag ``_coverage_score`` rerank,二者都保留词面重叠,
+    故确定性可断言。本文件其余 RAG 测试只验「召回非空/去重/确定性」机制,不验召回
+    *质量*——本测试补上这颗牙:破坏 rerank 排序键/打分即 top-1 崩、断言翻红。
+    (top_k 取语料段数,使所有候选都进 rerank,从而隔离并守住 rerank 正确性。)
+    """
+    profile = _seed_book_with_paragraphs(session, seed="qfloor")
+    store = InMemoryVectorStore()
+    rag.build_rag_index(session, profile, vector_store=store)
+    retriever = rag.RagRetriever(session, vector_store=store)
+
+    top1 = 0
+    for _pid, _ptype, text in _PARAGRAPHS:
+        query = text[: max(8, round(len(text) * 0.6))]
+        para_hits = retriever.retrieve_per_granularity(
+            profile.profile_id, query, top_k=len(_PARAGRAPHS)
+        )["paragraph"]
+        assert para_hits, f"paragraph 粒度对 query「{query}」零召回"
+        if para_hits[0].text == text:
+            top1 += 1
+    rate = top1 / len(_PARAGRAPHS)
+    assert rate >= 0.8, f"paragraph top-1 召回质量={rate:.2f} < 0.8(rerank/打分可能被破坏)"
