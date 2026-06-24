@@ -57,10 +57,15 @@ $windowsArgs = @("-ExecutionPolicy", "Bypass", "-File", $windowsScript)
 if ($IncludeLegacyVue) { $windowsArgs += "-IncludeLegacyVue" }
 Invoke-NativeCommand -Label "Windows verification lane" -FilePath "powershell" -ArgumentList $windowsArgs
 
+# React mainline contract E2E (run-smokes.mjs) is the default release gate for the
+# production frontend: verify_react_e2e.ps1 spins up an isolated seeded backend on :8009
+# + the React app on :5174, runs the smoke suites (reseeding between each), then tears
+# everything down. Needs Playwright installed in frontend/ (cd frontend; npm ci).
+$reactE2eScript = Join-Path $repoRoot "scripts\verify_react_e2e.ps1"
+Invoke-NativeCommand -Label "React mainline contract E2E (run-smokes)" -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $reactE2eScript)
+
 # Legacy Vue seeded Playwright E2E is no longer a default release gate (reversible).
-# Pass -IncludeLegacyVue to include it. The React mainline contract E2E uses
-# run-smokes.mjs (needs a separate seeded backend on :8009); wiring it into this lane
-# is a follow-up. Manual run:  cd frontend; node ../frontend-react/scripts/run-smokes.mjs
+# Pass -IncludeLegacyVue to include it.
 if ($IncludeLegacyVue) {
     Invoke-NativeStep -Label "Seeded runtime-ops E2E lane (legacy Vue)" -WorkingDirectory $frontendDir -FilePath "npm.cmd" -ArgumentList @("run", "test:e2e")
 }

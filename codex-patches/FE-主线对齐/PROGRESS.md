@@ -797,3 +797,37 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - 测试:+5(退避×3 / 瞬时重试×1 / runner 退避配置×1)。**全量 914 passed**。
 - 实机验证(dev 8000 + gcli2api):probe 连接 257ms + 48 模型 + 最小生成通过;
   GET providers/gcli2api/models 实时拉取 source=live 442ms。
+
+### CI 回归保护加固(2026-06-24,项目状态审计后修复唯一 high)
+
+审计发现唯一高危:**React 生产前端在自动 CI 中零回归保护**——`.github/workflows/ci.yml`
+前端 job 仍指向 legacy Vue,`run-smokes.mjs` 契约 E2E 游离在所有 lane 之外,
+单测仅 WsWorks 1 文件 2 用例。四条工作流闭合:
+
+- **WS1 · GitHub CI 门禁**:ci.yml 三 job——Backend Tests / **Frontend Tests (React mainline)**
+  (`frontend-react`:`npm ci`→vitest→build,authoritative gate)/ Legacy Vue Frontend Tests
+  (覆盖不丢失,Vue 降级为独立 job)。
+- **WS3 · store 单测扩面**:新增 `src/test-helpers.js`(按 URL 路由的 mock client 底座)+
+  `ws-catalog.test.jsx`(WsCatalog 乐观写穿/PATCH 失败 catRecover 回滚 + WsTrashStore 恢复/失败刷新)/
+  `ws-review.test.jsx`(rvPush/rvMarkResolved 乐观移除/resolve 失败告警)/
+  `lf7-bridge.test.jsx`(ruleCanon 乐观锁定 + adjudicate 失败重拉回滚)。**用例 2→11,全绿**。
+  **变异抽检**(有牙证明):临时打断 catRecover 告警/重拉 与 ruleCanon 乐观行,
+  正好对应 3 个用例转红、其余 8 个不变,随后精确还原复绿。
+  **稳定性加固**(对抗式复核发现初版在 CPU 负载下 flaky 后):失败回滚断言原本断
+  "又拉了一次 apiGet",但 store 的 catFetch/lf7Fetch/trashFetch 带 in-flight 去重
+  (并发时复用旧 promise、不再发请求),叠加默认 waitFor 1000ms 过紧 → 负载下间歇红。
+  改为断「可观测结果」(标题被服务端原值覆盖 / isRuled 翻回 open / alert 触发,对去重免疫)
+  + 加载阶段显式等 active 切到真实 id + 所有 waitFor 给足 5s。复测 **10 次顺序 + 4×2 并发抢 CPU
+  共 18 次全绿、0 flake**;变异抽检在重写后断言上重做仍如期转红。
+- **WS2 · E2E lane 接线**:新增 `scripts/verify_react_e2e.ps1`——隔离 e2e sqlite
+  (`.codex-run/e2e/`,不碰 dev 库)+ alembic upgrade head + 起 :8009 seeded 后端 +
+  :5174 React + 跑 run-smokes(七套逐套 reseed)+ 整树拆台,接进 `verify_release.ps1`
+  默认门禁(消掉原 "follow-up" 注释)。**七套 smoke 全过**。
+  额外发现并就地处理一个坑:**全新 `alembic upgrade head` 会被迁移 `20260523_0036`
+  的 legacy-backup 门禁(`_assert_backup_present`)拦下**(dev 库当年带数据迁过、CI pytest 走
+  create_all 都绕开了它);e2e lane 用该迁移自带的 `STYLE_REFERENCE_REPO_ROOT` 测试覆盖口
+  指向占位 backup 满足之。
+- **WS4 · 文档同步**:CLAUDE.md(CI/release lane 描述 + Contract-level E2E 接线 + 迁移门禁
+  gotcha + store 单测约定)、release-checklist(三 job + React 契约 E2E 门禁)、本账本。
+- 脚本编码注意:Windows PowerShell 5.1 按系统 ANSI 读无 BOM 的 .ps1,中文注释会撑坏解析
+  ——`verify_react_e2e.ps1` 保持纯 ASCII 注释。

@@ -29,7 +29,9 @@ wsl -d Ubuntu-24.04 bash -lc "cd <wsl-path> && bash scripts/verify_wsl_strict.sh
 ```
 The other declared marker, `consistency_validation` (blueprint §17 Action B recall/precision), is **not** auto-skipped and runs in the default Windows suite.
 
-Full Windows CI lane: `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1` (pytest `-m "not chroma_integration"` + the **React mainline** `frontend-react` `npm test` (vitest) + build; the legacy Vue `npm test`/build run only with `-IncludeLegacyVue`). Full release lane (Windows CI → WSL strict Chroma; the seeded Vue Playwright E2E runs only with `-IncludeLegacyVue`): `scripts/verify_release.ps1`.
+Full Windows CI lane: `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1` (pytest `-m "not chroma_integration"` + the **React mainline** `frontend-react` `npm test` (vitest) + build; the legacy Vue `npm test`/build run only with `-IncludeLegacyVue`). Full release lane (Windows CI → **React mainline contract E2E** (`scripts/verify_react_e2e.ps1`, see below) → WSL strict Chroma; the seeded Vue Playwright E2E runs only with `-IncludeLegacyVue`): `scripts/verify_release.ps1`.
+
+GitHub Actions (`.github/workflows/ci.yml`) gates three jobs on every PR/push: **Backend Tests** (pytest `-m "not chroma_integration"`), **Frontend Tests (React mainline)** (`frontend-react`: `npm ci` → vitest → build), and **Legacy Vue Frontend Tests** (`frontend`). The React mainline job is the authoritative frontend gate; the heavy lanes that need extra infra (the React contract E2E's seeded `:8009` backend, and WSL strict Chroma) stay local in `verify_release.ps1`, mirroring how the Chroma lane has always been local-only.
 
 **Schema-drift guard** (`backend/tests/test_metadata_isolation.py::test_migration_built_schema_matches_orm_models`) — the most important non-obvious gotcha. The test suite builds the schema via `Base.metadata.create_all`, but dev/prod build it via Alembic `upgrade head` (`auto_create_tables` defaults to `False`). This test builds it **both** ways and diffs tables/columns/named-indexes, because an ORM model that gains a column/index **without a matching migration** still passes every test yet 500s at runtime (`OperationalError: no such column`) — which silently kills `start-dev` (its health probe hits `GET /api/v1/chapters`). If it fails: write the missing migration, **or** declare the missing index in the model's `__table_args__`. Run: `cd backend; python -m pytest tests/test_metadata_isolation.py`.
 
@@ -54,6 +56,13 @@ Architecture rules (see `codex-patches/FE-主线对齐/契约附录-store缝合�
   `wr-doc-store.jsx`) — grep `window.WsWorks`, not an ES import. Stores are API-backed with sync
   in-memory caches (optimistic write + rollback / refetch-on-failure). Writer/advanced mode gating
   lives here too (`ws-app.jsx` `WS_NAV_GROUPS`), not only in the Vue `UiModeSwitch`.
+- **Store unit tests** (vitest, `src/*.test.jsx`): cover the optimistic-write + rollback/refetch
+  contract per store — `ws-works`, `ws-catalog` (incl. `WsTrashStore`), `ws-review`, `lf7-bridge`.
+  They `vi.mock("./lib/client.js")` and route `apiGet` by URL through the shared
+  `src/test-helpers.js` `installApiRouter`; each store loads in isolation via `vi.resetModules()` +
+  dynamic import (the active work falls back to a `__loading__` placeholder until a seeded
+  `/api/v2/projects` resolves with a real `project_id`). Run `npm test` (or the `verify_windows.ps1`
+  React gate / GitHub CI). Keep tests falsifiable — verify rollback/alert paths actually trip.
 - `src/lib/client.js` mirrors the Vue client contract (envelope / X-Idempotency-Key /
   X-Operator-Ref / `novel-system-api-base` localStorage override).
 - localStorage holds only UI preferences and read caches of backend truth
@@ -62,9 +71,14 @@ Architecture rules (see `codex-patches/FE-主线对齐/契约附录-store缝合�
 - Demo data comes from the backend seed (`novel_system.tools.seed_fe_demo_works`,
   project ids `tide`/`salt` — keep these literal ids).
 - Contract-level E2E: `cd frontend; node ../frontend-react/scripts/run-smokes.mjs [BASE] [API]`
-  (runs `smoke-phase2..7` + `smoke-ai-settings`, reseeding via `seed_demo` between suites; uses
+  (runs `smoke-phase2..7` + `smoke-ai-settings`, reseeding via `seed_demo` before each suite; uses
   frontend/'s Playwright install). Defaults are `BASE=http://127.0.0.1:5174/` and a **separate
-  seeded backend** `API=http://127.0.0.1:8009` — not the dev `:8000`.
+  seeded backend** `API=http://127.0.0.1:8009` — not the dev `:8000`. `scripts/verify_react_e2e.ps1`
+  now orchestrates this end-to-end (isolated e2e sqlite under `.codex-run/e2e/`, seeded `:8009`
+  backend + React `:5174`, full process-tree teardown) and is wired into `verify_release.ps1` as a
+  default gate. **Gotcha**: a fresh `alembic upgrade head` aborts on migration `20260523_0036`'s
+  legacy-backup guard unless `backups/style_reference_legacy_*.json` exists; the e2e lane satisfies
+  it via that migration's `STYLE_REFERENCE_REPO_ROOT` test override pointed at a placeholder backup.
 - Progress ledger & deferred items: `codex-patches/FE-主线对齐/PROGRESS.md`.
 
 ### Frontend (Vue 3 + Vite + Pinia, legacy)

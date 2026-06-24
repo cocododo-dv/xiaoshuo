@@ -4,8 +4,9 @@ Use this checklist before converting a Draft PR to ready state or treating the c
 
 ## Automatic PR checks
 
-- GitHub Actions backend job passed.
-- GitHub Actions frontend job passed.
+- GitHub Actions **Backend Tests** job passed.
+- GitHub Actions **Frontend Tests (React mainline)** job passed (vitest + build for `frontend-react`) — this is the authoritative frontend gate.
+- GitHub Actions **Legacy Vue Frontend Tests** job passed.
 
 ## Required local checks on this machine
 
@@ -14,7 +15,11 @@ Use this checklist before converting a Draft PR to ready state or treating the c
   `backend/tests/test_scene_generation.py` for fake-provider generation,
   `backend/tests/test_qc_engine.py` for fake-provider QC,
   and `backend/tests/test_chapter_runner.py` plus `backend/tests/test_chapter_runtime.py` for the current chapter runner/runtime path.
-- Run `cd frontend && npm run test:e2e`
+- Run the **React mainline contract E2E** (default release gate for the production frontend):
+  `powershell -ExecutionPolicy Bypass -File scripts/verify_react_e2e.ps1` — spins up an isolated
+  seeded `:8009` backend + React `:5174`, runs `run-smokes.mjs` (smoke-phase2..7 + ai-settings),
+  then tears the process tree down. Also runs automatically inside `scripts/verify_release.ps1`.
+- Run `cd frontend && npm run test:e2e` only for the legacy Vue lane (or pass `-IncludeLegacyVue` to `verify_release.ps1`).
 - Run `wsl -d Ubuntu-24.04 bash -lc "cd <current-checkout-in-wsl> && bash scripts/verify_wsl_strict.sh"`
 - Replace `<current-checkout-in-wsl>` with the checkout/worktree root under review so the WSL lane verifies the same tree as the Windows lane.
 - Fake-provider/deterministic verification is required in CI.
