@@ -127,4 +127,45 @@ describe("Lf7Bridge（设定裁决乐观锁定 + 失败回滚）", () => {
     expect(adj.drifted).toEqual([]);
     expect(adj.author_action.target_view).toBe("system-config");
   });
+
+  it("auditReceipt 把后端确定性回执还原成 LF3_AUDIT 形状（命中→honored、未检出/到期→introduced、drifted 恒空）", async () => {
+    const { mod, client } = await loadBridge();
+    const { Lf7Bridge } = mod;
+    await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+
+    client.apiGet.mockImplementation((url) => {
+      if (url.includes("/audit-receipt")) {
+        return Promise.resolve({
+          has_text: true, chapter_no: 1, words_total: 1500, contract: { status: "ready" },
+          anchor_hits: [{ id: "h1", subject: "林岑 · 年龄", value: "28 岁", evidence: "她在年龄栏写下 28", at: "场1·段3" }],
+          anchor_misses: [{ id: "m1", subject: "周岚 · 办公室", value: "地下档案室" }],
+          pending: [{ id: "p1", title: "第二组脚印回收" }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const r = await Lf7Bridge.auditReceipt(1);
+    expect(r.real).toBe(true);
+    expect(r.ch).toBe(1);
+    expect(r.honored).toHaveLength(1);
+    expect(r.honored[0].text).toContain("28 岁");
+    expect(r.honored[0].evidence).toBe("她在年龄栏写下 28");
+    // 可证伪：违约判定属 D13，确定性回执的 drifted 必须恒空
+    expect(r.drifted).toEqual([]);
+    // 1 未检出 + 1 到期承诺 → introduced 待人工核对
+    expect(r.introduced).toHaveLength(2);
+    expect(r.introduced.map((x) => x.kind)).toEqual(["未检出", "到期承诺"]);
+  });
+
+  it("auditReceipt 在本章无正文时返回 null（lf6 回落静态演示，不冒充真实回执）", async () => {
+    const { mod, client } = await loadBridge();
+    const { Lf7Bridge } = mod;
+    await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+
+    client.apiGet.mockImplementation((url) =>
+      url.includes("/audit-receipt") ? Promise.resolve({ has_text: false }) : Promise.resolve({}));
+
+    expect(await Lf7Bridge.auditReceipt(1)).toBe(null);
+  });
 });

@@ -268,11 +268,35 @@ Object.assign(window, {
    悬念债 / 设定锚点 / 故事线等仍是 tide 的演示数据层。
    ========================================================== */
 const LF2_BEATS = { 1: "开端", 2: "触发", 5: "中点", 7: "情节点一", 12: "情节点二", 18: "危机", 22: "高潮", 24: "结局" };
+/* 章号定位：取活动作品目录的真实位置（now = 最后已写/在写章，next = now+1）。
+   对所有作品生效——修正非 tide 作品此前因整体早退而把 LF2_NEXT 锚死在第 9 章
+   （tide 演示常量 now+1）的正确性 bug：控制塔审计/裁定的「本章」改以目录真相为准，
+   短书不再静默指向不存在的第 9 章，长书不再审计到错误的第 9 章。 */
+function lf2ChapterPosFromCatalog(cat) {
+  if (!cat || !cat.length) return null;
+  let now = 0;
+  cat.forEach((c) => {
+    const n = parseInt(c.n, 10);
+    if (!Number.isFinite(n)) return;
+    if (c.state !== "planned") now = Math.max(now, n);
+    if (c.current || c.state === "writing") now = Math.max(now, n);
+  });
+  if (!now) now = 1;
+  return { now, next: now + 1 };
+}
 function lf2SyncFromCatalog() {
   try {
-    if (!WsCatalog || !WsWorks || WsWorks.activeId() !== "tide") return;
+    if (!WsCatalog || !WsWorks) return;
     const cat = WsCatalog.get();
-    if (!cat.length) return;
+    // 所有作品：章号定位以目录真相为准（修正非 tide 锚死第 9 章的正确性 bug）
+    const pos = lf2ChapterPosFromCatalog(cat);
+    if (pos) {
+      LF2_BOOK = { ...LF2_BOOK, now: pos.now };
+      LF2_NEXT = pos.next;
+      Object.assign(window, { LF2_BOOK, LF2_NEXT });
+    }
+    // 以下仅潮汐档案：重建带 beat 锚点 / 理想张力曲线的演示章节结构层
+    if (WsWorks.activeId() !== "tide" || !cat.length) return;
     const total = Math.max(24, cat.length);
     const rows = cat.map((c, i) => {
       const n = i + 1;

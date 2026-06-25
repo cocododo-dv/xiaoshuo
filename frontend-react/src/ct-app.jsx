@@ -6,6 +6,7 @@ import { CTStructureMap, CTWeaveMap } from "./ct-map.jsx";
 import { CTContinuity, CTDownstream, CTInspector, CTQualityMatrix, CTSpinePanel } from "./ct-panels.jsx";
 import { CTLiveEdit, CT_INITIAL_SIGNALS, ctDerive } from "./ct-edit.jsx";
 import { WsWorks } from "./ws-works.jsx";
+import { WsDemoTag } from "./ws-catalog.jsx";
 
 /* global React, ReactDOM, I, CT_LAYERS, CT_TRACK, CT_STATE,
    CTStructureMap, CTSpinePanel, CTInspector, CTQualityMatrix, CTContinuity, CTDownstream, CTLiveEdit,
@@ -132,7 +133,10 @@ function ControlTower({ onOpenStep, go }) {
         <div className="ct-brand">
           {!embedded && <span className="ct-brand-mark">汐</span>}
           <div className="ct-brand-text">
-            <div className="ct-brand-eyebrow">构思 · 控制塔</div>
+            <div className="ct-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              构思 · 控制塔
+              {WsDemoTag && <WsDemoTag note="结构强度 / 连续性告警 / 脊柱绑定 / 质量矩阵展示的是示例作品数据 + 逐步工作台的实时推演，尚未接入后端真实雪花结构与连续性校验。" />}
+            </div>
             <h1 className="ct-brand-title">{WsWorks ? WsWorks.active().title : "潮汐档案"} · 雪花结构总览</h1>
           </div>
         </div>
