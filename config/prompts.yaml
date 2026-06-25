@@ -1399,6 +1399,8 @@ templates:
       The patch is a candidate only: do not claim it has been applied, and do not rewrite unrelated text.
     task_prompt: |
       Given the source passage, selected issue, evidence, and target dimensions, produce replacement options.
+      Return at least 2 and at most 3 distinct replacement options with different tones
+      (for example: shorter / sharper / subtler), so the author has a real choice.
       Write in the source language. Preserve continuity, names, facts, and author intent.
       Return concise patch records that the author can manually accept or reject.
     structured_schema:
@@ -1411,6 +1413,8 @@ templates:
       properties:
         patches:
           type: array
+          minItems: 2
+          maxItems: 3
           items:
             type: object
             additionalProperties: false

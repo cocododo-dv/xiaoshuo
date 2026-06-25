@@ -101,6 +101,43 @@ def test_run_jobs_creates_job_without_500(client, session) -> None:
     assert poll.status_code == 200
 
 
+def test_normalize_patch_output_tops_up_single_llm_option_to_two() -> None:
+    """Fix B：真 LLM 仅回 1 个候选时，补足到 ≥2，且补足项可区分、不污染前端 offline 正则。"""
+    import re as _re
+    from novel_system.services.writer_deep_review import _normalize_patch_output
+
+    out = _normalize_patch_output(
+        {"patches": [{"replacement_text": "她把证据袋按进掌心，没有解释。", "tone": "sharper", "label": "更狠"}], "rationale": "压缩解释余量"},
+        source_excerpt="她把证据袋放回原处，转身解释了三句。",
+        issue_dimension="把这段改得更凝练",
+        target_text_ref="ref-1",
+    )
+    opts = out["replacement_options"]
+    assert len(opts) >= 2, "真 LLM 只回 1 个时必须补足到 ≥2"
+    llm = [o for o in opts if str(o["option_id"]).startswith("option_llm_")]
+    topup = [o for o in opts if o.get("is_fallback_topup")]
+    assert len(llm) == 1 and len(topup) >= 1, "应恰有 1 个真 LLM 候选 + ≥1 个可区分的补足项"
+    assert all(str(o["replacement_text"]).strip() for o in opts)
+    assert topup[0]["replacement_text"].strip() != llm[0]["replacement_text"].strip(), "补足项不得与真候选重复"
+    # 诚实但不冒充：rationale 整串不得匹配前端 /offline deterministic/i（否则真改写被整体丢弃）
+    assert not _re.search(r"offline deterministic", out["rationale"], _re.I)
+
+
+def test_normalize_patch_output_keeps_multi_llm_options_without_topup() -> None:
+    """Fix B 边界：模型已给 ≥2 个候选时，不补足、不加标记。"""
+    from novel_system.services.writer_deep_review import _normalize_patch_output
+
+    out = _normalize_patch_output(
+        {"patches": [{"replacement_text": "甲版改写。"}, {"replacement_text": "乙版改写。"}], "rationale": "两版"},
+        source_excerpt="原句。",
+        issue_dimension="dim",
+        target_text_ref="r",
+    )
+    opts = out["replacement_options"]
+    assert len(opts) == 2
+    assert not any(o.get("is_fallback_topup") for o in opts), "已有 ≥2 个真候选不应补足"
+
+
 def test_author_note_instruction_formatting() -> None:
     from novel_system.services.scene_generation import author_note_instruction
 

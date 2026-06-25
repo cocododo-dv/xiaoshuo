@@ -882,10 +882,42 @@ def _normalize_patch_output(
             }
         )
     if not options:
+        # 模型完全没给可用候选 → 确定性兜底(3 个)，沿用既有语义（离线测试覆盖）
         options = _replacement_options(source_excerpt, issue_dimension)
+    elif len(options) < 2:
+        # Fix B：模型仅回 1 个合法候选时，用确定性变体补足到 ≥2，保留「多选改写」UX 契约。
+        # 诚实纪律：补足项 option_id 带 topup 前缀 + is_fallback_topup 标记可区分、不冒充模型产物；
+        # 且补足时 rationale 不得整串落入前端 /offline deterministic/i 正则
+        # （否则 ws-writer.jsx 会把整次真实改写误判为「模型不可用」而整体丢弃）。
+        existing = {opt["replacement_text"].strip() for opt in options}
+        for variant in _replacement_options(source_excerpt, issue_dimension):
+            if len(options) >= 2:
+                break
+            text = str(variant.get("replacement_text") or "").strip()
+            if not text or text in existing:
+                continue
+            options.append(
+                {
+                    "option_id": f"option_topup_{variant['option_id']}",
+                    "tone": str(variant.get("tone") or issue_dimension),
+                    "label": f"{variant.get('label') or '备选'}（确定性补足）",
+                    "replacement_text": text,
+                    "changed_dimensions": [*(variant.get("changed_dimensions") or []), "deterministic_topup"],
+                    "why_it_helps": str(variant.get("why_it_helps") or ""),
+                    "target_text_ref": target_text_ref,
+                    "source_excerpt": source_excerpt,
+                    "patch_type": "replace_excerpt",
+                    "is_fallback_topup": True,
+                }
+            )
+            existing.add(text)
+
+    rationale = str(payload.get("rationale") or "")
+    if any(opt.get("is_fallback_topup") for opt in options):
+        rationale = (rationale + "（模型仅返回单个候选，已用确定性变体补足候选数；标注「确定性补足」的选项为非模型产物。）").strip()
     return {
         "replacement_options": options,
-        "rationale": str(payload.get("rationale") or ""),
+        "rationale": rationale,
     }
 
 
