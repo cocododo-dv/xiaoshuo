@@ -206,10 +206,24 @@ function scnFriendly(e) {
     const miss = (((e && e.details) || {}).missing_fields || []).join("、");
     return new Error(`这一场的执行契约还缺关键字段${miss ? `（${miss}）` : ""}——先在章节编排把场景卡补全，或走「构思 → 物化」主路径生成完整场景卡。`);
   }
+  if (code === "VOICE_PROFILE_MISSING" || code === "RELATION_PROFILE_MISSING") {
+    // Fix C：缺声线/关系卡现可一键补齐最小卡解阻（scnCreateCards → /preflight/create-cards）
+    const what = code === "VOICE_PROFILE_MISSING" ? "POV 声线卡" : "同场角色关系卡";
+    return new Error(`这一场缺少可用的${what}，暂不能起草——可点「补齐最小${what}」一键生成后重试，或在声线/关系工作台细化。`);
+  }
   if (/LLM/i.test(code) || /llm|provider|api.?key/i.test(msg)) {
     return new Error("AI 起草需要可用的 LLM：请到「系统设置 → 模型与接入」配置并启用后重试。原始信息：" + msg);
   }
   return new Error("起草失败：" + msg);
+}
+
+/* Fix C：一键补齐当前场景缺失的最小 voice/relation 卡(active)，解阻 run 预检。
+   返回 { created, run_preflight }。这是 create_minimal_voice_card 预检动作的真实执行入口。 */
+async function scnCreateCards(sid) { // eslint-disable-line no-unused-vars
+  const { apiPost } = await import("./lib/client.js");
+  const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
+  if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
+  return apiPost(`/api/v1/scenes/${sceneId}/preflight/create-cards`, {});
 }
 
 async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-vars
@@ -319,7 +333,7 @@ function scnPickList(queuedSids) {
   } catch (e) { return []; }
 }
 
-Object.assign(window, { scnRun, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft });
+Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { scnRun, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft };
+export { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft };

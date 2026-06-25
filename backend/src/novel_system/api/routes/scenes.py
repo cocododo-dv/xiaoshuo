@@ -180,6 +180,19 @@ def get_scene_execution_contract(scene_id: str, request: Request, session: Sessi
     )
 
 
+@router.post("/api/v1/scenes/{scene_id}/preflight/create-cards")
+def create_scene_preflight_cards(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    """确定性建出当前场景缺失的最小 voice/relation 卡(active)，解阻 run 预检。
+
+    这是 create_minimal_voice_card / create_minimal_relation_card 预检动作的真实执行落点
+    （此前该动作只是提示、无可执行端点，是死胡同）。幂等：已有 active 卡则跳过。
+    """
+    scene = AuthorLifecycleService(session).require_active_scene(scene_id)
+    result = SceneRunPreflightService(session).create_missing_cards(scene)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v1/scenes/{scene_id}/execution-contract")
 def generate_scene_execution_contract(scene_id: str, request: Request, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"

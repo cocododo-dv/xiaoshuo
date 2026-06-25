@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SceneBlueprint, SceneCard
+from novel_system.db.models import RelationProfile, SceneBlueprint, SceneCard, VoiceProfile
 from novel_system.services.resolver import Resolver
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.writer_review import normalize_scene_writer_brief
@@ -24,7 +25,7 @@ class SceneRunPreflightService:
         warning_items = self._warning_items(scene)
         context_items = self._context_items(chapter_state)
         missing_dependencies = self._missing_dependencies(scene)
-        create_actions = self._create_actions(missing_dependencies)
+        create_actions = self._create_actions(scene.scene_id, missing_dependencies)
         constraint_conflicts = self._constraint_conflicts(scene)
 
         if blocking_items or constraint_conflicts:
@@ -76,7 +77,11 @@ class SceneRunPreflightService:
 
         return items
 
-    def _create_actions(self, missing_dependencies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _create_actions(self, scene_id: str, missing_dependencies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # 可执行落点：所有缺失卡都可经此端点确定性建出最小 active 卡解阻（见 create_missing_cards）。
+        # 历史上该动作只带 review.item_type="voice_profile"，但该 item_type 无 effect/物化落点（死胡同）；
+        # 现补 endpoint/method/executable 让前端真正点得动，review 块保留向后兼容。
+        endpoint = f"/api/v1/scenes/{scene_id}/preflight/create-cards"
         actions: list[dict[str, Any]] = []
         for dependency in missing_dependencies:
             dependency_type = dependency.get("dependency_type")
@@ -88,6 +93,9 @@ class SceneRunPreflightService:
                         "action": "create_minimal_voice_card",
                         "lineage_key": lineage_key,
                         "label": f"Create voice card for {character_id}",
+                        "executable": True,
+                        "endpoint": endpoint,
+                        "method": "POST",
                         "review": {
                             "item_type": "voice_profile",
                             "candidate_payload_json": {
@@ -106,6 +114,9 @@ class SceneRunPreflightService:
                         "action": "create_minimal_relation_card",
                         "lineage_key": lineage_key,
                         "label": f"Create relation card for {' / '.join(character_ids)}",
+                        "executable": True,
+                        "endpoint": endpoint,
+                        "method": "POST",
                         "review": {
                             "item_type": "relation_profile",
                             "candidate_payload_json": {
@@ -118,6 +129,66 @@ class SceneRunPreflightService:
                     }
                 )
         return actions
+
+    def create_missing_cards(self, scene: SceneCard) -> dict[str, Any]:
+        """确定性地为当前场景缺失的 voice/relation 依赖建出最小可用(active)卡，解阻 run 预检。
+
+        幂等：已有 active 卡则跳过。这是 create_minimal_voice_card / create_minimal_relation_card
+        预检动作的真实执行落点（此前该动作无 effect/物化路径，是死胡同）。
+        """
+        created: list[dict[str, Any]] = []
+        for dependency in self._missing_dependencies(scene):
+            dependency_type = dependency.get("dependency_type")
+            lineage_key = str(dependency.get("lineage_key") or "")
+            if not lineage_key:
+                continue
+            if dependency_type == "voice_card":
+                if self.resolver.resolve_active_voice_profile(self.session, scene) is not None:
+                    continue
+                character_id = str(dependency.get("character_id") or scene.pov_character_id or "")
+                version = self._next_profile_version(VoiceProfile, VoiceProfile.voice_profile_id, lineage_key)
+                self.session.add(
+                    VoiceProfile(
+                        row_id=f"voice_card__{lineage_key}__v{version}__{uuid4().hex[:8]}",
+                        voice_profile_id=lineage_key,
+                        version=version,
+                        character_id=character_id,
+                        content=f"{character_id}：保持其说话方式、用词与内心独白的一致性（最小占位声线，建议后续在声线工作台细化）。",
+                        active_flag=1,
+                        runtime_eligible=1,
+                        runtime_eligibility_basis="manual_minimal",
+                        source_note="scene_run_preflight.create_missing_cards",
+                    )
+                )
+                created.append({"dependency_type": "voice_card", "lineage_key": lineage_key, "character_id": character_id})
+            elif dependency_type == "relation_card":
+                if self.resolver.resolve_active_relation_profile(self.session, scene) is not None:
+                    continue
+                character_ids = [str(item) for item in dependency.get("character_ids") or []]
+                left = character_ids[0] if character_ids else (scene.pov_character_id or "")
+                right = character_ids[1] if len(character_ids) > 1 else (scene.pov_character_id or "")
+                version = self._next_profile_version(RelationProfile, RelationProfile.relation_profile_id, lineage_key)
+                self.session.add(
+                    RelationProfile(
+                        row_id=f"relation_card__{lineage_key}__v{version}__{uuid4().hex[:8]}",
+                        relation_profile_id=lineage_key,
+                        left_character_id=left,
+                        right_character_id=right,
+                        version=version,
+                        content="定义当前的情感压力、信息不对称与信任边界（最小占位关系卡，建议后续细化）。",
+                        active_flag=1,
+                        runtime_eligible=1,
+                        runtime_eligibility_basis="manual_minimal",
+                        source_note="scene_run_preflight.create_missing_cards",
+                    )
+                )
+                created.append({"dependency_type": "relation_card", "lineage_key": lineage_key})
+        self.session.flush()
+        return {"created": created, "run_preflight": self.build(scene, {})}
+
+    def _next_profile_version(self, model: Any, id_column: Any, lineage_key: str) -> int:
+        versions = self.session.execute(select(model.version).where(id_column == lineage_key)).scalars().all()
+        return (max(versions) + 1) if versions else 1
 
     def _constraint_conflicts(self, scene: SceneCard) -> list[dict[str, Any]]:
         forbidden_terms = self._constraint_terms(scene.forbidden_text)

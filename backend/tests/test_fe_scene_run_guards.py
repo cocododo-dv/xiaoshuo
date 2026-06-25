@@ -191,6 +191,81 @@ def test_run_full_forwards_author_note_to_orchestrator(client, session, monkeypa
 
 
 
+def _seed_scene_with_pov(session) -> tuple[str, str]:
+    from novel_system.db.models import StoryCharacter
+
+    session.add(StoryProject(project_id="PRJ_VC", title="声卡之书", outline_text="o", planning_mode="snowflake"))
+    session.add(StoryCharacter(character_id="CHAR_A", project_id="PRJ_VC", display_name="角色甲"))
+    session.add(
+        ChapterGoal(chapter_id="CH_VC_01", project_id="PRJ_VC", planned_scene_count=1, chapter_goal="第一章", writer_brief_json={"title": "第一章"})
+    )
+    session.add(
+        SceneCard(
+            scene_id="CH_VC_01_SC01",
+            chapter_id="CH_VC_01",
+            project_id="PRJ_VC",
+            scene_seq=1,
+            scene_goal="开场",
+            scene_type="proactive",
+            is_chapter_last=1,
+            pov_character_id="CHAR_A",
+            writer_brief_json={"source": "test", "title": "开场", "goal": "目标", "conflict": "阻碍", "setback": "挫折", "scene_crucible": "两难"},
+        )
+    )
+    session.commit()
+    return "CH_VC_01_SC01", "CHAR_A"
+
+
+def test_preflight_create_cards_unblocks_voice_profile_missing(client, session) -> None:
+    """Fix C：create_minimal_voice_card 动作可真正执行——建出 active 声线卡解阻预检。
+    修复前该动作只有无物化落点的 review.item_type='voice_profile'（死胡同）。"""
+    from sqlalchemy import select
+    from novel_system.db.models import VoiceProfile
+
+    scene_id, char_id = _seed_scene_with_pov(session)
+
+    wb = client.get(f"/api/v1/scenes/{scene_id}/workbench").json()["data"]
+    pf = wb["run_preflight"]
+    assert pf["can_run"] is False
+    assert any(b["code"] == "VOICE_PROFILE_MISSING" for b in pf["blocking_items"])
+    voice_action = next(a for a in pf["create_actions"] if a["action"] == "create_minimal_voice_card")
+    assert voice_action["executable"] is True
+    assert voice_action["endpoint"] == f"/api/v1/scenes/{scene_id}/preflight/create-cards"
+
+    resp = client.post(f"/api/v1/scenes/{scene_id}/preflight/create-cards", headers={"X-Idempotency-Key": "fc-cards"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert any(c["dependency_type"] == "voice_card" for c in data["created"])
+    # 端点回执里 preflight 不再被 voice 拦
+    assert not any(b["code"] == "VOICE_PROFILE_MISSING" for b in data["run_preflight"]["blocking_items"])
+
+    # DB 真有 active 声线卡 VOICE_CHAR_A，且 resolver 命中
+    session.expire_all()
+    vp = session.execute(
+        select(VoiceProfile).where(VoiceProfile.voice_profile_id == f"VOICE_{char_id}", VoiceProfile.active_flag == 1)
+    ).scalars().first()
+    assert vp is not None and vp.character_id == char_id
+
+    # 全新请求 GET workbench 复验已解阻
+    wb2 = client.get(f"/api/v1/scenes/{scene_id}/workbench").json()["data"]
+    assert not any(b["code"] == "VOICE_PROFILE_MISSING" for b in wb2["run_preflight"]["blocking_items"])
+
+
+def test_preflight_create_cards_is_idempotent(client, session) -> None:
+    """Fix C 幂等：已有 active 声线卡时再调不重复建。"""
+    from sqlalchemy import select
+    from novel_system.db.models import VoiceProfile
+
+    scene_id, char_id = _seed_scene_with_pov(session)
+    client.post(f"/api/v1/scenes/{scene_id}/preflight/create-cards", headers={"X-Idempotency-Key": "fc-i1"})
+    client.post(f"/api/v1/scenes/{scene_id}/preflight/create-cards", headers={"X-Idempotency-Key": "fc-i2"})
+    session.expire_all()
+    rows = session.execute(
+        select(VoiceProfile).where(VoiceProfile.voice_profile_id == f"VOICE_{char_id}", VoiceProfile.active_flag == 1)
+    ).scalars().all()
+    assert len(rows) == 1
+
+
 def test_passage_patch_candidate_for_fe_scene_offline(client, session) -> None:
     """FE-ALIGN G4：内联改写端点对 FE 目录场景可用；LLM 关闭走离线确定性客户端。"""
     scene_id = _seed_fe_scene(session)
