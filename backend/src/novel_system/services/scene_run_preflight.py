@@ -144,12 +144,15 @@ class SceneRunPreflightService:
         items: list[dict[str, Any]] = []
 
         if execution_contract is not None and execution_contract.status == "blocked":
-            missing_fields = ", ".join(execution_contract.missing_fields_json or [])
+            missing_fields_list = list(execution_contract.missing_fields_json or [])
+            missing_fields = ", ".join(missing_fields_list)
             items.append(
                 {
                     "code": "SCENE_EXECUTION_CONTRACT_BLOCKED",
                     "title": "Scene execution contract is incomplete",
                     "detail": f"Fill the missing execution contract fields before drafting: {missing_fields}",
+                    # 结构化缺失字段（供异步 run-jobs / 前端精确引导，区别于人读的 detail 串）
+                    "missing_fields": missing_fields_list,
                     "technical_hint": execution_contract.contract_id,
                 }
             )

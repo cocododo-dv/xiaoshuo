@@ -61,6 +61,32 @@ def test_run_full_returns_structured_409_not_500(client, session) -> None:
     assert body["details"]["missing_fields"]
 
 
+def test_run_jobs_exposes_structured_missing_fields_on_contract_block(client, session) -> None:
+    """Fix A：异步 run-jobs 在执行契约拦截时，serialize 必须透出结构化 missing_fields，
+    且与同步 run/full 的 error.details.missing_fields 同源——修复前异步路径丢失该信息。"""
+    from novel_system.services.scene_run_jobs import _run_scene_job_worker
+
+    scene_id = _seed_fe_scene(session)
+
+    # 同步 run/full 的 missing_fields 作为同源基准（已知非空）
+    full = client.post(f"/api/v1/scenes/{scene_id}/run/full", headers={"X-Idempotency-Key": "fa-full"})
+    assert full.status_code == 409, full.text
+    expected = set(full.json()["error"]["details"]["missing_fields"])
+    assert expected, "基准 missing_fields 不应为空"
+
+    # 异步：建任务(无预检阻断→queued) → 同步驱动 worker(不起线程，确定性) → 因契约拦截以 failed 终态
+    created = client.post(f"/api/v1/scenes/{scene_id}/run/jobs?start=false", headers={"X-Idempotency-Key": "fa-job"})
+    assert created.status_code == 200, created.text
+    job_id = created.json()["data"]["job_id"]
+    _run_scene_job_worker(job_id)
+
+    polled = client.get(f"/api/v1/run-jobs/{job_id}").json()["data"]
+    assert polled["error_code"] == "SCENE_EXECUTION_CONTRACT_BLOCKED"
+    # 关键断言：异步路径透出结构化 missing_fields（修复前此处为空 → 红）
+    assert polled["missing_fields"], "异步 run-jobs 必须透出结构化 missing_fields"
+    assert set(polled["missing_fields"]) == expected, "异步 missing_fields 必须与同步 run/full 同源"
+
+
 def test_run_jobs_creates_job_without_500(client, session) -> None:
     scene_id = _seed_fe_scene(session)
     response = client.post(

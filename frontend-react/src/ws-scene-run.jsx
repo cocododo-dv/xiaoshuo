@@ -238,7 +238,8 @@ async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-v
     || (wb.style_draft && wb.style_draft.content)
     || (wb.neutral_draft && wb.neutral_draft.content))) || "";
   if (!content.trim()) {
-    throw scnFriendly({ code: last.error_code || "", message: last.error_text || `任务以「${last.status}」结束且没有产出正文（${last.current_step || "—"}）` });
+    // Fix A：异步任务现透出结构化 missing_fields（与同步 run/full 同源）→ 引导能点名缺哪些字段
+    throw scnFriendly({ code: last.error_code || "", message: last.error_text || `任务以「${last.status}」结束且没有产出正文（${last.current_step || "—"}）`, details: { missing_fields: last.missing_fields || [] } });
   }
   const paras = content.split(/\n{2,}|\n/).map((x, i) => ({ id: "p" + (i + 1), beat: null, text: x.trim() })).filter(p => p.text);
   const hit = item.sid && WsCatalog ? WsCatalog.sceneById(item.sid) : null;

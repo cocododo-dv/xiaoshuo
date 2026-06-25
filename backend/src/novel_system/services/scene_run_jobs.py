@@ -65,6 +65,8 @@ class SceneRunJobService:
                 "needs_human_review": False,
                 "run_preflight": run_preflight,
                 "next_action": _preflight_next_action(run_preflight) if not can_run else None,
+                # 预检即拦截路径也透出结构化缺失字段（与 worker 路径同形），前端引导同源
+                "error_details": {"missing_fields": list((first_blocker or {}).get("missing_fields") or [])} if first_blocker else {},
             },
             worker_id=None,
             attempt_no=0,
@@ -88,6 +90,7 @@ class SceneRunJobService:
         summary = dict(job.result_summary_json or {})
         scene_id = payload.get("scene_id") or summary.get("scene_id")
         latest_qc = summary.get("latest_qc") or self._latest_qc_summary(str(scene_id or ""))
+        error_details = dict(summary.get("error_details") or {})
         return {
             "job_id": job.job_id,
             "chapter_id": job.chapter_id,
@@ -105,6 +108,10 @@ class SceneRunJobService:
             "needs_human_review": bool(summary.get("needs_human_review")),
             "error_code": job.error_code,
             "error_text": job.error_text,
+            # 异步路径透出结构化缺失字段（与同步 run/full 的 error.details.missing_fields 同源），
+            # 前端据此给「去补全场景卡(缺 xxx)」精确引导，不再只能拿到 error_code。
+            "error_details": error_details,
+            "missing_fields": list(error_details.get("missing_fields") or []),
             "author_note": payload.get("author_note") or "",
             "run_preflight": summary.get("run_preflight"),
             "result_summary": summary,
@@ -138,13 +145,19 @@ class SceneRunJobService:
         )
         self.session.flush()
 
-    def mark_failed(self, job: ChapterRunJob, *, error_code: str, error_text: str) -> None:
+    def mark_failed(self, job: ChapterRunJob, *, error_code: str, error_text: str, details: dict[str, Any] | None = None) -> None:
         job.status = "failed"
         job.finished_at = utcnow()
         job.error_code = error_code
         job.error_text = error_text
+        error_details = dict(details or {})
         self._update_payload(job, current_step="failed")
-        self._update_summary(job, current_step="failed", latest_error={"code": error_code, "message": error_text})
+        self._update_summary(
+            job,
+            current_step="failed",
+            latest_error={"code": error_code, "message": error_text, "details": error_details},
+            error_details=error_details,
+        )
         self.session.flush()
 
     def _latest_qc_summary(self, scene_id: str) -> dict[str, Any] | None:
@@ -246,7 +259,7 @@ def _run_scene_job_worker(job_id: str) -> None:
         session.commit()
     except DomainError as exc:
         session.rollback()
-        _mark_worker_failure(job_id, exc.code, exc.message)
+        _mark_worker_failure(job_id, exc.code, exc.message, details=exc.details)
     except Exception as exc:  # pragma: no cover - defensive worker boundary
         session.rollback()
         _mark_worker_failure(job_id, "RUN_JOB_FAILED", str(exc) or "run job failed")
@@ -254,12 +267,12 @@ def _run_scene_job_worker(job_id: str) -> None:
         session.close()
 
 
-def _mark_worker_failure(job_id: str, error_code: str, error_text: str) -> None:
+def _mark_worker_failure(job_id: str, error_code: str, error_text: str, details: dict[str, Any] | None = None) -> None:
     session = SessionLocal()
     try:
         service = SceneRunJobService(session)
         job = service.get_job(job_id)
-        service.mark_failed(job, error_code=error_code, error_text=error_text)
+        service.mark_failed(job, error_code=error_code, error_text=error_text, details=details)
         session.commit()
     finally:
         session.close()
