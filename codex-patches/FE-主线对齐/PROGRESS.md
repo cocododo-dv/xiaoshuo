@@ -831,3 +831,49 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
   gotcha + store 单测约定)、release-checklist(三 job + React 契约 E2E 门禁)、本账本。
 - 脚本编码注意:Windows PowerShell 5.1 按系统 ANSI 读无 BOM 的 .ps1,中文注释会撑坏解析
   ——`verify_react_e2e.ps1` 保持纯 ASCII 注释。
+
+### 2026-06-25 健康审计当前态刷新
+
+> 本小节为追加的「当前态快照」,不改写上方任何历史段落(各 Phase / F / G / H /
+> AI 模型接入段里的 passed 数与 alembic head 均为**当时**快照,一律保留)。
+> 换会话续工以本小节为最新真相基线。背景:此前账本最新的「当前态总规模」
+> 只记到 2026-06-12(914 passed / head 20260612_0052)+ 2026-06-24 的 CI 加固段,
+> 落后于实跑真相;本次健康审计实跑后补记。
+
+- **后端全量**:`cd backend; python -m pytest -m "not chroma_integration" -q`
+  实跑 **1260 passed / 0 failed / 3 skipped / 17 deselected**(372s,0 失败)。
+  (3 skipped = Windows 自动跳过项;17 deselected = `chroma_integration` 标记。)
+- **Schema 漂移守门**:`tests/test_metadata_isolation.py` 4 passed(含
+  `test_migration_built_schema_matches_orm_models`);ORM `create_all` 与
+  Alembic `upgrade head` 在表/列/命名索引层面**零漂移**。
+- **Alembic**:单头 **20260618_0059**,`current == head`,无分叉
+  (上一处当前态记录停在 0052;此后 finding-feedback 迁移链 0058/0059 已推进
+  head,本小节补记)。
+- **React 主线**:`frontend-react` vitest **8 文件 / 37 用例全绿**;
+  `vite build` 成功(94 模块,gzip JS≈358KB)。
+- **Git 在途**:分支 `feat/fe-react-quality-longform-fixes` 领先 `origin/main`
+  **7**(main 在 origin/main 基础上 +4、本分支再 +3,即分支比 main 多 **3** 个提交),
+  落后 0,工作树干净。核心工作(质量地板 / AI 设置 / 风格参考深层页 / CI 门禁)
+  已落 main 但**未 push**——属单点丢失风险,待推送备份。
+
+#### 修复轮(2026-06-25,本次健康审计后)
+
+按「安全可验证优先」分阶段执行,各阶段独立提交、独立验收:
+- **P1 账本刷新**(本段)—— 追加当前态小节,不改历史快照。✅
+- **P2 D13 控制塔「违约裁定」接真** —— 按 `library_derive` 范式加
+  `chapter_audit_adjudicate` 三件套 + 仿 `LibraryDeriveService` 的裁定服务 +
+  幂等路由;前端 `lf7-bridge.drifted` 接后端 violations、`lf6-app`
+  `fixDrift/archiveNew` 去 `d1/d2/n1/n3` 字面量。验收=LLM 关诚实降级(drifted
+  留空 + author_action)+ mock LLM 落 `ChapterAuditFinding`/`ReviewItem` +
+  store 单测 + `test_longform_tower` 全绿。
+- **P3 非 tide 结构层确定性派生真化** —— 后端把 `ForeshadowTracker` /
+  `SnowflakeScenePlan`(tension_target / onstage / causal_prerequisite)纯规则
+  投影进 `LongformAnchor` / `ChapterAuditFinding`,接 materialize/archive 钩子;
+  前端去 5 处 `!=="tide"` 清空门控改「后端有则显示、无则引导态」。
+  验收=新建非 tide 作品 materialize 后控制塔真实投影 + 派生函数单测,**0 LLM**。
+- **P4 推送备份** —— push `feat/fe-react-quality-longform-fixes`(含全部提交,
+  不动 origin/main),消单点丢失高危。
+- **P5 bundle 分包**(不做,仅记录)—— 勘察判定:48 个 window 注册模块靠
+  main.jsx 有序加载 + ws-app 殿后维持加载序(T3 陷阱),激进 `manualChunks`
+  破坏跨 chunk 求值序、投入产出比为负;client.js import 形态统一仅消警告无
+  性能收益却要碰 ws-writer/ws-styleref 十余处。保持默认配置不动。
