@@ -71,6 +71,27 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     await vi.waitFor(() =>
       expect(WsCatalog.sceneById("ch01s1").scene.title).toBe("交班"), T);
   });
+
+  it("设 povName 经 set() diff 只 PATCH pov_character_name（POV 设置入口契约）", async () => {
+    const { mod, client } = await loadCatalog();
+    const { WsCatalog } = mod;
+    client.apiPatch.mockClear();
+
+    const next = WsCatalog.get().map((c) =>
+      c.id === "ch01"
+        ? { ...c, scenes: c.scenes.map((s) => (s.sid === "ch01s1" ? { ...s, povName: "林深" } : s)) }
+        : c);
+    WsCatalog.set(next);
+
+    // 乐观值同步可见
+    expect(WsCatalog.sceneById("ch01s1").scene.povName).toBe("林深");
+    // diff 只发 pov_character_name（后端按名 find-or-create），命中后端 scene_id
+    await vi.waitFor(() =>
+      expect(client.apiPatch).toHaveBeenCalledWith(
+        "/api/v2/projects/tide/catalog/scenes/s1",
+        { pov_character_name: "林深" }
+      ), T);
+  });
 });
 
 describe("WsTrashStore（回收站乐观恢复 + 失败告警）", () => {

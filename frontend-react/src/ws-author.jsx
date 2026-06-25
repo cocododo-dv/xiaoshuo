@@ -322,6 +322,9 @@ function ArrGmcEdit({ s, onEdit }) {
   const bits = s.kind === "反应"
     ? [["反应", "goal"], ["困境", "obstacle"], ["决定", "turn"]]
     : [["目标", "goal"], ["阻碍", "obstacle"], ["出口", "turn"]];
+  // POV 角色候选（best-effort，取自资料库人物；冷启动无角色时为空，仍可自由输入新名）
+  const povChars = (() => { try { return (window.LIB_ENTRIES || []).filter(e => e.cat === "people").map(e => e.name).filter(Boolean); } catch (e) { return []; } })();
+  const povListId = "arr-pov-" + s.sid;
   return (
     <span className="arr-scene-brief">
       {bits.map(([label, key]) => (
@@ -333,6 +336,15 @@ function ArrGmcEdit({ s, onEdit }) {
             onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
         </span>
       ))}
+      <span className="arr-gmc arr-gmc-pov">
+        <b>POV</b>
+        <input className="arr-gmc-input" list={povListId} defaultValue={s.povName || ""} key={s.sid + "pov" + (s.povName || "")}
+          placeholder="谁的视角" title="设这一场的 POV 角色（按名字；新角色会自动建档）。起草前置：执行契约需要 POV"
+          onClick={(e) => e.stopPropagation()}
+          onBlur={(e) => onEdit({ povName: e.target.value.trim() })}
+          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+        {povChars.length ? <datalist id={povListId}>{povChars.map((n, i) => <option key={i} value={n} />)}</datalist> : null}
+      </span>
     </span>
   );
 }

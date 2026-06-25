@@ -242,3 +242,44 @@ def test_create_chapter_idempotency_contract(client):
         scene_replay.json()["data"]["scene"]["scene_id"]
         == scene_first.json()["data"]["scene"]["scene_id"]
     )
+
+
+def test_scene_pov_set_by_name_creates_character_and_round_trips(client):
+    """POV 设置端点：按名设 POV → find-or-create 角色，catalog 往返回传 id/name。"""
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "章"})["chapter"]
+    sid = chapter["scenes"][0]["scene_id"]
+
+    r = client.patch(f"/api/v2/projects/{pid}/catalog/scenes/{sid}", json={"pov_character_name": "林深"})
+    assert r.status_code == 200, r.text
+    sc = r.json()["data"]["scene"]
+    assert sc["pov_character_name"] == "林深"
+    pov_id = sc["pov_character_id"]
+    assert pov_id, "应已 find-or-create 出角色并绑定"
+
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    sc2 = tree["chapters"][0]["scenes"][0]
+    assert sc2["pov_character_id"] == pov_id and sc2["pov_character_name"] == "林深"
+
+    # 同名再设 → 复用同一角色，不重复建
+    r2 = client.patch(f"/api/v2/projects/{pid}/catalog/scenes/{sid}", json={"pov_character_name": "林深"})
+    assert r2.json()["data"]["scene"]["pov_character_id"] == pov_id
+
+
+def test_scene_pov_by_existing_id_bad_id_and_clear(client):
+    """按既有 id 设 / 不存在 id → 400 / 空串清空。"""
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "章"})["chapter"]
+    sid = chapter["scenes"][0]["scene_id"]
+    pov_id = client.patch(f"/api/v2/projects/{pid}/catalog/scenes/{sid}", json={"pov_character_name": "角色甲"}).json()["data"]["scene"]["pov_character_id"]
+
+    ok = client.patch(f"/api/v2/projects/{pid}/catalog/scenes/{sid}", json={"pov_character_id": pov_id})
+    assert ok.status_code == 200 and ok.json()["data"]["scene"]["pov_character_id"] == pov_id
+
+    bad = client.patch(f"/api/v2/projects/{pid}/catalog/scenes/{sid}", json={"pov_character_id": "CHAR_NOPE"})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "CATALOG_POV_CHARACTER_NOT_FOUND"
+
+    clr = client.patch(f"/api/v2/projects/{pid}/catalog/scenes/{sid}", json={"pov_character_id": ""})
+    assert clr.status_code == 200 and clr.json()["data"]["scene"]["pov_character_id"] == ""

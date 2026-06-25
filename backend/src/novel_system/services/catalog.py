@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard, StoryProject
+from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard, StoryCharacter, StoryProject
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import ProjectService
 
@@ -153,6 +153,11 @@ class CatalogService:
         kind = scene_kind(scene)
         brief_json = dict(scene.writer_brief_json or {})
         keys = SCENE_BRIEF_GCS if kind == "proactive" else SCENE_BRIEF_RDD
+        pov_id = str(scene.pov_character_id or "")
+        pov_name = ""
+        if pov_id:
+            character = self.session.get(StoryCharacter, pov_id)
+            pov_name = character.display_name if character is not None else ""
         return {
             "scene_id": scene.scene_id,
             "chapter_id": scene.chapter_id,
@@ -163,6 +168,8 @@ class CatalogService:
             "state": str(scene.state or "todo"),
             "words": int(scene.words_current or 0),
             "brief": {"kind": kind, **{key: str(brief_json.get(key) or "") for key in keys}},
+            "pov_character_id": pov_id,
+            "pov_character_name": pov_name,
         }
 
     # ---------- 写 ----------
@@ -254,9 +261,41 @@ class CatalogService:
             for key in (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD):
                 if key in nested:
                     brief[key] = str(nested[key] or "")
+        # POV 角色:按 id 选既有角色,或按名 find-or-create(让冷启动作品无需走完整雪花
+        # 物化即可设 pov,解执行契约的 pov_character_id 硬阻断);空串显式清空。
+        if "pov_character_id" in body or "pov_character_name" in body:
+            pov_id = str(body.get("pov_character_id") or "").strip()
+            pov_name = str(body.get("pov_character_name") or "").strip()
+            if pov_id:
+                character = self.session.get(StoryCharacter, pov_id)
+                if character is None or character.project_id != project_id:
+                    raise DomainError("CATALOG_POV_CHARACTER_NOT_FOUND", "pov character not found in project", status_code=400)
+                scene.pov_character_id = pov_id
+            elif pov_name:
+                scene.pov_character_id = self._find_or_create_character(project_id, pov_name).character_id
+            else:
+                scene.pov_character_id = None
         scene.writer_brief_json = brief
         self.session.flush()
         return {"scene": self._scene_payload_with_slug(scene)}
+
+    def _find_or_create_character(self, project_id: str, display_name: str) -> StoryCharacter:
+        existing = self.session.execute(
+            select(StoryCharacter).where(
+                StoryCharacter.project_id == project_id,
+                StoryCharacter.display_name == display_name,
+            )
+        ).scalars().first()
+        if existing is not None:
+            return existing
+        character = StoryCharacter(
+            character_id=f"CHAR_{uuid.uuid4().hex[:10].upper()}",
+            project_id=project_id,
+            display_name=display_name,
+        )
+        self.session.add(character)
+        self.session.flush()
+        return character
 
     def create_scene(self, project_id: str, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         chapter = self._require_chapter(project_id, chapter_id)

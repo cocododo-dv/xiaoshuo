@@ -184,6 +184,8 @@ function catFromApiScene(s) {
     goal: reactive ? (b.reaction || "") : (b.goal || ""),
     obstacle: reactive ? (b.dilemma || "") : (b.conflict || ""),
     turn: reactive ? (b.decision || "") : (b.setback || ""),
+    povName: s.pov_character_name || "",
+    povId: s.pov_character_id || "",
     kindFields: reactive ? KIND_FIELDS_RDD : KIND_FIELDS_GCS,
   };
 }
@@ -239,6 +241,8 @@ function catScenePatch(prev, next) {
   const patch = {};
   if (next.title !== prev.title) patch.title = next.title;
   if (next.state !== prev.state) patch.state = next.state;
+  // POV：FE 只跟「名字」打交道，后端按名 find-or-create 角色并回填 id（放在换型早退之前，避免同时改型丢 pov）
+  if ((next.povName || "") !== (prev.povName || "")) patch.pov_character_name = next.povName || "";
   const reactive = next.kind === "反应";
   if (next.kind !== prev.kind) {
     patch.kind = reactive ? "reactive" : "proactive";
