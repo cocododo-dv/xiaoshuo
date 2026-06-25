@@ -131,6 +131,16 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.7,
         max_output_tokens=1800,
     ),
+    # FE-ALIGN P2(D13): 章级「违约级判定」—— 草稿 vs 交接契约比对，产 drift findings
+    LLMNodeSpec(
+        "chapter_audit_adjudicate",
+        "Chapter audit adjudicate (违约级判定)",
+        "quality",
+        template_name="chapter_audit_adjudicate",
+        temperature=0.1,
+        max_output_tokens=2400,
+        model_profile="quality_strong",
+    ),
     LLMNodeSpec(
         "style_profile_extract",
         "Style profile extract",

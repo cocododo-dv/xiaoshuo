@@ -199,6 +199,126 @@ def test_audit_receipt_deterministic_scan(client, session):
     assert receipt["pending"] and receipt["pending"][0]["id"] == "l6"
 
 
+def _write_scene_prose(client, pid, cid, content) -> str:
+    """建章自带的首场写入正文，返回 scene_id。"""
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    scene_id = tree["chapters"][0]["scenes"][0]["scene_id"]
+    ensure = client.post(
+        f"/api/v1/author-drafts/scene/{scene_id}/ensure",
+        headers={"X-Idempotency-Key": f"adj-ensure-{scene_id}"},
+    )
+    draft = ensure.json()["data"]["draft"]
+    save = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": content, "base_revision_no": draft["revision_no"]},
+    )
+    assert save.status_code == 200, save.text
+    return scene_id
+
+
+def test_adjudicate_draft_degrades_without_llm(client):
+    """FE-ALIGN P2(D13)：LLM 未配置 → 诚实降级（只声明检出/未检出，drifted 留空 + author_action），
+    不机器判违约、不落 finding。"""
+    pid = _create_project(client)
+    cid = _chapter(client, pid)
+    client.put(
+        f"/api/v2/projects/{pid}/longform/chapters/{cid}/contract",
+        json={"constraints": [{"text": "档案室保持在地下，不得出现在三楼"}]},
+    )
+    _write_scene_prose(client, pid, cid, "<p>他们走上三楼，推开了档案室的门。</p>")
+
+    resp = client.post(
+        f"/api/v2/projects/{pid}/longform/chapters/{cid}/audit/adjudicate-draft",
+        json={},
+        headers={"X-Idempotency-Key": "adj-degrade-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["skipped"] is True
+    assert data["reason"] == "llm_disabled"
+    assert data["violations"] == []
+    assert data["findings_created"] == 0
+    assert data["author_action"]["target_view"] == "system-config"
+    # 确定性回执仍在（诚实口径：检出/未检出可见）
+    assert "anchor_hits" in data["receipt"] and "anchor_misses" in data["receipt"]
+    # 未落任何 finding
+    findings = client.get(f"/api/v2/projects/{pid}/longform/chapters/{cid}/audit").json()["data"]["findings"]
+    assert findings == []
+
+
+def test_adjudicate_draft_llm_violations_create_findings(client, session, monkeypatch):
+    """FE-ALIGN P2(D13)：LLM 开（mock）→ 每条违约落 ChapterAuditFinding(kind=drift) + 同事务产裁决卡；
+    确定性 finding_id 使重跑幂等（不重复落库）。"""
+    import types
+
+    import novel_system.services.longform_tower as tower_mod
+
+    pid = _create_project(client)
+    cid = _chapter(client, pid)
+    client.put(
+        f"/api/v2/projects/{pid}/longform/chapters/{cid}/contract",
+        json={"constraints": [{"text": "档案室保持在地下，不得出现在三楼"}]},
+    )
+    _write_scene_prose(client, pid, cid, "<p>他们走上三楼，推开了档案室的门。</p><p>灯还亮着。</p>")
+
+    # 强制 llm_enabled + 注入返回固定违约的 fake client（不触网）
+    monkeypatch.setattr(tower_mod, "get_settings", lambda: types.SimpleNamespace(llm_enabled=True))
+    violation = {
+        "clause_ref": "1",
+        "kind": "drift",
+        "severity": "block",
+        "text": "档案室被写到三楼，违反契约第 1 条（应在地下）",
+        "evidence_sentence": "他们走上三楼，推开了档案室的门。",
+        "at": "测试章",
+        "suggested_fix": "把档案室位置改回地下，删除三楼相关描写",
+    }
+
+    class _Resp:
+        def __init__(self, data):
+            self.structured_output = data
+
+    class _Client:
+        def __init__(self, data):
+            self._data = data
+
+        def generate(self, request):  # noqa: ARG002 — 测试桩
+            return _Resp(self._data)
+
+    result = tower_mod.LongformTowerService(session).adjudicate_draft(
+        pid, cid, llm_client=_Client({"violations": [violation]})
+    )
+    session.commit()
+    assert result["skipped"] is False
+    assert len(result["violations"]) == 1
+    assert result["violations"][0]["kind"] == "drift"
+    assert result["findings_created"] == 1
+
+    rows = (
+        session.query(ChapterAuditFinding)
+        .filter(ChapterAuditFinding.project_id == pid, ChapterAuditFinding.chapter_id == cid)
+        .all()
+    )
+    assert len(rows) == 1 and rows[0].kind == "drift" and rows[0].severity == "block"
+    fid = rows[0].finding_id
+    # 同事务产了裁决卡（drift → risk，priority 1）
+    items = client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"]
+    card = next(i for i in items if i.get("dedupe_key") == f"canon:{fid}")
+    assert card["kind"] == "risk" and card["priority"] == 1
+
+    # 同样违约重跑 → 幂等，不重复落库
+    result2 = tower_mod.LongformTowerService(session).adjudicate_draft(
+        pid, cid, llm_client=_Client({"violations": [violation]})
+    )
+    session.commit()
+    assert result2["findings_created"] == 0
+    rows2 = (
+        session.query(ChapterAuditFinding)
+        .filter(ChapterAuditFinding.project_id == pid, ChapterAuditFinding.chapter_id == cid)
+        .all()
+    )
+    assert len(rows2) == 1
+
+
 def test_anchor_create_honors_idempotency_replay(client):
     """FE-ALIGN 修复：锚点/审计创建端点兑现幂等键（重放不建重复行）。"""
     pid = _create_project(client)

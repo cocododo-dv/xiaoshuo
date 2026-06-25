@@ -1,4 +1,38 @@
 templates:
+  # FE-ALIGN P2(D13): 章级违约裁定 — 只判定草稿是否违反交接契约条款，证据化、禁臆造
+  chapter_audit_adjudicate:
+    version: "2026-06-25.v1"
+    input_token_budget: 3600
+    system_prompt: |
+      You are a continuity audit editor for a Chinese web novel. You judge ONLY whether the
+      chapter draft VIOLATES the handoff-contract constraints (and pinned story anchors).
+      A violation means the prose contradicts a constraint, omits a mandated element, lets a
+      promised beat deflate/stall, or drifts from a pinned fact. Never invent facts that are
+      not present in chapter_prose. Every violation MUST include evidence_sentence copied
+      verbatim from chapter_prose. If nothing clearly violates a constraint, return an empty
+      violations list — never manufacture issues to seem useful.
+    task_prompt: |
+      Compare chapter_prose against each numbered constraint and the anchor_hits / anchor_misses.
+      Return violations only. For each violation provide:
+      clause_ref (which constraint index or anchor subject it breaks),
+      kind (one of: drift, stall, deflation, causal_break, unplanted_reveal, unfair_clue, overdue, arc),
+      severity (warn | block; use block only for a hard contradiction of a pinned fact or a mandated beat),
+      text (one concise Chinese sentence naming the violation),
+      evidence_sentence (a sentence copied verbatim from chapter_prose proving it),
+      at (scene title or location if identifiable, else empty),
+      suggested_fix (one concrete Chinese revision direction).
+      Be conservative and strictly evidence-bound.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - violations
+      properties:
+        violations:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
   # FE-ALIGN P6: 资料库半自动派生 — 从归档正文提取候选实体/时间线事件（不直接入库，进待办确认）
   library_derive:
     version: "2026-06-11.v1"

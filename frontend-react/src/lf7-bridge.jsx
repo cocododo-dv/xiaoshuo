@@ -158,6 +158,43 @@ const Lf7Bridge = {
       ],
     };
   },
+  /* —— 章级「违约级判定」（FE-ALIGN P2 / D13）：草稿 vs 交接契约 LLM 比对 ——
+     接后端 adjudicate-draft：违约 → 映射成 drifted 形状（带真实 finding_id，
+     可走 ruleCanon 裁决）+ 刷新缓存让收件箱出现裁决卡；LLM 未配置 → 诚实降级
+     （skipped + author_action，drifted 留空，不机器判违约）。 */
+  async adjudicateDraft(chNo) {
+    const pid = lf7ProjectId();
+    const chapterId = lf7ChapterIdByNo(chNo);
+    if (!pid || !chapterId) return null;
+    let r = null;
+    try {
+      r = await apiPost(`/api/v2/projects/${pid}/longform/chapters/${chapterId}/audit/adjudicate-draft`, {});
+    } catch (e) {
+      return { skipped: true, reason: "error", author_action: null, drifted: [], findings_created: 0, error: (e && e.message) || "裁定失败" };
+    }
+    if (!r) return null;
+    if (r.skipped) {
+      return { skipped: true, reason: r.reason || "skipped", author_action: r.author_action || null, drifted: [], findings_created: 0 };
+    }
+    try { lf7Fetch(); } catch (e) {}  // 裁定落了 finding，刷新缓存让裁决卡/ruleCanon 可用
+    const drifted = (r.violations || []).map((v, i) => {
+      const block = v.severity === "block";
+      return {
+        id: v.finding_id || ("vio-" + i),
+        finding_id: v.finding_id || null,
+        real: true,
+        label: block ? "违约 · 阻断" : "违约 · 偏离",
+        tone: block ? "rose" : "gold",
+        sev: block ? "high" : "medium",
+        what: v.text,
+        detail: (v.clause_ref ? `违反交接契约第 ${v.clause_ref} 条。` : "") + (v.suggested_fix || ""),
+        line: v.evidence_sentence || "",
+        at: v.at || "",
+        fixes: v.suggested_fix ? [v.suggested_fix, "钉入下一轮交接复核"] : ["钉入下一轮交接复核"],
+      };
+    });
+    return { skipped: false, reason: null, drifted, findings_created: r.findings_created || 0 };
+  },
   /* —— 归档时新发现的冲突：直接建 finding（后端同事务产待办卡） —— */
   addCanonConflict(entry) {
     const pid = lf7ProjectId();

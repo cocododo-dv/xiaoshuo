@@ -458,9 +458,28 @@ function Lf6Tower({ go, standalone }) {
     return () => { on = false; window.removeEventListener("lf:bridge-changed", pull); };
   }, []);
 
-  /* 章级审计：起草台交齐全部场次后，由你在塔上启动（先刷新真实回执再播放） */
+  /* 章级审计：起草台交齐全部场次后，由你在塔上启动（先刷新真实回执，再跑 D13 违约裁定） */
   const beginAudit = () => {
-    try { if (Lf7Bridge && Lf7Bridge.auditReceipt) Lf7Bridge.auditReceipt(LF2_NEXT).then(r => setRealAud(r)).catch(() => {}); } catch (e) {}
+    try {
+      if (Lf7Bridge && Lf7Bridge.auditReceipt) {
+        Lf7Bridge.auditReceipt(LF2_NEXT).then(r => {
+          setRealAud(r);
+          // FE-ALIGN P2(D13)：本章有真实回执时，跑后端违约级裁定（LLM 关则诚实降级）
+          if (r && Lf7Bridge.adjudicateDraft) {
+            Lf7Bridge.adjudicateDraft(LF2_NEXT).then(adj => {
+              if (!adj) return;
+              if (adj.skipped) {
+                if (adj.reason === "llm_disabled") flash("违约级裁定需启用 LLM —— 去「系统设置 · AI 模型」启用后可在控制塔重跑逐条裁定；确定性回执仍如实显示检出/未检出。");
+                else if (adj.reason === "error" && adj.error) flash(adj.error);
+                return;
+              }
+              setRealAud(prev => prev ? { ...prev, drifted: adj.drifted || [] } : prev);
+              if ((adj.drifted || []).length) flash(`已比对交接契约：检出 ${adj.drifted.length} 处违约（已落审计并产裁决卡）`);
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    } catch (e) {}
     setHasDraft(true); setConsoleTab("audit"); setAuditPlay(true);
   };
 
@@ -481,7 +500,15 @@ function Lf6Tower({ go, standalone }) {
 
   const fixDrift = (id) => {
     setFixDone(s => new Set(s).add(id));
-    /* 裁决产物化：不只 toast，生成可追踪的修复任务进待办收件箱 */
+    /* FE-ALIGN P2(D13)：真实违约（adjudicate-draft 产物）→ 走后端裁决（accept_fix），
+       收件箱里的同一条裁决卡同步消失；finding 已落库，无需再造演示 onceTask。 */
+    const real = (aud.drifted || []).find(x => x.id === id && x.real && x.finding_id);
+    if (real) {
+      try { if (Lf7Bridge) Lf7Bridge.ruleCanon(real.finding_id, ""); } catch (e) {}
+      flash("已裁决该违约（accept_fix）· 回写正文后这条即结清，收件箱同一条同步消失");
+      return;
+    }
+    /* 裁决产物化（演示回落）：不只 toast，生成可追踪的修复任务进待办收件箱 */
     try {
       if (Lf7Bridge && id === "d1") Lf7Bridge.onceTask("task-aud-d1", {
         kind: "qc", priority: 2,
@@ -613,7 +640,7 @@ function Lf6Tower({ go, standalone }) {
         <div className="lf3-brand">
           <span className="lf3-brand-mark"><I.Radar size={20} /></span>
           <div>
-            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {WsDemoTag && <WsDemoTag note="悬念债 / 锚点 / 线 / 弧（锚点库）、空降 / 断链 / 认知态（审计层）、记忆预算池（faded 锚点）均为后端真实数据；章级审计回执在本章有正文时为确定性扫描真回执（契约 / 产出 / 锚点在场），违约级判定与流程动画的逐条裁定语气仍属演示（待 LLM 审计节点）。" />}</div>
+            <div className="lf3-brand-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>长篇 · 控制塔 {WsDemoTag && <WsDemoTag note="悬念债 / 锚点 / 线 / 弧（锚点库）、空降 / 断链 / 认知态（审计层）、记忆预算池（faded 锚点）均为后端真实数据；章级审计回执在本章有正文时为确定性扫描真回执（契约 / 产出 / 锚点在场）；违约级判定经后端 chapter_audit_adjudicate 节点接真（LLM 启用则逐条落审计 + 产裁决卡，未启用则诚实降级只声明检出 / 未检出）。无正文的演示章仍回落静态审计动画。" />}</div>
             <div className="lf3-brand-title">{WsWorks ? WsWorks.active().title : "潮汐档案"}<span className="lf3-brand-genre">{WsWorks ? WsWorks.active().genre : "悬疑 · 长篇"}</span></div>
           </div>
         </div>

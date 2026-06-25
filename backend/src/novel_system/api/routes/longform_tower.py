@@ -157,3 +157,26 @@ def adjudicate_chapter_audit_finding(
     result = LongformTowerService(session).adjudicate_finding(project_id, finding_id, payload or {})
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v2/projects/{project_id}/longform/chapters/{chapter_id}/audit/adjudicate-draft")
+def adjudicate_chapter_draft(
+    project_id: str,
+    chapter_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+):
+    """FE-ALIGN P2(D13)：章级「违约级判定」——草稿 vs 交接契约 LLM 比对，产 drift findings；
+    LLM 关闭时诚实降级（只声明检出/未检出，不机器判违约）。"""
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/longform/chapters/{chapter_id}/audit/adjudicate-draft",
+        payload=payload or {},
+        action=lambda: LongformTowerService(session).adjudicate_draft(project_id, chapter_id),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)

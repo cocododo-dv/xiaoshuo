@@ -20,6 +20,14 @@ task_routing:
     temperature: 0.1
     max_output_tokens: 1600
     response_format: json_object
+  # FE-ALIGN P2(D13): 章级违约级判定（草稿 vs 交接契约 → drift findings）
+  chapter_audit_adjudicate:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.1
+    max_output_tokens: 2400
+    response_format: json_object
+    model_profile: quality_strong
   # FE-ALIGN G5: 构思视图步骤候选（3 条不同方向）
   snowflake_step_candidates:
     provider: openai_compatible

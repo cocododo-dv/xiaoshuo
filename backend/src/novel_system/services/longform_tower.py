@@ -24,6 +24,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import ProjectService
+from novel_system.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ AUDIT_KINDS = {"drift", "overdue", "unplanted_reveal", "causal_break", "unfair_c
 AUDIT_SEVERITIES = {"warn", "block"}
 AUDIT_DECISIONS = {"accept_fix", "defer", "dismiss"}
 ANCHOR_STATUSES = {"pinned", "faded"}
+# FE-ALIGN P2(D13)：章级「违约级判定」LLM 节点。确定性回执只声明检出/未检出，
+# 这个节点把「草稿违反交接契约第 N 条」这一步接真；LLM 关闭时诚实降级（不机器判违约）。
+AUDIT_ADJUDICATE_NODE_ID = "chapter_audit_adjudicate"
 CONTRACT_TRANSITIONS = {
     "drafting": {"ready"},
     "ready": {"drafting", "dispatched"},
@@ -562,3 +566,176 @@ class LongformTowerService:
             logger.exception("archive derive failed for %s", chapter_id)
             write_back["derive"] = {"skipped": True, "reason": "error"}
         return write_back
+
+    # ---------------- 章级「违约级判定」（FE-ALIGN P2 / D13，LLM + 诚实降级） ----------------
+    # 设计：在 audit_receipt 的确定性扫描之上，用 LLM 把「草稿是否违反交接契约第 N 条」
+    # 这一步接真——每条违约证据化（须引正文原句）、禁臆造；落 ChapterAuditFinding(kind=drift)
+    # 并同事务产待办裁决卡（复用 create_finding 全链路）。LLM 关闭时诚实降级：只声明
+    # 检出/未检出，drifted 留空，给 author_action 引导，不机器判违约（这是正确行为而非占位）。
+    def adjudicate_draft(
+        self, project_id: str, chapter_id: str, *, llm_client: Any | None = None
+    ) -> dict[str, Any]:
+        receipt = self.audit_receipt(project_id, chapter_id)
+        settings = get_settings()
+        if not settings.llm_enabled:
+            return {
+                "skipped": True,
+                "reason": "llm_disabled",
+                "violations": [],
+                "findings_created": 0,
+                "author_action": {
+                    "title": "未配置 LLM",
+                    "message": "违约级裁定需要启用 LLM。确定性审计回执不受影响（仍如实声明检出/未检出）；"
+                    "配置后可在控制塔重跑「逐条裁定」。",
+                    "target_view": "system-config",
+                },
+                "receipt": receipt,
+            }
+        if not receipt.get("has_text"):
+            return {"skipped": True, "reason": "no_content", "violations": [], "findings_created": 0, "receipt": receipt}
+        constraints = (receipt.get("contract") or {}).get("constraints") or []
+        if not constraints:
+            return {
+                "skipped": True,
+                "reason": "no_contract_constraints",
+                "violations": [],
+                "findings_created": 0,
+                "receipt": receipt,
+            }
+        violations = self._adjudicate_violations(project_id, chapter_id, receipt, llm_client)
+        created = self._record_violations(project_id, chapter_id, violations)
+        return {
+            "skipped": False,
+            "violations": violations,
+            "findings_created": created,
+            "receipt": receipt,
+        }
+
+    def _build_llm_client(self) -> Any:
+        from novel_system.services.llm_client import LLMClient
+        from novel_system.services.system_config import load_llm_provider_runtime_configs
+
+        settings = get_settings()
+        return LLMClient(
+            provider=settings.llm_provider,
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            timeout_seconds=settings.llm_timeout_seconds,
+            provider_configs=load_llm_provider_runtime_configs(),
+        )
+
+    def _chapter_prose_for_audit(self, chapter_id: str) -> str:
+        """章正文（按场景拼接，剥标签，占位文档不计）——喂给违约裁定 LLM 的上下文。"""
+        from novel_system.db.models import AuthorDraft, SceneCard
+
+        scenes = self.session.scalars(
+            select(SceneCard)
+            .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
+            .order_by(SceneCard.scene_seq.asc())
+        ).all()
+        blocks: list[str] = []
+        for scene in scenes:
+            draft = self.session.scalars(
+                select(AuthorDraft).where(
+                    AuthorDraft.object_type == "scene",
+                    AuthorDraft.object_id == scene.scene_id,
+                    AuthorDraft.status == "current",
+                )
+            ).first()
+            paras = _draft_paragraphs(draft.content if draft else "")
+            if not paras:
+                continue
+            title = str((scene.writer_brief_json or {}).get("title") or scene.scene_goal or scene.scene_id)
+            blocks.append(f"【{title}】\n" + "\n".join(paras))
+        return "\n\n".join(blocks)
+
+    def _adjudicate_violations(
+        self, project_id: str, chapter_id: str, receipt: dict[str, Any], llm_client: Any | None
+    ) -> list[dict[str, Any]]:
+        from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
+
+        client = llm_client or self._build_llm_client()
+        constraints = (receipt.get("contract") or {}).get("constraints") or []
+        payload = {
+            "chapter_no": receipt.get("chapter_no"),
+            "constraints": [
+                {
+                    "index": idx + 1,
+                    "text": c.get("text"),
+                    "kind": c.get("kind"),
+                    "anchor_id": c.get("anchor_id"),
+                }
+                for idx, c in enumerate(constraints)
+            ],
+            "anchor_hits": [
+                {"subject": h.get("subject"), "value": h.get("value"), "evidence": h.get("evidence"), "at": h.get("at")}
+                for h in (receipt.get("anchor_hits") or [])
+            ],
+            "anchor_misses": [
+                {"subject": m.get("subject"), "value": m.get("value")} for m in (receipt.get("anchor_misses") or [])
+            ],
+            "chapter_prose": self._chapter_prose_for_audit(chapter_id)[:12000],
+        }
+        try:
+            structured = call_llm_node(AUDIT_ADJUDICATE_NODE_ID, payload, client)
+        except LLMNodeError as exc:
+            logger.warning("chapter audit adjudicate llm call failed: %s", exc)
+            return []
+        out: list[dict[str, Any]] = []
+        for item in structured.get("violations") or []:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            kind = str(item.get("kind") or "drift").strip()
+            if kind not in AUDIT_KINDS:
+                kind = "drift"
+            severity = str(item.get("severity") or "warn").strip()
+            if severity not in AUDIT_SEVERITIES:
+                severity = "warn"
+            out.append(
+                {
+                    "clause_ref": str(item.get("clause_ref") or "").strip(),
+                    "kind": kind,
+                    "severity": severity,
+                    "text": text,
+                    "evidence_sentence": str(item.get("evidence_sentence") or "").strip(),
+                    "at": str(item.get("at") or "").strip(),
+                    "suggested_fix": str(item.get("suggested_fix") or "").strip(),
+                }
+            )
+        return out
+
+    def _record_violations(
+        self, project_id: str, chapter_id: str, violations: list[dict[str, Any]]
+    ) -> int:
+        """每条违约 → 确定性 finding_id（同章+条款+文案幂等）→ create_finding 落库 + 产裁决卡。"""
+        import hashlib
+
+        created = 0
+        for v in violations:
+            seed = f"{chapter_id}:{v.get('clause_ref') or ''}:{v['text']}"
+            finding_id = "AUD_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10].upper()
+            v["finding_id"] = finding_id  # 回挂真实 finding_id，供前端裁决/去重消费
+            already = self.session.get(ChapterAuditFinding, finding_id) is not None
+            self.create_finding(
+                project_id,
+                chapter_id,
+                {
+                    "finding_id": finding_id,
+                    "kind": v["kind"],
+                    "severity": v["severity"],
+                    "text": v["text"],
+                    "evidence": v.get("evidence_sentence") or None,
+                    "meta": {
+                        "drift": True,
+                        "clause_ref": v.get("clause_ref") or "",
+                        "at": v.get("at") or "",
+                        "suggested_fix": v.get("suggested_fix") or "",
+                    },
+                },
+            )
+            if not already:
+                created += 1
+        return created
