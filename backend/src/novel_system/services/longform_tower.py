@@ -739,3 +739,129 @@ class LongformTowerService:
             if not already:
                 created += 1
         return created
+
+    # ---------------- 结构层确定性派生（FE-ALIGN P3，0 LLM、幂等） ----------------
+    # 从雪花场景规划投影故事线/悬念债锚点，让非演示作品的控制塔也有真实结构。
+    # 只投影高置信、无歧义的映射：onstage 角色区段 → thread；显式伏笔/下游义务 → promise。
+    # 断链/空降等推断性判定不在此投影（需真实数据校准，避免在没数据时产假阳性）。
+    _THREAD_COLORS = ("crimson", "slate", "ink", "gold", "sage", "teal")
+
+    def derive_structure(self, project_id: str) -> dict[str, Any]:
+        from novel_system.db.models import SnowflakeScenePlan, StoryCharacter
+
+        project = self._require_project(project_id)
+        plans = self.session.scalars(
+            select(SnowflakeScenePlan)
+            .where(SnowflakeScenePlan.project_id == project.project_id)
+            .order_by(SnowflakeScenePlan.scene_seq.asc())
+        ).all()
+        if not plans:
+            return {"skipped": True, "reason": "no_scene_plans", "threads_created": 0, "promises_created": 0}
+
+        # 章号映射：按 scene_seq 首现顺序给每个 chapter_id 编号（确定性）
+        chapter_no: dict[str, int] = {}
+        for plan in plans:
+            if plan.chapter_id and plan.chapter_id not in chapter_no:
+                chapter_no[plan.chapter_id] = len(chapter_no) + 1
+
+        char_names = {
+            row.character_id: row.display_name
+            for row in self.session.scalars(
+                select(StoryCharacter).where(StoryCharacter.project_id == project.project_id)
+            ).all()
+        }
+
+        # —— thread：每个出场角色的章节区段（连续章号合并成 segs） ——
+        char_chapters: dict[str, set[int]] = {}
+        for plan in plans:
+            no = chapter_no.get(plan.chapter_id)
+            if not no:
+                continue
+            for raw in plan.onstage_chars_json or []:
+                cid = str(raw or "").strip()
+                if cid:
+                    char_chapters.setdefault(cid, set()).add(no)
+
+        threads_created = 0
+        for index, (cid, nos) in enumerate(char_chapters.items()):
+            name = char_names.get(cid) or cid
+            anchor_id = self._derive_anchor_id(project.project_id, "thread", cid)
+            fe = {
+                "id": anchor_id,
+                "name": name,
+                "short": name[:6],
+                "color": self._THREAD_COLORS[index % len(self._THREAD_COLORS)],
+                "segs": self._merge_segments(nos),
+                "derived": True,
+            }
+            if self._upsert_derived_anchor(project.project_id, anchor_id, "thread", f"{name} 的故事线", fe):
+                threads_created += 1
+
+        # —— promise：显式伏笔 / 下游义务（首现章为 setup，payoff 待人工排期） ——
+        promise_setup: dict[str, int] = {}
+        for plan in plans:
+            no = chapter_no.get(plan.chapter_id) or 0
+            for raw in list(plan.involved_foreshadowing_json or []) + list(plan.downstream_obligations_json or []):
+                text = str(raw or "").strip()
+                if text and text not in promise_setup:
+                    promise_setup[text] = no
+
+        promises_created = 0
+        for text, setup_no in promise_setup.items():
+            anchor_id = self._derive_anchor_id(project.project_id, "promise", text)
+            fe = {
+                "id": anchor_id,
+                "title": text[:60],
+                "setup": setup_no,
+                "payoff": None,
+                "state": "open",
+                "pri": "medium",
+                "pinned": False,
+                "derived": True,
+                "note": text,
+            }
+            if self._upsert_derived_anchor(project.project_id, anchor_id, "promise", text, fe):
+                promises_created += 1
+
+        return {"skipped": False, "threads_created": threads_created, "promises_created": promises_created}
+
+    @staticmethod
+    def _merge_segments(nos: set[int]) -> list[list[int]]:
+        segs: list[list[int]] = []
+        for n in sorted(nos):
+            if segs and n == segs[-1][1] + 1:
+                segs[-1][1] = n
+            else:
+                segs.append([n, n])
+        return segs
+
+    def _derive_anchor_id(self, project_id: str, kind: str, key: str) -> str:
+        import hashlib
+
+        seed = f"{project_id}:{kind}:{key}"
+        return "ANC_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10].upper()
+
+    def _upsert_derived_anchor(
+        self, project_id: str, anchor_id: str, kind: str, text: str, fe: dict[str, Any]
+    ) -> bool:
+        """存在则刷新派生 note/text（幂等，保留人工 status），不存在则新建。返回是否新建。"""
+        note = json.dumps({"fe": fe}, ensure_ascii=False)
+        existing = self.session.get(LongformAnchor, anchor_id)
+        if existing is not None:
+            existing.text = text
+            existing.note = note
+            self.session.flush()
+            return False
+        self.session.add(
+            LongformAnchor(
+                anchor_id=anchor_id,
+                project_id=project_id,
+                kind=kind,
+                text=text,
+                source_ref="snowflake_scene_plan",
+                note=note,
+                status="pinned",
+            )
+        )
+        self.session.flush()
+        return True

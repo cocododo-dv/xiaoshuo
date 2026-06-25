@@ -310,7 +310,12 @@ function Lf6Tower({ go, standalone }) {
      这里挂载即主动水合锚点(anchors)/审计(audit)，并订阅 lf2:tower-synced 把 loops/canon
      重置为最新全局，订阅 lf3:audit-synced 触发重渲染（空降/因果/线索经 ESM live binding 刷新）。 */
   useEffect6(() => {
-    try { window.lf2SyncFromTower && window.lf2SyncFromTower(); } catch (e) {}
+    try {
+      // FE-ALIGN P3：非演示作品先从雪花规划确定性派生结构（故事线/悬念债）再水合；
+      // tide 用 seed 演示数据，走原同步路径。派生端点幂等、0 LLM。
+      if (window.WsWorks && window.WsWorks.activeId() !== "tide" && window.lf2DeriveStructure) window.lf2DeriveStructure();
+      else if (window.lf2SyncFromTower) window.lf2SyncFromTower();
+    } catch (e) {}
     try { window.lf3SyncFromAudit && window.lf3SyncFromAudit(); } catch (e) {}
     const reseat = () => {
       setLoops(JSON.parse(JSON.stringify(LF2_LOOPS)));

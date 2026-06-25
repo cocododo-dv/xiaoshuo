@@ -103,6 +103,28 @@ def get_chapter_audit_receipt(project_id: str, chapter_id: str, request: Request
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.post("/api/v2/projects/{project_id}/longform/derive-structure")
+def derive_tower_structure(
+    project_id: str,
+    request: Request,
+    payload: dict[str, Any] | None = None,
+    session: Session = Depends(get_session),
+):
+    """FE-ALIGN P3：从雪花场景规划确定性派生故事线/悬念债锚点（0 LLM、幂等），
+    让非演示作品的控制塔也能显示真实结构。"""
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/longform/derive-structure",
+        payload=payload or {},
+        action=lambda: LongformTowerService(session).derive_structure(project_id),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
 @router.get("/api/v2/projects/{project_id}/longform/audit")
 def list_project_audit(
     project_id: str,

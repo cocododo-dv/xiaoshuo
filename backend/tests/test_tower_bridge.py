@@ -199,6 +199,59 @@ def test_audit_receipt_deterministic_scan(client, session):
     assert receipt["pending"] and receipt["pending"][0]["id"] == "l6"
 
 
+def test_derive_structure_projects_threads_and_promises(client, session):
+    """FE-ALIGN P3：从雪花场景规划确定性派生 thread/promise 锚点（0 LLM、幂等），
+    让非演示作品的控制塔也有真实结构。"""
+    import json as _json
+
+    from novel_system.db.models import SnowflakeScenePlan, StoryCharacter
+
+    pid = _create_project(client)
+    session.add(StoryCharacter(character_id="CH_A", project_id=pid, display_name="林岑"))
+    session.add(StoryCharacter(character_id="CH_B", project_id=pid, display_name="周岚"))
+    # CH_A 出场 c1+c2（连续 → 合并 segs）、CH_B 仅 c2；一条伏笔、一条下游义务
+    session.add(SnowflakeScenePlan(
+        scene_plan_id="SP1", project_id=pid, scene_id="s1", chapter_id="c1", scene_seq=1,
+        onstage_chars_json=["CH_A"], involved_foreshadowing_json=["No.31 编号之谜"]))
+    session.add(SnowflakeScenePlan(
+        scene_plan_id="SP2", project_id=pid, scene_id="s2", chapter_id="c2", scene_seq=2,
+        onstage_chars_json=["CH_A", "CH_B"], downstream_obligations_json=["回收楼梯间脚印"]))
+    session.add(SnowflakeScenePlan(
+        scene_plan_id="SP3", project_id=pid, scene_id="s3", chapter_id="c2", scene_seq=3,
+        onstage_chars_json=["CH_B"]))
+    session.commit()
+
+    r = _post(client, f"/api/v2/projects/{pid}/longform/derive-structure", {})
+    assert r["threads_created"] == 2 and r["promises_created"] == 2
+
+    anchors = client.get(f"/api/v2/projects/{pid}/longform/anchors").json()["data"]["anchors"]
+    threads = [a for a in anchors if a["kind"] == "thread"]
+    promises = [a for a in anchors if a["kind"] == "promise"]
+    assert len(threads) == 2 and len(promises) == 2
+    a_fe = next(_json.loads(a["note"])["fe"] for a in threads if "林岑" in a["text"])
+    assert a_fe["name"] == "林岑" and a_fe["segs"] == [[1, 2]]  # c1-c2 连续合并
+    b_fe = next(_json.loads(a["note"])["fe"] for a in threads if "周岚" in a["text"])
+    assert b_fe["segs"] == [[2, 2]]
+    p_fe = next(_json.loads(a["note"])["fe"] for a in promises if "No.31" in a["text"])
+    assert p_fe["setup"] == 1 and p_fe["state"] == "open" and p_fe["payoff"] is None
+
+    # 幂等：重跑不新建（且锚点总数不变）
+    r2 = _post(client, f"/api/v2/projects/{pid}/longform/derive-structure", {})
+    assert r2["threads_created"] == 0 and r2["promises_created"] == 0
+    anchors2 = client.get(f"/api/v2/projects/{pid}/longform/anchors").json()["data"]["anchors"]
+    assert len([a for a in anchors2 if a["kind"] in ("thread", "promise")]) == 4
+
+
+def test_derive_structure_no_scene_plans_is_noop(client):
+    """无雪花场景规划 → 诚实跳过，不产锚点。"""
+    pid = _create_project(client)
+    r = _post(client, f"/api/v2/projects/{pid}/longform/derive-structure", {})
+    assert r["skipped"] is True and r["reason"] == "no_scene_plans"
+    assert r["threads_created"] == 0 and r["promises_created"] == 0
+    anchors = client.get(f"/api/v2/projects/{pid}/longform/anchors").json()["data"]["anchors"]
+    assert anchors == []
+
+
 def _write_scene_prose(client, pid, cid, content) -> str:
     """建章自带的首场写入正文，返回 scene_id。"""
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]

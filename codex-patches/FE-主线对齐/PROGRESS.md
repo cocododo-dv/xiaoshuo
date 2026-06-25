@@ -877,3 +877,25 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
   main.jsx 有序加载 + ws-app 殿后维持加载序(T3 陷阱),激进 `manualChunks`
   破坏跨 chunk 求值序、投入产出比为负;client.js import 形态统一仅消警告无
   性能收益却要碰 ws-writer/ws-styleref 十余处。保持默认配置不动。
+
+##### 修复轮收口(2026-06-25)
+
+- **P1** ✅ `830c8f1` 账本刷新(本节)。
+- **P2** ✅ `ac8ce55` D13 控制塔违约裁定接真 + 诚实降级(三件套 chapter_audit_adjudicate
+  + LongformTowerService.adjudicate_draft + 幂等路由 audit/adjudicate-draft + 前端
+  Lf7Bridge.adjudicateDraft 桥 / lf6 beginAudit 接缝 + fixDrift 真 finding_id / DemoTag)。
+- **P3** ✅ 非 tide 结构层确定性派生:`LongformTowerService.derive_structure`
+  (雪花 SnowflakeScenePlan → thread 角色出场区段[连续章号合并 segs] / promise 显式
+  伏笔·下游义务,确定性幂等、0 LLM)+ 幂等路由 derive-structure + 前端 lf2DeriveStructure
+  桥(lf6 挂载对非 tide 自动派生再水合,tide 保持 seed)。**范围克制**:只投影高置信映射;
+  断链(causal_break)/空降(unplanted_reveal)/张力曲线/人物弧线等推断性或更重的派生**未做**,
+  记为后续(需真实数据校准,避免无数据时产假阳性,守项目诚实纪律)。
+- **P4** ✅ 推送备份:`feat/fe-react-quality-longform-fixes` 已 push origin(含全部提交,
+  不动 origin/main)。
+- **P5** ❌ bundle 分包不做(仅记录,见上)。
+- **验收**:后端全量 `pytest -m "not chroma_integration"` = **1264 passed** / 0 failed /
+  3 skipped / 17 deselected;React vitest 8 文件 / **39 用例** + `vite build` 绿;
+  schema 漂移守门 4 passed + alembic 单头 20260618_0059 不变。
+- **后续(本轮明确不做)**:① D13 / 派生的真实 LLM 端到端验收(本环境 LLM 不可用);
+  ② P3 低置信派生(断链 / 空降 / 张力 / 弧线)接真 + 真实数据校准;③ 非 tide 作品的
+  审计层(lf3 `LF3_AUDIT.drifted`)与结构提示层(`LF2_RISKS`)的进一步真化。

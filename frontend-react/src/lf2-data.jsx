@@ -350,6 +350,19 @@ function lf2PushGlobals() {
   Object.assign(window, { LF2_LOOPS, LF2_CANON, LF2_THREADS, LF2_ARCS, LF2_RISKS, LF2_RETRIEVE_POOL });
 }
 
+/* FE-ALIGN P3：先从雪花场景规划确定性派生结构（故事线/悬念债），再水合 ——
+   让非演示作品的控制塔也显示真实结构。派生端点幂等、0 LLM；失败不阻塞既有锚点同步。 */
+async function lf2DeriveStructure() {
+  let workId = null;
+  try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+  if (!workId) return;
+  try {
+    const { apiPost } = await import("./lib/client.js");
+    await apiPost(`/api/v2/projects/${workId}/longform/derive-structure`, {});
+  } catch (e) { /* 派生失败不阻塞，照常同步既有锚点 */ }
+  await lf2SyncFromTower();
+}
+
 async function lf2AnchorPatch(feId, fe) {
   const anchorId = LF2_ANCHOR_IDS[feId];
   if (!anchorId || !LF2_TOWER_WORK) return;
@@ -386,7 +399,7 @@ window.addEventListener("hashchange", () => {
 });
 setTimeout(() => lf2SyncFromTower(), 700); // 启动水合（等 WsWorks 就绪）
 
-Object.assign(window, { lf2SyncFromTower, lf2LoopOp, lf2CanonOp, lf2HasTowerData });
+Object.assign(window, { lf2SyncFromTower, lf2DeriveStructure, lf2LoopOp, lf2CanonOp, lf2HasTowerData });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { LF2_BOOK, LF2_NEXT, LF2_CHAPTERS, LF2_TARGET, LF2_THREADS, LF2_LOOPS, LF2_RISKS, LF2_CANON, LF2_ARCS, LF2_ACTS, LF2_CLR, LF2_RETRIEVE_POOL, lf2Tone, lf2ThreadLast, lf2ThreadStalled, lf2Derive, lf2Issues, lf2Handoff, lf2SyncFromCatalog };
