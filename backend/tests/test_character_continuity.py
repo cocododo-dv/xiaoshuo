@@ -103,3 +103,31 @@ def test_detect_mechanical_required_beat_listing_flags_tail_loaded_checklist() -
         "message": "Required beats appear as a tail-loaded checklist instead of being woven into scene action.",
         "matched_terms": ["盐钟残片", "潮汐记录", "幸存者名单"],
     }
+
+
+def test_build_character_contract_digest_uses_authoritative_display_names_over_raw_id() -> None:
+    """修复裸 id 泄漏：声线卡解析不出 display_name 时，用 StoryCharacter 权威名而非 character_id。"""
+    digest = build_character_contract_digest(
+        pov_character_id="CHAR_2457AE17E4",
+        onstage_character_ids=None,
+        voice_profile_content="林深：保持其说话方式与内心独白的一致性。",  # 无「角色名:」标签 → 解析不出 name
+        relation_profile_content=None,
+        display_names={"CHAR_2457AE17E4": "林深"},
+    )
+    payload = json.loads(digest)
+    assert payload["characters"][0]["display_name"] == "林深"
+    assert payload["characters"][0]["character_id"] == "CHAR_2457AE17E4"
+    # 裸 id 不得当作角色名（否则模型把 id 写进正文）
+    assert payload["characters"][0]["display_name"] != "CHAR_2457AE17E4"
+
+
+def test_build_character_contract_digest_falls_back_to_id_without_name_source() -> None:
+    """无权威名且声线卡无元数据时退化到 id（对照：修复仅在有名源时生效）。"""
+    digest = build_character_contract_digest(
+        pov_character_id="CHAR_NONAME",
+        onstage_character_ids=None,
+        voice_profile_content="自由文本，无标签。",
+        relation_profile_content=None,
+    )
+    payload = json.loads(digest)
+    assert payload["characters"][0]["display_name"] == "CHAR_NONAME"

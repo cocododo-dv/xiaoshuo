@@ -21,18 +21,22 @@ def build_character_contract_digest(
     onstage_character_ids: Iterable[str] | None,
     voice_profile_content: str | None,
     relation_profile_content: str | None,
+    display_names: dict[str, str] | None = None,
 ) -> str:
     character_ids = _ordered_character_ids(pov_character_id, onstage_character_ids)
     if not character_ids:
         return ""
 
+    names = display_names or {}
     voice_metadata = _extract_voice_metadata(voice_profile_content or "")
     characters: list[dict[str, Any]] = []
     seen_identity_keys: set[str] = set()
     for character_id in character_ids:
         is_pov = character_id == pov_character_id
         metadata = voice_metadata if is_pov else {}
-        display_name = metadata.get("display_name") or _display_name_from_id(character_id)
+        # 优先用 StoryCharacter 的权威 display_name；其次声线卡元数据；最后才退化到 id。
+        # 否则裸 character_id 会被当成角色名写进提示词 → 模型把 id 当人名/线索写进正文。
+        display_name = (names.get(character_id) or "").strip() or metadata.get("display_name") or _display_name_from_id(character_id)
         character = {
             "character_id": character_id,
             "display_name": display_name,

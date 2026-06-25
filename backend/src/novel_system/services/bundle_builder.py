@@ -18,6 +18,7 @@ from novel_system.db.models import (
     SceneCard,
     SceneMemory,
     SceneRunState,
+    StoryCharacter,
     VolumeSummary,
 )
 from novel_system.db.models import StyleObservation
@@ -206,11 +207,21 @@ class BundleBuilder:
             )
             inline_digests["relation_card"] = relation_profile.content
 
+        # 解析 pov/onstage 的权威 display_name（StoryCharacter），避免裸 id 进提示词当人名
+        contract_char_ids = [cid for cid in [scene.pov_character_id, *(scene.onstage_chars_json or [])] if cid]
+        character_display_names: dict[str, str] = {}
+        if contract_char_ids:
+            for row in self.session.execute(
+                select(StoryCharacter).where(StoryCharacter.character_id.in_(contract_char_ids))
+            ).scalars().all():
+                if row.display_name:
+                    character_display_names[row.character_id] = row.display_name
         character_contract = build_character_contract_digest(
             pov_character_id=scene.pov_character_id,
             onstage_character_ids=scene.onstage_chars_json,
             voice_profile_content=voice_profile.content if voice_profile else None,
             relation_profile_content=relation_profile.content if relation_profile else None,
+            display_names=character_display_names,
         )
         if character_contract:
             source_version_refs["character_contract"] = CHARACTER_CONTRACT_VERSION
