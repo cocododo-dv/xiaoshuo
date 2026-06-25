@@ -209,7 +209,10 @@ function scnFriendly(e) {
   if (code === "VOICE_PROFILE_MISSING" || code === "RELATION_PROFILE_MISSING") {
     // Fix C：缺声线/关系卡现可一键补齐最小卡解阻（scnCreateCards → /preflight/create-cards）
     const what = code === "VOICE_PROFILE_MISSING" ? "POV 声线卡" : "同场角色关系卡";
-    return new Error(`这一场缺少可用的${what}，暂不能起草——可点「补齐最小${what}」一键生成后重试，或在声线/关系工作台细化。`);
+    const err = new Error(`这一场缺少可用的${what}，暂不能起草——可点「补齐声线卡并重试」一键生成后自动续跑，或在声线/关系工作台细化。`);
+    err.code = code;
+    err.canCreateCards = true; // 起草台据此在阻断态显示「补齐声线卡并重试」按钮
+    return err;
   }
   if (/LLM/i.test(code) || /llm|provider|api.?key/i.test(msg)) {
     return new Error("AI 起草需要可用的 LLM：请到「系统设置 → 模型与接入」配置并启用后重试。原始信息：" + msg);

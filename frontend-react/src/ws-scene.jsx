@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog, WsDemoTag } from "./ws-catalog.jsx";
-import { scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnRunSave, scnAdoptToDoc, scnPickList } from "./ws-scene-run.jsx";
+import { scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnRunSave, scnAdoptToDoc, scnPickList } from "./ws-scene-run.jsx";
 import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
@@ -377,7 +377,7 @@ function WsSceneDemo({ go, t, demo = true }) {
     const attempt = ((runs[id] && runs[id].attempt) || 0) + 1;
     const prevText = runs[id] && runs[id].draft ? runs[id].draft.map(p => p.parts.map(x => x.text).join("")).join("\n") : "";
     const t0 = new Date().toTimeString().slice(0, 8);
-    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, error: null,
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, error: null, needsCards: false,
       log: [{ t: t0, who: "system", text: `预检通过 · 第 ${attempt} 次尝试${note ? " · 改写指令已附" : ""}` }, { t: t0, who: "sonnet", text: "起草进行中……整稿返回后过质检" }] } }));
     const tick = setInterval(() => setRuns(m => {
       const cur = m[id];
@@ -399,7 +399,25 @@ function WsSceneDemo({ go, t, demo = true }) {
     } catch (e) {
       clearInterval(tick);
       if (runSeq.current[id] !== token) return;
-      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "起草失败，请重试" } }));
+      // Fix C：缺声线/关系卡的阻断带 canCreateCards 标记 → 起草台据此显示「补齐声线卡并重试」
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "起草失败，请重试", needsCards: !!(e && e.canCreateCards) } }));
+    }
+  };
+  // Fix C：一键补齐缺失的最小声线/关系卡(active)解阻预检，成功后自动续跑起草
+  const createCards = async () => {
+    const sc = sceneOfX(pickedId);
+    if (!sc || !sc.fromCard) return;
+    const id = sc.id;
+    const t0 = new Date().toTimeString().slice(0, 8);
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.04, error: null, needsCards: false,
+      log: [{ t: t0, who: "system", text: "正在补齐最小声线/关系卡……" }] } }));
+    try {
+      const res = await scnCreateCards(sc.sid);
+      const made = ((res && res.created) || []).map(c => c.dependency_type).join("、") || "(已就绪)";
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), log: [...((m[id] || {}).log || []), { t: new Date().toTimeString().slice(0, 8), who: "system", text: `已补齐：${made} · 自动续跑起草` }] } }));
+      await startRun("");
+    } catch (e) {
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "补齐声线卡失败，请重试", needsCards: false } }));
     }
   };
   const abortRun = () => {
@@ -461,7 +479,7 @@ function WsSceneDemo({ go, t, demo = true }) {
           {effState === "ready"    && <ReviewStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
           {effState === "archived" && <ArchivedStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
         </div>
-        <DecisionBar scene={scene} state={effState} go={go} onArchive={onArchive} onRun={startRun} />
+        <DecisionBar scene={scene} state={effState} go={go} onArchive={onArchive} onRun={startRun} onCreateCards={createCards} />
         {compare && <AttemptCompare attempt={compare} scene={scene} onClose={() => setCompare(null)} />}
       </section>
 
@@ -815,7 +833,7 @@ function ArchivedStage({ scene, activeBeat, setActiveBeat }) {
 
 /* ============================ Decision bar ============================ */
 
-function DecisionBar({ scene, state, go, onArchive, onRun }) {
+function DecisionBar({ scene, state, go, onArchive, onRun, onCreateCards }) {
   const [rework, setRework] = useSt8(false);
   const [note, setNote] = useSt8("");
   useEf8(() => { setRework(false); setNote(""); }, [scene.id]);
@@ -840,7 +858,9 @@ function DecisionBar({ scene, state, go, onArchive, onRun }) {
           </div>
           <div className="scn2-decide-acts">
             <button className="btn btn-quiet btn-sm" onClick={() => go("author")} title="场景卡在章节编排里维护">编辑场景卡</button>
-            <button className="btn btn-accent" onClick={() => onRun && onRun("")}><I.Play size={13} /> 开始起草</button>
+            {scene.needsCards && onCreateCards
+              ? <button className="btn btn-accent" onClick={() => onCreateCards()} title="确定性建出最小 active 声线/关系卡解阻，再自动续跑起草"><I.Refresh size={13} /> 补齐声线卡并重试</button>
+              : <button className="btn btn-accent" onClick={() => onRun && onRun("")}><I.Play size={13} /> 开始起草</button>}
           </div>
         </div>
       );
