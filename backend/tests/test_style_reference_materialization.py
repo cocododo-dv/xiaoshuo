@@ -137,6 +137,28 @@ def test_review_id_prefix_style_ref() -> None:
         )
 
 
+def test_apply_activates_profile_for_injection() -> None:
+    """Q1 回归：apply 即把 profile 置 active。
+
+    此前 synthesize 产 DRAFT、apply 只建 active binding 却从不激活 profile 本身，
+    而注入(InjectionService / scene_execution)硬要求 profile.status=='active'，
+    导致真实流程(导入→抽取→合成→应用)后风格注入恒为空(no-op)。
+    """
+    profile_id = _seed_profile_with_findings("activate")
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        assert repo.get_profile(profile_id).status == "draft"  # 合成态
+
+    with SessionLocal() as session:
+        svc = MaterializationService(session)
+        svc.apply_profile(profile_id, scope=BindingScope.PROJECT, scope_ref_id="proj_activate")
+        session.commit()
+
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        assert repo.get_profile(profile_id).status == "active"  # 修复后：apply 激活 → 注入可生效
+
+
 def test_apply_creates_binding_row() -> None:
     profile_id = _seed_profile_with_findings("binding")
     with SessionLocal() as session:

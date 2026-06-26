@@ -34,6 +34,7 @@ from novel_system.services.style_reference.schemas import (
     BindingScope,
     BindingStatus,
     InjectionStrategy,
+    ProfileStatus,
     TaskType,
 )
 
@@ -142,6 +143,16 @@ class MaterializationService:
             strategy=strategy,
             config_json=config_json,
         )
+
+        # 4. Q1 修复：激活 profile。此前 synthesize 产 DRAFT、apply 只建 active binding，
+        #    却从不把 profile 本身置 active；而注入(InjectionService / scene_execution)
+        #    硬要求 profile.status=="active"，导致真实流程(导入→抽取→合成→应用)后
+        #    风格注入恒为空(no-op)——整个风格参考在生成期失效。apply 即"让该 profile
+        #    在某 scope 生效"，随 active binding 一并激活 profile，使绑定与注入一致生效。
+        #    ARCHIVED 不复活。
+        if profile.status != ProfileStatus.ARCHIVED.value:
+            profile.status = ProfileStatus.ACTIVE.value
+            self.session.flush()
 
         return MaterializeResult(
             profile_id=profile_id,
