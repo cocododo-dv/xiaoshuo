@@ -1380,6 +1380,24 @@ class SnowflakeWorkspaceService:
                     message=f"{step_label} 尚未确认；可以继续整理，但后续可能需要回修。",
                     step_key=step_key,
                 )
+        # Q3 修复：scene_details 已确认但没有任何可整理的场景计划行时，materialize 会 409
+        # SNOWFLAKE_SCENES_REQUIRED。此前 gate 只检查 scene_plans 的 stale 态、从不检查「空」，
+        # 导致 ready_to_materialize=True 却点不动（信号说谎）。这里补一条 blocker，让 gate 与
+        # materialize 的硬要求一致：仅在 scene_details 满足、却零场景计划时触发（不影响已有 plans
+        # 的 happy path，也不与「scene_details 未确认」的既有 blocker 重复）。
+        scene_details_run = latest_by_step.get("scene_details")
+        scene_details_ready = scene_details_run is not None and (
+            scene_details_run.status in STRUCTURED_GATE_STATUSES
+            or (scene_details_run.status == "stale" and scene_details_run.stale_accepted_at)
+        )
+        if scene_details_ready and not (scene_plans or []):
+            add_step_item(
+                severity="blocker",
+                kind="missing_scene_plans",
+                message="场景细化已确认，但还没有可整理的场景计划；请先在「场景清单 / 场景细化」生成并确认场景，才能整理章节结构。",
+                step_key="scene_details",
+            )
+
         for scene in scene_plans or []:
             if scene.status != "stale":
                 continue
