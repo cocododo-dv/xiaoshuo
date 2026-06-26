@@ -15,6 +15,7 @@ const checks = [];
 const net = [];   // 关注的网络事件
 let ctx = "";
 function chk(name, ok, detail = "") { checks.push({ ctx, name, ok: !!ok, detail: String(detail).slice(0, 240) }); console.log(`  ${ok ? "✓" : "✗"} [${ctx}] ${name}${ok ? "" : "  | " + detail}`); }
+function skip(name, detail = "") { checks.push({ ctx, name, ok: true, skip: true, detail: String(detail).slice(0, 240) }); console.log(`  ⊘ [${ctx}] ${name} (skipped: ${detail})`); }
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
@@ -86,16 +87,35 @@ chk("tide 构思页渲染(含物化/章节字样)", /整理为章节结构|章�
 await shot("q3-tide-construct");
 
 // ---- AUTHOR-04 (P2 回归)：单章项目故事弧线无 SVG 报错 ----
+// 该回归需真实单章项目 PRJ_1C88DEFF3D（dev :8000 有）。seeded 门禁后端(:8009) 只有 tide/salt，
+// 项目不在则诚实跳过——绝不在错误项目上凑一个空过的"通过"。
 ctx = "AUTHOR-04";
-consoleErrs.length = 0;
-await go("PRJ_1C88DEFF3D", "author");
-await page.waitForTimeout(1000);
-// 点故事弧线 tab
-const arcTab = page.locator("text=故事弧线").first();
-if (await arcTab.count()) { await arcTab.click().catch(() => {}); await page.waitForTimeout(1000); }
-const svgErr = consoleErrs.filter(e => /moveto|path command|Expected.*path|<path>/i.test(e.t));
-chk("单章项目故事弧线无 SVG path 报错(P2 回归)", svgErr.length === 0, JSON.stringify(svgErr.slice(0, 2)));
-await shot("author04-real-arc");
+const arcProject = "PRJ_1C88DEFF3D";
+let arcProjectExists = false;
+try {
+  const resp = await page.request.get(`${API}/api/v2/projects`);
+  if (resp.ok()) {
+    const body = await resp.json();
+    let items = [];
+    if (body && body.data && Array.isArray(body.data.items)) items = body.data.items;
+    else if (body && Array.isArray(body.items)) items = body.items;
+    else if (body && Array.isArray(body.data)) items = body.data;
+    arcProjectExists = items.some(p => (p.project_id || p.id) === arcProject);
+  }
+} catch (e) { /* 探测失败按不存在处理 → 跳过，不误判通过 */ }
+if (!arcProjectExists) {
+  skip("单章项目故事弧线无 SVG path 报错(P2 回归)", `${arcProject} 不在当前后端`);
+} else {
+  consoleErrs.length = 0;
+  await go(arcProject, "author");
+  await page.waitForTimeout(1000);
+  // 点故事弧线 tab
+  const arcTab = page.locator("text=故事弧线").first();
+  if (await arcTab.count()) { await arcTab.click().catch(() => {}); await page.waitForTimeout(1000); }
+  const svgErr = consoleErrs.filter(e => /moveto|path command|Expected.*path|<path>/i.test(e.t));
+  chk("单章项目故事弧线无 SVG path 报错(P2 回归)", svgErr.length === 0, JSON.stringify(svgErr.slice(0, 2)));
+  await shot("author04-real-arc");
+}
 
 // ---- REVIEW-01：待办加载 + 筛选 chip ----
 ctx = "REVIEW-01";
@@ -134,9 +154,13 @@ chk("全视图巡检无 console error", realErrs.length === 0, JSON.stringify(re
 await browser.close();
 
 // 汇总
-const pass = checks.filter(c => c.ok).length, fail = checks.filter(c => !c.ok).length;
-const out = { base: BASE, api: API, pass, fail, checks, console_errors: consoleErrs.slice(0, 20), net_writes_or_4xx: net.slice(0, 30) };
+const pass = checks.filter(c => c.ok && !c.skip).length;
+const fail = checks.filter(c => !c.ok && !c.skip).length;
+const skipped = checks.filter(c => c.skip).length;
+const out = { base: BASE, api: API, pass, fail, skipped, checks, console_errors: consoleErrs.slice(0, 20), net_writes_or_4xx: net.slice(0, 30) };
 fs.writeFileSync(path.join(OUT, "ui-findings.json"), JSON.stringify(out, null, 2));
-console.log(`\n==== 批次2 UI ====  PASS ${pass} / FAIL ${fail}`);
-for (const c of checks.filter(c => !c.ok)) console.log(`  ✗ [${c.ctx}] ${c.name} :: ${c.detail}`);
-process.exitCode = 0;
+console.log(`\n==== 批次2 UI ====  PASS ${pass} / FAIL ${fail} / SKIP ${skipped}`);
+for (const c of checks.filter(c => !c.ok && !c.skip)) console.log(`  ✗ [${c.ctx}] ${c.name} :: ${c.detail}`);
+for (const c of checks.filter(c => c.skip)) console.log(`  ⊘ [${c.ctx}] ${c.name} :: ${c.detail}`);
+// 作为门禁：任一硬检查失败即非零退出（此前恒为 0 = 过门不设防，本次 P1 修复）。
+process.exitCode = fail > 0 ? 1 : 0;
