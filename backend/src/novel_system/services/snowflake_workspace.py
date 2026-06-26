@@ -246,6 +246,17 @@ class SnowflakeWorkspaceService:
         draft = merge_step_draft(step_key, body.get("draft") or {}, latest_by_step=latest_by_step)
         latest = latest_by_step.get(step_key)
 
+        # 防 BUG-2 静默回退：对已批准/已跳过的步，若 PATCH 进来的草稿与现存完全一致（前端无谓 re-push，
+        # 内容未变），不新建 pending_review 版本——否则会把「已确认」步悄悄打回待审。内容确有变更时
+        # 仍走下面的新建版本分支（编辑已批准内容理应重新审核）。
+        if latest is not None and latest.status in {"approved", "skipped"} and (draft or {}) == (latest.draft_json or {}):
+            workspace = self.workspace(project.project_id)
+            return {
+                "step": self._step_from_workspace(workspace, step_key),
+                "workspace": workspace,
+                "step_run": self._step_run_payload(latest),
+            }
+
         if latest is not None and latest.status == "pending_review":
             run = latest
             run.draft_json = draft

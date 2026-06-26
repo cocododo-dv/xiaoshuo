@@ -273,6 +273,11 @@ class ProjectRuntimeInvalidationService:
             state.current_phase = "planning"
             state.aggregate_block_reason = PROJECT_BACKTRACK_BLOCK_REASON
 
+        # 把上面新建的 ChapterState 落库，使下游 backtracks._apply_block 的 session.get 能命中
+        # 它们（session autoflush=False，pending 新对象对 get 不可见），否则同一 chapter_id 会被
+        # _apply_block 再 add 一遍，flush 时撞 chapter_states.chapter_id UNIQUE 约束 → 批准雪花步 500。
+        self.session.flush()
+
         scope = _scope_for_step(step_key)
         if impact.get("broad"):
             self.backtracks.ensure_item(
