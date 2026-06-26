@@ -931,7 +931,11 @@ class SceneGenerationService:
         source_content: str,
         quality_gate: dict[str, Any],
     ) -> StyleGenerationResult | None:
-        row_id = versioned_scene_artifact_id("draft_style_de_template", scene.scene_id, bundle)
+        # 每个触发去模板的候选（source_row_id 已带 _{idx}/_retry_{idx}）必须派生唯一的去模板稿 row_id，
+        # 否则 Best-of-N 下 ≥2 个候选都触发反模板闸时，第二条 SceneDraft 撞主键 → IntegrityError → 整跑崩溃。
+        # SceneDraft.row_id 为 opaque 主键、不被下游解析，故追加 source_row_id 的短哈希后缀即可（唯一且长度有界）。
+        source_suffix = hashlib.sha1(source_row_id.encode("utf-8")).hexdigest()[:10]
+        row_id = f"{versioned_scene_artifact_id('draft_style_de_template', scene.scene_id, bundle)}_{source_suffix}"
         user_prompt = self._build_style_user_prompt(
             prompt["user_prompt"],
             neutral_content=source_content,
