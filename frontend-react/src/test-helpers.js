@@ -79,7 +79,7 @@ export const DEFAULT_FINDING = {
 /**
  * 给已 mock 的 client 模块装 URL 路由。
  * @param {object} client - 由调用方 `await import("./lib/client.js")` 得到的 mock 模块。
- * @param {object} [opts] - 覆盖默认数据：{ projects, catalog, trash, reviewOpen, reviewSnoozed, findings }。
+ * @param {object} [opts] - 覆盖默认数据：{ projects, catalog, trash, reviewOpen, reviewSnoozed, findings, snowflakeWorkspace }。
  */
 export function installApiRouter(client, opts = {}) {
   const projects = opts.projects ?? [DEFAULT_PROJECT];
@@ -88,10 +88,12 @@ export function installApiRouter(client, opts = {}) {
   const reviewOpen = opts.reviewOpen ?? [];
   const reviewSnoozed = opts.reviewSnoozed ?? [];
   const findings = opts.findings ?? [];
+  const snowWorkspace = opts.snowflakeWorkspace ?? {};
 
   client.apiGet.mockImplementation((url) => {
     if (url === "/api/v2/projects") return Promise.resolve({ items: projects });
     if (/\/api\/v2\/projects\/[^/]+\/catalog(\?|$)/.test(url)) return Promise.resolve({ chapters: catalog });
+    if (/\/api\/v2\/projects\/[^/]+\/snowflake-workspace(\?|$)/.test(url)) return Promise.resolve(snowWorkspace);
     if (url.includes("/writing-stats")) return Promise.resolve({ words_total: 38000, words_today: 0, streak_days: 3 });
     if (url.includes("/dashboard")) return Promise.resolve({});
     if (url.startsWith("/api/v2/trash")) return Promise.resolve({ items: trash });
