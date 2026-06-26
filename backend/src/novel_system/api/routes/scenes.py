@@ -353,6 +353,22 @@ def get_run_job(job_id: str, request: Request, session: Session = Depends(get_se
 def scene_status(scene_id: str, request: Request, session: Session = Depends(get_session)):
     AuthorLifecycleService(session).require_active_scene(scene_id)
     state = session.get(SceneRunState, scene_id)
+    if state is None:
+        # 经目录新建、从未 run/未打开 workbench 的有效场景没有运行态行——
+        # 返回与「刚物化、ready」一致的空态，而非对 None 取属性抛 500（对齐 workbench 自动补建语义）。
+        return ok(
+            {
+                "scene_status": "ready",
+                "current_bundle_id": None,
+                "current_bundle_hash": None,
+                "current_neutral_draft_row_id": None,
+                "current_style_draft_row_id": None,
+                "current_final_scene_row_id": None,
+                "repeat_issue_key": None,
+                "repeat_issue_count": 0,
+            },
+            req_id=getattr(request.state, "request_id", None),
+        )
     return ok(
         {
             "scene_status": state.scene_status,
@@ -580,14 +596,17 @@ def select_style_candidate(
         session.flush()
         return {"scene_id": scene_id, "selected_row_id": row_id, "message": "Candidate selected for human terminal review"}
 
-    result = execute_with_idempotency(
-        session=session,
-        request=request,
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
         path_template="/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select",
-        path_params={"scene_id": scene_id, "row_id": row_id},
+        payload={"scene_id": scene_id, "row_id": row_id},
         action=lambda: _select(session),
+        actor_ref=getattr(request.state, "operator_ref", None) or "operator",
     )
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.get("/api/v1/scenes/{scene_id}/workbench")

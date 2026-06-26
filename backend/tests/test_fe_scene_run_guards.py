@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from novel_system.db.models import ChapterGoal, SceneCard, SceneRunState, StoryProject
+from novel_system.db.models import ChapterGoal, SceneCard, SceneDraft, SceneRunState, StoryProject
 
 
 def _seed_fe_scene(session) -> str:
@@ -296,3 +296,52 @@ def test_passage_patch_candidate_for_fe_scene_offline(client, session) -> None:
     )
     assert accept.status_code == 200
     assert accept.json()["data"]["candidate"]["author_decision"] == "accepted"
+
+
+def test_scene_status_tolerates_missing_run_state(client, session) -> None:
+    """QA3 回归（#12）：目录新建、无 SceneRunState 的有效场景，GET /status 应返回 200 空/ready 态，
+    而非对 None 取属性抛 500。"""
+    scene_id = _seed_fe_scene(session)
+    assert session.get(SceneRunState, scene_id) is None
+    resp = client.get(f"/api/v1/scenes/{scene_id}/status")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["scene_status"] == "ready"
+    assert data["current_final_scene_row_id"] is None
+    assert data["repeat_issue_count"] == 0
+
+
+def test_select_style_candidate_succeeds(client, session) -> None:
+    """QA3 回归（#3/#10）：POST style-candidates/{row_id}/select 应 200 并把候选设为当前风格稿，
+    而非因 execute_with_idempotency 参数错误恒 500。"""
+    scene_id = _seed_fe_scene(session)
+    session.add(SceneRunState(scene_id=scene_id, scene_status="ready"))
+    session.add(
+        SceneDraft(
+            row_id="draft_style_cand_pick_0",
+            scene_id=scene_id,
+            chapter_id="CH_FE_RUN_01",
+            stage="style_draft",
+            content="候选风格稿正文。",
+            source_bundle_id="b1",
+            source_bundle_hash="h1",
+        )
+    )
+    session.commit()
+
+    resp = client.post(
+        f"/api/v1/scenes/{scene_id}/style-candidates/draft_style_cand_pick_0/select",
+        headers={"X-Idempotency-Key": "qa3-select-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["selected_row_id"] == "draft_style_cand_pick_0"
+    session.expire_all()
+    assert session.get(SceneRunState, scene_id).current_style_draft_row_id == "draft_style_cand_pick_0"
+
+    # 不存在的候选 → 结构化 404，而非 500
+    missing = client.post(
+        f"/api/v1/scenes/{scene_id}/style-candidates/nope/select",
+        headers={"X-Idempotency-Key": "qa3-select-404"},
+    )
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["error"]["code"] == "CANDIDATE_NOT_FOUND"
