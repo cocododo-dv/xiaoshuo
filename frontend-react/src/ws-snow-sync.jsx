@@ -177,6 +177,32 @@ function canonHasContent(feKey, draft) {
 
 const BE_STATE_TO_FE = { approved: "done", skipped: "skip", stale: "warn" };
 
+/* push 片段与去重签名：snowPushKey（上行）与 snowHydrate（用后端真相预填 lastPushed）共用，
+   保证两侧 sig 计算完全一致——这是 BUG-2 防回退的前提。 */
+function buildStepFragment(feKey, cache) {
+  const c = cache || {};
+  const fragment = {
+    ...canonFromFE(feKey, c),
+    fe_text: ((c.drafts || {})[feKey]) || "",
+    fe_scaffold: ((c.scaffolds || {})[feKey]) || null,
+    fe_checks: ((c.checks || {})[feKey]) || [],
+    fe_state: ((c.states || {})[feKey]) || "todo",
+    fe_t: c._t || Date.now(),
+  };
+  if (feKey === "audience") {
+    fragment.fe_meta = {
+      revs: c.revs || {},
+      confirmRevs: c.confirmRevs || {},
+      history: (c.history || []).slice(0, 20).map(h => ({ t: h.t, who: h.who, action: h.action, note: h.note, key: h.key })),
+    };
+  }
+  return fragment;
+}
+function stepSig(fragment) {
+  const { fe_t, ...sigPart } = fragment;
+  return JSON.stringify(sigPart);
+}
+
 /* ---------- 水合 ---------- */
 const snowHydratedOnce = {};
 const snowReadyFlags = {};
@@ -227,6 +253,20 @@ async function snowHydrate(workId, opts) {
     }
   });
   if (!any) return; // 服务端还没有构思数据：保留本地（含种子门控默认）
+  // BUG-2 防回退：用后端真相预填 lastPushed（去重账本），使随后第一个 autosave 不再把这些未改动的步骤
+  // 全量 re-push。否则新会话 lastPushed 为空 → snowPushKey 全量上行：后端 update_step 对非 pending_review
+  // 步走 else 分支新建 pending_review 版本，把「已确认」步静默打回待审，并产生无谓写/approve 噪声。
+  // 注意：仅 seed 从后端水合到内容的步骤；本地新增、后端尚无的步骤不 seed，照常上行（不丢失）。
+  try {
+    const mine = lastPushed[workId] || (lastPushed[workId] = {});
+    const hydratedKeys = new Set([
+      ...Object.keys(remote.drafts), ...Object.keys(remote.states), ...Object.keys(remote.scaffolds),
+    ]);
+    hydratedKeys.forEach(feKey => {
+      const frag = buildStepFragment(feKey, remote);
+      mine[feKey] = { sig: stepSig(frag), state: frag.fe_state };
+    });
+  } catch (e) {}
   const key = snowCacheKey(workId);
   let local = null;
   try { local = JSON.parse(localStorage.getItem(key)); } catch (e) {}
@@ -249,24 +289,8 @@ async function snowPushKey(cacheKey) {
   if (!saved) return;
   const mine = lastPushed[workId] || (lastPushed[workId] = {});
   for (const [feKey, beKey] of SNOW_STEPS) {
-    const fragment = {
-      ...canonFromFE(feKey, saved),
-      fe_text: ((saved.drafts || {})[feKey]) || "",
-      fe_scaffold: ((saved.scaffolds || {})[feKey]) || null,
-      fe_checks: ((saved.checks || {})[feKey]) || [],
-      fe_state: ((saved.states || {})[feKey]) || "todo",
-      fe_t: saved._t || Date.now(),
-    };
-    if (feKey === "audience") {
-      fragment.fe_meta = {
-        revs: saved.revs || {},
-        confirmRevs: saved.confirmRevs || {},
-        // G2：journal 随存——去掉 snap 内容快照（体积大），只留时间线行
-        history: (saved.history || []).slice(0, 20).map(h => ({ t: h.t, who: h.who, action: h.action, note: h.note, key: h.key })),
-      };
-    }
-    const { fe_t, ...sigPart } = fragment;
-    const sig = JSON.stringify(sigPart);
+    const fragment = buildStepFragment(feKey, saved);
+    const sig = stepSig(fragment);
     const prev = mine[feKey] || {};
     if (prev.sig === sig) continue;
     try {
@@ -313,12 +337,16 @@ setTimeout(() => snowHydrate(activeWork()), 600); // 启动水合（等 WsWorks 
 const SnowSync = {
   refetch(workId) { return snowHydrate(workId || activeWork(), { force: true }); },
   readyToMaterialize(workId) { return !!snowReadyFlags[workId || activeWork()]; },
-  /* 物化主路径：approved scene plans → ChapterGoal/SceneCard（成功后目录重拉） */
+  /* 物化主路径：approved scene plans → ChapterGoal/SceneCard（成功后目录重拉）。
+     注意：materialize 端点只建 pending OutlinePlan，章节要 outline/approve 才落库——
+     必须两步都走，否则目录为空却谎称「已并入 N 章」。返回真实 created_chapter_count。 */
   async materialize(workId) {
     const id = workId || activeWork();
     const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/materialize`, {});
+    const approved = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/outline/approve`, {});
     try { if (WsCatalog && WsCatalog.reset) WsCatalog.reset(); } catch (e) {}
-    return data;
+    const createdChapters = (approved && approved.created_chapter_count) || 0;
+    return { ...(data || {}), created_chapter_count: createdChapters };
   },
 };
 

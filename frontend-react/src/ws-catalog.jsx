@@ -586,14 +586,13 @@ const WsCatalog = {
   /* —— 雪花大纲 → 目录。FE-ALIGN F3：构思已接 v2 工作台——后端闸门全过
      （ready_to_materialize）时走 materialize 主路径（approved scene plans →
      ChapterGoal/SceneCard，成功后目录重拉）；闸门未满足则沿用目录批量建章兜底。 */
-  adoptOutline(list) {
-    try {
-      if (window.SnowSync && window.SnowSync.readyToMaterialize()) {
-        const n = (list || []).filter(c => (c.title || "").trim() && !c.title.includes("待补")).length;
-        window.SnowSync.materialize().catch(() => {});
-        return n; // 乐观计数：物化结果以重拉后的目录为准
-      }
-    } catch (e) {}
+  async adoptOutline(list) {
+    if (window.SnowSync && window.SnowSync.readyToMaterialize()) {
+      // 物化 + 批准大纲（两步），返回后端真实落库章节数；失败上抛由调用方诚实提示，
+      // 不再回退 __adoptByDiff（那会经目录 POST 重复建章）。
+      const res = await window.SnowSync.materialize();
+      return (res && res.created_chapter_count) || 0;
+    }
     return this.__adoptByDiff(list);
   },
   __adoptByDiff(list) {

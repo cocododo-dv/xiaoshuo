@@ -1960,11 +1960,15 @@ function S2ChapterOutline({ scaffold, onScaffold }) {
   /* 采用到章节编排：构思产出物落进目录单一真相源（同名章跳过） */
   const [adopted, setAdopted] = useSS(null);
   const adoptable = chapters.filter(c => (c.title || "").trim() && !c.title.includes("待补"));
-  const adopt = () => {
+  const adopt = async () => {
     if (!WsCatalog || !adoptable.length) return;
     const existing = WsCatalog.get().length;
     if (existing && !window.confirm(`章节编排已有 ${existing} 章。把大纲中的 ${adoptable.length} 章并入目录？（同名章自动跳过）`)) return;
-    setAdopted(WsCatalog.adoptOutline(adoptable));
+    try {
+      setAdopted(await WsCatalog.adoptOutline(adoptable));
+    } catch (e) {
+      window.alert("并入章节失败：" + (e && e.message ? e.message : "请稍后重试，或检查构思各步是否已确认。"));
+    }
   };
   return (
     <div className="sf-scaffold sf-chapters">
