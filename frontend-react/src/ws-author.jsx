@@ -114,7 +114,9 @@ function ArrTensionCurve({ chapters, numOf, pickedId, onPick }) {
   const y = (t) => padT + (1 - t) * plotH;
   const pts = chapters.map((c, i) => ({ x: x(i), y: y(c.tension), c, i }));
   const line = arrSmoothPath(pts);
-  const area = line + ` L ${pts[n - 1].x} ${padT + plotH} L ${pts[0].x} ${padT + plotH} Z`;
+  // 单章（pts<2）时 arrSmoothPath 返回 ""，若仍拼接 area 会得到以 " L" 开头、缺起始 M 的非法 path，
+  // 浏览器报 "<path> attribute d: Expected moveto"。line 为空时 area 也置空（单点只渲染圆点即可）。
+  const area = line ? line + ` L ${pts[n - 1].x} ${padT + plotH} L ${pts[0].x} ${padT + plotH} Z` : "";
 
   // act bands
   const bands = ARR_ACTS.map((a) => {
