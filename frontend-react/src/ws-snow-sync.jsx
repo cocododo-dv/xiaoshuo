@@ -272,7 +272,11 @@ async function snowPushKey(cacheKey) {
     try {
       await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}`, { draft: fragment, force: true });
       mine[feKey] = { sig, state: fragment.fe_state };
-      if (fragment.fe_state === "done" && prev.state !== "done") {
+      // 仅在「本会话内已观测到非 done 前态 → done」的真实跃迁时补 approve。
+      // 新开页面时 prev 为空（prev.state===undefined），不要对所有已 done 步骤盲发 approve：
+      // 后端对已批准步骤会幂等返回 200，但对未达 pending_review/前序闸门未过的步骤返回 409，
+      // 虽被 catch 吞掉仍会污染 console/网络，并造成「一打开构思页就重写全部步骤」的副作用。
+      if (fragment.fe_state === "done" && prev.state && prev.state !== "done") {
         // 确认步骤：尝试后端 approve（前序闸门不满足时静默跳过，不打断写作流）
         try { await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/approve`, {}); } catch (e2) {}
       }
