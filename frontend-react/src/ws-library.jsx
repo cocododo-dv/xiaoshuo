@@ -6,7 +6,7 @@ import { LIB_REL_TYPES, LIB_SORTS, LIB_buildBacklinks, LIB_connections, LIB_degr
 import { LibGraph } from "./ws-library-graph.jsx";
 import { LibTimeline } from "./ws-library-timeline.jsx";
 import { LibOverview } from "./ws-library-overview.jsx";
-import { DossierCreate, DossierEdit, LIB_applyEdit, LIB_loadAdds, LIB_loadEdits, LIB_newEntry, LIB_persist, LIB_persistAdds, LIB_seedOn } from "./ws-library-edit.jsx";
+import { DossierCreate, DossierEdit, LIB_applyEdit, LIB_deleteEntry, LIB_loadAdds, LIB_loadEdits, LIB_newEntry, LIB_persist, LIB_persistAdds, LIB_seedOn } from "./ws-library-edit.jsx";
 import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I, LIB_CATS, LIB_ENTRIES, LIB_BY_ID, LibGraph, LibTimeline, LibOverview, LIB_loadEdits, LIB_persist, LIB_applyEdit, DossierEdit, DossierCreate, LIB_loadAdds, LIB_persistAdds, LIB_newEntry, LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_health, LIB_SORTS, LIB_sortWithPin, LIB_isCited, LIB_nextAction, LIB_groupConnections, LIB_REL_TYPES */
@@ -118,11 +118,13 @@ function WsLibrary({ go }) {
     pendingEdit.current = ne.id;
     setCreating(false); setSelId(ne.id);
   };
-  /* 删除用户新建的档案 */
+  /* 删除用户新建的档案（Q2 修复：真删后端，否则 refetch 后复活） */
   const deleteEntry = (id) => {
+    const base = byId[id];
     const next = adds.filter(a => a.id !== id);
     setAdds(next); LIB_persistAdds(next);
     if (edits[id]) { const e2 = { ...edits }; delete e2[id]; setEdits(e2); LIB_persist(e2); }
+    if (base) LIB_deleteEntry(base);
     setSelId(null); setEditing(false);
   };
 

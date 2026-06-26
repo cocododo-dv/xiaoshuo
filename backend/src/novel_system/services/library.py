@@ -350,3 +350,39 @@ class LibraryService:
         self.session.delete(relation)
         self.session.flush()
         return {"relation_id": relation_id, "deleted": True}
+
+    # ---- Q2 修复：人物 / 实体删除（此前缺 DELETE 端点，前端删除仅清本地、
+    #      refetch 后复活）。删除时一并清理以该对象为端点的关系边，避免图投影悬挂边。
+    def _relations_for_ref(self, project_id: str, ref: str) -> list[LibraryRelation]:
+        return list(
+            self.session.scalars(
+                select(LibraryRelation).where(
+                    LibraryRelation.project_id == project_id,
+                    (LibraryRelation.from_ref == ref) | (LibraryRelation.to_ref == ref),
+                )
+            ).all()
+        )
+
+    def delete_character(self, project_id: str, character_id: str) -> dict[str, Any]:
+        project = self._require_project(project_id)
+        character = self.session.get(StoryCharacter, character_id)
+        if character is None or character.project_id != project.project_id:
+            raise DomainError("LIBRARY_CHARACTER_NOT_FOUND", "character not found in project", status_code=404)
+        removed = 0
+        for relation in self._relations_for_ref(project.project_id, f"character:{character_id}"):
+            self.session.delete(relation)
+            removed += 1
+        self.session.delete(character)
+        self.session.flush()
+        return {"character_id": character_id, "deleted": True, "relations_removed": removed}
+
+    def delete_entity(self, project_id: str, entity_id: str) -> dict[str, Any]:
+        project = self._require_project(project_id)
+        entity = self._require_entity(project.project_id, entity_id)
+        removed = 0
+        for relation in self._relations_for_ref(project.project_id, f"entity:{entity_id}"):
+            self.session.delete(relation)
+            removed += 1
+        self.session.delete(entity)
+        self.session.flush()
+        return {"entity_id": entity_id, "deleted": True, "relations_removed": removed}

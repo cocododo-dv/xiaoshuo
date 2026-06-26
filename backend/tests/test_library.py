@@ -158,3 +158,47 @@ def test_library_relations_validate_refs_and_scope(client, session) -> None:
 
     overview = client.get(f"/api/v2/projects/{project['project_id']}/library")
     assert overview.json()["data"]["relations"] == []
+
+
+def test_library_character_and_entity_delete_cascades_relations(client, session) -> None:
+    """Q2 回归：人物 / 实体可删除，连带清理关系边；缺失对象 404。
+
+    此前 characters/entities 无 DELETE 端点（405），前端删除仅清本地、refetch 后复活。
+    """
+    project = _create_project(client)
+    pid = project["project_id"]
+    character = _seed_character(session, pid)
+    entity = client.post(
+        f"/api/v2/projects/{pid}/library/entities",
+        json={"kind": "location", "name": "盐田"},
+        headers=_idem(),
+    ).json()["data"]
+    client.post(
+        f"/api/v2/projects/{pid}/library/relations",
+        json={"from_ref": f"character:{character.character_id}", "to_ref": entity["ref"], "kind": "works_at"},
+        headers=_idem(),
+    )
+
+    # 删除实体 → 实体消失、相关关系边一并清理
+    deleted_entity = client.delete(f"/api/v2/projects/{pid}/library/entities/{entity['entity_id']}")
+    assert deleted_entity.status_code == 200, deleted_entity.text
+    body = deleted_entity.json()["data"]
+    assert body["deleted"] is True and body["relations_removed"] == 1
+    after = client.get(f"/api/v2/projects/{pid}/library").json()["data"]
+    assert after["entities"] == []
+    assert after["relations"] == []  # 端点被删，悬挂边已清理
+
+    # 删除人物 → 人物从聚合消失
+    deleted_char = client.delete(f"/api/v2/projects/{pid}/library/characters/{character.character_id}")
+    assert deleted_char.status_code == 200, deleted_char.text
+    assert deleted_char.json()["data"]["deleted"] is True
+    chars_after = client.get(f"/api/v2/projects/{pid}/library").json()["data"]["characters"]
+    assert all(c["character_id"] != character.character_id for c in chars_after)
+
+    # 重复删除 / 不存在 → 结构化 404（非 405/500）
+    missing_entity = client.delete(f"/api/v2/projects/{pid}/library/entities/{entity['entity_id']}")
+    assert missing_entity.status_code == 404
+    assert missing_entity.json()["error"]["code"] == "LIBRARY_ENTITY_NOT_FOUND"
+    missing_char = client.delete(f"/api/v2/projects/{pid}/library/characters/{character.character_id}")
+    assert missing_char.status_code == 404
+    assert missing_char.json()["error"]["code"] == "LIBRARY_CHARACTER_NOT_FOUND"

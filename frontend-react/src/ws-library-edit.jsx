@@ -106,6 +106,25 @@ async function libSyncLinks(base, nextLinks) {
   }
 }
 
+/* Q2 修复：真删后端（characters/entities/timeline）。此前 deleteEntry 仅清本地
+   adds，refetch 后被删条目复活；后端 characters/entities 也无 DELETE 端点（405）。 */
+async function LIB_deleteEntry(base) {
+  if (!base || !base.id) return;
+  try {
+    if (base.cat === "people") {
+      await apiDelete(`${libApiBase()}/characters/${base.id}`);
+    } else if (base.cat === "events") {
+      await apiDelete(`${libApiBase()}/timeline/${base.id}`);
+    } else {
+      await apiDelete(`${libApiBase()}/entities/${base.id}`);
+    }
+    libRefetch();
+  } catch (e) {
+    libToast(e, "删除资料失败。");
+    libRefetch();
+  }
+}
+
 /* merge a stored patch over a base entry */
 function LIB_applyEdit(entry, edits) {
   const p = entry && edits ? edits[entry.id] : null;
@@ -408,4 +427,4 @@ function LIB_live() {
 Object.assign(window, { LIB_loadEdits, LIB_persist, LIB_applyEdit, DossierEdit, DossierCreate, LIB_loadAdds, LIB_persistAdds, LIB_newEntry, LIB_seedOn, LIB_live });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { LIB_loadEdits, LIB_persist, LIB_applyEdit, DossierEdit, DossierCreate, LIB_loadAdds, LIB_persistAdds, LIB_newEntry, LIB_seedOn, LIB_live };
+export { LIB_loadEdits, LIB_persist, LIB_applyEdit, DossierEdit, DossierCreate, LIB_loadAdds, LIB_persistAdds, LIB_newEntry, LIB_seedOn, LIB_live, LIB_deleteEntry };

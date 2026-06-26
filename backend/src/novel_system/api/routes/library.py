@@ -182,6 +182,30 @@ def update_library_character(
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
+@router.delete("/api/v2/projects/{project_id}/library/characters/{character_id}")
+def delete_library_character(
+    project_id: str,
+    character_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    result = LibraryService(session).delete_character(project_id, character_id)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.delete("/api/v2/projects/{project_id}/library/entities/{entity_id}")
+def delete_library_entity(
+    project_id: str,
+    entity_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    result = LibraryService(session).delete_entity(project_id, entity_id)
+    session.commit()
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
 @router.post("/api/v2/projects/{project_id}/library/derive")
 def derive_library_candidates(
     project_id: str,
