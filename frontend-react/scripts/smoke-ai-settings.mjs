@@ -57,6 +57,10 @@ await check("预设目录:添加流程展示分组与主流厂商", async () => 
 });
 
 await check("添加服务:自定义兼容 + 免密钥 + 手填模型 → 保存出卡", async () => {
+  // 记录添加前的默认服务：产品行为是「原本无默认→新增即默认；原本已有默认→保留不劫持」
+  // （见 system_config.save_llm_provider: default_provider_id = 既有 or 新增）。
+  // 不预设环境一定是空配置，否则在已配置默认 provider 的 dev/CI 库上会误报失败。
+  const prevDefault = (await api("/api/v1/system-config/llm")).default_provider_id || null;
   await page.click('button:has-text("自定义 OpenAI 兼容")');
   await page.waitForSelector('text=服务标识');
   await page.fill('input[placeholder="如 my-deepseek"]', PROVIDER_ID);
@@ -71,7 +75,8 @@ await check("添加服务:自定义兼容 + 免密钥 + 手填模型 → 保存�
   if (!provider) throw new Error("provider not persisted");
   if (provider.credential_mode !== "none") throw new Error(`credential_mode: ${provider.credential_mode}`);
   if (!provider.models.includes("test-model-b")) throw new Error(`models: ${provider.models}`);
-  if (overview.default_provider_id !== PROVIDER_ID) throw new Error(`default: ${overview.default_provider_id}`);
+  const expectedDefault = prevDefault || PROVIDER_ID; // 已有默认则不变，无默认则新增即默认
+  if (overview.default_provider_id !== expectedDefault) throw new Error(`default: ${overview.default_provider_id} (expected ${expectedDefault})`);
 });
 
 await check("分工槽位:写作主力 → 该服务/模型,应用后路由生效", async () => {
