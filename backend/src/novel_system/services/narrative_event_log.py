@@ -54,6 +54,17 @@ class ProjectedFact:
     scene_id: str
     scene_seq: int
     event_id: str
+    confidence: str = "high"
+
+
+# 置信档：spec/规则事件=high(权威)，prose 抽取的 advisory 事件=extracted(顾问)。
+# 重放在**同一 scene_seq**内必须让高置信优先——advisory(LLM)事件不得反超 spec 事实，
+# 否则 LLM 幻觉会覆盖「单一真相源」。跨 scene_seq 仍按最新事件演进（latest-wins）。
+_CONFIDENCE_RANK = {"high": 2, "medium": 1, "low": 0, "extracted": 0}
+
+
+def _confidence_rank(confidence: str | None) -> int:
+    return _CONFIDENCE_RANK.get((confidence or "high").strip().lower(), 1)
 
 
 @dataclass(slots=True)
@@ -180,6 +191,13 @@ class NarrativeEventLog:
         events = self.session.execute(query).scalars().all()
         state = CharacterState(character_id=character_id)
         for evt in events:
+            existing = state.facts.get(evt.fact_key)
+            if (
+                existing is not None
+                and existing.scene_seq == evt.scene_seq
+                and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
+            ):
+                continue  # 同场景内 advisory 不得反超高置信 spec 事实
             state.facts[evt.fact_key] = ProjectedFact(
                 entity_type=evt.entity_type,
                 entity_id=evt.entity_id,
@@ -188,6 +206,7 @@ class NarrativeEventLog:
                 scene_id=evt.scene_id,
                 scene_seq=evt.scene_seq,
                 event_id=evt.event_id,
+                confidence=evt.confidence,
             )
         return state
 
@@ -215,6 +234,13 @@ class NarrativeEventLog:
         events = self.session.execute(query).scalars().all()
         state = EntityState(entity_type=entity_type, entity_id=entity_id)
         for evt in events:
+            existing = state.facts.get(evt.fact_key)
+            if (
+                existing is not None
+                and existing.scene_seq == evt.scene_seq
+                and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
+            ):
+                continue  # 同场景内 advisory 不得反超高置信 spec 事实
             state.facts[evt.fact_key] = ProjectedFact(
                 entity_type=evt.entity_type,
                 entity_id=evt.entity_id,
@@ -223,6 +249,7 @@ class NarrativeEventLog:
                 scene_id=evt.scene_id,
                 scene_seq=evt.scene_seq,
                 event_id=evt.event_id,
+                confidence=evt.confidence,
             )
         return state
 
@@ -303,6 +330,13 @@ class NarrativeEventLog:
         states: dict[str, CharacterState] = {}
         for evt in events:
             state = states.setdefault(evt.entity_id, CharacterState(character_id=evt.entity_id))
+            existing = state.facts.get(evt.fact_key)
+            if (
+                existing is not None
+                and existing.scene_seq == evt.scene_seq
+                and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
+            ):
+                continue  # 同场景内 advisory 不得反超高置信 spec 事实
             state.facts[evt.fact_key] = ProjectedFact(
                 entity_type=evt.entity_type,
                 entity_id=evt.entity_id,
@@ -311,6 +345,7 @@ class NarrativeEventLog:
                 scene_id=evt.scene_id,
                 scene_seq=evt.scene_seq,
                 event_id=evt.event_id,
+                confidence=evt.confidence,
             )
         return states
 
@@ -339,6 +374,13 @@ class NarrativeEventLog:
                 evt.entity_id,
                 EntityState(entity_type=evt.entity_type, entity_id=evt.entity_id),
             )
+            existing = state.facts.get(evt.fact_key)
+            if (
+                existing is not None
+                and existing.scene_seq == evt.scene_seq
+                and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
+            ):
+                continue  # 同场景内 advisory 不得反超高置信 spec 事实
             state.facts[evt.fact_key] = ProjectedFact(
                 entity_type=evt.entity_type,
                 entity_id=evt.entity_id,
@@ -347,6 +389,7 @@ class NarrativeEventLog:
                 scene_id=evt.scene_id,
                 scene_seq=evt.scene_seq,
                 event_id=evt.event_id,
+                confidence=evt.confidence,
             )
         return by_type
 

@@ -62,6 +62,7 @@ class CausalChainValidator:
             return report
 
         scene_ids = {p.scene_id for p in plans}
+        seq_by_id = {p.scene_id: p.scene_seq for p in plans}
         referenced_as_prereq: set[str] = set()
 
         linked_count = 0
@@ -80,6 +81,17 @@ class CausalChainValidator:
                         message=(
                             f"Scene '{plan.scene_id}' (seq {plan.scene_seq}) references "
                             f"prerequisite '{prereq}' which does not exist in project."
+                        ),
+                        severity="error",
+                    ))
+                elif seq_by_id.get(prereq, plan.scene_seq) >= plan.scene_seq:
+                    report.violations.append(CausalChainViolation(
+                        scene_plan_id=plan.scene_plan_id,
+                        violation_type="forward_reference",
+                        message=(
+                            f"Scene '{plan.scene_id}' (seq {plan.scene_seq}) depends on "
+                            f"prerequisite '{prereq}' (seq {seq_by_id.get(prereq)}) which "
+                            f"occurs at or after it — effect-before-cause / causal cycle."
                         ),
                         severity="error",
                     ))
