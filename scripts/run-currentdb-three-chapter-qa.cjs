@@ -562,9 +562,42 @@ async function clickIfPresent(page, testId) {
   return false;
 }
 
+// QA-RIG-HOTFIX(2026-06-27): this three-chapter harness was authored against the legacy
+// Vue frontend (:5173), which exposes `data-testid="nav-*"` navigation + per-view content
+// test-ids. The React mainline (frontend-react, :5174 — the contract-authoritative QA
+// target) has NO such test-ids and routes purely by `location.hash`. Pointed at React, the
+// original `visit()` timed out clicking `nav-*` and aborted the whole run. Since every real
+// step here is API-driven (apiPost/apiGet/apiPatch) and `visit()` is evidence-only
+// (screenshots + fixed experience notes), we degrade navigation gracefully: prefer the Vue
+// nav test-id when present, else fall back to React hash routing; the content-test-id wait
+// becomes best-effort. Keeps BOTH frontends working and unblocks the React run.
+const REACT_HASH_BY_VIEW = {
+  reference: "styleref",
+  "snowflake-workbench": "snowflake",
+  "writer-room": "writer",
+  workbench: "scene",
+  knowledge: "index",
+  deepdesk: "quality",
+};
+
 async function visit(page, viewId, testId, screenshotName) {
-  await page.getByTestId(`nav-${viewId}`).click();
-  await page.getByTestId(testId).waitFor({ timeout: 30000 });
+  let navigated = false;
+  try {
+    const navLoc = page.getByTestId(`nav-${viewId}`);
+    if (await navLoc.count()) {
+      await navLoc.first().click({ timeout: 5000 });
+      navigated = true;
+    }
+  } catch {
+    // Legacy-Vue nav path unavailable; fall through to React hash routing.
+  }
+  if (!navigated) {
+    const hash = REACT_HASH_BY_VIEW[viewId] || viewId;
+    await page.evaluate((h) => { window.location.hash = `#${h}`; }, hash).catch(() => null);
+    await page.waitForTimeout(800);
+  }
+  // React exposes no per-view content test-id; keep readiness wait best-effort (evidence-only).
+  await page.getByTestId(testId).waitFor({ timeout: 4000 }).catch(() => null);
   await screenshot(page, screenshotName);
 }
 
@@ -1807,8 +1840,14 @@ async function main() {
     await step("snowflake planning evidence for original seed", () => exerciseSnowflake(page));
     const workspace = await step("author workspace create unique three-chapter plan", () => createOriginalWorkspace(page), { fatal: true });
     await step("writer room create and save author draft", () => exerciseWriterRoomAndDrafts(page), { fatal: true });
+    // QA-RIG-HOTFIX(2026-06-27): exerciseReferenceLearning hits the LEGACY reference-learning
+    // API (/api/v1/reference-books/*), which the v2 Style Reference subsystem replaced with
+    // /api/v2/style-reference/*; against the current backend it 404s. The reference branch is an
+    // OPTIONAL side-quest (abstract style learning), NOT the three-chapter North Star — demote to
+    // non-fatal so the run reaches scene generation. (Style Reference itself is exercised via the
+    // React UI in R2's manual journey.) Recorded as finding RIG-02.
     const reference = await step("reference learning import-path segments_only and apply abstract profile", () => exerciseReferenceLearning(page), {
-      fatal: true,
+      fatal: false,
     });
     await step("review inbox approve release and reference review handling", () => exerciseReviewInbox(page, reference?.applyReviewIds || []));
     await step("knowledge and index recovery/promotion probes", () => exerciseKnowledgeAndIndex(page));

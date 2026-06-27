@@ -1140,8 +1140,19 @@ class SystemConfigService:
 
     def _secret_status(self, secret_id: str, *, secret: SystemSecret | None = None) -> dict[str, Any]:
         item = secret or self.session.get(SystemSecret, secret_id)
+        decryptable = False
+        if item is not None and item.encrypted_value:
+            # BUG-001: secret 记录"存在"不等于"可解密"。config.secret 轮换后旧密文
+            # InvalidToken,运行期 load_secret_value 静默返 None → api_key 为空,但
+            # 就绪侧若只看 configured 就会假阳性。这里真正试解密,把三态拆开。
+            try:
+                decrypted = _decrypt_secret(item.encrypted_value)
+                decryptable = bool(decrypted and decrypted.strip())
+            except (DomainError, InvalidToken):
+                decryptable = False
         return {
             "configured": item is not None,
+            "decryptable": decryptable,
             "hint": item.value_hint if item is not None else None,
             "secret_type": item.secret_type if item is not None else None,
             "metadata": item.metadata_json if item is not None else {},
@@ -1394,6 +1405,7 @@ def _provider_catalog() -> dict[str, dict[str, Any]]:
 def _none_secret_status() -> dict[str, Any]:
     return {
         "configured": False,
+        "decryptable": False,
         "hint": None,
         "secret_type": "none",
         "metadata": {},
@@ -1443,7 +1455,8 @@ def _provider_view_ready(provider: dict[str, Any]) -> bool:
     if credential_mode == "none":
         return True
     secret = provider.get("secret") if isinstance(provider.get("secret"), dict) else {}
-    return secret.get("configured") is True
+    # BUG-001: 必须"可解密"才算就绪——仅"存在"会在 config.secret 轮换后假阳性。
+    return secret.get("decryptable") is True
 
 
 def _route_readiness(route: dict[str, Any], providers: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1500,7 +1513,17 @@ def _route_readiness(route: dict[str, Any], providers: dict[str, dict[str, Any]]
     ready = provider_ready and not model_missing
     reason = "ready"
     if not provider_ready:
-        reason = "provider_not_ready"
+        # BUG-001: 区分"未配置密钥" vs "密文无法解密(config.secret 轮换)",别压成一态。
+        secret = provider.get("secret") if isinstance(provider.get("secret"), dict) else {}
+        credential_mode = str(provider.get("credential_mode") or "api_key")
+        if provider.get("enabled") is False:
+            reason = "provider_disabled"
+        elif credential_mode != "none" and secret.get("configured") and not secret.get("decryptable"):
+            reason = "secret_decrypt_failed"
+        elif credential_mode != "none" and not secret.get("configured"):
+            reason = "secret_missing"
+        else:
+            reason = "provider_not_ready"
     elif model_missing:
         reason = f"model_not_listed:{model}"
     return {

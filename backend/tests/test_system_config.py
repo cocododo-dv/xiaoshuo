@@ -1167,3 +1167,99 @@ def test_llm_oauth_routes_are_removed(client, monkeypatch) -> None:
 
     assert start_response.status_code == 404
     assert callback_response.status_code == 404
+
+
+def test_llm_overview_marks_route_not_ready_when_secret_cannot_be_decrypted(
+    client, session, monkeypatch
+) -> None:
+    """BUG-001 回归: config.secret 轮换后旧密文 InvalidToken,运行期 LLM 调用 100%
+    失败"未提供令牌",但就绪侧若只看"secret 是否存在"会报假阳性(ready=true)。
+
+    修复要求:secret 存在但无法用当前 config.secret 解密时,provider 不就绪、route
+    ready=false、active_provider_count=0,且 readiness_reason 能与"未配置密钥"区分。
+    """
+    import base64
+    import hashlib
+
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "openai_primary",
+            "provider_type": "openai",
+            "account_id": "acct_ops",
+            "base_url": "https://api.openai.example/v1",
+            "enabled": True,
+            "credential_mode": "api_key",
+            "api_mode": "responses",
+            "models": ["gpt-5.4"],
+            "api_key": "sk-secret-openai",
+        },
+    )
+    assert provider_response.status_code == 200
+
+    route_response = client.post(
+        "/api/v1/system-config/llm/node-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "activate": True,
+            "node_routing": {
+                "neutral_draft": {
+                    "provider": "openai",
+                    "provider_id": "openai_primary",
+                    "account_id": "acct_ops",
+                    "model": "gpt-5.4",
+                    "temperature": 0.25,
+                    "max_output_tokens": 3200,
+                    "response_format": "json_object",
+                    "reasoning_level": "medium",
+                    "api_mode": "responses",
+                },
+            },
+            "retry_budget": {"total_attempt_budget": 4},
+            "job_runtime": {},
+        },
+    )
+    assert route_response.status_code == 200
+
+    # --- 健康基线(可解密 secret 不得被判死)---
+    healthy = client.get("/api/v1/system-config/llm").json()["data"]
+    healthy_secret = healthy["providers"]["openai_primary"]["secret"]
+    assert healthy_secret["configured"] is True
+    assert healthy["node_routes"]["neutral_draft"]["ready"] is True
+    assert healthy["readiness"]["active_provider_count"] == 1
+
+    # --- 模拟 config.secret 轮换: 把旧密文换成"用不同密钥加密的合法 Fernet token",
+    #     当前 config-secret 解不出 → InvalidToken(等价线上 .codex-run/config.secret 被重生)---
+    rotated_key = base64.urlsafe_b64encode(hashlib.sha256(b"rotated-different-secret").digest())
+    undecryptable = Fernet(rotated_key).encrypt(b"sk-secret-openai").decode("utf-8")
+    stored_secret = session.execute(
+        select(SystemSecret).where(SystemSecret.secret_id == "llm_provider:openai_primary:api_key")
+    ).scalars().one()
+    stored_secret.encrypted_value = undecryptable
+    session.add(stored_secret)
+    session.commit()
+
+    overview = client.get("/api/v1/system-config/llm")
+    assert overview.status_code == 200
+    payload = overview.json()["data"]
+    route = payload["node_routes"]["neutral_draft"]
+    secret_status = payload["providers"]["openai_primary"]["secret"]
+
+    # 核心:解密失败时就绪侧不得报假阳性(修前此行红:ready 仍为 True)
+    assert route["ready"] is False
+    # secret"仍存在"但"不可解密"——三态不再被压成两态
+    assert secret_status["configured"] is True
+    assert secret_status["decryptable"] is False
+    # 与"未配置密钥(secret_missing)"可区分
+    assert route["readiness_reason"] == "secret_decrypt_failed"
+    assert payload["readiness"]["active_provider_count"] == 0
+    assert payload["readiness"]["ready"] is False
+
+    # 回归:健康基线快照里 decryptable 为 True(正常路径未被误判)
+    assert healthy_secret["decryptable"] is True
