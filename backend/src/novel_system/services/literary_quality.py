@@ -588,6 +588,7 @@ class LiteraryQualityService:
         chapter_id: str | None = None,
         risk_type: str | None = None,
         min_severity: str | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         if text_layer not in QUALITY_TEXT_LAYERS:
             raise DomainError("LITERARY_QUALITY_LAYER_INVALID", "unsupported literary quality text layer", status_code=400)
@@ -595,12 +596,16 @@ class LiteraryQualityService:
 
         items: list[dict[str, Any]] = []
         for chapter in self._chapters():
+            if project_id and chapter.project_id != project_id:
+                continue
             if chapter_id and chapter.chapter_id != chapter_id:
                 continue
             source = self._chapter_source(chapter, text_layer=text_layer)
             if source is not None:
                 items.append(self._analyze_item("chapter", chapter.chapter_id, chapter.chapter_id, None, source))
         for scene in self._scenes():
+            if project_id and scene.project_id != project_id:
+                continue
             if chapter_id and scene.chapter_id != chapter_id:
                 continue
             source = self._scene_source(scene, text_layer=text_layer)
@@ -617,6 +622,7 @@ class LiteraryQualityService:
                 "chapter_id": chapter_id,
                 "risk_type": risk_type,
                 "min_severity": min_severity,
+                "project_id": project_id,
             },
             "summary": {
                 "object_count": len(items),
@@ -732,7 +738,7 @@ class LiteraryQualityService:
         repeated_patterns = _chapter_set_repeated_patterns(source_rows, scene_items)
         scores = _chapter_set_scores(
             mean_score, payoff_reveal_checks, safety_findings, len(chapters),
-            source_rows=source_rows, chapters=chapters,
+            source_rows=source_rows, chapters=chapters, protected_terms=protected_terms,
         )
         return {
             "chapter_ids": chapter_ids,
@@ -1408,7 +1414,24 @@ def _chapter_set_repeated_patterns(source_rows: list[dict[str, Any]], scene_item
         for row in grouped.values()
         if row["count"] >= 2 and len(row["chapter_ids"]) >= 2
     ]
+    patterns = _dedupe_key_term_substrings(patterns)
     return sorted(patterns, key=lambda row: (-row["count"], row["cluster_type"], row["token"]))[:20]
+
+
+def _dedupe_key_term_substrings(patterns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """key_term n-gram 去碎片：若较短 token 只作为较长 token 的子串出现（计数相等），
+    丢弃较短的，保留最长有意义复用词（如保留「玻璃雨」而非「玻璃」「璃雨」）。"""
+    key_terms = [p for p in patterns if p["cluster_type"] == "key_term"]
+    drop: set[str] = set()
+    for short in key_terms:
+        for long in key_terms:
+            if short is long:
+                continue
+            st, lt = short["token"], long["token"]
+            if len(lt) > len(st) and st in lt and long["count"] >= short["count"]:
+                drop.add(st)
+                break
+    return [p for p in patterns if not (p["cluster_type"] == "key_term" and p["token"] in drop)]
 
 
 def _add_repeated_pattern(
@@ -1433,18 +1456,31 @@ def _add_repeated_pattern(
         row["object_ids"].append(object_id)
 
 
+_CJK_STOP_CHARS = frozenset(
+    "的了在和这那他她它我你您们是有就也都要会着过被把对与之而其于以为不没"
+    "很又再上下里中来去到说做看想能将已并且或如但因所还只本该些个种样头边时"
+)
+
+
 def _cjk_key_term_counts(text: str) -> Counter[str]:
+    """通用跨章关键词词频：滑动 2-4 字 CJK n-gram 计数，过滤纯虚词 gram。
+
+    取代旧的 `玻璃雨/零点/证人/反证/名单` demo 硬编码（对真实新书返回空）。
+    改为按词频提取每部作品自己的反复关键词，由调用方 count>=2 且 chapter_ids>=2
+    过滤 + 子串去重收敛为有意义的跨章复用词。
+    """
     counts: Counter[str] = Counter()
     normalized = _compact_ws(text)
     for token in re.findall(r"[\u4e00-\u9fff]{2,6}", normalized):
-        if token in {"必须选择", "公开证据"}:
-            counts[token] += 1
-        if token.endswith("雨") or token.endswith("证") or token.endswith("名单"):
-            counts[token] += 1
-    for marker in ("玻璃雨", "零点", "证人", "反证", "名单"):
-        marker_count = normalized.count(marker)
-        if marker_count:
-            counts[marker] += marker_count
+        run_len = len(token)
+        for size in (2, 3, 4):
+            if run_len < size:
+                break
+            for start in range(run_len - size + 1):
+                gram = token[start : start + size]
+                if all(ch in _CJK_STOP_CHARS for ch in gram):
+                    continue
+                counts[gram] += 1
     return counts
 
 
@@ -1456,6 +1492,7 @@ def _chapter_set_scores(
     *,
     source_rows: list[dict[str, Any]] | None = None,
     chapters: list[ChapterGoal] | None = None,
+    protected_terms: list[str] | None = None,
 ) -> dict[str, Any]:
     arc_score = _evaluate_cross_chapter_arc(
         payoff_reveal_checks,
@@ -1463,10 +1500,18 @@ def _chapter_set_scores(
         source_rows=source_rows,
         chapters=chapters,
     )
+    # 诚实性：未提供受保护词 = 未做参考安全扫描 → 返回 None（前端渲染「—」），
+    # 不能把「没扫」伪装成绿色满分 1.0。命中=0.0，传词且干净=1.0。
+    if safety_findings:
+        reference_safety: float | None = 0.0
+    elif protected_terms:
+        reference_safety = 1.0
+    else:
+        reference_safety = None
     return {
         "literary_quality": mean_score,
         "cross_chapter_arc": arc_score,
-        "reference_safety": 0.0 if safety_findings else 1.0,
+        "reference_safety": reference_safety,
     }
 
 

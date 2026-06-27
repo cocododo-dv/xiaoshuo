@@ -515,6 +515,7 @@ def test_literary_quality_overview_exposes_filters_clusters_fingerprints_and_reu
         "chapter_id": "LQ300",
         "risk_type": "template_action_reuse",
         "min_severity": "revision",
+        "project_id": None,
     }
     assert payload["items"]
     assert {item["chapter_id"] for item in payload["items"]} == {"LQ300"}

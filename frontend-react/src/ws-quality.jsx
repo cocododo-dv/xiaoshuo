@@ -79,6 +79,14 @@ function qBuildPath(base, filters) {
   return q ? `${base}?${q}` : base;
 }
 
+/* 把当前作品 id 注入 overview 过滤 —— 作者只看自己作品（BUG-103 修复）。
+   WsWorks 未就绪 / 无活动作品时返回原 filters → 退回全局（向后兼容 + 单测安全）。 */
+function qScopeFilters(filters) {
+  let pid;
+  try { pid = window.WsWorks && window.WsWorks.activeId && window.WsWorks.activeId(); } catch (e) {}
+  return pid ? { ...filters, project_id: pid } : filters;
+}
+
 async function qLoadOverview(filters = {}) {
   qState = { ...qState, loading: true, error: null };
   qEmit();
@@ -160,10 +168,10 @@ function WsQuality({ go }) {
   const [filters, setFilters] = React.useState({ text_layer: "author_draft_preferred", chapter_id: "", risk_type: "", min_severity: "" });
   const [draft, setDraft] = React.useState("");
 
-  // 初次进入巡检一轮
-  React.useEffect(() => { qLoadOverview(filters); /* eslint-disable-next-line */ }, []);
+  // 初次进入巡检一轮（按当前作品作用域，作者只看自己作品 · BUG-103）
+  React.useEffect(() => { qLoadOverview(qScopeFilters(filters)); /* eslint-disable-next-line */ }, []);
 
-  const reload = () => qLoadOverview(filters);
+  const reload = () => qLoadOverview(qScopeFilters(filters));
   const setF = (k, v) => setFilters((f) => ({ ...f, [k]: v }));
 
   const ov = st.overview || {};

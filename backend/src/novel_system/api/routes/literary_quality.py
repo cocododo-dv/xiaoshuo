@@ -17,6 +17,7 @@ def literary_quality_overview(
     chapter_id: str | None = None,
     risk_type: str | None = None,
     min_severity: str | None = None,
+    project_id: str | None = None,
     session: Session = Depends(get_session),
 ):
     payload = LiteraryQualityService(session).overview(
@@ -24,6 +25,7 @@ def literary_quality_overview(
         chapter_id=chapter_id,
         risk_type=risk_type,
         min_severity=min_severity,
+        project_id=project_id,
     )
     return ok(payload, req_id=getattr(request.state, "request_id", None))
 
