@@ -38,6 +38,14 @@ class PromotionService(VersioningServiceBase):
             raise DomainError("APPROVED_ROW_NOT_FOUND", f"row {review.approved_item_row_id} not found", status_code=404)
         if getattr(approved_row, "active_flag", 0) == 1:
             raise DomainError("RELEASE_PRECONDITION_FAILED", "candidate is already active", status_code=409)
+        # 已被更新版本 supersede 的旧行 active_flag=0，绝不能再被释放——否则会复活陈旧版本
+        # 并把当前版本打成 superseded（血缘倒退）。可达于操作者重试 / 崩溃后 recovery 重放。
+        if getattr(approved_row, "runtime_eligibility_basis", None) == "superseded":
+            raise DomainError(
+                "RELEASE_PRECONDITION_FAILED",
+                "candidate has been superseded by a newer version",
+                status_code=409,
+            )
         if not self._is_due_for_activation(getattr(approved_row, "effective_at", None)):
             raise DomainError("RELEASE_PRECONDITION_FAILED", "candidate is not due for release", status_code=409)
 
