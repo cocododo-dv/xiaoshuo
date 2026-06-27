@@ -9,7 +9,11 @@ from sqlalchemy import delete, text
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
+    BannedRuleCluster,
+    CalibrationLine,
+    NarrativePattern,
     ReviewItem,
+    StyleObservation,
     StyleReferenceBannedTerm,
     StyleReferenceEvidence,
     StyleReferenceExtraction,
@@ -20,6 +24,17 @@ from novel_system.db.models import (
     StyleReferenceQuote,
     StyleReferenceRun,
     StyleReferenceValidationReport,
+    StyleRule,
+)
+
+# 物化提升落库的运行时风格行（approve 时由 ReviewItem 提升而来，以 source_review_id 标记来源）。
+# 删书须按 source_review_id 一并清除，否则孤儿行仍 runtime-active 注入下游成稿。
+_PROMOTED_STYLE_MODELS = (
+    StyleObservation,
+    StyleRule,
+    NarrativePattern,
+    BannedRuleCluster,
+    CalibrationLine,
 )
 
 
@@ -29,8 +44,11 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     覆盖 10 张派生表(validation reports → bindings → banned terms → profiles →
     finding_feedback → evidences → findings → extractions → quotes → runs,
     FK 反向顺序)+ 相关 ReviewItem(``review_style_ref_apply_*`` /
-    ``review_style_ref_calib_*`` / ``review_style_ref_finding_*`` 前缀)+ 每个
-    profile 的三粒度 RAG 向量索引(向量后端,独立于 DB 事务)。
+    ``review_style_ref_calib_*`` / ``review_style_ref_finding_*`` 前缀)+ **apply/calib
+    review 提升落库的 5 张运行时风格表**(style_observations / style_rules /
+    narrative_patterns / banned_rule_clusters / calibration_lines,按 source_review_id
+    前缀清除——否则删书后孤儿行仍 runtime-active 注入下游成稿)+ 每个 profile 的
+    三粒度 RAG 向量索引(向量后端,独立于 DB 事务)。
 
     刻意不删 ``style_reference_metric_events``:纯运营遥测(无 book_id / FK 列),
     由 ``cleanup_metric_events`` 的 90 天留存独立清理。删书后其 profile_id /
@@ -77,9 +95,19 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
     for pid in profile_ids:
         suffix = pid[-12:] if len(pid) > 12 else pid
         for prefix in ("review_style_ref_apply_", "review_style_ref_calib_"):
+            pattern = f"{prefix}{suffix}_"
+            # 删除该 review 提升落库的运行时风格行;否则删书后这些 approved 行变孤儿,
+            # 仍 runtime-active 注入下游成稿(leak-after-delete / 删不干净)。
+            for model in _PROMOTED_STYLE_MODELS:
+                _exec(
+                    delete(model).where(
+                        model.source_review_id.startswith(pattern, autoescape=True)
+                    ),
+                    "promoted_style_rows",
+                )
             _exec(
                 delete(ReviewItem).where(
-                    ReviewItem.review_id.startswith(f"{prefix}{suffix}_", autoescape=True)
+                    ReviewItem.review_id.startswith(pattern, autoescape=True)
                 ),
                 "review_items",
             )

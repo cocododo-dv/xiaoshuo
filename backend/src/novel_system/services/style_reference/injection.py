@@ -569,7 +569,16 @@ class InjectionService:
         passes a re-ordered priority list (from style_drift_detector.drift_corrective_ptype_priority)
         so the few-shot exemplars "show" the correct baseline for drifted dimensions
         rather than just "telling" the model to adjust.
+
+        反抄袭/隐私(附录 B):few-shot 注入的是参考书**原文引文**,最终随用户生成 prompt
+        送往云端 LLM。``cloud_policy=local_only`` 的书禁止把原文送云端,故此处直接跳过
+        few-shot(与 Strategy C RAG 守卫一致;positive/forbidden 抽象特征仍由其它 block 注入)。
         """
+        from novel_system.services.style_reference.policy import cloud_llm_allowed
+
+        book = self.repo.get_book(getattr(profile, "book_id", None))
+        if book is not None and not cloud_llm_allowed(book):
+            return ""
         budget = _load_budget()
         k = int(budget.get("few_shot_k", 3))
         quote_max = int(budget.get("few_shot_quote_max_chars", 120))
