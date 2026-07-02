@@ -10,6 +10,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Restart full stack: `.\restart-dev.cmd`
 - Reset runtime DB/artifacts but keep LLM config: `.\reset-runtime-keep-llm.cmd` (→ `scripts/reset_runtime_keep_llm.ps1 -StopServices`; distinct from the Python `reset_author_state` tool below)
 
+On Linux/macOS there's no equivalent one-shot script — run the Backend and Frontend commands below directly (`cd backend && python -m alembic upgrade head` then `python -m uvicorn novel_system.api.app:create_app --factory --reload --app-dir src`; `cd frontend-react && npm install && npm run dev`). This is exactly what CI (`.github/workflows/ci.yml`, Ubuntu + Node 22) does.
+
 Default addresses: the **React frontend** `http://127.0.0.1:5174` (what `start-dev.cmd` auto-opens), the backend `http://127.0.0.1:8000`, and the **legacy Vue frontend** `http://127.0.0.1:5173` (**no longer started by default** — pass `-IncludeLegacyVue` to `start-dev.cmd`/`dev.ps1` to also start it). `start-dev.cmd` (→ `scripts/dev.ps1`) brings up the backend + React frontend (plus the legacy Vue frontend only when `-IncludeLegacyVue` is passed) in one shot: it runs `alembic upgrade head` + demo seed, forces `NOVEL_SYSTEM_VECTOR_BACKEND=memory`, auto-generates a `NOVEL_SYSTEM_CONFIG_SECRET`, and writes pid/url files under `.codex-run/` (`backend.url`, `frontend.url`, `frontend-react.url`). If port 8000 is busy it scans upward and records the chosen URL in `.codex-run/backend.url`. Backend readiness is probed at `GET /api/v1/chapters` (a 90s timeout — if migrations are stale this probe 500s and the browser never opens). Skip the demo seed with `NOVEL_SYSTEM_SKIP_DEMO_SEED=1` or a `.codex-run/skip-demo-seed` marker.
 
 ### Backend (Python 3.12 / FastAPI)
