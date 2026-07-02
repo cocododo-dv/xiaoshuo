@@ -51,6 +51,8 @@ class Orchestrator:
     def run_scene(self, scene_id: str, from_step: str = "bundle", resume: bool = False, author_note: str | None = None) -> dict:
         self.version_manager.recover_stuck_jobs()
         scene = self.session.get(SceneCard, scene_id)
+        if scene is None:
+            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
         state = self.session.get(SceneRunState, scene_id)
         if state is None:
             # FE 目录直接建的场景没有运行时状态行（scenes POST 才会建）：按同一约定补建
@@ -754,17 +756,19 @@ class Orchestrator:
     def _index_scene_to_vector_store(scene: SceneCard, content: str) -> None:
         """Index approved scene content into the vector store for semantic retrieval (§3 Track 3)."""
         try:
-            from novel_system.services.vector_store import InMemoryVectorStore
+            # 必须走 get_vector_store() 工厂：memory 后端是进程级单例、chroma 后端持久化。
+            # 裸 new InMemoryVectorStore() 写进的是函数返回即销毁的实例字典（审计 P-7）。
+            from novel_system.services.vector_store import get_vector_store
             project_id = scene.project_id or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
             collection_name = f"scenes_{project_id}"
-            store = InMemoryVectorStore()
+            store = get_vector_store()
             existing = store.load_collection(collection_name) if store.collection_exists(collection_name) else []
             existing_ids = {doc["id"] for doc in existing}
             if scene.scene_id not in existing_ids:
                 existing.append({"id": scene.scene_id, "text": (content or "")[:600]})
                 store.write_collection(collection_name, existing)
         except Exception:
-            _LOGGER.debug("vector store indexing skipped", exc_info=True)
+            _LOGGER.warning("vector store indexing degraded for scene %s", scene.scene_id, exc_info=True)
 
     def _detect_and_store_style_drift(self, scene: SceneCard) -> None:
         """Run style drift detection at chapter boundary and store correction prompt.
@@ -869,7 +873,7 @@ class Orchestrator:
                 select(StyleReferenceInjectionBinding).where(
                     StyleReferenceInjectionBinding.scope == "project",
                     StyleReferenceInjectionBinding.scope_ref_id == scene.project_id,
-                    StyleReferenceInjectionBinding.active == 1,
+                    StyleReferenceInjectionBinding.status == "active",
                 ).order_by(StyleReferenceInjectionBinding.created_at.desc())
             ).scalars().first()
             if not binding:

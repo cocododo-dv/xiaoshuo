@@ -230,17 +230,9 @@ class ChapterRuntimeService:
             raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
 
     def _ensure_chapter_state(self, chapter_id: str) -> ChapterState:
-        chapter_state = self.session.get(ChapterState, chapter_id)
-        if chapter_state is None:
-            chapter_state = ChapterState(
-                chapter_id=chapter_id,
-                current_phase="drafting",
-                mid_aggregate_enabled_effective=0,
-                aggregate_block_reason="none",
-            )
-            self.session.add(chapter_state)
-            self.session.flush()
-        return chapter_state
+        from novel_system.services.chapter_state import ensure_chapter_state
+
+        return ensure_chapter_state(self.session, chapter_id)
 
     def _parse_scene_markers(self, scene: SceneCard) -> list[ParsedBackfillMarker]:
         text = scene.must_include_text or ""

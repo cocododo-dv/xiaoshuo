@@ -6,10 +6,10 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     ChapterGoal,
     ChapterMemory,
-    ChapterState,
     SceneMemory,
     VolumeSummary,
 )
+from novel_system.services.chapter_state import ensure_chapter_state
 
 # §2 summary tower: roll chapters up into a volume every N chapters so long books
 # (50+ scenes) have a far-horizon ATMOSPHERE context the chapter layer is too fine for.
@@ -118,7 +118,8 @@ class Aggregator:
         }
 
     def run_final_aggregate(self, chapter_id: str) -> dict | None:
-        chapter_state = self.session.get(ChapterState, chapter_id)
+        # 目录冷启动章可能没有状态行（审计 P-1）：缺行补建
+        chapter_state = ensure_chapter_state(self.session, chapter_id)
         if chapter_state.chapter_backfill_pending_count != 0 or chapter_state.aggregate_block_reason != "none":
             return {
                 "status": "blocked",

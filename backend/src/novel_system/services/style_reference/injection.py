@@ -38,6 +38,8 @@ from novel_system.services.style_reference.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# 预算单位是**字符数**（配置注释：汉字 ~1 字 = 1 token 的粗估），
+# 截断走 _truncate_lines(text, max_chars)——键名沿用 *_max_tokens 仅为配置兼容（审计 P-20）。
 _DEFAULT_BUDGET = {
     "system_prompt_max_tokens": 800,
     "positive_block_ratio": 0.6,

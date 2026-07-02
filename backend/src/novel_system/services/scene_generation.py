@@ -1299,7 +1299,8 @@ def _extract_scene_text(response: LLMResponse) -> str:
     scene_text = structured_output.get("scene_text")
     if isinstance(scene_text, str) and scene_text.strip():
         return scene_text.strip()
-    raise ValueError("neutral_draft response missing scene_text")
+    # 中性/风格/补丁/续写各路径共用此提取器，消息不指认具体 stage（审计 P-17）
+    raise ValueError("llm generation response missing scene_text")
 
 
 def _anti_template_quality_gate(text: str, *, scene_id: str, chapter_id: str) -> dict[str, Any]:

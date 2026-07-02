@@ -581,7 +581,9 @@ class OutlinePlannerService:
         for scene_index in range(1, scene_count + 1):
             raw_scene = scenes_payload[scene_index - 1] if scene_index - 1 < len(scenes_payload) and isinstance(scenes_payload[scene_index - 1], dict) else {}
             fallback = fallback_scenes[scene_index - 1] if scene_index - 1 < len(fallback_scenes) else fallback_scenes[-1]
-            scene_id = str(raw_scene.get("scene_id") or f"{chapter_id}_SC{scene_index:02d}").strip()
+            # 审计 P-18：scene_id 是全局主键，强制系统格式化——LLM 返回的自由字符串
+            # 可能与其他章撞号（同 id 建卡时静默覆盖）。
+            scene_id = f"{chapter_id}_SC{scene_index:02d}"
             scenes.append(
                 {
                     "scene_id": scene_id,

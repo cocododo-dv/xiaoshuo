@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import ipaddress
 import time
 import uuid
@@ -1225,7 +1226,10 @@ def default_config_payload(category: str) -> tuple[str, dict[str, Any], dict[str
 def require_admin_token(header_value: str | None, *, client_host: str | None = None) -> None:
     token = _admin_token()
     if token:
-        if header_value == token:
+        # 常数时间比较，避免逐字符短路的时序侧信道（审计 P-16）
+        if header_value is not None and hmac.compare_digest(
+            header_value.encode("utf-8"), token.encode("utf-8")
+        ):
             return
         raise DomainError("ADMIN_TOKEN_REQUIRED", "valid X-Admin-Token is required", status_code=403)
     if _is_loopback_client(client_host):

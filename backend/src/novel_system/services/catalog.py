@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard, StoryCharacter, StoryProject
+from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import ProjectService
 
@@ -221,6 +222,9 @@ class CatalogService:
         )
         self.session.add(chapter)
         self.session.flush()
+        # 审计 P-1：冷启动章与雪花物化/章 API 同约定补建运行时状态行，
+        # 否则场景 run 通过全部 QC 后在归档/聚合段对缺行章 None 解引用 500。
+        ensure_chapter_state(self.session, chapter.chapter_id)
         if is_first or body.get("current", True):
             project.current_chapter_id = chapter.chapter_id
         # 默认带一个开场场景（抄 addChapter：scenes=[开场]）；传 with_scene=False 可跳过

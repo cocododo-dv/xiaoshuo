@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     AttemptTracker,
     ChapterRollingNote,
-    ChapterState,
     FinalScene,
     SceneMemory,
     SceneRunState,
 )
+from novel_system.services.chapter_state import ensure_chapter_state
 
 
 class Archiver:
@@ -29,7 +29,8 @@ class Archiver:
     ) -> dict:
         final_scene = self.session.get(FinalScene, final_scene_row_id)
         state = self.session.get(SceneRunState, scene_id)
-        chapter_state = self.session.get(ChapterState, final_scene.chapter_id)
+        # 目录冷启动章可能没有状态行（审计 P-1）：缺行补建而不是 None 解引用崩掉整跑
+        chapter_state = ensure_chapter_state(self.session, final_scene.chapter_id)
 
         existing_memory = self.session.execute(
             select(SceneMemory).where(SceneMemory.scene_id == scene_id, SceneMemory.active_flag == 1)

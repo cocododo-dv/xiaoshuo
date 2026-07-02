@@ -54,8 +54,13 @@ class BundleBuilder:
             build_no += 1
 
     def build(self, scene_id: str, execution_mode: str = "P2", force_rebuild: bool = False) -> dict[str, Any]:
+        self._degraded_slots = set()
         scene = self.session.get(SceneCard, scene_id)
+        if scene is None:
+            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        if chapter is None:
+            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
         state = self.session.get(SceneRunState, scene_id)
         previous_memory = self.session.execute(
             select(SceneMemory)
@@ -597,7 +602,12 @@ class BundleBuilder:
         try:
             from novel_system.services.narrative_event_log import NarrativeEventLog
             log = NarrativeEventLog(self.session)
-            project_id = scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id
+            # 审计 P-6：project_id 以 SceneCard 权威列优先；rsplit 启发式只作 legacy 兜底
+            # （目录冷启动章 id 形如 {project}_CH_{hex}，rsplit 会推导出错误值），
+            # 与事件写侧（orchestrator._record_narrative_events）保持同一规则。
+            project_id = scene.project_id or (
+                scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id
+            )
             text = log.format_state_for_prompt(
                 project_id,
                 scene.scene_seq or 0,
@@ -780,9 +790,11 @@ class BundleBuilder:
     def _similar_scene_context(self, scene: SceneCard) -> str | None:
         """Blueprint §3 Track 3: semantic retrieval for atmosphere/echo material."""
         try:
-            from novel_system.services.vector_store import InMemoryVectorStore
+            # 审计 P-7 关联：统一走 get_vector_store()（memory=进程级单例 / chroma=持久化）。
+            # 行为保持"每次由 DB 重建集合再查询"——自包含且结果始终新鲜。
+            from novel_system.services.vector_store import get_vector_store
             collection_name = f"scenes_{scene.project_id or scene.chapter_id.rsplit('_', 1)[0]}"
-            store = InMemoryVectorStore()
+            store = get_vector_store()
             approved_scenes = self.session.execute(
                 select(FinalScene)
                 .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
@@ -877,14 +889,22 @@ class BundleBuilder:
             if chapter is None or chapter.display_order is None:
                 return None
             from sqlalchemy import func as sa_func
-            total_chapters = self.session.execute(
-                sa_func.count(ChapterGoal.chapter_id)
-            ).scalar() or 1
+            # 审计 P-5：count 必须走 select(func.count())（Function 没有 .where），
+            # 且分母只数本项目未回收的章——否则多项目库里进度被稀释。
+            total_chapters = self.session.scalar(
+                select(sa_func.count())
+                .select_from(ChapterGoal)
+                .where(
+                    ChapterGoal.project_id == project_id,
+                    ChapterGoal.trashed_flag == 0,
+                )
+            ) or 1
             # Refine with scene_seq within the chapter for sub-chapter granularity
-            total_scenes_in_chapter = self.session.execute(
-                sa_func.count(SceneCard.scene_id)
+            total_scenes_in_chapter = self.session.scalar(
+                select(sa_func.count())
+                .select_from(SceneCard)
                 .where(SceneCard.chapter_id == scene.chapter_id, SceneCard.trashed_flag == 0)
-            ).scalar() or 1
+            ) or 1
             chapter_progress = (chapter.display_order or 0) / max(total_chapters, 1)
             scene_fraction = ((scene.scene_seq or 1) - 1) / max(total_scenes_in_chapter, 1)
             # Combine: chapter-level coarse + scene-level fine adjustment
