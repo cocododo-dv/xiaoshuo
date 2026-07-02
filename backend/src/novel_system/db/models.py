@@ -592,6 +592,7 @@ class StagedBackfill(Base):
 
 class SceneBundle(Base):
     __tablename__ = "scene_bundles"
+    __table_args__ = (Index("ix_scene_bundles_scene", "scene_id"),)
 
     bundle_id: Mapped[str] = mapped_column(String, primary_key=True)
     scene_id: Mapped[str] = mapped_column(ForeignKey("scene_cards.scene_id"))
@@ -696,6 +697,7 @@ class GenerationPlanningArtifact(Base):
 
 class LlmCall(Base):
     __tablename__ = "llm_calls"
+    __table_args__ = (Index("ix_llm_calls_scene_created", "scene_id", "created_at"),)
 
     llm_call_id: Mapped[str] = mapped_column(String, primary_key=True)
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -724,6 +726,7 @@ class LlmCall(Base):
 
 class SceneDraft(Base):
     __tablename__ = "scene_drafts"
+    __table_args__ = (Index("ix_scene_drafts_scene", "scene_id"),)
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
     scene_id: Mapped[str] = mapped_column(String)
@@ -739,6 +742,7 @@ class SceneDraft(Base):
 
 class QcReport(Base):
     __tablename__ = "qc_reports"
+    __table_args__ = (Index("ix_qc_reports_scene", "scene_id"),)
 
     qc_report_id: Mapped[str] = mapped_column(String, primary_key=True)
     scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1143,6 +1147,10 @@ class LongformStructureGuidance(Base):
 
 class FinalScene(Base):
     __tablename__ = "final_scenes"
+    __table_args__ = (
+        Index("ix_final_scenes_scene", "scene_id"),
+        Index("ix_final_scenes_chapter", "chapter_id"),
+    )
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
     scene_id: Mapped[str] = mapped_column(String)
@@ -1157,6 +1165,10 @@ class FinalScene(Base):
 
 class SceneMemory(Base):
     __tablename__ = "scene_memories"
+    __table_args__ = (
+        Index("ix_scene_memories_scene", "scene_id"),
+        Index("ix_scene_memories_chapter", "chapter_id"),
+    )
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
     scene_id: Mapped[str] = mapped_column(String)
@@ -1175,6 +1187,7 @@ class SceneMemory(Base):
 
 class ChapterMemory(Base):
     __tablename__ = "chapter_memories"
+    __table_args__ = (Index("ix_chapter_memories_chapter", "chapter_id"),)
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
     chapter_id: Mapped[str] = mapped_column(String)
@@ -1233,6 +1246,7 @@ class ChapterRollingNote(Base):
 
 class AttemptTracker(Base):
     __tablename__ = "attempt_tracker"
+    __table_args__ = (Index("ix_attempt_tracker_scene", "scene_id"),)
 
     attempt_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1272,6 +1286,9 @@ class ReviewItem(Base):
         # onceTask: 同一作品同一 dedupe_key 只允许一张卡（NULL 不参与唯一性）。
         # 镜像迁移 0050 的唯一索引，使测试的 create_all 与生产迁移同样强制该唯一性。
         Index("ux_review_items_project_dedupe", "project_id", "dedupe_key", unique=True),
+        # 审计 P-9 热路径索引（迁移 0060）
+        Index("ix_review_items_project_state", "project_id", "state"),
+        Index("ix_review_items_scene", "scene_id"),
     )
 
     review_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -1341,6 +1358,10 @@ class ReviewDerivedSnooze(Base):
 
 class HumanReviewEvent(Base):
     __tablename__ = "human_review_events"
+    __table_args__ = (
+        Index("ix_human_review_events_scene", "scene_id"),
+        Index("ix_human_review_events_status", "status"),
+    )
 
     event_id: Mapped[str] = mapped_column(String, primary_key=True)
     scene_id: Mapped[str | None] = mapped_column(String, nullable=True)

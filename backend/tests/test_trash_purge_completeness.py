@@ -1,0 +1,153 @@
+"""审计 P-2 回归：purge_project"永久清除"后全库无该项目残留。
+
+历史缺陷：purge 只删 FE 域 + 雪花域表，正文全文仍以 SceneDraft/FinalScene/
+SceneMemory/AuthorDraftRevision/LlmCall 载荷等形式留库，且孤儿行永远无法
+经 UI 清理。本测试在项目名下种满派生表后 purge，逐表断言清零。
+"""
+
+from __future__ import annotations
+
+from novel_system.db.models import (
+    AttemptTracker,
+    AuthorDraft,
+    AuthorDraftEvent,
+    AuthorDraftProposal,
+    AuthorDraftRevision,
+    ChapterGoal,
+    ChapterMemory,
+    ChapterRollingNote,
+    ChapterState,
+    FinalScene,
+    ForeshadowTracker,
+    HumanReviewEvent,
+    LlmCall,
+    NarrativeEvent,
+    QcReport,
+    ReviewItem,
+    SceneBundle,
+    SceneCard,
+    SceneDraft,
+    SceneMemory,
+    SceneRunState,
+    StoryProject,
+    VolumeSummary,
+    WriterEvaluation,
+    utcnow,
+)
+from novel_system.services.trash import TrashService
+
+
+PROJECT_ID = "proj_purge"
+CHAPTER_ID = f"{PROJECT_ID}_CH01"
+SCENE_ID = f"{CHAPTER_ID}_SC01"
+
+
+def _seed_full_project(session) -> None:
+    session.add(StoryProject(
+        project_id=PROJECT_ID, title="T", outline_text="o",
+        planning_mode="snowflake", trashed_flag=1, trashed_at=utcnow(), trashed_by="op",
+    ))
+    session.add(ChapterGoal(chapter_id=CHAPTER_ID, project_id=PROJECT_ID, chapter_goal="g"))
+    session.add(ChapterState(chapter_id=CHAPTER_ID))
+    session.add(SceneCard(
+        scene_id=SCENE_ID, chapter_id=CHAPTER_ID, project_id=PROJECT_ID,
+        scene_seq=1, scene_goal="推进",
+    ))
+    session.add(SceneRunState(scene_id=SCENE_ID))
+    # —— 正文/运行时派生行（修复前全部漏删）——
+    session.add(SceneDraft(
+        row_id="sd1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID, stage="style_draft",
+        content="草稿正文", source_bundle_id="b1", source_bundle_hash="h1",
+    ))
+    session.add(FinalScene(
+        row_id="fs1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID, content="成稿正文",
+        source_bundle_id="b1", source_bundle_hash="h1",
+    ))
+    session.add(SceneMemory(
+        row_id="sm1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID, content="记忆",
+        source_bundle_id="b1", final_scene_row_id="fs1",
+    ))
+    session.add(ChapterMemory(row_id="cm1", chapter_id=CHAPTER_ID, aggregate_stage="final", content="章记忆"))
+    session.add(ChapterRollingNote(
+        row_id="rn1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID,
+        source_scene_memory_row_id="sm1", note_text="滚动",
+    ))
+    session.add(SceneBundle(
+        bundle_id="b1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID,
+        bundle_snapshot_hash="h1", frozen_snapshot_json={},
+    ))
+    session.add(QcReport(qc_report_id="qc1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID))
+    session.add(WriterEvaluation(
+        evaluation_id="ev1", object_type="scene", object_id=SCENE_ID,
+        scene_id=SCENE_ID, chapter_id=CHAPTER_ID, rubric_id="r1",
+    ))
+    session.add(AttemptTracker(scene_id=SCENE_ID, chapter_id=CHAPTER_ID, step="archive", status="completed"))
+    session.add(LlmCall(llm_call_id="llm1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID))
+    session.add(LlmCall(llm_call_id="llm2", project_id=PROJECT_ID))
+    session.add(HumanReviewEvent(event_id="hre1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID))
+    session.add(NarrativeEvent(
+        event_id="ne1", project_id=PROJECT_ID, scene_id=SCENE_ID, chapter_id=CHAPTER_ID,
+        event_type="character_state", entity_type="character", entity_id="c1",
+        fact_key="k", fact_value="v",
+    ))
+    session.add(VolumeSummary(row_id="vs1", project_id=PROJECT_ID, volume_seq=1))
+    session.add(ForeshadowTracker(
+        row_id="ft1", foreshadow_id="f1", project_id=PROJECT_ID, chapter_id=CHAPTER_ID, text="伏笔",
+    ))
+    session.add(ReviewItem(
+        review_id="ri1", project_id=PROJECT_ID, item_type="fe_card", candidate_text="卡",
+    ))
+    # —— 作者草稿链（修订快照/提案修复前漏删）——
+    session.add(AuthorDraft(
+        draft_id="d1", object_type="scene", object_id=SCENE_ID,
+        source_text_ref="ref", content="作者稿",
+    ))
+    session.add(AuthorDraftEvent(
+        event_id="de1", draft_id="d1", object_type="scene", object_id=SCENE_ID, event_type="created",
+    ))
+    session.add(AuthorDraftRevision(draft_revision_id="dr1", draft_id="d1", revision_no=1, content="修订全文"))
+    session.add(AuthorDraftProposal(
+        proposal_id="dp1", draft_id="d1", object_type="scene", object_id=SCENE_ID, content="提案",
+    ))
+    session.flush()
+
+
+def test_purge_project_leaves_no_residual_rows(session):
+    _seed_full_project(session)
+
+    TrashService(session).purge_project(PROJECT_ID)
+    session.flush()
+
+    residuals: dict[str, int] = {}
+    checks = {
+        "story_projects": session.query(StoryProject).filter_by(project_id=PROJECT_ID),
+        "chapter_goals": session.query(ChapterGoal).filter_by(project_id=PROJECT_ID),
+        "chapter_states": session.query(ChapterState).filter_by(chapter_id=CHAPTER_ID),
+        "scene_cards": session.query(SceneCard).filter_by(project_id=PROJECT_ID),
+        "scene_run_states": session.query(SceneRunState).filter_by(scene_id=SCENE_ID),
+        "scene_drafts": session.query(SceneDraft).filter_by(scene_id=SCENE_ID),
+        "final_scenes": session.query(FinalScene).filter_by(scene_id=SCENE_ID),
+        "scene_memories": session.query(SceneMemory).filter_by(scene_id=SCENE_ID),
+        "chapter_memories": session.query(ChapterMemory).filter_by(chapter_id=CHAPTER_ID),
+        "chapter_rolling_notes": session.query(ChapterRollingNote).filter_by(scene_id=SCENE_ID),
+        "scene_bundles": session.query(SceneBundle).filter_by(scene_id=SCENE_ID),
+        "qc_reports": session.query(QcReport).filter_by(scene_id=SCENE_ID),
+        "writer_evaluations": session.query(WriterEvaluation).filter_by(scene_id=SCENE_ID),
+        "attempt_tracker": session.query(AttemptTracker).filter_by(scene_id=SCENE_ID),
+        "llm_calls(scene)": session.query(LlmCall).filter_by(scene_id=SCENE_ID),
+        "llm_calls(project)": session.query(LlmCall).filter_by(project_id=PROJECT_ID),
+        "human_review_events": session.query(HumanReviewEvent).filter_by(scene_id=SCENE_ID),
+        "narrative_events": session.query(NarrativeEvent).filter_by(project_id=PROJECT_ID),
+        "volume_summaries": session.query(VolumeSummary).filter_by(project_id=PROJECT_ID),
+        "foreshadow_tracker": session.query(ForeshadowTracker).filter_by(project_id=PROJECT_ID),
+        "review_items": session.query(ReviewItem).filter_by(project_id=PROJECT_ID),
+        "author_drafts": session.query(AuthorDraft).filter_by(draft_id="d1"),
+        "author_draft_events": session.query(AuthorDraftEvent).filter_by(draft_id="d1"),
+        "author_draft_revisions": session.query(AuthorDraftRevision).filter_by(draft_id="d1"),
+        "author_draft_proposals": session.query(AuthorDraftProposal).filter_by(draft_id="d1"),
+    }
+    for table, query in checks.items():
+        count = query.count()
+        if count:
+            residuals[table] = count
+    assert not residuals, f"purge 后仍有残留: {residuals}"

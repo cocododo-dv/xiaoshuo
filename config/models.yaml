@@ -156,6 +156,50 @@ task_routing:
     # §7 anti-mean sampling: decoding-level penalties to counteract repetition at source
     frequency_penalty: 0.3
     presence_penalty: 0.15
+  # —— 审计 P-10：以下 6 个活跃节点此前无文件路由。llm_enabled=true 时 task_config
+  # 故意不回退 stylize 别名（离线才回退），首次启用 LLM 必先 sync-missing 否则风格化
+  # 全线 LLM_ROUTE_NOT_CONFIGURED。此处补缺省（参数对齐 llm_node_registry 节点规格），
+  # DB 快照/系统配置页仍可覆盖。 ——
+  style_draft:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.8
+    max_output_tokens: 6000
+    response_format: json_object
+    frequency_penalty: 0.3
+    presence_penalty: 0.15
+  style_patch:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.8
+    max_output_tokens: 6000
+    response_format: json_object
+    frequency_penalty: 0.3
+    presence_penalty: 0.15
+  project_outline_plan:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.25
+    max_output_tokens: 3200
+    response_format: json_object
+  writer_deep_review:
+    provider: openai_compatible
+    model: gpt-5
+    temperature: 0.15
+    max_output_tokens: 3600
+    response_format: json_object
+  style_profile_extract:
+    provider: openai_compatible
+    model: gpt-5-mini
+    temperature: 0.15
+    max_output_tokens: 2200
+    response_format: json_object
+  literary_eval_live:
+    provider: openai_compatible
+    model: gpt-5-mini
+    temperature: 0.2
+    max_output_tokens: 2400
+    response_format: json_object
   soft_qc:
     provider: openai_compatible
     model: gpt-5-mini

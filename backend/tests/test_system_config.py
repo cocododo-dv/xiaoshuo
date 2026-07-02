@@ -105,8 +105,9 @@ def test_llm_overview_marks_default_routes_without_provider_as_not_ready(client)
     assert payload["readiness"]["configured_route_count"] > 0
     assert payload["readiness"]["ready_route_count"] == 0
     assert payload["readiness"]["ready"] is False
-    assert "project_outline_plan" in payload["missing_active_routes"]
-    assert "writer_deep_review" in payload["missing_active_routes"]
+    # 审计 P-10：文件配置现已覆盖全部活跃节点（含 project_outline_plan /
+    # writer_deep_review 等此前的缺口）——"未就绪"只应剩 provider 未配一个原因。
+    assert payload["missing_active_routes"] == []
     route = payload["node_routes"]["neutral_draft"]
     assert route["configured"] is True
     assert route["ready"] is False

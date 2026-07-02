@@ -571,11 +571,23 @@ class SystemConfigService:
     def llm_call_audit(self, *, limit: int = 1000) -> dict[str, Any]:
         node_catalog = llm_node_catalog()
         active_nodes = set(active_llm_node_ids())
+        # 审计 P-15：聚合只需要标量列——不加载 request/response 全量 JSON 载荷
         rows = self.session.execute(
-            select(LlmCall)
+            select(
+                LlmCall.llm_call_id,
+                LlmCall.node_id,
+                LlmCall.step,
+                LlmCall.scene_id,
+                LlmCall.chapter_id,
+                LlmCall.provider,
+                LlmCall.provider_id,
+                LlmCall.model,
+                LlmCall.error_code,
+                LlmCall.created_at,
+            )
             .order_by(LlmCall.created_at.desc(), LlmCall.llm_call_id.desc())
             .limit(max(1, min(int(limit or 1000), 5000)))
-        ).scalars().all()
+        ).all()
         by_node: dict[str, dict[str, Any]] = {
             node_id: {
                 "node_id": node_id,

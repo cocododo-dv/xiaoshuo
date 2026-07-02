@@ -164,7 +164,15 @@ class TrashService:
         return self._lifecycle_result(entry_id, result)
 
     def purge_project(self, project_id: str) -> dict[str, Any]:
-        """整部作品永久清除（D3 手动）。删除项目本体与其 FE 域子数据。"""
+        """整部作品永久清除（D3 手动）。删除项目本体与全部派生数据。
+
+        审计 P-2：此前只删 FE 域 + 雪花域 15 张表，正文全文仍以草稿/成稿/
+        场景记忆/修订快照/LLM 审计载荷等形式留库（"永久清除"语义未兑现），
+        且孤儿行永远无法经 UI 清理。现按 scene/chapter/draft/project 四个维度
+        补全运行时派生表（对齐 style_reference/cleanup.py 的删书标准）。
+        刻意保留 OperationLog（纯操作审计，无正文，与 style_reference 保留
+        MetricEvent 同一取舍）。
+        """
         project = self._require_project(project_id, allow_trashed=True)
         if project.trashed_flag != 1:
             raise DomainError(
@@ -198,16 +206,147 @@ class TrashService:
                     )
                 ).scalars().all()
             ]
+
+        from novel_system.db.models import (
+            AttemptTracker,
+            AuthorDraftProposal,
+            AuthorDraftRevision,
+            AuthorStructureCandidate,
+            AutoRewriteRun,
+            ChapterMemory,
+            ChapterRollingNote,
+            FinalScene,
+            ForeshadowTracker,
+            GenerationPlanningArtifact,
+            HumanReviewEvent,
+            LlmCall,
+            LongformDiagnosticCard,
+            LongformStructureGuidance,
+            NarrativeEvent,
+            PassagePatchCandidate,
+            ProjectBacktrackItem,
+            QcReport,
+            ReviewDerivedSnooze,
+            ReviewItem,
+            RevisionCandidate,
+            SceneBlueprint,
+            SceneBundle,
+            SceneDraft,
+            SceneExecutionContract,
+            SceneMemory,
+            SceneQualityContract,
+            StagedBackfill,
+            StoryCharacter,
+            TimelineEvent,
+            VolumeSummary,
+            WriterEvaluation,
+        )
+
+        character_ids = [
+            row
+            for row in self.session.execute(
+                select(StoryCharacter.character_id).where(StoryCharacter.project_id == project_id)
+            ).scalars().all()
+        ]
+
         if draft_ids:
             self.session.execute(delete(AuthorDraftEvent).where(AuthorDraftEvent.draft_id.in_(draft_ids)))
+            self.session.execute(delete(AuthorDraftRevision).where(AuthorDraftRevision.draft_id.in_(draft_ids)))
+            self.session.execute(delete(AuthorDraftProposal).where(AuthorDraftProposal.draft_id.in_(draft_ids)))
             self.session.execute(delete(AuthorDraft).where(AuthorDraft.draft_id.in_(draft_ids)))
+
+        # —— scene 维度派生表（正文/运行时痕迹）——
+        if scene_ids:
+            for model in (
+                SceneDraft,
+                FinalScene,
+                SceneMemory,
+                ChapterRollingNote,
+                SceneBundle,
+                SceneBlueprint,
+                SceneQualityContract,
+                SceneExecutionContract,
+                AutoRewriteRun,
+            ):
+                self.session.execute(delete(model).where(model.scene_id.in_(scene_ids)))
+
+        # —— chapter 维度派生表 ——
+        if chapter_ids:
+            self.session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id.in_(chapter_ids)))
+            self.session.execute(delete(StagedBackfill).where(StagedBackfill.chapter_id.in_(chapter_ids)))
+
+        # —— scene ∪ chapter 双列维度（行可能只挂其中一列）——
+        if scene_ids or chapter_ids:
+            for model in (
+                QcReport,
+                WriterEvaluation,
+                RevisionCandidate,
+                PassagePatchCandidate,
+                AuthorStructureCandidate,
+                AttemptTracker,
+                HumanReviewEvent,
+                GenerationPlanningArtifact,
+                LongformDiagnosticCard,
+            ):
+                self.session.execute(
+                    delete(model).where(
+                        model.scene_id.in_(scene_ids or [""])
+                        | model.chapter_id.in_(chapter_ids or [""])
+                    )
+                )
+            # 章/场景/角色 scope 的长篇指导（global scope 不动）
+            self.session.execute(
+                delete(LongformStructureGuidance).where(
+                    (
+                        (LongformStructureGuidance.scope_type == "chapter")
+                        & LongformStructureGuidance.scope_ref_id.in_(chapter_ids or [""])
+                    )
+                    | (
+                        (LongformStructureGuidance.scope_type == "scene")
+                        & LongformStructureGuidance.scope_ref_id.in_(scene_ids or [""])
+                    )
+                    | (
+                        (LongformStructureGuidance.scope_type == "character")
+                        & LongformStructureGuidance.scope_ref_id.in_(character_ids or [""])
+                    )
+                )
+            )
+
+        # —— project 维度派生表（自带 project_id 列）——
+        for model in (
+            NarrativeEvent,
+            VolumeSummary,
+            ProjectBacktrackItem,
+            ReviewDerivedSnooze,
+            ForeshadowTracker,
+            ReviewItem,
+        ):
+            self.session.execute(delete(model).where(model.project_id == project_id))
+        # legacy ReviewItem/LlmCall 行可能只挂 scene/chapter 列
+        if scene_ids or chapter_ids:
+            self.session.execute(
+                delete(ReviewItem).where(
+                    ReviewItem.scene_id.in_(scene_ids or [""])
+                    | ReviewItem.chapter_id.in_(chapter_ids or [""])
+                )
+            )
+        self.session.execute(
+            delete(LlmCall).where(
+                (LlmCall.project_id == project_id)
+                | LlmCall.scene_id.in_(scene_ids or [""])
+                | LlmCall.chapter_id.in_(chapter_ids or [""])
+            )
+        )
+        if chapter_ids:
+            self.session.execute(delete(ForeshadowTracker).where(ForeshadowTracker.chapter_id.in_(chapter_ids)))
+
+        # —— 运行时状态与卡片本体（原有逻辑）——
         if scene_ids:
             self.session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
             self.session.execute(delete(SceneCard).where(SceneCard.scene_id.in_(scene_ids)))
         if chapter_ids:
             self.session.execute(delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids)))
             self.session.execute(delete(ChapterGoal).where(ChapterGoal.chapter_id.in_(chapter_ids)))
-        from novel_system.db.models import StoryCharacter, TimelineEvent
 
         for model in (
             SnowflakeSceneTriageItem,
