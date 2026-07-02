@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ from novel_system.services.character_continuity import (
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
 from novel_system.services.style_profile import StyleScoreService
 
+
+_LOGGER = logging.getLogger(__name__)
 
 CONTINUITY_BUDGET_ISSUE_KEY = "continuity_budget_exceeded"
 CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe input budget after deterministic continuity compaction."
@@ -1057,7 +1060,10 @@ class HardQcEngine:
                 return None
             verdict = response.sync_result.verdict.value
             return verdict
-        except Exception:  # noqa: BLE001 — gate 不阻塞主流程
+        except Exception:  # noqa: BLE001 — gate 不阻塞主流程，但降级必须可见（审计 P-11）
+            _LOGGER.warning(
+                "style validation gate degraded for scene %s", scene.scene_id, exc_info=True
+            )
             return None
         finally:
             # PR-10 §13 — 记录 qc gate 决策事件;无 active binding 时不记录

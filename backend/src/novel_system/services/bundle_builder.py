@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -32,10 +33,25 @@ from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, 
 from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief, writer_brief_has_content
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
 class BundleBuilder:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.resolver = Resolver()
+        # 审计 P-11：可选注入槽的降级不允许静默——WARNING 落日志并随快照暴露。
+        self._degraded_slots: set[str] = set()
+
+    def _slot_degraded(self, slot: str, scene: SceneCard | None = None) -> None:
+        """记录一个可选注入槽的降级（在 except 块内调用，exc_info 取当前异常）。"""
+        self._degraded_slots.add(slot)
+        _LOGGER.warning(
+            "bundle slot %s degraded for scene %s",
+            slot,
+            getattr(scene, "scene_id", "?"),
+            exc_info=True,
+        )
 
     @staticmethod
     def _single_or_list(values: list[str]) -> str | list[str]:
@@ -504,6 +520,10 @@ class BundleBuilder:
         snapshot = projection.model_dump(mode="json")
         snapshot["scene_id"] = scene.scene_id
         snapshot["chapter_id"] = scene.chapter_id
+        # 审计 P-11：降级槽位随快照可见（hash 之后追加——不参与 bundle_snapshot_hash，
+        # 与 scene_id/chapter_id 同一约定）。
+        if self._degraded_slots:
+            snapshot["degraded_slots"] = sorted(self._degraded_slots)
 
         bundle = SceneBundle(
             bundle_id=bundle_id,
@@ -547,15 +567,16 @@ class BundleBuilder:
             service = ForeshadowLifecycleService(self.session)
             return service.format_foreshadow_directives(scene.scene_id)
         except Exception:
+            self._slot_degraded("foreshadow_directives", scene)
             return None
 
-    @staticmethod
-    def _tension_prompt(scene: SceneCard) -> str | None:
+    def _tension_prompt(self, scene: SceneCard) -> str | None:
         try:
             from novel_system.services.tension_curve import TensionCurveService
             service = TensionCurveService.__new__(TensionCurveService)
             return service.format_tension_prompt(scene)
         except Exception:
+            self._slot_degraded("tension_pacing", scene)
             return None
 
     def _theme_and_expression_budget(self, scene: SceneCard) -> str | None:
@@ -595,6 +616,7 @@ class BundleBuilder:
 
             return "\n".join(parts)
         except Exception:
+            self._slot_degraded("theme_expression_budget", scene)
             return None
 
     def _narrative_state_digest(self, scene: SceneCard) -> str | None:
@@ -616,6 +638,7 @@ class BundleBuilder:
             )
             return text if text else None
         except Exception:
+            self._slot_degraded("narrative_state", scene)
             return None
 
     def _literary_freshness_budget(self, scene: SceneCard) -> dict[str, Any] | None:
@@ -685,8 +708,8 @@ class BundleBuilder:
             lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(scene.project_id)
             if lifetime_guidance:
                 budget["lifetime_banned_expressions"] = lifetime_guidance
-        except Exception:  # noqa: S110 — non-critical enrichment
-            pass
+        except Exception:
+            self._slot_degraded("literary_freshness_enrichment", scene)
         return {
             "source_final_scene_ids": [row.row_id for row in source_rows],
             "budget": budget,
@@ -785,6 +808,7 @@ class BundleBuilder:
                 return f"## Chapter Transition Buffer (previous chapter ending — maintain tone continuity)\n\n{tail}"
             return None
         except Exception:
+            self._slot_degraded("chapter_transition_buffer", scene)
             return None
 
     def _similar_scene_context(self, scene: SceneCard) -> str | None:
@@ -832,10 +856,10 @@ class BundleBuilder:
                 lines.append(f"\n[scene {item.get('id', '?')}]\n{item.get('text', '')[:400]}")
             return "\n".join(lines)
         except Exception:
+            self._slot_degraded("similar_scene", scene)
             return None
 
-    @staticmethod
-    def _pov_voice_coloring(scene: SceneCard, voice_profile) -> str | None:
+    def _pov_voice_coloring(self, scene: SceneCard, voice_profile) -> str | None:
         """Blueprint §2: POV-conditional narration coloring (自由间接引语)."""
         try:
             from novel_system.services.pov_voice_coloring import build_pov_coloring, format_pov_coloring_prompt
@@ -850,10 +874,10 @@ class BundleBuilder:
             directive = build_pov_coloring(pov_id, voice_content, bible)
             return format_pov_coloring_prompt(directive)
         except Exception:
+            self._slot_degraded("pov_voice_coloring", scene)
             return None
 
-    @staticmethod
-    def _character_psychology_prompt(scene: SceneCard) -> str | None:
+    def _character_psychology_prompt(self, scene: SceneCard) -> str | None:
         """Blueprint §11: three-layer character psychology model."""
         try:
             from novel_system.services.character_psychology import extract_psychology_from_bible, format_psychology_prompt
@@ -867,6 +891,7 @@ class BundleBuilder:
             tension = get_scene_tension(scene)
             return format_psychology_prompt(psych, tension_level=tension)
         except Exception:
+            self._slot_degraded("character_psychology", scene)
             return None
 
     def _character_arc_weights_prompt(self, scene: SceneCard) -> str | None:
@@ -914,10 +939,10 @@ class BundleBuilder:
             arc_svc = CharacterArcService(self.session)
             return arc_svc.format_weights_at_progress_for_prompt(project_id, pov_id, progress)
         except Exception:
+            self._slot_degraded("character_arc_weights", scene)
             return None
 
-    @staticmethod
-    def _voice_fingerprint_prompt(scene: SceneCard) -> str | None:
+    def _voice_fingerprint_prompt(self, scene: SceneCard) -> str | None:
         """Blueprint §11: structured voice fingerprint for onstage characters."""
         try:
             from novel_system.services.voice_fingerprint import extract_fingerprint_from_bible, format_voice_fingerprint_prompt
@@ -929,6 +954,7 @@ class BundleBuilder:
             fp = extract_fingerprint_from_bible(pov_id, bible)
             return format_voice_fingerprint_prompt(fp)
         except Exception:
+            self._slot_degraded("voice_fingerprint", scene)
             return None
 
     def _relationship_matrix_prompt(self, scene: SceneCard) -> str | None:
@@ -952,6 +978,7 @@ class BundleBuilder:
                 prompt += "\n\n### Tension Opportunities\n" + "\n".join(f"- {o}" for o in opportunities[:3])
             return prompt
         except Exception:
+            self._slot_degraded("relationship_matrix", scene)
             return None
 
     def _information_asymmetry_digest(self, scene: SceneCard) -> str | None:
@@ -971,4 +998,5 @@ class BundleBuilder:
             )
             return text if text else None
         except Exception:
+            self._slot_degraded("information_asymmetry", scene)
             return None

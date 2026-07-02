@@ -86,8 +86,43 @@ function buildUrlFromBase(baseUrl, path) {
   return `${String(baseUrl || DEFAULT_API_BASE).trim().replace(/\/+$/, "")}${path}`;
 }
 
-function buildIdempotencyKey(path) {
-  return `${path}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+/* ---- 幂等键：操作意图级（审计 P-3，与 frontend-react/src/lib/client.js 同契约）----
+   同一「方法+路径+载荷」的请求在途/失败重试复用同一键；成功后丢弃签名。 */
+const IDEMPOTENCY_KEYS_MAX = 200;
+const inflightIdempotencyKeys = new Map();
+
+function requestSignature(method, path, body) {
+  let payload = "";
+  try {
+    payload = body === undefined ? "" : JSON.stringify(body);
+  } catch {
+    payload = String(body);
+  }
+  return `${method} ${path} ${payload}`;
+}
+
+function acquireIdempotencyKey(method, path, body) {
+  const signature = requestSignature(method, path, body);
+  let key = inflightIdempotencyKeys.get(signature);
+  if (!key) {
+    key = `${path}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (inflightIdempotencyKeys.size >= IDEMPOTENCY_KEYS_MAX) {
+      const oldest = inflightIdempotencyKeys.keys().next().value;
+      inflightIdempotencyKeys.delete(oldest);
+    }
+    inflightIdempotencyKeys.set(signature, key);
+  }
+  return { key, signature };
+}
+
+function releaseIdempotencyKey(signature) {
+  inflightIdempotencyKeys.delete(signature);
+}
+
+function releaseIdempotencyKeyOnError(signature, normalizedError) {
+  if (!normalizedError.retryable && normalizedError.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
+    releaseIdempotencyKey(signature);
+  }
 }
 
 function buildClientRequestId() {
@@ -209,20 +244,25 @@ export async function apiGetFromBase(baseUrl, path) {
 
 export async function apiPost(path, body = {}) {
   const clientRequestId = buildClientRequestId();
+  const { key, signature } = acquireIdempotencyKey("POST", path, body);
   try {
     const response = await fetch(buildUrl(path), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Idempotency-Key": buildIdempotencyKey(path),
+        "X-Idempotency-Key": key,
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
       },
       body: JSON.stringify(body),
     });
-    return parseEnvelope(response, clientRequestId);
+    const data = await parseEnvelope(response, clientRequestId);
+    releaseIdempotencyKey(signature);
+    return data;
   } catch (error) {
-    throw normalizeRequestError(error, clientRequestId);
+    const normalized = normalizeRequestError(error, clientRequestId);
+    releaseIdempotencyKeyOnError(signature, normalized);
+    throw normalized;
   }
 }
 
@@ -286,35 +326,46 @@ export async function apiAdminPost(path, body = {}, adminToken = "") {
 
 export async function apiPostForm(path, formData) {
   const clientRequestId = buildClientRequestId();
+  // FormData 无法稳定序列化为签名：按「路径」持键（同路径的表单上传在途期间复用）
+  const { key, signature } = acquireIdempotencyKey("POST-FORM", path, undefined);
   try {
     const response = await fetch(buildUrl(path), {
       method: "POST",
       headers: {
-        "X-Idempotency-Key": buildIdempotencyKey(path),
+        "X-Idempotency-Key": key,
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
       },
       body: formData,
     });
-    return parseEnvelope(response, clientRequestId);
+    const data = await parseEnvelope(response, clientRequestId);
+    releaseIdempotencyKey(signature);
+    return data;
   } catch (error) {
-    throw normalizeRequestError(error, clientRequestId);
+    const normalized = normalizeRequestError(error, clientRequestId);
+    releaseIdempotencyKeyOnError(signature, normalized);
+    throw normalized;
   }
 }
 
 export async function apiDelete(path) {
   const clientRequestId = buildClientRequestId();
+  const { key, signature } = acquireIdempotencyKey("DELETE", path, undefined);
   try {
     const response = await fetch(buildUrl(path), {
       method: "DELETE",
       headers: {
-        "X-Idempotency-Key": buildIdempotencyKey(path),
+        "X-Idempotency-Key": key,
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
       },
     });
-    return parseEnvelope(response, clientRequestId);
+    const data = await parseEnvelope(response, clientRequestId);
+    releaseIdempotencyKey(signature);
+    return data;
   } catch (error) {
-    throw normalizeRequestError(error, clientRequestId);
+    const normalized = normalizeRequestError(error, clientRequestId);
+    releaseIdempotencyKeyOnError(signature, normalized);
+    throw normalized;
   }
 }

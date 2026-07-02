@@ -19,6 +19,24 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _lease_ttl_seconds() -> int:
+    """幂等租约 TTL：优先 models 配置 job_runtime.idempotency_claim_ttl_seconds。
+
+    审计 P-8：此前该配置键无人消费（settings 硬编码 90s 是唯一生效值），
+    LLM 场景 run 轻易超时 → 客户端重试把未完成的租约当过期回收 → 并发二次执行。
+    读取失败时回退 settings 缺省。
+    """
+    try:
+        from novel_system.services.llm_client import load_model_routing_config
+
+        value = load_model_routing_config().job_runtime.get("idempotency_claim_ttl_seconds")
+        if value is not None:
+            return max(1, int(value))
+    except Exception:
+        pass
+    return get_settings().idempotency_ttl_seconds
+
+
 def canonical_request_hash(method: str, path_template: str, payload: Any) -> str:
     body = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     raw = f"{method.upper()}::{path_template}::{body}"
@@ -41,7 +59,9 @@ def execute_with_idempotency(
     request_hash = canonical_request_hash(method, path_template, payload)
     record = session.get(IdempotencyKey, idempotency_key)
     now = utcnow()
-    lease_expires_at = (now + timedelta(seconds=get_settings().idempotency_ttl_seconds)).isoformat()
+    # 注：不做执行中途的心跳续租——SQLite 单写者下，续租需独立事务提交，
+    # 会与"action 失败整体回滚"的原子性冲突；改为把 TTL 配到覆盖最长 run 时长。
+    lease_expires_at = (now + timedelta(seconds=_lease_ttl_seconds())).isoformat()
     operator_action_context = _prepare_operator_action_context(session, path_template=path_template, payload=payload)
 
     if record is None:

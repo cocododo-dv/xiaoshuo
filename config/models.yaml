@@ -361,7 +361,9 @@ retry_budget:
   total_attempt_budget: 4
 
 job_runtime:
-  idempotency_claim_ttl_seconds: 90
+  # 幂等租约须覆盖最长的同步操作：LLM 场景 run（Best-of-N 最多 9 次生成 + 多轮 QC）
+  # 常态 3-10 分钟。90s 会让客户端重试把仍在执行的 run 当过期回收 → 并发二次执行。
+  idempotency_claim_ttl_seconds: 600
   reindex_lease_ttl_seconds: 180
   verify_lease_ttl_seconds: 180
   heartbeat_interval_seconds: 45

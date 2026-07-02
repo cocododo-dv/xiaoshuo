@@ -183,8 +183,9 @@ class Orchestrator:
         # Default: rule-based pass only. Opt-in (NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED +
         # llm_enabled) layers the independent LLM editor critic on top — degrades to
         # rule-only on any runner error, never blocks (blueprint §8 + §15 honest-bounds).
+        critique = None
         try:
-            from novel_system.services.auto_critique import llm_auto_critique, format_critique_brief
+            from novel_system.services.auto_critique import llm_auto_critique
             _critique_runner = self._resolve_auto_critique_runner()
             critique = llm_auto_critique(
                 style_generation.content,
@@ -193,11 +194,17 @@ class Orchestrator:
                 llm_runner=_critique_runner,
                 skip_critique=criticality.skip_critique,
             )
-            if critique.should_rewrite:
-                _LOGGER.info(
-                    "auto-critique flagged %d dimensions for scene %s: %s",
-                    len(critique.flagged_dimensions), scene_id, critique.flagged_dimensions,
-                )
+        except Exception:
+            _LOGGER.warning("auto-critique degraded for scene %s", scene_id, exc_info=True)
+        if critique is not None and critique.should_rewrite:
+            _LOGGER.info(
+                "auto-critique flagged %d dimensions for scene %s: %s",
+                len(critique.flagged_dimensions), scene_id, critique.flagged_dimensions,
+            )
+            # 补丁生成失败与 critique 本身失败分开兜底：保留未修订稿继续主流程，
+            # 但失败必须以 WARNING 可见（scene_generation 内部已落 AttemptTracker/LlmCall）。
+            try:
+                from novel_system.services.auto_critique import format_critique_brief
                 critique_brief = format_critique_brief(critique)
                 style_generation = self.scene_generation_service.generate_style_patch(
                     scene_id,
@@ -207,8 +214,12 @@ class Orchestrator:
                     rewrite_brief=critique_brief,
                     source_qc_report_id=f"auto_critique_{scene_id}",
                 )
-        except Exception:
-            _LOGGER.debug("auto-critique skipped", exc_info=True)
+            except Exception:
+                _LOGGER.warning(
+                    "auto-critique patch failed for scene %s; keeping unpatched style draft",
+                    scene_id,
+                    exc_info=True,
+                )
 
         soft_qc = self.soft_qc_engine.evaluate(
             scene_id=scene_id,
@@ -394,7 +405,9 @@ class Orchestrator:
             try:
                 self.aggregator.maybe_aggregate_volume(scene.chapter_id)
             except Exception:
-                _LOGGER.debug("volume aggregation skipped", exc_info=True)
+                _LOGGER.warning(
+                    "volume aggregation degraded for chapter %s", scene.chapter_id, exc_info=True
+                )
             chapter_near_final = self.near_final_service.evaluate_chapter(scene.chapter_id)
             self._detect_and_store_style_drift(scene)
 
@@ -632,7 +645,9 @@ class Orchestrator:
 
             self.session.flush()
         except Exception:
-            _LOGGER.debug("narrative event recording skipped", exc_info=True)
+            _LOGGER.warning(
+                "narrative event recording degraded for scene %s", scene.scene_id, exc_info=True
+            )
 
     def _resolve_auto_critique_runner(self):
         """§8 gate: the independent LLM editor critic is layered on ONLY when both
@@ -670,7 +685,9 @@ class Orchestrator:
                     payload={"source": "prose"},
                 )
         except Exception:
-            _LOGGER.debug("prose event extraction skipped", exc_info=True)
+            _LOGGER.warning(
+                "prose event extraction degraded for scene %s", scene.scene_id, exc_info=True
+            )
 
     def _record_relation_events(
         self, log, scene: SceneCard, base: dict, pov: str | None, all_chars: list[str],
@@ -846,7 +863,9 @@ class Orchestrator:
                 scene.chapter_id, scope_type, scope_ref_id, len(report.drifts),
             )
         except Exception:
-            _LOGGER.debug("style drift detection skipped", exc_info=True)
+            _LOGGER.warning(
+                "style drift detection degraded for chapter %s", scene.chapter_id, exc_info=True
+            )
 
     def _find_next_chapter(self, scene: SceneCard) -> ChapterGoal | None:
         """Find the next chapter after the scene's chapter, by display_order."""

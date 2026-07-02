@@ -520,6 +520,21 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
         ),
     }
 
+    # 审计 P-11：最近一次 bundle 的降级注入槽（辅助注入失效不再沉默）
+    try:
+        from novel_system.db.models import SceneBundle as _SceneBundle
+        latest_bundle = session.execute(
+            select(_SceneBundle)
+            .where(_SceneBundle.scene_id == scene_id)
+            .order_by(_SceneBundle.created_at.desc(), _SceneBundle.bundle_id.desc())
+        ).scalars().first()
+        signals["degraded_slots"] = (
+            (latest_bundle.frozen_snapshot_json or {}).get("degraded_slots") or []
+            if latest_bundle is not None else []
+        )
+    except Exception:
+        signals["degraded_slots"] = None
+
     # §5 foreshadow debt health (best-effort — never fail the whole panel)
     try:
         from novel_system.services.foreshadow_lifecycle import ForeshadowLifecycleService
