@@ -168,6 +168,7 @@ async function wsMigrateLegacy() {
     const raw = localStorage.getItem(WS_WORKS_LS);
     const legacy = raw ? JSON.parse(raw) : null;
     let migrated = false;
+    let failed = 0;
     if (Array.isArray(legacy)) {
       for (const w of legacy) {
         if (!w || !w.title) continue;
@@ -185,11 +186,18 @@ async function wsMigrateLegacy() {
           migrated = true;
         } catch (e) {
           // 单部失败不阻塞其余；旧键保留（Phase 8 清理）
+          failed += 1;
           console.warn("[WsWorks] 迁移本地作品失败:", w.title, e);
         }
       }
     }
-    localStorage.setItem(WS_MIGRATED_LS, new Date().toISOString());
+    // 审计 P-19：有失败就不落"已迁移"标记，下次启动重试失败的作品；
+    // 全部成功（或无可迁移项）才封口。
+    if (failed === 0) {
+      localStorage.setItem(WS_MIGRATED_LS, new Date().toISOString());
+    } else {
+      console.warn(`[WsWorks] ${failed} 部作品迁移失败，保留旧键待下次启动重试。`);
+    }
     return migrated;
   } catch (e) {
     return false;
@@ -304,7 +312,11 @@ const WsWorks = {
   remove(id) {
     /* FE-ALIGN P4：整部软删（DELETE /api/v2/projects/{id}）。
        乐观下架 + 失败回滚；回收站条目由后端自动产生。 */
-    if (WS_WORKS.length <= 1) return; // 至少保留一部（原型既有限制，P4 只摘「种子不可删」）
+    if (WS_WORKS.length <= 1) {
+      // 审计 P-19：静默 return 让用户不知道为何删不掉——给出明确提示
+      try { window.alert("至少需要保留一部作品，无法删除最后一部。"); } catch (e) {}
+      return;
+    }
     const victim = WS_WORKS.find(w => w.id === id);
     if (!victim) return;
     const prevList = WS_WORKS;

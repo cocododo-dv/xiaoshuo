@@ -120,12 +120,23 @@ async function pushSave(sid, html) {
     }
   } catch (e) {
     if (e && e.code === "AUTHOR_DRAFT_CONFLICT") {
-      // 服务端已被改（另一端保存）：以服务端为准重新水合
+      // 服务端已被改（另一端保存）：以服务端为准重新水合。
+      // 审计 P-12：覆盖前把本地未保存稿留一份副本，避免较新的本地编辑无痕丢失。
+      let backupKey = null;
+      try {
+        backupKey = `${wrKeyOf(sid)}:conflict-${Date.now()}`;
+        localStorage.setItem(backupKey, html);
+      } catch (e3) { backupKey = null; }
       m.draftId = null;
       m.hydrated = false;
       m.dirty = false;
       await hydrate(sid);
-      try { window.alert("这份正文在别处被修改过，已加载服务端最新版本。"); } catch (e2) {}
+      try {
+        window.alert(
+          "这份正文在别处被修改过，已加载服务端最新版本。" +
+          (backupKey ? `\n你本地未保存的内容已备份到浏览器缓存（键：${backupKey}），可从中找回。` : "")
+        );
+      } catch (e2) {}
     } else {
       console.warn("[WrDocs] 正文保存失败（缓存已留底，下次保存重试）:", e);
     }
