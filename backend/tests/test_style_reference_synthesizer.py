@@ -226,20 +226,47 @@ def test_synthesize_excludes_rejected_findings() -> None:
 
 
 def test_synthesize_scene_samples_index_buckets_by_paragraph_type() -> None:
-    """scene_samples_index 应按 paragraph_type 分桶(从 quote.extracted_features 读)。"""
+    """scene_samples_index 按段落表实测类型分桶;合成反例/负空间/无段落锚点不入索引。"""
     book_id, run_id = _ingest_with_finding("buckets")
-    # 多加 1 个 dialogue paragraph_type 的 quote
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
+        paras = repo.list_paragraphs(book_id)
+        assert len(paras) >= 2
+        p_dlg, p_env = paras[0], paras[1]
+        p_dlg.paragraph_type = "dialogue"
+        p_env.paragraph_type = "description_env"
+        # 真实原文引文(带 anchor_kind)→ 按段落表类型分桶
         repo.create_quote(
-            quote_id=f"sr_quote_dlg_buckets",
+            quote_id="sr_quote_dlg_buckets",
             book_id=book_id,
-            paragraph_id=None,
+            paragraph_id=p_dlg.paragraph_id,
             span_start=0,
             span_end=10,
             quote_text="对话引文",
             illustrates_dims=[],
-            extracted_features={"paragraph_type": "dialogue"},
+            extracted_features={"anchor_kind": "paragraph_quote"},
+        )
+        # legacy 行(无 anchor_kind)→ 默认按 paragraph_quote 处理,仍按段落表分桶
+        repo.create_quote(
+            quote_id="sr_quote_env_buckets",
+            book_id=book_id,
+            paragraph_id=p_env.paragraph_id,
+            span_start=0,
+            span_end=10,
+            quote_text="环境引文",
+            illustrates_dims=[],
+            extracted_features={},
+        )
+        # 合成反例:与原作风格相悖,不能作为风格样例进 few-shot 索引
+        repo.create_quote(
+            quote_id="sr_quote_syn_buckets",
+            book_id=book_id,
+            paragraph_id=None,
+            span_start=0,
+            span_end=10,
+            quote_text="(反例)天是那样蓝",
+            illustrates_dims=[],
+            extracted_features={"anchor_kind": "counter_example"},
         )
         session.commit()
 
@@ -257,6 +284,9 @@ def test_synthesize_scene_samples_index_buckets_by_paragraph_type() -> None:
         profile = synth.synthesize(book_id, run_id)
         session.commit()
     index = profile.profile_json["scene_samples_index"]
-    assert "narration" in index
-    assert "dialogue" in index
-    assert any(qid.startswith("sr_quote_dlg") for qid in index["dialogue"])
+    assert "sr_quote_dlg_buckets" in index.get("dialogue", [])
+    assert "sr_quote_env_buckets" in index.get("description_env", [])
+    flat = [qid for ids in index.values() for qid in ids]
+    assert "sr_quote_syn_buckets" not in flat
+    # helper 里 paragraph_id=None 的旧式 quote 同样不入索引
+    assert "sr_quote_buckets" not in flat

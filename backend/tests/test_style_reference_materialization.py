@@ -227,6 +227,22 @@ def test_apply_profile_not_found() -> None:
             svc.apply_profile(
                 "sr_profile_nonexistent",
                 scope=BindingScope.PROJECT,
-                scope_ref_id=None,
+                scope_ref_id="proj_x",
             )
         assert exc_info.value.code == "STYLE_REFERENCE_PROFILE_NOT_FOUND"
+
+
+def test_apply_profile_requires_scope_ref_id() -> None:
+    """scope_ref_id 缺失的绑定永远解析不到(_binding_rank=99 死绑定),apply 必须拒绝。"""
+    from novel_system.services.errors import DomainError
+
+    with SessionLocal() as session:
+        svc = MaterializationService(session)
+        for bad_ref in (None, "", "  "):
+            with pytest.raises(DomainError) as exc_info:
+                svc.apply_profile(
+                    "sr_profile_nonexistent",
+                    scope=BindingScope.PROJECT,
+                    scope_ref_id=bad_ref,
+                )
+            assert exc_info.value.code == "STYLE_REFERENCE_APPLY_PARAM_INVALID"

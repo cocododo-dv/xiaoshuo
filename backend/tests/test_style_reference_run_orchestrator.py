@@ -117,3 +117,63 @@ def test_run_orchestrator_happy_path_writes_4_tables(fake_extractor_llm) -> None
     # 64 finding × 2 evidence = 128 evidence/quote
     assert ev_count == 128
     assert quote_count == 128
+
+
+def test_extractor_checkpoint_called_per_sub_dim(monkeypatch) -> None:
+    """后台模式的事务边界:每个 sub_dim 落库后 checkpoint(commit),
+    写事务不得跨分钟级 LLM 调用持有 SQLite 写锁(database is busy 回归)。"""
+    from novel_system.services.style_reference.extractors.base import (
+        BaseExtractor,
+        ExtractionRunResult,
+    )
+    from novel_system.services.style_reference.extractors.language import LanguageExtractor
+
+    calls = {"checkpoint": 0, "extract": 0}
+
+    def fake_extract(self, sub_dim):
+        calls["extract"] += 1
+        return ExtractionRunResult(sub_dimension=sub_dim)
+
+    monkeypatch.setattr(BaseExtractor, "_extract_with_retry", fake_extract)
+    monkeypatch.setattr(BaseExtractor, "__init__", lambda self, **kw: None)
+    extractor = LanguageExtractor.__new__(LanguageExtractor)
+    extractor._checkpoint = lambda: calls.__setitem__("checkpoint", calls["checkpoint"] + 1)
+    results = extractor.extract_all_sub_dimensions()
+    assert len(results) == 4
+    assert calls["extract"] == 4
+    assert calls["checkpoint"] == 4
+
+    # checkpoint=None(inline 模式)不触发
+    extractor2 = LanguageExtractor.__new__(LanguageExtractor)
+    extractor2._checkpoint = None
+    assert len(extractor2.extract_all_sub_dimensions()) == 4
+
+
+def test_start_run_rejects_when_book_has_active_run() -> None:
+    """并发守卫:同书已有 RUNNING run 时再启动 → 409(连点重跑抽取的防呆)。"""
+    import pytest as _pytest
+
+    from novel_system.services.errors import DomainError
+    from novel_system.services.style_reference.ingest import IngestService
+    from novel_system.services.style_reference.repository import StyleReferenceRepository
+    from novel_system.services.style_reference.run_orchestrator import RunOrchestrator
+
+    with SessionLocal() as session:
+        ingest = IngestService(session, llm_enabled=False)
+        result = ingest.ingest_upload(
+            raw_bytes=("第一段。\n\n第二段。\n\n第三段。" * 40).encode("utf-8"),
+            file_name="active_guard.txt",
+            title="并发守卫",
+            author_label=None,
+            cloud_policy="segments_only",
+        )
+        book_id = result.book.book_id
+        repo = StyleReferenceRepository(session)
+        repo.create_run(run_id="sr_run_active_guard", book_id=book_id, status="running", phase="extract")
+        session.commit()
+
+        orch = RunOrchestrator(session, llm_client=object(), llm_enabled=True)
+        with _pytest.raises(DomainError) as exc_info:
+            orch.start_extract_run(book_id, background=True)
+        assert exc_info.value.code == "STYLE_REFERENCE_RUN_ALREADY_ACTIVE"
+        assert exc_info.value.status_code == 409

@@ -396,7 +396,7 @@ function WsStyleRef({ go }) {
         <aside className="sr-books">
           <header className="sr-books-head">
             <div>
-              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {WsDemoTag && <WsDemoTag note="书库/导入/删除/抽取启动已接后端 style-reference v2（LLM 未启用时启动抽取会给明确引导）。维度矩阵/画像/回测/注入展示的是 LLM 抽取产物，启用前为演示数据。" />}</div>
+              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {WsDemoTag && <WsDemoTag note="全流程已接后端 style-reference v2：导入/抽取/审核/画像/注入/回测/禁用词均为真实数据。标「演示」的内置样书仅用于预览界面形态，导入真实参考书后各页只显示这本书的真实产物（未抽取时给空态引导）。" />}</div>
               <h2 className="text-serif" style={{fontSize:18, margin:"4px 0 0"}}>参考书库</h2>
             </div>
             <button className="btn btn-accent btn-sm" onClick={() => window.srImportBook && window.srImportBook()}><I.Plus size={13} /></button>
@@ -408,7 +408,7 @@ function WsStyleRef({ go }) {
                 <button className={`sr-book ${bookId === b.id ? "is-active" : ""}`} onClick={() => setBookId(b.id)}>
                   <span className={`sr-book-spine spine-${b.color}`} />
                   <span className="sr-book-body">
-                    <span className="sr-book-title text-serif">{b.title}</span>
+                    <span className="sr-book-title text-serif">{b.title}{!b.real && <span className="sr-book-demo">演示</span>}</span>
                     <span className="sr-book-author">{b.author} · {(b.chars/10000).toFixed(1)} 万字</span>
                     <span className="sr-book-run">{b.run}</span>
                   </span>
@@ -523,15 +523,20 @@ function SrBookState({ s }) {
 function SrOverview({ book, go }) {
   const deep = useSrDeep(book);
   const stats = srStatsOf(deep);
+  /* 真实书绝不回退演示数据:缺数据显示空态,避免把演示书的鲁迅统计当成这本书的 */
+  const isRealBook = !!(book && book.real);
   const realMetricsArr = stats ? srRealMetrics(stats) : [];
-  const metrics = realMetricsArr.length ? realMetricsArr : SR_METRICS;
+  const metrics = realMetricsArr.length ? realMetricsArr : (isRealBook ? [] : SR_METRICS);
   const realInput = stats && stats.input_assessment;
-  const inputRows = SR_LAYERS.map(l => ({ id: l.id, name: l.name, level: (realInput && realInput[l.id]) || l.input }));
+  const inputRows = SR_LAYERS.map(l => ({ id: l.id, name: l.name, level: (realInput && realInput[l.id]) || (isRealBook ? "low" : l.input) }));
   const realDistArr = stats ? srRealParaDist(stats) : [];
-  const dist = realDistArr.length ? realDistArr : SR_PARA_DIST;
+  const dist = realDistArr.length ? realDistArr : (isRealBook ? [] : SR_PARA_DIST);
   const distMax = Math.max(...dist.map(d => d.v), 0.01);
   const calib = (stats && stats.classifier_calibration) || null;
   const isReal = !!stats;
+  const dimCovered = deep && deep.dimCounts ? Object.keys(deep.dimCounts).length : 0;
+  const runStatus = deep && deep.run ? deep.run.status : null;
+  const runProgress = (deep && deep.run && deep.run.coverage_json && deep.run.coverage_json.progress) || null;
 
   return (
     <div className="sr-overview">
@@ -553,6 +558,9 @@ function SrOverview({ book, go }) {
               </div>
             ))}
           </div>
+          {metrics.length === 0 && (
+            <div className="text-xs text-muted" style={{padding:"10px 2px"}}>统计基线加载中——若长时间为空，重进本页或重新导入。</div>
+          )}
         </div>
 
         <div className="card">
@@ -590,28 +598,54 @@ function SrOverview({ book, go }) {
               <span className="sr-dist-val tab-num">{(d.v*100).toFixed(0)}%</span>
             </div>
           ))}
+          {dist.length === 0 && (
+            <div className="text-xs text-muted" style={{padding:"6px 2px"}}>暂无段型分布——导入后自动分类，启用 LLM 后可在右上「重新分类」提升精度。</div>
+          )}
         </div>
       </div>
 
-      <div className="sr-ov-grid">
-        <div className="card">
-          <div className="card-head"><div><div className="card-title">抽取进度趋势</div><div className="card-sub">近 14 次 run 的 sub-dim 覆盖增长</div></div>
-            <span className="pill pill-sage"><span className="pill-dot" />16/16 已覆盖</span>
+      {/* 演示书:趋势/重试链示意图。真实书:最近一次抽取 run 的真实进展。 */}
+      {!isRealBook ? (
+        <div className="sr-ov-grid">
+          <div className="card">
+            <div className="card-head"><div><div className="card-title">抽取进度趋势（示意）</div><div className="card-sub">近 14 次 run 的 sub-dim 覆盖增长</div></div>
+              <span className="pill pill-sage"><span className="pill-dot" />16/16 已覆盖</span>
+            </div>
+            <SrTrendChart data={SR_TREND} />
           </div>
-          <SrTrendChart data={SR_TREND} />
-        </div>
 
-        <div className="card">
-          <div className="card-head"><div><div className="card-title">Evidence 重试链</div><div className="card-sub">两级重试 · 成本审计</div></div></div>
-          <ul className="sr-retry">
-            <li><span className="sr-retry-dot ok" /><span className="flex-1">初次抽取通过</span><b className="tab-num">47</b></li>
-            <li><span className="sr-retry-dot l1" /><span className="flex-1">第一级定向补抽</span><b className="tab-num">9</b></li>
-            <li><span className="sr-retry-dot l2" /><span className="flex-1">第二级整维重抽</span><b className="tab-num">2</b></li>
-            <li><span className="sr-retry-dot drop" /><span className="flex-1">证据不足丢弃</span><b className="tab-num">1</b></li>
-          </ul>
-          <p className="text-xs text-muted mt-3">补抽成本 ≤ 完整抽取 30% · 全部 finding 强制 ≥2 证据。</p>
+          <div className="card">
+            <div className="card-head"><div><div className="card-title">Evidence 重试链（示意）</div><div className="card-sub">两级重试 · 成本审计</div></div></div>
+            <ul className="sr-retry">
+              <li><span className="sr-retry-dot ok" /><span className="flex-1">初次抽取通过</span><b className="tab-num">47</b></li>
+              <li><span className="sr-retry-dot l1" /><span className="flex-1">第一级定向补抽</span><b className="tab-num">9</b></li>
+              <li><span className="sr-retry-dot l2" /><span className="flex-1">第二级整维重抽</span><b className="tab-num">2</b></li>
+              <li><span className="sr-retry-dot drop" /><span className="flex-1">证据不足丢弃</span><b className="tab-num">1</b></li>
+            </ul>
+            <p className="text-xs text-muted mt-3">补抽成本 ≤ 完整抽取 30% · 全部 finding 强制 ≥2 证据。</p>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="card">
+          <div className="card-head">
+            <div><div className="card-title">抽取进展</div><div className="card-sub">最近一次抽取 run</div></div>
+            <span className={`pill ${runStatus === "done" ? "pill-sage" : runStatus === "running" ? "pill-gold" : ""}`}>
+              <span className="pill-dot" />
+              {runStatus === "done" ? "抽取完成" : runStatus === "running" ? "抽取中" : runStatus === "failed" ? "抽取失败" : "尚未抽取"}
+            </span>
+          </div>
+          {runStatus ? (
+            <ul className="meta-rows">
+              <li><span>覆盖维度</span><strong className="tab-num">{dimCovered} / 16</strong></li>
+              {runProgress && <li><span>层进度</span><strong className="tab-num">{runProgress.layers_done ?? 0} / {runProgress.layers_total ?? 4}{runProgress.current_layer ? ` · ${runProgress.current_layer}` : ""}</strong></li>}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted" style={{margin:0}}>
+              这本书还没有抽取记录——点右上「重跑抽取」启动后台抽取（需启用 LLM），完成后「维度矩阵」即显示真实 findings。
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -651,16 +685,23 @@ function srAdaptFinding(f) {
 
 function SrMatrix({ go, book }) {
   const deep = useSrDeep(book);
+  const isRealBook = !!(book && book.real);
   const realInput = (deep && deep.book && deep.book.stats_json && deep.book.stats_json.input_assessment) || null;
   const realMode = !!(deep && deep.runId && deep.dimCounts && Object.keys(deep.dimCounts).length > 0);
+  /* 真实书但尚无抽取产物:显示真实空态(全 0 + 引导),绝不回退鲁迅演示 findings */
+  const realEmpty = isRealBook && !realMode;
   const [cell, setCell] = useStSR("language.sentence_structure");
   const [kindFilter, setKindFilter] = useStSR("all");
   const [hover, setHover] = useStSR(null);
   const [synthBusy, setSynthBusy] = useStSR(false);
 
-  // 有效单元数据：真模式叠加 dimCounts + input_assessment(skip)，否则用 SR_LAYERS 演示值
+  // 有效单元数据：真模式叠加 dimCounts + input_assessment(skip)，演示书用 SR_LAYERS 演示值
   const cellData = (layerId, sub) => {
     const path = `${layerId}.${sub.id}`;
+    if (realEmpty) {
+      const skip = !!(realInput && realInput[layerId] === "skip");
+      return { path, name: sub.name, conf: skip ? "skip" : "low", obs: 0, fp: 0, q: 0, skip };
+    }
     if (!realMode) return { path, name: sub.name, conf: sub.conf, obs: sub.obs, fp: sub.fp, q: sub.q, skip: sub.conf === "skip" };
     if (realInput && realInput[layerId] === "skip") return { path, name: sub.name, conf: "skip", obs: 0, fp: 0, q: 0, skip: true };
     const dc = deep.dimCounts[path];
@@ -669,11 +710,11 @@ function SrMatrix({ go, book }) {
   };
   const cellsByLayer = SR_LAYERS.map(l => ({ layer: l, cells: l.subs.map(s => cellData(l.id, s)) }));
 
-  // 抽屉 findings：真模式取 deep.findingsByDim[cell] 适配，否则 SR_FINDINGS
+  // 抽屉 findings：真模式取 deep.findingsByDim[cell] 适配；真实书未抽取 → null(空态)；演示书 → SR_FINDINGS
   const realGroup = realMode ? deep.findingsByDim[cell] : null;
   const findings = realMode
     ? (realGroup ? { observations: realGroup.observations.map(srAdaptFinding), forbidden_patterns: realGroup.forbidden_patterns.map(srAdaptFinding) } : null)
-    : SR_FINDINGS[cell];
+    : (realEmpty ? null : SR_FINDINGS[cell]);
   const onReviewFinding = realMode
     ? (findingId, decision) => { if (window.srReviewFinding) window.srReviewFinding(findingId, decision, book.id).catch(() => {}); }
     : null;
@@ -715,10 +756,11 @@ function SrMatrix({ go, book }) {
 
   const totals = realMode
     ? Object.values(deep.dimCounts).reduce((a, d) => ({ obs: a.obs + d.obs, fp: a.fp + d.fp, q: a.q + d.q }), { obs: 0, fp: 0, q: 0 })
-    : { obs: 52, fp: 14, q: 140 };
+    : (realEmpty ? { obs: 0, fp: 0, q: 0 } : { obs: 52, fp: 14, q: 140 });
   const hasProfile = !!(deep && deep.profileId);
 
   const onSynth = async () => {
+    if (realEmpty) return;
     if (!realMode || !deep.runId || hasProfile) { go && go("profile"); return; }
     if (synthBusy) return;
     setSynthBusy(true);
@@ -743,6 +785,12 @@ function SrMatrix({ go, book }) {
         @keyframes srDrawerIn { from { transform: translateX(12px); } to { transform: none; } }
       `}</style>
       <div className="sr-matrix-side">
+        {realEmpty && (
+          <div className="sr-fewshot-warn" style={{marginBottom: 12}}>
+            <I.Info size={13} />
+            <span>这本书还没有抽取产物——点右上「重跑抽取」启动后台抽取（需启用 LLM）。完成后此矩阵按真实 findings 点亮。</span>
+          </div>
+        )}
         <div className="sr-matrix-legend">
           <span className="text-xs text-muted">置信度</span>
           <span className="sr-lg sr-lg-high">高</span>
@@ -788,8 +836,8 @@ function SrMatrix({ go, book }) {
                             <span className={`conf-dot conf-${c.conf}`} />
                             {confLabel} · {c.obs} 观察 / {c.q} 引文 / {c.fp} 禁忌
                           </span>
-                          {!realMode && tip && <span className="sr-cell-tip-metric">{tip.metric}</span>}
-                          {!realMode && tip && <span className="sr-cell-tip-quote">「{tip.sample}」</span>}
+                          {!realMode && !realEmpty && tip && <span className="sr-cell-tip-metric">{tip.metric}</span>}
+                          {!realMode && !realEmpty && tip && <span className="sr-cell-tip-quote">「{tip.sample}」</span>}
                           <span className="sr-cell-tip-hint">点击查看全部证据 →</span>
                         </span>
                       )}
@@ -806,7 +854,7 @@ function SrMatrix({ go, book }) {
           <div className="sr-matrix-foot-stat"><b className="tab-num">{totals.fp}</b> 禁忌模式</div>
           <div className="sr-matrix-foot-stat"><b className="tab-num">{totals.q}</b> 引文样本</div>
           <div className="flex-1" />
-          <button className="btn btn-accent btn-sm" disabled={synthBusy} onClick={onSynth}>
+          <button className="btn btn-accent btn-sm" disabled={synthBusy || realEmpty} title={realEmpty ? "先完成抽取再合成画像" : undefined} onClick={onSynth}>
             {synthBusy ? <><span className="sr-spin" style={{display:"inline-flex"}}><I.Refresh size={13} /></span> 合成中…</>
               : <><I.Sparkles size={13} /> {hasProfile ? "查看风格画像" : "合成风格画像"}</>}
           </button>
@@ -841,7 +889,10 @@ function SrMatrix({ go, book }) {
           {!findings && (
             <div className="empty-state" style={{padding: 30}}>
               <I.Quote size={24} />
-              <div className="mt-2 text-muted text-sm">{realMode ? "该维度暂无 finding（语料不足或尚未抽出）。" : "该维度暂无展开数据"}</div>
+              <div className="mt-2 text-muted text-sm">
+                {realEmpty ? "尚未抽取——启动「重跑抽取」后，这里显示该维度的真实观察与证据。"
+                  : realMode ? "该维度暂无 finding（语料不足或尚未抽出）。" : "该维度暂无展开数据"}
+              </div>
             </div>
           )}
           {findings && (kindFilter === "all" || kindFilter === "obs") && findings.observations.map(o => (
@@ -920,9 +971,22 @@ function FindingCard({ kind, finding, onReview, onVote }) {
 }
 
 /* ============ Stage: Profile ============ */
+/* 真实书缺产物时的空态引导(矩阵/画像/回测/注入共用形态) */
+function SrRealEmpty({ title, sub, actionLabel, onAction }) {
+  return (
+    <div className="card" style={{padding: "44px 24px", textAlign: "center"}}>
+      <I.Sparkles size={26} style={{color: "var(--ink-3)"}} />
+      <h3 className="text-serif" style={{fontSize: 17, margin: "10px 0 6px"}}>{title}</h3>
+      <p className="text-muted text-sm" style={{margin: "0 auto 16px", maxWidth: 420, lineHeight: 1.7}}>{sub}</p>
+      {actionLabel && <button className="btn btn-accent btn-sm" onClick={onAction}>{actionLabel}</button>}
+    </div>
+  );
+}
+
 function SrProfile({ book, go }) {
   const [tab, setTab] = useStSR("summary");
   const deep = useSrDeep(book);
+  const isRealBook = !!(book && book.real);
   const profile = deep && deep.profile;
   const pj = (profile && profile.profile_json) || null;
   const real = !!pj;
@@ -936,6 +1000,21 @@ function SrProfile({ book, go }) {
   const features = (pj && pj.style_features) || [];
   const demoDimRows = SR_LAYERS.filter(l => l.input !== "skip").flatMap(l => l.subs.filter(s => s.conf !== "skip").map(s => ({ path: `${l.id}.${s.id}`, abbr: l.abbr, name: s.name, conf: s.conf, obs: s.obs, fp: s.fp, q: s.q })));
   const dimRows = realDimRows || demoDimRows;
+
+  /* 真实书还没有画像:显示真实空态,不再把演示画像(冷峻克制白描…)当成这本书的 */
+  if (isRealBook && !real) {
+    const hasRun = !!(deep && deep.runId);
+    return (
+      <SrRealEmpty
+        title="还没有风格画像"
+        sub={hasRun
+          ? "抽取已有产物——回「维度矩阵」点「合成风格画像」聚合 16 维 findings（需启用 LLM）。"
+          : "先在「维度矩阵」启动抽取，完成后再合成风格画像。"}
+        actionLabel="去维度矩阵"
+        onAction={() => go && go("matrix")}
+      />
+    );
+  }
 
   return (
     <div className="sr-profile">
@@ -1180,6 +1259,7 @@ function SrApply({ go, book }) {
   /* ---- 真注入预览（dryrun，不写盘，debounce 350ms）---- */
   const [preview, setPreview] = useStSR(null);
   const [previewErr, setPreviewErr] = useStSR(null);
+  const [previewNonce, setPreviewNonce] = useStSR(0); // 禁用词增删后强制刷新预览
   const previewTimer = React.useRef(null);
   React.useEffect(() => {
     if (!realMode) { setPreview(null); setPreviewErr(null); return; }
@@ -1193,10 +1273,88 @@ function SrApply({ go, book }) {
         .catch(e => { setPreview(null); setPreviewErr((e && e.message) || "注入预览失败"); });
     }, 350);
     return () => clearTimeout(previewTimer.current);
-  }, [realMode, realProfileId, strategy, taskType, intensity, selectedDims]);
+  }, [realMode, realProfileId, strategy, taskType, intensity, selectedDims, previewNonce]);
+
+  /* ---- 禁用词（真模式接 profile 级后端;演示书保留本地演示列表）---- */
+  const [realBanned, setRealBanned] = useStSR(null);
+  const [bannedBusy, setBannedBusy] = useStSR(false);
+  const loadRealBanned = React.useCallback(async () => {
+    if (!realProfileId) return;
+    try {
+      const { apiGet } = await import("./lib/client.js");
+      const r = await apiGet(`/api/v2/style-reference/profiles/${realProfileId}/banned-terms`);
+      setRealBanned((r && r.terms) || []);
+    } catch { setRealBanned([]); }
+  }, [realProfileId]);
+  React.useEffect(() => { if (realMode) loadRealBanned(); else setRealBanned(null); }, [realMode, loadRealBanned]);
+  const addBannedReal = async () => {
+    const t = bannedInput.trim();
+    if (!t || bannedBusy || !realProfileId) return;
+    setBannedBusy(true);
+    try {
+      const { apiPost } = await import("./lib/client.js");
+      await apiPost(`/api/v2/style-reference/profiles/${realProfileId}/banned-terms`, { term: t, scope: bannedScope });
+      setBannedInput("");
+      await loadRealBanned();
+      setPreviewNonce(n => n + 1); // generation 词进红线段,预览需刷新
+    } catch (e) { window.alert("添加禁用词失败：" + ((e && e.message) || e)); }
+    finally { setBannedBusy(false); }
+  };
+  const removeBannedReal = async (termId) => {
+    if (bannedBusy) return;
+    setBannedBusy(true);
+    try {
+      const { apiDelete } = await import("./lib/client.js");
+      await apiDelete(`/api/v2/style-reference/banned-terms/${termId}`);
+      await loadRealBanned();
+      setPreviewNonce(n => n + 1);
+    } catch (e) { window.alert("删除禁用词失败：" + ((e && e.message) || e)); }
+    finally { setBannedBusy(false); }
+  };
+
+  /* ---- 任务默认表（真源 /injection/task-defaults：默认策略 + 续写刷新周期；失败回退静态值）---- */
+  const [taskDefaults, setTaskDefaults] = useStSR(null);
+  React.useEffect(() => {
+    if (!realMode) { setTaskDefaults(null); return; }
+    let alive = true;
+    (async () => {
+      try {
+        const { apiGet } = await import("./lib/client.js");
+        const r = await apiGet("/api/v2/style-reference/injection/task-defaults");
+        if (alive) setTaskDefaults((r && r.tasks) || null);
+      } catch { /* 静态默认兜底 */ }
+    })();
+    return () => { alive = false; };
+  }, [realMode]);
+  const tasks = SR_TASKS.map(t => {
+    const d = (taskDefaults || []).find(x => x.task_type === t.id);
+    return d ? { ...t, def: d.default_strategy, refresh: d.refresh_every_chars } : t;
+  });
+
+  /* ---- 叠加注入层（真源 /injection/layers：resolve_binding_layers 命中层 + 预算分配）
+       上下文带本画像已绑定的场景/角色 id，使 scene/character 层能在预览中亮起 ---- */
+  const [layerStack, setLayerStack] = useStSR(null);
+  const [layerErr, setLayerErr] = useStSR(null);
+  React.useEffect(() => {
+    if (!realMode || sub !== "layers" || !activeProjId) { setLayerStack(null); setLayerErr(null); return; }
+    let alive = true;
+    (async () => {
+      try {
+        const { apiGet } = await import("./lib/client.js");
+        const qs = new URLSearchParams({ project_id: activeProjId, task_type: taskType });
+        const sceneB = realBindings.find(b => b.scope === "scene" && b.scope_ref_id);
+        if (sceneB) qs.set("scene_id", sceneB.scope_ref_id);
+        const charRefs = realBindings.filter(b => b.scope === "character" && b.scope_ref_id).map(b => b.scope_ref_id);
+        if (charRefs.length) qs.set("character_ids", charRefs.join(","));
+        const r = await apiGet(`/api/v2/style-reference/injection/layers?${qs.toString()}`);
+        if (alive) { setLayerStack(r); setLayerErr(null); }
+      } catch (e) { if (alive) { setLayerStack(null); setLayerErr((e && e.message) || "叠层加载失败"); } }
+    })();
+    return () => { alive = false; };
+  }, [realMode, sub, activeProjId, taskType, realBindings.length]);
 
   const toggleDim = (path) => setSelectedDims(prev => prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]);
-  const task = SR_TASKS.find(t => t.id === taskType) || SR_TASKS[1];
+  const task = tasks.find(t => t.id === taskType) || tasks[1];
   const obsCount = Math.round((intensity / 100) * 6 * (selectedDims.length / 12));
   const totalTokens = SR_LAYER_STACK.reduce((s, l) => s + l.tokens, 0);
 
@@ -1207,6 +1365,18 @@ function SrApply({ go, book }) {
     setBannedInput("");
   };
 
+  /* 真实书还没有画像:注入应用无对象,给真实空态引导(演示书保留完整演示流程) */
+  if (isRealBook && !realMode) {
+    return (
+      <SrRealEmpty
+        title="还没有可应用的画像"
+        sub="注入应用消费「风格画像」——先在「维度矩阵」完成抽取并合成画像，回到这里即可配置策略/强度并应用到项目、场景或角色。"
+        actionLabel="去维度矩阵"
+        onAction={() => go && go("matrix")}
+      />
+    );
+  }
+
   return (
     <div className="sr-apply">
       <div className="sr-apply-main">
@@ -1214,7 +1384,7 @@ function SrApply({ go, book }) {
           <button className={`sr-ast ${sub==="strategy"?"is-active":""}`} onClick={()=>setSub("strategy")}><I.Sliders size={13} /> 策略与维度</button>
           <button className={`sr-ast ${sub==="layers"?"is-active":""}`} onClick={()=>setSub("layers")}><I.Layers size={13} /> 叠加层</button>
           <button className={`sr-ast ${sub==="fewshot"?"is-active":""}`} onClick={()=>setSub("fewshot")}><I.Quote size={13} /> Few-shot</button>
-          <button className={`sr-ast ${sub==="banned"?"is-active":""}`} onClick={()=>setSub("banned")}><I.Ban size={13} /> 禁用词 <span className="sr-ast-count">{banned.length}</span></button>
+          <button className={`sr-ast ${sub==="banned"?"is-active":""}`} onClick={()=>setSub("banned")}><I.Ban size={13} /> 禁用词 <span className="sr-ast-count">{realMode ? (realBanned || []).length : banned.length}</span></button>
         </nav>
 
         {sub === "strategy" && (
@@ -1222,7 +1392,7 @@ function SrApply({ go, book }) {
             <div className="card">
               <div className="card-head"><div><div className="card-title">注入策略</div><div className="card-sub">按任务类型选择 A / B / C / 混合，TaskType 自带默认</div></div></div>
               <div className="sr-task-row">
-                {SR_TASKS.map(t => (
+                {tasks.map(t => (
                   <button key={t.id} className={`sr-task ${taskType === t.id ? "is-active" : ""}`} onClick={() => { setTaskType(t.id); setStrategy(t.def); }}>
                     <span className="sr-task-name">{t.name}</span>
                     <span className="sr-task-def">默认 {t.def}{t.refresh > 0 ? ` · 每${t.refresh}字刷新` : ""}</span>
@@ -1282,7 +1452,9 @@ function SrApply({ go, book }) {
           </>
         )}
 
-        {sub === "layers" && (
+        {sub === "layers" && (realMode ? (
+          <SrLayersReal stack={layerStack} err={layerErr} />
+        ) : (
           <div className="card">
             <div className="card-head">
               <div><div className="card-title">叠加注入层</div><div className="card-sub">由泛到具体加权全叠：scene &gt; character &gt; project &gt; global，越具体预算越大</div></div>
@@ -1317,57 +1489,106 @@ function SrApply({ go, book }) {
               <span>合并规则：base + 最具体增量逐层叠加；forbidden 行级去重；同一 metric 取最具体层；token 按 <b>weights=range(1,n+1)</b> 加权分配（scene 最大）。qc gate 单选时走 <code>resolve_active_binding</code> 透明返回合并后的单一 fragments。</span>
             </div>
           </div>
-        )}
+        ))}
 
         {sub === "fewshot" && (
           <div className="card">
             <div className="card-head">
-              <div><div className="card-title">Few-shot 示例（策略 B）</div><div className="card-sub">从 profile.scene_samples_index 按段类型 O(1) 直读，不绕段落表</div></div>
-              <span className="pill pill-gold"><span className="pill-dot" />k = 5</span>
+              <div><div className="card-title">Few-shot 示例（策略 B / 混合）</div><div className="card-sub">从 profile.scene_samples_index 按段类型 O(1) 直读，不绕段落表</div></div>
+              {!realMode && <span className="pill pill-gold"><span className="pill-dot" />k = 5</span>}
             </div>
             {strategy === "A" && (
               <div className="sr-fewshot-warn"><I.Info size={13} /><span>当前策略为 A（System Prompt），不注入 few-shot。切到 B 或 混合 以启用示例。</span></div>
             )}
-            <div className="sr-fewshot-list">
-              {Object.entries(SR_FEWSHOT).map(([k, v]) => (
-                <div key={k} className="sr-fewshot-item">
-                  <div className="sr-fewshot-meta">
-                    <span className="pill text-xs"><span className="pill-dot" />{v.note}</span>
-                    <span className="sr-fewshot-id">{v.id}</span>
+            {strategy === "C" && (
+              <div className="sr-fewshot-warn"><I.Info size={13} /><span>当前策略为 C（RAG），示例由三粒度向量召回提供（rag_block），不走 few-shot 直读。</span></div>
+            )}
+            {realMode ? (
+              (() => {
+                const fs = String((preview && preview.fragments && preview.fragments.few_shot_block) || "").trim();
+                if (!fs) {
+                  return (strategy === "B" || strategy === "mixed")
+                    ? <div className="text-xs text-muted" style={{padding:"8px 2px"}}>该画像暂无可注入样例——样例索引为空（重跑抽取后重新合成画像可补齐）。</div>
+                    : <div className="text-xs text-muted" style={{padding:"8px 2px"}}>切到 B 或 混合 策略后，这里显示实际注入的样例引文。</div>;
+                }
+                const lines = fs.split("\n").filter(l => l.trim());
+                return (
+                  <div className="sr-fewshot-list">
+                    {lines.map((l, i) => (
+                      i === 0
+                        ? <p key={i} className="text-xs text-muted" style={{margin:"0 0 4px"}}>{l}</p>
+                        : <div key={i} className="sr-fewshot-item"><p className="sr-fewshot-text text-serif" style={{margin:0}}>{l.replace(/^-\s*/, "")}</p></div>
+                    ))}
                   </div>
-                  <p className="sr-fewshot-text text-serif">{v.text}</p>
+                );
+              })()
+            ) : (
+              <>
+                <div className="sr-fewshot-list">
+                  {Object.entries(SR_FEWSHOT).map(([k, v]) => (
+                    <div key={k} className="sr-fewshot-item">
+                      <div className="sr-fewshot-meta">
+                        <span className="pill text-xs"><span className="pill-dot" />{v.note}</span>
+                        <span className="sr-fewshot-id">{v.id}</span>
+                      </div>
+                      <p className="sr-fewshot-text text-serif">{v.text}</p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <p className="text-xs text-muted mt-3">每 sub-dim 索引：对话 10 · 动作 6 · 心理 8 · 环境 14（见画像页样例索引）。</p>
+                <p className="text-xs text-muted mt-3">每 sub-dim 索引：对话 10 · 动作 6 · 心理 8 · 环境 14（见画像页样例索引）。</p>
+              </>
+            )}
           </div>
         )}
 
         {sub === "banned" && (
           <div className="card">
             <div className="card-head">
-              <div><div className="card-title">禁用词编辑</div><div className="card-sub">generation = 生成时禁用 · extraction = 抽取时跳过含此词的段落</div></div>
+              <div><div className="card-title">禁用词编辑</div><div className="card-sub">generation = 生成红线段禁用 · extraction = 重跑抽取时跳过含此词的段落</div></div>
+              {realMode && <span className="pill pill-sage text-xs"><span className="pill-dot" />画像级 · 已接后端</span>}
             </div>
             <div className="sr-banned-add">
-              <input className="input" placeholder="添加禁用词…" value={bannedInput}
-                onChange={e=>setBannedInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addBanned()} />
+              <input className="input" placeholder="添加禁用词…" value={bannedInput} disabled={bannedBusy}
+                onChange={e=>setBannedInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(realMode ? addBannedReal() : addBanned())} />
               <div className="seg">
                 <button className={`seg-btn ${bannedScope==="generation"?"is-active":""}`} onClick={()=>setBannedScope("generation")}>generation</button>
                 <button className={`seg-btn ${bannedScope==="extraction"?"is-active":""}`} onClick={()=>setBannedScope("extraction")}>extraction</button>
               </div>
-              <button className="btn btn-primary btn-sm" onClick={addBanned}><I.Plus size={13} /> 添加</button>
+              <button className="btn btn-primary btn-sm" disabled={bannedBusy} onClick={() => (realMode ? addBannedReal() : addBanned())}><I.Plus size={13} /> 添加</button>
             </div>
-            <ul className="sr-banned-list">
-              {banned.map((b, i) => (
-                <li key={i} className="sr-banned-item">
-                  <span className={`sr-banned-scope sc-${b.scope}`}>{b.scope === "generation" ? "生成" : "抽取"}</span>
-                  <span className="sr-banned-term text-serif">{b.term}</span>
-                  {b.hint && <span className="sr-banned-hint">→ {b.hint}</span>}
-                  {b.source === "preset" && <span className="sr-banned-preset">预置</span>}
-                  <button className="btn btn-quiet btn-sm" onClick={()=>setBanned(prev=>prev.filter((_,j)=>j!==i))}><I.X size={13} /></button>
-                </li>
-              ))}
-            </ul>
+            {realMode ? (
+              <>
+                <ul className="sr-banned-list">
+                  {(realBanned || []).map((b) => (
+                    <li key={b.term_id} className="sr-banned-item">
+                      <span className={`sr-banned-scope sc-${b.scope}`}>{b.scope === "generation" ? "生成" : "抽取"}</span>
+                      <span className="sr-banned-term text-serif">{b.term}</span>
+                      {b.replacement_hint && <span className="sr-banned-hint">→ {b.replacement_hint}</span>}
+                      {b.source === "preset" && <span className="sr-banned-preset">预置</span>}
+                      {b.source !== "preset" && (
+                        <button className="btn btn-quiet btn-sm" disabled={bannedBusy} onClick={()=>removeBannedReal(b.term_id)}><I.X size={13} /></button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {realBanned && realBanned.length === 0 && (
+                  <p className="text-xs text-muted" style={{padding:"6px 2px"}}>暂无禁用词。generation 词会立即进入右侧红线段；extraction 词在下次重跑抽取时过滤段落。</p>
+                )}
+                {!realBanned && <p className="text-xs text-muted" style={{padding:"6px 2px"}}>加载中…</p>}
+              </>
+            ) : (
+              <ul className="sr-banned-list">
+                {banned.map((b, i) => (
+                  <li key={i} className="sr-banned-item">
+                    <span className={`sr-banned-scope sc-${b.scope}`}>{b.scope === "generation" ? "生成" : "抽取"}</span>
+                    <span className="sr-banned-term text-serif">{b.term}</span>
+                    {b.hint && <span className="sr-banned-hint">→ {b.hint}</span>}
+                    {b.source === "preset" && <span className="sr-banned-preset">预置</span>}
+                    <button className="btn btn-quiet btn-sm" onClick={()=>setBanned(prev=>prev.filter((_,j)=>j!==i))}><I.X size={13} /></button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>
@@ -1546,6 +1767,74 @@ function SrApply({ go, book }) {
   );
 }
 
+/* 叠加注入层 — 真数据渲染（GET /injection/layers：命中层 + 权重/预算 + 合并概要） */
+const SR_SCOPE_TONE = { scene: "sage", character: "gold", project: "crimson", global: "slate" };
+const SR_SCOPE_LABEL = { scene: "场景层", character: "角色层", project: "项目层", global: "全局基底" };
+
+function SrLayersReal({ stack, err }) {
+  if (err) {
+    return <div className="card"><div className="sr-fewshot-warn"><I.Info size={13} /><span>叠加注入层：{err}</span></div></div>;
+  }
+  if (!stack) {
+    return <div className="card"><div className="text-xs text-muted" style={{padding:"10px 2px"}}>正在解析当前项目的注入叠层…</div></div>;
+  }
+  const layers = stack.layers || [];
+  const total = stack.budget_total || 800;
+  const merged = stack.merged;
+  if (layers.length === 0) {
+    return (
+      <div className="card" style={{padding: "32px 20px", textAlign: "center"}}>
+        <I.Layers size={24} style={{color: "var(--ink-3)"}} />
+        <div className="mt-2 text-muted text-sm">当前项目没有已批准的激活绑定——先在「策略与维度」应用画像并在收件箱批准，这里会显示真实的注入叠层。</div>
+      </div>
+    );
+  }
+  const maxBudget = Math.max(...layers.map(l => l.budget_chars || 0), 1);
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div><div className="card-title">叠加注入层</div><div className="card-sub">由泛到具体加权全叠：scene &gt; character &gt; project &gt; global，越具体预算越大</div></div>
+        <span className="pill pill-sage"><span className="pill-dot" />{layers.length} 层 · 预算 {total} 字</span>
+      </div>
+
+      <div className="sr-stack">
+        {layers.map(l => {
+          const tone = SR_SCOPE_TONE[l.scope] || "slate";
+          return (
+            <div key={l.binding_id} className="sr-stack-layer">
+              <div className={`sr-stack-rank rank-${tone}`}>rank {l.rank}</div>
+              <div className="sr-stack-body">
+                <div className="sr-stack-top">
+                  <span className={`pill pill-${tone} text-xs`}><span className="pill-dot" />{SR_SCOPE_LABEL[l.scope] || l.scope}</span>
+                  <span className="sr-stack-target text-serif">{l.profile_title || l.profile_id}</span>
+                  <span className="text-xs text-muted">{l.scope_ref_id || "—"} · 策略 {l.strategy === "mixed" ? "A+B" : l.strategy}</span>
+                  <span className="sr-stack-frags">{l.fragment_count} fragments</span>
+                </div>
+                <div className="sr-stack-budget">
+                  <div className="sr-stack-budget-track">
+                    <div className={`sr-stack-budget-fill fill-${tone}`} style={{width: ((l.budget_chars || 0) / maxBudget * 100) + "%"}} />
+                  </div>
+                  <span className="sr-stack-weight">权重 ×{l.weight}</span>
+                  <span className="sr-stack-tokens tab-num">{l.budget_chars} 字</span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="sr-stack-note">
+        <I.Info size={13} />
+        <span>
+          {merged && merged.layer_count > 1
+            ? <>合并产物：{merged.layer_count} 层 → 单一 fragments（策略取最具体层 {merged.strategy === "mixed" ? "A+B" : merged.strategy}），最终注入前缀 <b className="tab-num">{merged.prefix_chars}</b> 字。forbidden 行级去重、metric 取最具体层、few-shot/RAG 不参与叠加。</>
+            : <>单层路径：strategy 全语义直出（不做叠加截断），最终注入前缀 <b className="tab-num">{merged ? merged.prefix_chars : 0}</b> 字。</>}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function StratCard({ id, cur, on, title, desc }) {
   return (
     <button className={`sr-strat ${cur === id ? "is-active" : ""}`} onClick={() => on(id)}>
@@ -1622,6 +1911,11 @@ const srCss = `
 .spine-slate { background: var(--slate); } .spine-sage { background: var(--sage); }
 .sr-book-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sr-book-title { font-size: 14.5px; font-weight: 600; }
+.sr-book-demo {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+  font-family: var(--font-sans); font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  background: var(--paper-3); color: var(--ink-4); vertical-align: 2px;
+}
 .sr-book-author { font-size: 12px; color: var(--ink-3); }
 .sr-book-run { font-size: 11px; color: var(--ink-4); margin-top: 2px; }
 .sr-book-item { position: relative; }

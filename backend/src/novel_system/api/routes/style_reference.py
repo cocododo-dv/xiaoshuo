@@ -13,6 +13,7 @@ from __future__ import annotations
 # `/inject` / `InjectionBundle` HTTP API in the current implementation.
 
 import logging
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -34,7 +35,10 @@ from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.run_orchestrator import RunOrchestrator
-from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.injection import (
+    InjectionService,
+    injection_task_defaults,
+)
 from novel_system.services.style_reference.metrics_aggregator import MetricsAggregator
 from novel_system.services.style_reference.schemas import (
     BindingScope,
@@ -96,6 +100,15 @@ class FindingFeedbackRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     vote: str  # up / down
+
+
+class BannedTermCreateRequest(BaseModel):
+    """禁用词登记:generation=生成期红线段填充;extraction=抽取期段落过滤。"""
+
+    model_config = ConfigDict(extra="forbid")
+    term: str
+    replacement_hint: str | None = None
+    scope: str = "generation"
 
 
 class ApplyProfileRequest(ApplyConfigMixin):
@@ -961,6 +974,138 @@ def delete_binding(
 
 
 # ---------------------------------------------------------------------------
+# Banned terms(禁用词:generation=注入红线段填充 / extraction=抽取段落过滤)
+# ---------------------------------------------------------------------------
+
+
+BANNED_TERM_SCOPES = ("generation", "extraction")
+
+
+def _serialize_banned_term(term) -> dict[str, Any]:
+    return {
+        "term_id": term.term_id,
+        "profile_id": term.profile_id,
+        "term": term.term,
+        "replacement_hint": term.replacement_hint,
+        "source": term.source,
+        "scope": term.scope,
+        "created_at": term.created_at,
+    }
+
+
+@router.get(f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms")
+def list_banned_terms(
+    profile_id: str,
+    request: Request,
+    scope: str | None = None,
+    session: Session = Depends(get_session),
+):
+    repo = StyleReferenceRepository(session)
+    if repo.get_profile(profile_id) is None:
+        raise DomainError(
+            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+            f"profile {profile_id!r} not found",
+            status_code=404,
+        )
+    terms = repo.list_banned_terms(profile_id, scope=scope)
+    return ok(
+        {"terms": [_serialize_banned_term(t) for t in terms]},
+        req_id=_req_id(request),
+    )
+
+
+@router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms")
+def create_banned_term(
+    profile_id: str,
+    payload: BannedTermCreateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    term_text = payload.term.strip()
+    scope = payload.scope.strip()
+
+    def _do() -> dict[str, Any]:
+        if not term_text:
+            raise DomainError(
+                "STYLE_REFERENCE_BANNED_TERM_INVALID",
+                "term must be non-empty",
+                status_code=400,
+            )
+        if scope not in BANNED_TERM_SCOPES:
+            raise DomainError(
+                "STYLE_REFERENCE_BANNED_TERM_INVALID",
+                f"scope must be one of {BANNED_TERM_SCOPES}",
+                status_code=400,
+            )
+        repo = StyleReferenceRepository(session)
+        if repo.get_profile(profile_id) is None:
+            raise DomainError(
+                "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+                f"profile {profile_id!r} not found",
+                status_code=404,
+            )
+        # (profile_id, term, scope) 唯一:重复创建返回既有行(幂等友好)
+        existing = repo.find_banned_term(profile_id, term_text, scope)
+        if existing is not None:
+            if payload.replacement_hint is not None:
+                existing.replacement_hint = payload.replacement_hint
+            return {"term": _serialize_banned_term(existing), "created": False}
+        row = repo.create_banned_term(
+            term_id=f"sr_term_{uuid.uuid4().hex[:12]}",
+            profile_id=profile_id,
+            term=term_text,
+            replacement_hint=payload.replacement_hint,
+            source="user",
+            scope=scope,
+        )
+        return {"term": _serialize_banned_term(row), "created": True}
+
+    return _with_idem(
+        session,
+        request,
+        method="POST",
+        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms",
+        payload={"profile_id": profile_id, "term": term_text, "scope": scope,
+                 "replacement_hint": payload.replacement_hint},
+        action=_do,
+    )
+
+
+@router.delete(f"{PATH_PREFIX}/banned-terms/{{term_id}}")
+def delete_banned_term(
+    term_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    def _do() -> dict[str, Any]:
+        repo = StyleReferenceRepository(session)
+        row = repo.get_banned_term(term_id)
+        if row is None:
+            raise DomainError(
+                "STYLE_REFERENCE_BANNED_TERM_NOT_FOUND",
+                f"banned term {term_id!r} not found",
+                status_code=404,
+            )
+        if row.source == "preset":
+            raise DomainError(
+                "STYLE_REFERENCE_BANNED_TERM_PROTECTED",
+                "preset banned terms cannot be deleted",
+                status_code=400,
+            )
+        repo.delete_banned_term(term_id)
+        return {"term_id": term_id, "deleted": True}
+
+    return _with_idem(
+        session,
+        request,
+        method="DELETE",
+        path_template=f"{PATH_PREFIX}/banned-terms/{{term_id}}",
+        payload={"term_id": term_id},
+        action=_do,
+    )
+
+
+# ---------------------------------------------------------------------------
 # PR-7 — Validation endpoints
 # ---------------------------------------------------------------------------
 
@@ -1153,6 +1298,37 @@ def dryrun_injection_preview(
         {"fragments": fragments.model_dump(), "prefix": fragments.to_system_prompt_prefix()},
         req_id=_req_id(request),
     )
+
+
+# ---------------------------------------------------------------------------
+# Injection 只读辅助:任务默认表 + 叠层预览(前端「注入应用」页数据源)
+# ---------------------------------------------------------------------------
+
+
+@router.get(f"{PATH_PREFIX}/injection/task-defaults")
+def get_injection_task_defaults(request: Request):
+    """TaskType → 默认策略 + 运行时刷新周期(refresh 真源:llm_node_registry)。"""
+    return ok({"tasks": injection_task_defaults()}, req_id=_req_id(request))
+
+
+@router.get(f"{PATH_PREFIX}/injection/layers")
+def get_injection_layers(
+    request: Request,
+    project_id: str | None = None,
+    task_type: str = "scene_generation",
+    scene_id: str | None = None,
+    character_ids: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """只读叠层预览:resolve_binding_layers 命中层 + 权重/预算分配 + 合并概要。
+
+    character_ids 逗号分隔(onstage 多角色)。无命中层时 layers=[]、merged=null。
+    """
+    chars = [c.strip() for c in (character_ids or "").split(",") if c.strip()] or None
+    data = InjectionService(session).describe_binding_layers(
+        project_id, task_type, character_ids=chars, scene_id=scene_id,
+    )
+    return ok(data, req_id=_req_id(request))
 
 
 # ---------------------------------------------------------------------------

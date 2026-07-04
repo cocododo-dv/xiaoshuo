@@ -348,6 +348,7 @@ class LLMNodeRunner:
             max_output_tokens=task_config.max_output_tokens,
             response_format=task_config.response_format,
             provider=task_config.provider,
+            timeout_seconds=getattr(task_config, "timeout_seconds", None),
             node_id=node_id,
             provider_id=getattr(task_config, "provider_id", None),
             account_id=getattr(task_config, "account_id", None),

@@ -165,8 +165,8 @@ window.SrValidation = function SrValidation({ book, go }) {
   const pollRef = React.useRef(null);
   React.useEffect(() => () => clearTimeout(pollRef.current), []);
 
-  // 演示模式：进入即展示演示报告；真模式：等用户运行
-  const demoMode = !realMode;
+  // 演示模式仅限演示书;真实书没画像时走空态引导(不再把演示报告当成这本书的)
+  const demoMode = !isReal;
   const showReport = demoMode || (done && !!report);
 
   const run = async () => {
@@ -220,6 +220,20 @@ window.SrValidation = function SrValidation({ book, go }) {
     if (worst) hints.push({ tone: "slate", label: "量化", text: `${worst.name} 实测 ${worst.pct ? (worst.actual * 100).toFixed(0) + "%" : (Math.round(worst.actual * 10) / 10)}，偏离目标 ${(worst.deviation || 0).toFixed(2)}×。` });
     return hints;
   })() : null;
+
+  /* 真实书但还没有画像:回测无对象,空态引导 */
+  if (isReal && !realMode) {
+    return (
+      <div className="card" style={{padding: "44px 24px", textAlign: "center"}}>
+        <I.Beaker size={26} style={{color: "var(--ink-3)"}} />
+        <h3 className="text-serif" style={{fontSize: 17, margin: "10px 0 6px"}}>还不能回测</h3>
+        <p className="text-muted text-sm" style={{margin: "0 auto 16px", maxWidth: 420, lineHeight: 1.7}}>
+          回测把生成文本对照「风格画像」做量化/语义/抄袭/禁忌校验——先在「维度矩阵」完成抽取并合成画像。
+        </p>
+        <button className="btn btn-accent btn-sm" onClick={() => go && go("matrix")}>去维度矩阵</button>
+      </div>
+    );
+  }
 
   return (
     <div className="srv">

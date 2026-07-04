@@ -114,6 +114,15 @@ class RunOrchestrator:
         ensure_cloud_llm_allowed(book, operation="start_extract_run")
         # 僵尸 run 回收:同书遗留的超时 RUNNING run 降级 FAILED
         self._reap_stale_runs(book_id)
+        # 并发守卫:同书已有活跃 run 时拒绝再启(两个后台线程并发抽同一本书
+        # 会互撞 SQLite 写锁,前端连点「重跑抽取」即触发)
+        active = self.repo.list_runs(book_id=book_id, status=RunStatus.RUNNING.value)
+        if active:
+            raise DomainError(
+                "STYLE_REFERENCE_RUN_ALREADY_ACTIVE",
+                f"这本书已有正在进行的抽取 run({active[0].run_id}),请等它完成或先取消",
+                status_code=409,
+            )
 
         layers = layers or [Layer.LANGUAGE, Layer.NARRATIVE, Layer.SCENE, Layer.THEME]
         unknown = [layer for layer in layers if layer not in _LAYER_EXTRACTOR_MAP]
@@ -204,6 +213,9 @@ class RunOrchestrator:
                     book_id=book_id,
                     retry_policy=self._retry_policy,
                     rng=self._rng,
+                    # 后台模式每 sub_dim commit:不让写事务跨分钟级 LLM 调用持锁
+                    # (否则并发 UI 写操作等满 busy_timeout 报 database is busy)
+                    checkpoint=(self.session.commit if progress_commits else None),
                 )
                 sub_dim_results.extend(extractor.extract_all_sub_dimensions())
         except Exception:

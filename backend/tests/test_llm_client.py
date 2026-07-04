@@ -142,9 +142,13 @@ def test_llm_client_generates_structured_json_from_chat_completions_api() -> Non
     assert response.finish_reason == "stop"
 
 
-def test_llm_client_responses_404_includes_protocol_hint() -> None:
+def test_llm_client_responses_404_degrades_to_chat_then_raises() -> None:
+    """连通性加固后:/responses 404 先自动降级重试 chat completions(不再一击即抛
+    协议提示);两个端点都 404 才最终抛错——此时多半是 base_url 配错。"""
+    calls: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "https://example.test/v1/responses"
+        calls.append(request.url.path)
         return httpx.Response(404, json={"detail": "Not Found"})
 
     client = LLMClient(
@@ -180,12 +184,8 @@ def test_llm_client_responses_404_includes_protocol_hint() -> None:
         )
 
     assert error.value.status_code == 404
-    assert "Responses API" in error.value.message
-    assert "chat" in error.value.message
-    assert error.value.details["endpoint"] == "/responses"
-    assert error.value.details["api_mode"] == "responses"
-    assert error.value.details["provider_id"] == "gcli2api"
-    assert error.value.details["next_action"] == "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider"
+    # 降级链:先 /responses,404 后自动改打 /chat/completions
+    assert calls == ["/v1/responses", "/v1/chat/completions"]
 
 
 def test_llm_client_retries_http_429_before_succeeding() -> None:

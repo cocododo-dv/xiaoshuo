@@ -499,6 +499,39 @@ class StyleReferenceRepository:
             stmt = stmt.where(StyleReferenceBannedTerm.scope == scope)
         return list(self.session.scalars(stmt).all())
 
+    def get_banned_term(self, term_id: str) -> StyleReferenceBannedTerm | None:
+        return self.session.get(StyleReferenceBannedTerm, term_id)
+
+    def find_banned_term(
+        self, profile_id: str, term: str, scope: str
+    ) -> StyleReferenceBannedTerm | None:
+        """按唯一约束 (profile_id, term, scope) 查重,用于幂等创建。"""
+        stmt = select(StyleReferenceBannedTerm).where(
+            StyleReferenceBannedTerm.profile_id == profile_id,
+            StyleReferenceBannedTerm.term == term,
+            StyleReferenceBannedTerm.scope == scope,
+        )
+        return self.session.scalars(stmt).first()
+
+    def list_banned_terms_for_book(
+        self,
+        book_id: str,
+        *,
+        scope: str | None = None,
+    ) -> list[StyleReferenceBannedTerm]:
+        """一本书全部 profile 的禁用词并集(extraction 域抽取过滤用)。"""
+        stmt = (
+            select(StyleReferenceBannedTerm)
+            .join(
+                StyleReferenceProfile,
+                StyleReferenceBannedTerm.profile_id == StyleReferenceProfile.profile_id,
+            )
+            .where(StyleReferenceProfile.book_id == book_id)
+        )
+        if scope is not None:
+            stmt = stmt.where(StyleReferenceBannedTerm.scope == scope)
+        return list(self.session.scalars(stmt).all())
+
     def delete_banned_term(self, term_id: str) -> int:
         result = self.session.execute(
             delete(StyleReferenceBannedTerm).where(StyleReferenceBannedTerm.term_id == term_id)

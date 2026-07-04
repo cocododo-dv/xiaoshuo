@@ -54,6 +54,10 @@ class LLMRequest:
     frequency_penalty: float | None = None   # 0.0–2.0; penalise repeated tokens
     presence_penalty: float | None = None    # 0.0–2.0; penalise topic repetition
     top_p: float | None = None               # nucleus sampling; None = provider default
+    # 结构化输出降级阶梯(LLMClient 连通性加固):False 时不向 provider 发送
+    # response_format 约束(部分中转/本地引擎连 json_object 模式都不支持),
+    # 客户端仍按 response_format=json_object 解析文本——prompt 本身要求输出 JSON。
+    wire_response_format: bool = True
 
 
 @dataclass(slots=True, frozen=True)

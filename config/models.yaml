@@ -78,24 +78,28 @@ task_routing:
     temperature: 0.15
     max_output_tokens: 3200
     response_format: json_object
+    timeout_seconds: 180
   style_ref_extract_narrative:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.15
     max_output_tokens: 3200
     response_format: json_object
+    timeout_seconds: 180
   style_ref_extract_scene:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.15
     max_output_tokens: 3200
     response_format: json_object
+    timeout_seconds: 180
   style_ref_extract_theme:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.15
     max_output_tokens: 3200
     response_format: json_object
+    timeout_seconds: 180
   style_ref_supplement_evidence:
     provider: openai_compatible
     model: gpt-5-mini
@@ -108,6 +112,7 @@ task_routing:
     temperature: 0.2
     max_output_tokens: 3500
     response_format: json_object
+    timeout_seconds: 180
   style_ref_preview_generate:
     provider: openai_compatible
     model: gpt-5-mini

@@ -14,6 +14,9 @@ from typing import Any
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
 from novel_system.services.prompt_builder import load_prompt_templates
 
+# 路由未显式配置 timeout_seconds 时 style_ref 节点的调用超时保底(秒)
+DEFAULT_TIMEOUT_SECONDS = 120.0
+
 
 class LLMNodeError(Exception):
     """LLM 调用 / 解析失败的统一异常。
@@ -34,7 +37,15 @@ def call_llm_node(node_id: str, payload: dict[str, Any], llm_client: Any) -> dic
     """
     try:
         routing = load_model_routing_config()
-        task_config = getattr(routing, "task_routing", {})[node_id]
+        # 与 llm_task_runner / segmentation.llm 同序:DB 节点路由(系统设置「模型与
+        # 接入」角色槽同步的 provider/model/api_mode)优先,config/models.yaml 的
+        # task 默认仅兜底。parse 层的合并是 setdefault(yaml 赢),只读 task_routing
+        # 会让用户配好的路由被 yaml 占位(gpt-5/responses)遮蔽 → chat-only 中转 404。
+        node_routing = getattr(routing, "node_routing", None)
+        if isinstance(node_routing, dict) and node_id in node_routing:
+            task_config = node_routing[node_id]
+        else:
+            task_config = getattr(routing, "task_routing", {})[node_id]
         template = load_prompt_templates()[node_id]
     except KeyError as exc:
         raise LLMNodeError(
@@ -53,6 +64,9 @@ def call_llm_node(node_id: str, payload: dict[str, Any], llm_client: Any) -> dic
         max_output_tokens=task_config.max_output_tokens,
         response_format=task_config.response_format,
         provider=task_config.provider,
+        # style_ref 节点吃长 prompt(20 段原文 + schema)+ 长输出,30s 全局默认在
+        # 慢速中转上容易 LLM_REQUEST_TIMEOUT;路由未显式配置时按 120s 保底
+        timeout_seconds=getattr(task_config, "timeout_seconds", None) or DEFAULT_TIMEOUT_SECONDS,
         node_id=node_id,
         provider_id=getattr(task_config, "provider_id", None),
         account_id=getattr(task_config, "account_id", None),

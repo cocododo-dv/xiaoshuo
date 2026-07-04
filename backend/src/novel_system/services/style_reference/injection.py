@@ -34,9 +34,41 @@ from novel_system.services.style_reference.repository import StyleReferenceRepos
 from novel_system.services.style_reference.schemas import (
     InjectionStrategy,
     SystemPromptFragments,
+    TaskType,
 )
 
 logger = logging.getLogger(__name__)
+
+# §5.1 TaskType → 默认注入策略表(设计手册规划的 strategy.py 落点)。绑定创建时
+# 未显式选 strategy 的推荐默认;前端「注入应用」任务卡片以此为数据源。
+DEFAULT_STRATEGY_BY_TASK: dict[TaskType, InjectionStrategy] = {
+    TaskType.PROJECT_INIT: InjectionStrategy.A,
+    TaskType.SCENE_GENERATION: InjectionStrategy.MIXED,
+    TaskType.FINE_TUNING: InjectionStrategy.B,
+    TaskType.LONG_FORM_CONTINUATION: InjectionStrategy.MIXED,
+    TaskType.KEY_CHAPTER: InjectionStrategy.C,
+}
+
+
+def injection_task_defaults() -> list[dict[str, Any]]:
+    """TaskType → 默认策略 + 运行时刷新周期(只读,前端任务卡片数据源)。
+
+    refresh_every_chars 的唯一运行时真源是 llm_node_registry 的
+    long_form_continuation 节点(scene_generation 按它分段重注入防漂移);
+    其余任务是一次性注入(0)。
+    """
+    from novel_system.services.llm_node_registry import get_llm_node_spec
+
+    spec = get_llm_node_spec("long_form_continuation")
+    refresh = int(getattr(spec, "refresh_every_chars", 0) or 0) if spec else 0
+    return [
+        {
+            "task_type": task.value,
+            "default_strategy": strategy.value,
+            "refresh_every_chars": refresh if task is TaskType.LONG_FORM_CONTINUATION else 0,
+        }
+        for task, strategy in DEFAULT_STRATEGY_BY_TASK.items()
+    ]
 
 # 预算单位是**字符数**（配置注释：汉字 ~1 字 = 1 token 的粗估），
 # 截断走 _truncate_lines(text, max_chars)——键名沿用 *_max_tokens 仅为配置兼容（审计 P-20）。
@@ -446,6 +478,69 @@ class InjectionService:
             layers.append(scene_b)
         return layers                     # 由泛到具体
 
+    def describe_binding_layers(
+        self,
+        project_id: str | None,
+        task_type: str,
+        *,
+        character_ids: list[str] | None = None,
+        scene_id: str | None = None,
+    ) -> dict[str, Any]:
+        """只读叠层预览(注入应用页「叠加注入层」数据源)。
+
+        复算 `_resolve_fragments` 的权重/预算分配并附各层截断后 block 规模与
+        合并结果概要;不写 metric 事件、不记 last id(纯读,可随 UI 反复调用)。
+        """
+        total = self._budget_total()
+        layers = self.resolve_binding_layers(
+            project_id, task_type, character_ids=character_ids, scene_id=scene_id,
+        )
+        if not layers:
+            return {"layers": [], "merged": None, "budget_total": total}
+        n = len(layers)
+        weights = list(range(1, n + 1))
+        wsum = sum(weights)
+        rendered = [self._render_binding(b) for b in layers]
+        if n == 1:
+            # 单层与 _resolve_fragments 一致:strategy 全语义,不 cap
+            budgets = [total]
+            capped = rendered
+            merged = rendered[0]
+        else:
+            budgets = [total * weights[i] // wsum for i in range(n)]
+            capped = [_cap_fragments(rendered[i], budgets[i]) for i in range(n)]
+            merged = _merge_fragments(capped)
+        rank_by_scope = {"scene": 0, "character": 1, "project": 2, "global": 3}
+        out_layers: list[dict[str, Any]] = []
+        for i, binding in enumerate(layers):
+            frag = capped[i]
+            block_chars = {
+                "positive_block": len(frag.positive_block),
+                "forbidden_block": len(frag.forbidden_block),
+                "metric_anchor_block": len(frag.metric_anchor_block),
+            }
+            profile = self.repo.get_profile(binding.profile_id)
+            out_layers.append({
+                "rank": rank_by_scope.get(binding.scope, 9),
+                "scope": binding.scope,
+                "scope_ref_id": binding.scope_ref_id,
+                "binding_id": binding.binding_id,
+                "profile_id": binding.profile_id,
+                "profile_title": getattr(profile, "title", None),
+                "strategy": binding.strategy,
+                "weight": weights[i],
+                "budget_chars": budgets[i],
+                "block_chars": block_chars,
+                "fragment_count": sum(1 for v in block_chars.values() if v),
+            })
+        prefix = merged.to_system_prompt_prefix()
+        strategy_val = merged.strategy.value if hasattr(merged.strategy, "value") else str(merged.strategy)
+        return {
+            "layers": out_layers,
+            "budget_total": total,
+            "merged": {"layer_count": n, "strategy": strategy_val, "prefix_chars": len(prefix)},
+        }
+
     def _render(
         self,
         profile,
@@ -498,6 +593,9 @@ class InjectionService:
             positive = _truncate_lines(positive, caps["positive"]) if caps["positive"] else ""
             forbidden = _truncate_lines(forbidden, caps["forbidden"]) if caps["forbidden"] else ""
             metric = _truncate_lines(metric, caps["metric"]) if caps["metric"] else ""
+            # mixed = A + B:few-shot 样例块也随混合策略注入(自带 few_shot_block_max_chars
+            # 预算截断,不参与上面三块的比例分配)
+            few_shot = self._render_few_shot(profile, drift_ptype_priority=drift_ptype_priority)
 
         # §A.5 / §11 风险 11 — 抄袭事前预防红线段:任一风格 block 非空时必随注入,
         # 不参与任何预算截断;few-shot 引用原文片段,更必须带红线
@@ -691,10 +789,13 @@ class InjectionService:
         if not (rules or finding_statements):
             return ""
         lines = ["[禁忌模式]"]
-        for rule in rules:
-            lines.append(f"- {rule}")
-        for stmt in finding_statements:
-            lines.append(f"- {stmt}")
+        # 同一禁忌可能在多个 sub_dim 下重复抽出(statement 完全一致),行级去重
+        seen: set[str] = set()
+        for entry in [*rules, *finding_statements]:
+            if entry in seen:
+                continue
+            seen.add(entry)
+            lines.append(f"- {entry}")
         return "\n".join(lines)
 
     def _collect_forbidden_finding_statements(

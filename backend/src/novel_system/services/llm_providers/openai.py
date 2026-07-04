@@ -28,6 +28,9 @@ class OpenAIFamilyAdapter(ProviderAdapter):
     appends_v1_to_bare_host: ClassVar[bool] = True
 
     def build_request(self, request: LLMRequest, provider_config: ProviderRuntimeConfig) -> AdapterHTTPRequest:
+        # request.api_mode 已在 LLMClient.generate 入口按 provider 声明归一化
+        # (端点能力,chat-only 中转收到 /responses 必 404);build 与响应解析
+        # (extract_output_text)共用 request.api_mode,不得在此另行改写。
         api_mode = request.api_mode or provider_config.api_mode
         native_reasoning = openai_reasoning(request.reasoning_level)
         if api_mode == "responses":
@@ -52,8 +55,11 @@ class OpenAIFamilyAdapter(ProviderAdapter):
                 payload["top_p"] = request.top_p
             if native_reasoning:
                 payload["reasoning"] = native_reasoning
-            if request.response_format == "json_object":
+            if request.response_format == "json_object" and request.wire_response_format:
                 payload["text"] = {"format": openai_text_format(request)}
+            extra_payload = (request.provider_options or {}).get("extra_payload")
+            if isinstance(extra_payload, dict):
+                payload.update(extra_payload)
             return AdapterHTTPRequest(
                 endpoint="/responses",
                 payload=payload,
@@ -76,8 +82,13 @@ class OpenAIFamilyAdapter(ProviderAdapter):
             payload["top_p"] = request.top_p
         if native_reasoning:
             payload["reasoning"] = native_reasoning
-        if request.response_format == "json_object":
+        if request.response_format == "json_object" and request.wire_response_format:
             payload["response_format"] = openai_chat_response_format(request)
+        # 连通性降级/用户配置的额外 wire 参数直通(如 qwen/vllm 系
+        # chat_template_kwargs.enable_thinking 思考开关)
+        extra_payload = (request.provider_options or {}).get("extra_payload")
+        if isinstance(extra_payload, dict):
+            payload.update(extra_payload)
         return AdapterHTTPRequest(
             endpoint="/chat/completions",
             payload=payload,

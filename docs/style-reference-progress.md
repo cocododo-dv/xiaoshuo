@@ -292,3 +292,157 @@ delete 清空三 collection — ALL CHROMA RAG CHECKS PASSED。** 立项 C 的�
 - 当前仓库运行时已移除旧 `reference_books` 路由、旧 `reference_*` ORM 映射和 `reset_style_reference` 工具；当前 `cleanup.py` 仅保留 metric events 清理，历史 migration 语义仍只作为历史记录保留。
 > 2026-05-31 运行时对齐说明：正式注入契约以 `SystemPromptFragments + injection-preview` 为准，对外不再公开 `/inject` / `InjectionBundle`。
 > 长文续写已收口到 `SceneGenerationService.generate_long_form_continuation(...)`；legacy 运行时依赖(`reference_learning.py` / `/api/v1/reference-books/*` / fallback / legacy ORM / reset tool)已切断，历史 Alembic migration 保留仅作历史记录。
+
+## 十、2026-07-03 全链路实证审查 + 缺陷修复（第十三轮）
+
+**背景**：作者反馈「参考风格模块看到的都是演示数据，疑似只有代码层面完成」。本轮用
+mock-LLM 隔离后端（独立 sqlite + memory 向量 + 本地 OpenAI 兼容假服务）把
+导入 → LLM 重分类 → 后台抽取（16 sub-dim / 48 findings）→ 审核/投票 → 合成 →
+预览 → 注入预览 → 绑定（直连 + review-effect 两路）→ 回测（sync_only / async_full）
+整条运行链路真实跑通，实证「代码完成 ≠ 假功能」——但确实揪出并修复了以下缺陷：
+
+- **MIXED 策略不注入 few-shot**（`injection.py`）：`_render_few_shot` 只在纯 B 策略
+  被调用，而场景生成默认策略就是 mixed（契约语义 A+B）。已在 MIXED 分支补上
+  few-shot 渲染（自带 few_shot_block_max_chars 预算）。新增混合策略回归测试。
+- **scene_samples_index 全桶 narration + 反例污染**（`profile_synthesizer.py` /
+  `extractors/base.py`）：quote 落库只存 anchor_kind，合成分桶时缺省全归 narration，
+  且 counter_example 合成反例、author_avoidance 统计说明也进了 few-shot 样例索引
+  （会把反面教材当风格范例注入）。修复：分桶按段落表实测类型（quote 落库同时冗余
+  paragraph_type 双保险），只收 anchor_kind=paragraph_quote 的真实原文引文。
+- **禁用词链路整体断裂**：`create_banned_term` 无生产调用方 → 注入红线段
+  `{banned_terms_list}` 永远为空、extraction 域从未消费、前端编辑器纯本地 state。
+  修复：新增 `GET/POST /profiles/{id}/banned-terms` + `DELETE /banned-terms/{id}`
+  三端点（幂等、preset 保护、(profile,term,scope) 唯一冲突返既有行）；extraction 域
+  接入 `_sample_paragraphs` 段落过滤；React 禁用词 tab 真模式接后端并在增删后刷新
+  注入预览。新增 `tests/test_style_reference_banned_terms.py` 全链路测试。
+- **apply 缺 scope_ref_id 校验**（`materialization.py`）：三种 scope 都按
+  scope_ref_id 匹配（`_binding_rank`），缺 ref 的绑定 rank=99 永远解析不到（死绑定），
+  直连 API 却允许创建。现统一拒绝（`STYLE_REFERENCE_APPLY_PARAM_INVALID`）。
+- **forbidden_block 重复行**：同一禁忌 statement 跨 sub-dim 重复抽出时逐条罗列，
+  现行级去重。
+- **前端演示数据陷阱**（`ws-styleref.jsx` / `ws-styleref-val.jsx`）：真实书未抽取/
+  未合成时，矩阵/画像/回测/注入各 stage 回退鲁迅演示数据，作者极易误读为「假功能」。
+  现真实书全程只显示真实数据：未抽取 → 空态矩阵 + 引导启动抽取；无画像 → 画像/注入/
+  回测均给空态引导；概览的趋势图/Evidence 重试链假面板仅演示书显示（真实书改显最近
+  run 真实进展）；演示书标「演示」徽章；few-shot 子页真模式直读注入预览的
+  few_shot_block 真实产物。
+
+回归：style-reference pytest 子集 394 passed（新增 8 测试）；frontend-react vitest
+50 passed + build 通过；隔离后端 stage C 复验全部通过（few-shot 有产物、样例索引
+按 dialogue/description_env/action/description_char 分桶、禁用词进红线段、
+无 ref apply 被拒、抄袭检测对语料重叠文本正确判 plagiarism）。
+
+尚未闭合（后续可选）：注入应用页「叠加注入层」卡片仍为示意图（真实叠层预览需要
+resolve_binding_layers 的只读 API）；`SR_TASKS` 的 per-TaskType 刷新参数展示值
+未接 config。
+
+### 第十三轮补遗（2026-07-03，两项遗留闭合）
+
+- **叠加注入层接真**：新增 `InjectionService.describe_binding_layers()`（只读，复算
+  `_resolve_fragments` 的权重/预算分配，附各层截断后 block 规模与合并概要，不写
+  metric 事件）+ `GET /api/v2/style-reference/injection/layers`（query:
+  project_id / task_type / scene_id / character_ids 逗号分隔）。React「叠加注入层」
+  子页真模式改由该端点渲染（无绑定给空态引导；上下文自动带本画像已绑定的场景/角色
+  id 使对应层亮起），SR_LAYER_STACK 示意图仅演示书保留。
+- **TaskType 默认策略/刷新参数接真源**：补上设计手册 §5.1 规划却从未落地的默认表
+  `DEFAULT_STRATEGY_BY_TASK`（injection.py）+ `GET /injection/task-defaults`。
+  refresh_every_chars 从 `llm_node_registry` 的 `long_form_continuation` 节点直读
+  （=8000，scene_generation 运行时真消费的值；此前前端写死的 1500/2000 为虚构）。
+  React 任务卡片真模式水合该端点，失败回退静态值。
+
+回归：style-reference pytest 子集 399 passed（新增 `test_style_reference_injection_layers.py`
+5 例：默认表对齐节点注册表、空/单层/双层加权与只读性）；frontend-react vitest 50 passed
++ build 通过；`:8000` 活体验证 task-defaults 表与 layers 单层真数据（真实画像标题/分块
+字数/合并前缀字数）。至此第十三轮"尚未闭合"清单清零。
+
+### 第十三轮补遗 2（2026-07-03，抽取 404 修复）
+
+**现象**：真实参考书（189 万字）导入正常，启动抽取 3 秒内 run failed：
+`Responses API endpoint returned 404`。
+
+**根因**：用户在系统设置把「提炼整理」角色槽配到了 chat-only 中转
+（node_routing 里 11 个 style_ref 节点均为 provider_id=oneapi / api_mode=chat），
+但 `_llm_helper.call_llm_node` **只读 task_routing**——而
+`parse_model_routing_config` 的合并方向是 task_routing setdefault（yaml 赢），
+DB 节点路由被 yaml 占位默认（gpt-5 / responses）遮蔽，请求打向中转不存在的
+`/responses` 端点。`llm_task_runner` 与 `segmentation/llm.py` 都是
+node_routing 优先的正确顺序，唯独这个 helper 漏了——抽取 4 层、补证据、合成、
+预览、语义回测、RAG rerank 全走它。
+
+**修复**：`call_llm_node` 对齐三处解析顺序（node_routing 优先，task_routing 兜底）。
+新增 `tests/test_style_reference_llm_routing.py` 3 例（DB 覆盖 yaml / 无 DB 路由回退 /
+双缺报 LLMNodeError）；受影响模块回归 46 passed；对真实运行库实测 5 个 style_ref
+节点全部解析到用户配置的 chat 路由。
+
+### 第十三轮补遗 3（2026-07-03，LLM 连通性系统级加固）
+
+**现象**（路由修复后抽取仍失败）：中转后端推理引擎（lightllm/qwen3.5）不支持
+JSON Schema 约束解码——`guided_grammar '<schema>' has compile_grammar_error:
+Unsupported tokenizer type`，且按 5xx 重试三连击同一错误后 run 失败。
+
+**定性**：这与此前的 /responses 404 同类——**provider 能力与请求形状不匹配**，
+散落在各调用点修不完，一律收敛到 `LLMClient.generate` 统一加固（全部节点受益）：
+
+1. **api_mode 入口归一化**：provider 声明的端点能力（chat/responses）优先于任务
+   路由缺省；build 与响应解析共用归一后的 request.api_mode（避免"按 chat 发、按
+   responses 解析"错位）。env 回退路径自动 no-op。
+2. **连通性降级阶梯**（最多 3 跳，逐跳记 warning）：
+   /responses 404 → api_mode 换 chat；json_schema 被拒（guided_grammar /
+   compile_grammar_error / guided_json / response_format 等特征）→ 退 json_object
+   → 仍被拒 → 不发 wire response_format（prompt 本身约束 JSON，客户端解析不变，
+   新增 `LLMRequest.wire_response_format`）。429 限流与无特征硬错不降级。
+   引擎级结构化输出错误在重试环内**早退**（重试不会自愈，不烧重试预算）。
+3. **能力缓存**（进程内，按 provider_id+model）：降级成功的结论只降不升地缓存，
+   后续调用直接按学到的档位发请求——重分类 500+ 批次不再每批浪费一个 400。
+4. **按节点超时**：`TaskModelConfig.timeout_seconds` 新增并透传（_llm_helper +
+   llm_task_runner）；style_ref 节点未显式配置时 120s 保底（30s 全局默认吃不下
+   重抽取），models.yaml 给 4 个 extract + synthesize 显式 180s。
+
+**实证**：对用户真实中转（sensenova hub / deepseek-v4-flash / chat）探测：
+第 1 次调用触发一跳降级后成功返回正确分类；第 2 次调用零降级直接成功。
+`tests/test_llm_client_connectivity.py` 9 例（归一化 / 404 降级 / schema 降级早退 /
+json_object 三跳 / 缓存 / 429 不降级 / 无特征不降级 / 超时配置解析 / style_ref 超时保底）。
+旧测试 `responses_404_includes_protocol_hint` 更新为降级链新契约。
+
+### 第十三轮补遗 4（2026-07-03，空正文/写锁/schema 内联/并发守卫）
+
+抽取再战三类新故障，全部修复并经真实中转实证：
+
+- **空正文降级**：reasoning 模型把 max_tokens 烧在思考上，200 但 content 为空
+  （`LLM_RESPONSE_MISSING_TEXT`），旧逻辑按"可重试"同参空转 3 次（每次一整个生成
+  时长）。现空正文不做无脑重试，进降级阶梯：关 reasoning 参数 + 输出预算×2
+  （封顶 8192）；"关 reasoning"进能力缓存。顺带兼容 completions 风格
+  `choices[0].text` 正文。
+- **schema 内联**：wire json_schema 降级为裸 json_object 后模型看不到输出形状，
+  实测把 statement 写成 description、span 写成原文字符串——Pydantic(extra=forbid)
+  全灭。现降级/缓存路径都会把 JSON Schema 内联进 system prompt；extractor 解析器
+  另加键级容错归一（statement 别名、非法 span 置 None、未知键剔除；内容级校验
+  照旧）。真实中转实测：3/3 findings statement 可用、6/6 引文命中原文。
+- **SQLite 写锁跨 LLM 调用**（"database is busy"根因 1）：后台抽取只在层边界
+  commit，一层 4 个 sub_dim 的写事务跨多次分钟级 LLM 调用持锁，并发 UI 写操作
+  等满 busy_timeout(30s) 后报错。现 extractor 支持 checkpoint，后台模式每个
+  sub_dim 落库即 commit，锁持有降到毫秒级。
+- **同书并发 run 守卫**（"database is busy"根因 2）：连点「重跑抽取」会起两个
+  后台线程并发抽同一本书互撞写锁。`start_extract_run` 现拒绝同书活跃 run
+  （409 STYLE_REFERENCE_RUN_ALREADY_ACTIVE）。
+
+测试：连通性 12 例（新增空正文降级+缓存、legacy text、schema 内联）、
+extractor 归一 1 例、orchestrator checkpoint/并发守卫 2 例。
+
+### 第十三轮补遗 5（2026-07-03，思考型模型空正文的最终解）
+
+补遗 4 的"关 reasoning + 扩预算"对该中转不奏效——qwen 系模型**默认开思考**且不认
+OpenAI 的 reasoning 参数,8192 预算照样烧光,run 再次失败。最终解:
+
+- openai 家族 adapter 新增 `provider_options.extra_payload` 直通(降级机制与用户
+  配置共用的 wire 参数逃生口);
+- 空正文降级第一跳(仅 `openai_compatible` 类型,严格官方 API 不发未知参数)合并
+  发送 `chat_template_kwargs.enable_thinking=false` + `enable_thinking=false`
+  (lightllm/vllm/DashScope 三系通吃),结论进能力缓存(`disable_thinking`);
+- `LLM_RESPONSE_MISSING_TEXT` 报错带诊断细节(finish_reason /
+  has_reasoning_content / completion_tokens)。
+
+真实中转 20 段(run 实际采样规模)实证:首调两跳降级后 68s 成功
+(3/3 statement、6/6 引文命中原文);二调零降级 37s。
+备注:deepseek-v4-flash 抽取产出较薄(同 payload 二调返回 0 观察),连通性已闭合,
+产出质量属模型能力——建议「提炼整理」角色槽换更强模型。

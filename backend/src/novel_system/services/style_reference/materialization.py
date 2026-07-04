@@ -75,6 +75,14 @@ class MaterializationService:
     ) -> MaterializeResult:
         """``config_json`` 落入 binding(intensity / sub_dimensions / include 开关),
         由 InjectionService._render 在注入时消费——前端强度滑块的端到端落点。"""
+        # BindingScope 三种 scope(project/scene/character)都按 scope_ref_id 匹配
+        # (_binding_rank),缺 ref 的绑定永远 rank=99,是解析不到的死绑定——拒绝落库
+        if not (scope_ref_id and str(scope_ref_id).strip()):
+            raise DomainError(
+                "STYLE_REFERENCE_APPLY_PARAM_INVALID",
+                f"scope={_enum_value(scope)} requires a non-empty scope_ref_id",
+                status_code=400,
+            )
         profile = self.repo.get_profile(profile_id)
         if profile is None:
             raise DomainError(

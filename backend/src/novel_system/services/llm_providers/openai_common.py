@@ -66,10 +66,25 @@ def extract_openai_output_text(body: dict[str, Any], *, api_mode: Literal["respo
                         content_parts.append(text)
                 if content_parts:
                     return "".join(content_parts)
+            # 部分中转/本地引擎按 completions 风格把正文放 choices[0].text
+            legacy_text = choices[0].get("text")
+            if isinstance(legacy_text, str) and legacy_text:
+                return legacy_text
 
+    # 诊断细节:finish_reason=length + reasoning_content 非空 = 思考吃满输出预算
+    first_choice = None
+    body_choices = body.get("choices") or []
+    if body_choices and isinstance(body_choices[0], dict):
+        first_choice = body_choices[0]
+    message = (first_choice or {}).get("message") or {}
     raise LLMResponseError(
         "LLM_RESPONSE_MISSING_TEXT",
         "llm provider response did not include text output",
+        details={
+            "finish_reason": (first_choice or {}).get("finish_reason"),
+            "has_reasoning_content": bool(message.get("reasoning_content")),
+            "completion_tokens": (body.get("usage") or {}).get("completion_tokens"),
+        },
     )
 
 

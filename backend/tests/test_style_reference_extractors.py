@@ -214,3 +214,27 @@ def test_metrics_anchor_injected_into_prompt(fake_extractor_llm, monkeypatch) ->
         c for c in captured if '"metrics_anchor"' in c
     ]
     assert extract_calls, "user_msg 应注入 metrics_anchor 字段"
+
+
+def test_normalize_finding_item_tolerates_near_miss_output() -> None:
+    """schema 降级模式下模型的近似输出(description / 字符串 span / 多余键)
+    必须归一到可过 Pydantic 校验的形状;内容级校验不放松。"""
+    from novel_system.services.style_reference.extractors.base import _normalize_finding_item
+
+    item = _normalize_finding_item({
+        "description": "以短句推进叙事。",
+        "extra_field": "x",
+        "evidence": [
+            {"paragraph_id": "p1", "span": "他走了。", "quote": "他走了。", "source": "y"},
+            {"paragraph_id": "p2", "span": [0, 4], "quote": "雨停了。"},
+        ],
+    })
+    assert item["statement"] == "以短句推进叙事。"
+    assert "extra_field" not in item and "description" not in item
+    assert item["evidence"][0]["span"] is None
+    assert "source" not in item["evidence"][0]
+    assert item["evidence"][1]["span"] == [0, 4]
+
+    # statement 已存在时不被别名覆盖
+    item2 = _normalize_finding_item({"statement": "原句。", "description": "别名。", "evidence": []})
+    assert item2["statement"] == "原句。"

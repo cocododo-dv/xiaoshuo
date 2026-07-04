@@ -707,6 +707,52 @@ def test_strategy_a_has_no_few_shot_block():
     assert fragments.few_shot_block == ""
 
 
+def test_strategy_mixed_renders_few_shot_from_samples_index():
+    """mixed = A + B:few-shot 样例块必须随混合策略注入(场景生成默认即 mixed)。"""
+    book_id = _seed_book("fewshotmx", cloud_policy="segments_only", with_paragraphs=False)
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_quote(
+            quote_id="sr_q_hd_fsmx_1",
+            book_id=book_id,
+            paragraph_id=None,
+            span_start=0,
+            span_end=10,
+            quote_text="他把伞收了,站在檐下看雨。",
+            illustrates_dims=[],
+            extracted_features={},
+        )
+        session.commit()
+    profile_id = _seed_profile_for_book(
+        "fewshotmx",
+        book_id,
+        profile_json={
+            "narrative_summary": "短句白描",
+            "style_features": ["短句"],
+            "scene_samples_index": {"dialogue": ["sr_q_hd_fsmx_1"]},
+        },
+    )
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_binding(
+            binding_id="sr_bind_hd_fsmx",
+            profile_id=profile_id,
+            scope="project",
+            scope_ref_id="proj_fewshotmx",
+            task_type="scene_generation",
+            strategy="mixed",
+            config_json={"intensity": 80},
+            status="active",
+        )
+        session.commit()
+        fragments = InjectionService(session).fragments_for("proj_fewshotmx", "scene_generation")
+    assert "风格样例" in fragments.few_shot_block
+    assert "他把伞收了" in fragments.few_shot_block
+    # few-shot 引用原文 → 红线段必须在场
+    assert "严格禁止" in fragments.anti_plagiarism_block
+    assert "风格样例" in fragments.to_system_prompt_prefix()
+
+
 def test_failed_idempotent_action_does_not_half_commit():
     """幂等层:action 中途失败时,已 flush 的半成品写入必须随回滚消失。"""
     from novel_system.services.idempotency import execute_with_idempotency

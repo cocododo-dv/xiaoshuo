@@ -87,7 +87,11 @@ class ProfileSynthesizer:
 
         sub_dim_summaries = _aggregate_sub_dim_stats(findings, quotes)
         metrics_baseline = (book.stats_json or {}).get("metrics", {})
-        scene_samples_index = _build_scene_samples_index(quotes)
+        paragraph_types = {
+            p.paragraph_id: p.paragraph_type
+            for p in self.repo.list_paragraphs(book_id)
+        }
+        scene_samples_index = _build_scene_samples_index(quotes, paragraph_types)
         sample_quotes_payload = _build_sample_quotes_payload(findings, quotes)
 
         payload = {
@@ -193,18 +197,31 @@ def _aggregate_sub_dim_stats(
 
 def _build_scene_samples_index(
     quotes: list["StyleReferenceQuote"],
+    paragraph_types: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """按 paragraph_type 把 quote_id 分桶。
 
     `quote.paragraph_id` 关联回 paragraph,这里只用 quote_id 作为索引值;
     Few-shot 调用方按 paragraph_type 拉对应 quote_id list 再 fetch quote_text。
-    quote.extracted_features.paragraph_type(若提供)优先;否则按 illustrates_dims
-    第一个分类前缀粗推断。
+
+    只收 anchor_kind=paragraph_quote 的真实原文引文:counter_example 是与原作
+    风格**相悖**的合成反例,author_avoidance 是统计说明文本,二者进样例索引会被
+    few-shot 当作风格范例注入。段落类型优先用段落表实测(`paragraph_types`),
+    其次 quote 落库时冗余的 extracted_features.paragraph_type,最后回退 "narration"。
     """
+    paragraph_types = paragraph_types or {}
     index: dict[str, list[str]] = defaultdict(list)
     for q in quotes:
-        # 简化:优先用 extracted_features.paragraph_type,否则归 "narration"
-        ptype = (q.extracted_features or {}).get("paragraph_type", "narration")
+        feats = q.extracted_features or {}
+        if feats.get("anchor_kind", "paragraph_quote") != "paragraph_quote":
+            continue
+        if not q.paragraph_id:
+            continue
+        ptype = (
+            paragraph_types.get(q.paragraph_id)
+            or feats.get("paragraph_type")
+            or "narration"
+        )
         index[ptype].append(q.quote_id)
     return dict(index)
 

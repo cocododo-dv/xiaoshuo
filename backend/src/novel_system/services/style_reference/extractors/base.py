@@ -212,6 +212,7 @@ class BaseExtractor:
         metrics_engine: MetricsEngine | None = None,
         retry_policy: ExtractionRetryPolicy | None = None,
         rng: random.Random | None = None,
+        checkpoint: Any | None = None,
     ) -> None:
         self.session = session
         self.llm_client = llm_client
@@ -222,6 +223,11 @@ class BaseExtractor:
         self.retry_policy = retry_policy or ExtractionRetryPolicy()
         self.rng = rng or random.Random()
         self._config = load_yaml_config("extraction")
+        self._ptype_by_pid: dict[str, str] | None = None
+        # 后台模式的事务边界:每个 sub_dim 落库后调用(session.commit),否则
+        # 一层 4 个 sub_dim 的写事务会跨着多次分钟级 LLM 调用持有 SQLite 写锁,
+        # 期间任何 UI 写操作等满 busy_timeout 后报 "database is busy"。
+        self._checkpoint = checkpoint
 
     @property
     def sub_dimensions(self) -> list[SubDimension]:
@@ -235,6 +241,8 @@ class BaseExtractor:
         for sub_dim in self.sub_dimensions:
             result = self._extract_with_retry(sub_dim)
             results.append(result)
+            if self._checkpoint is not None:
+                self._checkpoint()
         return results
 
     # ------------------------------------------------------------------ retry
@@ -407,7 +415,7 @@ class BaseExtractor:
         ]:
             if not isinstance(item, dict):
                 continue
-            item = dict(item)
+            item = _normalize_finding_item(dict(item))
             item.setdefault("finding_kind", kind.value)
             item.setdefault("sub_dimension", sub_dim.value)
 
@@ -509,6 +517,18 @@ class BaseExtractor:
         min_per_type = int(observations_cfg.get("min_samples_per_type", 3))
 
         paragraphs = self.repo.list_paragraphs(self.book_id)
+        # extraction 域禁用词(用户在任一 profile 上登记):含此词的段落不进抽取
+        # 样本池——典型用途是把源书专名/标志性意象隔离在 finding/quote 之外
+        banned = [
+            t.term
+            for t in self.repo.list_banned_terms_for_book(self.book_id, scope="extraction")
+            if (t.term or "").strip()
+        ]
+        if banned:
+            paragraphs = [
+                p for p in paragraphs
+                if not any(term in (p.text or "") for term in banned)
+            ]
         return stratified_sample(
             paragraphs,
             target_n=target_n,
@@ -577,6 +597,12 @@ class BaseExtractor:
                 quote_id = f"sr_quote_{uuid.uuid4().hex[:12]}"
                 span_start = evidence.span[0] if evidence.span else 0
                 span_end = evidence.span[1] if evidence.span else len(evidence.quote)
+                # 冗余段落类型:scene_samples_index / few-shot 按段型分桶时不再
+                # 回退默认 narration(合成侧还有段落表兜底,双保险)
+                features: dict[str, Any] = {"anchor_kind": evidence.anchor_kind.value}
+                ptype = self._paragraph_type_of(evidence.paragraph_id)
+                if ptype:
+                    features["paragraph_type"] = ptype
                 self.repo.create_quote(
                     quote_id=quote_id,
                     book_id=self.book_id,
@@ -585,7 +611,7 @@ class BaseExtractor:
                     span_end=span_end,
                     quote_text=evidence.quote,
                     illustrates_dims=list(evidence.illustrates_dims),
-                    extracted_features={"anchor_kind": evidence.anchor_kind.value},
+                    extracted_features=features,
                 )
                 self.repo.create_evidence(
                     evidence_id=f"sr_ev_{uuid.uuid4().hex[:12]}",
@@ -594,6 +620,17 @@ class BaseExtractor:
                     anchor_kind=evidence.anchor_kind.value,
                     is_synthetic=int(evidence.is_synthetic),
                 )
+
+    def _paragraph_type_of(self, paragraph_id: str | None) -> str | None:
+        """段落类型 lazy 全书查表(每 extractor 实例最多查一次)。"""
+        if not paragraph_id:
+            return None
+        if self._ptype_by_pid is None:
+            self._ptype_by_pid = {
+                p.paragraph_id: p.paragraph_type
+                for p in self.repo.list_paragraphs(self.book_id)
+            }
+        return self._ptype_by_pid.get(paragraph_id)
 
     def _record_purpose_extraction(self, sub_dim: SubDimension, purpose: ExtractionPurpose) -> None:
         """在两级重试中,即使没有新 finding 也需要落一个 extraction 行表明 purpose 调用过。
@@ -633,6 +670,49 @@ class _PartialResult(StyleReferenceError):
         super().__init__(f"partial:ok={len(findings)},failed={len(failed)}")
         self.findings = findings
         self.failed = failed
+
+
+_FINDING_KEYS = {"statement", "confidence", "finding_kind", "evidence", "sub_dimension"}
+_STATEMENT_ALIASES = ("description", "observation", "pattern", "summary")
+_EVIDENCE_KEYS = {
+    "paragraph_id", "span", "quote", "illustrates_dims",
+    "anchor_kind", "note", "is_synthetic",
+}
+
+
+def _normalize_finding_item(item: dict) -> dict:
+    """结构化输出降级(schema 不上线)时对近似输出做容错归一。
+
+    实测中转模型在裸 json_object 模式下会把 statement 写成 description、
+    span 写成原文字符串——不归一会在 Pydantic(extra=forbid)全灭。只做键级
+    纠偏,内容校验(引文原文、≥2 证据、禁用形容词)照旧。
+    """
+    if "statement" not in item:
+        for alias in _STATEMENT_ALIASES:
+            value = item.get(alias)
+            if isinstance(value, str) and value.strip():
+                item["statement"] = value
+                break
+    evidence = item.get("evidence")
+    if isinstance(evidence, list):
+        for ev in evidence:
+            if not isinstance(ev, dict):
+                continue
+            span = ev.get("span")
+            span_ok = (
+                isinstance(span, (list, tuple))
+                and len(span) == 2
+                and all(isinstance(x, int) for x in span)
+            )
+            if span is not None and not span_ok:
+                ev["span"] = None
+            for key in list(ev.keys()):
+                if key not in _EVIDENCE_KEYS:
+                    ev.pop(key)
+    for key in list(item.keys()):
+        if key not in _FINDING_KEYS:
+            item.pop(key)
+    return item
 
 
 def _is_evidence_short_error(exc: ValidationError) -> bool:
