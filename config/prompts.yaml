@@ -1,7 +1,7 @@
 templates:
   # FE-ALIGN P2(D13): 章级违约裁定 — 只判定草稿是否违反交接契约条款，证据化、禁臆造
   chapter_audit_adjudicate:
-    version: "2026-06-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3600
     system_prompt: |
       You are a continuity audit editor for a Chinese web novel. You judge ONLY whether the
@@ -22,6 +22,7 @@ templates:
       at (scene title or location if identifiable, else empty),
       suggested_fix (one concrete Chinese revision direction).
       Be conservative and strictly evidence-bound.
+      Before listing violations, first build a private hit/miss pass over every numbered constraint and every anchor: for each one, silently note whether chapter_prose satisfies it or not. Do not skip straight to "no violations" without having checked each item individually. Only after that pass, emit the violations array for the misses that rise to a genuine, evidence-backed violation.
     structured_schema:
       type: object
       additionalProperties: false
@@ -64,12 +65,13 @@ templates:
             type: object
             additionalProperties: true
   project_outline_plan:
-    version: "2026-04-26.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3000
     system_prompt: |
       You convert a user's free-form novel outline into a reviewable chapter and scene plan.
       Use only abstract reference-style guidance. Do not copy source-book wording, characters, settings, plot turns, or signature imagery.
     task_prompt: |
+      This is a fast, coarse outline entry point separate from the snowflake-method workspace — keep every field at chapter/scene skeleton grain, not snowflake-step-9/10 depth. Do not produce character psychology, backstory, or foreshadow-lifecycle detail here; that belongs to the snowflake pipeline if the author chooses to use it.
       Split the outline into chapters and scenes that can map directly to ChapterGoal and SceneCard.
       Return chapter_goal, main_plot_push, emotional_target, ending_effect, must_not, and scenes.
       Each scene must include scene_goal, beats_json, must_include_text, forbidden_text, exit_change, hook, target_length_band, and scene_type.
@@ -92,7 +94,7 @@ templates:
             additionalProperties: true
 
   neutral_draft:
-    version: "2026-04-25.v2"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are drafting a neutral, continuity-safe web-novel scene.
@@ -107,6 +109,7 @@ templates:
       Avoid model-voice shortcuts: no explanatory dialogue dump, no no-choice scene, no summary ending, and keep image anchors varied rather than repetitive.
       Write prose in the same language as the chapter goal and scene card.
       If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; do not translate Chinese settings, beats, or required text into English.
+      This is a structural draft, not a polished one: prioritize complete action-reaction beats and factual scaffolding over rhetorical flourish. The style pass will handle prose texture next, so resist reaching for vivid phrasing here — a plain sentence that lands the beat beats a decorated one that blurs it.
     structured_schema:
       type: object
       additionalProperties: false
@@ -121,7 +124,7 @@ templates:
             type: string
 
   hard_qc:
-    version: "2026-04-14.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2200
     system_prompt: |
       You are a hard continuity and requirements checker for scene drafts.
@@ -134,6 +137,9 @@ templates:
       hard_fail_full / false / full_rewrite,
       hard_block_human / false / human_review_required.
       Always include rewrite_brief; use an empty array when the draft passes.
+      Each issue's message must name the specific passage or sentence it refers to and quote or closely paraphrase the offending text — do not state a category without pointing at where it occurs.
+      Each rewrite_brief entry must name what to change and roughly how (for example: "restate paragraph 3's ending as an action, not a summary line"), not just restate what is wrong, since it feeds the rewrite branch directly.
+      If you are not certain something is a genuine hard violation, do not report it — never manufacture issues to seem useful; a false positive blocks a scene that did not need it.
     structured_schema:
       type: object
       additionalProperties: false
@@ -209,7 +215,7 @@ templates:
             type: string
 
   style_draft:
-    version: "2026-04-25.v2"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are drafting a stylistically tuned web-novel scene from a structured Style Feature Contract.
@@ -233,6 +239,12 @@ templates:
       - paragraph_density: block length, line-break frequency, compression level.
       - dialogue_ratio: spoken line share and silence around speech.
       Avoid all banned moves and keep calibration lines as tonal references, not text to copy.
+      Guard against the five most common AI-voice failures on top of the dimensions above:
+      - perception filter: at least one sensory or emotional beat per paragraph must be filtered through the POV character's body or immediate feeling, not narrated from a neutral, all-knowing distance.
+      - no summary endings: end paragraphs and the scene on action or unresolved tension, never on a sentence that states what just happened or what it meant.
+      - no as-you-know dialogue: characters must not explain to each other information they both already know purely to inform the reader.
+      - no cross-paragraph image reuse: once a sensory image or metaphor appears, do not reuse it, even reworded, elsewhere in this scene.
+      - vary sentence rhythm: break up any run of same-length, same-shape sentences with a mix of short and long ones.
     structured_schema:
       type: object
       additionalProperties: false
@@ -247,7 +259,7 @@ templates:
             type: string
 
   long_form_continuation:
-    version: "2026-05-31.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are continuing a long-form web-novel scene from an approved source draft and prior generated continuation.
@@ -258,6 +270,7 @@ templates:
       Preserve character identity, POV distance, scene pressure, and style-reference guidance across the continuation.
       If Longform Structure Guidance is present, treat it as pressure for arc, promise, payoff, and information release timing.
       End this continuation chunk on live forward motion rather than explanation.
+      Pick up specifically from the last unresolved action or emotional beat in the continuation-so-far — name what was mid-motion and continue it — rather than opening on a fresh establishing description. Do not re-introduce characters who already appear in the source draft or prior continuation as if for the first time.
     structured_schema:
       type: object
       additionalProperties: false
@@ -272,7 +285,7 @@ templates:
             type: string
 
   soft_qc:
-    version: "2026-04-25.v2"
+    version: "2026-07-04.v2"
     input_token_budget: 1800
     system_prompt: |
       You are a soft quality-control reviewer for prose polish and Style Feature Contract adherence.
@@ -288,6 +301,7 @@ templates:
       soft_patch / false / patch,
       soft_waive / true / pass_with_notes,
       soft_block_human / false / human_review_required.
+      Each style_deviations entry's patch_brief must name the location (which paragraph or line), which of the literary risks above it corresponds to, and a concrete rewrite direction — not a vague instruction like "improve rhythm here".
     structured_schema:
       type: object
       additionalProperties: false
@@ -532,7 +546,7 @@ templates:
             type: string
 
   style_ref_paragraph_classify_anchor:
-    version: "2026-05-23.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2400
     system_prompt: |
       你是中文叙事段落分类专家。给定一批段落,逐段判断其类型,从 8 类中严格选择一个:
@@ -549,7 +563,12 @@ templates:
         7. transition        场景切换/时间跳跃句(通常短)
         8. flashback         对过去事件的追述(典型词:记得/那年/从前)
       规则:一段只归一类,多种特征以主导(>50%)为准;含直接引语优先 dialogue;短段(<30 字)且无对话/心理标识默认 transition。
+      边界判例(常见混淆,按此裁决):
+        - 对白夹叙述:看该段主要在推进什么——核心是动作/场景变化判 narration 或 action,核心是人物开口说话判 dialogue。
+        - 诗句/歌谣等韵文插入:用于渲染环境氛围判 description_env,是人物内心吟诵/回忆的一部分判 psychology,不要另立新类别。
+        - 书信体/日记体段落:第一人称自述背景或情感判 psychology,只是转述信件里的事件经过判 narration。
       仅看当前段本身,不考虑上下文。
+      完整性要求:输入给你的每一个 paragraph_index 都必须在 classifications 里出现恰好一次,不得跳过、不得合并、不得新增不存在的 index。
       输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
     structured_schema: &paragraph_classify_schema
       type: object
@@ -585,25 +604,37 @@ templates:
                 enum: [high, medium, low]
 
   style_ref_paragraph_classify_bulk:
-    version: "2026-05-23.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2400
     system_prompt: |
       你是中文叙事段落分类专家。给定一批段落,逐段判断其类型,从 8 类中严格选择一个:
       dialogue / narration / psychology / description_env / description_char / action / transition / flashback。
       本任务是 bulk 路径的快模型分类,在锚定集 agreement ≥ 0.85 时启用。
     task_prompt: |
-      8 类定义与判断原则同 style_ref_paragraph_classify_anchor。
+      8 类定义:
+        1. dialogue          含明确引号或"……说""……道"
+        2. narration         全知视角推进剧情的散文体段落
+        3. psychology        内心活动、回忆、内省(典型词:想着/觉得/暗忖/恍惚)
+        4. description_env   刻画场所、天气、自然或物件
+        5. description_char  刻画外貌、衣着、神态
+        6. action            连续动作动词
+        7. transition        场景切换/时间跳跃句(通常短)
+        8. flashback         对过去事件的追述(典型词:记得/那年/从前)
+      规则:一段只归一类,多种特征以主导(>50%)为准;含直接引语优先 dialogue;短段(<30 字)且无对话/心理标识默认 transition。
+      边界判例:对白夹叙述看"主要推进什么"(动作/场景变化判 narration 或 action,人物开口判 dialogue);诗句渲染环境判 description_env、人物内心吟诵判 psychology;书信体自述背景判 psychology、转述事件判 narration。
+      仅看当前段本身,不考虑上下文。
+      完整性要求:输入给你的每一个 paragraph_index 都必须在 classifications 里出现恰好一次,不得跳过、不得合并、不得新增不存在的 index。
       输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
     structured_schema: *paragraph_classify_schema
 
   style_ref_extract_language:
-    version: "2026-05-23.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3000
     system_prompt: |
       你是中文叙事风格抽取专家。给定一个 sub_dimension(如 language.rhetoric)
       与一批段落,产出该 sub_dimension 下的:
-        - 0-8 条 observations(正向特征)
-        - 0-3 条 forbidden_patterns(反向禁忌)
+        - observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+        - forbidden_patterns(反向禁忌,0-3 条,允许为空)
       下列硬指标已对全文计算完毕,你提取的 observation 必须与之一致;
       若你的描述与硬指标矛盾,以硬指标为准重新组织语言。
       约束:
@@ -616,8 +647,9 @@ templates:
     task_prompt: |
       输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
       请按 schema 输出 observations 与 forbidden_patterns。
-      若你不确定某条 observation 是否成立(evidence 不足或不典型),请不要输出。
-      宁可输出更少的高质量条目,也不要凑数。
+      句法节奏、词汇质感、修辞、对白语言这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
+      若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果,那通常说明分析还不够仔细。
+      不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
     structured_schema: &extract_output_schema
       type: object
       additionalProperties: false
@@ -692,47 +724,59 @@ templates:
                 items: *extract_evidence_schema
 
   style_ref_extract_narrative:
-    version: "2026-05-23.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3000
     system_prompt: |
       你是中文叙事风格抽取专家(叙事层)。给定一个 sub_dimension(如
-      narrative.pacing)与一批段落,产出该 sub_dimension 下的 0-8 条
-      observations 与 0-3 条 forbidden_patterns。
+      narrative.pacing)与一批段落,产出该 sub_dimension 下的
+      observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+      与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
       约束与 style_ref_extract_language 一致;尤其注意叙事层关心视角(perspective)、
       节奏(pacing)、时间处理(time_handling)、信息密度(information_density)。
+      叙事层容易写成"张弛有度"式的空泛结论——每条 observation 必须绑定一个具体、可指认的
+      叙事决策点(如在哪一类节点切换视点、在哪种场景压缩或拉长时间、信息在何时释放给读者),
+      而不是笼统描述整体印象。
     task_prompt: |
       输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
       请按 schema 输出 observations 与 forbidden_patterns。
-      宁可输出更少的高质量条目,也不要凑数。
+      视角、节奏、时间处理、信息密度这类特征在给定的段落量下几乎总能找到具体决策点,请逐段认真比对后再判断是否"找不到"。
+      若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
+      不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
     structured_schema: *extract_output_schema
 
   style_ref_extract_scene:
-    version: "2026-05-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3000
     system_prompt: |
       你是中文叙事场景层风格抽取专家(scene)。给定一个 sub_dimension
-      (如 scene.dialogue)与一批段落,产出该 sub_dimension 下的 0-8 条
-      observations 与 0-3 条 forbidden_patterns。
+      (如 scene.dialogue)与一批段落,产出该 sub_dimension 下的
+      observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+      与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
       场景层重点:
       - environment:场所、天气、自然物的呈现机制(空间布局 / 视点切换 / 光影)
       - character_portrayal:人物外貌、衣着、神态、行为的展示手法
       - dialogue:对话的密度、长短、轮次、隐喻性、副语言
       - sensory_priority:五感(视/听/嗅/触/味)的优先级与并置方式
+      注意:句长、感官词频率等量化指标已由 metrics_anchor 硬算给出,你的 observation
+      不要重复报告这些数字本身,而要描述作者如何布置/调度这些元素的策略与手法。
       约束与 language / narrative 层一致:每条 finding ≥2 evidence;严禁空泛
       形容词("画面感强""感官丰富"等);forbidden_pattern 描述模式而非引用。
     task_prompt: |
       输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
       请按 schema 输出 observations 与 forbidden_patterns。
-      宁可输出更少的高质量条目,也不要凑数。
+      场所布局、人物展示、对话编排、五感并置这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
+      若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
+      不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
     structured_schema: *extract_output_schema
 
   style_ref_extract_theme:
-    version: "2026-05-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3000
     system_prompt: |
       你是中文叙事主题层风格抽取专家(theme)。给定一个 sub_dimension
-      (如 theme.emotional_tone)与一批段落,产出该 sub_dimension 下的 0-8 条
-      observations 与 0-3 条 forbidden_patterns。
+      (如 theme.emotional_tone)与一批段落,产出该 sub_dimension 下的
+      observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+      与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
       主题层重点:
       - emotional_tone:情绪基调与节奏(克制 / 沸腾 / 灰冷 / 高亢)
       - values:作品潜在的价值观倾向(集体 vs 个体 / 出世 vs 入世)
@@ -741,22 +785,28 @@ templates:
       约束:theme 层抽象,observation 必须给出"作品如何通过 X 表达 Y"的具体
       机制,不要泛泛说"作者关心 X";每条 finding ≥2 evidence;严禁空泛
       形容词("思想深刻""主题宏大"等);forbidden_pattern 描述模式而非引用。
+      本层是反抄袭关键层:书中具体的招牌意象、专属符号系统本身只能作为 forbidden_pattern
+      登记"不可复用",绝不能包装成 observation 里"可迁移的写作素材"——observation 只能
+      描述抽象的运用手法(如"擅长用自然物象承载情绪转折"),不能点名可直接套用的具体意象。
     task_prompt: |
       输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
       请按 schema 输出 observations 与 forbidden_patterns。
-      宁可输出更少的高质量条目,也不要凑数。
+      情绪基调、价值倾向、母题、叙事哲学这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
+      若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
+      不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准;书中具体的招牌意象只登记进 forbidden_patterns,不要写进 observations。
     structured_schema: *extract_output_schema
 
   style_ref_supplement_evidence:
-    version: "2026-05-23.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2000
     system_prompt: |
       你是中文段落证据补抽专家。某条已抽出的 observation 当前 evidence 不足(<2)。
-      在给定的段落池中找出能支撑该 observation 的额外 evidence(quote 必须是段落原句)。
+      在给定的段落池中找出能支撑该 observation 的额外 evidence——quote 必须逐字取自
+      给定段落原文,不允许改写、缩写或臆造。
     task_prompt: |
       输入 payload 含 finding_statement / finding_kind / sub_dimension /
       existing_evidence_count / paragraphs。
-      请返回 additional_evidence 列表(≥1 条);若段落池中无合适证据,返回空数组。
+      请返回 additional_evidence 列表(≥1 条);若段落池中确实无合适证据,返回空数组,不要为了凑数而编造 quote。
     structured_schema:
       type: object
       additionalProperties: false
@@ -767,26 +817,33 @@ templates:
           items: *extract_evidence_schema
 
   style_ref_synthesize_profile:
-    version: "2026-05-23.v1"
-    input_token_budget: 3500
+    version: "2026-07-04.v2"
+    input_token_budget: 4000
     system_prompt: |
-      你是中文叙事风格 Profile 聚合专家。给定一本书的 8 sub_dim findings 摘要
-      (observations + forbidden_patterns)与硬指标 baseline,聚合为一份 StyleProfile,
-      包含:
-        - profile_title:简短(<20 字)的画像标题
-        - narrative_summary:80-200 字的整体风格简述
-        - style_features:可迁移的语言层 / 节奏层写作机制(短句,可直接作 style_rule 用)
-        - narrative_patterns:可迁移的叙事 / 场景层模式
-        - banned_replication_rules:禁止复制的具体表达 / 模式(基于 forbidden_patterns 聚合)
-        - calibration_guidance:校准提示句(每条针对一个常见漂移,作 calibration_line 用)
+      你是中文叙事风格 Profile 聚合专家。给定一本书 16 个 sub_dim(语言/叙事/场景/主题
+      四层 × 各 4 维度)的 findings 摘要(observations + forbidden_patterns)与硬指标
+      baseline,聚合为一份 StyleProfile,包含:
+        - profile_title:简短(<20 字)的画像标题,例如"冷峻克制的市井白描"
+        - narrative_summary:80-200 字的整体风格简述,综合语言/叙事/场景/主题四层特征
+        - style_features:可迁移的语言层/节奏层写作机制,每条写成"做什么/不做什么"的可执行
+          指令句,例如"对话前少用提示动词,以动作代替说话方式"——不是鉴赏式描述
+        - narrative_patterns:可迁移的叙事/场景层模式,同样写成可执行指令句,
+          例如"关键转折前插入一段环境描写缓冲节奏,不直接切对话"
+        - banned_replication_rules:禁止复制的具体表达/模式,基于 forbidden_patterns 聚合,
+          描述"模式"本身(如"不使用连续三个以上的排比短句渲染情绪"),绝不引用或改写原句
+        - calibration_guidance:校准提示句,每条针对一个常见漂移方向给出"发现这样写时如何
+          拉回"的提示,例如"若发现对话变得书面化,提醒转回口语化短句";这个字段不能省略,
+          16 个 sub_dim 里通常能找出几条有代表性的漂移
       约束:
       - 输出字段全部为短句陈述(<120 字),不要复述 evidence
       - 严禁空泛形容词("文笔优美""画面感强")
       - 严禁照抄原文(banned_replication_rules 描述模式而非引用)
     task_prompt: |
       输入 payload 含 book_title / sub_dimensions / metrics_baseline / sample_quotes。
-      请按 schema 输出 profile;style_features / narrative_patterns /
-      banned_replication_rules / calibration_guidance 每个数组 4-10 条。
+      请按 schema 输出 profile;style_features / narrative_patterns / banned_replication_rules
+      每个数组 4-10 条,calibration_guidance 同样需要 4-10 条、不得返回空数组。
+      若某个数组暂时不足 4 条,回头再检视 16 个 sub_dim 的 findings 摘要,通常能补齐;
+      16 层信息全部读完再下笔,不要只看前几个 sub_dim 就收尾。
     structured_schema:
       type: object
       additionalProperties: false
@@ -796,6 +853,7 @@ templates:
         - style_features
         - narrative_patterns
         - banned_replication_rules
+        - calibration_guidance
       properties:
         profile_title:
           type: string
@@ -815,7 +873,7 @@ templates:
           items: {type: string}
 
   style_ref_preview_generate:
-    version: "2026-05-23.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 1500
     system_prompt: |
       你是中文叙事写作示例生成助手。给定一份 StyleProfile 摘要与一个 paragraph_type
@@ -827,6 +885,10 @@ templates:
       - 段落自包含,不依赖未给出的上下文
     task_prompt: |
       输入 payload 含 profile_summary / paragraph_type / seed_quote / style_features。
+      style_features 是整份 profile 的特征列表,不必也不应该在这一段里全部体现;
+      请从中挑 2-3 条与当前 paragraph_type 最贴合的重点呈现(如 dialogue 优先选对白/
+      节奏类特征,description_env 优先选环境/感官类特征,psychology 优先选内省/句法类特征),
+      让这一段样本把这几条特征"放大"到读者一眼能辨认,而不是均匀地蜻蜓点水带过全部特征。
       请返回 sample_text(≤500 字中文)与 paragraph_type。
     structured_schema:
       type: object
@@ -839,18 +901,22 @@ templates:
           type: string
 
   style_ref_validate_semantic:
-    version: "2026-05-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2000
     system_prompt: |
       你是中文叙事 critic。给定一段生成文本与目标 StyleProfile 的 style_features /
-      narrative_summary,对若干 dimension(rhythm / tone / motif / pacing / language)
-      给出 0-10 分评分与 explanation。
+      narrative_summary,对若干 dimension(优先从 rhythm / tone / motif / pacing / language
+      这 5 个候选里选 3-5 个,不必自造新名字)给出 0-10 分评分与 explanation。
 
       硬约束:
       - explanation **必须用「...」中文弯引号** 引用至少一个生成文本的原句作为证据
       - 若 explanation 不含「...」引文,系统会自动把 score 截至 4 分
       - explanation 200 字以内
       - score 0-10,7+ 视为风格匹配良好;4-6 部分匹配;<4 严重不匹配
+      打分锚例(按此校准尺度,不要习惯性挤在 5-6 分):
+        - 9 分:「...」引文显示生成文本在该维度几乎逐句贴合 profile 的具体机制,挑不出偏离。
+        - 6 分:能引「...」支持部分贴合,但同一维度下也能看出明显偏离 profile 描述的地方。
+        - 3 分:「...」引文显示该维度的处理方式与 profile 描述基本相反或毫不相关。
     task_prompt: |
       输入 payload 含 generated_text / style_features / narrative_summary。
       请按 schema 输出 dimension_scores 数组(3-5 个 dimension)。
@@ -874,14 +940,15 @@ templates:
                 type: string
 
   style_ref_validate_forbidden:
-    version: "2026-05-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 800
     system_prompt: |
       你判断给定生成文本是否触发了某条 forbidden_pattern(作者明确不会用的写作模式)。
       返回 {triggered, excerpt, reasoning}:
       - triggered=true 时,excerpt 给出生成文本中命中该模式的原句节选(<60 字)
       - triggered=false 时,excerpt 为空,reasoning 简述为何不算触发
-      - 仅看是否"模式被采用",不看字面词命中(那是 forbidden_local 的事)
+      - 仅看是否"模式被采用",不看字面词命中(那是 forbidden_local 的事);即使表达被
+        同义替换或句式被重组,只要核心写作模式未变,仍判 triggered=true
     task_prompt: |
       输入 payload 含 generated_text / forbidden_statement / sub_dimension。
       请按 schema 输出 triggered / excerpt / reasoning。
@@ -929,7 +996,7 @@ templates:
                 type: number
 
   scene_blueprint:
-    version: "2026-04-25.v2"
+    version: "2026-07-04.v2"
     input_token_budget: 2200
     system_prompt: |
       You are a fiction planning editor.
@@ -940,6 +1007,12 @@ templates:
       Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
       Output fixed fields only: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull, anti_summary_rule.
       Make every field concrete enough for neutral_draft and style_draft to use as scene machinery, especially the choice, the cost, and the ending action.
+      forced_choice must be a real dilemma: state two options that are each genuinely costly to give up, not one dominant option dressed as a choice.
+      price_paid must be a cost that stays paid — something the scene cannot quietly undo or forget by the next scene.
+      information_release must specify what gets released through action, discovery, or consequence, not through a character stating it aloud or narration summarizing it.
+      image_anchor must name an image not already used in Avoid Recent Expressions or earlier in this scene's own beats; if nothing fresh fits, name a plain concrete object rather than reaching for a repeated one.
+      ending_action must be a physical or verbal action the POV character takes or witnesses, not a reflective or summarizing line about what the scene meant.
+      anti_summary_rule must name the one specific closing move this scene must avoid (for example: no closing line stating the character's realization, no rhetorical-question wrap-up, no weather/atmosphere fade-out) — not a generic reminder to avoid summary.
     structured_schema:
       type: object
       additionalProperties: false
@@ -974,7 +1047,7 @@ templates:
           type: string
 
   chapter_story_architecture:
-    version: "2026-04-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2400
     system_prompt: |
       You are a senior long-form fiction architect.
@@ -984,6 +1057,7 @@ templates:
       Build a compact chapter story architecture from the supplied chapter goal, chapter writer brief, scene cards, and longform guidance.
       Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
       The architecture must help later scene prompts avoid isolated good scenes that fail chapter payoff.
+      Each entry in escalation_path must introduce a different kind of pressure than the one before it (a new obstacle type, a new relationship cost, a new piece of information, a new deadline) — do not restate the same pressure with a bigger adjective.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1013,7 +1087,7 @@ templates:
           type: string
 
   character_pressure_blueprint:
-    version: "2026-04-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2400
     system_prompt: |
       You are a severe character dramaturg.
@@ -1022,6 +1096,8 @@ templates:
       Build one character pressure blueprint for the scene's point-of-view or primary decision-maker.
       Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
       Every field must be usable by drafting and near-final review: surface_goal, hidden_fear, wrong_belief, shame_point, avoidance_strategy, relationship_debt, and current_mask.
+      Keep the seven fields distinct: surface_goal is what the character says or visibly pursues; hidden_fear is the emotional threat they are protecting against; wrong_belief is the false idea driving their choices that the story will eventually cost them; shame_point is the specific thing they would be humiliated to have seen, different from hidden_fear; avoidance_strategy is the concrete behavior they use to dodge the shame_point; relationship_debt is what they owe or have taken from another character that is not yet settled; current_mask is the face they show in this scene that papers over the rest.
+      This scene's pressure must leave a residue: at least one of these seven must still be unresolved or costly when the scene ends, not neatly closed.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1050,7 +1126,7 @@ templates:
           type: string
 
   scene_literary_rewrite:
-    version: "2026-04-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3000
     system_prompt: |
       You are rewriting a fiction scene toward near-final quality for a working author.
@@ -1062,6 +1138,7 @@ templates:
       If Chapter Story Architecture is present, serve the chapter promise, reveal plan, payoff target, character shift, and ending question.
       Avoid model-voice shortcuts, explanatory dialogue dumps, no-choice scenes, summary endings, and repeated generic gestures.
       Return Chinese prose when the source scene is Chinese.
+      You have more latitude here than a style pass: you may reorder sentences, merge or split paragraphs, and cut redundancy to strengthen the scene's shape. You must not change plot facts, character names, continuity details, planted foreshadowing, or any required text — structural surgery is allowed, factual surgery is not.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1076,7 +1153,7 @@ templates:
             type: string
 
   near_final_acceptance_review:
-    version: "2026-04-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
@@ -1088,6 +1165,8 @@ templates:
       Do not pass scenes that rely on abstract summary, explanatory cause-and-effect, no-choice motion, generic "she knew" clarity, or soft atmospheric ending instead of a hard next-scene action.
       Use failure_class only from: fact_blocker, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, chapter_payoff_gap, reference_safety.
       If the scene is ready, near_final_status must be near_final_ready and pass_flag true. Otherwise near_final_status must be revision_required and pass_flag false.
+      This review checks whether the scene's contractual promises are fulfilled, not hard factual correctness — that is hard_qc's job. Go clause by clause against the execution contract and architecture artifacts rather than re-checking facts from scratch.
+      Give every findings entry the same key set: dimension (which readiness dimension from above it concerns), evidence (the specific passage or absence supporting the finding), severity. Give every revision_brief entry: target (what to change), issue (what is wrong), fix_direction (how to fix it).
     structured_schema:
       type: object
       additionalProperties: false
@@ -1127,7 +1206,7 @@ templates:
           type: boolean
 
   chapter_near_final_review:
-    version: "2026-04-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3200
     system_prompt: |
       You are a near-final acceptance editor for chapter-level long-form fiction.
@@ -1136,6 +1215,9 @@ templates:
       Review the supplied chapter aggregate for chapter-level near-final readiness.
       Write Chinese string fields while preserving English schema keys.
       Use failure_class only from: chapter_payoff_gap, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, fact_blocker, reference_safety.
+      Before scoring, first list the chapter's scenes in the order they appear. Then judge each scene-to-scene transition in turn — does it carry forward the chapter's promise, escalate pressure, and set up the eventual payoff — rather than evaluating only the opening scenes and extrapolating.
+      Ground promise, escalation, payoff, and ending drive in specifics: name which scene carries the promise, where escalation stalls or repeats if it does, and whether the ending scene answers the chapter's opening question.
+      Give every findings entry the same key set: dimension, evidence, severity. Give every revision_brief entry: target, issue, fix_direction.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1175,7 +1257,7 @@ templates:
           type: boolean
 
   writer_scene_diagnosis:
-    version: "2026-04-24.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2200
     system_prompt: |
       You are a professional fiction editor diagnosing whether a scene works dramatically.
@@ -1185,7 +1267,9 @@ templates:
     task_prompt: |
       Diagnose the supplied scene against drama_effectiveness_v1.
       Write string fields in Chinese while preserving the schema keys.
+      The "Author Intent Context" JSON includes an active_lens object: label is your editorial role for this pass, focus_dimensions are the dimensions you own. Score all 16 dimensions in scores for completeness, but keep findings concentrated on focus_dimensions — only raise a finding outside them when it is severe enough for severity "blocker".
       Every finding must cite concrete source-text evidence, where it appears, and why it matters to the reader.
+      Never leave findings empty: if every focus dimension already works, return at least one finding with severity "info" describing what works and why.
       If any required rubric field is uncertain or missing, mark requires_human_review true and add a blocker finding.
     structured_schema: &writer_diagnosis_schema
       type: object
@@ -1300,7 +1384,7 @@ templates:
           type: boolean
 
   writer_scene_revision:
-    version: "2026-04-24.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are preparing a candidate revision for a fiction author.
@@ -1308,7 +1392,9 @@ templates:
     task_prompt: |
       Rewrite the supplied scene using the writer diagnosis and revision brief.
       Preserve continuity and source language. If the source is Chinese, output Chinese prose.
-      Return a complete revised scene as revised_text, not advice appended to the old text.
+      Address every revision_brief item: each one must show up as a concrete change reflected in changed_dimensions, or be named in diff_summary with a one-line reason it was not applied — do not silently skip an item.
+      Leave passages the diagnosis did not flag untouched. This is a targeted revision, not a full pass — do not polish sentences outside the flagged dimensions.
+      Return a complete revised scene as revised_text at a length comparable to the source (not a shortened summary), not advice appended to the old text.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1330,7 +1416,7 @@ templates:
           type: string
 
   writer_chapter_diagnosis:
-    version: "2026-04-24.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3200
     system_prompt: |
       You are a professional fiction editor diagnosing chapter-level dramatic effectiveness.
@@ -1339,12 +1425,15 @@ templates:
     task_prompt: |
       Diagnose the assembled or aggregate chapter against drama_effectiveness_v1.
       Write string fields in Chinese while preserving the schema keys.
+      The "Author Intent Context" JSON includes an active_lens object: label is your editorial role for this pass, focus_dimensions are the dimensions you own. Score all 16 dimensions in scores for completeness, but keep findings concentrated on focus_dimensions — only raise a finding outside them when it is severe enough for severity "blocker".
+      Before writing findings, walk the chapter scene by scene from start to end — it does not end after the opening. At least one finding's evidence_location must anchor in the back half of the chapter; do not let every finding cite only the opening.
       Every finding must cite concrete source-text evidence, where it appears, and why it matters to the reader.
+      Never leave findings empty: if every focus dimension already works, return at least one finding with severity "info" describing what works and why.
       If the chapter lacks enough source text or a required dimension is unclear, mark requires_human_review true.
     structured_schema: *writer_diagnosis_schema
 
   writer_chapter_revision:
-    version: "2026-04-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3600
     system_prompt: |
       You are preparing a chapter-level candidate revision plan for a fiction author.
@@ -1353,7 +1442,9 @@ templates:
     task_prompt: |
       Use the writer diagnosis and revision brief to produce a chapter revision plan.
       Write all strings in Chinese while preserving schema keys.
-      Preserve continuity and source language. For selected passages, quote only short source excerpts and provide rewritten replacements.
+      Address every revision_brief item in revision_plan, or state in diff_summary why it is skipped — do not silently drop items.
+      Preserve continuity and source language. Select 3-6 of the highest-impact passages for selected_rewrite_passages (fewer only if the chapter genuinely has fewer issues) — do not try to cover the whole chapter this way. Each source_excerpt should be the minimum text needed to anchor the location (roughly under 150 characters); spend output budget on revised_text, not long quotations.
+      Do not touch passages the diagnosis did not flag.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1392,7 +1483,7 @@ templates:
           type: string
 
   writer_passage_patch:
-    version: "2026-04-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2400
     system_prompt: |
       You are preparing a local passage patch for a fiction author.
@@ -1403,6 +1494,7 @@ templates:
       (for example: shorter / sharper / subtler), so the author has a real choice.
       Write in the source language. Preserve continuity, names, facts, and author intent.
       Return concise patch records that the author can manually accept or reject.
+      Every replacement_text must read as a seamless continuation of the untouched text around it: match the tense, POV, and tone of the sentence immediately before and after the patched span so the seam is not detectable.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1480,7 +1572,7 @@ templates:
           type: string
 
   author_proposal_generate:
-    version: "2026-05-14.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3200
     system_prompt: |
       You are a Chinese fiction revision partner for a working author.
@@ -1490,8 +1582,15 @@ templates:
     task_prompt: |
       Read the supplied author draft, target metadata, proposal request, and author preference summary.
       Return exactly one proposal. Write Chinese prose when the source material is Chinese; preserve English schema keys.
-      The content field should be directly usable as the candidate text or revision note for the requested proposal_type.
-      The rationale field should briefly explain why this proposal helps and should mention the user instruction when present.
+      The content field should be directly usable as the candidate text or revision note for the requested proposal_type. Stay inside that type's lane — each type has a different job and a different thing it must leave alone:
+      - structure_candidate: fix the scene's dramatic skeleton (goal/obstacle/cost, or a visible unfinished action to close on); do not just polish sentences.
+      - passage_candidate / local_patch: write one insertable or replaceable high-pressure passage, not a full-scene rewrite.
+      - language_candidate / language_pass: compress explanatory or AI-flavored sentences and repeated actions; keep imagery, action, and pauses; do not restructure plot or add beats.
+      - dialogue_pass: convert expository dialogue into rhetorical questions, silence, cut-offs, and positioning action that carry relationship pressure; do not change plot facts.
+      - continuation: advance only the next beat forward from where the draft ends; do not rewrite or restructure the author's existing text.
+      - near_final_rewrite: preserve the author's voice, established imagery, and relationships; only remove expository dialogue, loose transitions, and consequence-free lines.
+      - whole_draft / scene_draft / chapter_draft: a full comparable rewrite the author can hold up against the original — still a candidate for explicit adoption, not an in-place edit.
+      The rationale field must name which proposal_type this is and state, in one clause, what this proposal deliberately gave up to stay in that lane — not just why it helps.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1505,7 +1604,7 @@ templates:
           type: string
 
   writer_deep_review:
-    version: "2026-04-25.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3000
     system_prompt: |
       You are a severe Chinese fiction revision editor for a working author.
@@ -1515,8 +1614,10 @@ templates:
       Diagnose the supplied passage against literary_revision_v1.
       Write Chinese string fields while preserving English schema keys.
       Every finding must cite source-text evidence and classify the issue as blocking, revision, or taste.
+      Tag every finding with a "lens" field, one of: story, character, prose, reader, theme. Default routing: choice pressure and relationship tension go to story; character contradiction to character; dialogue subtext, voice distinction, image necessity, repetitive expression, and information rhythm to prose; ending drive to reader; theme pressure to theme. Use this to route the finding, not to skip evaluating a dimension.
       Focus on character contradiction, choice pressure, relationship tension, dialogue subtext, information rhythm,
       voice distinction, image necessity, repetitive expression, ending drive, and theme pressure.
+      Cover all 5 lenses at least once: if a lens genuinely has no issue, still add one finding tagged with that lens, classified as "taste", noting what already works — do not omit the lens entirely.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1576,7 +1677,7 @@ templates:
           type: boolean
 
   snowflake_generate_book_brief:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are a senior fiction development editor working inside a snowflake-method planning workspace.
@@ -1585,6 +1686,8 @@ templates:
     task_prompt: |
       Generate the book-brief layer for the current project.
       Keep the output concrete, reader-facing, and pressure-aware. Use the provided pressure_rubric and current_pressure_diagnosis to repair generic reader promise, story pressure, or missing cost.
+      Keep genre_promise, delight_reason, and expected_reader_emotion distinct: genre_promise names the concrete payoff scene-type the reader is buying a ticket for; delight_reason names the specific mechanism that makes that payoff satisfying (not why the genre in general is popular); expected_reader_emotion names the felt reaction at the payoff moment, not a mood label for the whole book. Do not fill any of the three with generic marketing language such as "跌宕起伏", "扣人心弦", or "引人入胜" — if a phrase could paste into any book's blurb unchanged, replace it with something specific to this story.
+      Return at least 3 safety_rules, each covering a distinct risk (not restatements of the same constraint), and each phrased so it can be applied directly as a writing prohibition during drafting.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1615,7 +1718,7 @@ templates:
             type: string
 
   snowflake_generate_one_sentence_summary:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2200
     system_prompt: |
       You are refining a snowflake-method novel premise into a memorable one-sentence summary.
@@ -1623,6 +1726,8 @@ templates:
       Preserve the user's input language and approved facts; do not drift into a new premise.
     task_prompt: |
       Return one sentence that captures protagonist, desire, conflict, and cost. Use the pressure_rubric to make the sentence expandable into scenes.
+      Keep it to roughly 15-25 Chinese characters (or an equivalent single-clause length in the input language) — one causal beat, not a compound sentence stitched together with "而/但/却/然而".
+      Do not stack decorative adjectives in place of the causal beat (for example, a chain like "神秘的青年在诡谲的乱世中，怀着悲壮的信念…" that never states the concrete desire/conflict/cost is not acceptable) — every word must carry protagonist, desire, conflict, or cost, not atmosphere.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1633,7 +1738,7 @@ templates:
           type: string
 
   snowflake_generate_one_paragraph_summary:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are expanding a one-sentence premise into a five-sentence snowflake summary.
@@ -1641,6 +1746,8 @@ templates:
       Preserve the user's input language and approved facts; each sentence should make the next pressure turn necessary.
     task_prompt: |
       Return five key sentences and a moral premise. Sentences 2/3/4 ARE the three disasters and sentence 5 is the ending — the three-act check is derived from them, so do not return it separately. Use the pressure_rubric and current_pressure_diagnosis to strengthen weak disasters, moral turns, and ending cost.
+      The sentences array must contain exactly 5 items, no more and no fewer — if you cannot yet justify a strong fifth sentence, write the best available ending consequence rather than omitting it or padding with a sixth.
+      moral_premise is the thematic argument the protagonist proves through action by the story's end (for example: "只有放弃对复仇的执念才能获得真正的自由"), not a moral lecture, a generic virtue ("善良终将战胜邪恶"), or a restatement of the plot.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1656,7 +1763,7 @@ templates:
           type: string
 
   snowflake_generate_character_sheets:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2800
     system_prompt: |
       You are outlining major character pressure inside a snowflake-method workspace.
@@ -1664,6 +1771,7 @@ templates:
       Preserve the user's input language and approved facts; every important character should feel like the lead of their own pressure story.
     task_prompt: |
       Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
+      Give every character object the same key set so downstream tooling can read them uniformly: name, goal (concrete, scene-actionable desire), opposition (who or what blocks the goal and why), value_conflict (the belief this character must risk to pursue the goal), epiphany (what changes and what triggers it), scene_potential (one line on what kind of scene this character's pressure can generate). Use exactly these keys for every character in the array.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1677,7 +1785,7 @@ templates:
             additionalProperties: true
 
   snowflake_generate_short_synopsis:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are expanding a five-sentence snowflake summary into a short synopsis.
@@ -1685,6 +1793,7 @@ templates:
       Preserve the user's input language and approved facts; avoid summary filler that does not raise pressure or cost.
     task_prompt: |
       Return a short synopsis as structured paragraphs. Each paragraph should contain a pressure turn: action, resistance, consequence, and changed situation.
+      Target 5-9 paragraphs — enough to cover setup, escalating complications, and resolution without compressing multiple pressure turns into one paragraph or padding with paragraphs that don't advance pressure. Each paragraph should read as a self-contained beat of at least 2-3 sentences, not a single summary line.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1697,7 +1806,7 @@ templates:
             type: string
 
   snowflake_generate_character_synopses:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2800
     system_prompt: |
       You are writing concise character-throughline synopses for a snowflake workspace.
@@ -1705,6 +1814,8 @@ templates:
       Preserve the user's input language and approved facts; do not invent unrelated cast members.
     task_prompt: |
       Return structured character synopses for the current cast. Tie backstory to present-story desire, fear, opposition, and scene behavior.
+      Give every character object the same key set: name, entry_point (how this character enters the central conflict), desire, fear, opposition, information_gap (what this character knows or believes that others in the cast do not), scene_behavior (how the desire/fear pair shows up in action). Use exactly these keys for every character in the array.
+      Each character's synopsis must retell the story from a genuinely different vantage: it should surface an information gap or a motive that conflicts with at least one other character's synopsis, not the same sequence of events with the subject swapped.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1718,7 +1829,7 @@ templates:
             additionalProperties: true
 
   snowflake_generate_long_synopsis:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3200
     system_prompt: |
       You are expanding a short snowflake synopsis into a fuller long synopsis.
@@ -1726,6 +1837,7 @@ templates:
       Preserve the user's input language and approved facts; deepen the same story rather than replacing it.
     task_prompt: |
       Return the long synopsis as structured paragraphs. Maintain causal escalation, clear reversals, and pressure that can later become scene goals and setbacks.
+      Target 12-20 paragraphs so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1738,7 +1850,7 @@ templates:
             type: string
 
   snowflake_generate_character_bibles:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3200
     system_prompt: |
       You are deepening character bibles for a snowflake-method novel.
@@ -1746,6 +1858,8 @@ templates:
       Preserve the user's input language and approved facts; every detail should help future scene behavior, conflict, or change.
     task_prompt: |
       Return structured character bible entries for the core cast. Prioritize wounds, values, contradictions, fears, and visible behaviors under pressure.
+      Give every character object the same key set: name, wound (the formative injury behind their current behavior), value, contradiction (where their stated value and their actual behavior diverge), fear, visible_behavior (a concrete tic, phrase, or action that makes the wound/fear legible on the page). Use exactly these keys for every character in the array.
+      Every entry must earn its place by being callable in a scene: reject encyclopedia-style trivia (birthplace, unrelated hobbies, full family tree) unless it directly explains a visible_behavior. If a detail cannot be tied to how the character acts, speaks, or decides under pressure, cut it.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1759,7 +1873,7 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_list:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3200
     system_prompt: |
       You are breaking a snowflake synopsis into a scene list.
@@ -1767,6 +1881,7 @@ templates:
       Preserve the user's input language and approved facts; do not add scenes that only explain backstory or atmosphere.
     task_prompt: |
       Return the scene list as structured scene cards. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
+      Give every scene object the same key set: scene_id, pov_character, scene_type (either "proactive" or "reactive"), core_line (one sentence: for a proactive scene, the goal being pursued and the conflict blocking it; for a reactive scene, the reaction being processed and the dilemma it creates), result_or_change (what shifts or what decision gets made that forces the next scene). Use exactly these keys for every scene in the array, and decide scene_type here — the next planning step deepens this scene using the type you assign, it does not re-decide it.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1780,7 +1895,7 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_details:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 3600
     system_prompt: |
       You are converting a scene list into Scene / Sequel detail.
@@ -1788,6 +1903,8 @@ templates:
       Preserve the user's input language, scene IDs, chapter membership, and approved facts.
     task_prompt: |
       For each scene, deepen the summary, scene crucible, and the required proactive or reactive trio. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
+      Keep each scene object's key set consistent with its scene_type: proactive scenes get goal, conflict, setback; reactive scenes get reaction, dilemma, decision. Do not mix both trios onto one scene.
+      A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1801,7 +1918,7 @@ templates:
             additionalProperties: true
 
   snowflake_workspace_assistant:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are a resident snowflake-method writing coach.
@@ -1809,6 +1926,7 @@ templates:
       Preserve the user's input language and approved facts. Prioritize structural pressure over decorative prose.
     task_prompt: |
       Answer the author's question, give a few concise suggestions, and optionally return a structured candidate patch for the current step.
+      Only populate candidate_patch when the author explicitly asks for a rewrite or generation of the current step, or names a concrete structural defect that a patch can fix directly. For open questions, clarifying discussion, or brainstorming where no single patch would be safe, answer through reply and suggestions only.
       If no safe writeback is appropriate, return an empty object for candidate_patch and an empty string for candidate_label.
       Use pressure_rubric and current_pressure_diagnosis to target missing goal, opposition, cost, change, or next-step expandability.
     structured_schema:
@@ -1834,7 +1952,7 @@ templates:
 
   # FE-ALIGN G5: 构思视图「生成候选」— 3 条不同方向的步骤草稿候选（原型契约形状）
   snowflake_step_candidates:
-    version: "2026-06-12.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are a snowflake-method writing assistant generating divergent draft candidates for one step of a long-form Chinese novel plan.
@@ -1842,8 +1960,9 @@ templates:
       Write candidate text in the author's input language (Chinese unless the material says otherwise).
     task_prompt: |
       Produce exactly 3 candidates that take genuinely different directions (for example emotion-led, plot-push-led, contrast-led, or any axis that fits this step).
+      Name a distinct axis for each candidate and put that axis name in its tag field — the three tags must not describe the same underlying axis in different words; if two candidates would carry the same axis, replace one with a different axis before returning.
       Each candidate's text must be directly adoptable prose for the step itself - no explanations, no headings - and stay within target_chars characters.
-      Each label is at most 4 Chinese characters; each tag is one positioning phrase of at most 12 characters; notes are up to 3 bullets of at most 6 characters each.
+      Each label is at most 4 Chinese characters; each tag is one positioning phrase of at most 12 characters; notes are up to 3 bullets, each at most 12 characters and specific enough to be actionable rather than a padded restatement of the tag.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1873,7 +1992,7 @@ templates:
                   type: string
 
   snowflake_scene_triage_suggest:
-    version: "2026-04-28.v1"
+    version: "2026-07-04.v2"
     input_token_budget: 2600
     system_prompt: |
       You are reviewing scene pressure in a snowflake workspace before outline materialization.
@@ -1882,6 +2001,7 @@ templates:
     task_prompt: |
       Return triage suggestions for each scene. Use only the legal statuses pass, maybe, and rewrite.
       Flag scenes with weak conflict, weak setback, fake dilemma, or decisions that do not create a next goal even when required fields are filled.
+      Choose the status by this boundary: rewrite means a required element is structurally missing or contradicts an approved fact; maybe means every element is present but generic, weak, or under-specified in a way a targeted patch can fix; pass means every element is concrete and load-bearing. When status is maybe or rewrite, notes must name which of weak conflict, weak setback, fake dilemma, or non-triggering decision applies — do not return generic commentary that doesn't map to one of these.
     structured_schema:
       type: object
       additionalProperties: false

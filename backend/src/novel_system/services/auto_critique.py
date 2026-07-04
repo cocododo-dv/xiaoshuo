@@ -258,6 +258,8 @@ Rules:
 - Keep each directive actionable and under 80 words.
 - Quote or closely paraphrase the offending text in "evidence".
 - Do NOT suggest style preferences — only flag craft failures.
+- "dimension" must be exactly one of the six values listed above, lowercase with underscores — do not invent a new dimension name.
+- Return ONLY the JSON object above: no markdown fences, no prose before or after it.
 """
 
 CRITIC_TASK_PROMPT_TEMPLATE: str = """\

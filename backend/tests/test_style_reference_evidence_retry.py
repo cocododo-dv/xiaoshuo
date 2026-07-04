@@ -1,9 +1,11 @@
 """两级重试机制单测(PR-3 §6.6)。
 
-3 路径:
+5 路径:
 - 初次通过(default rule)
 - 第一级定向补抽通过(fail_then_pass rule:obs 仅 1 evidence,supplement 补 1)
 - 第二级 / 丢弃(evidence_short rule:始终 1 evidence,补抽也无效;最终丢弃 + warning)
+- 空结果重抽(empty_then_default rule:初次返回合法空数组,full_retry 拿到内容)
+- 持续空结果(always_empty rule:只重抽一次即接受空结果,不死循环)
 """
 
 from __future__ import annotations
@@ -152,3 +154,55 @@ def test_retry_path_full_retry_and_drop(fake_extractor_llm) -> None:
     extractions = _extractions_for_run(run_id)
     purposes = [e.purpose for e in extractions]
     assert "full_retry" in purposes, f"应有 full_retry 行,实际 {purposes}"
+
+
+# ---------------------------------------------------------------------------
+# 路径 4:空结果重抽 — 初次返回合法空数组(弱模型"产出薄"),full_retry 拿到内容
+# ---------------------------------------------------------------------------
+
+
+def test_retry_path_empty_result_full_retry(fake_extractor_llm) -> None:
+    book_id, run_id = _ingest_and_run("p4")
+    client = fake_extractor_llm("empty_then_default")
+
+    with SessionLocal() as session:
+        extractor = LanguageExtractor(
+            session, client, run_id=run_id, book_id=book_id
+        )
+        results = extractor.extract_all_sub_dimensions()
+        session.commit()
+
+    # 每 sub_dim 初次空 → full_retry 第二次拿到 3 obs + 1 forbid,共 16
+    total = sum(len(r.findings) for r in results)
+    assert total == 16, f"空结果重抽后应拿到 16 findings,实际 {total}"
+
+    extractions = _extractions_for_run(run_id)
+    purposes = [e.purpose for e in extractions]
+    assert purposes.count("full_retry") == 4, f"每 sub_dim 应 1 次 full_retry,实际 {purposes}"
+
+
+# ---------------------------------------------------------------------------
+# 路径 5:持续空结果 — 只重抽一次(受 max_full_retries 预算),之后接受空结果
+# ---------------------------------------------------------------------------
+
+
+def test_retry_path_always_empty_accepts_after_one_retry(fake_extractor_llm) -> None:
+    book_id, run_id = _ingest_and_run("p5")
+    client = fake_extractor_llm("always_empty")
+
+    with SessionLocal() as session:
+        extractor = LanguageExtractor(
+            session, client, run_id=run_id, book_id=book_id
+        )
+        results = extractor.extract_all_sub_dimensions()
+        session.commit()
+
+    total = sum(len(r.findings) for r in results)
+    assert total == 0
+
+    # 每 sub_dim 恰好 2 次 LLM 调用(初抽 + 1 次空结果重抽),不得死循环
+    assert client.call_count == 8, f"4 sub_dim × 2 次调用,实际 {client.call_count}"
+
+    extractions = _extractions_for_run(run_id)
+    purposes = [e.purpose for e in extractions]
+    assert purposes.count("full_retry") == 4, f"应各 1 次 full_retry,实际 {purposes}"

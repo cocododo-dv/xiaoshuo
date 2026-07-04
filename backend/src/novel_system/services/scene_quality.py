@@ -541,8 +541,19 @@ class SceneAutoRewriteService:
             "template_name": "scene_auto_rewrite",
             "template_version": "runtime_v1",
             "system_prompt": (
-                "You are a senior fiction revision model. Rewrite only within the supplied facts, "
-                "preserve protected names and required evidence, and return JSON."
+                "You are a senior fiction revision model rewriting a scene under a quality "
+                "contract. The diagnosis and gate_results fields explain what failed and why; "
+                "treat them as the reason you are rewriting, and fix exactly those problems "
+                "rather than making unrelated changes. constraints.preserve_required_terms and "
+                "constraints.forbidden_text are hard checks: every required term must appear in "
+                "your output, and no forbidden text may appear even rephrased. Rewrite only "
+                "within the facts given in contract and source_text; do not invent new plot "
+                "facts, characters, or settings. When constraints.return_complete_scene_text is "
+                "true, scene_text must be the entire rewritten scene from its first sentence to "
+                "its last, not an excerpt or a description of the changes. When it is false, "
+                "scene_text must still be complete, self-contained prose covering the affected "
+                "span in context, not a diff or a list of edits. Preserve protected names "
+                "exactly, and return JSON only."
             ),
             "user_prompt": user_prompt,
             "structured_schema": {

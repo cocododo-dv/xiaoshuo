@@ -169,6 +169,28 @@ def test_synthesize_pydantic_validation_failure() -> None:
             synth.synthesize(book_id, run_id)
 
 
+def test_synthesize_rejects_empty_style_features() -> None:
+    """style_features / narrative_patterns 是注入素材,为空的 Profile 必须硬失败。
+
+    banned_replication_rules / calibration_guidance 保持宽松(合法可为空)。
+    """
+    book_id, run_id = _ingest_with_finding("emptyfeat")
+    client = _fake_llm_with_response(
+        {
+            "profile_title": "t",
+            "narrative_summary": "其余字段全部合法的画像简述",
+            "style_features": [],  # 违反 min_length=1
+            "narrative_patterns": ["p"],
+            "banned_replication_rules": [],
+            "calibration_guidance": [],
+        }
+    )
+    with SessionLocal() as session:
+        synth = ProfileSynthesizer(session, llm_client=client, llm_enabled=True)
+        with pytest.raises(SynthesizeError):
+            synth.synthesize(book_id, run_id)
+
+
 def test_synthesize_excludes_rejected_findings() -> None:
     """PR-23 — rejected finding 不进 LLM 聚合 payload,也不进 source_finding_ids_json。"""
     book_id, run_id = _ingest_with_finding("rej")

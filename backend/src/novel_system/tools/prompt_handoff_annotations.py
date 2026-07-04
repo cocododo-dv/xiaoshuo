@@ -197,11 +197,33 @@ INLINE_PROMPTS: dict[str, dict[str, Any]] = {
         "verbatim_blocks": [
             (
                 "system_prompt（函数内联，_generate_llm_candidate）",
-                "You are a senior fiction revision model. Rewrite only within the supplied facts, "
-                "preserve protected names and required evidence, and return JSON.",
+                "You are a senior fiction revision model rewriting a scene under a quality "
+                "contract. The diagnosis and gate_results fields explain what failed and why; "
+                "treat them as the reason you are rewriting, and fix exactly those problems "
+                "rather than making unrelated changes. constraints.preserve_required_terms and "
+                "constraints.forbidden_text are hard checks: every required term must appear in "
+                "your output, and no forbidden text may appear even rephrased. Rewrite only "
+                "within the facts given in contract and source_text; do not invent new plot "
+                "facts, characters, or settings. When constraints.return_complete_scene_text is "
+                "true, scene_text must be the entire rewritten scene from its first sentence to "
+                "its last, not an excerpt or a description of the changes. When it is false, "
+                "scene_text must still be complete, self-contained prose covering the affected "
+                "span in context, not a diff or a list of edits. Preserve protected names "
+                "exactly, and return JSON only.",
                 [
-                    "You are a senior fiction revision model. Rewrite only within the supplied facts, ",
-                    "preserve protected names and required evidence, and return JSON.",
+                    "You are a senior fiction revision model rewriting a scene under a quality ",
+                    "contract. The diagnosis and gate_results fields explain what failed and why; ",
+                    "treat them as the reason you are rewriting, and fix exactly those problems ",
+                    "rather than making unrelated changes. constraints.preserve_required_terms and ",
+                    "constraints.forbidden_text are hard checks: every required term must appear in ",
+                    "your output, and no forbidden text may appear even rephrased. Rewrite only ",
+                    "within the facts given in contract and source_text; do not invent new plot ",
+                    "facts, characters, or settings. When constraints.return_complete_scene_text is ",
+                    "true, scene_text must be the entire rewritten scene from its first sentence to ",
+                    "its last, not an excerpt or a description of the changes. When it is false, ",
+                    "scene_text must still be complete, self-contained prose covering the affected ",
+                    "span in context, not a diff or a list of edits. Preserve protected names ",
+                    "exactly, and return JSON only.",
                 ],
             ),
         ],
@@ -950,10 +972,10 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "task_prompt + JSON payload：sub_dim 定义 + 按段落类型定向抽样的原文段落（20 段级）+ 观察数/证据数指标（config/style_reference/extraction.yaml）。按 sub_dim 逐项调用、逐项 checkpoint 提交。",
         "output_contract": "findings（observation 或 forbidden_pattern，finding_kind 区分）：statement 禁 banned_adjectives.yaml 词表、evidence ≥2 且 span 必须能在原文定位（Pydantic + span 校验）。",
         "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1)],
-        "failure": "两级重试：先 style_ref_supplement_evidence 定向补证，仍不达标整 sub_dim 重抽；最终失败记 _ExtractLLMError、该 sub_dim 缺失。",
+        "failure": "两级重试：先 style_ref_supplement_evidence 定向补证，仍不达标整 sub_dim 重抽；完全空结果（0 findings，合法 schema 输出）同样触发一次整 sub_dim 重抽（受 max_full_retries 预算）；最终失败记 _ExtractLLMError、该 sub_dim 缺失。",
         "opt_notes": (
-            "弱模型「产出薄」重灾区（deepseek-v4-flash 同 payload 可能 0 findings）。优化抓手：给最少 findings 数硬指标、"
-            "每 finding 的字段填写范例（好/坏对照）、把「禁模糊形容词」具象成替换示范；statement 要写成可执行的写作规则而非鉴赏评语。"
+            "弱模型「产出薄」重灾区（deepseek-v4-flash 同 payload 可能 0 findings）。2026-07-04.v2 已落两手：模板给产出下限"
+            "（通常 3-8 条、0 条是罕见例外）、代码对空结果补一次 full_retry。statement 要写成可执行的写作规则而非鉴赏评语。"
         ),
     },
     {
@@ -1046,9 +1068,9 @@ UNITS: list[dict[str, Any]] = [
         "trigger": "POST /api/v2/style-reference/…/synthesize（ProfileSynthesizer.synthesize）。",
         "call_chain": [(f"{SVC}/style_reference/profile_synthesizer.py", "call_llm_node(node_id", 1, "SYNTHESIZE_NODE_ID")],
         "inputs": "task_prompt + JSON：全部 findings（含 forbidden_pattern）+ metrics 基线。",
-        "output_contract": "SynthesizedProfile.model_validate（Pydantic，严格）；失败 SynthesizeError。",
+        "output_contract": "SynthesizedProfile.model_validate（Pydantic，严格）；失败 SynthesizeError。style_features / narrative_patterns 必须非空（min_length=1，空画像是废品宁可硬失败）；calibration_guidance 已入 wire required（存在性压力），与 banned_replication_rules 一样允许为空数组。",
         "parser_refs": [(f"{SVC}/style_reference/profile_synthesizer.py", "SynthesizedProfile.model_validate", 1)],
-        "failure": "LLM 未启用 → LLMRequiredError；RAG 索引构建失败容错不阻塞。",
+        "failure": "LLM 未启用 → LLMRequiredError；style_features / narrative_patterns 为空 → SynthesizeError 硬失败；RAG 索引构建失败容错不阻塞。",
         "opt_notes": "输出即最终注入文本的直接素材：要求每条 profile 规则「指令化」（做什么/不做什么/示例句式骨架），并保留 forbidden_pattern 的独立区块。schema 大且严——弱模型上失败率高，指令中把 schema 关键字段用途讲一遍。",
     },
     {

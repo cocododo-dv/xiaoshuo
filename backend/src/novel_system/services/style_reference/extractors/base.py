@@ -270,6 +270,30 @@ class BaseExtractor:
         result.extractions_created += 1
 
         if not failed:
+            if not findings and self.retry_policy.max_full_retries > 0:
+                # 空 observations/forbidden_patterns 是合法 schema 输出,不会进
+                # 任何既有重试路径 —— 弱模型"产出薄"会让该 sub_dim 静默落空且
+                # 永不补抽。按 full_retry 预算原 payload 重抽一次。
+                logger.warning(
+                    "Empty extraction for %s, retrying once", sub_dim.value
+                )
+                try:
+                    findings = self._extract_once(
+                        sub_dim,
+                        paragraphs,
+                        metrics_anchor,
+                        paragraph_lookup,
+                        purpose=ExtractionPurpose.FULL_RETRY,
+                    )
+                except _PartialResult as partial:
+                    findings = [f for f in partial.findings if len(f.evidence) >= 2]
+                except _ExtractLLMError as exc:
+                    logger.warning("empty-result full retry failed: %s", exc)
+                    findings = []
+                result.extractions_created += 1
+                self._persist_findings(sub_dim, findings, ExtractionPurpose.FULL_RETRY)
+                result.findings = findings
+                return result
             self._persist_findings(sub_dim, findings, ExtractionPurpose.EXTRACT)
             result.findings = findings
             return result

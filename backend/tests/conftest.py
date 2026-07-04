@@ -163,6 +163,9 @@ def fake_extractor_llm():
     - all_banned:obs.statement 全部命中"文笔优美"(BannedAdjective)
     - fail_then_pass:第一次 obs 只带 1 evidence,supplement_evidence 调用返回 1 条
       新 evidence(第一级重试通过)
+    - empty_then_default:每 sub_dim 第一次返回合法空数组(弱模型"产出薄"),
+      第二次(空结果 full_retry)返回 default 内容
+    - always_empty:抽取一律返回空数组(验证空结果只重抽一次、不死循环)
     """
     import json
     import re
@@ -210,6 +213,7 @@ def fake_extractor_llm():
             self.call_count = 0
             self.call_log: list[dict] = []
             self._supplement_call = 0
+            self._extract_calls: dict = {}
 
         def generate(self, request):  # noqa: ANN001
             self.call_count += 1
@@ -243,6 +247,16 @@ def fake_extractor_llm():
             # extract_language / extract_narrative
             if not paragraphs:
                 return _FakeLLMResponse({"observations": [], "forbidden_patterns": []})
+
+            if self.rule == "always_empty":
+                return _FakeLLMResponse({"observations": [], "forbidden_patterns": []})
+            if self.rule == "empty_then_default":
+                self._extract_calls[sub_dim] = self._extract_calls.get(sub_dim, 0) + 1
+                if self._extract_calls[sub_dim] == 1:
+                    return _FakeLLMResponse(
+                        {"observations": [], "forbidden_patterns": []}
+                    )
+                # 第二次(空结果 full_retry)落到 default 分支返回正常内容
 
             observations: list[dict] = []
             forbidden: list[dict] = []

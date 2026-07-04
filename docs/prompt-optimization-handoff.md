@@ -100,11 +100,11 @@
 | 9 | `reference_profile_synthesize` | reference | 孤儿 | yaml:`reference_profile_synthesize` | — |
 | 10 | `style_ref_paragraph_classify_anchor` | style_reference | 活跃 | yaml:`style_ref_paragraph_classify_anchor` | `backend/src/novel_system/services/style_reference/segmentation/llm.py:201` |
 | 11 | `style_ref_paragraph_classify_bulk` | style_reference | 活跃 | yaml:`style_ref_paragraph_classify_bulk` | `backend/src/novel_system/services/style_reference/segmentation/llm.py:201` |
-| 12 | `style_ref_extract_language` | style_reference | 活跃 | yaml:`style_ref_extract_language` | `backend/src/novel_system/services/style_reference/extractors/base.py:506` |
-| 13 | `style_ref_extract_narrative` | style_reference | 活跃 | yaml:`style_ref_extract_narrative` | `backend/src/novel_system/services/style_reference/extractors/base.py:506` |
-| 14 | `style_ref_extract_scene` | style_reference | 活跃 | yaml:`style_ref_extract_scene` | `backend/src/novel_system/services/style_reference/extractors/base.py:506` |
-| 15 | `style_ref_extract_theme` | style_reference | 活跃 | yaml:`style_ref_extract_theme` | `backend/src/novel_system/services/style_reference/extractors/base.py:506` |
-| 16 | `style_ref_supplement_evidence` | style_reference | 活跃 | yaml:`style_ref_supplement_evidence` | `backend/src/novel_system/services/style_reference/extractors/base.py:506` |
+| 12 | `style_ref_extract_language` | style_reference | 活跃 | yaml:`style_ref_extract_language` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
+| 13 | `style_ref_extract_narrative` | style_reference | 活跃 | yaml:`style_ref_extract_narrative` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
+| 14 | `style_ref_extract_scene` | style_reference | 活跃 | yaml:`style_ref_extract_scene` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
+| 15 | `style_ref_extract_theme` | style_reference | 活跃 | yaml:`style_ref_extract_theme` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
+| 16 | `style_ref_supplement_evidence` | style_reference | 活跃 | yaml:`style_ref_supplement_evidence` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
 | 17 | `style_ref_synthesize_profile` | style_reference | 活跃 | yaml:`style_ref_synthesize_profile` | `backend/src/novel_system/services/style_reference/profile_synthesizer.py:154` |
 | 18 | `style_ref_preview_generate` | style_reference | 活跃 | yaml:`style_ref_preview_generate` | `backend/src/novel_system/services/style_reference/preview.py:164` |
 | 19 | `style_ref_validate_semantic` | style_reference | 活跃 | yaml:`style_ref_validate_semantic` | `backend/src/novel_system/services/style_reference/validation/semantic.py:49` |
@@ -120,7 +120,7 @@
 | 29 | `style_draft` | scene_generation | 活跃 | yaml:`style_draft` | `backend/src/novel_system/services/scene_generation.py:835` |
 | 30 | `style_patch` | scene_generation | 活跃 | yaml:`style_draft` | `backend/src/novel_system/services/scene_generation.py:835`；`backend/src/novel_system/services/scene_generation.py:958` |
 | 31 | `scene_literary_rewrite` | rewrite | 活跃 | yaml:`scene_literary_rewrite` | `backend/src/novel_system/services/scene_generation.py:835` |
-| 32 | `scene_auto_rewrite` | rewrite | 活跃 | 内联:`scene_quality.py` | `backend/src/novel_system/services/scene_quality.py:572` |
+| 32 | `scene_auto_rewrite` | rewrite | 活跃 | 内联:`scene_quality.py` | `backend/src/novel_system/services/scene_quality.py:583` |
 | 33 | `long_form_continuation` | scene_generation | 活跃 | yaml:`long_form_continuation` | `backend/src/novel_system/services/scene_generation.py:693` |
 | 34 | `hard_qc` | quality | 活跃 | yaml:`hard_qc` | `backend/src/novel_system/services/qc_engine.py:655` |
 | 35 | `soft_qc` | quality | 活跃 | yaml:`soft_qc` | `backend/src/novel_system/services/qc_engine.py:1347` |
@@ -149,7 +149,7 @@
 | 58 | `continuity_compression` | local | 保留 | yaml:`continuity_compression` | — |
 | 59 | `archive` | local | 本地保留 | 无 | — |
 | 60 | `chapter_aggregate` | local | 本地保留 | 无 | — |
-| — | `auto_critique_llm`（run_task 任务名） | — | 顾问·活跃（别名→soft_qc） | 内联:`auto_critique.py` | `backend/src/novel_system/services/auto_critique.py:306` |
+| — | `auto_critique_llm`（run_task 任务名） | — | 顾问·活跃（别名→soft_qc） | 内联:`auto_critique.py` | `backend/src/novel_system/services/auto_critique.py:308` |
 | — | `narrative_event_extract`（run_task 任务名） | — | 顾问·活跃（别名→extraction） | 内联:`prose_event_extractor.py` | `backend/src/novel_system/services/prose_event_extractor.py:87` |
 | — | `consistency_extract`（run_task 任务名） | — | 顾问·休眠（无路由无注册） | 内联:`narrative_event_log.py` | `backend/src/novel_system/services/narrative_event_log.py:501` |
 | — | `causal_skeleton_refine`（run_task 任务名） | — | 顾问·休眠（无路由无注册） | 内联:`reverse_causal_skeleton.py` | `backend/src/novel_system/services/reverse_causal_skeleton.py:180` |
@@ -177,7 +177,7 @@
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_book_brief`（version `2026-04-28.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_book_brief`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「读者定位 / 一书简报」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -200,6 +200,8 @@ Preserve the user's input language and all approved snowflake facts. Every field
 ```text
 Generate the book-brief layer for the current project.
 Keep the output concrete, reader-facing, and pressure-aware. Use the provided pressure_rubric and current_pressure_diagnosis to repair generic reader promise, story pressure, or missing cost.
+Keep genre_promise, delight_reason, and expected_reader_emotion distinct: genre_promise names the concrete payoff scene-type the reader is buying a ticket for; delight_reason names the specific mechanism that makes that payoff satisfying (not why the genre in general is popular); expected_reader_emotion names the felt reaction at the payoff moment, not a mood label for the whole book. Do not fill any of the three with generic marketing language such as "跌宕起伏", "扣人心弦", or "引人入胜" — if a phrase could paste into any book's blurb unchanged, replace it with something specific to this story.
+Return at least 3 safety_rules, each covering a distinct risk (not restatements of the same constraint), and each phrased so it can be applied directly as a writing prohibition during drafting.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -251,7 +253,7 @@ Keep the output concrete, reader-facing, and pressure-aware. Use the provided pr
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_one_sentence_summary`（version `2026-04-28.v1`，input_token_budget 2200）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_one_sentence_summary`（version `2026-07-04.v2`，input_token_budget 2200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「一句话梗概」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -273,6 +275,8 @@ Preserve the user's input language and approved facts; do not drift into a new p
 
 ```text
 Return one sentence that captures protagonist, desire, conflict, and cost. Use the pressure_rubric to make the sentence expandable into scenes.
+Keep it to roughly 15-25 Chinese characters (or an equivalent single-clause length in the input language) — one causal beat, not a compound sentence stitched together with "而/但/却/然而".
+Do not stack decorative adjectives in place of the causal beat (for example, a chain like "神秘的青年在诡谲的乱世中，怀着悲壮的信念…" that never states the concrete desire/conflict/cost is not acceptable) — every word must carry protagonist, desire, conflict, or cost, not atmosphere.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -297,7 +301,7 @@ Return one sentence that captures protagonist, desire, conflict, and cost. Use t
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_one_paragraph_summary`（version `2026-04-28.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_one_paragraph_summary`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「一段话梗概」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -319,6 +323,8 @@ Preserve the user's input language and approved facts; each sentence should make
 
 ```text
 Return five key sentences and a moral premise. Sentences 2/3/4 ARE the three disasters and sentence 5 is the ending — the three-act check is derived from them, so do not return it separately. Use the pressure_rubric and current_pressure_diagnosis to strengthen weak disasters, moral turns, and ending cost.
+The sentences array must contain exactly 5 items, no more and no fewer — if you cannot yet justify a strong fifth sentence, write the best available ending consequence rather than omitting it or padding with a sixth.
+moral_premise is the thematic argument the protagonist proves through action by the story's end (for example: "只有放弃对复仇的执念才能获得真正的自由"), not a moral lecture, a generic virtue ("善良终将战胜邪恶"), or a restatement of the plot.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -350,7 +356,7 @@ Return five key sentences and a moral premise. Sentences 2/3/4 ARE the three dis
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_character_sheets`（version `2026-04-28.v1`，input_token_budget 2800）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_character_sheets`（version `2026-07-04.v2`，input_token_budget 2800）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「角色卡」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -372,6 +378,7 @@ Preserve the user's input language and approved facts; every important character
 
 ```text
 Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
+Give every character object the same key set so downstream tooling can read them uniformly: name, goal (concrete, scene-actionable desire), opposition (who or what blocks the goal and why), value_conflict (the belief this character must risk to pursue the goal), epiphany (what changes and what triggers it), scene_potential (one line on what kind of scene this character's pressure can generate). Use exactly these keys for every character in the array.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -400,7 +407,7 @@ Return structured character sheets for the key cast. Emphasize concrete goals, b
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_short_synopsis`（version `2026-04-28.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_short_synopsis`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「一页梗概」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -422,6 +429,7 @@ Preserve the user's input language and approved facts; avoid summary filler that
 
 ```text
 Return a short synopsis as structured paragraphs. Each paragraph should contain a pressure turn: action, resistance, consequence, and changed situation.
+Target 5-9 paragraphs — enough to cover setup, escalating complications, and resolution without compressing multiple pressure turns into one paragraph or padding with paragraphs that don't advance pressure. Each paragraph should read as a self-contained beat of at least 2-3 sentences, not a single summary line.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -449,7 +457,7 @@ Return a short synopsis as structured paragraphs. Each paragraph should contain 
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_character_synopses`（version `2026-04-28.v1`，input_token_budget 2800）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_character_synopses`（version `2026-07-04.v2`，input_token_budget 2800）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「角色梗概」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -471,6 +479,8 @@ Preserve the user's input language and approved facts; do not invent unrelated c
 
 ```text
 Return structured character synopses for the current cast. Tie backstory to present-story desire, fear, opposition, and scene behavior.
+Give every character object the same key set: name, entry_point (how this character enters the central conflict), desire, fear, opposition, information_gap (what this character knows or believes that others in the cast do not), scene_behavior (how the desire/fear pair shows up in action). Use exactly these keys for every character in the array.
+Each character's synopsis must retell the story from a genuinely different vantage: it should surface an information gap or a motive that conflicts with at least one other character's synopsis, not the same sequence of events with the subject swapped.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -499,7 +509,7 @@ Return structured character synopses for the current cast. Tie backstory to pres
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_long_synopsis`（version `2026-04-28.v1`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_long_synopsis`（version `2026-07-04.v2`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「长纲」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -521,6 +531,7 @@ Preserve the user's input language and approved facts; deepen the same story rat
 
 ```text
 Return the long synopsis as structured paragraphs. Maintain causal escalation, clear reversals, and pressure that can later become scene goals and setbacks.
+Target 12-20 paragraphs so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -548,7 +559,7 @@ Return the long synopsis as structured paragraphs. Maintain causal escalation, c
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_character_bibles`（version `2026-04-28.v1`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_character_bibles`（version `2026-07-04.v2`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「角色圣经」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -570,6 +581,8 @@ Preserve the user's input language and approved facts; every detail should help 
 
 ```text
 Return structured character bible entries for the core cast. Prioritize wounds, values, contradictions, fears, and visible behaviors under pressure.
+Give every character object the same key set: name, wound (the formative injury behind their current behavior), value, contradiction (where their stated value and their actual behavior diverge), fear, visible_behavior (a concrete tic, phrase, or action that makes the wound/fear legible on the page). Use exactly these keys for every character in the array.
+Every entry must earn its place by being callable in a scene: reject encyclopedia-style trivia (birthplace, unrelated hobbies, full family tree) unless it directly explains a visible_behavior. If a detail cannot be tied to how the character acts, speaks, or decides under pressure, cut it.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -598,7 +611,7 @@ Return structured character bible entries for the core cast. Prioritize wounds, 
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_scene_list`（version `2026-04-28.v1`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_scene_list`（version `2026-07-04.v2`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「场景清单」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -620,6 +633,7 @@ Preserve the user's input language and approved facts; do not add scenes that on
 
 ```text
 Return the scene list as structured scene cards. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
+Give every scene object the same key set: scene_id, pov_character, scene_type (either "proactive" or "reactive"), core_line (one sentence: for a proactive scene, the goal being pursued and the conflict blocking it; for a reactive scene, the reaction being processed and the dilemma it creates), result_or_change (what shifts or what decision gets made that forces the next scene). Use exactly these keys for every scene in the array, and decide scene_type here — the next planning step deepens this scene using the type you assign, it does not re-decide it.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -648,7 +662,7 @@ Return the scene list as structured scene cards. Each scene needs POV pressure, 
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_scene_details`（version `2026-04-28.v1`，input_token_budget 3600）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_scene_details`（version `2026-07-04.v2`，input_token_budget 3600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「场景规划」步的整步草稿生成/补全。
 - **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
@@ -670,6 +684,8 @@ Preserve the user's input language, scene IDs, chapter membership, and approved 
 
 ```text
 For each scene, deepen the summary, scene crucible, and the required proactive or reactive trio. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
+Keep each scene object's key set consistent with its scene_type: proactive scenes get goal, conflict, setback; reactive scenes get reaction, dilemma, decision. Do not mix both trios onto one scene.
+A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -698,7 +714,7 @@ For each scene, deepen the summary, scene crucible, and the required proactive o
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`snowflake_step_candidates`
-- **模板**：`config/prompts.yaml` → `snowflake_step_candidates`（version `2026-06-12.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `snowflake_step_candidates`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.7，max_output_tokens=1800，response_format=`json_object`
 - **用途**：构思视图「生成 3 条不同方向候选」——同一步骤给出三个方向上真正不同的草稿候选。
 - **触发**：POST /api/v2/projects/{id}/snowflake-workspace/steps/{key}/fe-candidates（前端带折叠上下文）。
@@ -720,8 +736,9 @@ Write candidate text in the author's input language (Chinese unless the material
 
 ```text
 Produce exactly 3 candidates that take genuinely different directions (for example emotion-led, plot-push-led, contrast-led, or any axis that fits this step).
+Name a distinct axis for each candidate and put that axis name in its tag field — the three tags must not describe the same underlying axis in different words; if two candidates would carry the same axis, replace one with a different axis before returning.
 Each candidate's text must be directly adoptable prose for the step itself - no explanations, no headings - and stay within target_chars characters.
-Each label is at most 4 Chinese characters; each tag is one positioning phrase of at most 12 characters; notes are up to 3 bullets of at most 6 characters each.
+Each label is at most 4 Chinese characters; each tag is one positioning phrase of at most 12 characters; notes are up to 3 bullets, each at most 12 characters and specific enough to be actionable rather than a padded restatement of the tag.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -773,7 +790,7 @@ Each label is at most 4 Chinese characters; each tag is one positioning phrase o
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`snowflake_workspace_assistant`
-- **模板**：`config/prompts.yaml` → `snowflake_workspace_assistant`（version `2026-04-28.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `snowflake_workspace_assistant`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.35，max_output_tokens=2200，response_format=`json_object`
 - **用途**：步骤内多轮教练式对话：根据作者 message 与当前草稿给出建议或直接产出草稿 patch。
 - **触发**：构思工作台助手端点（api/routes/snowflake_workspace.py → request_assistant）。
@@ -795,6 +812,7 @@ Preserve the user's input language and approved facts. Prioritize structural pre
 
 ```text
 Answer the author's question, give a few concise suggestions, and optionally return a structured candidate patch for the current step.
+Only populate candidate_patch when the author explicitly asks for a rewrite or generation of the current step, or names a concrete structural defect that a patch can fix directly. For open questions, clarifying discussion, or brainstorming where no single patch would be safe, answer through reply and suggestions only.
 If no safe writeback is appropriate, return an empty object for candidate_patch and an empty string for candidate_label.
 Use pressure_rubric and current_pressure_diagnosis to target missing goal, opposition, cost, change, or next-step expandability.
 ```
@@ -837,7 +855,7 @@ Use pressure_rubric and current_pressure_diagnosis to target missing goal, oppos
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`snowflake_scene_triage`
-- **模板**：`config/prompts.yaml` → `snowflake_scene_triage_suggest`（version `2026-04-28.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `snowflake_scene_triage_suggest`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.15，max_output_tokens=2200，response_format=`json_object`
 - **用途**：物化前对每个场景计划给 pass / maybe / rewrite 三态建议（qualified/needs_fix/rewrite 分诊的 LLM 辅助）。
 - **触发**：POST …/snowflake-workspace/scene-triage/suggest（api/routes/snowflake_workspace.py → suggest_scene_triage）。
@@ -860,6 +878,7 @@ Preserve scene IDs and the user's input language. Diagnose pressure, not prose p
 ```text
 Return triage suggestions for each scene. Use only the legal statuses pass, maybe, and rewrite.
 Flag scenes with weak conflict, weak setback, fake dilemma, or decisions that do not create a next goal even when required fields are filled.
+Choose the status by this boundary: rewrite means a required element is structurally missing or contradicts an approved fact; maybe means every element is present but generic, weak, or under-specified in a way a targeted patch can fix; pass means every element is concrete and load-bearing. When status is maybe or rewrite, notes must name which of weak conflict, weak setback, fake dilemma, or non-triggering decision applies — do not return generic commentary that doesn't map to one of these.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -928,7 +947,7 @@ Flag scenes with weak conflict, weak setback, fake dilemma, or decisions that do
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`project_outline_plan`
-- **模板**：`config/prompts.yaml` → `project_outline_plan`（version `2026-04-26.v1`，input_token_budget 3000）
+- **模板**：`config/prompts.yaml` → `project_outline_plan`（version `2026-07-04.v2`，input_token_budget 3000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：项目级 OutlinePlan 的 LLM 生成（雪花之外的粗纲入口）。
 - **触发**：POST /api/v1/projects/{id}/outline（api/routes/projects.py → OutlinePlannerService）。
@@ -948,6 +967,7 @@ Use only abstract reference-style guidance. Do not copy source-book wording, cha
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
+This is a fast, coarse outline entry point separate from the snowflake-method workspace — keep every field at chapter/scene skeleton grain, not snowflake-step-9/10 depth. Do not produce character psychology, backstory, or foreshadow-lifecycle detail here; that belongs to the snowflake pipeline if the author chooses to use it.
 Split the outline into chapters and scenes that can map directly to ChapterGoal and SceneCard.
 Return chapter_goal, main_plot_push, emotional_target, ending_effect, must_not, and scenes.
 Each scene must include scene_goal, beats_json, must_include_text, forbidden_text, exit_change, hook, target_length_band, and scene_type.
@@ -991,7 +1011,7 @@ The user will approve this plan before any prose is drafted.
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`scene_blueprint`
-- **模板**：`config/prompts.yaml` → `scene_blueprint`（version `2026-04-25.v2`，input_token_budget 2200）
+- **模板**：`config/prompts.yaml` → `scene_blueprint`（version `2026-07-04.v2`，input_token_budget 2200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.25，max_output_tokens=1800，response_format=`json_object`
 - **用途**：起草前的场景文学蓝图：感知策略、意象预算、冲突走向等写作策略层决策（质量地板 v2 的第一环）。
 - **触发**：场景运行管线自动（orchestrator）或 POST /api/v1/scenes/{id}/blueprint。
@@ -1016,6 +1036,12 @@ Build the scene readability proposal v2 from the supplied chapter goal, scene ca
 Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
 Output fixed fields only: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, next_scene_pull, anti_summary_rule.
 Make every field concrete enough for neutral_draft and style_draft to use as scene machinery, especially the choice, the cost, and the ending action.
+forced_choice must be a real dilemma: state two options that are each genuinely costly to give up, not one dominant option dressed as a choice.
+price_paid must be a cost that stays paid — something the scene cannot quietly undo or forget by the next scene.
+information_release must specify what gets released through action, discovery, or consequence, not through a character stating it aloud or narration summarizing it.
+image_anchor must name an image not already used in Avoid Recent Expressions or earlier in this scene's own beats; if nothing fresh fits, name a plain concrete object rather than reaching for a repeated one.
+ending_action must be a physical or verbal action the POV character takes or witnesses, not a reflective or summarizing line about what the scene meant.
+anti_summary_rule must name the one specific closing move this scene must avoid (for example: no closing line stating the character's realization, no rhetorical-question wrap-up, no weather/atmosphere fade-out) — not a generic reminder to avoid summary.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1072,7 +1098,7 @@ Make every field concrete enough for neutral_draft and style_draft to use as sce
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`chapter_story_architecture`
-- **模板**：`config/prompts.yaml` → `chapter_story_architecture`（version `2026-04-25.v1`，input_token_budget 2400）
+- **模板**：`config/prompts.yaml` → `chapter_story_architecture`（version `2026-07-04.v2`，input_token_budget 2400）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.25，max_output_tokens=2200，response_format=`json_object`
 - **用途**：近终稿规划：章级承诺-兑现结构、场景间的势能分配（写进后续生成的上下文分节）。
 - **触发**：场景执行契约生成（POST /api/v1/scenes/{id}/execution-contract → NearFinalPlanningService）。
@@ -1096,6 +1122,7 @@ Stay concrete and preserve the supplied chapter and scene facts.
 Build a compact chapter story architecture from the supplied chapter goal, chapter writer brief, scene cards, and longform guidance.
 Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
 The architecture must help later scene prompts avoid isolated good scenes that fail chapter payoff.
+Each entry in escalation_path must introduce a different kind of pressure than the one before it (a new obstacle type, a new relationship cost, a new piece of information, a new deadline) — do not restate the same pressure with a bigger adjective.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1146,7 +1173,7 @@ The architecture must help later scene prompts avoid isolated good scenes that f
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`character_pressure_blueprint`
-- **模板**：`config/prompts.yaml` → `character_pressure_blueprint`（version `2026-04-25.v1`，input_token_budget 2400）
+- **模板**：`config/prompts.yaml` → `character_pressure_blueprint`（version `2026-07-04.v2`，input_token_budget 2400）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.25，max_output_tokens=1800，response_format=`json_object`
 - **用途**：近终稿规划：本场景对每个到场角色施加的压力/代价/决策点（Character Pressure 分节的来源）。
 - **触发**：同上（执行契约生成，include_chapter_architecture=True 后串行）。
@@ -1169,6 +1196,8 @@ Before prose generation, identify the character pressure that must become visibl
 Build one character pressure blueprint for the scene's point-of-view or primary decision-maker.
 Write string fields in Chinese when the source context is Chinese, while preserving English schema keys.
 Every field must be usable by drafting and near-final review: surface_goal, hidden_fear, wrong_belief, shame_point, avoidance_strategy, relationship_debt, and current_mask.
+Keep the seven fields distinct: surface_goal is what the character says or visibly pursues; hidden_fear is the emotional threat they are protecting against; wrong_belief is the false idea driving their choices that the story will eventually cost them; shame_point is the specific thing they would be humiliated to have seen, different from hidden_fear; avoidance_strategy is the concrete behavior they use to dodge the shame_point; relationship_debt is what they owe or have taken from another character that is not yet settled; current_mask is the face they show in this scene that papers over the rest.
+This scene's pressure must leave a residue: at least one of these seven must still be unresolved or costly when the scene ends, not neatly closed.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1217,7 +1246,7 @@ Every field must be usable by drafting and near-final review: surface_goal, hidd
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`neutral_draft`
-- **模板**：`config/prompts.yaml` → `neutral_draft`（version `2026-04-25.v2`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `neutral_draft`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.6，max_output_tokens=6000，response_format=`json_object`
 - **用途**：无风格化的场景正文初稿——把 spec（目标/冲突/挫败或反应/两难/决定）落成完整叙事，供风格层加工。
 - **触发**：场景运行管线（POST /api/v1/scenes/{id}/run/jobs → Orchestrator.run_scene）。
@@ -1246,6 +1275,7 @@ If Chapter Story Architecture is present, obey its promise, escalation path, rev
 Avoid model-voice shortcuts: no explanatory dialogue dump, no no-choice scene, no summary ending, and keep image anchors varied rather than repetitive.
 Write prose in the same language as the chapter goal and scene card.
 If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; do not translate Chinese settings, beats, or required text into English.
+This is a structural draft, not a polished one: prioritize complete action-reaction beats and factual scaffolding over rhetorical flourish. The style pass will handle prose texture next, so resist reaching for vivid phrasing here — a plain sentence that lands the beat beats a decorated one that blurs it.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1276,7 +1306,7 @@ If the chapter goal or scene card contains Chinese text, scene_text must be Chin
 - **状态**：活跃（注册表 template_name="stylize" 只是路由别名；实际提示词即本模板）
 - **优先级**：P0
 - **节点**：`style_draft`、`style_patch`
-- **模板**：`config/prompts.yaml` → `style_draft`（version `2026-04-25.v2`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `style_draft`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `style_draft`：model=`gpt-5`，temperature=0.8，max_output_tokens=6000，response_format=`json_object`，frequency_penalty=0.3，presence_penalty=0.15
 - **路由（yaml 兜底，DB 优先）** `style_patch`：model=`gpt-5`，temperature=0.8，max_output_tokens=6000，response_format=`json_object`，frequency_penalty=0.3，presence_penalty=0.15
 - **用途**：把中性稿加工成风格化正文（Best-of-N 多候选）；soft_patch 分支按 QC 的 patch_brief 做定向修补；另有去模板化 pass 复用 style_patch 节点。
@@ -1315,6 +1345,12 @@ Follow the Style Feature Contract dimension by dimension:
 - paragraph_density: block length, line-break frequency, compression level.
 - dialogue_ratio: spoken line share and silence around speech.
 Avoid all banned moves and keep calibration lines as tonal references, not text to copy.
+Guard against the five most common AI-voice failures on top of the dimensions above:
+- perception filter: at least one sensory or emotional beat per paragraph must be filtered through the POV character's body or immediate feeling, not narrated from a neutral, all-knowing distance.
+- no summary endings: end paragraphs and the scene on action or unresolved tension, never on a sentence that states what just happened or what it meant.
+- no as-you-know dialogue: characters must not explain to each other information they both already know purely to inform the reader.
+- no cross-paragraph image reuse: once a sensory image or metaphor appears, do not reuse it, even reworded, elsewhere in this scene.
+- vary sentence rhythm: break up any run of same-length, same-shape sentences with a mix of short and long ones.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1345,7 +1381,7 @@ Avoid all banned moves and keep calibration lines as tonal references, not text 
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`long_form_continuation`
-- **模板**：`config/prompts.yaml` → `long_form_continuation`（version `2026-05-31.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `long_form_continuation`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.7，max_output_tokens=4000，response_format=`json_object`，refresh_every_chars=8000
 - **用途**：长场景/长章的分段续写，每 8000 字符重新拉取 [STYLE_REFERENCE] 注入防风格漂移（refresh_every_chars=8000）。
 - **触发**：场景运行管线长文分支（generate_long_form_continuation）。
@@ -1370,6 +1406,7 @@ Do not restart the scene, summarize earlier beats, or repeat the last paragraph 
 Preserve character identity, POV distance, scene pressure, and style-reference guidance across the continuation.
 If Longform Structure Guidance is present, treat it as pressure for arc, promise, payoff, and information release timing.
 End this continuation chunk on live forward motion rather than explanation.
+Pick up specifically from the last unresolved action or emotional beat in the continuation-so-far — name what was mid-motion and continue it — rather than opening on a fresh establishing description. Do not re-introduce characters who already appear in the source draft or prior continuation as if for the first time.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1400,7 +1437,7 @@ End this continuation chunk on live forward motion rather than explanation.
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`scene_literary_rewrite`
-- **模板**：`config/prompts.yaml` → `scene_literary_rewrite`（version `2026-04-25.v1`，input_token_budget 3000）
+- **模板**：`config/prompts.yaml` → `scene_literary_rewrite`（version `2026-07-04.v2`，input_token_budget 3000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.55，max_output_tokens=6000，response_format=`json_object`
 - **用途**：近终稿阶段的整场文学化重写（比 style_draft 更激进的质量拉升，quality_strong 档）。
 - **触发**：场景运行管线 rewrite 分支（llm_step="scene_literary_rewrite" 时走专用模板）。
@@ -1426,6 +1463,7 @@ If Character Pressure Blueprint is present, make hidden fear, wrong belief, sham
 If Chapter Story Architecture is present, serve the chapter promise, reveal plan, payoff target, character shift, and ending question.
 Avoid model-voice shortcuts, explanatory dialogue dumps, no-choice scenes, summary endings, and repeated generic gestures.
 Return Chinese prose when the source scene is Chinese.
+You have more latitude here than a style pass: you may reorder sentences, merge or split paragraphs, and cut redundancy to strengthen the scene's shape. You must not change plot facts, character names, continuity details, planted foreshadowing, or any required text — structural surgery is allowed, factual surgery is not.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1460,16 +1498,16 @@ Return Chinese prose when the source scene is Chinese.
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.55，max_output_tokens=5000，response_format=`json_object`
 - **用途**：质量契约兜底改写：按诊断/门禁结果对场景做 full_scene 或局部分支改写，产出候选走人工确认。
 - **触发**：POST /api/v1/scenes/{id}/auto-rewrite（api/routes/scenes.py → SceneAutoRewriteService.run）。
-- **调用链**：`backend/src/novel_system/services/scene_quality.py:572`（_generate_llm_candidate（occurrence 1 是离线审计行））
+- **调用链**：`backend/src/novel_system/services/scene_quality.py:583`（_generate_llm_candidate（occurrence 1 是离线审计行））
 - **输入组装**：user_prompt = canonical_json 快照（contract/source_text/diagnosis/gate_results/constraints——含 preserve_required_terms/forbidden_text）。
-- **输出契约**：scene_text 必填（缺失 → SCENE_AUTO_REWRITE_EMPTY 502）；rewrite_notes 可选。（解析/校验：`backend/src/novel_system/services/scene_quality.py:593`）
+- **输出契约**：scene_text 必填（缺失 → SCENE_AUTO_REWRITE_EMPTY 502）；rewrite_notes 可选。（解析/校验：`backend/src/novel_system/services/scene_quality.py:604`）
 - **失败与降级**：路由缺失/调用失败 → SCENE_AUTO_REWRITE_LLM_FAILED 409（引导配路由）；离线走确定性候选并落审计行。
 - **优化注意**：system_prompt 只有一句话，信息量过低——是全系统最值得重写的内联提示词。改写目标、保护项、分支语义（full_scene vs 局部）都应进 system_prompt；改动要回写 scene_quality.py（无 yaml）。
 
 **system_prompt（函数内联，_generate_llm_candidate）**
 
 ```text
-You are a senior fiction revision model. Rewrite only within the supplied facts, preserve protected names and required evidence, and return JSON.
+You are a senior fiction revision model rewriting a scene under a quality contract. The diagnosis and gate_results fields explain what failed and why; treat them as the reason you are rewriting, and fix exactly those problems rather than making unrelated changes. constraints.preserve_required_terms and constraints.forbidden_text are hard checks: every required term must appear in your output, and no forbidden text may appear even rephrased. Rewrite only within the facts given in contract and source_text; do not invent new plot facts, characters, or settings. When constraints.return_complete_scene_text is true, scene_text must be the entire rewritten scene from its first sentence to its last, not an excerpt or a description of the changes. When it is false, scene_text must still be complete, self-contained prose covering the affected span in context, not a diff or a list of edits. Preserve protected names exactly, and return JSON only.
 ```
 
 **structured_schema（代码内联；字段名冻结）**
@@ -1502,7 +1540,7 @@ You are a senior fiction revision model. Rewrite only within the supplied facts,
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`writer_passage_patch`
-- **模板**：`config/prompts.yaml` → `writer_passage_patch`（version `2026-04-25.v1`，input_token_budget 2400）
+- **模板**：`config/prompts.yaml` → `writer_passage_patch`（version `2026-07-04.v2`，input_token_budget 2400）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.45，max_output_tokens=2600，response_format=`json_object`
 - **用途**：深评/写作间里对选中段落的定向修补（保持上下文咬合的局部重写）。
 - **触发**：深评修补端点（api/routes/writer_deep_review.py → create_patch_candidate）。
@@ -1527,6 +1565,7 @@ Return at least 2 and at most 3 distinct replacement options with different tone
 (for example: shorter / sharper / subtler), so the author has a real choice.
 Write in the source language. Preserve continuity, names, facts, and author intent.
 Return concise patch records that the author can manually accept or reject.
+Every replacement_text must read as a seamless continuation of the untouched text around it: match the tense, POV, and tone of the sentence immediately before and after the patched span so the seam is not detectable.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1600,7 +1639,7 @@ Return concise patch records that the author can manually accept or reject.
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`hard_qc`
-- **模板**：`config/prompts.yaml` → `hard_qc`（version `2026-04-14.v1`，input_token_budget 2200）
+- **模板**：`config/prompts.yaml` → `hard_qc`（version `2026-07-04.v2`，input_token_budget 2200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.2，max_output_tokens=2200，response_format=`json_object`
 - **用途**：阻断级质量闸：事实/连续性/必含文本/禁词等硬约束违反检测，决定 pass/部分重写/全量重写/转人工。
 - **触发**：场景运行管线 QC 阶段（HardQcEngine.evaluate）。
@@ -1627,6 +1666,9 @@ hard_fail_partial / false / partial_rewrite,
 hard_fail_full / false / full_rewrite,
 hard_block_human / false / human_review_required.
 Always include rewrite_brief; use an empty array when the draft passes.
+Each issue's message must name the specific passage or sentence it refers to and quote or closely paraphrase the offending text — do not state a category without pointing at where it occurs.
+Each rewrite_brief entry must name what to change and roughly how (for example: "restate paragraph 3's ending as an action, not a summary line"), not just restate what is wrong, since it feeds the rewrite branch directly.
+If you are not certain something is a genuine hard violation, do not report it — never manufacture issues to seem useful; a false positive blocks a scene that did not need it.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1698,7 +1740,7 @@ Always include rewrite_brief; use an empty array when the draft passes.
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`soft_qc`
-- **模板**：`config/prompts.yaml` → `soft_qc`（version `2026-04-25.v2`，input_token_budget 1800）
+- **模板**：`config/prompts.yaml` → `soft_qc`（version `2026-07-04.v2`，input_token_budget 1800）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.2，max_output_tokens=1800，response_format=`json_object`
 - **用途**：风格/表达层质量评审：产出 patch 建议或放行（soft_pass/soft_patch/soft_waive/soft_block_human）。
 - **触发**：场景运行管线 QC 阶段（SoftQcEngine.evaluate）。
@@ -1728,6 +1770,7 @@ soft_pass / true / pass,
 soft_patch / false / patch,
 soft_waive / true / pass_with_notes,
 soft_block_human / false / human_review_required.
+Each style_deviations entry's patch_brief must name the location (which paragraph or line), which of the literary risks above it corresponds to, and a concrete rewrite direction — not a vague instruction like "improve rhythm here".
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1860,7 +1903,7 @@ soft_block_human / false / human_review_required.
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`near_final_acceptance_review`
-- **模板**：`config/prompts.yaml` → `near_final_acceptance_review`（version `2026-04-25.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `near_final_acceptance_review`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=2600，response_format=`json_object`
 - **用途**：场景级近终稿验收评审：对照执行契约/架构工件做放行判断。
 - **触发**：近终稿管线（NearFinalAcceptanceService.evaluate_scene）。
@@ -1886,6 +1929,8 @@ A ready scene must have story necessity, character pressure, forced choice press
 Do not pass scenes that rely on abstract summary, explanatory cause-and-effect, no-choice motion, generic "she knew" clarity, or soft atmospheric ending instead of a hard next-scene action.
 Use failure_class only from: fact_blocker, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, chapter_payoff_gap, reference_safety.
 If the scene is ready, near_final_status must be near_final_ready and pass_flag true. Otherwise near_final_status must be revision_required and pass_flag false.
+This review checks whether the scene's contractual promises are fulfilled, not hard factual correctness — that is hard_qc's job. Go clause by clause against the execution contract and architecture artifacts rather than re-checking facts from scratch.
+Give every findings entry the same key set: dimension (which readiness dimension from above it concerns), evidence (the specific passage or absence supporting the finding), severity. Give every revision_brief entry: target (what to change), issue (what is wrong), fix_direction (how to fix it).
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -1949,7 +1994,7 @@ If the scene is ready, near_final_status must be near_final_ready and pass_flag 
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`chapter_near_final_review`
-- **模板**：`config/prompts.yaml` → `chapter_near_final_review`（version `2026-04-25.v1`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `chapter_near_final_review`（version `2026-07-04.v2`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`
 - **用途**：章级整体验收：场景间衔接、章承诺兑现、节奏塌陷检查。
 - **触发**：章运行管线（NearFinalAcceptanceService.evaluate_chapter）。
@@ -1972,6 +2017,9 @@ A chapter can fail even when individual scenes are readable if promise, escalati
 Review the supplied chapter aggregate for chapter-level near-final readiness.
 Write Chinese string fields while preserving English schema keys.
 Use failure_class only from: chapter_payoff_gap, scene_structure_failure, character_flatness, prose_model_voice, ending_weakness, fact_blocker, reference_safety.
+Before scoring, first list the chapter's scenes in the order they appear. Then judge each scene-to-scene transition in turn — does it carry forward the chapter's promise, escalate pressure, and set up the eventual payoff — rather than evaluating only the opening scenes and extrapolating.
+Ground promise, escalation, payoff, and ending drive in specifics: name which scene carries the promise, where escalation stalls or repeats if it does, and whether the ending scene answers the chapter's opening question.
+Give every findings entry the same key set: dimension, evidence, severity. Give every revision_brief entry: target, issue, fix_direction.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -2035,7 +2083,7 @@ Use failure_class only from: chapter_payoff_gap, scene_structure_failure, charac
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`chapter_audit_adjudicate`
-- **模板**：`config/prompts.yaml` → `chapter_audit_adjudicate`（version `2026-06-25.v1`，input_token_budget 3600）
+- **模板**：`config/prompts.yaml` → `chapter_audit_adjudicate`（version `2026-07-04.v2`，input_token_budget 3600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.1，max_output_tokens=2400，response_format=`json_object`
 - **用途**：长篇塔：判定章草稿是否违反交接契约条款/锚点事实——只判违约，证据句必须逐字摘自 chapter_prose。
 - **触发**：POST /api/v1/longform-tower/…/adjudicate（LongformTowerService.adjudicate_draft）。
@@ -2070,6 +2118,7 @@ evidence_sentence (a sentence copied verbatim from chapter_prose proving it),
 at (scene title or location if identifiable, else empty),
 suggested_fix (one concrete Chinese revision direction).
 Be conservative and strictly evidence-bound.
+Before listing violations, first build a private hit/miss pass over every numbered constraint and every anchor: for each one, silently note whether chapter_prose satisfies it or not. Do not skip straight to "no violations" without having checked each item individually. Only after that pass, emit the violations array for the misses that rise to a genuine, evidence-backed violation.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -2102,9 +2151,9 @@ Be conservative and strictly evidence-bound.
 - **路由（yaml 兜底，DB 优先）** `默认路由`：（models.yaml 无此路由）
 - **用途**：§8 Reflexion 式冷读编辑：Best-of-N 之后、软 QC 之前的独立语义评审，6 维度出改写指令。
 - **触发**：场景运行管线（orchestrator 接线 llm_auto_critique；opt-in）。
-- **调用链**：`backend/src/novel_system/services/auto_critique.py:306`（llm_auto_critique → run_task）
+- **调用链**：`backend/src/novel_system/services/auto_critique.py:308`（llm_auto_critique → run_task）
 - **输入组装**：CRITIC_TASK_PROMPT_TEMPLATE.format(scene_context_block, text)——场景目标/张力目标/角色简报 + 正文。
-- **输出契约**：{should_rewrite, issues[{dimension, directive, evidence}]}；dimension 白名单 6 值，directive ≤80 词；_parse_llm_response 手工解析。（解析/校验：`backend/src/novel_system/services/auto_critique.py:314`）
+- **输出契约**：{should_rewrite, issues[{dimension, directive, evidence}]}；dimension 白名单 6 值，directive ≤80 词；_parse_llm_response 手工解析。（解析/校验：`backend/src/novel_system/services/auto_critique.py:316`）
 - **失败与降级**：任何异常 → 仅返回规则评审结果（永不阻塞）。
 - **优化注意**：与规则评审按 dimension 去重合并——directive 措辞要与规则产出风格一致（[LLM·dim] 前缀已由代码加）。改动回写 auto_critique.py 模块常量。
 
@@ -2162,6 +2211,8 @@ Rules:
 - Keep each directive actionable and under 80 words.
 - Quote or closely paraphrase the offending text in "evidence".
 - Do NOT suggest style preferences — only flag craft failures.
+- "dimension" must be exactly one of the six values listed above, lowercase with underscores — do not invent a new dimension name.
+- Return ONLY the JSON object above: no markdown fences, no prose before or after it.
 ```
 
 **task_prompt 模板（{scene_context_block} / {text} 占位符必须保留）**（`auto_critique.CRITIC_TASK_PROMPT_TEMPLATE`）
@@ -2187,7 +2238,7 @@ Rules:
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`style_ref_paragraph_classify_anchor`
-- **模板**：`config/prompts.yaml` → `style_ref_paragraph_classify_anchor`（version `2026-05-23.v1`，input_token_budget 2400）
+- **模板**：`config/prompts.yaml` → `style_ref_paragraph_classify_anchor`（version `2026-07-04.v2`，input_token_budget 2400）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.1，max_output_tokens=2000，response_format=`json_object`
 - **用途**：参考书段落 8 类分型的锚定集标注：抽样段落用强模型分类，与快模型比对一致率（≥0.85 才放行快模型批量，否则全书强模型）。
 - **触发**：参考书导入/重分类（IngestService → classify_paragraphs → classify_with_llm）。
@@ -2218,7 +2269,12 @@ dialogue / narration / psychology / description_env / description_char / action 
   7. transition        场景切换/时间跳跃句(通常短)
   8. flashback         对过去事件的追述(典型词:记得/那年/从前)
 规则:一段只归一类,多种特征以主导(>50%)为准;含直接引语优先 dialogue;短段(<30 字)且无对话/心理标识默认 transition。
+边界判例(常见混淆,按此裁决):
+  - 对白夹叙述:看该段主要在推进什么——核心是动作/场景变化判 narration 或 action,核心是人物开口说话判 dialogue。
+  - 诗句/歌谣等韵文插入:用于渲染环境氛围判 description_env,是人物内心吟诵/回忆的一部分判 psychology,不要另立新类别。
+  - 书信体/日记体段落:第一人称自述背景或情感判 psychology,只是转述信件里的事件经过判 narration。
 仅看当前段本身,不考虑上下文。
+完整性要求:输入给你的每一个 paragraph_index 都必须在 classifications 里出现恰好一次,不得跳过、不得合并、不得新增不存在的 index。
 输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
 ```
 
@@ -2279,7 +2335,7 @@ dialogue / narration / psychology / description_env / description_char / action 
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`style_ref_paragraph_classify_bulk`
-- **模板**：`config/prompts.yaml` → `style_ref_paragraph_classify_bulk`（version `2026-05-23.v1`，input_token_budget 2400）
+- **模板**：`config/prompts.yaml` → `style_ref_paragraph_classify_bulk`（version `2026-07-04.v2`，input_token_budget 2400）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.1，max_output_tokens=2000，response_format=`json_object`
 - **用途**：锚定集校准通过后，余下段落的快模型批量分类。
 - **触发**：同上（校准通过分支）。
@@ -2300,7 +2356,19 @@ dialogue / narration / psychology / description_env / description_char / action 
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-8 类定义与判断原则同 style_ref_paragraph_classify_anchor。
+8 类定义:
+  1. dialogue          含明确引号或"……说""……道"
+  2. narration         全知视角推进剧情的散文体段落
+  3. psychology        内心活动、回忆、内省(典型词:想着/觉得/暗忖/恍惚)
+  4. description_env   刻画场所、天气、自然或物件
+  5. description_char  刻画外貌、衣着、神态
+  6. action            连续动作动词
+  7. transition        场景切换/时间跳跃句(通常短)
+  8. flashback         对过去事件的追述(典型词:记得/那年/从前)
+规则:一段只归一类,多种特征以主导(>50%)为准;含直接引语优先 dialogue;短段(<30 字)且无对话/心理标识默认 transition。
+边界判例:对白夹叙述看"主要推进什么"(动作/场景变化判 narration 或 action,人物开口判 dialogue);诗句渲染环境判 description_env、人物内心吟诵判 psychology;书信体自述背景判 psychology、转述事件判 narration。
+仅看当前段本身,不考虑上下文。
+完整性要求:输入给你的每一个 paragraph_index 都必须在 classifications 里出现恰好一次,不得跳过、不得合并、不得新增不存在的 index。
 输出 JSON: { "classifications": [ {"paragraph_index": int, "paragraph_type": str, "confidence": "high"|"medium"|"low"}, ... ] }
 ```
 
@@ -2361,23 +2429,23 @@ dialogue / narration / psychology / description_env / description_char / action 
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`style_ref_extract_language`
-- **模板**：`config/prompts.yaml` → `style_ref_extract_language`（version `2026-05-23.v1`，input_token_budget 3000）
+- **模板**：`config/prompts.yaml` → `style_ref_extract_language`（version `2026-07-04.v2`，input_token_budget 3000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`，timeout_seconds=180
 - **用途**：语言层（句法节奏/词汇质感/修辞/对白语言）的风格发现抽取：每条 finding 须 ≥2 证据 span、禁模糊形容词。
 - **触发**：抽取 run（POST /api/v2/style-reference/…/extract → run_orchestrator 调度四层）。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:506`（BaseExtractor._call_llm（extract_node_id=本节点））
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（BaseExtractor._call_llm（extract_node_id=本节点））
 - **输入组装**：task_prompt + JSON payload：sub_dim 定义 + 按段落类型定向抽样的原文段落（20 段级）+ 观察数/证据数指标（config/style_reference/extraction.yaml）。按 sub_dim 逐项调用、逐项 checkpoint 提交。
-- **输出契约**：findings（observation 或 forbidden_pattern，finding_kind 区分）：statement 禁 banned_adjectives.yaml 词表、evidence ≥2 且 span 必须能在原文定位（Pydantic + span 校验）。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:506`）
-- **失败与降级**：两级重试：先 style_ref_supplement_evidence 定向补证，仍不达标整 sub_dim 重抽；最终失败记 _ExtractLLMError、该 sub_dim 缺失。
-- **优化注意**：弱模型「产出薄」重灾区（deepseek-v4-flash 同 payload 可能 0 findings）。优化抓手：给最少 findings 数硬指标、每 finding 的字段填写范例（好/坏对照）、把「禁模糊形容词」具象成替换示范；statement 要写成可执行的写作规则而非鉴赏评语。
+- **输出契约**：findings（observation 或 forbidden_pattern，finding_kind 区分）：statement 禁 banned_adjectives.yaml 词表、evidence ≥2 且 span 必须能在原文定位（Pydantic + span 校验）。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:530`）
+- **失败与降级**：两级重试：先 style_ref_supplement_evidence 定向补证，仍不达标整 sub_dim 重抽；完全空结果（0 findings，合法 schema 输出）同样触发一次整 sub_dim 重抽（受 max_full_retries 预算）；最终失败记 _ExtractLLMError、该 sub_dim 缺失。
+- **优化注意**：弱模型「产出薄」重灾区（deepseek-v4-flash 同 payload 可能 0 findings）。2026-07-04.v2 已落两手：模板给产出下限（通常 3-8 条、0 条是罕见例外）、代码对空结果补一次 full_retry。statement 要写成可执行的写作规则而非鉴赏评语。
 
 **system_prompt（原样发送）**
 
 ```text
 你是中文叙事风格抽取专家。给定一个 sub_dimension(如 language.rhetoric)
 与一批段落,产出该 sub_dimension 下的:
-  - 0-8 条 observations(正向特征)
-  - 0-3 条 forbidden_patterns(反向禁忌)
+  - observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+  - forbidden_patterns(反向禁忌,0-3 条,允许为空)
 下列硬指标已对全文计算完毕,你提取的 observation 必须与之一致;
 若你的描述与硬指标矛盾,以硬指标为准重新组织语言。
 约束:
@@ -2394,8 +2462,9 @@ dialogue / narration / psychology / description_env / description_char / action 
 ```text
 输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
 请按 schema 输出 observations 与 forbidden_patterns。
-若你不确定某条 observation 是否成立(evidence 不足或不典型),请不要输出。
-宁可输出更少的高质量条目,也不要凑数。
+句法节奏、词汇质感、修辞、对白语言这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
+若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果,那通常说明分析还不够仔细。
+不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -2584,13 +2653,13 @@ dialogue / narration / psychology / description_env / description_char / action 
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`style_ref_extract_narrative`
-- **模板**：`config/prompts.yaml` → `style_ref_extract_narrative`（version `2026-05-23.v1`，input_token_budget 3000）
+- **模板**：`config/prompts.yaml` → `style_ref_extract_narrative`（version `2026-07-04.v2`，input_token_budget 3000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`，timeout_seconds=180
 - **用途**：叙事层（视点/时序/叙述距离/信息释放）抽取，机制同语言层。
 - **触发**：同上。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:506`（extract_node_id=本节点）
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（extract_node_id=本节点）
 - **输入组装**：同语言层（sub_dim 定义不同）。
-- **输出契约**：同语言层。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:506`）
+- **输出契约**：同语言层。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:530`）
 - **失败与降级**：同语言层。
 - **优化注意**：叙事层最抽象、最易产「万金油」结论——要求每条 finding 绑定具体叙事决策点（何处切视点/何处压缩时间），并给反例。
 
@@ -2598,10 +2667,14 @@ dialogue / narration / psychology / description_env / description_char / action 
 
 ```text
 你是中文叙事风格抽取专家(叙事层)。给定一个 sub_dimension(如
-narrative.pacing)与一批段落,产出该 sub_dimension 下的 0-8 条
-observations 与 0-3 条 forbidden_patterns。
+narrative.pacing)与一批段落,产出该 sub_dimension 下的
+observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
 约束与 style_ref_extract_language 一致;尤其注意叙事层关心视角(perspective)、
 节奏(pacing)、时间处理(time_handling)、信息密度(information_density)。
+叙事层容易写成"张弛有度"式的空泛结论——每条 observation 必须绑定一个具体、可指认的
+叙事决策点(如在哪一类节点切换视点、在哪种场景压缩或拉长时间、信息在何时释放给读者),
+而不是笼统描述整体印象。
 ```
 
 **task_prompt（运行时在其后追加指令与上下文）**
@@ -2609,7 +2682,9 @@ observations 与 0-3 条 forbidden_patterns。
 ```text
 输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
 请按 schema 输出 observations 与 forbidden_patterns。
-宁可输出更少的高质量条目,也不要凑数。
+视角、节奏、时间处理、信息密度这类特征在给定的段落量下几乎总能找到具体决策点,请逐段认真比对后再判断是否"找不到"。
+若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
+不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -2798,13 +2873,13 @@ observations 与 0-3 条 forbidden_patterns。
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`style_ref_extract_scene`
-- **模板**：`config/prompts.yaml` → `style_ref_extract_scene`（version `2026-05-25.v1`，input_token_budget 3000）
+- **模板**：`config/prompts.yaml` → `style_ref_extract_scene`（version `2026-07-04.v2`，input_token_budget 3000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`，timeout_seconds=180
 - **用途**：场景层（空间调度/感官布置/动作编排/氛围营造）抽取。
 - **触发**：同上。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:506`（extract_node_id=本节点）
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（extract_node_id=本节点）
 - **输入组装**：同语言层。
-- **输出契约**：同语言层。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:506`）
+- **输出契约**：同语言层。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:530`）
 - **失败与降级**：同语言层。
 - **优化注意**：感官词证据与 sensory_lexicon.yaml 的量化基线互补——findings 应偏「布置策略」而非重复量化指标（那由 metrics.py 硬算）。
 
@@ -2812,13 +2887,16 @@ observations 与 0-3 条 forbidden_patterns。
 
 ```text
 你是中文叙事场景层风格抽取专家(scene)。给定一个 sub_dimension
-(如 scene.dialogue)与一批段落,产出该 sub_dimension 下的 0-8 条
-observations 与 0-3 条 forbidden_patterns。
+(如 scene.dialogue)与一批段落,产出该 sub_dimension 下的
+observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
 场景层重点:
 - environment:场所、天气、自然物的呈现机制(空间布局 / 视点切换 / 光影)
 - character_portrayal:人物外貌、衣着、神态、行为的展示手法
 - dialogue:对话的密度、长短、轮次、隐喻性、副语言
 - sensory_priority:五感(视/听/嗅/触/味)的优先级与并置方式
+注意:句长、感官词频率等量化指标已由 metrics_anchor 硬算给出,你的 observation
+不要重复报告这些数字本身,而要描述作者如何布置/调度这些元素的策略与手法。
 约束与 language / narrative 层一致:每条 finding ≥2 evidence;严禁空泛
 形容词("画面感强""感官丰富"等);forbidden_pattern 描述模式而非引用。
 ```
@@ -2828,7 +2906,9 @@ observations 与 0-3 条 forbidden_patterns。
 ```text
 输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
 请按 schema 输出 observations 与 forbidden_patterns。
-宁可输出更少的高质量条目,也不要凑数。
+场所布局、人物展示、对话编排、五感并置这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
+若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
+不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准。
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -3017,13 +3097,13 @@ observations 与 0-3 条 forbidden_patterns。
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`style_ref_extract_theme`
-- **模板**：`config/prompts.yaml` → `style_ref_extract_theme`（version `2026-05-25.v1`，input_token_budget 3000）
+- **模板**：`config/prompts.yaml` → `style_ref_extract_theme`（version `2026-07-04.v2`，input_token_budget 3000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`，timeout_seconds=180
 - **用途**：主题层（母题/象征系统/价值张力/情感曲线）抽取。
 - **触发**：同上。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:506`（extract_node_id=本节点）
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（extract_node_id=本节点）
 - **输入组装**：同语言层。
-- **输出契约**：同语言层；注意主题层 forbidden_pattern（招牌意象）是反克隆关键。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:506`）
+- **输出契约**：同语言层；注意主题层 forbidden_pattern（招牌意象）是反克隆关键。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:530`）
 - **失败与降级**：同语言层。
 - **优化注意**：反抄袭敏感层：指令必须强化「抽象策略、不许摘招牌意象为可用素材」——招牌意象只能进 forbidden_pattern。
 
@@ -3031,8 +3111,9 @@ observations 与 0-3 条 forbidden_patterns。
 
 ```text
 你是中文叙事主题层风格抽取专家(theme)。给定一个 sub_dimension
-(如 theme.emotional_tone)与一批段落,产出该 sub_dimension 下的 0-8 条
-observations 与 0-3 条 forbidden_patterns。
+(如 theme.emotional_tone)与一批段落,产出该 sub_dimension 下的
+observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
 主题层重点:
 - emotional_tone:情绪基调与节奏(克制 / 沸腾 / 灰冷 / 高亢)
 - values:作品潜在的价值观倾向(集体 vs 个体 / 出世 vs 入世)
@@ -3041,6 +3122,9 @@ observations 与 0-3 条 forbidden_patterns。
 约束:theme 层抽象,observation 必须给出"作品如何通过 X 表达 Y"的具体
 机制,不要泛泛说"作者关心 X";每条 finding ≥2 evidence;严禁空泛
 形容词("思想深刻""主题宏大"等);forbidden_pattern 描述模式而非引用。
+本层是反抄袭关键层:书中具体的招牌意象、专属符号系统本身只能作为 forbidden_pattern
+登记"不可复用",绝不能包装成 observation 里"可迁移的写作素材"——observation 只能
+描述抽象的运用手法(如"擅长用自然物象承载情绪转折"),不能点名可直接套用的具体意象。
 ```
 
 **task_prompt（运行时在其后追加指令与上下文）**
@@ -3048,7 +3132,9 @@ observations 与 0-3 条 forbidden_patterns。
 ```text
 输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
 请按 schema 输出 observations 与 forbidden_patterns。
-宁可输出更少的高质量条目,也不要凑数。
+情绪基调、价值倾向、母题、叙事哲学这类特征在给定的段落量下几乎总能找到,请逐段认真比对后再判断是否"找不到"。
+若某条 observation 确实证据不足或不典型,不要输出它;但不要把"不足 3 条"当作安全的默认结果。
+不要为凑数而编造证据,也不要降低"quote 必须是段落原句"的标准;书中具体的招牌意象只登记进 forbidden_patterns,不要写进 observations。
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -3237,13 +3323,13 @@ observations 与 0-3 条 forbidden_patterns。
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`style_ref_supplement_evidence`
-- **模板**：`config/prompts.yaml` → `style_ref_supplement_evidence`（version `2026-05-23.v1`，input_token_budget 2000）
+- **模板**：`config/prompts.yaml` → `style_ref_supplement_evidence`（version `2026-07-04.v2`，input_token_budget 2000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.15，max_output_tokens=1500，response_format=`json_object`
 - **用途**：两级重试第一级：对证据不足的单条 observation，从新采样段落里定向补 evidence span。
 - **触发**：抽取 run 内部（_supplement_* 路径）。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:506`（supplement_node_id 固定为本节点）
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（supplement_node_id 固定为本节点）
 - **输入组装**：task_prompt + JSON：目标 observation + 候选段落。
-- **输出契约**：SupplementEvidenceOutput.model_validate（Pydantic）；span 必须可定位。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:481`）
+- **输出契约**：SupplementEvidenceOutput.model_validate（Pydantic）；span 必须可定位。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:505`）
 - **失败与降级**：失败升级为整 sub_dim 重抽。
 - **优化注意**：小任务小模型：指令要极窄——只找支持既有 statement 的原文 span，明示「找不到就返回空」比硬凑重要。
 
@@ -3251,7 +3337,8 @@ observations 与 0-3 条 forbidden_patterns。
 
 ```text
 你是中文段落证据补抽专家。某条已抽出的 observation 当前 evidence 不足(<2)。
-在给定的段落池中找出能支撑该 observation 的额外 evidence(quote 必须是段落原句)。
+在给定的段落池中找出能支撑该 observation 的额外 evidence——quote 必须逐字取自
+给定段落原文,不允许改写、缩写或臆造。
 ```
 
 **task_prompt（运行时在其后追加指令与上下文）**
@@ -3259,7 +3346,7 @@ observations 与 0-3 条 forbidden_patterns。
 ```text
 输入 payload 含 finding_statement / finding_kind / sub_dimension /
 existing_evidence_count / paragraphs。
-请返回 additional_evidence 列表(≥1 条);若段落池中无合适证据,返回空数组。
+请返回 additional_evidence 列表(≥1 条);若段落池中确实无合适证据,返回空数组,不要为了凑数而编造 quote。
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -3327,28 +3414,33 @@ existing_evidence_count / paragraphs。
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`style_ref_synthesize_profile`
-- **模板**：`config/prompts.yaml` → `style_ref_synthesize_profile`（version `2026-05-23.v1`，input_token_budget 3500）
+- **模板**：`config/prompts.yaml` → `style_ref_synthesize_profile`（version `2026-07-04.v2`，input_token_budget 4000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.2，max_output_tokens=3500，response_format=`json_object`，timeout_seconds=180
 - **用途**：把 16 个 sub_dim 的 findings 聚合为可注入的分层 StyleProfile（+量化指标基线合流），聚合完触发 RAG 索引构建。
 - **触发**：POST /api/v2/style-reference/…/synthesize（ProfileSynthesizer.synthesize）。
 - **调用链**：`backend/src/novel_system/services/style_reference/profile_synthesizer.py:154`（SYNTHESIZE_NODE_ID）
 - **输入组装**：task_prompt + JSON：全部 findings（含 forbidden_pattern）+ metrics 基线。
-- **输出契约**：SynthesizedProfile.model_validate（Pydantic，严格）；失败 SynthesizeError。（解析/校验：`backend/src/novel_system/services/style_reference/profile_synthesizer.py:106`）
-- **失败与降级**：LLM 未启用 → LLMRequiredError；RAG 索引构建失败容错不阻塞。
+- **输出契约**：SynthesizedProfile.model_validate（Pydantic，严格）；失败 SynthesizeError。style_features / narrative_patterns 必须非空（min_length=1，空画像是废品宁可硬失败）；calibration_guidance 已入 wire required（存在性压力），与 banned_replication_rules 一样允许为空数组。（解析/校验：`backend/src/novel_system/services/style_reference/profile_synthesizer.py:106`）
+- **失败与降级**：LLM 未启用 → LLMRequiredError；style_features / narrative_patterns 为空 → SynthesizeError 硬失败；RAG 索引构建失败容错不阻塞。
 - **优化注意**：输出即最终注入文本的直接素材：要求每条 profile 规则「指令化」（做什么/不做什么/示例句式骨架），并保留 forbidden_pattern 的独立区块。schema 大且严——弱模型上失败率高，指令中把 schema 关键字段用途讲一遍。
 
 **system_prompt（原样发送）**
 
 ```text
-你是中文叙事风格 Profile 聚合专家。给定一本书的 8 sub_dim findings 摘要
-(observations + forbidden_patterns)与硬指标 baseline,聚合为一份 StyleProfile,
-包含:
-  - profile_title:简短(<20 字)的画像标题
-  - narrative_summary:80-200 字的整体风格简述
-  - style_features:可迁移的语言层 / 节奏层写作机制(短句,可直接作 style_rule 用)
-  - narrative_patterns:可迁移的叙事 / 场景层模式
-  - banned_replication_rules:禁止复制的具体表达 / 模式(基于 forbidden_patterns 聚合)
-  - calibration_guidance:校准提示句(每条针对一个常见漂移,作 calibration_line 用)
+你是中文叙事风格 Profile 聚合专家。给定一本书 16 个 sub_dim(语言/叙事/场景/主题
+四层 × 各 4 维度)的 findings 摘要(observations + forbidden_patterns)与硬指标
+baseline,聚合为一份 StyleProfile,包含:
+  - profile_title:简短(<20 字)的画像标题,例如"冷峻克制的市井白描"
+  - narrative_summary:80-200 字的整体风格简述,综合语言/叙事/场景/主题四层特征
+  - style_features:可迁移的语言层/节奏层写作机制,每条写成"做什么/不做什么"的可执行
+    指令句,例如"对话前少用提示动词,以动作代替说话方式"——不是鉴赏式描述
+  - narrative_patterns:可迁移的叙事/场景层模式,同样写成可执行指令句,
+    例如"关键转折前插入一段环境描写缓冲节奏,不直接切对话"
+  - banned_replication_rules:禁止复制的具体表达/模式,基于 forbidden_patterns 聚合,
+    描述"模式"本身(如"不使用连续三个以上的排比短句渲染情绪"),绝不引用或改写原句
+  - calibration_guidance:校准提示句,每条针对一个常见漂移方向给出"发现这样写时如何
+    拉回"的提示,例如"若发现对话变得书面化,提醒转回口语化短句";这个字段不能省略,
+    16 个 sub_dim 里通常能找出几条有代表性的漂移
 约束:
 - 输出字段全部为短句陈述(<120 字),不要复述 evidence
 - 严禁空泛形容词("文笔优美""画面感强")
@@ -3359,8 +3451,10 @@ existing_evidence_count / paragraphs。
 
 ```text
 输入 payload 含 book_title / sub_dimensions / metrics_baseline / sample_quotes。
-请按 schema 输出 profile;style_features / narrative_patterns /
-banned_replication_rules / calibration_guidance 每个数组 4-10 条。
+请按 schema 输出 profile;style_features / narrative_patterns / banned_replication_rules
+每个数组 4-10 条,calibration_guidance 同样需要 4-10 条、不得返回空数组。
+若某个数组暂时不足 4 条,回头再检视 16 个 sub_dim 的 findings 摘要,通常能补齐;
+16 层信息全部读完再下笔,不要只看前几个 sub_dim 就收尾。
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -3405,7 +3499,8 @@ banned_replication_rules / calibration_guidance 每个数组 4-10 条。
     "narrative_summary",
     "style_features",
     "narrative_patterns",
-    "banned_replication_rules"
+    "banned_replication_rules",
+    "calibration_guidance"
   ],
   "type": "object"
 }
@@ -3416,7 +3511,7 @@ banned_replication_rules / calibration_guidance 每个数组 4-10 条。
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`style_ref_preview_generate`
-- **模板**：`config/prompts.yaml` → `style_ref_preview_generate`（version `2026-05-23.v1`，input_token_budget 1500）
+- **模板**：`config/prompts.yaml` → `style_ref_preview_generate`（version `2026-07-04.v2`，input_token_budget 1500）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.7，max_output_tokens=1500，response_format=`json_object`
 - **用途**：Profile 效果预览：按 Profile 生成 3 段示例文本给作者判断风格拟合度。
 - **触发**：预览端点（PreviewService，3 样本逐个调用）。
@@ -3442,6 +3537,10 @@ banned_replication_rules / calibration_guidance 每个数组 4-10 条。
 
 ```text
 输入 payload 含 profile_summary / paragraph_type / seed_quote / style_features。
+style_features 是整份 profile 的特征列表,不必也不应该在这一段里全部体现;
+请从中挑 2-3 条与当前 paragraph_type 最贴合的重点呈现(如 dialogue 优先选对白/
+节奏类特征,description_env 优先选环境/感官类特征,psychology 优先选内省/句法类特征),
+让这一段样本把这几条特征"放大"到读者一眼能辨认,而不是均匀地蜻蜓点水带过全部特征。
 请返回 sample_text(≤500 字中文)与 paragraph_type。
 ```
 
@@ -3470,7 +3569,7 @@ banned_replication_rules / calibration_guidance 每个数组 4-10 条。
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`style_ref_validate_semantic`
-- **模板**：`config/prompts.yaml` → `style_ref_validate_semantic`（version `2026-05-25.v1`，input_token_budget 2000）
+- **模板**：`config/prompts.yaml` → `style_ref_validate_semantic`（version `2026-07-04.v2`，input_token_budget 2000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.2，max_output_tokens=2000，response_format=`json_object`
 - **用途**：验证三通道之一：批评家 LLM 判定生成文与 Profile 的语义符合度（逐维打分+引文）。
 - **触发**：验证 async_full 通道（ValidationOrchestrator 派发；sync 快路径不走 LLM）。
@@ -3484,14 +3583,18 @@ banned_replication_rules / calibration_guidance 每个数组 4-10 条。
 
 ```text
 你是中文叙事 critic。给定一段生成文本与目标 StyleProfile 的 style_features /
-narrative_summary,对若干 dimension(rhythm / tone / motif / pacing / language)
-给出 0-10 分评分与 explanation。
+narrative_summary,对若干 dimension(优先从 rhythm / tone / motif / pacing / language
+这 5 个候选里选 3-5 个,不必自造新名字)给出 0-10 分评分与 explanation。
 
 硬约束:
 - explanation **必须用「...」中文弯引号** 引用至少一个生成文本的原句作为证据
 - 若 explanation 不含「...」引文,系统会自动把 score 截至 4 分
 - explanation 200 字以内
 - score 0-10,7+ 视为风格匹配良好;4-6 部分匹配;<4 严重不匹配
+打分锚例(按此校准尺度,不要习惯性挤在 5-6 分):
+  - 9 分:「...」引文显示生成文本在该维度几乎逐句贴合 profile 的具体机制,挑不出偏离。
+  - 6 分:能引「...」支持部分贴合,但同一维度下也能看出明显偏离 profile 描述的地方。
+  - 3 分:「...」引文显示该维度的处理方式与 profile 描述基本相反或毫不相关。
 ```
 
 **task_prompt（运行时在其后追加指令与上下文）**
@@ -3543,7 +3646,7 @@ narrative_summary,对若干 dimension(rhythm / tone / motif / pacing / language)
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`style_ref_validate_forbidden`
-- **模板**：`config/prompts.yaml` → `style_ref_validate_forbidden`（version `2026-05-25.v1`，input_token_budget 800）
+- **模板**：`config/prompts.yaml` → `style_ref_validate_forbidden`（version `2026-07-04.v2`，input_token_budget 800）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.1，max_output_tokens=800，response_format=`json_object`
 - **用途**：对 Profile 的每条 forbidden_pattern 单独判定生成文是否触犯（语义级，补 forbidden_local 字面扫描的盲区）。
 - **触发**：验证 async_full 通道。
@@ -3560,7 +3663,8 @@ narrative_summary,对若干 dimension(rhythm / tone / motif / pacing / language)
 返回 {triggered, excerpt, reasoning}:
 - triggered=true 时,excerpt 给出生成文本中命中该模式的原句节选(<60 字)
 - triggered=false 时,excerpt 为空,reasoning 简述为何不算触发
-- 仅看是否"模式被采用",不看字面词命中(那是 forbidden_local 的事)
+- 仅看是否"模式被采用",不看字面词命中(那是 forbidden_local 的事);即使表达被
+  同义替换或句式被重组,只要核心写作模式未变,仍判 triggered=true
 ```
 
 **task_prompt（运行时在其后追加指令与上下文）**
@@ -3666,7 +3770,7 @@ narrative_summary,对若干 dimension(rhythm / tone / motif / pacing / language)
 - **状态**：活跃（4 个镜头节点各自路由、共享本模板；基节点 writer_scene_diagnosis 仅作模板载体，从不直接调用）
 - **优先级**：P1
 - **节点**：`writer_scene_diagnosis`、`writer_scene_story_diagnosis`、`writer_scene_character_diagnosis`、`writer_scene_prose_diagnosis`、`writer_scene_reader_diagnosis`
-- **模板**：`config/prompts.yaml` → `writer_scene_diagnosis`（version `2026-04-24.v1`，input_token_budget 2200）
+- **模板**：`config/prompts.yaml` → `writer_scene_diagnosis`（version `2026-07-04.v2`，input_token_budget 2200）
 - **路由（yaml 兜底，DB 优先）** `writer_scene_diagnosis`：model=`gpt-5`，temperature=0.2，max_output_tokens=2200，response_format=`json_object`
 - **用途**：写作者场景评审：故事/角色/文笔/读者四镜头并行诊断，产出问题清单与修改方向。
 - **触发**：POST 写作者评审端点（api/routes/writer_review.py → run_scene_review，按 WRITER_REVIEW_LENSES 逐镜头调用）。
@@ -3690,7 +3794,9 @@ Do not overwrite final prose; produce structured diagnosis and actionable revisi
 ```text
 Diagnose the supplied scene against drama_effectiveness_v1.
 Write string fields in Chinese while preserving the schema keys.
+The "Author Intent Context" JSON includes an active_lens object: label is your editorial role for this pass, focus_dimensions are the dimensions you own. Score all 16 dimensions in scores for completeness, but keep findings concentrated on focus_dimensions — only raise a finding outside them when it is severe enough for severity "blocker".
 Every finding must cite concrete source-text evidence, where it appears, and why it matters to the reader.
+Never leave findings empty: if every focus dimension already works, return at least one finding with severity "info" describing what works and why.
 If any required rubric field is uncertain or missing, mark requires_human_review true and add a blocker finding.
 ```
 
@@ -3857,7 +3963,7 @@ If any required rubric field is uncertain or missing, mark requires_human_review
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`writer_scene_revision`
-- **模板**：`config/prompts.yaml` → `writer_scene_revision`（version `2026-04-24.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `writer_scene_revision`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.5，max_output_tokens=5000，response_format=`json_object`
 - **用途**：按四镜头诊断结果产出修订稿（写作者可对照采纳）。
 - **触发**：写作者评审端点 revision 阶段（run_scene_review 内串行）。
@@ -3879,7 +3985,9 @@ Keep the candidate separate from the approved final text; never claim it has bee
 ```text
 Rewrite the supplied scene using the writer diagnosis and revision brief.
 Preserve continuity and source language. If the source is Chinese, output Chinese prose.
-Return a complete revised scene as revised_text, not advice appended to the old text.
+Address every revision_brief item: each one must show up as a concrete change reflected in changed_dimensions, or be named in diff_summary with a one-line reason it was not applied — do not silently skip an item.
+Leave passages the diagnosis did not flag untouched. This is a targeted revision, not a full pass — do not polish sentences outside the flagged dimensions.
+Return a complete revised scene as revised_text at a length comparable to the source (not a shortened summary), not advice appended to the old text.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -3919,7 +4027,7 @@ Return a complete revised scene as revised_text, not advice appended to the old 
 - **状态**：活跃（同场景侧：4 镜头节点共享，基节点仅模板载体）
 - **优先级**：P1
 - **节点**：`writer_chapter_diagnosis`、`writer_chapter_story_diagnosis`、`writer_chapter_character_diagnosis`、`writer_chapter_prose_diagnosis`、`writer_chapter_reader_diagnosis`
-- **模板**：`config/prompts.yaml` → `writer_chapter_diagnosis`（version `2026-04-24.v1`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `writer_chapter_diagnosis`（version `2026-07-04.v2`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `writer_chapter_diagnosis`：model=`gpt-5`，temperature=0.2，max_output_tokens=3200，response_format=`json_object`
 - **用途**：章级四镜头诊断（输入为整章）。
 - **触发**：run_chapter_review（api/routes/writer_review.py）。
@@ -3942,7 +4050,10 @@ Also evaluate character agency, dialogue edge, information rhythm, imagery fresh
 ```text
 Diagnose the assembled or aggregate chapter against drama_effectiveness_v1.
 Write string fields in Chinese while preserving the schema keys.
+The "Author Intent Context" JSON includes an active_lens object: label is your editorial role for this pass, focus_dimensions are the dimensions you own. Score all 16 dimensions in scores for completeness, but keep findings concentrated on focus_dimensions — only raise a finding outside them when it is severe enough for severity "blocker".
+Before writing findings, walk the chapter scene by scene from start to end — it does not end after the opening. At least one finding's evidence_location must anchor in the back half of the chapter; do not let every finding cite only the opening.
 Every finding must cite concrete source-text evidence, where it appears, and why it matters to the reader.
+Never leave findings empty: if every focus dimension already works, return at least one finding with severity "info" describing what works and why.
 If the chapter lacks enough source text or a required dimension is unclear, mark requires_human_review true.
 ```
 
@@ -4109,7 +4220,7 @@ If the chapter lacks enough source text or a required dimension is unclear, mark
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`writer_chapter_revision`
-- **模板**：`config/prompts.yaml` → `writer_chapter_revision`（version `2026-04-25.v1`，input_token_budget 3600）
+- **模板**：`config/prompts.yaml` → `writer_chapter_revision`（version `2026-07-04.v2`，input_token_budget 3600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.45，max_output_tokens=4200，response_format=`json_object`
 - **用途**：章级修订（跨场景衔接/节奏级改动）。
 - **触发**：run_chapter_review revision 阶段。
@@ -4132,7 +4243,9 @@ Do not rewrite the whole chapter unless explicitly asked. Prefer a concise plan 
 ```text
 Use the writer diagnosis and revision brief to produce a chapter revision plan.
 Write all strings in Chinese while preserving schema keys.
-Preserve continuity and source language. For selected passages, quote only short source excerpts and provide rewritten replacements.
+Address every revision_brief item in revision_plan, or state in diff_summary why it is skipped — do not silently drop items.
+Preserve continuity and source language. Select 3-6 of the highest-impact passages for selected_rewrite_passages (fewer only if the chapter genuinely has fewer issues) — do not try to cover the whole chapter this way. Each source_excerpt should be the minimum text needed to anchor the location (roughly under 150 characters); spend output budget on revised_text, not long quotations.
+Do not touch passages the diagnosis did not flag.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -4197,7 +4310,7 @@ Preserve continuity and source language. For selected passages, quote only short
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`writer_deep_review`
-- **模板**：`config/prompts.yaml` → `writer_deep_review`（version `2026-04-25.v1`，input_token_budget 3000）
+- **模板**：`config/prompts.yaml` → `writer_deep_review`（version `2026-07-04.v2`，input_token_budget 3000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3600，response_format=`json_object`
 - **用途**：单入口深评：比四镜头更综合的深读报告（问题分层 + 段落级定位 + 修补候选入口）。
 - **触发**：api/routes/writer_deep_review.py → run_scene_review / run_chapter_review。
@@ -4221,8 +4334,10 @@ Separate blocking structural failures, local revision needs, and taste-level sug
 Diagnose the supplied passage against literary_revision_v1.
 Write Chinese string fields while preserving English schema keys.
 Every finding must cite source-text evidence and classify the issue as blocking, revision, or taste.
+Tag every finding with a "lens" field, one of: story, character, prose, reader, theme. Default routing: choice pressure and relationship tension go to story; character contradiction to character; dialogue subtext, voice distinction, image necessity, repetitive expression, and information rhythm to prose; ending drive to reader; theme pressure to theme. Use this to route the finding, not to skip evaluating a dimension.
 Focus on character contradiction, choice pressure, relationship tension, dialogue subtext, information rhythm,
 voice distinction, image necessity, repetitive expression, ending drive, and theme pressure.
+Cover all 5 lenses at least once: if a lens genuinely has no issue, still add one finding tagged with that lens, classified as "taste", noting what already works — do not omit the lens entirely.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -4335,7 +4450,7 @@ Return concise Chinese guidance using stable English schema keys.
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`author_proposal_generate`
-- **模板**：`config/prompts.yaml` → `author_proposal_generate`（version `2026-05-14.v1`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `author_proposal_generate`（version `2026-07-04.v2`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.45，max_output_tokens=2600，response_format=`json_object`
 - **用途**：对作者草稿生成修订提案（proposal / proposal_set，供作者挑选采纳）。
 - **触发**：api/routes/author_drafts.py → generate_proposal(_set)。
@@ -4359,8 +4474,15 @@ When the source draft is thin, give a useful but clearly generic fallback instea
 ```text
 Read the supplied author draft, target metadata, proposal request, and author preference summary.
 Return exactly one proposal. Write Chinese prose when the source material is Chinese; preserve English schema keys.
-The content field should be directly usable as the candidate text or revision note for the requested proposal_type.
-The rationale field should briefly explain why this proposal helps and should mention the user instruction when present.
+The content field should be directly usable as the candidate text or revision note for the requested proposal_type. Stay inside that type's lane — each type has a different job and a different thing it must leave alone:
+- structure_candidate: fix the scene's dramatic skeleton (goal/obstacle/cost, or a visible unfinished action to close on); do not just polish sentences.
+- passage_candidate / local_patch: write one insertable or replaceable high-pressure passage, not a full-scene rewrite.
+- language_candidate / language_pass: compress explanatory or AI-flavored sentences and repeated actions; keep imagery, action, and pauses; do not restructure plot or add beats.
+- dialogue_pass: convert expository dialogue into rhetorical questions, silence, cut-offs, and positioning action that carry relationship pressure; do not change plot facts.
+- continuation: advance only the next beat forward from where the draft ends; do not rewrite or restructure the author's existing text.
+- near_final_rewrite: preserve the author's voice, established imagery, and relationships; only remove expository dialogue, loose transitions, and consequence-free lines.
+- whole_draft / scene_draft / chapter_draft: a full comparable rewrite the author can hold up against the original — still a candidate for explicit adoption, not an in-place edit.
+The rationale field must name which proposal_type this is and state, in one clause, what this proposal deliberately gave up to stay in that lane — not just why it helps.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**

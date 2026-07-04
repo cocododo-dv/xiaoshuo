@@ -458,8 +458,12 @@ class SynthesizedProfile(BaseModel):
 
     profile_title: str = Field(min_length=1)
     narrative_summary: str = Field(min_length=1)
-    style_features: list[str] = Field(default_factory=list)
-    narrative_patterns: list[str] = Field(default_factory=list)
+    # style_features / narrative_patterns 是注入文本的直接素材:为空的 Profile
+    # 是废品,宁可 SynthesizeError 硬失败让作者重跑,不让空画像进 ready 状态。
+    # banned_replication_rules / calibration_guidance 保持宽松:全书
+    # forbidden_patterns 合法可为 0,不逼模型编造禁令。
+    style_features: list[str] = Field(min_length=1)
+    narrative_patterns: list[str] = Field(min_length=1)
     banned_replication_rules: list[str] = Field(default_factory=list)
     calibration_guidance: list[str] = Field(default_factory=list)
 
