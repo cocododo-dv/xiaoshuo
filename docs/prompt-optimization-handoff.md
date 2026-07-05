@@ -1,6 +1,6 @@
 # 全系统 LLM 提示词优化交接文档
 
-> 面向 Claude Sonnet 5 的自包含提示词优化工作底稿 · 生成于 2026-07-04 · 机器提取 + 人工审计注释，勿手改本文件（改注释/源码后重新生成）。
+> 面向 Claude Sonnet 5 的自包含提示词优化工作底稿 · 生成于 2026-07-05 · 机器提取 + 人工审计注释，勿手改本文件（改注释/源码后重新生成）。
 
 ## §0 给 Sonnet 5 的任务简报
 
@@ -90,7 +90,7 @@
 | # | 节点 / 任务 | 组 | 状态 | 提示词来源 | 调用点 |
 |---|---|---|---|---|---|
 | 1 | `project_outline_plan` | project | 活跃 | yaml:`project_outline_plan` | `backend/src/novel_system/services/projects.py:487` |
-| 2 | `extraction` | reference | 活跃 | 内联:`prose_event_extractor.py` | `backend/src/novel_system/services/prose_event_extractor.py:87` |
+| 2 | `extraction` | reference | 活跃 | 内联:`prose_event_extractor.py` | `backend/src/novel_system/services/prose_event_extractor.py:95` |
 | 3 | `library_derive` | project | 活跃 | yaml:`library_derive` | `backend/src/novel_system/services/library_derive.py:121` |
 | 4 | `snowflake_step_candidates` | project | 活跃 | yaml:`snowflake_step_candidates` | `backend/src/novel_system/services/snowflake_workspace_llm.py:292` |
 | 5 | `chapter_audit_adjudicate` | quality | 活跃 | yaml:`chapter_audit_adjudicate` | `backend/src/novel_system/services/longform_tower.py:680` |
@@ -150,7 +150,7 @@
 | 59 | `archive` | local | 本地保留 | 无 | — |
 | 60 | `chapter_aggregate` | local | 本地保留 | 无 | — |
 | — | `auto_critique_llm`（run_task 任务名） | — | 顾问·活跃（别名→soft_qc） | 内联:`auto_critique.py` | `backend/src/novel_system/services/auto_critique.py:308` |
-| — | `narrative_event_extract`（run_task 任务名） | — | 顾问·活跃（别名→extraction） | 内联:`prose_event_extractor.py` | `backend/src/novel_system/services/prose_event_extractor.py:87` |
+| — | `narrative_event_extract`（run_task 任务名） | — | 顾问·活跃（别名→extraction） | 内联:`prose_event_extractor.py` | `backend/src/novel_system/services/prose_event_extractor.py:95` |
 | — | `consistency_extract`（run_task 任务名） | — | 顾问·休眠（无路由无注册） | 内联:`narrative_event_log.py` | `backend/src/novel_system/services/narrative_event_log.py:501` |
 | — | `causal_skeleton_refine`（run_task 任务名） | — | 顾问·休眠（无路由无注册） | 内联:`reverse_causal_skeleton.py` | `backend/src/novel_system/services/reverse_causal_skeleton.py:180` |
 | — | `stylize`（task_routing 键） | — | 别名/兜底路由 | 别名/兜底路由：style_draft 与 style_patch 节点的注… | — |
@@ -4515,7 +4515,7 @@ The rationale field must name which proposal_type this is and state, in one clau
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`library_derive`
-- **模板**：`config/prompts.yaml` → `library_derive`（version `2026-06-11.v1`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `library_derive`（version `2026-07-05.v2`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.1，max_output_tokens=1600，response_format=`json_object`
 - **用途**：从归档章节正文提取新实体（地点/物品/势力/概念）与时间线事件候选，进待办确认（不直接入库）。
 - **触发**：POST /api/v1/library/…/derive-from-chapter（LibraryDeriveService.derive_from_chapter）。
@@ -4523,23 +4523,23 @@ The rationale field must name which proposal_type this is and state, in one clau
 - **输入组装**：task_prompt + JSON：chapter_text + known_names（已知名单，用于去重）。
 - **输出契约**：entities[{name,kind,summary,aliases}] + timeline_events[{label,time_label,note}]；kind 枚举 location/item/faction/concept；服务内手工解析。（解析/校验：`backend/src/novel_system/services/library_derive.py:121`）
 - **失败与降级**：LLMNodeError → 降级（空结果）。
-- **优化注意**：查全 vs 保守的平衡：known_names 去重规则要涵盖别名/简称；弱模型上「漏报」多于误报，可要求先列候选再自筛。
+- **优化注意**：查全 vs 保守的平衡。2026-07-05.v2 已落两手：system_prompt 改两遍扫描（先列全候选再按 known_names 过滤，含别名匹配），summary/time_label 加长度上限与「无标记不得编造」边界。
 
 **system_prompt（原样发送）**
 
 ```text
 You extract story-bible candidates from finished Chinese novel chapter text.
-Only surface NEW named locations, items, factions, concepts, and timeline events.
-Skip anything already listed in known_names. Never invent facts not present in the text.
+Work in two passes: first privately list every named location, item, faction, and concept the text mentions, including ones referred to only by alias or shorthand; then drop anything already covered by known_names (matching on name or alias) and keep the rest as NEW candidates.
+Never invent facts not present in the text. Weak extraction under-reports far more often than it over-reports — favor completeness in the listing pass, and let the filtering pass keep the result precise.
 ```
 
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-Read chapter_text and return new entity candidates and timeline events.
-entities: name, kind (location|item|faction|concept), one-sentence summary, aliases.
-timeline_events: label, time_label (as written in text, may be empty), short note.
-Be conservative: only clearly named, story-relevant items.
+Read chapter_text and known_names, then return new entity candidates and timeline events using the two-pass process above.
+entities: name, kind (location|item|faction|concept), summary (one factual sentence, no more than 30 Chinese characters), aliases (other names or shorthand this entity is called by in the text; use an empty array if none).
+timeline_events: label, time_label (copy the text's own time marker verbatim; use "" if the text gives none — never infer or invent one), short note.
+Only surface items that are clearly named and story-relevant, but do not drop one just because it seems minor.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -4576,7 +4576,7 @@ Be conservative: only clearly named, story-relevant items.
 - **状态**：活跃（旧版抽象风格契约：rhythm/syntax/imagery/narrative_distance 等 7 特征——与 style_reference 子系统并存）
 - **优先级**：P1
 - **节点**：`style_profile_extract`
-- **模板**：`config/prompts.yaml` → `style_profile_extract`（version `2026-04-18.v1`，input_token_budget 1800）
+- **模板**：`config/prompts.yaml` → `style_profile_extract`（version `2026-07-05.v2`，input_token_budget 1800）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.15，max_output_tokens=2200，response_format=`json_object`
 - **用途**：从作者文本抽取 7 维抽象风格特征契约（Style Feature Contract 分节的来源之一）。
 - **触发**：api/routes/style_profile.py → StyleProfileService.extract。
@@ -4584,21 +4584,22 @@ Be conservative: only clearly named, story-relevant items.
 - **输入组装**：PromptBuilder(style_profile_extract)：作者样本文本。
 - **输出契约**：_normalize_style_profile_payload 归一（另有确定性 YAML 解析路径 _parse_structured_profile）。（解析/校验：`backend/src/novel_system/services/style_profile.py:196`）
 - **失败与降级**：LLMNodeExecutionError 上抛。
-- **优化注意**：与 style_reference 16 维的分工：这里是「作者自己的风格」轻量画像——特征值要可直接进生成上下文（短、指令化）。
+- **优化注意**：与 style_reference 16 维的分工：这里是「作者自己的风格」轻量画像——特征值要可直接进生成上下文（短、指令化）。2026-07-05.v2 已给 7 个维度逐项正反例（具体模式 vs 空泛评价），并把 calibration_lines/banned_moves 从「有证据才写」放宽为「先尽力找一条，仍无证据才留空」。
 
 **system_prompt（原样发送）**
 
 ```text
 You extract transferable prose style features from examples or approved style rules.
 Do not identify or imitate a protected author; describe reusable craft-level traits only.
+Describe each trait as a concrete, reusable pattern the author could follow — never as a bare quality judgment (banned on their own: "fluent", "vivid", "engaging", "well-paced").
 ```
 
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-Convert the supplied samples into a Style Feature Contract.
-Use rhythm, syntax, imagery, narrative_distance, emotion_curve, paragraph_density, and dialogue_ratio.
-Include calibration lines and banned moves only when explicitly supported by the input.
+Convert the supplied samples into a Style Feature Contract. For each of the 7 keys below, write one concrete sentence describing the pattern actually observed — what the prose does, not how good it is:
+rhythm (sentence-length pattern, e.g. short-short-long bursts), syntax (clause structure, inversion, fragment use), imagery (sensory channel and density), narrative_distance (close vs. distant POV cues), emotion_curve (how feeling escalates or resets across a passage), paragraph_density (information per paragraph), dialogue_ratio (dialogue-to-narration balance and tag style).
+Look hard for at least one calibration_line and one banned_move the samples actually support before leaving either empty — but never fabricate one just to fill the slot.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -4639,7 +4640,7 @@ Include calibration lines and banned moves only when explicitly supported by the
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`author_structure_extract`
-- **模板**：`config/prompts.yaml` → `author_structure_extract`（version `2026-04-25.v1`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `author_structure_extract`（version `2026-07-05.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.2，max_output_tokens=2200，response_format=`json_object`
 - **用途**：从作者上传样稿中抽取结构骨架（节拍/场景切分），用于对齐系统结构模型。
 - **触发**：api/routes/author_drafts.py → extract_structure。
@@ -4647,13 +4648,14 @@ Include calibration lines and banned moves only when explicitly supported by the
 - **输入组装**：PromptBuilder(author_structure_extract)：样稿文本。
 - **输出契约**：结构 payload 手工解析。（解析/校验：`backend/src/novel_system/services/author_drafts.py:918`）
 - **失败与降级**：上抛/桩。
-- **优化注意**：切分粒度定义要客观（以场景为最小单元、给切分判据），防止弱模型按段落乱切。
+- **优化注意**：切分粒度定义要客观（以场景为最小单元、给切分判据），防止弱模型按段落乱切。2026-07-05.v2 已落：system_prompt 加「视角/地点/时间任一跳变」判据，task_prompt 加「禁止混用 scene/chapter 两套字段」与 uncertainty_notes 的留空判据。
 
 **system_prompt（原样发送）**
 
 ```text
 You are a Chinese fiction dramaturg reading an author's free draft.
 Extract only candidate structure understanding; do not write prose and do not claim the candidate has been applied.
+Treat a scene boundary as a break in viewpoint, location, or time — use that as your unit of analysis, not paragraph breaks.
 Keep uncertain inferences explicit instead of turning ambiguous material into hard facts.
 ```
 
@@ -4662,6 +4664,7 @@ Keep uncertain inferences explicit instead of turning ambiguous material into ha
 ```text
 Read the supplied author draft and metadata, then propose a writer-brief candidate for the target object.
 Write all string values in Chinese while preserving English schema keys.
+Use only the field list for the actual target type below, and never mix the two vocabularies in one candidate_brief.
 If the target is a scene, candidate_brief should use scene brief fields such as character_desire, obstacle, stakes,
 secret_or_misunderstanding, subtext, irreversible_change, reader_question, choice_under_pressure, power_shift,
 new_information, emotional_turn, image_anchor, and reader_aftertaste.
@@ -4669,6 +4672,7 @@ If the target is a chapter, candidate_brief should use chapter brief fields such
 character_shift, chapter_question, ending_aftertaste, chapter_promise, escalation_path, relationship_delta,
 reveal_or_reversal, payoff_target, and ending_question.
 Do not include final prose, and do not overwrite existing cards.
+uncertainty_notes: add one entry for each field you had to infer from thin or ambiguous evidence; if the draft clearly supports every field, return an empty array instead of inventing a note.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -5029,12 +5033,12 @@ Compress the continuity payload while keeping essential carry-forward constraint
 - **输入组装**：内联 system_prompt + _case_user_prompt（用例 prompt + 各类 cues/banned terms + 长度带）。
 - **输出契约**：{scene_text}（缺失 → ValueError）。（解析/校验：`backend/src/novel_system/services/literary_eval.py:211`）
 - **失败与降级**：异常上抛（评测路径，可容忍失败）。
-- **优化注意**：评测生成器的提示词改动会整体抬/压分数基线——若要改，须重跑基线对照并记录；用例本身的 prompt 字段勿动（§10）。
+- **优化注意**：评测生成器的提示词改动会整体抬/压分数基线——若要改，须重跑基线对照并记录；用例本身的 prompt 字段勿动（§10）。2026-07-05：system_prompt 加一句去总结式收尾/解释性对白/冲突免费和解的高杠杆指令（用户已确认接受基线漂移风险，待重跑基线对照）。
 
 **system_prompt（函数内联，_request）**
 
 ```text
-You are generating original fiction for a style-feature evaluation. Do not imitate a living or named author's protected expression. Return JSON with one field: scene_text.
+You are generating original fiction for a style-feature evaluation. Do not imitate a living or named author's protected expression. Avoid AI-flavored prose: no summary-style closing sentence, no dialogue that states facts both characters already know, no conflict that resolves without cost. Return JSON with one field: scene_text.
 ```
 
 **user_prompt 骨架（_case_user_prompt 动态拼装，逐行 f-string）**
@@ -5076,18 +5080,20 @@ Return JSON exactly like: {"scene_text": "..."}
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.1，max_output_tokens=1200，response_format=`json_object`
 - **用途**：§2 事件溯源补全：从「实际生成的散文」抽取改变状态的硬事实（伤残/位置/得知/关系），advisory 写入 NarrativeEvent。
 - **触发**：场景运行管线收尾（orchestrator 接线 extract_events_from_prose；opt-in）。
-- **调用链**：`backend/src/novel_system/services/prose_event_extractor.py:87`（extract_events_from_prose → run_task）
+- **调用链**：`backend/src/novel_system/services/prose_event_extractor.py:95`（extract_events_from_prose → run_task）
 - **输入组装**：EXTRACTOR_SYSTEM_PROMPT + "## Scene prose" + 正文前 6000 字。
-- **输出契约**：{events[{event_type,entity_id,fact_key,fact_value,evidence}]}；event_type 白名单 4 值，越界丢弃；fact_value ≤200 字。（解析/校验：`backend/src/novel_system/services/prose_event_extractor.py:60`）
+- **输出契约**：{events[{event_type,entity_id,fact_key,fact_value,evidence}]}；event_type 白名单 4 值，越界丢弃；fact_value ≤200 字。（解析/校验：`backend/src/novel_system/services/prose_event_extractor.py:68`）
 - **失败与降级**：任何异常/未启用 → []（advisory，永不阻塞）。
-- **优化注意**：弱模型抽取薄的另一现场：可加「先逐段扫描列候选、再按耐久性筛选」两步式指令；「宁缺毋滥」保留但给最低敏感度示例（断肢/得知秘密必须报）。
+- **优化注意**：弱模型抽取薄的另一现场。2026-07-05 已落：EXTRACTOR_SYSTEM_PROMPT 加「先逐段扫描列候选、再按耐久性筛选」两步式指令，并补断肢/得知秘密/关系破裂的正例与情绪/动作瞬时反例；「宁缺毋滥」规则不变。
 
 **system_prompt（模块常量）**（`prose_event_extractor.EXTRACTOR_SYSTEM_PROMPT`）
 
 ```text
 You are a precise continuity fact-extractor for a long-form novel.
-Read the scene prose and extract ONLY concrete, on-the-page facts that CHANGE STATE —
-not mood, not interpretation, not transient action.
+Work in two passes: first scan the prose paragraph by paragraph and note every apparent
+state change; then keep only the ones that are durable — facts that would still matter
+several scenes later — and drop momentary action, mood, or interpretation.
+Extract ONLY concrete, on-the-page facts that CHANGE STATE.
 
 Event types (use exactly one of these strings):
 - character_state: a durable change to a character (injury, item gained/lost, a
@@ -5095,6 +5101,12 @@ Event types (use exactly one of these strings):
 - location_change: a character is now at a specific place
 - character_learns: a character gains specific knowledge/information
 - relation_change: the relationship between two characters shifts
+
+Examples of durable facts to report: a character loses an arm (character_state); a
+character learns who the killer is (character_learns); two characters end a scene as
+enemies after being allies (relation_change).
+Examples to NOT report: a character feels afraid for a moment; a character walks across
+a room; a character raises their voice.
 
 Respond with JSON only, no prose:
 {
@@ -5484,7 +5496,7 @@ confidence 三档:high / medium / low。若一段同时具备 2 类强特征,降
 
 ## §12 完整性自审计
 
-- 生成命令：`cd backend && python -m novel_system.tools.export_prompt_handoff`（2026-07-04）
+- 生成命令：`cd backend && python -m novel_system.tools.export_prompt_handoff`（2026-07-05）
 - 模板来源：config/prompts.yaml（无生效的 DB prompts 快照）
 - prompts 模板：**54** 个，全部出现在 §3–§8（脚本断言双向覆盖）
 - 注册节点：**60** 个，全部出现在 §2 总表；未进单元的仅 `archive`、`chapter_aggregate`、`scene_quality_contract`（无提示词，§11 说明）

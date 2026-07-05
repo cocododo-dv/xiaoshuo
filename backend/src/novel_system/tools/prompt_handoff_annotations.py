@@ -251,10 +251,13 @@ INLINE_PROMPTS: dict[str, dict[str, Any]] = {
                 "system_prompt（函数内联，_request）",
                 "You are generating original fiction for a style-feature evaluation. "
                 "Do not imitate a living or named author's protected expression. "
+                "Avoid AI-flavored prose: no summary-style closing sentence, no dialogue that states facts "
+                "both characters already know, no conflict that resolves without cost. "
                 "Return JSON with one field: scene_text.",
                 [
                     "You are generating original fiction for a style-feature evaluation. ",
                     "Do not imitate a living or named author's protected expression. ",
+                    "Avoid AI-flavored prose: no summary-style closing sentence, no dialogue that states facts ",
                     "Return JSON with one field: scene_text.",
                 ],
             ),
@@ -1319,7 +1322,7 @@ UNITS: list[dict[str, Any]] = [
         "output_contract": "entities[{name,kind,summary,aliases}] + timeline_events[{label,time_label,note}]；kind 枚举 location/item/faction/concept；服务内手工解析。",
         "parser_refs": [(f"{SVC}/library_derive.py", "call_llm_node(DERIVE_NODE_ID", 1)],
         "failure": "LLMNodeError → 降级（空结果）。",
-        "opt_notes": "查全 vs 保守的平衡：known_names 去重规则要涵盖别名/简称；弱模型上「漏报」多于误报，可要求先列候选再自筛。",
+        "opt_notes": "查全 vs 保守的平衡。2026-07-05.v2 已落两手：system_prompt 改两遍扫描（先列全候选再按 known_names 过滤，含别名匹配），summary/time_label 加长度上限与「无标记不得编造」边界。",
     },
     {
         "unit_id": "style_profile_extract",
@@ -1338,7 +1341,7 @@ UNITS: list[dict[str, Any]] = [
         "output_contract": "_normalize_style_profile_payload 归一（另有确定性 YAML 解析路径 _parse_structured_profile）。",
         "parser_refs": [(f"{SVC}/style_profile.py", 'node_id="style_profile_extract"', 1)],
         "failure": "LLMNodeExecutionError 上抛。",
-        "opt_notes": "与 style_reference 16 维的分工：这里是「作者自己的风格」轻量画像——特征值要可直接进生成上下文（短、指令化）。",
+        "opt_notes": "与 style_reference 16 维的分工：这里是「作者自己的风格」轻量画像——特征值要可直接进生成上下文（短、指令化）。2026-07-05.v2 已给 7 个维度逐项正反例（具体模式 vs 空泛评价），并把 calibration_lines/banned_moves 从「有证据才写」放宽为「先尽力找一条，仍无证据才留空」。",
     },
     {
         "unit_id": "author_structure_extract",
@@ -1357,7 +1360,7 @@ UNITS: list[dict[str, Any]] = [
         "output_contract": "结构 payload 手工解析。",
         "parser_refs": [(f"{SVC}/author_drafts.py", 'node_id="author_structure_extract"', 1)],
         "failure": "上抛/桩。",
-        "opt_notes": "切分粒度定义要客观（以场景为最小单元、给切分判据），防止弱模型按段落乱切。",
+        "opt_notes": "切分粒度定义要客观（以场景为最小单元、给切分判据），防止弱模型按段落乱切。2026-07-05.v2 已落：system_prompt 加「视角/地点/时间任一跳变」判据，task_prompt 加「禁止混用 scene/chapter 两套字段」与 uncertainty_notes 的留空判据。",
     },
     {
         "unit_id": "reference_sample_ranker",
@@ -1471,7 +1474,7 @@ UNITS: list[dict[str, Any]] = [
         "output_contract": "{scene_text}（缺失 → ValueError）。",
         "parser_refs": [(f"{SVC}/literary_eval.py", 'structured_output.get("scene_text")', 1)],
         "failure": "异常上抛（评测路径，可容忍失败）。",
-        "opt_notes": "评测生成器的提示词改动会整体抬/压分数基线——若要改，须重跑基线对照并记录；用例本身的 prompt 字段勿动（§10）。",
+        "opt_notes": "评测生成器的提示词改动会整体抬/压分数基线——若要改，须重跑基线对照并记录；用例本身的 prompt 字段勿动（§10）。2026-07-05：system_prompt 加一句去总结式收尾/解释性对白/冲突免费和解的高杠杆指令（用户已确认接受基线漂移风险，待重跑基线对照）。",
     },
     {
         "unit_id": "narrative_event_extract",
@@ -1490,7 +1493,7 @@ UNITS: list[dict[str, Any]] = [
         "output_contract": "{events[{event_type,entity_id,fact_key,fact_value,evidence}]}；event_type 白名单 4 值，越界丢弃；fact_value ≤200 字。",
         "parser_refs": [(f"{SVC}/prose_event_extractor.py", "_VALID_EVENT_TYPES", 1)],
         "failure": "任何异常/未启用 → []（advisory，永不阻塞）。",
-        "opt_notes": "弱模型抽取薄的另一现场：可加「先逐段扫描列候选、再按耐久性筛选」两步式指令；「宁缺毋滥」保留但给最低敏感度示例（断肢/得知秘密必须报）。",
+        "opt_notes": "弱模型抽取薄的另一现场。2026-07-05 已落：EXTRACTOR_SYSTEM_PROMPT 加「先逐段扫描列候选、再按耐久性筛选」两步式指令，并补断肢/得知秘密/关系破裂的正例与情绪/动作瞬时反例；「宁缺毋滥」规则不变。",
     },
     {
         "unit_id": "consistency_extract",

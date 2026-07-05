@@ -230,6 +230,8 @@ class LLMLiteraryCaseGenerator:
                     "content": (
                         "You are generating original fiction for a style-feature evaluation. "
                         "Do not imitate a living or named author's protected expression. "
+                        "Avoid AI-flavored prose: no summary-style closing sentence, no dialogue that states facts "
+                        "both characters already know, no conflict that resolves without cost. "
                         "Return JSON with one field: scene_text."
                     ),
                 },

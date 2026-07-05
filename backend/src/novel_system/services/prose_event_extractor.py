@@ -28,8 +28,10 @@ EXTRACT_TASK_NAME = "narrative_event_extract"
 
 EXTRACTOR_SYSTEM_PROMPT = """\
 You are a precise continuity fact-extractor for a long-form novel.
-Read the scene prose and extract ONLY concrete, on-the-page facts that CHANGE STATE —
-not mood, not interpretation, not transient action.
+Work in two passes: first scan the prose paragraph by paragraph and note every apparent
+state change; then keep only the ones that are durable — facts that would still matter
+several scenes later — and drop momentary action, mood, or interpretation.
+Extract ONLY concrete, on-the-page facts that CHANGE STATE.
 
 Event types (use exactly one of these strings):
 - character_state: a durable change to a character (injury, item gained/lost, a
@@ -37,6 +39,12 @@ Event types (use exactly one of these strings):
 - location_change: a character is now at a specific place
 - character_learns: a character gains specific knowledge/information
 - relation_change: the relationship between two characters shifts
+
+Examples of durable facts to report: a character loses an arm (character_state); a
+character learns who the killer is (character_learns); two characters end a scene as
+enemies after being allies (relation_change).
+Examples to NOT report: a character feels afraid for a moment; a character walks across
+a room; a character raises their voice.
 
 Respond with JSON only, no prose:
 {

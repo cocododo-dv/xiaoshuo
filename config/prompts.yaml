@@ -36,17 +36,17 @@ templates:
             additionalProperties: true
   # FE-ALIGN P6: 资料库半自动派生 — 从归档正文提取候选实体/时间线事件（不直接入库，进待办确认）
   library_derive:
-    version: "2026-06-11.v1"
+    version: "2026-07-05.v2"
     input_token_budget: 3200
     system_prompt: |
       You extract story-bible candidates from finished Chinese novel chapter text.
-      Only surface NEW named locations, items, factions, concepts, and timeline events.
-      Skip anything already listed in known_names. Never invent facts not present in the text.
+      Work in two passes: first privately list every named location, item, faction, and concept the text mentions, including ones referred to only by alias or shorthand; then drop anything already covered by known_names (matching on name or alias) and keep the rest as NEW candidates.
+      Never invent facts not present in the text. Weak extraction under-reports far more often than it over-reports — favor completeness in the listing pass, and let the filtering pass keep the result precise.
     task_prompt: |
-      Read chapter_text and return new entity candidates and timeline events.
-      entities: name, kind (location|item|faction|concept), one-sentence summary, aliases.
-      timeline_events: label, time_label (as written in text, may be empty), short note.
-      Be conservative: only clearly named, story-relevant items.
+      Read chapter_text and known_names, then return new entity candidates and timeline events using the two-pass process above.
+      entities: name, kind (location|item|faction|concept), summary (one factual sentence, no more than 30 Chinese characters), aliases (other names or shorthand this entity is called by in the text; use an empty array if none).
+      timeline_events: label, time_label (copy the text's own time marker verbatim; use "" if the text gives none — never infer or invent one), short note.
+      Only surface items that are clearly named and story-relevant, but do not drop one just because it seems minor.
     structured_schema:
       type: object
       additionalProperties: false
@@ -185,15 +185,16 @@ templates:
             type: string
 
   style_profile_extract:
-    version: "2026-04-18.v1"
+    version: "2026-07-05.v2"
     input_token_budget: 1800
     system_prompt: |
       You extract transferable prose style features from examples or approved style rules.
       Do not identify or imitate a protected author; describe reusable craft-level traits only.
+      Describe each trait as a concrete, reusable pattern the author could follow — never as a bare quality judgment (banned on their own: "fluent", "vivid", "engaging", "well-paced").
     task_prompt: |
-      Convert the supplied samples into a Style Feature Contract.
-      Use rhythm, syntax, imagery, narrative_distance, emotion_curve, paragraph_density, and dialogue_ratio.
-      Include calibration lines and banned moves only when explicitly supported by the input.
+      Convert the supplied samples into a Style Feature Contract. For each of the 7 keys below, write one concrete sentence describing the pattern actually observed — what the prose does, not how good it is:
+      rhythm (sentence-length pattern, e.g. short-short-long bursts), syntax (clause structure, inversion, fragment use), imagery (sensory channel and density), narrative_distance (close vs. distant POV cues), emotion_curve (how feeling escalates or resets across a passage), paragraph_density (information per paragraph), dialogue_ratio (dialogue-to-narration balance and tag style).
+      Look hard for at least one calibration_line and one banned_move the samples actually support before leaving either empty — but never fabricate one just to fill the slot.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1538,15 +1539,17 @@ templates:
           type: boolean
 
   author_structure_extract:
-    version: "2026-04-25.v1"
+    version: "2026-07-05.v2"
     input_token_budget: 2600
     system_prompt: |
       You are a Chinese fiction dramaturg reading an author's free draft.
       Extract only candidate structure understanding; do not write prose and do not claim the candidate has been applied.
+      Treat a scene boundary as a break in viewpoint, location, or time — use that as your unit of analysis, not paragraph breaks.
       Keep uncertain inferences explicit instead of turning ambiguous material into hard facts.
     task_prompt: |
       Read the supplied author draft and metadata, then propose a writer-brief candidate for the target object.
       Write all string values in Chinese while preserving English schema keys.
+      Use only the field list for the actual target type below, and never mix the two vocabularies in one candidate_brief.
       If the target is a scene, candidate_brief should use scene brief fields such as character_desire, obstacle, stakes,
       secret_or_misunderstanding, subtext, irreversible_change, reader_question, choice_under_pressure, power_shift,
       new_information, emotional_turn, image_anchor, and reader_aftertaste.
@@ -1554,6 +1557,7 @@ templates:
       character_shift, chapter_question, ending_aftertaste, chapter_promise, escalation_path, relationship_delta,
       reveal_or_reversal, payoff_target, and ending_question.
       Do not include final prose, and do not overwrite existing cards.
+      uncertainty_notes: add one entry for each field you had to infer from thin or ambiguous evidence; if the draft clearly supports every field, return an empty array instead of inventing a note.
     structured_schema:
       type: object
       additionalProperties: false
