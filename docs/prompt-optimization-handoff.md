@@ -1,6 +1,6 @@
 # 全系统 LLM 提示词优化交接文档
 
-> 面向 Claude Sonnet 5 的自包含提示词优化工作底稿 · 生成于 2026-07-05 · 机器提取 + 人工审计注释，勿手改本文件（改注释/源码后重新生成）。
+> 面向 Claude Sonnet 5 的自包含提示词优化工作底稿 · 生成于 2026-07-06 · 机器提取 + 人工审计注释，勿手改本文件（改注释/源码后重新生成）。
 
 ## §0 给 Sonnet 5 的任务简报
 
@@ -100,12 +100,12 @@
 | 9 | `reference_profile_synthesize` | reference | 孤儿 | yaml:`reference_profile_synthesize` | — |
 | 10 | `style_ref_paragraph_classify_anchor` | style_reference | 活跃 | yaml:`style_ref_paragraph_classify_anchor` | `backend/src/novel_system/services/style_reference/segmentation/llm.py:201` |
 | 11 | `style_ref_paragraph_classify_bulk` | style_reference | 活跃 | yaml:`style_ref_paragraph_classify_bulk` | `backend/src/novel_system/services/style_reference/segmentation/llm.py:201` |
-| 12 | `style_ref_extract_language` | style_reference | 活跃 | yaml:`style_ref_extract_language` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
-| 13 | `style_ref_extract_narrative` | style_reference | 活跃 | yaml:`style_ref_extract_narrative` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
-| 14 | `style_ref_extract_scene` | style_reference | 活跃 | yaml:`style_ref_extract_scene` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
-| 15 | `style_ref_extract_theme` | style_reference | 活跃 | yaml:`style_ref_extract_theme` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
-| 16 | `style_ref_supplement_evidence` | style_reference | 活跃 | yaml:`style_ref_supplement_evidence` | `backend/src/novel_system/services/style_reference/extractors/base.py:530` |
-| 17 | `style_ref_synthesize_profile` | style_reference | 活跃 | yaml:`style_ref_synthesize_profile` | `backend/src/novel_system/services/style_reference/profile_synthesizer.py:154` |
+| 12 | `style_ref_extract_language` | style_reference | 活跃 | yaml:`style_ref_extract_language` | `backend/src/novel_system/services/style_reference/extractors/base.py:525` |
+| 13 | `style_ref_extract_narrative` | style_reference | 活跃 | yaml:`style_ref_extract_narrative` | `backend/src/novel_system/services/style_reference/extractors/base.py:525` |
+| 14 | `style_ref_extract_scene` | style_reference | 活跃 | yaml:`style_ref_extract_scene` | `backend/src/novel_system/services/style_reference/extractors/base.py:525` |
+| 15 | `style_ref_extract_theme` | style_reference | 活跃 | yaml:`style_ref_extract_theme` | `backend/src/novel_system/services/style_reference/extractors/base.py:525` |
+| 16 | `style_ref_supplement_evidence` | style_reference | 活跃 | yaml:`style_ref_supplement_evidence` | `backend/src/novel_system/services/style_reference/extractors/base.py:525` |
+| 17 | `style_ref_synthesize_profile` | style_reference | 活跃 | yaml:`style_ref_synthesize_profile` | `backend/src/novel_system/services/style_reference/profile_synthesizer.py:172` |
 | 18 | `style_ref_preview_generate` | style_reference | 活跃 | yaml:`style_ref_preview_generate` | `backend/src/novel_system/services/style_reference/preview.py:164` |
 | 19 | `style_ref_validate_semantic` | style_reference | 活跃 | yaml:`style_ref_validate_semantic` | `backend/src/novel_system/services/style_reference/validation/semantic.py:49` |
 | 20 | `style_ref_validate_forbidden` | style_reference | 活跃 | yaml:`style_ref_validate_forbidden` | `backend/src/novel_system/services/style_reference/validation/forbidden_semantic.py:62` |
@@ -1246,7 +1246,7 @@ This scene's pressure must leave a residue: at least one of these seven must sti
 - **状态**：活跃
 - **优先级**：P0
 - **节点**：`neutral_draft`
-- **模板**：`config/prompts.yaml` → `neutral_draft`（version `2026-07-04.v2`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `neutral_draft`（version `2026-07-06.v3`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.6，max_output_tokens=6000，response_format=`json_object`
 - **用途**：无风格化的场景正文初稿——把 spec（目标/冲突/挫败或反应/两难/决定）落成完整叙事，供风格层加工。
 - **触发**：场景运行管线（POST /api/v1/scenes/{id}/run/jobs → Orchestrator.run_scene）。
@@ -1254,7 +1254,7 @@ This scene's pressure must leave a residue: at least one of these seven must sti
 - **输入组装**：PromptBuilder 全量上下文分节（chapter_goal/scene_card/scene_blueprint/character_pressure/POV voice/世界规则/前情记忆/伏笔/避免近期表达…）+ 语言锁 + 角色连续性指令 + schema 指令。
 - **输出契约**：scene_text（+元信息），_extract_scene_text 解析 → NeutralGenerationResult；正文进 SceneDraft 行。（解析/校验：`backend/src/novel_system/services/scene_generation.py:223`）
 - **失败与降级**：离线 OfflineNeutralClient；连续性预算超限 → LLMNodeContinuityError（建议拆场景）。
-- **优化注意**：去AI味在此层管「叙事骨架不塌」：动作-反应节拍完整、信息经由压力而非旁白倾倒。风格留给 style 层，本模板应抑制修辞欲。
+- **优化注意**：去AI味在此层管「叙事骨架不塌」：动作-反应节拍完整、信息经由压力而非旁白倾倒。风格留给 style 层，本模板应抑制修辞欲。2026-07-06.v3 复核轮：删除模板内与运行时语言锁逐字重复的两句（_append_runtime_template_instruction 会自动追加，双份指令白耗预算）。
 
 **system_prompt（原样发送）**
 
@@ -1273,8 +1273,6 @@ If Longform Structure Guidance is present, treat it as editorial pressure for ar
 If Character Pressure Blueprint is present, make the character's hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask visible through action or omission.
 If Chapter Story Architecture is present, obey its promise, escalation path, reveal plan, payoff target, character shift, and ending question.
 Avoid model-voice shortcuts: no explanatory dialogue dump, no no-choice scene, no summary ending, and keep image anchors varied rather than repetitive.
-Write prose in the same language as the chapter goal and scene card.
-If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; do not translate Chinese settings, beats, or required text into English.
 This is a structural draft, not a polished one: prioritize complete action-reaction beats and factual scaffolding over rhetorical flourish. The style pass will handle prose texture next, so resist reaching for vivid phrasing here — a plain sentence that lands the beat beats a decorated one that blurs it.
 ```
 
@@ -1306,7 +1304,7 @@ This is a structural draft, not a polished one: prioritize complete action-react
 - **状态**：活跃（注册表 template_name="stylize" 只是路由别名；实际提示词即本模板）
 - **优先级**：P0
 - **节点**：`style_draft`、`style_patch`
-- **模板**：`config/prompts.yaml` → `style_draft`（version `2026-07-04.v2`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `style_draft`（version `2026-07-06.v3`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `style_draft`：model=`gpt-5`，temperature=0.8，max_output_tokens=6000，response_format=`json_object`，frequency_penalty=0.3，presence_penalty=0.15
 - **路由（yaml 兜底，DB 优先）** `style_patch`：model=`gpt-5`，temperature=0.8，max_output_tokens=6000，response_format=`json_object`，frequency_penalty=0.3，presence_penalty=0.15
 - **用途**：把中性稿加工成风格化正文（Best-of-N 多候选）；soft_patch 分支按 QC 的 patch_brief 做定向修补；另有去模板化 pass 复用 style_patch 节点。
@@ -1315,7 +1313,7 @@ This is a structural draft, not a polished one: prioritize complete action-react
 - **输入组装**：PromptBuilder(style_draft) + [STYLE_REFERENCE] 注入块（绑定 Profile 时，含反抄袭红线）+ 中性稿正文 + author_note 附加指令 + patch_brief（补丁分支）+ 发散化/风格强调前缀（低分散重试）。采样带 frequency_penalty 0.3 / presence_penalty 0.15（§7 反均值）。
 - **输出契约**：scene_text；_extract_scene_text → StyleGenerationResult；候选进 Best-of-N 排序（adversarial_rank_score 规则盲评）。（解析/校验：`backend/src/novel_system/services/scene_generation.py:1024`）
 - **失败与降级**：离线 OfflineStyleClient（patch_mode 区分）；失败记 AttemptTracker 后上抛原错误。
-- **优化注意**：去AI味核心战场。对照 literary_quality 21 维中的高频失分项写硬约束：感知过滤器（每段落至少一处经由 POV 身体/情绪过滤的感知）、禁总结式收尾、禁「as you know」式对白倾倒、意象不许跨段复用、句式长短交替。注意语言锁与反抄袭红线是自动追加的，模板里不要重复。
+- **优化注意**：去AI味核心战场。对照 literary_quality 21 维中的高频失分项写硬约束：感知过滤器（每段落至少一处经由 POV 身体/情绪过滤的感知）、禁总结式收尾、禁「as you know」式对白倾倒、意象不许跨段复用、句式长短交替。注意语言锁与反抄袭红线是自动追加的，模板里不要重复。2026-07-06.v3 复核轮：开头两行冗余且矛盾（本模板服务 4 种 source_label——Approved Neutral Draft / Current Style Draft / Near-Final Draft Under Review / Style Draft Requiring De-template Pass，「approved neutral draft」在 patch/去模板化路径下语义错误），合并为源无关的一句；并删除与运行时语言锁逐字重复的两句。
 
 **system_prompt（原样发送）**
 
@@ -1327,15 +1325,12 @@ Preserve bundle facts exactly, keep continuity safe, and apply reusable craft-le
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-Rewrite the scene draft with stronger style adherence without changing factual continuity.
-Rewrite the approved neutral draft without changing factual continuity.
+Rewrite the supplied source draft (the labeled source section in the context) with stronger style adherence, without changing factual continuity.
 Preserve the Scene Literary Blueprint v2 pressure: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, and next_scene_pull must remain legible in prose.
 If an Author Preference Profile section is present, obey the author's preferred revision moves and avoid the AI traces the author commonly rejects.
 If Longform Structure Guidance is present, use it as structural pressure for arc, payoff, and release timing; do not let it override hard continuity or scene-card facts.
 If Character Pressure Blueprint is present, preserve its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as scene pressure rather than explanation.
 If Chapter Story Architecture is present, make the rewritten scene serve the chapter promise, reveal plan, payoff target, character shift, and ending question.
-Preserve the source draft language; do not translate the scene while styling it.
-If the draft or scene card is Chinese, scene_text must remain Chinese prose.
 Follow the Style Feature Contract dimension by dimension:
 - rhythm: sentence beat, pause placement, paragraph endings.
 - syntax: sentence length mix, clause shape, dialogue/narration texture.
@@ -2433,9 +2428,9 @@ dialogue / narration / psychology / description_env / description_char / action 
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`，timeout_seconds=180
 - **用途**：语言层（句法节奏/词汇质感/修辞/对白语言）的风格发现抽取：每条 finding 须 ≥2 证据 span、禁模糊形容词。
 - **触发**：抽取 run（POST /api/v2/style-reference/…/extract → run_orchestrator 调度四层）。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（BaseExtractor._call_llm（extract_node_id=本节点））
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:525`（BaseExtractor._call_llm（extract_node_id=本节点））
 - **输入组装**：task_prompt + JSON payload：sub_dim 定义 + 按段落类型定向抽样的原文段落（20 段级）+ 观察数/证据数指标（config/style_reference/extraction.yaml）。按 sub_dim 逐项调用、逐项 checkpoint 提交。
-- **输出契约**：findings（observation 或 forbidden_pattern，finding_kind 区分）：statement 禁 banned_adjectives.yaml 词表、evidence ≥2 且 span 必须能在原文定位（Pydantic + span 校验）。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:530`）
+- **输出契约**：findings（observation 或 forbidden_pattern，finding_kind 区分）：statement 禁 banned_adjectives.yaml 词表、evidence ≥2 且 span 必须能在原文定位（Pydantic + span 校验）。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:525`）
 - **失败与降级**：两级重试：先 style_ref_supplement_evidence 定向补证，仍不达标整 sub_dim 重抽；完全空结果（0 findings，合法 schema 输出）同样触发一次整 sub_dim 重抽（受 max_full_retries 预算）；最终失败记 _ExtractLLMError、该 sub_dim 缺失。
 - **优化注意**：弱模型「产出薄」重灾区（deepseek-v4-flash 同 payload 可能 0 findings）。2026-07-04.v2 已落两手：模板给产出下限（通常 3-8 条、0 条是罕见例外）、代码对空结果补一次 full_retry。statement 要写成可执行的写作规则而非鉴赏评语。
 
@@ -2657,9 +2652,9 @@ dialogue / narration / psychology / description_env / description_char / action 
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`，timeout_seconds=180
 - **用途**：叙事层（视点/时序/叙述距离/信息释放）抽取，机制同语言层。
 - **触发**：同上。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（extract_node_id=本节点）
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:525`（extract_node_id=本节点）
 - **输入组装**：同语言层（sub_dim 定义不同）。
-- **输出契约**：同语言层。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:530`）
+- **输出契约**：同语言层。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:525`）
 - **失败与降级**：同语言层。
 - **优化注意**：叙事层最抽象、最易产「万金油」结论——要求每条 finding 绑定具体叙事决策点（何处切视点/何处压缩时间），并给反例。
 
@@ -2877,9 +2872,9 @@ observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`，timeout_seconds=180
 - **用途**：场景层（空间调度/感官布置/动作编排/氛围营造）抽取。
 - **触发**：同上。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（extract_node_id=本节点）
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:525`（extract_node_id=本节点）
 - **输入组装**：同语言层。
-- **输出契约**：同语言层。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:530`）
+- **输出契约**：同语言层。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:525`）
 - **失败与降级**：同语言层。
 - **优化注意**：感官词证据与 sensory_lexicon.yaml 的量化基线互补——findings 应偏「布置策略」而非重复量化指标（那由 metrics.py 硬算）。
 
@@ -3101,9 +3096,9 @@ observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3200，response_format=`json_object`，timeout_seconds=180
 - **用途**：主题层（母题/象征系统/价值张力/情感曲线）抽取。
 - **触发**：同上。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（extract_node_id=本节点）
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:525`（extract_node_id=本节点）
 - **输入组装**：同语言层。
-- **输出契约**：同语言层；注意主题层 forbidden_pattern（招牌意象）是反克隆关键。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:530`）
+- **输出契约**：同语言层；注意主题层 forbidden_pattern（招牌意象）是反克隆关键。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:525`）
 - **失败与降级**：同语言层。
 - **优化注意**：反抄袭敏感层：指令必须强化「抽象策略、不许摘招牌意象为可用素材」——招牌意象只能进 forbidden_pattern。
 
@@ -3327,9 +3322,9 @@ observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.15，max_output_tokens=1500，response_format=`json_object`
 - **用途**：两级重试第一级：对证据不足的单条 observation，从新采样段落里定向补 evidence span。
 - **触发**：抽取 run 内部（_supplement_* 路径）。
-- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:530`（supplement_node_id 固定为本节点）
+- **调用链**：`backend/src/novel_system/services/style_reference/extractors/base.py:525`（supplement_node_id 固定为本节点）
 - **输入组装**：task_prompt + JSON：目标 observation + 候选段落。
-- **输出契约**：SupplementEvidenceOutput.model_validate（Pydantic）；span 必须可定位。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:505`）
+- **输出契约**：SupplementEvidenceOutput.model_validate（Pydantic）；span 必须可定位。（解析/校验：`backend/src/novel_system/services/style_reference/extractors/base.py:511`）
 - **失败与降级**：失败升级为整 sub_dim 重抽。
 - **优化注意**：小任务小模型：指令要极窄——只找支持既有 statement 的原文 span，明示「找不到就返回空」比硬凑重要。
 
@@ -3418,9 +3413,9 @@ existing_evidence_count / paragraphs。
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.2，max_output_tokens=3500，response_format=`json_object`，timeout_seconds=180
 - **用途**：把 16 个 sub_dim 的 findings 聚合为可注入的分层 StyleProfile（+量化指标基线合流），聚合完触发 RAG 索引构建。
 - **触发**：POST /api/v2/style-reference/…/synthesize（ProfileSynthesizer.synthesize）。
-- **调用链**：`backend/src/novel_system/services/style_reference/profile_synthesizer.py:154`（SYNTHESIZE_NODE_ID）
+- **调用链**：`backend/src/novel_system/services/style_reference/profile_synthesizer.py:172`（SYNTHESIZE_NODE_ID）
 - **输入组装**：task_prompt + JSON：全部 findings（含 forbidden_pattern）+ metrics 基线。
-- **输出契约**：SynthesizedProfile.model_validate（Pydantic，严格）；失败 SynthesizeError。style_features / narrative_patterns 必须非空（min_length=1，空画像是废品宁可硬失败）；calibration_guidance 已入 wire required（存在性压力），与 banned_replication_rules 一样允许为空数组。（解析/校验：`backend/src/novel_system/services/style_reference/profile_synthesizer.py:106`）
+- **输出契约**：SynthesizedProfile.model_validate（Pydantic，严格）；失败 SynthesizeError。style_features / narrative_patterns 必须非空（min_length=1，空画像是废品宁可硬失败）；calibration_guidance 已入 wire required（存在性压力），与 banned_replication_rules 一样允许为空数组。（解析/校验：`backend/src/novel_system/services/style_reference/profile_synthesizer.py:110`）
 - **失败与降级**：LLM 未启用 → LLMRequiredError；style_features / narrative_patterns 为空 → SynthesizeError 硬失败；RAG 索引构建失败容错不阻塞。
 - **优化注意**：输出即最终注入文本的直接素材：要求每条 profile 规则「指令化」（做什么/不做什么/示例句式骨架），并保留 forbidden_pattern 的独立区块。schema 大且严——弱模型上失败率高，指令中把 schema 关键字段用途讲一遍。
 
@@ -4318,7 +4313,7 @@ Do not touch passages the diagnosis did not flag.
 - **输入组装**：PromptBuilder(writer_deep_review)：正文 + 上下文分节。
 - **输出契约**：_normalize_deep_review_output 归一的深评报告。（解析/校验：`backend/src/novel_system/services/writer_deep_review.py:409`）
 - **失败与降级**：OfflineWriterDeepReviewClient 桩。
-- **优化注意**：深评发现须能锚定段落（供 writer_passage_patch 消费）——要求每条发现带原文引句或段落序号。
+- **优化注意**：深评发现须能锚定段落（供 writer_passage_patch 消费）——要求每条发现带原文引句或段落序号。2026-07-06 复核轮决议：《schema 变更提案》（顶层可选 lens_evaluations）**关闭不落地**——_normalize_deep_review_output 对模型直出的 lens_evaluations 仅浅拷贝不校验内部结构，弱模型垃圾会绕过归一入库；现行兜底（findings 逐条 lens 标签 + 服务端确定性重建）结构完整且更稳，维持现状。
 
 **system_prompt（原样发送）**
 
@@ -5496,7 +5491,7 @@ confidence 三档:high / medium / low。若一段同时具备 2 类强特征,降
 
 ## §12 完整性自审计
 
-- 生成命令：`cd backend && python -m novel_system.tools.export_prompt_handoff`（2026-07-05）
+- 生成命令：`cd backend && python -m novel_system.tools.export_prompt_handoff`（2026-07-06）
 - 模板来源：config/prompts.yaml（无生效的 DB prompts 快照）
 - prompts 模板：**54** 个，全部出现在 §3–§8（脚本断言双向覆盖）
 - 注册节点：**60** 个，全部出现在 §2 总表；未进单元的仅 `archive`、`chapter_aggregate`、`scene_quality_contract`（无提示词，§11 说明）

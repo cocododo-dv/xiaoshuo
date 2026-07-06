@@ -94,7 +94,7 @@ templates:
             additionalProperties: true
 
   neutral_draft:
-    version: "2026-07-04.v2"
+    version: "2026-07-06.v3"
     input_token_budget: 2600
     system_prompt: |
       You are drafting a neutral, continuity-safe web-novel scene.
@@ -107,8 +107,6 @@ templates:
       If Character Pressure Blueprint is present, make the character's hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask visible through action or omission.
       If Chapter Story Architecture is present, obey its promise, escalation path, reveal plan, payoff target, character shift, and ending question.
       Avoid model-voice shortcuts: no explanatory dialogue dump, no no-choice scene, no summary ending, and keep image anchors varied rather than repetitive.
-      Write prose in the same language as the chapter goal and scene card.
-      If the chapter goal or scene card contains Chinese text, scene_text must be Chinese prose; do not translate Chinese settings, beats, or required text into English.
       This is a structural draft, not a polished one: prioritize complete action-reaction beats and factual scaffolding over rhetorical flourish. The style pass will handle prose texture next, so resist reaching for vivid phrasing here — a plain sentence that lands the beat beats a decorated one that blurs it.
     structured_schema:
       type: object
@@ -216,21 +214,18 @@ templates:
             type: string
 
   style_draft:
-    version: "2026-07-04.v2"
+    version: "2026-07-06.v3"
     input_token_budget: 2600
     system_prompt: |
       You are drafting a stylistically tuned web-novel scene from a structured Style Feature Contract.
       Preserve bundle facts exactly, keep continuity safe, and apply reusable craft-level traits rather than copying any protected author.
     task_prompt: |
-      Rewrite the scene draft with stronger style adherence without changing factual continuity.
-      Rewrite the approved neutral draft without changing factual continuity.
+      Rewrite the supplied source draft (the labeled source section in the context) with stronger style adherence, without changing factual continuity.
       Preserve the Scene Literary Blueprint v2 pressure: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, and next_scene_pull must remain legible in prose.
       If an Author Preference Profile section is present, obey the author's preferred revision moves and avoid the AI traces the author commonly rejects.
       If Longform Structure Guidance is present, use it as structural pressure for arc, payoff, and release timing; do not let it override hard continuity or scene-card facts.
       If Character Pressure Blueprint is present, preserve its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as scene pressure rather than explanation.
       If Chapter Story Architecture is present, make the rewritten scene serve the chapter promise, reveal plan, payoff target, character shift, and ending question.
-      Preserve the source draft language; do not translate the scene while styling it.
-      If the draft or scene card is Chinese, scene_text must remain Chinese prose.
       Follow the Style Feature Contract dimension by dimension:
       - rhythm: sentence beat, pause placement, paragraph endings.
       - syntax: sentence length mix, clause shape, dialogue/narration texture.

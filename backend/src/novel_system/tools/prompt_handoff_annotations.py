@@ -692,7 +692,10 @@ UNITS: list[dict[str, Any]] = [
         "output_contract": "scene_text（+元信息），_extract_scene_text 解析 → NeutralGenerationResult；正文进 SceneDraft 行。",
         "parser_refs": [(f"{SVC}/scene_generation.py", 'node_id="neutral_draft"', 1)],
         "failure": "离线 OfflineNeutralClient；连续性预算超限 → LLMNodeContinuityError（建议拆场景）。",
-        "opt_notes": "去AI味在此层管「叙事骨架不塌」：动作-反应节拍完整、信息经由压力而非旁白倾倒。风格留给 style 层，本模板应抑制修辞欲。",
+        "opt_notes": (
+            "去AI味在此层管「叙事骨架不塌」：动作-反应节拍完整、信息经由压力而非旁白倾倒。风格留给 style 层，本模板应抑制修辞欲。"
+            "2026-07-06.v3 复核轮：删除模板内与运行时语言锁逐字重复的两句（_append_runtime_template_instruction 会自动追加，双份指令白耗预算）。"
+        ),
     },
     {
         "unit_id": "style_draft",
@@ -721,6 +724,9 @@ UNITS: list[dict[str, Any]] = [
         "opt_notes": (
             "去AI味核心战场。对照 literary_quality 21 维中的高频失分项写硬约束：感知过滤器（每段落至少一处经由 POV 身体/情绪过滤的感知）、"
             "禁总结式收尾、禁「as you know」式对白倾倒、意象不许跨段复用、句式长短交替。注意语言锁与反抄袭红线是自动追加的，模板里不要重复。"
+            "2026-07-06.v3 复核轮：开头两行冗余且矛盾（本模板服务 4 种 source_label——Approved Neutral Draft / Current Style Draft / "
+            "Near-Final Draft Under Review / Style Draft Requiring De-template Pass，「approved neutral draft」在 patch/去模板化路径下语义错误），"
+            "合并为源无关的一句；并删除与运行时语言锁逐字重复的两句。"
         ),
     },
     {
@@ -1264,7 +1270,12 @@ UNITS: list[dict[str, Any]] = [
         "output_contract": "_normalize_deep_review_output 归一的深评报告。",
         "parser_refs": [(f"{SVC}/writer_deep_review.py", "_normalize_deep_review_output", 1)],
         "failure": "OfflineWriterDeepReviewClient 桩。",
-        "opt_notes": "深评发现须能锚定段落（供 writer_passage_patch 消费）——要求每条发现带原文引句或段落序号。",
+        "opt_notes": (
+            "深评发现须能锚定段落（供 writer_passage_patch 消费）——要求每条发现带原文引句或段落序号。"
+            "2026-07-06 复核轮决议：《schema 变更提案》（顶层可选 lens_evaluations）**关闭不落地**——"
+            "_normalize_deep_review_output 对模型直出的 lens_evaluations 仅浅拷贝不校验内部结构，弱模型垃圾会绕过归一入库；"
+            "现行兜底（findings 逐条 lens 标签 + 服务端确定性重建）结构完整且更稳，维持现状。"
+        ),
     },
     {
         "unit_id": "writer_reference_application_review",

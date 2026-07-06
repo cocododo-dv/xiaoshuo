@@ -260,7 +260,7 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert style_request.reasoning_level == "medium"
     assert any("Approved Neutral Draft" in message["content"] for message in style_request.messages)
     assert any("Provider-generated neutral scene text." in message["content"] for message in style_request.messages)
-    assert any("Rewrite the scene draft with stronger style adherence" in message["content"] for message in style_request.messages)
+    assert any("Rewrite the supplied source draft" in message["content"] for message in style_request.messages)
     assert sum(message["content"].count("Return JSON that matches the structured schema exactly.") for message in style_request.messages) == 1
 
     assert neutral_draft.content == "Provider-generated neutral scene text."
