@@ -2015,6 +2015,10 @@ class OfflineAuthorProposalClient:
         self.instruction = instruction
 
     def generate(self, request: LLMRequest) -> LLMResponse:
+        # 与 writer_deep_review.OfflinePassagePatchClient 同一约定:rationale 必须
+        # 落入前端 /offline deterministic/i 探测正则,消费方才能把占位稿如实标成
+        # "LLM 不可用",不冒充真实续写(_proposal_rationale 本身复用于正常 LLM 响应
+        # 缺 rationale 字段时的兜底,不能带这个标记,故在此单独拼接)。
         payload = {
             "content": _proposal_content(
                 self.draft,
@@ -2022,7 +2026,7 @@ class OfflineAuthorProposalClient:
                 proposal_type=self.proposal_type,
                 instruction=self.instruction,
             ),
-            "rationale": _proposal_rationale(
+            "rationale": "offline deterministic author proposal — " + _proposal_rationale(
                 target=self.target,
                 proposal_type=self.proposal_type,
                 instruction=self.instruction,

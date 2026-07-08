@@ -1169,23 +1169,7 @@ def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
     if overall_score is None:
         overall_score = round(mean(scores.values()), 2) if scores else None
     revision_brief = _normalize_revision_brief(payload.get("revision_brief"), findings)
-    lens_evaluations = payload.get("lens_evaluations") if isinstance(payload.get("lens_evaluations"), list) else []
-    normalized_lenses = [dict(item) for item in lens_evaluations if isinstance(item, dict)]
-    if not normalized_lenses:
-        findings_by_lens: dict[str, list[dict[str, Any]]] = {lens: [] for lens in DEEP_REVIEW_LENSES}
-        for finding in findings:
-            lens = str(finding.get("lens") or "story")
-            findings_by_lens.setdefault(lens, []).append(finding)
-        normalized_lenses = [
-            {
-                "lens": lens,
-                "scores": _scores_for_findings(lens_findings) if lens_findings else scores,
-                "findings": lens_findings,
-                "revision_brief": _revision_brief_from_findings(lens_findings),
-            }
-            for lens, lens_findings in findings_by_lens.items()
-            if lens_findings
-        ]
+    normalized_lenses = _normalize_lens_evaluations(payload.get("lens_evaluations"), findings)
     requires_human_review = bool(payload.get("requires_human_review"))
     if any(finding.get("severity") == "blocking" for finding in findings):
         requires_human_review = True
@@ -1197,6 +1181,53 @@ def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
         "requires_human_review": requires_human_review,
         "lens_evaluations": normalized_lenses,
     }
+
+
+def _normalize_lens_evaluations(value: Any, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # 模型直出的分组是权威来源（校验后采用）;缺失的镜头再从顶层 findings 的
+    # lens 标签重建——不把顶层 findings 并入模型已给出的条目,否则同一条发现
+    # 会在两处同时出现时被重复计入。
+    findings_by_lens: dict[str, list[dict[str, Any]]] = {lens: [] for lens in DEEP_REVIEW_LENSES}
+    for finding in findings:
+        findings_by_lens[_coerce_lens(finding.get("lens")) or "story"].append(finding)
+    by_lens: dict[str, dict[str, Any]] = {}
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        lens = _coerce_lens(item.get("lens"))
+        if lens is None:
+            continue
+        lens_findings = _normalize_findings(item.get("findings"))
+        for finding in lens_findings:
+            finding["lens"] = lens
+        entry = by_lens.get(lens)
+        if entry is None:
+            by_lens[lens] = {
+                "lens": lens,
+                "overall_score": _optional_score(item.get("overall_score")),
+                "scores": _normalize_scores(item.get("scores")),
+                "findings": lens_findings,
+                "revision_brief": _normalize_revision_brief(item.get("revision_brief"), lens_findings),
+            }
+        else:
+            entry["findings"].extend(lens_findings)
+            entry["revision_brief"].extend(_revision_brief_from_findings(lens_findings))
+    for lens in DEEP_REVIEW_LENSES:
+        lens_findings = findings_by_lens[lens]
+        if lens in by_lens or not lens_findings:
+            continue
+        by_lens[lens] = {
+            "lens": lens,
+            "scores": _scores_for_findings(lens_findings),
+            "findings": lens_findings,
+            "revision_brief": _revision_brief_from_findings(lens_findings),
+        }
+    return [by_lens[lens] for lens in DEEP_REVIEW_LENSES if lens in by_lens]
+
+
+def _coerce_lens(value: Any) -> str | None:
+    lens = str(value or "").strip().lower()
+    return lens if lens in DEEP_REVIEW_LENSES else None
 
 
 def _normalize_scores(value: Any) -> dict[str, float]:
@@ -1232,7 +1263,7 @@ def _normalize_findings(value: Any) -> list[dict[str, Any]]:
             severity = "revision"
         finding["severity"] = severity
         finding["classification"] = str(finding.get("classification") or severity)
-        finding["lens"] = str(finding.get("lens") or "story")
+        finding["lens"] = _coerce_lens(finding.get("lens")) or "story"
         finding["dimension"] = str(finding.get("dimension") or "choice_pressure")
         finding["issue"] = str(finding.get("issue") or "")
         finding["recommendation"] = str(finding.get("recommendation") or "")

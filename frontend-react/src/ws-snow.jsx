@@ -319,20 +319,6 @@ function s2ReadWorkbench() {
   } catch (e) { return null; }
 }
 
-const S2_DRAFT_BACKSTORY = "周岚从来不和人谈起那年冬天。她那时刚毕业三年，是潮汐档案馆最年轻的助理，每天工作到夜里十一点，把潮位、回声和盐钟读数一条条抄进登记簿。\n\n那场潮汐死了三十一个人，包括林岑的父亲。事后整理档案时，是周岚一个人在馆里翻了一周，她当时只想把所有「对不起」留在纸上，等谁来认领。\n\n没有人来。";
-
-const S2_CANDS_BACKSTORY = [
-  { id: "A", label: "克制版", tag: "现存草稿延续",
-    text: "周岚二十岁那年第一次站到潮汐塔上，她以为自己能挡住一座城市的脏话。后来她明白，世界不需要一个挡风的人，世界只需要档案上写「没事」。从那以后，她每天提前一小时上班，每天比所有人晚走，她以为这样可以让一切重新长出来——可是有些东西一旦被记录下来，就再也不会真正长出来了。",
-    notes: ["保留原节奏", "句末重音", "未引入新意象"] },
-  { id: "B", label: "推进版", tag: "加深动机",
-    text: "周岚不再相信潮汐。十九岁那年她见过它把一艘灯塔船拗成两段，从那以后，她相信的是档案——白纸黑字，盖章生效，至少能在第二天还认得。她做主任的二十年里，她比任何人都早到馆，她要确保所有被记下来的事都不出错。错的，她改；不该有的，她让它没有过。",
-    notes: ["新增「灯塔船」意象", "动机更明确", "破坏感更强"] },
-  { id: "C", label: "对照版", tag: "引入林岑视角",
-    text: "林岑第一次见周岚是十二岁，馆里来了客人，父亲让她叫「周阿姨」。她记得周岚的手很冷，递糖给她的时候笑得很轻。后来父亲走了，周岚每年生日都给她寄一封手写信，字迹端正得像在抄写自己的余生。林岑不知道一个人要练习多少年，才能把谎话写得和真话一样匀。",
-    notes: ["新增林岑童年回忆", "可能与 05 冲突", "情感更丰厚"] },
-];
-
 /* Per-step content: draft / target / explainer / hints / candidates,
    plus a `scaffold` spec for the four method-critical steps. */
 const S2_STEP_DATA = {
@@ -787,6 +773,10 @@ async function s2GenerateCands(active, data, drafts, scaffolds) {
   })).filter(c => c.text);
 }
 
+/* 「采纳并结构化」等入口统一走视图内的 structuredGenerate（后端 generate 节点：
+   每步专用模板 + 权威上游材料 + 压力诊断 + 空字段定向重试；require_llm 保证
+   LLM 不可用时诚实报错，绝不落一版启发式草稿冒充）。 */
+
 /* ---- downstream staleness (the fractal method's cheap-backtracking core) ----
    Each step carries a content revision number (revs), bumped whenever its
    folded content changes. When a step is confirmed we snapshot the current
@@ -840,7 +830,7 @@ function s2Load(key) { try { return JSON.parse(localStorage.getItem(key || s2Key
 const s2SeedOn = () => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } };
 function s2BlankScaffolds() {
   return {
-    audience: { genre: "", reader: "", pleasure: "", source: "", exclude: "" },
+    audience: { genre: "", reader: "", pleasure: "", source: "", exclude: "", emotion: "" },
     paragraph: { premiseF: "", premiseT: "", setup: "", d1: "", d2: "", d3: "", resolution: "" },
     characters: { sel: "c1", chars: { c1: { name: "", role: "主角", goal: "", ambition: "", values: "", conflict: "", epiphany: "" } } },
     planning: { sel: "", plans: {} },
@@ -966,7 +956,8 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const myKey = keyRef.current;
   const saved = s2Load(myKey);
   const [activeKey, setActiveKey] = useSS(initialStep || "paragraph");
-  const [tab, setTab] = useSS("edit");
+  /* 页签按步骤记忆：在某步点开「候选」，不该让其它步骤也停在候选页 */
+  const [tabByStep, setTabByStep] = useSS({});
   const [drafts, setDrafts] = useSS(() => ({ ...s2DefaultDrafts(), ...(saved.drafts || {}) }));
   const [scaffolds, setScaffolds] = useSS(() => s2MergeScaffolds(saved.scaffolds));
   const [checks, setChecks] = useSS(() => s2MergeChecks(saved.checks));
@@ -980,12 +971,51 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const [ctxOpen, setCtxOpen] = useSS(false);
   const [snapDiff, setSnapDiff] = useSS(null);   // 待预览的历史快照条目
   const [genCands, setGenCands] = useSS({});   // ai-generated candidates, keyed by step
-  const [genBusy, setGenBusy] = useSS(false);
-  const [genErr, setGenErr] = useSS(null);
+  /* busy / 错误也按步骤隔离：全局布尔会让"生成中…"在所有步骤的按钮上亮起，
+     并挡住其它步骤发起自己的生成 */
+  const [genBusyMap, setGenBusyMap] = useSS({});
+  const [genErrMap, setGenErrMap] = useSS({});
+  /* 后端 per-step 权威健康（score/status/缺字段/前序闸门）——来自 SnowSync
+     （hydrate 全量 + 每次保存后 PATCH 回包增量），与「实时自评」的本地正则估算区分展示 */
+  const [beHealth, setBeHealth] = useSS(() => { try { return (window.SnowSync && window.SnowSync.health()) || {}; } catch (e) { return {}; } });
+  useSE(() => {
+    const refresh = () => { try { setBeHealth((window.SnowSync && window.SnowSync.health()) || {}); } catch (e) {} };
+    window.addEventListener("ws:snow-health", refresh);
+    window.addEventListener("ws:snow-hydrated", refresh);
+    window.addEventListener("ws:work-changed", refresh);
+    return () => { window.removeEventListener("ws:snow-health", refresh); window.removeEventListener("ws:snow-hydrated", refresh); window.removeEventListener("ws:work-changed", refresh); };
+  }, []);
+  /* 物化后回流：构思 9/10 步领先于目录场景卡的场（SnowSync.resyncStatus，后端真相）。
+     pendingCount>0 时顶部横幅给一键「同步到目录」——不同步，写作台/AI 起草台拿到的是旧三拍 */
+  const [resyncInfo, setResyncInfo] = useSS(() => { try { return (window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0, pendingScenes: [] }; } catch (e) { return { pendingCount: 0, pendingScenes: [] }; } });
+  const [resyncBusy, setResyncBusy] = useSS(false);
+  useSE(() => {
+    const refresh = () => { try { setResyncInfo((window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0, pendingScenes: [] }); } catch (e) {} };
+    window.addEventListener("ws:snow-resync", refresh);
+    window.addEventListener("ws:snow-hydrated", refresh);
+    window.addEventListener("ws:work-changed", refresh);
+    return () => { window.removeEventListener("ws:snow-resync", refresh); window.removeEventListener("ws:snow-hydrated", refresh); window.removeEventListener("ws:work-changed", refresh); };
+  }, []);
+  const doResync = async () => {
+    if (resyncBusy || !window.SnowSync || !window.SnowSync.resync) return;
+    setResyncBusy(true);
+    try {
+      const r = await window.SnowSync.resync();
+      showToast(`已把 ${r.synced} 场的构思改动同步到目录场景卡`, "sage");
+    } catch (e) {
+      window.alert("同步到目录失败：" + ((e && e.message) || "请稍后重试"));
+    } finally { setResyncBusy(false); }
+  };
   const toastTimer = useSR(null);
 
   const active = S2_STEPS.find(s => s.key === activeKey) || S2_STEPS[2];
   const data = S2_STEP_DATA[activeKey] || {};
+  /* 当前步骤的页签 / busy / 错误视图（底层都按步骤存） */
+  const tab = tabByStep[activeKey] || "edit";
+  const setTabFor = (key, v) => setTabByStep(prev => ({ ...prev, [key]: v }));
+  const setTab = (v) => setTabFor(activeKey, v);
+  const genBusy = !!genBusyMap[activeKey];
+  const genErr = genErrMap[activeKey] || null;
   /* 提示文案是种子作品专属剧情（周岚/林岑…），只在「潮汐档案」展示 */
   const seedHints = s2SeedOn() ? data.hints : null;
   const draft = drafts[activeKey] || "";
@@ -993,7 +1023,10 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const updateScaffold = (updater) => setScaffolds(prev => ({ ...prev, [activeKey]: updater(prev[activeKey]) }));
   const toggleCheck = (i) => setChecks(prev => ({ ...prev, [activeKey]: (prev[activeKey] || []).map((v, j) => j === i ? !v : v) }));
   const gen = genCands[activeKey];
-  const cands = (gen && gen.list) || data.cands || s2GenericCands(draft);
+  /* data.cands 是种子作品专属的示例候选（周岚/潮汐剧情），与 seedHints 一样只在「潮汐档案」预置；
+     其它作品未点「AI 生成」时回退到基于自身草稿的本地启发式候选，避免演示剧情泄漏进真实项目 */
+  const seedCands = s2SeedOn() ? data.cands : null;
+  const cands = (gen && gen.list) || seedCands || s2GenericCands(draft);
   const candMeta = gen ? { ai: true, at: gen.at } : { ai: false };
   const idx = S2_STEPS.findIndex(s => s.key === activeKey);
   const doneCount = S2_STEPS.filter(s => states[s.key] === "done").length;
@@ -1023,7 +1056,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     setDrafts(prev => ({ ...prev, [h.key]: h.snap.draft || "" }));
     if (h.snap.scaffold) setScaffolds(prev => ({ ...prev, [h.key]: JSON.parse(JSON.stringify(h.snap.scaffold)) }));
     setHistory(prev => [{ t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${new Date(h.t).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}`, key: h.key, snap: backup }, ...prev].slice(0, 80));
-    setActiveKey(h.key); setTab("edit"); setSnapDiff(null);
+    setActiveKey(h.key); setTabFor(h.key, "edit"); setSnapDiff(null);
     showToast(`已回滚 · ${st.name}`, "gold");
   };
   const goStep = (i) => setActiveKey(S2_STEPS[Math.max(0, Math.min(S2_STEPS.length - 1, i))].key);
@@ -1055,19 +1088,287 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   };
 
   const regenerate = async () => {
-    if (genBusy) return;
-    setGenErr(null); setGenBusy(true);
     const key = activeKey;
+    if (genBusyMap[key]) return;
+    setGenErrMap(prev => ({ ...prev, [key]: null }));
+    setGenBusyMap(prev => ({ ...prev, [key]: true }));
     try {
       const list = await s2GenerateCands(active, data, drafts, scaffolds);
       setGenCands(prev => ({ ...prev, [key]: { list, at: Date.now() } }));
       pushHist(`生成 ${list.length} 条候选`, `${active.num} ${active.name}`, "Claude");
-      showToast(`已生成 ${list.length} 条候选 · 依据上游材料`, "gold");
+      showToast(`已生成 ${list.length} 条候选 · 依据上游材料与诊断缺口`, "gold");
     } catch (err) {
-      setGenErr((err && err.message) || "生成失败，请稍后重试");
+      setGenErrMap(prev => ({ ...prev, [key]: (err && err.message) || "生成失败，请稍后重试" }));
     } finally {
-      setGenBusy(false);
+      setGenBusyMap(prev => ({ ...prev, [key]: false }));
     }
+  };
+
+  /* 编辑区「让 AI 生成候选」→ 跳候选页并（还没有 AI 候选时）触发生成 */
+  const openCands = () => { setTab("candidates"); if (!gen && !genBusy) regenerate(); };
+
+  /* 结构化生成通用通道：候选采纳 / 整表生成 / 全部补全 / 单场补全共用——
+     后端 generate → 整步规范草稿经 applyServerStep 反推回脚手架，健康评分随回包刷新。
+     focusRow 时只回写焦点场的规划（其余场保留本地态，防止未上行编辑被服务端旧值盖掉）。 */
+  const [structBusyMap, setStructBusyMap] = useSS({});
+  const structBusy = !!structBusyMap[activeKey];
+  const structuredGenerate = async ({ direction = null, focus = null, focusRow = null, focusChars = null, focusChar = null, histAction, histNote, doneAction, doneNote, toastOk, toastFail, switchTab = false, fallbackText = null }) => {
+    const key = activeKey, step = active;
+    if (structBusyMap[key]) return false;
+    setGenErrMap(prev => ({ ...prev, [key]: null }));
+    setStructBusyMap(prev => ({ ...prev, [key]: true }));
+    pushHist(histAction, `${step.num} ${step.name}${histNote ? " · " + histNote : ""} · 生成前留底`, "我", snapNow(key));
+    try {
+      const { apiPost } = await import("./lib/client.js");
+      let workId = null;
+      try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+      const beKey = S2_BE_KEY[key];
+      if (!workId || !beKey) throw new Error("作品尚未就绪，稍后重试");
+      const body = { require_llm: true, source: focus ? "fe_scene_focus_ai" : focusChars ? "fe_char_focus_ai" : (direction ? "fe_candidate_adopt" : "fe_scaffold_ai") };
+      if (direction) body.direction_text = direction;
+      if (focus) body.focus_scene_refs = focus;
+      if (focusChars) body.focus_character_refs = focusChars;
+      /* 本地最新规范草稿随请求带入（与上行 PATCH 同源）：消除「刚加的角色/场
+         还没自动保存上行，模型看不到、合并后被丢掉」的竞态 */
+      try {
+        const dOv = (window.SnowSync && window.SnowSync.pushCanon) ? window.SnowSync.pushCanon(key, { drafts, scaffolds }, workId) : null;
+        if (dOv && Object.keys(dOv).length) body.draft_override = dOv;
+      } catch (e) {}
+      const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/generate`, body);
+      if (!res || !res.step) throw new Error("生成回包缺少 step");
+      const fe = (window.SnowSync && window.SnowSync.applyServerStep)
+        ? window.SnowSync.applyServerStep(workId, key, res.step) : null;
+      if (fe && fe.scaffold) {
+        if (focusRow && key === "planning") {
+          const fePlans = (fe.scaffold || {}).plans || {};
+          setScaffolds(prev => {
+            const cur = prev[key] || {};
+            return { ...prev, [key]: { ...cur, sel: focusRow, plans: { ...(cur.plans || {}), [focusRow]: fePlans[focusRow] || (cur.plans || {})[focusRow] || {} } } };
+          });
+        } else if (focusChar && (key === "characters" || key === "backstory" || key === "profile")) {
+          /* 单角色定向：只把焦点角色的生成结果并回本地，其余角色保持本地态
+             （与 planning 的 focusRow 同一防线：未上行编辑不被服务端旧值盖掉） */
+          const feChars = (fe.scaffold || {}).chars || {};
+          setScaffolds(prev => {
+            const cur = prev[key] || {};
+            return { ...prev, [key]: { ...cur, sel: focusChar, chars: { ...(cur.chars || {}), [focusChar]: feChars[focusChar] || (cur.chars || {})[focusChar] || {} } } };
+          });
+        } else {
+          setScaffolds(prev => ({ ...prev, [key]: fe.scaffold }));
+        }
+        setDrafts(prev => ({ ...prev, [key]: "" })); // 脚手架即唯一内容源，避免旧自由草稿盖住它
+      } else if (fe && fe.text != null) {
+        setDrafts(prev => ({ ...prev, [key]: fe.text }));
+      } else if (fallbackText != null) {
+        setDrafts(prev => ({ ...prev, [key]: fallbackText })); // 兜底：至少落自由草稿
+      }
+      if (switchTab) setTabFor(key, "edit");
+      pushHist(doneAction || histAction, `${step.num} ${step.name}${doneNote ? " · " + doneNote : ""}`, "Claude");
+      showToast(toastOk || "已生成 · 可回滚", "gold");
+      return true;
+    } catch (err) {
+      setGenErrMap(prev => ({ ...prev, [key]: (err && err.message) || "生成失败，请稍后重试" }));
+      showToast(toastFail || ("生成失败：" + ((err && err.message) || "稍后重试").slice(0, 40)), "crimson");
+      return false;
+    } finally {
+      setStructBusyMap(prev => ({ ...prev, [key]: false }));
+    }
+  };
+
+  /* 采纳并结构化：候选正文作为方向蓝本，展开整步 */
+  const adoptStructured = (t, id) => structuredGenerate({
+    direction: t, switchTab: true, fallbackText: t,
+    histAction: `采纳候选 ${id} · 结构化`, histNote: "采纳前留底",
+    doneAction: "结构化整步", doneNote: `依候选 ${id} 展开全部字段`,
+    toastOk: `候选 ${id} 已结构化写入「${active.name}」· 可回滚`,
+    toastFail: "结构化失败 · 候选仍可「仅作草稿」采纳",
+  });
+
+  /* 多成员步骤（04/06/08 角色 · 10 场景规划）的增量采纳：候选方向 + 焦点定向组合，
+     只更新当前选中的成员，其余保持不动 */
+  const candFocus = (() => {
+    if (activeKey === "characters" || activeKey === "backstory" || activeKey === "profile") {
+      const sc = scaffolds[activeKey] || {};
+      const roster = activeKey === "characters" ? (sc.chars || {}) : (((scaffolds.characters || {}).chars) || {});
+      const ids = Object.keys(roster);
+      if (!ids.length) return null;
+      const sel = (sc.sel && (roster[sc.sel] || (sc.chars || {})[sc.sel])) ? sc.sel : ids[0];
+      const name = (((roster[sel] || (sc.chars || {})[sel]) || {}).name || "").trim();
+      return { kind: "char", id: sel, label: (name || sel).slice(0, 8) };
+    }
+    if (activeKey === "planning") {
+      const sel = ((scaffolds.planning || {}).sel || "").trim();
+      if (!sel) return null;
+      const row = (((scaffolds.scenes || {}).list) || []).find(s => s.id === sel);
+      const title = ((row && (row.event || row.place)) || "").trim();
+      return { kind: "scene", id: sel, label: title ? `${sel} ${title}`.slice(0, 12) : sel };
+    }
+    return null;
+  })();
+  const adoptStructuredFocused = candFocus ? (t, id) => structuredGenerate({
+    direction: t, switchTab: true,
+    ...(candFocus.kind === "char" ? { focusChars: [candFocus.id], focusChar: candFocus.id } : { focus: [candFocus.id], focusRow: candFocus.id }),
+    histAction: `采纳候选 ${id} · 定向「${candFocus.label}」`, histNote: "采纳前留底",
+    doneAction: "定向结构化", doneNote: `依候选 ${id} 只更新「${candFocus.label}」`,
+    toastOk: `候选 ${id} 已定向写入「${candFocus.label}」· 其余成员未动 · 可回滚`,
+    toastFail: "定向结构化失败 · 可改用整步结构化或仅作草稿",
+  }) : null;
+
+  /* 场景分诊（第 10 步）：后端逐场评估 pass/maybe/rewrite + 修复建议/补丁。
+     draft_override 带本地最新折叠草稿，免受自动保存节流竞态影响。
+     分诊结果随手存档（save_scene_triage）——「重写」场会真实阻挡物化闸门；
+     会话内记住 triage_id，复诊时原行更新而不是堆新行。 */
+  const [triage, setTriage] = useSS(null);   // { items: rowUid -> item, at, source }
+  const [triageBusy, setTriageBusy] = useSS(false);
+  const triageIdsRef = useSR({});            // scene_plan_id -> triage_id（会话内复用）
+  const runTriage = async () => {
+    if (triageBusy) return;
+    setTriageBusy(true);
+    try {
+      const { apiPost } = await import("./lib/client.js");
+      let workId = null;
+      try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+      if (!workId) throw new Error("作品尚未就绪");
+      const draftOverride = (window.SnowSync && window.SnowSync.canonDraft)
+        ? window.SnowSync.canonDraft("planning", { drafts, scaffolds }) : null;
+      const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/scene-triage/suggest`,
+        draftOverride && (draftOverride.scenes || []).length ? { draft_override: draftOverride } : {});
+      const byRow = {};
+      (res && res.items || []).forEach(it => { const k = it.row_uid || it.scene_id; if (k) byRow[k] = it; });
+      setTriage({ items: byRow, at: Date.now(), source: (res && res.source) || "fallback" });
+      pushHist("场景分诊", `10 场景规划 · ${Object.keys(byRow).length} 场`, res && res.source === "llm" ? "Claude" : "规则");
+      // 存档为推荐态（不写人工裁定），让「重写场挡物化」的闸门真实生效
+      try {
+        const saved = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/scene-triage`, {
+          items: (res && res.items || []).map(it => ({
+            triage_id: triageIdsRef.current[it.scene_plan_id] || "",
+            scene_plan_id: it.scene_plan_id, scene_id: it.scene_id,
+            recommended_status: it.status, score: it.score,
+            missing_fields: it.missing_fields, fix_steps: it.fix_steps,
+            repair_patch: it.repair_patch, notes: it.notes,
+          })),
+        });
+        (saved && saved.items || []).forEach(it => { if (it.scene_plan_id && it.triage_id) triageIdsRef.current[it.scene_plan_id] = it.triage_id; });
+        try { window.SnowSync && window.SnowSync.refetch && window.SnowSync.refetch(workId); } catch (e2) {}
+      } catch (e2) { /* 存档失败不打断分诊展示；下次分诊重试 */ }
+      showToast(res && res.source === "llm" ? "分诊完成 · AI 评估每场压力 · 已存档" : "分诊完成 · 规则诊断（启用 LLM 可得更深评估）· 已存档", "gold");
+    } catch (err) {
+      showToast("分诊失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+    } finally {
+      setTriageBusy(false);
+    }
+  };
+
+  /* 一键应用分诊修复补丁：GCS/RDD 字段进 10 的 plans，坩埚/摘要/地点回写 09 的场景行 */
+  const applyTriageRepair = (rowUid, item) => {
+    const patch = (item && item.repair_patch) || {};
+    if (!Object.keys(patch).length) return;
+    pushHist("应用修复补丁", `10 场景规划 · ${rowUid} 修复前留底`, "我", snapNow("planning"));
+    const planKeys = ["goal", "conflict", "setback", "reaction", "dilemma", "decision"];
+    setScaffolds(prev => {
+      const cur = prev.planning || {};
+      const plan = { ...((cur.plans || {})[rowUid] || {}) };
+      planKeys.forEach(k => { if (patch[k]) plan[k] = patch[k]; });
+      const next = { ...prev, planning: { ...cur, sel: rowUid, plans: { ...(cur.plans || {}), [rowUid]: plan } } };
+      const cru = patch.scene_crucible || patch.crucible;
+      if (cru || patch.summary || patch.location) {
+        const sc = prev.scenes || {};
+        next.scenes = { ...sc, list: (sc.list || []).map(s => s.id !== rowUid ? s : {
+          ...s, crucible: cru || s.crucible, event: patch.summary || s.event, place: patch.location || s.place,
+        }) };
+      }
+      return next;
+    });
+    showToast(`已应用修复补丁 · ${rowUid} · 可回滚`, "gold");
+  };
+
+  /* 传给 09/10 脚手架的 AI 工具面 */
+  const sceneAI = {
+    structBusy, triage, triageBusy, onTriage: runTriage, onApplyRepair: applyTriageRepair,
+    onGenerateAll: () => structuredGenerate({
+      histAction: "AI 生成场景表", doneAction: "AI 生成场景表",
+      doneNote: "依上游大纲与角色生成整表", toastOk: "场景表已生成 · 依上游材料 · 可回滚",
+    }),
+    onFillAll: () => structuredGenerate({
+      histAction: "AI 补全所有场景", doneAction: "AI 补全所有场景",
+      doneNote: "逐场补齐 GCS/RDD 与钩子", toastOk: "所有场景已补全 · 可回滚",
+    }),
+    onFillScene: (rowUid) => structuredGenerate({
+      focus: [rowUid], focusRow: rowUid,
+      histAction: `AI 补全 ${rowUid}`, doneAction: `AI 补全 ${rowUid}`,
+      doneNote: "单场定向生成", toastOk: `${rowUid} 已补全 · 其余场景未动 · 可回滚`,
+    }),
+  };
+
+  /* 传给 04/06/08 角色编辑器的 AI 工具面：只补全当前选中的角色——
+     后端 focus_character_refs 定向生成，其余角色（含名册顺序）保持不动 */
+  const charAI = {
+    structBusy,
+    onFillChar: (charId, charName) => {
+      const label = (charName || "").trim() || charId;
+      return structuredGenerate({
+        focusChars: [charId], focusChar: charId,
+        histAction: `AI 补全角色「${label}」`, doneAction: `AI 补全角色「${label}」`,
+        doneNote: "单角色定向生成", toastOk: `「${label}」已补全 · 其余角色未动 · 可回滚`,
+      });
+    },
+  };
+
+  /* 驻场教练（snowflake_workspace_assistant）：逐步对话辅导，回合服务端持久化。
+     第 10 步自动聚焦当前选中场（row_uid，后端已兼容）；带 draft_override 免竞态。
+     candidate_patch 是咨询式补丁：应用时空值不清空、按 id 对位、不删成员。 */
+  const [coachHist, setCoachHist] = useSS([]);     // 后端 assistant_history（全步骤，服务端持久化）
+  const [coachBusy, setCoachBusy] = useSS(false);
+  const coachFocusRow = activeKey === "planning" ? ((scaffolds.planning || {}).sel || "") : "";
+  /* 进教练页且本地还没有历史 → 从 workspace 懒加载（跨会话回合可见） */
+  useSE(() => {
+    if (tab !== "coach" || coachHist.length) return;
+    (async () => {
+      try {
+        const { apiGet } = await import("./lib/client.js");
+        const workId = WsWorks && WsWorks.activeId();
+        if (!workId) return;
+        const ws = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
+        if (ws && Array.isArray(ws.assistant_history) && ws.assistant_history.length) setCoachHist(ws.assistant_history);
+      } catch (e) {}
+    })();
+  }, [tab]);
+  const sendCoach = async (message) => {
+    const msg = String(message || "").trim();
+    if (coachBusy || !msg) return;
+    setCoachBusy(true);
+    const key = activeKey, step = active;
+    try {
+      const { apiPost } = await import("./lib/client.js");
+      let workId = null;
+      try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
+      const beKey = S2_BE_KEY[key];
+      if (!workId || !beKey) throw new Error("作品尚未就绪，稍后重试");
+      const body = { step_key: beKey, message: msg };
+      const dOv = (window.SnowSync && window.SnowSync.canonDraft) ? window.SnowSync.canonDraft(key, { drafts, scaffolds }) : null;
+      if (dOv && Object.keys(dOv).length) body.draft_override = dOv;
+      if (key === "planning" && coachFocusRow) body.focus_scene_id = coachFocusRow;
+      const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/assistant`, body);
+      setCoachHist((res && res.assistant_history) || []);
+      pushHist("教练问答", `${step.num} ${step.name}${body.focus_scene_id ? " · 聚焦 " + body.focus_scene_id : ""}`, res && res.source === "llm" ? "Claude" : "规则");
+      if (res && res.source !== "llm") showToast("教练已回复 · 规则建议（启用 LLM 可得更深辅导）", "slate");
+    } catch (err) {
+      showToast("教练回复失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+    } finally {
+      setCoachBusy(false);
+    }
+  };
+  /* 应用教练补丁（当前步任意带补丁的回合）：咨询式合并——空值不清空、按 id 对位、不删成员 */
+  const applyCoachPatch = (turn) => {
+    const patch = turn && turn.candidate_patch;
+    if (!patch || !Object.keys(patch).length) return;
+    pushHist("应用教练补丁", `${active.num} ${active.name} · 应用前留底`, "我", snapNow(activeKey));
+    const fe = (window.SnowSync && window.SnowSync.applyCanonPatch)
+      ? window.SnowSync.applyCanonPatch(activeKey, { drafts, scaffolds }, patch, null) : null;
+    if (fe && fe.scaffold) setScaffolds(prev => ({ ...prev, [activeKey]: fe.scaffold }));
+    else if (fe && fe.text != null) setDraft(fe.text);
+    setTab("edit");
+    showToast(`已应用「${(turn && turn.candidate_label) || "教练补丁"}」· 可回滚`, "gold");
   };
 
   useSE(() => {
@@ -1083,7 +1384,6 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [idx, activeKey, states, ctxOpen]);
   useSE(() => () => clearTimeout(toastTimer.current), []);
-  useSE(() => { setGenErr(null); }, [activeKey]);
 
   /* bump a step's revision whenever its folded content changes (drives staleness) */
   useSE(() => {
@@ -1166,12 +1466,17 @@ function WsSnowflake({ go, initialStep, onOverview }) {
 
   /* respond to command-palette step jumps */
   useSE(() => {
-    const onStep = (e) => { if (e.detail) { setActiveKey(e.detail); setTab("edit"); } };
+    const onStep = (e) => { if (e.detail) { setActiveKey(e.detail); setTabFor(e.detail, "edit"); } };
     window.addEventListener("ws:snow-step", onStep);
     return () => window.removeEventListener("ws:snow-step", onStep);
   }, []);
 
   const stStatus = states[activeKey];
+  /* 「已确认」区分本地态 vs 后端批准态：beStatus==="approved" 才是后端已批。
+     approve 在前序闸门不满足时被 ws-snow-sync 静默跳过，此时本地 done 但后端仍 pending_review——
+     以前用户无从分辨，这里显式标注。beHealth 缺失（未同步）时不误判为「未批」。 */
+  const beApprovedOf = (k) => { const b = beHealth[k]; return !!(b && b.beStatus === "approved"); };
+  const beKnownUnapproved = (k) => { const b = beHealth[k]; return !!(b && b.beStatus && b.beStatus !== "approved" && b.beStatus !== "skipped"); };
   const curChecks = checks[activeKey] || [];
   const checkDone = curChecks.filter(Boolean).length;
   const allChecked = curChecks.length > 0 && checkDone === curChecks.length;
@@ -1217,6 +1522,25 @@ function WsSnowflake({ go, initialStep, onOverview }) {
         </div>
       </div>
 
+      {resyncInfo.pendingCount > 0 && (
+        <div className="sf-stale-banner sf-resync-banner">
+          <span className="sf-stale-banner-ic"><I.Refresh size={15} /></span>
+          <div className="sf-stale-body">
+            <div className="sf-stale-title">构思已更新 · {resyncInfo.pendingCount} 场的改动还没同步到章节目录</div>
+            <div className="sf-stale-sub">
+              物化之后你又修改了这些场的规划
+              {resyncInfo.pendingScenes.slice(0, 3).map(s => s.title).filter(Boolean).length
+                ? <>（{resyncInfo.pendingScenes.slice(0, 3).map(s => s.title).filter(Boolean).join("、")}{resyncInfo.pendingCount > 3 ? " 等" : ""}）</>
+                : null}
+              ——不同步的话，写作台和 AI 起草台拿到的还是旧场景卡。
+            </div>
+          </div>
+          <button className="btn btn-accent btn-sm sf-stale-ok" disabled={resyncBusy} onClick={doResync} title="把构思里这些场的最新三拍/POV/题名写回目录场景卡">
+            <I.Refresh size={13} className={resyncBusy ? "sf-spin" : ""} /> {resyncBusy ? "同步中…" : "同步到目录"}
+          </button>
+        </div>
+      )}
+
       <div className="snow-cols" data-ctx={ctxOpen ? "open" : "closed"}>
         {/* left — step list */}
         <aside className="snow-steps">
@@ -1230,7 +1554,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
             const st = states[s.key];
             const stale = !!staleMap[s.key];
             return (
-              <button key={s.key} className={`snow-step ${activeKey === s.key ? "is-active" : ""} s-${st} ${stale ? "is-stale" : ""}`} onClick={() => setActiveKey(s.key)}>
+              <button key={s.key} className={`snow-step ${activeKey === s.key ? "is-active" : ""} s-${st} ${stale ? "is-stale" : ""}`} onClick={() => setActiveKey(s.key)} title={st === "done" && beKnownUnapproved(s.key) ? "本地已确认 · 后端未批准（前序闸门未满足）" : undefined}>
                 <span className={`sf-track-bar trk-${s.track}`} />
                 <span className="snow-step-num">{s.num}</span>
                 <span className="snow-step-body">
@@ -1239,7 +1563,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
                 </span>
                 <span className="snow-step-mark">
                   {stale ? <I.AlertTriangle size={13} className="sf-stale-ic" />
-                    : st === "done" ? <I.Check size={13} />
+                    : st === "done" ? <I.Check size={13} style={beKnownUnapproved(s.key) ? { color: "var(--gold)" } : undefined} />
                     : st === "warn" ? <I.AlertTriangle size={13} />
                     : st === "skip" ? <span className="sf-skip-mark">–</span>
                     : (st === "active" && activeKey !== s.key) ? <span className="snow-step-dot" /> : null}
@@ -1272,7 +1596,11 @@ function WsSnowflake({ go, initialStep, onOverview }) {
               </div>
               <div className="flex items-center gap-2">
                 {stStatus === "done" ? (
-                  <span className="pill pill-sage"><span className="pill-dot" />已确认</span>
+                  beApprovedOf(activeKey) ? (
+                    <span className="pill pill-sage" title="后端已批准本步"><span className="pill-dot" />已批准</span>
+                  ) : (
+                    <span className="pill pill-gold" title={(beHealth[activeKey] && !beHealth[activeKey].gateSatisfied) ? "本地已确认，后端未批准：前序闸门未满足——补齐上游各步后会自动批准" : "本地已确认 · 后端批准同步中…"}><span className="pill-dot" />本地已确认</span>
+                  )
                 ) : active.essential ? (
                   <span className="pill pill-crimson"><span className="pill-dot" />必填</span>
                 ) : (
@@ -1304,6 +1632,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
             <div className="snow-tabs">
               <S2Tab id="edit" cur={tab} on={setTab}>编辑</S2Tab>
               <S2Tab id="candidates" cur={tab} on={setTab}>候选 <span className="cand-tab-num">{cands.length}</span></S2Tab>
+              <S2Tab id="coach" cur={tab} on={setTab}>教练{coachHist.filter(t => t.step_key === S2_BE_KEY[activeKey]).length ? <span className="cand-tab-num">{coachHist.filter(t => t.step_key === S2_BE_KEY[activeKey]).length}</span> : null}</S2Tab>
               <S2Tab id="history" cur={tab} on={setTab}>历史</S2Tab>
               <S2Tab id="ref" cur={tab} on={setTab}>引用上下文</S2Tab>
             </div>
@@ -1312,13 +1641,21 @@ function WsSnowflake({ go, initialStep, onOverview }) {
               data.scaffold
                 ? <React.Fragment>
                     {draft.trim() ? <S2DraftOverride draft={draft} setDraft={setDraft} stepName={active.name} /> : null}
-                    <S2Scaffold kind={data.scaffold.type} scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} hints={seedHints} refs={scaffolds} go={setActiveKey} />
+                    <S2Scaffold kind={data.scaffold.type} scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} hints={seedHints} refs={scaffolds} go={setActiveKey}
+                      ai={(data.scaffold.type === "scenelist" || data.scaffold.type === "scene") ? sceneAI
+                        : (data.scaffold.type === "charsheet" || data.scaffold.type === "backstory" || data.scaffold.type === "profile") ? charAI : undefined} />
                   </React.Fragment>
-                : <S2Edit draft={draft} setDraft={setDraft} stepName={active.name} target={data.target} meter={data.meter} hints={seedHints} />
+                : <S2Edit draft={draft} setDraft={setDraft} stepName={active.name} target={data.target} meter={data.meter} hints={seedHints} onAICands={openCands} />
             )}
             {tab === "candidates" && (
               <S2Cands draft={draft} cands={cands} meta={candMeta} busy={genBusy} err={genErr} onRegen={regenerate}
+                structBusy={structBusy} onAdoptStructured={adoptStructured}
+                onAdoptFocused={adoptStructuredFocused} focusLabel={candFocus ? candFocus.label : null}
                 onAdopt={(t, id) => { pushHist(`采纳候选 ${id}`, `${active.num} ${active.name} · 采纳前留底`, "我", snapNow(activeKey)); setDraft(t); setTab("edit"); showToast(`已采纳候选 ${id} · 写入「${active.name}」草稿`, "gold"); }} />
+            )}
+            {tab === "coach" && (
+              <S2Coach active={active} beKey={S2_BE_KEY[activeKey]} history={coachHist} busy={coachBusy}
+                focusRow={coachFocusRow} onSend={sendCoach} onApplyPatch={applyCoachPatch} />
             )}
             {tab === "history" && <S2History history={history} go={setActiveKey} onRestore={restoreSnap} />}
             {tab === "ref" && <S2Ref active={active} drafts={drafts} scaffolds={scaffolds} />}
@@ -1345,7 +1682,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
             <button className="wr-drawer-x" onClick={() => setCtxOpen(false)} title="关闭 (Esc)"><I.X size={16} /></button>
           </div>
           <S2Guide guide={data.guide} rubric={data.rubric || S2_RUBRIC} checks={checks[activeKey] || []} onToggle={toggleCheck}
-            stepKey={activeKey} draft={draft} scaffold={scaffolds[activeKey]} target={data.target} go={setActiveKey} refs={scaffolds} />
+            stepKey={activeKey} draft={draft} scaffold={scaffolds[activeKey]} target={data.target} go={setActiveKey} refs={scaffolds} health={beHealth[activeKey]} />
           <S2Spine active={active} go={setActiveKey} para={scaffolds.paragraph} />
           <S2Links active={active} states={states} go={setActiveKey} staleMap={staleMap} />
         </aside>
@@ -1401,6 +1738,7 @@ function S2Fractal({ progress }) {
 function S2Spine({ active, go, para }) {
   const isPlot = active && active.track === "plot";
   const p = para || {};
+  const seed = s2SeedOn();   // 灾难 effect / 道德前提的样例文案是种子剧情，只在「潮汐档案」回填
   const clip = (s, n) => { s = (s || "").trim(); return s.length > n ? s.slice(0, n) + "…" : s; };
   const rows = [
     { meta: S2_DISASTERS[0], text: p.d1 },
@@ -1411,9 +1749,9 @@ function S2Spine({ active, go, para }) {
     <div className={`ctx-block sf-spine-block ${isPlot ? "is-hot" : ""}`}>
       <header className="sfx-h sfx-spine-head"><I.Activity size={13} /><span>故事脊柱 · 三幕三灾难</span></header>
       <div className="sf-premise-mini" title="道德前提：在第二个灾难处，错误信念翻转为正确信念">
-        <span className="sf-pm-false">{p.premiseF || S2_PREMISE.f}</span>
+        <span className="sf-pm-false">{p.premiseF || (seed ? S2_PREMISE.f : "错误信念")}</span>
         <I.ArrowRight size={12} />
-        <span className="sf-pm-true">{p.premiseT || S2_PREMISE.t}</span>
+        <span className="sf-pm-true">{p.premiseT || (seed ? S2_PREMISE.t : "正确信念")}</span>
       </div>
       <div className="sf-spine">
         {rows.map((d, i) => (
@@ -1421,7 +1759,7 @@ function S2Spine({ active, go, para }) {
             <span className="sf-spine-id">{d.meta.id}</span>
             <div className="sf-spine-body">
               <span className="sf-spine-title">{clip(d.text, 18) || "（待填）"}</span>
-              <span className="sf-spine-act">{d.meta.act} · {d.meta.effect}</span>
+              <span className="sf-spine-act">{d.meta.act}{seed && d.meta.effect ? ` · ${d.meta.effect}` : ""}</span>
             </div>
           </div>
         ))}
@@ -1455,7 +1793,7 @@ function S2Sec({ label, meta, children, collapsible, defaultOpen = true }) {
 }
 
 /* ====== Step diagnostics (pipeline · live rubric · acceptance gate) ====== */
-function S2Guide({ guide, rubric, checks, onToggle, stepKey, draft, scaffold, target, go, refs }) {
+function S2Guide({ guide, rubric, checks, onToggle, stepKey, draft, scaffold, target, go, refs, health }) {
   if (!guide) return null;
   const content = s2Content(draft, scaffold);
   const notStarted = !content.trim();
@@ -1527,6 +1865,41 @@ function S2Guide({ guide, rubric, checks, onToggle, stepKey, draft, scaffold, ta
         )}
       </S2Sec>
 
+      {(() => {
+        const be = health || null;
+        const hasBe = !!(be && (typeof be.score === "number" || (be.missingFields && be.missingFields.length) || be.beStatus));
+        const beTone = be && be.status === "pass" ? "sage" : be && be.status === "rewrite" ? "rose" : "gold";
+        const beLabel = { pass: "结构达标", maybe: "可改进", rewrite: "建议重写" };
+        return (
+          <S2Sec label="后端评估 · 权威" meta={hasBe && typeof be.score === "number"
+            ? <span className="sfx-ruler-overall" style={{ color: s2HC(be.score) }}>{be.score}<small> / 100</small></span>
+            : <span style={{ color: "var(--ink-3, #8a8a8a)", fontSize: 11 }}>待同步</span>}>
+            {!hasBe ? (
+              <p className="sfx-ruler-src"><I.Cpu size={10} /> 保存本步后，这里显示后端完备性闸门的权威评定（分数 / 缺字段 / 前序闸门），非本地正则估算。</p>
+            ) : (
+              <React.Fragment>
+                <p className="sfx-ruler-src"><I.Cpu size={10} /> 由后端完备性闸门评定 · 保存时更新（非正则估算）</p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", margin: "0 0 6px" }}>
+                  {be.status && <span style={{ fontSize: 11, padding: "1px 8px", borderRadius: 10, color: `var(--${beTone})`, border: `1px solid var(--${beTone})` }}>{beLabel[be.status] || be.status}</span>}
+                  {typeof be.filled === "number" && typeof be.total === "number" && <span style={{ fontSize: 11, color: "var(--ink-3, #8a8a8a)" }}>字段 {be.filled}/{be.total}</span>}
+                  <span style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 3, color: be.gateSatisfied ? "var(--sage)" : "var(--gold)" }}>{be.gateSatisfied ? <><I.Unlock size={10} /> 前序闸门满足</> : <><I.Lock size={10} /> 前序未满足</>}</span>
+                </div>
+                {be.missingFields && be.missingFields.length > 0 && (
+                  <p className="sfx-rq" style={{ margin: "0 0 4px" }}><I.AlertTriangle size={10} /> 缺 {be.missingFields.length} 个字段：{be.missingFields.slice(0, 6).join("、")}</p>
+                )}
+                {be.nextActions && be.nextActions.length > 0 && (
+                  <ul className="sfx-autos">
+                    {be.nextActions.slice(0, 4).map((a, i) => (
+                      <li key={i}><span className="sfx-auto-ic"><I.ArrowRight size={10} /></span><span className="sfx-auto-t">{a}</span></li>
+                    ))}
+                  </ul>
+                )}
+              </React.Fragment>
+            )}
+          </S2Sec>
+        );
+      })()}
+
       <S2Sec label="验收门" meta={<span className={`sfx-gate-meta ${gateOpen ? "is-open" : ""}`}>{gateOpen ? <><I.Unlock size={11} /> 门开</> : <><I.Lock size={11} /> {passedTotal}/{allTotal}</>}</span>}>
         <div className="sfx-gate-grp-h"><I.Cpu size={11} /> 机器核验 · 自动 <span className="sfx-gate-grp-c">{autoPass}/{auto.length}</span></div>
         <ul className="sfx-autos">
@@ -1558,16 +1931,14 @@ function S2Guide({ guide, rubric, checks, onToggle, stepKey, draft, scaffold, ta
 }
 
 /* ====== Freeform editor (+ optional word meter) ====== */
-function S2Edit({ draft, setDraft, stepName, target, meter, hints }) {
+function S2Edit({ draft, setDraft, stepName, target, meter, hints, onAICands }) {
   return (
     <div className="edit-pane">
       <div className="edit-toolbar">
         <div className="flex items-center gap-2">
-          <button className="btn btn-quiet btn-sm"><I.Wand size={13} /> 让 AI 续写</button>
-          <button className="btn btn-quiet btn-sm"><I.Refresh size={13} /> 再生 3 条</button>
-          <span className="text-muted text-sm">·</span>
-          <button className="btn btn-quiet btn-sm">让句子更短</button>
-          <button className="btn btn-quiet btn-sm">挑明动机</button>
+          <button className="btn btn-quiet btn-sm" onClick={() => onAICands && onAICands()} title="让 AI 读上游材料与诊断缺口，生成 3 条方向候选">
+            <I.Wand size={13} /> 让 AI 生成候选
+          </button>
         </div>
         <div className="text-muted text-sm">{draft.length} 字{target ? ` · 目标约 ${target}` : ""}</div>
       </div>
@@ -1621,18 +1992,18 @@ function S2DraftOverride({ draft, setDraft, stepName }) {
 }
 
 /* ====== Structured scaffolds ====== */
-function S2Scaffold({ kind, scaffold, onScaffold, hints, refs, go }) {
+function S2Scaffold({ kind, scaffold, onScaffold, hints, refs, go, ai }) {
   return (
     <div className="edit-pane">
       {kind === "beats" && <S2Beats scaffold={scaffold} onScaffold={onScaffold} />}
       {kind === "audience" && <S2Audience scaffold={scaffold} onScaffold={onScaffold} />}
-      {kind === "charsheet" && <S2CharSheet scaffold={scaffold} onScaffold={onScaffold} />}
+      {kind === "charsheet" && <S2CharSheet scaffold={scaffold} onScaffold={onScaffold} ai={ai} />}
       {kind === "synopsisbeats" && <S2SynopsisBeats scaffold={scaffold} onScaffold={onScaffold} refs={refs} />}
       {kind === "chapters" && <S2ChapterOutline scaffold={scaffold} onScaffold={onScaffold} />}
-      {kind === "backstory" && <S2CharDeep scaffold={scaffold} onScaffold={onScaffold} fields={S2_BACKSTORY_FIELDS} roster={(refs && refs.characters) || null} go={go} note={<><b>角色继承自 04 角色摘要表</b>，在这里为每人写半页来路——不是户口簿，是那件把她变成今天的事。</>} icon="BookOpen" />}
-      {kind === "profile" && <S2CharDeep scaffold={scaffold} onScaffold={onScaffold} fields={S2_PROFILE_FIELDS} roster={(refs && refs.characters) || null} go={go} note={<><b>角色继承自 04 角色摘要表</b>，为每人建一份「角色圣经」：四维度 + 矛盾 + 两个版本的她。</>} icon="Users" />}
-      {kind === "scenelist" && <S2SceneList scaffold={scaffold} onScaffold={onScaffold} refs={refs} />}
-      {kind === "scene" && <S2ScenePlan scaffold={scaffold} onScaffold={onScaffold} refs={refs} go={go} />}
+      {kind === "backstory" && <S2CharDeep scaffold={scaffold} onScaffold={onScaffold} ai={ai} fields={S2_BACKSTORY_FIELDS} roster={(refs && refs.characters) || null} go={go} note={<><b>角色继承自 04 角色摘要表</b>，在这里为每人写半页来路——不是户口簿，是那件把她变成今天的事。</>} icon="BookOpen" />}
+      {kind === "profile" && <S2CharDeep scaffold={scaffold} onScaffold={onScaffold} ai={ai} fields={S2_PROFILE_FIELDS} roster={(refs && refs.characters) || null} go={go} note={<><b>角色继承自 04 角色摘要表</b>，为每人建一份「角色圣经」：四维度 + 矛盾 + 两个版本的她。</>} icon="Users" />}
+      {kind === "scenelist" && <S2SceneList scaffold={scaffold} onScaffold={onScaffold} refs={refs} ai={ai} />}
+      {kind === "scene" && <S2ScenePlan scaffold={scaffold} onScaffold={onScaffold} refs={refs} go={go} ai={ai} />}
       <div className="edit-hints">
         {(hints || []).map((h, i) => <S2Hint key={i} icon={h.icon} tone={h.tone} text={h.text} />)}
       </div>
@@ -1687,7 +2058,7 @@ const S2_CHAR_FIELDS = [
   { f: "conflict", label: "阻碍",          hint: "什么挡在她和目标之间" },
   { f: "epiphany", label: "顿悟",          hint: "故事结束时她学到什么（反派常无）" },
 ];
-function S2CharSheet({ scaffold, onScaffold }) {
+function S2CharSheet({ scaffold, onScaffold, ai }) {
   const ids = Object.keys(scaffold.chars);
   const sel = scaffold.chars[scaffold.sel] ? scaffold.sel : ids[0];
   const ch = scaffold.chars[sel] || {};
@@ -1725,6 +2096,12 @@ function S2CharSheet({ scaffold, onScaffold }) {
       <div className="sf-chardeep-head">
         <input className="sf-chardeep-name" value={ch.name || ""} placeholder="角色名"
           onChange={(e) => onScaffold(s => ({ ...s, chars: { ...s.chars, [sel]: { ...s.chars[sel], name: e.target.value } } }))} />
+        {ai && (
+          <button className="btn btn-quiet btn-sm" disabled={ai.structBusy} onClick={() => ai.onFillChar(sel, ch.name)}
+            title="只让 AI 补全当前选中的这个角色——其余角色保持不动（依据上游材料，与其他角色保持一致）">
+            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 补全此角色"}
+          </button>
+        )}
         <button className="btn btn-quiet btn-sm" onClick={delChar} title="删除这个角色"><I.X size={13} /> 删除角色</button>
       </div>
       <div className="sf-fields">
@@ -1766,7 +2143,7 @@ const S2_PROFILE_FIELDS = [
   { f: "views",         label: "两个版本的她", hint: "别人眼中的她 ／ 她自己眼中的她", accent: true },
 ];
 const S2_ROLE_TONE = { "主角": "crimson", "对立面": "gold", "次要": "slate", "导师": "slate", "帮手": "sage" };
-function S2CharDeep({ scaffold, onScaffold, fields, note, icon, roster, go }) {
+function S2CharDeep({ scaffold, onScaffold, fields, note, icon, roster, go, ai }) {
   /* 名册的唯一真相源是 04 角色摘要表；本步只存自己这一层的深档字段。
      （本地遗留的、不在 04 名册里的角色仍展示，但标记出来） */
   const rosterChars = (roster && roster.chars) || {};
@@ -1822,6 +2199,12 @@ function S2CharDeep({ scaffold, onScaffold, fields, note, icon, roster, go }) {
       <div className="sf-chardeep-head">
         <span className="sf-chardeep-name is-ro" title="姓名与定位继承自 04 角色摘要表">{meta.name || "未命名"}</span>
         <span className="sf-chardeep-role is-ro">{meta.role || "—"}</span>
+        {ai && (
+          <button className="btn btn-quiet btn-sm" disabled={ai.structBusy} onClick={() => ai.onFillChar(sel, meta.name)}
+            title="只让 AI 补全当前选中的这个角色——其余角色保持不动（依据上游材料，与其他角色保持一致）">
+            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 补全此角色"}
+          </button>
+        )}
         <button className="sf-lineage" onClick={() => go && go("characters")} title="改名 / 改定位 / 增删角色，都在 04">
           <I.ArrowRight size={11} style={{ transform: "rotate(180deg)" }} /> 名册管理在 04
         </button>
@@ -1844,6 +2227,7 @@ const S2_AUD_FIELDS = [
   { f: "reader",   label: "读者画像", hint: "谁？年龄、阅读口味、她为何被这种故事吸引", rows: 2 },
   { f: "pleasure", label: "核心快感", hint: "用「她读完会觉得 ___」一句话锁定", rows: 2, accent: true },
   { f: "source",   label: "快感来源", hint: "这种快感具体从哪来——叙述、主题、节奏？", rows: 2 },
+  { f: "emotion",  label: "期待读者情绪", hint: "压力升级中，读者持续感到什么——揪心、压迫、向前的拉力？", rows: 2 },
   { f: "exclude",  label: "反向定位", hint: "「我不为谁写 / 不写什么」——砍掉犹豫", rows: 2, danger: true },
 ];
 function S2Audience({ scaffold, onScaffold }) {
@@ -1876,7 +2260,7 @@ function S2Audience({ scaffold, onScaffold }) {
       </div>
 
       <div className="sf-aud-foot">
-        <span className={`sf-aud-prog ${filled === 5 ? "is-all" : ""}`}><I.Target size={11} /> 定位完成度 {filled} / 5</span>
+        <span className={`sf-aud-prog ${filled === S2_AUD_FIELDS.length + 1 ? "is-all" : ""}`}><I.Target size={11} /> 定位完成度 {filled} / {S2_AUD_FIELDS.length + 1}</span>
         {scaffold.genre && scaffold.pleasure ? (
           <span className="sf-aud-seal"><I.Check size={11} /> 已锚定：<b>{scaffold.genre}</b> · 取悦「{(scaffold.pleasure || "").slice(0, 14)}…」的读者</span>
         ) : (
@@ -1957,18 +2341,35 @@ function S2ChapterOutline({ scaffold, onScaffold }) {
   });
   const spineHits = chapters.filter(c => c.spine).length;
   const placeholders = chapters.filter(c => !c.summary.trim() || c.title.includes("待补")).length;
-  /* 采用到章节编排：构思产出物落进目录单一真相源（同名章跳过） */
+  /* 采用到章节编排：构思产出物落进目录单一真相源（同名章跳过）。
+     确认框明示走的是哪条通道——后端物化主路径 vs 闸门未过的目录直建（降级）。 */
   const [adopted, setAdopted] = useSS(null);
   const adoptable = chapters.filter(c => (c.title || "").trim() && !c.title.includes("待补"));
   const adopt = async () => {
     if (!WsCatalog || !adoptable.length) return;
     const existing = WsCatalog.get().length;
-    if (existing && !window.confirm(`章节编排已有 ${existing} 章。把大纲中的 ${adoptable.length} 章并入目录？（同名章自动跳过）`)) return;
+    const ready = !!(window.SnowSync && window.SnowSync.readyToMaterialize && window.SnowSync.readyToMaterialize());
+    const pathNote = ready
+      ? "构思闸门已全过：走后端物化主路径——章、场、三拍一起落库，之后构思改动可一键回流同步。"
+      : "构思闸门还没全过（有未确认步骤或「重写」场）：降级为目录直建——会把 07 的章和 09/10 的场按脊柱锚点一起写入目录；等闸门过了再物化，同名章会自动跳过。";
+    if (!window.confirm(`把大纲中的 ${adoptable.length} 章并入目录？（同名章自动跳过${existing ? `；目录现有 ${existing} 章` : ""}）\n\n${pathNote}`)) return;
     try {
       setAdopted(await WsCatalog.adoptOutline(adoptable));
     } catch (e) {
       window.alert("并入章节失败：" + (e && e.message ? e.message : "请稍后重试，或检查构思各步是否已确认。"));
     }
+  };
+  /* 并入成功后的第二动线：把已规划好的 todo 场批量送进 AI 起草台（入列后跳转） */
+  const goDraft = async () => {
+    try {
+      if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh();
+      const sids = [];
+      (WsCatalog ? WsCatalog.get() : []).forEach(c => (c.scenes || []).forEach(s => {
+        if (s.sid && s.state !== "done" && (s.goal || "").trim() && !(s.goal || "").includes("待规划")) sids.push(s.sid);
+      }));
+      if (sids.length) window.__scnEnqueue = { sids: sids.slice(0, 40) };
+    } catch (e) {}
+    location.hash = "#scene";
   };
   return (
     <div className="sf-scaffold sf-chapters">
@@ -1986,9 +2387,14 @@ function S2ChapterOutline({ scaffold, onScaffold }) {
             <I.Layout size={13} /> 采用到章节编排
           </button>
         ) : (
-          <button className="btn btn-quiet btn-sm" onClick={() => { location.hash = "#author"; }}>
-            <I.Check size={13} /> {adopted ? `已并入 ${adopted} 章` : "无新增（同名已存在）"} · 去编排查看
-          </button>
+          <>
+            <button className="btn btn-quiet btn-sm" onClick={() => { location.hash = "#author"; }}>
+              <I.Check size={13} /> {adopted ? `已并入 ${adopted} 章` : "无新增（同名已存在）"} · 去编排查看
+            </button>
+            <button className="btn btn-accent btn-sm" onClick={goDraft} title="把已规划好的场批量送进 AI 起草台排队，按场景卡三拍与雪花上下文起草整场">
+              <I.Play size={13} /> 去 AI 起草
+            </button>
+          </>
         )}
       </div>
       {S2_ACTS.map(a => {
@@ -2058,7 +2464,7 @@ function s2LineStats(list, lines) {
     return { ...ln, pos, count, span, clustered, noRefract };
   });
 }
-function S2SceneList({ scaffold, onScaffold, refs }) {
+function S2SceneList({ scaffold, onScaffold, refs, ai }) {
   const list = scaffold.list || [];
   const lines = scaffold.lines || [{ id: "main", name: "主线", kind: "main", tone: "crimson", refract: "" }];
   const [hiLine, setHiLine] = useSS(null);
@@ -2144,6 +2550,17 @@ function S2SceneList({ scaffold, onScaffold, refs }) {
         <span className="sf-sstat"><b>{lines.length}</b> 线</span>
         <span className={`sf-sstat ${noCrucible ? "tone-rose" : "tone-sage"}`}>{noCrucible ? <><I.AlertTriangle size={11} /> {noCrucible} 场缺冲突</> : <><I.Check size={11} /> 场场有冲突</>}</span>
         <span style={{ flex: 1 }} />
+        {ai && (
+          <button className="btn btn-quiet btn-sm" disabled={ai.structBusy}
+            title="让 AI 依已确认的大纲/角色/道德前提生成整份场景表（生成前自动留底，可回滚）"
+            onClick={() => {
+              if (list.some(s => (s.event || s.crucible || "").trim()) &&
+                !window.confirm(`AI 会依上游材料重新生成整份场景表，现有 ${list.length} 场将被整体替换（已留底可回滚）。继续？`)) return;
+              ai.onGenerateAll();
+            }}>
+            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 生成整表"}
+          </button>
+        )}
         {adoptedSc == null ? (
           <button className="btn btn-quiet btn-sm" onClick={adoptScenes} disabled={!adoptableSc.length} title="把这份场景表落进目录的当前在写章">
             <I.Play size={13} /> 采用到当前章
@@ -2256,7 +2673,9 @@ function S2SceneList({ scaffold, onScaffold, refs }) {
   );
 }
 
-function S2ScenePlan({ scaffold, onScaffold, refs, go }) {
+const S2_TRIAGE_LABEL = { pass: "可通过", maybe: "需修补", rewrite: "该重写" };
+
+function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const list = ((refs && refs.scenes) || {}).list || [];
   const plans = scaffold.plans || {};
   const selId = list.some(s => s.id === scaffold.sel) ? scaffold.sel : (list[0] ? list[0].id : "");
@@ -2286,6 +2705,10 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go }) {
 
   const stateOf = (id) => s2PlanState(plans[id]);
   const fully = list.filter(s => stateOf(s.id) === 2).length;
+  const triItems = (ai && ai.triage && ai.triage.items) || null;
+  const triOf = (id) => (triItems ? triItems[id] : null);
+  const triCount = (st) => (triItems ? list.filter(s => (triOf(s.id) || {}).status === st).length : 0);
+  const selTri = triOf(selId);
   const prev = selIdx > 0 ? list[selIdx - 1] : null;
   const prevPlan = prev ? plans[prev.id] : null;
   const prevSeam = prev ? ((prev.type === "reactive" ? (prevPlan || {}).decision : (prevPlan || {}).setback) || "").trim() : "";
@@ -2309,17 +2732,41 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go }) {
         <span>原书规矩：<b>每场花五分钟</b>画一张草图——主动场＝目标-冲突-挫败；反应场＝反应-两难-决定。逐场过一遍，规划才算完。</span>
       </div>
 
+      {/* AI 工具面：分诊全部场景 / 一键补全（生成前自动留底） */}
+      {ai && (
+        <div className="sf-plan-ai">
+          <button className="btn btn-quiet btn-sm" disabled={ai.triageBusy} onClick={() => ai.onTriage()}
+            title="逐场评估压力结构：可通过 / 需修补 / 该重写，并给出修复步骤与补丁">
+            <I.Activity size={13} className={ai.triageBusy ? "sf-spin" : ""} /> {ai.triageBusy ? "分诊中…" : "AI 分诊"}
+          </button>
+          <button className="btn btn-quiet btn-sm" disabled={ai.structBusy} onClick={() => {
+            if (!window.confirm(`AI 会逐场补齐 GCS/RDD、坩埚与钩子，已填内容会被深化改写（已留底可回滚）。继续？`)) return;
+            ai.onFillAll();
+          }} title="让 AI 依上游材料逐场补齐目标/冲突/挫败（或反应/两难/决定）">
+            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 补全所有场景"}
+          </button>
+          {triItems && (
+            <span className="sf-triage-sum" title={`分诊于 ${new Date(ai.triage.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · ${ai.triage.source === "llm" ? "AI 评估" : "规则诊断"}`}>
+              <span className="tri-pass">{triCount("pass")} 过</span>
+              <span className="tri-maybe">{triCount("maybe")} 修</span>
+              <span className="tri-rewrite">{triCount("rewrite")} 重写</span>
+            </span>
+          )}
+        </div>
+      )}
+
       {/* 覆盖率导航：一格一场，点击切换 */}
       <div className="sf-plan-nav">
         <span className={`sf-plan-cov ${fully === list.length ? "is-all" : ""}`}><I.CheckCircle size={12} /> {fully} / {list.length} 场已规划</span>
         <div className="sf-plan-cells">
           {list.map(s => {
             const st = stateOf(s.id);
+            const tri = triOf(s.id);
             return (
               <button key={s.id}
-                className={`sf-plan-cell st-${st} ${s.id === selId ? "is-sel" : ""} ${s.type === "reactive" ? "is-rea" : "is-pro"} ${s.spine ? "is-spine" : ""}`}
+                className={`sf-plan-cell st-${st} ${s.id === selId ? "is-sel" : ""} ${s.type === "reactive" ? "is-rea" : "is-pro"} ${s.spine ? "is-spine" : ""} ${tri ? "tri-" + tri.status : ""}`}
                 onClick={() => selScene(s.id)}
-                title={`${s.id} · ${s.type === "reactive" ? "反应" : "主动"}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}`}>
+                title={`${s.id} · ${s.type === "reactive" ? "反应" : "主动"}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
                 {s.id.replace(/^S0?/, "")}
               </button>
             );
@@ -2342,7 +2789,35 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go }) {
           {proactive ? "主动 · GCS" : "反应 · RDD"}
           <button className="sf-plan-type-go" onClick={() => go && go("scenes")} title="在 09 修改类型">09</button>
         </span>
+        {ai && (
+          <button className="btn btn-quiet btn-sm" disabled={ai.structBusy} onClick={() => ai.onFillScene(selId)}
+            title="只补全这一场的三槽/坩埚/钩子，其余场景不动（生成前自动留底）">
+            <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 补全这一场"}
+          </button>
+        )}
       </div>
+
+      {/* 本场分诊结果：状态 + 诊断 + 修复步骤 + 一键应用补丁 */}
+      {selTri && (
+        <div className={`sf-triage tri-${selTri.status}`}>
+          <div className="sf-triage-head">
+            <span className="sf-triage-badge">{S2_TRIAGE_LABEL[selTri.status] || selTri.status}</span>
+            {typeof selTri.score === "number" && <span className="sf-triage-score">{selTri.score} 分</span>}
+            <span className="sf-triage-notes">{selTri.notes || ""}</span>
+            {Object.keys(selTri.repair_patch || {}).length > 0 && (
+              <button className="btn btn-accent btn-sm" disabled={ai.structBusy} onClick={() => ai.onApplyRepair(selId, selTri)}
+                title="把分诊给出的修复补丁写进本场三槽/坩埚（应用前自动留底）">
+                <I.Check size={13} /> 应用修复补丁
+              </button>
+            )}
+          </div>
+          {(selTri.fix_steps || []).length > 0 && (
+            <ul className="sf-triage-fixes">
+              {(selTri.fix_steps || []).slice(0, 4).map((f, i) => <li key={i}>{f}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
 
       {prev && (
         <div className={`sf-plan-seam ${prevSeam ? "" : "is-empty"}`}>
@@ -2375,7 +2850,71 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go }) {
   );
 }
 
-function S2Cands({ onAdopt, draft, cands, meta, busy, err, onRegen }) {
+/* ====== 驻场教练：逐步对话辅导（回合服务端持久化；第 10 步自动聚焦选中场） ====== */
+const S2_COACH_QUICKS = [
+  "这一步还缺什么？先告诉我最要命的一个缺口。",
+  "帮我把这一步的压力再抬高一档——具体到代价。",
+  "请直接给我一版可用的改写（作为补丁）。",
+];
+
+function S2Coach({ active, beKey, history, busy, focusRow, onSend, onApplyPatch }) {
+  const [input, setInput] = useSS("");
+  const turns = (history || []).filter(t => t.step_key === beKey);
+  const endRef = useSR(null);
+  useSE(() => { try { endRef.current && endRef.current.scrollIntoView({ block: "end" }); } catch (e) {} }, [turns.length, busy]);
+  const send = (text) => { const t = (text != null ? text : input).trim(); if (!t || busy) return; onSend(t); setInput(""); };
+  return (
+    <div className="sf-coach">
+      <div className="sf-coach-note">
+        <I.Sparkles size={14} />
+        <span>驻场教练读得到你<b>本步草稿</b>与已确认的上游材料{focusRow ? <>，当前聚焦场景 <b>{focusRow}</b>（跟随左侧选中）</> : null}。要它直接改写时，回复会附带「补丁」，可一键应用、可回滚。</span>
+      </div>
+      <div className="sf-coach-log">
+        {!turns.length && !busy && (
+          <div className="sf-coach-empty">还没有对话。从下面的快捷提问开始，或直接问「{active.name}」这一步的任何问题。</div>
+        )}
+        {turns.map(t => (
+          <div key={t.turn_id} className="sf-coach-turn">
+            <div className="sf-coach-q"><span className="sf-coach-who">我</span><span>{t.message || "（生成建议）"}</span></div>
+            <div className="sf-coach-a">
+              <span className={`sf-coach-who ${t.source === "llm" ? "is-ai" : ""}`}>{t.source === "llm" ? "教练" : "规则"}</span>
+              <div className="sf-coach-body">
+                <p>{t.reply}</p>
+                {(t.suggestions || []).length > 0 && (
+                  <ul className="sf-coach-sugs">{(t.suggestions || []).slice(0, 4).map((s, i) => <li key={i}>{s}</li>)}</ul>
+                )}
+                {t.candidate_patch && Object.keys(t.candidate_patch).length > 0 && (
+                  <button className="btn btn-accent btn-sm" onClick={() => onApplyPatch(t)}
+                    title="把教练给出的结构化补丁合并进本步（空字段不清空、按角色/场景对位；应用前自动留底）">
+                    <I.Check size={13} /> 应用补丁{t.candidate_label ? `「${t.candidate_label}」` : ""}
+                  </button>
+                )}
+                {t.focus_scene_id && <span className="sf-coach-focus">聚焦 {t.focus_scene_id}</span>}
+              </div>
+            </div>
+          </div>
+        ))}
+        {busy && <div className="sf-coach-busy"><I.Refresh size={13} className="sf-spin" /> 教练正在读你的草稿…</div>}
+        <div ref={endRef} />
+      </div>
+      <div className="sf-coach-quicks">
+        {S2_COACH_QUICKS.map((q, i) => (
+          <button key={i} className="btn btn-quiet btn-sm" disabled={busy} onClick={() => send(q)}>{q.slice(0, 18)}…</button>
+        ))}
+      </div>
+      <div className="sf-coach-input">
+        <textarea rows={2} value={input} disabled={busy} placeholder={`问「${active.name}」这一步的任何问题；让教练“直接给改写”会得到可应用的补丁…`}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); send(); } }} />
+        <button className="btn btn-primary" disabled={busy || !input.trim()} onClick={() => send()}>
+          {busy ? <I.Refresh size={14} className="sf-spin" /> : <I.ArrowRight size={14} />} 发送
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function S2Cands({ onAdopt, onAdoptStructured, onAdoptFocused, focusLabel, structBusy, draft, cands, meta, busy, err, onRegen }) {
   const list = cands && cands.length ? cands : [];
   const [sel, setSel] = useSS(list[0] ? list[0].id : "A");
   const [compare, setCompare] = useSS(false);
@@ -2406,7 +2945,7 @@ function S2Cands({ onAdopt, draft, cands, meta, busy, err, onRegen }) {
             {list.length} 条候选 · {isAi ? `AI 生成${stamp ? " · " + stamp : ""}` : "示例候选"}
           </div>
           <div className="text-muted text-sm">
-            {isAi ? "依据已确认的上游材料（人物 · 冲突 · 道德前提）生成。" : "点「AI 生成」让 Claude 读上游各步，按本步任务重写候选。"}
+            {isAi ? "依据后端已批准的上游材料与本步诊断缺口生成。「采纳并结构化」会把候选方向展开成本步全部字段。" : "点「AI 生成」让 Claude 读上游各步与诊断缺口，按本步任务重写候选。"}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -2454,7 +2993,24 @@ function S2Cands({ onAdopt, draft, cands, meta, busy, err, onRegen }) {
             <div className="sf-compare-h"><span className="pill pill-gold text-xs"><span className="pill-dot" />候选 {selCand.id} · {selCand.label}</span></div>
             <p className="cand-text">{selCand.text}</p>
             <div className="cand-notes">{selCand.notes.map((n, i) => <span key={i} className="pill text-xs">{n}</span>)}</div>
-            <button className="btn btn-accent btn-sm sf-compare-adopt" onClick={() => onAdopt(selCand.text, selCand.id)}><I.Check size={13} /> 采纳候选 {selCand.id}，整体替换草稿</button>
+            {isAi && onAdoptStructured ? (
+              <React.Fragment>
+                <button className="btn btn-accent btn-sm sf-compare-adopt" disabled={structBusy} onClick={() => onAdoptStructured(selCand.text, selCand.id)}
+                  title="以候选为方向蓝本，让 AI 把本步全部结构化字段整套填好（可回滚）">
+                  {structBusy ? <I.Refresh size={13} className="sf-spin" /> : <I.Check size={13} />} {structBusy ? "结构化中…" : `采纳候选 ${selCand.id} 并结构化整步`}
+                </button>
+                {onAdoptFocused && focusLabel && (
+                  <button className="btn btn-primary btn-sm sf-compare-adopt" disabled={structBusy} onClick={() => onAdoptFocused(selCand.text, selCand.id)}
+                    title={`以候选为定向蓝本，只更新当前选中的「${focusLabel}」——其余成员保持不动（可回滚）`}>
+                    {structBusy ? "定向中…" : `只更新「${focusLabel}」`}
+                  </button>
+                )}
+                <button className="btn btn-quiet btn-sm sf-compare-adopt" disabled={structBusy} onClick={() => onAdopt(selCand.text, selCand.id)}
+                  title="只把候选文本放进自由草稿，不动结构化脚手架">仅作草稿替换</button>
+              </React.Fragment>
+            ) : (
+              <button className="btn btn-accent btn-sm sf-compare-adopt" onClick={() => onAdopt(selCand.text, selCand.id)}><I.Check size={13} /> 采纳候选 {selCand.id}，整体替换草稿</button>
+            )}
           </div>
         </div>
       ) : (
@@ -2469,7 +3025,24 @@ function S2Cands({ onAdopt, draft, cands, meta, busy, err, onRegen }) {
                 </div>
                 <div className="flex gap-2 cand-actions">
                   <button className="btn btn-quiet btn-sm" onClick={(e) => { e.stopPropagation(); setSel(c.id); setCompare(true); }}>对比</button>
-                  <button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); onAdopt(c.text, c.id); }}>采纳</button>
+                  {isAi && onAdoptStructured ? (
+                    <React.Fragment>
+                      <button className="btn btn-quiet btn-sm" disabled={structBusy} title="只把候选文本放进自由草稿，不动结构化脚手架"
+                        onClick={(e) => { e.stopPropagation(); onAdopt(c.text, c.id); }}>仅作草稿</button>
+                      {onAdoptFocused && focusLabel && (
+                        <button className="btn btn-quiet btn-sm" disabled={structBusy} title={`以候选为定向蓝本，只更新当前选中的「${focusLabel}」——其余成员保持不动（可回滚）`}
+                          onClick={(e) => { e.stopPropagation(); onAdoptFocused(c.text, c.id); }}>
+                          {structBusy ? "定向中…" : `只更新「${focusLabel}」`}
+                        </button>
+                      )}
+                      <button className="btn btn-primary btn-sm" disabled={structBusy} title="以候选为方向蓝本，让 AI 把本步全部结构化字段整套填好（可回滚）"
+                        onClick={(e) => { e.stopPropagation(); onAdoptStructured(c.text, c.id); }}>
+                        {structBusy ? "结构化中…" : "采纳并结构化"}
+                      </button>
+                    </React.Fragment>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); onAdopt(c.text, c.id); }}>采纳</button>
+                  )}
                 </div>
               </header>
               <p className="cand-text">{c.text}</p>
@@ -2658,6 +3231,48 @@ function S2Styles() {
 .sf-plan-cell.is-sel { box-shadow: 0 0 0 2px var(--ink-1); }
 .sf-plan-cell.is-rea { border-radius: 12px; }
 .sf-plan-cell.is-spine::after { content: ""; position: absolute; top: -3px; right: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--crimson); }
+.sf-plan-cell.tri-maybe { box-shadow: inset 0 -2.5px 0 var(--gold); }
+.sf-plan-cell.tri-rewrite { box-shadow: inset 0 -2.5px 0 var(--crimson); }
+.sf-plan-cell.tri-pass { box-shadow: inset 0 -2.5px 0 var(--sage); }
+.sf-plan-cell.is-sel.tri-maybe, .sf-plan-cell.is-sel.tri-rewrite, .sf-plan-cell.is-sel.tri-pass { box-shadow: 0 0 0 2px var(--ink-1); }
+/* AI 工具面（分诊 / 一键补全）与逐场分诊卡 */
+.sf-plan-ai { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.sf-triage-sum { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--paper-1, #f6f5f2); }
+.sf-triage-sum .tri-pass { color: var(--sage); }
+.sf-triage-sum .tri-maybe { color: var(--gold); }
+.sf-triage-sum .tri-rewrite { color: var(--crimson); }
+.sf-triage { margin-bottom: 12px; padding: 10px 13px; border-radius: 11px; border: 1px solid var(--line-1, #ddd); background: var(--paper-1, #f6f5f2); }
+.sf-triage.tri-maybe { border-color: var(--gold); background: var(--gold-wash); }
+.sf-triage.tri-rewrite { border-color: var(--crimson); background: var(--crimson-wash, #f8ecec); }
+.sf-triage.tri-pass { border-color: var(--sage); background: var(--sage-wash, #e8f0e8); }
+.sf-triage-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.sf-triage-badge { font-size: 11.5px; font-weight: 800; padding: 2px 9px; border-radius: 999px; background: var(--paper-0, #fff); flex: 0 0 auto; }
+.sf-triage.tri-maybe .sf-triage-badge { color: var(--gold); }
+.sf-triage.tri-rewrite .sf-triage-badge { color: var(--crimson); }
+.sf-triage.tri-pass .sf-triage-badge { color: var(--sage); }
+.sf-triage-score { font-size: 11.5px; font-weight: 700; color: var(--ink-2); flex: 0 0 auto; }
+.sf-triage-notes { font-size: 12.5px; color: var(--ink-2); flex: 1; min-width: 160px; }
+.sf-triage-fixes { margin: 7px 0 0; padding-left: 18px; font-size: 12px; color: var(--ink-2); display: flex; flex-direction: column; gap: 3px; }
+/* 驻场教练 tab */
+.sf-coach { display: flex; flex-direction: column; gap: 10px; }
+.sf-coach-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 13px; border-radius: 11px; background: var(--paper-1, #f6f5f2); font-size: 12.5px; color: var(--ink-2); }
+.sf-coach-log { display: flex; flex-direction: column; gap: 12px; max-height: 420px; overflow-y: auto; padding: 2px; }
+.sf-coach-empty { padding: 22px 14px; text-align: center; font-size: 12.5px; color: var(--ink-3, #999); }
+.sf-coach-turn { display: flex; flex-direction: column; gap: 7px; }
+.sf-coach-q, .sf-coach-a { display: flex; align-items: flex-start; gap: 8px; }
+.sf-coach-who { flex: 0 0 auto; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 999px; background: var(--paper-1, #f3f2ef); color: var(--ink-2); }
+.sf-coach-who.is-ai { background: var(--gold-wash); color: var(--gold); }
+.sf-coach-q > span:last-child { font-size: 13px; color: var(--ink-1); padding-top: 1px; }
+.sf-coach-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border-radius: 11px; border: 1px solid var(--line-1, #e2e0db); background: var(--paper-0, #fff); }
+.sf-coach-body p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--ink-1); }
+.sf-coach-sugs { margin: 0; padding-left: 17px; font-size: 12.5px; color: var(--ink-2); display: flex; flex-direction: column; gap: 3px; }
+.sf-coach-body .btn { align-self: flex-start; }
+.sf-coach-focus { font-size: 11px; color: var(--ink-3, #999); }
+.sf-coach-busy { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-3, #999); padding: 4px 2px; }
+.sf-coach-quicks { display: flex; gap: 7px; flex-wrap: wrap; }
+.sf-coach-input { display: flex; gap: 9px; align-items: flex-end; }
+.sf-coach-input textarea { flex: 1; resize: vertical; min-height: 44px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-1, #ddd); background: var(--paper-0, #fff); font: inherit; font-size: 13px; color: var(--ink-1); }
+.sf-coach-input .btn { flex: 0 0 auto; }
 .sf-plan-cur { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 220px; }
 .sf-plan-cur-id { font-family: var(--font-mono, monospace); font-size: 12px; font-weight: 700; color: var(--ink-2); padding: 3px 8px; border-radius: 7px; background: var(--paper-1, #f3f2ef); flex: 0 0 auto; }
 .sf-plan-cur-body { display: flex; flex-direction: column; min-width: 0; }
@@ -2713,6 +3328,9 @@ function S2Styles() {
 .sf-stale-count { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px; padding: 3px 9px; border: 0; border-radius: 999px; background: var(--gold-wash); color: var(--gold); font-size: 11.5px; font-weight: 600; cursor: pointer; vertical-align: middle; transition: filter var(--t-fast, 0.15s); }
 .sf-stale-count:hover { filter: brightness(0.95); }
 .sf-stale-banner { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 14px; padding: 12px 14px; border-radius: 12px; background: var(--gold-wash); border: 1px solid var(--gold); }
+/* 回流横幅：strip 与 cols 之间的页级条（构思领先于目录 N 场） */
+.sf-resync-banner { margin: 12px 32px 0; align-items: center; }
+.sf-resync-banner .sf-stale-ok { white-space: nowrap; }
 .sf-stale-banner-ic { color: var(--gold); flex: 0 0 auto; margin-top: 1px; }
 .sf-stale-body { flex: 1; min-width: 0; }
 .sf-stale-title { font-weight: 600; font-size: 13.5px; color: var(--ink-1); }

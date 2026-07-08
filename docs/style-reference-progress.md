@@ -284,6 +284,55 @@ delete 清空三 collection — ALL CHROMA RAG CHECKS PASSED。** 立项 C 的�
 主线(审查 → 三轮后端加固 → 黄金语料/本地通道 → 三轮前端真化 → 量化容差校准 → 立项 C RAG → 立项 B 校准回路
 → 立项 A 场景/角色绑定)**全部收口;Phase 3 backlog 三个立项 A/B/C 均已完成**。
 
+### 第十三轮(2026-07-06,深度评审修复轮 — 全模块逐文件审读)
+
+对模块 ~7700 行逐文件深读(含 scene_generation / qc_engine / review_effects 集成面),确认并修复
+11 项测试覆盖不到的真实缺陷(`tests/test_style_reference_review_fixes.py` 13 用例 + 既有文件补锚点):
+
+- **D1 few-shot 段型索引名存实亡**:extractor 落 quote 时 `extracted_features` 只写 `anchor_kind`,
+  而 `_build_scene_samples_index` 读 `paragraph_type` → 全部引文落 "narration" 桶:Strategy B
+  few-shot「每段型取 1、k=3」实际只注 1 条、漂移修正段型优先级空转、Preview 的
+  dialogue/description_env/psychology 种子引文恒空。修:落库冗余段型 + 合成时经段落表反查
+  (既有数据一并修复);**反例/负空间引文(counter_example / author_avoidance)不入索引**
+  (此前 LLM 合成的"反例文本"可能被 few-shot 当风格范例注入);quotes 改 **run-scoped**
+  (同书多次抽取时旧 run 引文不再混入新 profile 的索引/计数/few-shot 池)。
+- **D2 输入量门槛(§6.4)只算不执行**:`assess_input_size` 的 skip 评估仅入库供前端展示,
+  RunOrchestrator 照跑全四层——字数不足的书白烧 16 sub_dim 的 LLM 调用,且与矩阵页展示的
+  skip 相互矛盾。修:start_extract_run 剔除 skip 层(记入 `coverage_json.skipped_layers`),
+  全 skip → 409 `STYLE_REFERENCE_INPUT_TOO_SMALL`;新增 `force` 逃生门(API + StartRunRequest);
+  React 端 rerun 对该 409 给专门文案 + 一键强制重试。无 input_assessment 的历史数据不门控。
+- **D3 量化对照 8 个段型比例指标是系统性伪信号**:回测把生成文本全部标 narration(无分类器),
+  narration_ratio 恒 1、其余恒 0,对话密集的参考书必然把 pass_rate 拖到 0.8 以下 → qc gate
+  恒 PARTIAL 进人审。修:`check_quantitative` 排除 8 项分类器标签依赖指标(`TYPE_RATIO_METRICS`),
+  对照面收敛为 18 项纯文本统计;8 项仍保留在 baseline/抽取锚点/前端展示。
+- **D4 metrics 字符集勘误(影响面最广)**:`question_density` 用 `"??"`(两个 ASCII ?)、
+  `semicolon_density` 用 `";;"` ——**全角 ？/； 完全不被统计**,中文文本两指标恒 ≈0
+  (鲁迅黄金语料实测 0.0 → 修后 9.51 / 3.32 每千字);`_PUNCT_CHARS` 含重复字符(`—`/`"`/`:`
+  双计)且缺全角 `：`。修字符集 + 计数函数防御性去重 + 黄金 expected 重生成。
+- **D5 补证晋升绕过 span 校验**:两级重试中 shim 的原始 evidence(首轮 LLM 产出)因 Pydantic
+  在 ≥2 条校验处提前失败而从未过 span 校验,伪造引文可借补证晋升入库(再经 few-shot 注入)。
+  修:抽共享 `_span_valid_evidence`,合并前过滤原始条目(与补证同一套规则)。
+- **D6 resolve 不校验 profile 状态**:draft/archived profile 的 binding 仍被
+  `resolve_active_binding` 选中——注入侧渲染为空(no-op),qc gate 却照样以该 profile 做风格
+  裁决(「从未注入却被风格门拦下」),多层叠加时空层白占预算权重。修:选取单点
+  `_active_bindings` 统一过滤,注入 / qc gate 语义一致。
+- **D7 终态 run 复活**:排队中的后台 run 被 60 分钟僵尸回收标 FAILED 后,worker 接手照跑,
+  把终态拉回 RUNNING→DONE,并与同书新 run 并发互撞。修:层边界 `_observed_status` 检查,
+  CANCELLED 之外的终态直接退出不复活。
+- **D8 binding 决平精度**:`_ts_to_int` 截到秒([:14]),同秒创建的多条 binding「最新优先」
+  退化为非确定插入序;补齐微秒([:20])。
+- **D9 抽取数量上限不执行**:§6.5 的 obs ≤8 / fp ≤3 只写在 schema 注释里,LLM 超发全部入库;
+  解析处截断。
+- **D10 import-path 任意文件读取面**:`ingest_path` 按任意服务器路径读文件入库并可经 API 回读
+  (/etc/passwd、.env、*.db);收窄为 .txt/.md/.markdown 白名单(path 模式必须有后缀)。
+- **D11 apply 死绑定**(与并行提示词优化批次共同落地):scope_ref_id 为空的 binding 任何
+  rank 都不命中,静默不生效;apply 一律要求非空 scope_ref_id(400)。
+
+**明确不改、记为已知限制**:memory 向量后端重启后 RAG 索引不持久(C 策略优雅退化,chroma
+为生产后端);metrics 逐段均值不按段长加权(基线与回测同法,对照公平);多层叠加 positive
+块标题逐层重复(纯观感);`_load_plagiarism_corpus` 进程缓存删书后不失效(按 checksum 键,
+无正确性影响)。
+
 ## 九、2026-05-31 收口勘误
 
 - 运行时已下线旧 `/api/v1/reference-books/*` 入口，应用仅保留 `/api/v2/style-reference/*` 作为参考书学习主公开面。

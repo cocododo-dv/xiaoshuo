@@ -311,7 +311,11 @@ class BaseExtractor:
                     logger.warning("supplement_evidence failed: %s", exc)
                     still_failed.append(finding)
                     continue
-                merged = list(finding.evidence) + list(extras)
+                # 2026-07 勘误:shim 的原始 evidence(首轮 LLM 产出)因 Pydantic 在
+                # ≥2 条校验处提前失败,从未过 span 校验——伪造引文可借补证晋升入库
+                # (再经 few-shot 注入)。合并前按与补证同一套规则过滤原始条目。
+                original_valid = _span_valid_evidence(finding.evidence, paragraph_lookup)
+                merged = original_valid + list(extras)
                 if len(merged) >= 2:
                     finding.evidence = merged
                     promoted.append(finding)
@@ -427,8 +431,10 @@ class BaseExtractor:
         EvidenceShortError 触发的 finding 被收入 `failed` 列表;BannedAdjective /
         EvidenceSpan 触发的 finding 直接丢弃(不可补救)。
         """
-        observations = structured.get("observations") or []
-        forbidden = structured.get("forbidden_patterns") or []
+        # §6.5 数量上限(ExtractionOutput 契约 obs ≤8 / fp ≤3):此前只写在
+        # schema 注释里从未执行,LLM 超发时全部入库。超出部分截断。
+        observations = (structured.get("observations") or [])[:8]
+        forbidden = (structured.get("forbidden_patterns") or [])[:3]
 
         findings: list[ExtractionFindingInput] = []
         failed: list[ExtractionFindingInput] = []
@@ -506,18 +512,7 @@ class BaseExtractor:
         except ValidationError as exc:
             logger.warning("supplement_evidence parse failed: %s", exc)
             return []
-        validated: list[ExtractionEvidenceInput] = []
-        for ev in parsed.additional_evidence:
-            # span 校验:不通过则跳过(不影响其他 evidence)
-            if ev.anchor_kind in (AnchorKind.COUNTER_EXAMPLE, AnchorKind.AUTHOR_AVOIDANCE):
-                validated.append(ev)
-                continue
-            if ev.paragraph_id is None:
-                continue
-            text = paragraph_lookup.get(ev.paragraph_id)
-            if text is None or ev.quote not in text:
-                continue
-            validated.append(ev)
+        validated = _span_valid_evidence(parsed.additional_evidence, paragraph_lookup)
         # 调用方应记录 SUPPLEMENT_EVIDENCE purpose
         self._record_purpose_extraction(sub_dim, ExtractionPurpose.SUPPLEMENT_EVIDENCE)
         return validated
@@ -737,6 +732,30 @@ def _normalize_finding_item(item: dict) -> dict:
         if key not in _FINDING_KEYS:
             item.pop(key)
     return item
+
+
+def _span_valid_evidence(
+    evidence_list: list[ExtractionEvidenceInput],
+    paragraph_lookup: dict[str, str],
+) -> list[ExtractionEvidenceInput]:
+    """按 evidence span 规则过滤:paragraph_quote 锚必须 quote ∈ 对应段落文本;
+    counter_example / author_avoidance(合成锚)直通;缺 paragraph_id 的引用锚丢弃。
+
+    与 `_supplement_evidence_for` 的补证校验为同一套规则;两级重试的 shim 原始
+    evidence 合并前也走这里(2026-07 勘误:此前原始条目未经校验即可晋升入库)。
+    """
+    validated: list[ExtractionEvidenceInput] = []
+    for ev in evidence_list:
+        if ev.anchor_kind in (AnchorKind.COUNTER_EXAMPLE, AnchorKind.AUTHOR_AVOIDANCE):
+            validated.append(ev)
+            continue
+        if ev.paragraph_id is None:
+            continue
+        text = paragraph_lookup.get(ev.paragraph_id)
+        if text is None or ev.quote not in text:
+            continue
+        validated.append(ev)
+    return validated
 
 
 def _is_evidence_short_error(exc: ValidationError) -> bool:

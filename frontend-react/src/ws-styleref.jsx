@@ -1454,6 +1454,16 @@ function SrApply({ go, book }) {
 
         {sub === "layers" && (realMode ? (
           <SrLayersReal stack={layerStack} err={layerErr} />
+        ) : isRealBook ? (
+          <div className="card">
+            <div className="card-head">
+              <div><div className="card-title">叠加注入层</div><div className="card-sub">scene &gt; character &gt; project &gt; global 逐层加权</div></div>
+            </div>
+            <div className="sr-stack-note">
+              <I.Info size={13} />
+              <span>尚未合成风格画像——完成抽取并「合成风格画像」后，这里显示该书的真实注入层与预算分配。</span>
+            </div>
+          </div>
         ) : (
           <div className="card">
             <div className="card-head">
@@ -1695,6 +1705,10 @@ function SrApply({ go, book }) {
                 );
               })}
             </ul>
+          ) : isRealBook ? (
+            <ul className="sr-bindings">
+              <li><span className="text-sm" style={{opacity:.7}}>尚无绑定——合成风格画像后，在上方「立项应用」为项目 / 角色 / 场景创建绑定。</span></li>
+            </ul>
           ) : (
             <ul className="sr-bindings">
               <li><span className="pill pill-crimson text-xs"><span className="pill-dot" />项目</span><span className="text-sm">潮汐档案 · 全局</span><I.Check size={13} style={{color:"var(--sage)"}} /></li>
@@ -1713,8 +1727,8 @@ function SrApply({ go, book }) {
           const selOpt = scope !== "project" ? (scopeOpts[scope] || []).find(o => o.id === scopeRefId) : null;
           const selLabel = selOpt ? selOpt.label : (scopeRefId || "");
           const scopeName = scope === "project" ? `项目《${workTitle}》`
-            : scope === "scene" ? (realMode ? `场景 ${selLabel}` : "场景 CH08 · SC01")
-            : (realMode ? `角色 ${selLabel}` : "角色 林岑 POV");
+            : scope === "scene" ? (realMode ? `场景 ${selLabel}` : (isRealBook ? "场景" : "场景 CH08 · SC01"))
+            : (realMode ? `角色 ${selLabel}` : (isRealBook ? "角色" : "角色 林岑 POV"));
           // 立项 A — scope_ref_id:项目级用 project_id,场景/角色级用所选目标 id(显式传,不靠后端回退)
           const effScopeRefId = scope === "project" ? projId : scopeRefId;
           if (realMode) {
@@ -2347,13 +2361,13 @@ function srImportBook() {
 }
 
 /* 头部动作（真实书）：重跑抽取 / 重新分类。LLM 未启用时给明确引导。 */
-async function srBookAction(action, bookId) {
+async function srBookAction(action, bookId, opts = {}) {
   try {
     const { apiPost } = await import("./lib/client.js");
     if (action === "rerun") {
       // 后台模式：立即返回 run_id，按 coverage_json.progress 轮询(2.5s),
       // 全 16 维抽取可达数分钟,同步等待会撞 HTTP 超时
-      const res = await apiPost(`/api/v2/style-reference/books/${bookId}/runs`, { background: true });
+      const res = await apiPost(`/api/v2/style-reference/books/${bookId}/runs`, { background: true, force: !!opts.force });
       const runId = res && res.run_id;
       window.alert("抽取已在后台启动（按层推进），完成后会提示。");
       if (runId) srPollRun(runId);
@@ -2364,6 +2378,13 @@ async function srBookAction(action, bookId) {
   } catch (e) {
     if (e && e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED") {
       window.alert("这本书的云端策略是「仅本地」，风格抽取需要把段落送 LLM 分析。请删除后以「按段落送云」策略重新导入。");
+    } else if (e && e.code === "STYLE_REFERENCE_INPUT_TOO_SMALL" && !opts.force) {
+      // §6.4 输入量门槛：全部分析层被评估为 skip。给一键强制重试（明知样本少仍要抽）
+      const goOn = window.confirm(
+        "这本书字数太少，按输入量门槛所有分析层都被评估为「跳过」，抽取不会执行。\n\n" +
+        "建议补足语料后重新导入；也可以点「确定」强制抽取（样本过少时画像可信度很低）。"
+      );
+      if (goOn) return srBookAction("rerun", bookId, { force: true });
     } else if (e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || /llm/i.test(e.code || ""))) {
       window.alert("风格抽取需要先启用 LLM：请到「系统设置 → 模型与接入」配置并开启后重试。");
     } else {

@@ -31,6 +31,7 @@ from novel_system.services.literary_quality import LiteraryQualityService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import NEAR_FINAL_REWRITE_TYPE, NEAR_FINAL_RUBRIC_ID
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
+from novel_system.services.projects import ProjectService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService, SceneTriageService
 from novel_system.services.scene_quality import SceneAutoRewriteService, SceneQualityService
@@ -347,6 +348,35 @@ def get_run_job(job_id: str, request: Request, session: Session = Depends(get_se
     service = SceneRunJobService(session)
     job = service.get_job(job_id)
     return ok(service.serialize_job(job), req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v1/scene-run-states")
+def list_scene_run_states(project_id: str, request: Request, session: Session = Depends(get_session)):
+    """项目内全部场景运行态（管线真相）。
+
+    起草台队列成员的后端派生源：换浏览器后 FE 据此恢复「哪些场进过管线」，
+    localStorage 队列退化为这份真相的读缓存（贯通轮遗留项 ①）。
+    只返回有运行态行且离开过 ready 的场——ready/无行 = 从未进管线，不参与恢复。
+    """
+    ProjectService(session).require_project(project_id)
+    rows = session.execute(
+        select(SceneRunState, SceneCard)
+        .join(SceneCard, SceneCard.scene_id == SceneRunState.scene_id)
+        .where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
+        .order_by(SceneRunState.updated_at.desc())
+    ).all()
+    items = [
+        {
+            "scene_id": state.scene_id,
+            "chapter_id": card.chapter_id,
+            "scene_status": state.scene_status,
+            "total_attempt_count": state.total_attempt_count,
+            "updated_at": state.updated_at,
+        }
+        for state, card in rows
+        if state.scene_status != "ready"
+    ]
+    return ok({"items": items, "count": len(items)}, req_id=getattr(request.state, "request_id", None))
 
 
 @router.get("/api/v1/scenes/{scene_id}/status")

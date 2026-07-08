@@ -83,7 +83,11 @@ class ProfileSynthesizer:
         # PR-23 — 被驳回的 finding 不进聚合 payload / source_finding_ids_json;
         # pending + approved 保留(审阅是可选环节,与 review 端点三态语义一致)
         findings = [f for f in findings if f.status != "rejected"]
-        quotes = self.repo.list_quotes(book_id)
+        # 2026-07 勘误:quotes 原为 list_quotes(book_id) 全书跨 run——同书重复抽取
+        # (未 reclassify)时,旧 run 的引文会混进本 profile 的 scene_samples_index /
+        # quote_count / few-shot 池。改为 **run-scoped**:仅取本 run findings 经
+        # evidence 关联的 quotes(与 source_finding_ids_json 同一物料来源)。
+        quotes = self._run_scoped_quotes(findings)
 
         sub_dim_summaries = _aggregate_sub_dim_stats(findings, quotes)
         metrics_baseline = (book.stats_json or {}).get("metrics", {})
@@ -145,6 +149,20 @@ class ProfileSynthesizer:
                 "rag index build failed for profile %s", profile.profile_id, exc_info=True
             )
         return profile
+
+    def _run_scoped_quotes(self, findings: list["StyleReferenceFinding"]) -> list["StyleReferenceQuote"]:
+        """本 run findings 经 evidence 关联的 quotes(排序确定:created_at, quote_id)。"""
+        finding_ids = [f.finding_id for f in findings]
+        evidences = self.repo.list_evidences_for_findings(finding_ids)
+        quote_ids: list[str] = []
+        seen: set[str] = set()
+        for ev in evidences:
+            if ev.quote_id and ev.quote_id not in seen:
+                seen.add(ev.quote_id)
+                quote_ids.append(ev.quote_id)
+        quotes = self.repo.list_quotes_by_ids(quote_ids)
+        quotes.sort(key=lambda q: (q.created_at or "", q.quote_id))
+        return quotes
 
     # ------------------------------------------------------------------ LLM
 

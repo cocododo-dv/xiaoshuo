@@ -156,10 +156,21 @@ def _merge_fragments(layers_frags: list["SystemPromptFragments"]) -> "SystemProm
 
     few_shot_block 与 rag_block(立项 C)不在此合并:它们已在上游 `_cap_fragments`
     阶段丢弃(per-profile 原文样例多层混叠稀释风格信号,详见该函数注释),故合并产物
-    不含二者。RAG 仅在单层路径注入。"""
-    positive = "\n\n".join(
-        f.positive_block for f in layers_frags if f.positive_block.strip()
-    )
+    不含二者。RAG 仅在单层路径注入。
+
+    positive 拼接时 `[正向风格特征]` 标题只保留首层——每层各带一遍标题会让
+    system prompt 出现多个同名块头,干扰 LLM 对块结构的解析(2026-07 观感修正)。"""
+    positive_parts: list[str] = []
+    for f in layers_frags:
+        block = f.positive_block.strip()
+        if not block:
+            continue
+        if positive_parts and block.startswith("[正向风格特征]"):
+            block = block[len("[正向风格特征]"):].lstrip("\n")
+            if not block:
+                continue
+        positive_parts.append(block)
+    positive = "\n\n".join(positive_parts)
     forbidden = _merge_forbidden_blocks(*[f.forbidden_block for f in layers_frags])
     metric = ""
     for f in reversed(layers_frags):  # 最具体层优先
@@ -377,6 +388,28 @@ class InjectionService:
         self._last_layer_count = 0
 
     # ------------------------------------------------------------- binding 选取
+    def _active_bindings(self, task_type: str) -> list:
+        """binding.status=active **且其 profile.status=active** 的候选集。
+
+        2026-07 勘误:此前只查 binding 状态——draft/archived profile 的 binding
+        仍会被 resolve 选中:注入侧渲染为空(no-op),但 qc_engine 的风格校验门
+        照样以该 profile 做回测裁决,出现「从未注入却被风格门拦下」的矛盾;
+        多层叠加时空层还白占预算权重。在选取单点统一过滤,注入 / qc gate 一致。
+        """
+        profile_status: dict[str, str | None] = {}
+
+        def _profile_active(profile_id: str) -> bool:
+            if profile_id not in profile_status:
+                profile = self.repo.get_profile(profile_id)
+                profile_status[profile_id] = getattr(profile, "status", None)
+            return profile_status[profile_id] == "active"
+
+        return [
+            b
+            for b in self.repo.list_bindings(task_type=task_type)
+            if b.status == "active" and _profile_active(b.profile_id)
+        ]
+
     def resolve_active_binding(
         self,
         project_id: str | None,
@@ -393,11 +426,7 @@ class InjectionService:
         """
         if not project_id and not character_ids and not scene_id:
             return None
-        bindings = [
-            b
-            for b in self.repo.list_bindings(task_type=task_type)
-            if b.status == "active"
-        ]
+        bindings = self._active_bindings(task_type)
         if not bindings:
             return None
 
@@ -431,11 +460,7 @@ class InjectionService:
         """
         if not project_id and not character_ids and not scene_id:
             return []
-        bindings = [
-            b
-            for b in self.repo.list_bindings(task_type=task_type)
-            if b.status == "active"
-        ]
+        bindings = self._active_bindings(task_type)
         if not bindings:
             return []
 
@@ -860,13 +885,18 @@ class InjectionService:
 
 
 def _ts_to_int(ts: str | None) -> int:
-    """把 ISO 时间串转为可比 int(只用于排序,失败回 0)。"""
+    """把 ISO 时间串转为可比 int(只用于排序,失败回 0)。
+
+    取前 20 位数字(YYYYMMDDHHMMSS + 微秒 6 位):models.utcnow() 是进程内严格
+    单调的微秒级时间戳,截到秒([:14])会让同秒创建的多条 binding 排序退化为
+    非确定的插入序;补齐微秒后「最新优先」决平确定。
+    """
     if not ts:
         return 0
     cleaned = "".join(ch for ch in ts if ch.isdigit())
     if not cleaned:
         return 0
     try:
-        return int(cleaned[:14])
+        return int(cleaned[:20].ljust(20, "0"))
     except ValueError:
         return 0

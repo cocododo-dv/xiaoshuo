@@ -422,10 +422,14 @@ function WsReview({ go }) {
 
   const act = (item, a) => {
     if (a.op === "nav" && a.to) {
+      /* AI 起草台深链（管线 blocked 稿卡片）：入列惯用法——挂载读 __scnEnqueue，
+         已挂载走 ws:scene-enqueue 事件（与写作台 forkAI / 构思「去 AI 起草」同源） */
+      if (a.to === "scene" && a.scene) window.__scnEnqueue = { sid: a.scene };
       go(a.to);
       /* 带上下文深链：雪花步骤 / 写作器场景 / 深改姿态（与命令面板同一套事件） */
       if (a.step) setTimeout(() => window.dispatchEvent(new CustomEvent("ws:snow-step", { detail: a.step })), 60);
-      if (a.scene) setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-scene", { detail: a.scene })), 60);
+      if (a.scene && a.to === "scene") setTimeout(() => window.dispatchEvent(new CustomEvent("ws:scene-enqueue", { detail: { sid: a.scene } })), 80);
+      else if (a.scene) setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-scene", { detail: a.scene })), 60);
       if (a.posture) setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: a.posture })), 110);
     }
     else if (a.op === "snooze") snooze(item.id);

@@ -2,12 +2,19 @@
 
 `check_quantitative(generated_text, profile)`:
 1. 把 generated_text 包装成临时 paragraphs 列表(全部归 narration)
-2. MetricsEngine.compute_all → 26 项 metric
+2. MetricsEngine.compute_all → 逐项 metric
 3. 对照 profile.profile_json["metrics_baseline"](PR-4 ProfileSynthesizer 落)
 4. tolerance = max(baseline_std × 1.25, ABSOLUTE_FLOORS[metric])
 5. 返 list[QuantitativeReportItem]
 
 baseline 缺失或 generated_text 为空时返 []。
+
+2026-07 勘误:8 个 paragraph_type 比例指标(dialogue_ratio 等)**不参与对照**。
+它们度量的是分类器标签而非文本本身——生成文本在这里全部归 narration(无分类器),
+narration_ratio 恒 1、其余恒 0,对照 baseline 是系统性伪偏差:对话密集的参考书
+必然把 pass_rate 拖到 0.8 以下,QC gate 恒 PARTIAL/FAIL。对照只保留 18 个纯文本
+统计指标(句长/标点/词表/感官密度),与「quant 不依赖 paragraph_type 精确性」的
+既有约定一致;8 项仍保留在 metrics_baseline / 抽取锚点 / 前端展示。
 """
 
 from __future__ import annotations
@@ -28,6 +35,21 @@ if TYPE_CHECKING:
 
 
 DEFAULT_FLOOR = 0.1
+
+# 分类器标签依赖指标:生成侧无 paragraph_type(全部归 narration),对照无意义,
+# 从量化回测中排除(见 module docstring 2026-07 勘误)。
+TYPE_RATIO_METRICS: frozenset[str] = frozenset(
+    {
+        "dialogue_ratio",
+        "psychology_ratio",
+        "description_env_ratio",
+        "description_char_ratio",
+        "action_ratio",
+        "narration_ratio",
+        "transition_ratio",
+        "flashback_ratio",
+    }
+)
 
 
 def _wrap_as_paragraphs(generated_text: str) -> list[ParagraphRecord]:
@@ -86,6 +108,8 @@ def check_quantitative(
 
     reports: list[QuantitativeReportItem] = []
     for name in METRIC_NAMES:
+        if name in TYPE_RATIO_METRICS:
+            continue  # 分类器标签依赖指标不对照(见 module docstring)
         base = baseline.get(name)
         if not isinstance(base, dict):
             continue

@@ -85,8 +85,11 @@ METRIC_NAMES: tuple[str, ...] = (
     "sensory_gustatory_per_1k",
 )
 
-# 常量词表
-_PUNCT_CHARS = "。！？，；:、——…“”\"\"‘’「」『』《》()【】!?,;:."
+# 常量词表。
+# 2026-07 勘误:原字符串含重复字符(`——` 两个 `—`、`\"\"` 两个 ASCII 引号、
+# ASCII `:` 出现两次),`_density_per_1k_chars` 按字符逐个 count 会**双计**;
+# 且遗漏全角冒号 `：` 与全角括号 `（）`。现去重并补全,计数函数同时做防御性去重。
+_PUNCT_CHARS = "。！？，；：、—…“”\"‘’「」『』《》（）()【】!?,;:."
 _CLASSICAL_MARKERS = ("之", "乎", "者", "也", "焉", "矣", "哉", "曰", "兮", "其")
 _COLLOQUIAL_MARKERS = ("吧", "呢", "啊", "嗯", "哎", "嘛", "哦", "哪", "呀", "罢", "嘞")
 # 比喻关键词;TODO(PR-3):LLM 抽取增强,目前以词表近似
@@ -201,10 +204,12 @@ class MetricsEngine:
             return _density_per_1k_pattern(p.text, r"——|—")
         if name == "ellipsis_density_per_1k":
             return _density_per_1k_pattern(p.text, r"……|…|\.{3,}")
+        # 2026-07 勘误:原为 ";;" / "??"(两个 ASCII 字符)——全角 `；`/`？` 完全
+        # 不被统计(中文文本该指标恒 ≈0),ASCII 反被双计。改为全角 + ASCII 各一。
         if name == "semicolon_density_per_1k":
-            return _density_per_1k_chars(p.text, ";;")
+            return _density_per_1k_chars(p.text, "；;")
         if name == "question_density_per_1k":
-            return _density_per_1k_chars(p.text, "??")
+            return _density_per_1k_chars(p.text, "？?")
         if name == "classical_word_ratio":
             return _word_occurrence_ratio(p.text, _CLASSICAL_MARKERS)
         if name == "colloquial_marker_ratio":
@@ -295,7 +300,8 @@ def _sentence_length_ratio(text: str, predicate: Callable[[int], bool]) -> float
 def _density_per_1k_chars(text: str, chars: str) -> float:
     if not text:
         return 0.0
-    count = sum(text.count(c) for c in chars)
+    # set() 去重:字符集若含重复字符(历史勘误)不得双计
+    count = sum(text.count(c) for c in set(chars))
     return count * 1000.0 / len(text)
 
 

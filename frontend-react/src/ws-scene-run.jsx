@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { wsKey } from "./ws-works.jsx";
+import { wsKey, WsWorks } from "./ws-works.jsx";
 import { s2ExportState } from "./ws-snow.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 
@@ -280,6 +280,67 @@ async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-v
   return qc;
 }
 
+/* ---- 后端水合：本地没有运行记录（换浏览器 / 页面关闭前没取回）时，
+   从 scenes workbench 恢复这一场的最新产出为一条可裁决的运行。
+   队列/运行记录此前只活在 localStorage，后端 SceneRunState 才是管线真相——
+   这是「起草台各自为战」的补缝。目录场景卡已 done 的按已归档呈现。 ---- */
+async function scnHydrateFromBackend(sid) {
+  const { apiGet } = await import("./lib/client.js");
+  const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
+  if (!sceneId) return null;
+  let wb = null;
+  try { wb = await apiGet(`/api/v1/scenes/${sceneId}/workbench`); } catch (e) { return null; }
+  const content = (wb && ((wb.final_scene && wb.final_scene.content)
+    || (wb.style_draft && wb.style_draft.content)
+    || (wb.neutral_draft && wb.neutral_draft.content))) || "";
+  if (!content.trim()) return null;
+  const paras = content.split(/\n{2,}|\n/).map((x, i) => ({ id: "p" + (i + 1), beat: null, text: x.trim() })).filter(p => p.text);
+  if (!paras.length) return null;
+  const hit = WsCatalog ? WsCatalog.sceneById(sid) : null;
+  const reactive = ((hit && hit.scene && hit.scene.kind) || "").includes("反应");
+  const qc = scnQC(paras, reactive);
+  const done = !!(hit && hit.scene && hit.scene.state === "done");
+  const pipeState = (wb && wb.scene_run_state && wb.scene_run_state.scene_status) || "";
+  const now = new Date().toTimeString().slice(0, 8);
+  qc.state = done ? "archived" : "ready";
+  qc.attempt = 1;
+  qc.at = Date.now();
+  qc.attempts = [{ n: 1, time: "后端恢复", result: done ? "已归档" : "待裁决", tone: done ? "sage" : "gold", note: "从后端管线取回的最新产出" }];
+  qc.log = [
+    { t: now, who: "system", text: `已从后端恢复这一场的最新产出（场景状态 ${pipeState || "—"}）——运行在别处完成或页面关闭前未取回` },
+    { t: now, who: "qc", text: `本地复检：短句率 ${qc.metrics[0].val} · 句式重复 ${qc.metrics[1].val} · ${qc.verdict.risks}` },
+  ];
+  qc.cost = [
+    { k: "起草", v: "后端管线 · 已恢复" },
+    { k: "质检", v: "硬/软双层 + 本地复检" },
+    { k: "字数", v: String(qc.words), mono: true },
+  ];
+  return qc;
+}
+
+/* ---- 队列成员的后端派生（贯通轮遗留 ①）：项目内进过管线的场
+   （GET /scene-run-states，scene_status 已离开 ready）→ sid 列表。
+   队列的 localStorage 从此退化为这份管线真相的读缓存——换浏览器时
+   队列成员可恢复，各场产出再经 scnHydrateFromBackend 逐场取回。 ---- */
+async function scnBackendQueueSids() {
+  const { apiGet } = await import("./lib/client.js");
+  const workId = WsWorks ? WsWorks.activeId() : null;
+  if (!workId || workId === "__loading__") return [];
+  let data = null;
+  try { data = await apiGet(`/api/v1/scene-run-states?project_id=${encodeURIComponent(workId)}`); } catch (e) { return []; }
+  const items = (data && data.items) || [];
+  if (!items.length) return [];
+  try {
+    if (WsCatalog && !WsCatalog.get().length && WsCatalog.__refresh) await WsCatalog.__refresh(workId);
+  } catch (e) {}
+  const bySceneId = {};
+  try {
+    (WsCatalog ? WsCatalog.get() : []).forEach(c => (c.scenes || []).forEach(s => { if (s.backendId) bySceneId[s.backendId] = s.sid; }));
+  } catch (e) {}
+  // 端点按 updated_at 倒序返回：最近有动静的场排前面
+  return items.map(it => bySceneId[it.scene_id]).filter(Boolean);
+}
+
 /* ---- 归档：写入写作器正文 + 字数回写 + 场景卡置 done ---- */
 function scnEscape(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function scnAdoptToDoc(sid, draft) {
@@ -336,7 +397,7 @@ function scnPickList(queuedSids) {
   } catch (e) { return []; }
 }
 
-Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft });
+Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft };
+export { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids };

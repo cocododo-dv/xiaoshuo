@@ -118,6 +118,27 @@ function ControlTower({ onOpenStep, go }) {
     return () => window.removeEventListener("ws:ct-tab", onTab);
   }, []);
 
+  /* 结构控制塔的层/脊柱/连续性内容目前来自演示数据集（ct-data，尚未接真实草稿）：
+     只对「潮汐档案」演示作品展示，其它真实作品显示引导空态，杜绝演示剧情泄漏。
+     后续把 CT 接到真实雪花草稿后可解除此门控。 */
+  const ctIsTide = !WsWorks || (WsWorks.activeId && WsWorks.activeId() === "tide");
+  if (!ctIsTide) {
+    const _title = (WsWorks && WsWorks.active && WsWorks.active() && WsWorks.active().title) || "本作";
+    return (
+      <div className="ct-root">
+        <header className="ct-header">
+          <div className="ct-brand"><h1 className="ct-brand-title">{_title} · 雪花结构总览</h1></div>
+        </header>
+        <div className="ct-empty-guide" style={{ padding: "56px 28px", textAlign: "center", color: "var(--slate, #64748b)", lineHeight: 1.8 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>结构总览尚未就绪</div>
+          <div style={{ fontSize: 13, maxWidth: 460, margin: "0 auto" }}>
+            推进「雪花构思」的十步草稿后，这里会按本作真实结构展示层级健康度、故事脊柱与连续性检查。
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const headerMetrics = [
     { label: "结构强度", val: metrics.health, suffix: "", tone: "ink", big: true },
     { label: "已确认层", val: `${metrics.approved}`, suffix: "/10", tone: "sage" },

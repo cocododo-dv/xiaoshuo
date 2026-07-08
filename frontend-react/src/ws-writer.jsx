@@ -186,17 +186,8 @@ function wrHighlightEntities(root) {
   });
 }
 
-const WR_CANDIDATES = [
-  { id: "c1", approach: "克制 · 听觉", tone: "slate",
-    note: "顺着「安静」的母题推进，用声音收束，不点破。",
-    html: '核对机的<mark>风扇先转了起来</mark>，然后是读取头来回扫过的、像退潮一样的<mark>沙沙声</mark>。林岑没有动。她听着那声音，忽然觉得这台机器比馆里任何一个人都更像父亲——<mark>沉默，准确，从不解释</mark>。' },
-  { id: "c2", approach: "推进 · 动作", tone: "crimson",
-    note: "把节奏拎紧，让她立刻做出选择，制造下一场的钩子。",
-    html: '屏幕跳出一行字：<mark>「记录 No.31 不存在。」</mark>林岑盯了两秒，伸手把备份单拍进扫描槽。机器卡了一下，红灯亮起。走廊尽头，<mark>电梯「叮」地响了一声</mark>——这个点，不该有人上来。' },
-  { id: "c3", approach: "心理 · 迟疑", tone: "gold",
-    note: "向内走，落在她的犹疑上，保留悬念但更慢。",
-    html: '她的手停在回车键上方。<mark>她不知道自己是希望这个数字是真的，还是希望它只是父亲某次笔误</mark>。如果是真的，那二十年前那个夜晚，就还藏着一个没人数过的人。她终于按了下去。' },
-];
+/* AI 续写候选的展示外观（真实候选无模型自评的"手法标签"，仅用于视觉区分/轮换） */
+const WR_CAND_TONES = ["slate", "crimson", "gold"];
 
 /* ==========================================================
    Sentence-level adoption — split a candidate into sentences so the
@@ -1011,7 +1002,9 @@ function WriterRoom({ t, setTweak, onExit, go }) {
         ? <WrDeepDrawer open={rightOpen} issues={dxIssues} activeKey={dxActive} onPick={dxPick} onAdopt={dxAdopt} onIgnore={dxIgnore} onRescan={dxRescanAll} onEditDraft={dxEditDraft} onUndo={dxUndo} canUndo={!!(dxUndoRef.current && dxUndoRef.current.sid === activeScene)} log={dxLog} onClose={() => setRightOpen(false)} />
         : <WrContext open={rightOpen} tab={rightTab} setTab={setRightTab} onClose={() => setRightOpen(false)} onOpenAI={() => { setRightOpen(false); setTrayOpen(true); }} place={tw.aiPlace} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} scene={activeScene} editorRef={editorRef} />}
       <div className={`wr-scrim wr-scrim-tray ${trayOpen ? "show" : ""}`} onClick={() => setTrayOpen(false)} />
-      <WrTray open={trayOpen} onClose={() => setTrayOpen(false)} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} />
+      <WrTray open={trayOpen} onClose={() => setTrayOpen(false)} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText}
+        sceneLabel={am.stamp ? am.stamp + (am.title ? " · " + am.title : "") : null}
+        pov={wrCtx(activeScene).pov !== "—" ? wrCtx(activeScene).pov : null} />
       <WrInlineRewrite editorRef={editorRef} onCommit={commitEdit} />
       <WrEntityPop pop={entityPop} onOpen={openDossier} />
       <WrMentionPicker mention={mention} list={mentionList} idx={mentionIdx} onPick={insertMention} onHover={setMentionIdx} />
@@ -1340,6 +1333,14 @@ function WrCtxContract({ scene }) {
 }
 function WrCtxScene({ scene }) {
   const c = wrCtx(scene);
+  /* 写作台 → AI 起草台的直达动线：这一场在目录里存在时，单场入列并跳转
+     （此前整场起草只能绕道章节编排的「交给 AI」，三个台子像各自为战） */
+  const inCatalog = (() => { try { return !!(WsCatalog && WsCatalog.sceneById(scene)); } catch (e) { return false; } })();
+  const forkAI = () => {
+    window.__scnEnqueue = { sid: scene };
+    location.hash = "#scene";
+    setTimeout(() => window.dispatchEvent(new CustomEvent("ws:scene-enqueue", { detail: { sid: scene } })), 80);
+  };
   return (
     <>
       <WrCtxContract scene={scene} />
@@ -1359,6 +1360,12 @@ function WrCtxScene({ scene }) {
           <li><div className="k">Conflict · 阻碍</div><div className="v">{c.gmc.conflict}</div></li>
           <li><div className="k">Setback · 挫折</div><div className="v">{c.gmc.setback}</div></li>
         </ul>
+        {inCatalog && (
+          <button className="btn btn-quiet btn-sm" style={{ marginTop: 10, width: "100%", justifyContent: "center" }} onClick={forkAI}
+            title="把这一场送进 AI 起草台排队：按上面的三拍与雪花上下文起草整场，归档后写回这里的正文">
+            <I.Play size={13} /> 交给 AI 起草整场
+          </button>
+        )}
       </section>
       <section className="wr-block">
         <div className="wr-block-h">出场角色</div>
@@ -1375,23 +1382,35 @@ function WrCtxAI({ place, onOpenAI, onAdopt, onMerge, onAdoptText }) {
   const [running, setRunning] = useWS(false);
   const [cands, setCands] = useWS(place === "drawer" ? [] : null);
   const [picks, setPicks] = useWS({});
-  const run = () => { setRunning(true); setCands([]); setPicks({}); setTimeout(() => { setRunning(false); setCands(WR_CANDIDATES); }, 900); };
+  const [err, setErr] = useWS("");
+  const run = (instr) => {
+    setRunning(true); setCands([]); setPicks({}); setErr("");
+    wrContinueMulti(instr)
+      .then(list => { setRunning(false); setCands(list); })
+      .catch(e => {
+        setRunning(false); setCands([]);
+        setErr(e && e.code === "no-model" ? "AI 续写需要可用的 LLM：请到「系统设置 → 模型与接入」配置并启用后重试。" : "生成失败，请稍后重试。");
+      });
+  };
   const toggle = (id, si) => setPicks(p => { const cur = p[id] || []; return { ...p, [id]: cur.includes(si) ? cur.filter(x => x !== si) : [...cur, si] }; });
   return (
     <>
       {place === "tray" ? (
         <button className="btn btn-accent" style={{ width: "100%", justifyContent: "center" }} onClick={onOpenAI}><I.Sparkles size={15} /> 打开续写托盘 · ⌘J</button>
       ) : (
-        <button className="btn btn-accent" style={{ width: "100%", justifyContent: "center" }} onClick={run}><I.Wand size={14} /> {cands && cands.length ? "重新生成三条" : "生成三条候选"}</button>
+        <button className="btn btn-accent" style={{ width: "100%", justifyContent: "center" }} onClick={() => run()}><I.Wand size={14} /> {cands && cands.length ? "重新生成三条" : "生成三条候选"}</button>
       )}
       <div className="wr-block mt-4">
         <div className="wr-block-h">快捷动作</div>
         <div className="wr-chips">
           {["续写下一段", "让节奏更紧", "加感官细节", "删冗余", "改成对话推进"].map(x => (
-            <button key={x} className="pill" style={{ cursor: "pointer" }} onClick={place === "drawer" ? run : onOpenAI}>{x}</button>
+            <button key={x} className="pill" style={{ cursor: "pointer" }} onClick={() => place === "drawer" ? run(x) : onOpenAI()}>{x}</button>
           ))}
         </div>
       </div>
+      {place === "drawer" && err && (
+        <div className="wr-block mt-4"><div className="wr-cand-note is-err">{err}</div></div>
+      )}
       {place === "drawer" && (running || (cands && cands.length > 0)) && (
         <div className="wr-block mt-4">
           <div className="wr-block-h">三条候选 · 点句挑选</div>
@@ -1404,6 +1423,7 @@ function WrCtxAI({ place, onOpenAI, onAdopt, onMerge, onAdoptText }) {
                 <article key={c.id} className="wr-cand" style={{ marginBottom: 10, animationDelay: i * 70 + "ms" }}>
                   <div className="wr-cand-head"><span className="wr-cand-key">{i + 1}</span><span className={`pill pill-${c.tone} text-xs`}><span className="pill-dot" />{c.approach}</span></div>
                   <WrCandText html={c.html} picked={picked} onToggle={(si) => toggle(c.id, si)} />
+                  {c.note && <p className="wr-cand-note">{c.note}</p>}
                   <div className="wr-cand-act">
                     <button className="btn btn-quiet btn-sm" onClick={() => onMerge && onMerge(c)} title="作为可编辑草稿插入">融合</button>
                     {picked.length > 0
@@ -1480,15 +1500,26 @@ function WrCtxNotes({ scene }) {
 }
 
 /* ---- AI tray ---- */
-function WrTray({ open, onClose, onAdopt, onMerge, onAdoptText }) {
-  const [prompt, setPrompt] = useWS("续写下一段：核对机开始读取，先用声音收束，再起一个钩子");
-  const [phase, setPhase] = useWS("ready");
+function WrTray({ open, onClose, onAdopt, onMerge, onAdoptText, sceneLabel, pov }) {
+  const [prompt, setPrompt] = useWS("续写下一段，自然承接当前正文");
+  const [phase, setPhase] = useWS("ready"); // ready | loading | result | error
+  const [cands, setCands] = useWS([]);
+  const [errMsg, setErrMsg] = useWS("");
   const [sel, setSel] = useWS(0);
   const [seed, setSeed] = useWS(0);
   const [picks, setPicks] = useWS({});
-  const run = () => { setPhase("loading"); setPicks({}); setTimeout(() => { setPhase("result"); setSel(0); }, 900); };
+  const run = () => {
+    setPhase("loading"); setPicks({}); setErrMsg("");
+    wrContinueMulti(prompt)
+      .then(list => { setCands(list); setPhase("result"); setSel(0); })
+      .catch(e => {
+        setCands([]);
+        setErrMsg(e && e.code === "no-model" ? "AI 续写需要可用的 LLM：请到「系统设置 → 模型与接入」配置并启用后重试。" : "生成失败，请稍后重试。");
+        setPhase("error");
+      });
+  };
   const toggle = (id, si) => setPicks(p => { const cur = p[id] || []; return { ...p, [id]: cur.includes(si) ? cur.filter(x => x !== si) : [...cur, si] }; });
-  useWE(() => { if (open) { setSeed(s => s + 1); run(); } else setPhase("ready"); }, [open]);
+  useWE(() => { if (open) { setSeed(s => s + 1); run(); } else setPhase("ready"); }, [open]); // eslint-disable-line
   useWE(() => {
     if (!open) return;
     const onKey = (e) => {
@@ -1496,7 +1527,8 @@ function WrTray({ open, onClose, onAdopt, onMerge, onAdoptText }) {
       if (["1", "2", "3"].includes(e.key)) { e.preventDefault(); setSel(+e.key - 1); }
       else if (e.key === "Enter" && !e.shiftKey && document.activeElement.tagName !== "TEXTAREA") {
         e.preventDefault();
-        const c = WR_CANDIDATES[sel]; const p = picks[c.id] || [];
+        const c = cands[sel]; if (!c) return;
+        const p = picks[c.id] || [];
         if (p.length && onAdoptText) onAdoptText(wrPickedText(wrSentences(c.html), p));
         else onAdopt(c);
       }
@@ -1504,33 +1536,35 @@ function WrTray({ open, onClose, onAdopt, onMerge, onAdoptText }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, phase, sel, picks]);
+  }, [open, phase, sel, picks, cands]); // eslint-disable-line
   return (
     <div className={`wr-tray ${open ? "show" : ""}`}>
       <div className="wr-tray-grip" />
       <header className="wr-tray-head">
         <span className="wr-tray-spark"><I.Sparkles size={16} /></span>
-        <div><div className="wr-tray-title">AI 续写 · 三条候选</div><div className="wr-tray-sub">CH 08 · SC 03 · 画像「冷峻短句」</div></div>
+        <div><div className="wr-tray-title">AI 续写 · 三条候选</div><div className="wr-tray-sub">{sceneLabel || "—"}</div></div>
         <button className="wr-tray-x" onClick={onClose} title="关闭 (Esc)"><I.X size={16} /></button>
       </header>
       <div className="wr-tray-prompt">
         <textarea className="wr-prompt-in" rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
         <div className="wr-prompt-side">
-          <div className="wr-prompt-chips"><span className="pill text-xs"><span className="pill-dot" />冷峻短句</span><span className="pill text-xs"><span className="pill-dot" />限知 · 林岑</span></div>
-          <button className="btn btn-primary btn-sm" onClick={() => { setSeed(s => s + 1); run(); }}><I.Wand size={13} /> {phase === "result" ? "重新生成" : "生成"}</button>
+          {pov && <div className="wr-prompt-chips"><span className="pill text-xs"><span className="pill-dot" />{pov}</span></div>}
+          <button className="btn btn-primary btn-sm" onClick={() => { setSeed(s => s + 1); run(); }}><I.Wand size={13} /> {phase === "result" || phase === "error" ? "重新生成" : "生成"}</button>
         </div>
       </div>
       <div className="wr-cands" key={seed}>
         {phase === "loading"
           ? [0, 1, 2].map(i => (<div key={i} className="wr-cand wr-skel" style={{ animation: "none", opacity: 1, transform: "none" }}><div className="sk" /><div className="sk" /><div className="sk" /><div className="sk short" /></div>))
-          : phase === "result" && WR_CANDIDATES.map((c, i) => {
+          : phase === "error"
+          ? (<div className="wr-cand-note is-err">{errMsg}</div>)
+          : phase === "result" && cands.map((c, i) => {
             const picked = picks[c.id] || [];
             const sents = wrSentences(c.html);
             return (
             <article key={c.id} className={`wr-cand ${sel === i ? "is-sel" : ""}`} style={{ animationDelay: i * 70 + "ms" }} onMouseEnter={() => setSel(i)} onClick={() => setSel(i)}>
               <div className="wr-cand-head"><span className="wr-cand-key">{i + 1}</span><span className={`pill pill-${c.tone} text-xs`}><span className="pill-dot" />{c.approach}</span>{picked.length > 0 && <span className="wr-cand-pickn">{picked.length} 句已选</span>}</div>
               <WrCandText html={c.html} picked={picked} onToggle={(si) => toggle(c.id, si)} />
-              <p className="wr-cand-note">{c.note}</p>
+              {c.note && <p className="wr-cand-note">{c.note}</p>}
               <div className="wr-cand-act">
                 <button className="btn btn-quiet btn-sm" onClick={(e) => { e.stopPropagation(); onMerge && onMerge(c); }} title="作为可编辑草稿插入，自己揉合">融合</button>
                 {picked.length > 0
@@ -1543,7 +1577,7 @@ function WrTray({ open, onClose, onAdopt, onMerge, onAdoptText }) {
       </div>
       <footer className="wr-tray-foot">
         <span><kbd style={WR_KBD}>1</kbd><kbd style={WR_KBD}>2</kbd><kbd style={WR_KBD}>3</kbd> 预览 · <kbd style={WR_KBD}>⏎</kbd> 采纳 · <kbd style={WR_KBD}>R</kbd> 重生 · <kbd style={WR_KBD}>Esc</kbd> 关闭</span>
-        <span>点击句子可逐句挑选 · 高亮为该条着重意象</span>
+        <span>点击句子可逐句挑选</span>
       </footer>
     </div>
   );
@@ -1633,6 +1667,51 @@ function wrPatchDecide(pickIdx, accepted) {
     if (accepted) apiPost(`/api/v1/passage-patch-candidates/${last.patchId}/accept`, { selected_option_id: opt.option_id || "" }).catch(() => {});
     else apiPost(`/api/v1/passage-patch-candidates/${last.patchId}/reject`, {}).catch(() => {});
   }).catch(() => {});
+}
+
+/* ==========================================================
+   AI 续写 — 接后端 author-drafts 的 proposals/generate（continuation
+   类型："只推进下一拍，不改写作者现有正文"，见 config/prompts.yaml
+   author_proposal_generate 模板）。并发 3 次独立取样凑 3 条候选；复用
+   wrRewriteMulti 同一套 WR_ACTIVE_SID → WrDocs.draftId 映射。
+   离线兜底（LLM 未启用）与内联改写同一约定：rationale 命中
+   /offline deterministic/i 即按"模型不可用"处理，不混入候选列表。
+   ========================================================== */
+function wrCandEscape(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function wrCandTidy(s) { return String(s || "").replace(/\s*\n\s*/g, "").trim(); }
+
+async function wrContinueMulti(instruction) {
+  const { apiPost } = await import("./lib/client.js");
+  const sid = WR_ACTIVE_SID || (((WsCatalog && WsCatalog.writingScene()) || {}).scene || {}).sid;
+  if (!sid) { const err = new Error("no-scene"); err.code = "no-model"; throw err; }
+  let draftId = null;
+  try { draftId = await WrDocs.draftId(sid); } catch (e) {}
+  if (!draftId) { const err = new Error("no-draft"); err.code = "no-model"; throw err; }
+  const attempts = await Promise.allSettled([0, 1, 2].map(() =>
+    apiPost(`/api/v1/author-drafts/${draftId}/proposals/generate`, {
+      proposal_type: "continuation",
+      instruction: instruction || "续写下一段，自然承接当前正文",
+      proposal_source: "writer_room_continuation_tray",
+    })
+  ));
+  const cands = [];
+  attempts.forEach((r) => {
+    if (r.status !== "fulfilled") return;
+    const p = r.value && r.value.proposal;
+    const text = wrCandTidy(p && p.content);
+    if (!text) return;
+    // 离线兜底产物是确定性占位续写——按「模型不可用」如实处理，不混进候选里
+    if (/offline deterministic/i.test((p && p.rationale) || "")) return;
+    cands.push({
+      id: (p && p.proposal_id) || ("cand" + cands.length),
+      approach: `候选 ${cands.length + 1}`,
+      tone: WR_CAND_TONES[cands.length % WR_CAND_TONES.length],
+      note: (p && p.rationale) || "",
+      html: wrCandEscape(text),
+    });
+  });
+  if (!cands.length) { const err = new Error("no-model"); err.code = "no-model"; throw err; }
+  return cands;
 }
 
 function WrInlineRewrite({ editorRef, onCommit }) {

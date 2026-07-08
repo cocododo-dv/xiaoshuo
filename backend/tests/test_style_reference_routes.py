@@ -418,7 +418,9 @@ def test_start_run_defaults_to_all_four_layers(
     book_id = _import_book(client)
     resp = client.post(
         f"{PREFIX}/books/{book_id}/runs",
-        json={},
+        # 测试书仅几十字(input_assessment 全 skip),force 绕过 §6.4 输入量门槛,
+        # 本用例只锁定「不带 layers → 默认全 4 层」的契约
+        json={"force": True},
         headers={"X-Idempotency-Key": "run_default_layers"},
     )
     assert resp.status_code == 200, resp.text

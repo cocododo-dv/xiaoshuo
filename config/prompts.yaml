@@ -1603,7 +1603,7 @@ templates:
           type: string
 
   writer_deep_review:
-    version: "2026-07-04.v2"
+    version: "2026-07-07.v3"
     input_token_budget: 3000
     system_prompt: |
       You are a severe Chinese fiction revision editor for a working author.
@@ -1617,6 +1617,7 @@ templates:
       Focus on character contradiction, choice pressure, relationship tension, dialogue subtext, information rhythm,
       voice distinction, image necessity, repetitive expression, ending drive, and theme pressure.
       Cover all 5 lenses at least once: if a lens genuinely has no issue, still add one finding tagged with that lens, classified as "taste", noting what already works — do not omit the lens entirely.
+      Also return a top-level lens_evaluations array with exactly one entry per lens, each an object with keys lens, overall_score, scores, findings, revision_brief. Its findings are the same finding objects from the flat findings list, grouped under their lens — do not invent new findings here and do not leave any tagged finding ungrouped. Its scores holds only the dimensions that lens is responsible for, and its overall_score judges that lens alone — do not paste the aggregate overall_score into all five entries.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1641,6 +1642,10 @@ templates:
             type: object
         requires_human_review:
           type: boolean
+        lens_evaluations:
+          type: array
+          items:
+            type: object
 
   writer_reference_application_review:
     version: "2026-04-24.v1"
@@ -1762,7 +1767,7 @@ templates:
           type: string
 
   snowflake_generate_character_sheets:
-    version: "2026-07-04.v2"
+    version: "2026-07-06.v3"
     input_token_budget: 2800
     system_prompt: |
       You are outlining major character pressure inside a snowflake-method workspace.
@@ -1770,7 +1775,8 @@ templates:
       Preserve the user's input language and approved facts; every important character should feel like the lead of their own pressure story.
     task_prompt: |
       Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
-      Give every character object the same key set so downstream tooling can read them uniformly: name, goal (concrete, scene-actionable desire), opposition (who or what blocks the goal and why), value_conflict (the belief this character must risk to pursue the goal), epiphany (what changes and what triggers it), scene_potential (one line on what kind of scene this character's pressure can generate). Use exactly these keys for every character in the array.
+      Each character object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: character_id (reuse the id from approved_steps or current_draft when the character already exists; leave "" for a brand-new character and the server assigns one), display_name, role (主角/对手/盟友/镜像 in the input language), goal (concrete, scene-actionable desire), ambition (the deeper abstract want behind the goal), values (array of belief statements, each phrased like "相信……"), conflict (who or what blocks the goal, and why that opposition cannot be waved away — the belief this character must risk belongs here), epiphany (what changes and what concrete event triggers it), one_sentence_summary (this character's private arc in one sentence), one_paragraph_summary (that arc expanded to a short paragraph tied to the three disasters, ending with what kind of scenes this character's pressure can generate).
+      Fill every key for every character with substantive content — an empty string or a name-only entry is a defect. Keep characters distinct: if two characters share the same goal/conflict shape, sharpen one until the overlap is gone.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1805,16 +1811,22 @@ templates:
             type: string
 
   snowflake_generate_character_synopses:
-    version: "2026-07-04.v2"
+    version: "2026-07-06.v3"
     input_token_budget: 2800
     system_prompt: |
-      You are writing concise character-throughline synopses for a snowflake workspace.
+      You are writing concise character-backstory synopses for a snowflake workspace.
       Emphasize how each character enters the story conflict and changes under pressure.
       Preserve the user's input language and approved facts; do not invent unrelated cast members.
     task_prompt: |
-      Return structured character synopses for the current cast. Tie backstory to present-story desire, fear, opposition, and scene behavior.
-      Give every character object the same key set: name, entry_point (how this character enters the central conflict), desire, fear, opposition, information_gap (what this character knows or believes that others in the cast do not), scene_behavior (how the desire/fear pair shows up in action). Use exactly these keys for every character in the array.
-      Each character's synopsis must retell the story from a genuinely different vantage: it should surface an information gap or a motive that conflicts with at least one other character's synopsis, not the same sequence of events with the subject swapped.
+      Return the backstory synopsis layer for the current cast. Tie each backstory to present-story desire, fear, opposition, and visible scene behavior.
+      Each character object must use exactly the canonical keys the workspace stores — the server discards any other key: character_id and display_name and role (reuse identities from the approved character sheets; do not rename the cast), synopsis.
+      Write synopsis as multi-line text in the input language using exactly these five prefixed lines, in this order, so the workspace form can split them into editable slots:
+      信念：the belief this character lives by, and how their history installed it.
+      旧伤：the formative injury — the single concrete event that made them who they are.
+      欲望：what they want now because of that history, plus the information gap they carry (what they know or believe that others in the cast do not).
+      恐惧：what they cannot afford to face, and the visible scene behavior it produces (a tic, an avoidance, a ritual).
+      关系：how they enter the central conflict, and their charged link to other named characters.
+      Every prefixed line must carry substantive content specific to this character — an empty or generic line is a defect. Each character's five lines must retell the story from a genuinely different vantage: surface at least one motive or information gap that collides with another character's synopsis, not the same events with the subject swapped.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1828,15 +1840,16 @@ templates:
             additionalProperties: true
 
   snowflake_generate_long_synopsis:
-    version: "2026-07-04.v2"
+    version: "2026-07-06.v3"
     input_token_budget: 3200
     system_prompt: |
-      You are expanding a short snowflake synopsis into a fuller long synopsis.
+      You are expanding a short snowflake synopsis into a chapter-grain long outline.
       Preserve escalation, reversals, and ending cost.
       Preserve the user's input language and approved facts; deepen the same story rather than replacing it.
     task_prompt: |
-      Return the long synopsis as structured paragraphs. Maintain causal escalation, clear reversals, and pressure that can later become scene goals and setbacks.
-      Target 12-20 paragraphs so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
+      Return the long synopsis as exactly three structured paragraphs, one per act: paragraphs[0] = act one, paragraphs[1] = act two, paragraphs[2] = act three.
+      Inside each paragraph write one line per chapter in the exact format "NN 章名：本章的因果推进一句话" (two-digit chapter number, one space, chapter title, full-width colon, one causal sentence stating what changes and why it cannot be undone), with chapter lines separated by newlines — the workspace parses this format into an editable chapter table, so deviating from it loses content.
+      Plan 12-20 chapters total so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Mark the three disaster chapters by appending （灾一）/（灾二）/（灾三） at the end of their lines. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1849,16 +1862,17 @@ templates:
             type: string
 
   snowflake_generate_character_bibles:
-    version: "2026-07-04.v2"
+    version: "2026-07-06.v3"
     input_token_budget: 3200
     system_prompt: |
       You are deepening character bibles for a snowflake-method novel.
       Keep biography in service of scene pressure and transformation.
       Preserve the user's input language and approved facts; every detail should help future scene behavior, conflict, or change.
     task_prompt: |
-      Return structured character bible entries for the core cast. Prioritize wounds, values, contradictions, fears, and visible behaviors under pressure.
-      Give every character object the same key set: name, wound (the formative injury behind their current behavior), value, contradiction (where their stated value and their actual behavior diverge), fear, visible_behavior (a concrete tic, phrase, or action that makes the wound/fear legible on the page). Use exactly these keys for every character in the array.
-      Every entry must earn its place by being callable in a scene: reject encyclopedia-style trivia (birthplace, unrelated hobbies, full family tree) unless it directly explains a visible_behavior. If a detail cannot be tied to how the character acts, speaks, or decides under pressure, cut it.
+      Return complete character-bible entries for the core cast. Prioritize wounds, values, contradictions, fears, and visible behaviors under pressure.
+      Each character object must use exactly the canonical keys and nested structure the workspace stores — the server discards any other key, so a different key name means lost content: character_id and display_name and role (reuse identities from the approved cast), physical_profile {age, height, appearance, style}, personality_profile {strongest_trait, weakest_trait, humor, preferences (array of concrete likes/dislikes)}, environment_profile {home, family_background, education, work, relationships}, psychological_profile {best_memory, worst_memory (the formative wound behind current behavior), deepest_fear, greatest_hope, philosophy (the value they claim to live by), self_image, public_image (where it diverges from self_image is the contradiction), character_arc (how story pressure forces the change)}.
+      Fill every nested field for every character with concrete, story-specific content — empty strings and generic filler ("普通身高", "性格开朗") are defects. appearance and style must carry at least one visible tic, habit, or object that makes the inner wound legible on the page.
+      Every entry must earn its place by being callable in a scene: reject encyclopedia-style trivia unless it directly explains how the character acts, speaks, or decides under pressure — family_background/education/work must each end by naming the behavior it produces today.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1872,15 +1886,16 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_list:
-    version: "2026-07-04.v2"
+    version: "2026-07-06.v3"
     input_token_budget: 3200
     system_prompt: |
       You are breaking a snowflake synopsis into a scene list.
       Each scene should have a clear job in the chapter and a distinct point-of-view pressure.
       Preserve the user's input language and approved facts; do not add scenes that only explain backstory or atmosphere.
     task_prompt: |
-      Return the scene list as structured scene cards. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
-      Give every scene object the same key set: scene_id, pov_character, scene_type (either "proactive" or "reactive"), core_line (one sentence: for a proactive scene, the goal being pursued and the conflict blocking it; for a reactive scene, the reaction being processed and the dilemma it creates), result_or_change (what shifts or what decision gets made that forces the next scene). Use exactly these keys for every scene in the array, and decide scene_type here — the next planning step deepens this scene using the type you assign, it does not re-decide it.
+      Return the scene list as structured scene cards covering the whole story spine. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
+      Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the approved cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束). Leave row_uid/scene_id/chapter_id/chapter_title/chapter_goal as "" — the server assigns identities.
+      Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Alternate proactive and reactive deliberately, and mark the three disaster scenes in chapter_role.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1894,16 +1909,17 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_details:
-    version: "2026-07-04.v2"
+    version: "2026-07-06.v3"
     input_token_budget: 3600
     system_prompt: |
       You are converting a scene list into Scene / Sequel detail.
       Respect existing scene membership and order. Do not invent extra scenes.
       Preserve the user's input language, scene IDs, chapter membership, and approved facts.
     task_prompt: |
-      For each scene, deepen the summary, scene crucible, and the required proactive or reactive trio. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
-      Keep each scene object's key set consistent with its scene_type: proactive scenes get goal, conflict, setback; reactive scenes get reaction, dilemma, decision. Do not mix both trios onto one scene.
-      A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious.
+      Deepen every scene from the current draft into Scene/Sequel detail. Echo each scene's scene_id unchanged — the server matches your output to the draft by scene_id and silently drops scenes it cannot match.
+      Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key: scene_id, title (short scene title), summary, scene_type (echo the draft's type), location, scene_crucible and crucible (both set to the trap that keeps the POV in the scene), the trio matching its scene_type — proactive: goal (concrete and time-bound), conflict (2-3 rounds of attempt→blocked), setback (the scene ends worse than it started); reactive: reaction (felt first in the body, before analysis), dilemma (two options, each genuinely costly to refuse), decision (directly spawns the next scene's goal) — plus exit_change (what is irreversibly different when the scene ends), hook (the open loop that forces the page turn), target_length_band ("short"/"medium"/"long"), must_include_text (a concrete beat, object, or line that must appear; "" if none), beats_json (array of 3-6 short beat lines tracing the scene's turn).
+      Keep the other trio's keys as empty strings — do not mix both trios onto one scene. Fill title, summary, location, scene_crucible, crucible, exit_change, and hook for every scene — an empty one is a defect.
+      A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1951,14 +1967,16 @@ templates:
 
   # FE-ALIGN G5: 构思视图「生成候选」— 3 条不同方向的步骤草稿候选（原型契约形状）
   snowflake_step_candidates:
-    version: "2026-07-04.v2"
-    input_token_budget: 2600
+    version: "2026-07-06.v3"
+    input_token_budget: 3400
     system_prompt: |
       You are a snowflake-method writing assistant generating divergent draft candidates for one step of a long-form Chinese novel plan.
-      Stay strictly consistent with the upstream material (characters, conflicts, moral premise). Never invent facts that contradict it.
+      Ground every candidate in the payload's authoritative material: approved_steps (backend-approved canonical drafts of upstream steps) and current_canonical_draft are the source of truth; fe_local_context only reflects the author's latest unsynced edits and supplements them.
+      Stay strictly consistent with that material (characters, conflicts, moral premise). Never invent facts that contradict it.
       Write candidate text in the author's input language (Chinese unless the material says otherwise).
     task_prompt: |
       Produce exactly 3 candidates that take genuinely different directions (for example emotion-led, plot-push-led, contrast-led, or any axis that fits this step).
+      current_pressure_diagnosis lists this step's diagnosed gaps and next_actions: at least one candidate must directly repair the weakest diagnosed gap, and no candidate may reintroduce a flagged weakness (generic pressure, missing disaster escalation, soft moral turn).
       Name a distinct axis for each candidate and put that axis name in its tag field — the three tags must not describe the same underlying axis in different words; if two candidates would carry the same axis, replace one with a different axis before returning.
       Each candidate's text must be directly adoptable prose for the step itself - no explanations, no headings - and stay within target_chars characters.
       Each label is at most 4 Chinese characters; each tag is one positioning phrase of at most 12 characters; notes are up to 3 bullets, each at most 12 characters and specific enough to be actionable rather than a padded restatement of the tag.

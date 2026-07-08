@@ -62,7 +62,7 @@ const LF3_COST = {
 };
 
 /* ---------- 草稿审计：第 9 章草稿 vs 交接契约 ---------- */
-const LF3_AUDIT = {
+const LF3_AUDIT_DEMO = {
   ch: 9,
   honored: [
     { id: "h1", label: "锁定设定", text: "林岑 · 年龄 = 28 岁", tone: "sage",
@@ -97,6 +97,11 @@ const LF3_AUDIT = {
       actions: ["锁定为设定锚点"] },
   ],
 };
+
+const LF3_AUDIT_EMPTY = { ch: null, honored: [], drifted: [], introduced: [] };
+/* LF3_AUDIT 是「草稿审计」演示（尚未接后端）：只对「潮汐档案」演示作品展示，
+   其它真实作品呈空态。初值取 demo，随 lf3SyncFromAudit 按当前作品门控。 */
+let LF3_AUDIT = LF3_AUDIT_DEMO;
 
 /* ========== 派生 ========== */
 
@@ -223,6 +228,9 @@ async function lf3SyncFromAudit() {
   let workId = null;
   try { workId = window.WsWorks && window.WsWorks.activeId(); } catch (e) {}
   if (!workId) return;
+  /* 草稿审计演示只属「潮汐档案」：其它作品置空态，避免演示剧情泄漏 */
+  LF3_AUDIT = workId === "tide" ? LF3_AUDIT_DEMO : LF3_AUDIT_EMPTY;
+  Object.assign(window, { LF3_AUDIT });
   let data = null;
   try {
     const { apiGet } = await import("./lib/client.js");

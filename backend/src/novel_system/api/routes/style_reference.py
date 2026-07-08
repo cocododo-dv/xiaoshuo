@@ -76,6 +76,8 @@ class StartRunRequest(BaseModel):
     # True 时立即返回 RUNNING + run_id,抽取在后台线程执行;
     # 调用方轮询 GET /runs/{run_id} 读 coverage_json.progress
     background: bool = False
+    # True 时无视 §6.4 输入量门槛(skip 层剔除),强制抽取所请求层
+    force: bool = False
 
 
 class ApplyConfigMixin(BaseModel):
@@ -501,7 +503,10 @@ def start_run(
             ) from exc
         orch = RunOrchestrator(session, llm_client=client, llm_enabled=enabled)
         result = orch.start_extract_run(
-            book_id, layers=layers, background=bool(body.get("background"))
+            book_id,
+            layers=layers,
+            background=bool(body.get("background")),
+            force=bool(body.get("force")),
         )
         return {
             "run_id": result.run_id,

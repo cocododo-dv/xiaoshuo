@@ -295,8 +295,21 @@ function lf2SyncFromCatalog() {
       LF2_NEXT = pos.next;
       Object.assign(window, { LF2_BOOK, LF2_NEXT });
     }
+    // 非潮汐作品：章节结构以目录真相为准（不加演示 beat / 不补占位），杜绝演示章名泄漏
+    if (WsWorks.activeId() !== "tide") {
+      LF2_CHAPTERS = cat.map((c, i) => {
+        const row = { n: i + 1, title: c.title, words: (c.words && c.words.cur) || 0, pace: typeof c.tension === "number" ? c.tension : 0.5 };
+        if (c.state === "planned") row.planned = true;
+        if (c.current || c.state === "writing") row.current = true;
+        return row;
+      });
+      // 总数/已写也以目录真相为准，避免塔头「真实章数 / 演示总数(24)」错配
+      LF2_BOOK = { ...LF2_BOOK, total: cat.length, written: LF2_CHAPTERS.filter(r => !r.planned).length };
+      Object.assign(window, { LF2_CHAPTERS, LF2_BOOK });
+      return;
+    }
     // 以下仅潮汐档案：重建带 beat 锚点 / 理想张力曲线的演示章节结构层
-    if (WsWorks.activeId() !== "tide" || !cat.length) return;
+    if (!cat.length) return;
     const total = Math.max(24, cat.length);
     const rows = cat.map((c, i) => {
       const n = i + 1;

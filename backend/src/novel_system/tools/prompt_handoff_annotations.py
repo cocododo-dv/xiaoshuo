@@ -509,7 +509,13 @@ def _snowflake_unit(step_key: str, label: str, opt: str) -> dict[str, Any]:
         "status": "活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）",
         "priority": "P0",
         "purpose": f"雪花法第「{label}」步的整步草稿生成/补全。",
-        "trigger": "构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。",
+        "trigger": (
+            "构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；"
+            "React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、"
+            "第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）、"
+            "04/06/08「AI 补全此角色」与候选页「只更新当前成员」（角色三步走 focus_character_refs，"
+            "可与 direction_text 组合）都走此端点；FE 一律随请求带 draft_override（与上行 PATCH 同源的本地最新草稿）消竞态。"
+        ),
         "call_chain": [
             (f"{SVC}/snowflake_workspace_llm.py", 'template_name=f"snowflake_generate_{step_key}"', 1, "generate_step 动态选模板"),
             (f"{SVC}/snowflake_workspace_llm.py", "response = self._client().generate(request)", 1, "_run_structured_task 出口"),
@@ -517,8 +523,14 @@ def _snowflake_unit(step_key: str, label: str, opt: str) -> dict[str, Any]:
         "inputs": (
             "user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、"
             "step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、"
-            "approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、"
-            "pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。"
+            "approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、"
+            "pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、"
+            "adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、"
+            "focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并并硬过滤焦点外输出）、"
+            "focus_characters（可选，仅角色三步：单角色定向——只输出焦点角色，按 character_id 合并并硬过滤；"
+            "06/08 焦点角色未立档时以 04 名册种子兜底）、"
+            "completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试；定向时缺口只盯焦点成员）。"
+            "集合步（角色三步 + scene_details）的合并底稿一律为当前最新草稿而非重播种骨架——模型漏回传的成员幸存，空字段不清空既有内容。"
         ),
         "output_contract": (
             "structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + "
@@ -550,11 +562,11 @@ UNITS: list[dict[str, Any]] = [
         "status": "活跃",
         "priority": "P1",
         "purpose": "构思视图「生成 3 条不同方向候选」——同一步骤给出三个方向上真正不同的草稿候选。",
-        "trigger": "POST /api/v2/projects/{id}/snowflake-workspace/steps/{key}/fe-candidates（前端带折叠上下文）。",
+        "trigger": "POST /api/v2/projects/{id}/snowflake-workspace/steps/{key}/fe-candidates（后端权威上下文为主，前端折叠文本仅作本地未上行补充）。",
         "call_chain": [
             (f"{SVC}/snowflake_workspace_llm.py", 'task_key="snowflake_step_candidates"', 1, "step_candidates"),
         ],
-        "inputs": "payload 键：project、步骤定义/指引、upstream_context（前端折叠的上游上下文文本）、current_draft_text、target_chars（目标字数）。",
+        "inputs": "payload 键：project、步骤定义/指引、approved_steps（后端已批准上游规范草稿，已剥 fe_*）、current_canonical_draft、pressure_rubric、current_pressure_diagnosis（缺口导向）、fe_local_context（前端折叠补充）、current_draft_text、target_chars（目标字数）。",
         "output_contract": "candidates 数组；经 _normalize_candidates_output 归一。",
         "parser_refs": [(f"{SVC}/snowflake_workspace_llm.py", "def _normalize_candidates_output", 1)],
         "failure": "LLM 未启用 → fallback {\"candidates\": []}；错误码同雪花家族。",
@@ -571,9 +583,13 @@ UNITS: list[dict[str, Any]] = [
         "status": "活跃",
         "priority": "P1",
         "purpose": "步骤内多轮教练式对话：根据作者 message 与当前草稿给出建议或直接产出草稿 patch。",
-        "trigger": "构思工作台助手端点（api/routes/snowflake_workspace.py → request_assistant）。",
+        "trigger": (
+            "构思工作台助手端点（api/routes/snowflake_workspace.py → request_assistant）；"
+            "React 构思视图「教练」tab 走此端点（带 draft_override 免竞态；第 10 步自动以选中场聚焦，"
+            "focus_scene_id 兼容 row_uid/scene_id；candidate_patch 由 FE 咨询式合并应用）。"
+        ),
         "call_chain": [(f"{SVC}/snowflake_workspace_llm.py", 'task_key="snowflake_workspace_assistant"', 1, "assistant_reply")],
-        "inputs": "payload 键：project、步骤定义/指引/editor、draft（当前草稿）、message（作者输入）、approved_context（已确认上游）、focus_scene_id/focus_scene（场景聚焦）、pressure_rubric + 诊断、scene_rules。",
+        "inputs": "payload 键：project、步骤定义/指引/editor、draft（当前草稿，已剥 fe_*）、message（作者输入）、approved_context（已确认上游）、focus_scene_id/focus_scene（场景聚焦，row_uid/scene_id 皆可）、pressure_rubric + 诊断、scene_rules。",
         "output_contract": "回复 + 可选 patch；经 _normalize_assistant_output 归一（含与 base_draft 的合并语义）。",
         "parser_refs": [(f"{SVC}/snowflake_workspace_llm.py", "def _normalize_assistant_output", 1)],
         "failure": "LLM 未启用 → SnowflakeWorkspaceAssistantService 的确定性 fallback 回复（source=\"fallback\"）。",
@@ -1272,9 +1288,11 @@ UNITS: list[dict[str, Any]] = [
         "failure": "OfflineWriterDeepReviewClient 桩。",
         "opt_notes": (
             "深评发现须能锚定段落（供 writer_passage_patch 消费）——要求每条发现带原文引句或段落序号。"
-            "2026-07-06 复核轮决议：《schema 变更提案》（顶层可选 lens_evaluations）**关闭不落地**——"
-            "_normalize_deep_review_output 对模型直出的 lens_evaluations 仅浅拷贝不校验内部结构，弱模型垃圾会绕过归一入库；"
-            "现行兜底（findings 逐条 lens 标签 + 服务端确定性重建）结构完整且更稳，维持现状。"
+            "2026-07-07 用户拍板落地《schema 变更提案》（推翻 2026-07-06 的关闭决议）：schema 顶层新增**可选**属性 "
+            "lens_evaluations（不进 required——模型省略时仍合法），task_prompt 要求按 5 镜头各出一条分组条目；"
+            "前提是同批加固了 _normalize_lens_evaluations：lens 白名单（大小写/空白容错，非法条目整条丢弃）、"
+            "重复镜头合并、findings/scores/revision_brief 逐项归一、模型漏掉的镜头从顶层 findings 的 lens 标签重建补齐。"
+            "顶层 findings 不并入模型已给出的条目（防止两处同现的发现被重复计入）。"
         ),
     },
     {

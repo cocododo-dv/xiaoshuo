@@ -157,9 +157,12 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
     vi.resetModules();
     window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
-    try { delete window.SnowSync; } catch (e) {}
+    try { delete window.SnowSync; delete window.s2Materialize; delete window.s2ExportState; } catch (e) {}
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    try { delete window.s2Materialize; delete window.s2ExportState; } catch (e) {}
+  });
 
   it("闸门满足 → 走 materialize 两步并回传后端真实 created_chapter_count", async () => {
     const { mod, client } = await loadWithSnow(true);
@@ -214,5 +217,47 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
     // 闸门未过时绝不调物化端点
     expect(client.apiPost).not.toHaveBeenCalledWith(
       "/api/v2/projects/tide/snowflake-workspace/materialize", expect.anything());
+  });
+
+  it("闸门未满足且本地物化引擎可用 → 走 s2Materialize（章+场直建），不再落到只建空壳章", async () => {
+    const { mod, client } = await loadWithSnow(false);
+    client.apiPost.mockClear();
+
+    // 模拟 ws-snow 挂到 window 的构思导出与本地物化引擎（真引擎经 WsCatalog.set 写穿目录）
+    const scaffolds = { outline: { chapters: [{ id: "01", act: 1, title: "锚点章", summary: "概要" }] } };
+    window.s2ExportState = () => ({ scaffolds });
+    const preview = { ok: true, chapters: [{ act: 1, title: "锚点章", summary: "概要", spine: "灾一", scenes: [
+      { title: "第一场", kind: "主动", goal: "去看看", obstacle: "门锁着", turn: "钥匙不见了" },
+    ] }], total: 1, planned: 1 };
+    window.s2Materialize = {
+      preview: vi.fn(() => preview),
+      apply: vi.fn(() => ({ newCh: 1, newSc: 1, skipSc: 0 })),
+    };
+
+    const n = await mod.WsCatalog.adoptOutline([{ title: "锚点章", act: 1 }]);
+
+    expect(window.s2Materialize.preview).toHaveBeenCalledWith(scaffolds); // 预览吃构思导出的脚手架
+    expect(window.s2Materialize.apply).toHaveBeenCalledWith(preview);     // 应用的是同一份预览（含场）
+    expect(n).toBe(1);                                                    // 章数取自 apply 的 newCh
+    // 降级路径绝不调后端物化端点
+    expect(client.apiPost).not.toHaveBeenCalledWith(
+      "/api/v2/projects/tide/snowflake-workspace/materialize", expect.anything());
+  });
+
+  it("闸门未满足且预览不可用（09 还没有场）→ 才落到 __adoptByDiff 只建章", async () => {
+    const { mod } = await loadWithSnow(false);
+    window.s2ExportState = () => ({ scaffolds: {} });
+    window.s2Materialize = {
+      preview: vi.fn(() => ({ ok: false, reason: "09 场景列表还没有场景", chapters: [], total: 0 })),
+      apply: vi.fn(),
+    };
+
+    const before = mod.WsCatalog.get().length;
+    const n = await mod.WsCatalog.adoptOutline([{ title: "只有章的大纲", act: 1, summary: "概要" }]);
+
+    expect(window.s2Materialize.apply).not.toHaveBeenCalled(); // 预览不 ok：不应用
+    expect(n).toBe(1);
+    expect(mod.WsCatalog.get().length).toBe(before + 1);
+    expect(mod.WsCatalog.get().some((c) => c.title === "只有章的大纲")).toBe(true);
   });
 });

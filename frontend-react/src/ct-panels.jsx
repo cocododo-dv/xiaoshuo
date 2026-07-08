@@ -302,11 +302,17 @@ function CTContinuity({ items = CT_CONTINUITY, onSelect }) {
 function CTDownstream({ layerMap, onSelect, onWriteScene, onOpenStep }) {
   const [, force] = React.useState(0);
   const [written, setWritten] = React.useState(null);
+  const [matBusy, setMatBusy] = React.useState(false);
   React.useEffect(() => {
     const refresh = () => force(n => n + 1);
     const un = WsCatalog ? WsCatalog.subscribe(refresh) : null;
     window.addEventListener("ws:snow-saved", refresh);
-    return () => { if (un) un(); window.removeEventListener("ws:snow-saved", refresh); };
+    window.addEventListener("ws:snow-hydrated", refresh); // 后端物化就绪标志随水合更新
+    return () => {
+      if (un) un();
+      window.removeEventListener("ws:snow-saved", refresh);
+      window.removeEventListener("ws:snow-hydrated", refresh);
+    };
   }, []);
 
   const state = window.s2ExportState ? window.s2ExportState() : null;
@@ -316,14 +322,51 @@ function CTDownstream({ layerMap, onSelect, onWriteScene, onOpenStep }) {
   const gateOk = CT_MATERIALIZE.gateLayers.every(k => getState(k) === "approved");
   const sidOf = (chTitle, scTitle) => (window.s2Materialize ? window.s2Materialize.sid(chTitle, scTitle) : null);
   const catCount = (() => { try { return WsCatalog.get().length; } catch (e) { return 0; } })();
+  /* 贯通轮遗留 ②：后端雪花闸门已过时，交付走物化主路径（approved 场景计划
+     → ChapterGoal/SceneCard），与目录 adoptOutline 同语义；未就绪才降级本地直建 */
+  const beReady = (() => { try { return !!(window.SnowSync && window.SnowSync.readyToMaterialize()); } catch (e) { return false; } })();
+
+  const writeInBackend = async () => {
+    if (matBusy) return;
+    const msg = "构思的雪花闸门已就绪——走后端物化主路径写入章节目录：\napproved 场景计划 → 章 + 场（带 GCS/RDD 三拍）。\n继续？";
+    if (!window.confirm(msg)) return;
+    setMatBusy(true);
+    try {
+      const res = await window.SnowSync.materialize();
+      setWritten({ be: true, newCh: (res && res.created_chapter_count) || 0 });
+    } catch (e) {
+      window.alert("后端物化失败：" + ((e && e.message) || e) + "\n修复后可重试；也可先用本地整理直建目录。");
+    } finally { setMatBusy(false); }
+  };
 
   const writeIn = () => {
+    if (beReady) { writeInBackend(); return; }
     if (!preview.ok) return;
-    const msg = `把 ${preview.chapters.length} 章 / ${preview.total} 场写入章节目录？\n已有同名章 / 同名场会保留原样并跳过——不会覆盖你在编排台的修改。${catCount ? `\n（目录现有 ${catCount} 章）` : ""}`;
+    const msg = `把 ${preview.chapters.length} 章 / ${preview.total} 场写入章节目录？\n（后端物化闸门未就绪——降级为目录直建）\n已有同名章 / 同名场会保留原样并跳过——不会覆盖你在编排台的修改。${catCount ? `\n（目录现有 ${catCount} 章）` : ""}`;
     if (!window.confirm(msg)) return;
     const r = window.s2Materialize.apply(preview);
     setWritten(r);
   };
+
+  if (!preview.ok && beReady) {
+    /* 本地构思脚手架不可用但后端闸门已过（如换浏览器后未水合本地稿）：主路径仍可交付 */
+    return (
+      <div className="ct-downstream">
+        <div className="ct-quality-head">
+          <h3 className="ct-panel-title">下游交付 · 整理成章节结构</h3>
+          <p className="ct-panel-sub">后端雪花闸门已就绪——可直接走物化主路径写入章节目录。</p>
+        </div>
+        <div className="ct-mat-blank">
+          <I.Layout size={24} />
+          <div className="fw-600">本地预览不可用（{preview.reason}），但后端物化主路径已就绪</div>
+          <div className="ct-mat-blank-acts">
+            <button className="btn btn-accent btn-sm" onClick={writeInBackend} disabled={matBusy}>{matBusy ? "物化中…" : "物化并写入目录（主路径）"}</button>
+          </div>
+          {written && written.be && <p className="text-muted text-sm">已并入 {written.newCh} 章——去章节编排或写作房间继续。</p>}
+        </div>
+      </div>
+    );
+  }
 
   if (!preview.ok) {
     return (
@@ -356,6 +399,9 @@ function CTDownstream({ layerMap, onSelect, onWriteScene, onOpenStep }) {
         <div className="ct-gate-head">
           <span className="ct-insp-eyebrow">门槛检查</span>
           <span className={`pill ${gateOk ? "pill-sage" : "pill-gold"} text-xs`}><span className="pill-dot" />{gateOk ? "门槛已满足" : "尚有未确认门槛 · 仍可先预览"}</span>
+          <span className={`pill ${beReady ? "pill-sage" : "pill-slate"} text-xs`} title={beReady ? "写入将走后端物化：approved 场景计划 → 章节目录" : "后端雪花闸门未过（硬门步骤未确认或分诊有 rewrite 场）——写入将降级为目录直建"}>
+            <span className="pill-dot" />{beReady ? "后端物化主路径已就绪" : "主路径未就绪 · 将降级直建"}
+          </span>
         </div>
         <div className="ct-gate-row">
           {CT_MATERIALIZE.gateLayers.map(k => {
@@ -417,10 +463,14 @@ function CTDownstream({ layerMap, onSelect, onWriteScene, onOpenStep }) {
         <div className="ct-mat-copy">
           <strong>{preview.chapters.length} 章 · {preview.total} 场{preview.planned < preview.total ? ` · ${preview.total - preview.planned} 场未规划` : " · 10 已全覆盖"}</strong>
           <span>{written
-            ? `已写入：新增 ${written.newCh} 章 / ${written.newSc} 场${written.skipSc ? ` · 跳过同名 ${written.skipSc} 场` : ""} · 点任一场「写正文」即可进写作房间。`
+            ? (written.be
+              ? `已经后端物化主路径并入 ${written.newCh} 章 · 点任一场「写正文」即可进写作房间。`
+              : `已写入：新增 ${written.newCh} 章 / ${written.newSc} 场${written.skipSc ? ` · 跳过同名 ${written.skipSc} 场` : ""} · 点任一场「写正文」即可进写作房间。`)
             : "写入章节目录后，编排台 / 写作器 / 成稿中心读到的就是这份结构——构思→成稿不断线。"}</span>
         </div>
-        <button className="btn btn-accent" onClick={writeIn} disabled={!preview.ok}><I.Layout size={14} /> {written ? "再次整理（增量）" : "整理成章节结构"}</button>
+        <button className="btn btn-accent" onClick={writeIn} disabled={matBusy || (!beReady && !preview.ok)}>
+          <I.Layout size={14} /> {matBusy ? "物化中…" : beReady ? "物化并写入目录（主路径）" : written ? "再次整理（增量）" : "整理成章节结构"}
+        </button>
       </div>
       <style>{`
 .ct-mat-blank { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 32px 24px; border: 1px dashed var(--line-1, #ddd); border-radius: 14px; color: var(--ink-2); }

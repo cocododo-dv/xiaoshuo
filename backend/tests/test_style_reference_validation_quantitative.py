@@ -87,7 +87,12 @@ def test_two_profiles_yield_different_tolerances() -> None:
 
 
 def test_dimension_routing() -> None:
-    """dimension 按 metric 归类:sensory_* → scene;ratio 类 → narrative;其余 → language。"""
+    """dimension 按 metric 归类:sensory_* → scene;其余 → language。
+
+    2026-07 勘误:paragraph_type 比例指标(dialogue_ratio 等)不再参与对照——
+    生成文本在 quant 路径全部归 narration(无分类器),narration_ratio 恒 1、
+    其余恒 0,对 baseline 是系统性伪偏差(对话密集参考书必然拖垮 pass_rate)。
+    """
     profile = _profile_with_baseline(
         {
             "avg_sentence_length": {"mean": 10.0, "std": 3.0},
@@ -99,5 +104,31 @@ def test_dimension_routing() -> None:
     reports = check_quantitative(text, profile)
     by_metric = {r.metric: r.dimension for r in reports}
     assert by_metric["avg_sentence_length"] == "language"
-    assert by_metric["dialogue_ratio"] == "narrative"
     assert by_metric["sensory_visual_per_1k"] == "scene"
+    # 分类器标签依赖指标即使给了 baseline 也不得进入对照
+    assert "dialogue_ratio" not in by_metric
+
+
+def test_type_ratio_metrics_excluded_even_with_full_baseline() -> None:
+    """全 26 项 baseline 下,8 个段型比例指标一律不出现在量化对照里。
+
+    可证伪性:若排除逻辑被移除,生成文本(无分类器,全 narration)会让
+    narration_ratio actual=1.0 / dialogue_ratio actual=0.0,两项必然 fail,
+    本用例的 not-in 断言即失败。
+    """
+    from novel_system.services.style_reference.metrics import METRIC_NAMES
+    from novel_system.services.style_reference.validation.quantitative import (
+        TYPE_RATIO_METRICS,
+    )
+
+    baseline = {name: {"mean": 0.3, "std": 0.1} for name in METRIC_NAMES}
+    profile = _profile_with_baseline(baseline)
+    text = "他说:「今天风大。」\n\n她没有回答,只是望着窗外的雨。"
+    reports = check_quantitative(text, profile)
+    got_metrics = {r.metric for r in reports}
+    assert got_metrics, "非比例指标应正常对照"
+    assert not (got_metrics & TYPE_RATIO_METRICS), (
+        f"段型比例指标漏进量化对照: {sorted(got_metrics & TYPE_RATIO_METRICS)}"
+    )
+    # 对照面 = 26 - 8 = 18 项纯文本统计指标
+    assert len(got_metrics) == len(METRIC_NAMES) - len(TYPE_RATIO_METRICS)

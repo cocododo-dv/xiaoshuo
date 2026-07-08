@@ -568,7 +568,8 @@ def test_background_run_returns_immediately_and_completes(fake_extractor_llm):
         orch = RunOrchestrator(
             session, llm_client=fake_extractor_llm("default"), llm_enabled=True
         )
-        result = orch.start_extract_run(book_id, background=True)
+        # 测试书 <1 万字(assessment 全 skip),force 绕过输入量门槛
+        result = orch.start_extract_run(book_id, background=True, force=True)
     assert result.status == "running"
     assert result.sub_dim_results == []
 

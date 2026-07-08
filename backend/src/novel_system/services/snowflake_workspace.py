@@ -178,11 +178,47 @@ class SnowflakeWorkspaceService:
             status = "skipped"
             approved_at = utcnow()
         else:
+            # 「采纳并结构化」通道：FE 把选中的候选正文作为方向蓝本带入，
+            # require_llm=true 时 LLM 未启用要诚实报错，绝不能静默落一版启发式草稿。
+            direction_text = str(body.get("direction_text") or "").strip()[:2000]
+            # 「AI 补全这一场」通道：只深化指定场景（row_uid/scene_id 皆可指），
+            # 清洗器按 scene_id 合并回底稿，其余场景保持原样。仅 scene_details 支持。
+            focus_scene_refs = [str(ref or "").strip() for ref in (body.get("focus_scene_refs") or []) if str(ref or "").strip()]
+            # 「AI 补全这个角色」通道：只深化指定角色（character_id/姓名皆可指），
+            # 按 character_id 合并回底稿，其余角色保持原样。仅角色三步（04/06/08）支持。
+            focus_character_refs = [str(ref or "").strip() for ref in (body.get("focus_character_refs") or []) if str(ref or "").strip()]
+            # draft_override：FE 带来的本地最新规范草稿（与上行 PATCH 同源），盖在
+            # 存档之上作为生成底稿——消除「刚加的角色/场还没自动保存上行」的竞态。
+            draft_override = body.get("draft_override") if isinstance(body.get("draft_override"), dict) else None
+            if draft_override:
+                latest = latest_by_step.get(step_key)
+                base_payload = {
+                    key: value
+                    for key, value in (((latest.artifact_json if latest is not None else None) or {}).items())
+                    if not str(key).startswith("fe_")
+                }
+                override_payload = {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
+                draft_override = _merge_dicts(base_payload, override_payload)
+            if body.get("require_llm") and not self._llm.llm_enabled():
+                raise DomainError(
+                    "SNOWFLAKE_LLM_REQUIRED",
+                    "结构化生成需要可用的 LLM：请到「系统设置 → 模型与接入」启用并配置后重试。",
+                    status_code=409,
+                    details={"node_id": "snowflake_step_generate", "next_action": "configure_llm_then_retry"},
+                )
             llm_result = self._llm.generate_step(
                 project=project,
                 step_key=step_key,
                 latest_by_step=latest_by_step,
                 fallback_factory=lambda: self._planner._build_artifact_json(project, step_key, latest_by_step),
+                adopted_direction=direction_text or None,
+                focus_scene_refs=focus_scene_refs if step_key == "scene_details" else None,
+                focus_character_refs=(
+                    focus_character_refs
+                    if step_key in {"character_sheets", "character_synopses", "character_bibles"}
+                    else None
+                ),
+                draft_override=draft_override,
             )
             draft = llm_result.payload
             source = llm_result.source
@@ -212,9 +248,10 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
 
-    # FE-ALIGN G5：构思视图「生成候选」——上下文/草稿折叠文本由 FE 带入
-    # （原型脚手架形状只在前端存在），提示词模板与节点路由在后端。
-    # LLM 关闭 → source="fallback" + 空候选（FE 退静态启发式并给引导）。
+    # FE-ALIGN G5：构思视图「生成候选」。上下文以后端权威材料为主
+    # （approved 各步规范草稿 + 当前步压力诊断，见 step_candidates），FE 折叠
+    # 文本只作「本地未上行编辑」补充。LLM 关闭 → source="fallback" + 空候选
+    # （FE 退静态启发式并给引导）。
     def fe_step_candidates(self, project_id: str, step_key: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         self._require_step(step_key)
@@ -229,6 +266,7 @@ class SnowflakeWorkspaceService:
             context_text=str(body.get("context") or "")[:6000],
             current_draft=str(body.get("draft") or "")[:3000],
             target_chars=target_chars,
+            latest_by_step=self._latest_by_step(project.project_id),
         )
         return {
             "source": llm_result.source,
@@ -1093,11 +1131,37 @@ class SnowflakeWorkspaceService:
             "writer_brief_json": brief,
         }
 
+    # writer_brief_json 里承载作者内容的戏剧键：pending 检测只看它们。
+    # 其余键要么是出处/标识（source、scene_plan_id/outline_plan_id、chapter_id、scene_id）、
+    # 要么是 resync 补丁才回填的富化键（primary_form 与物化写的 scene_form 同义、
+    # chapter_goal 汇总）——物化与 resync 两个写入方对这些键的写法天生不同，
+    # 拿去整体 != 会让刚物化完的每一场都被报成待同步（纯假阳性）。
+    # 场卡其余内容（scene_goal/beats/hook/location/POV/scene_type…）由顶层列对比兜底。
+    _BRIEF_CONTENT_KEYS = ("scene_crucible", "goal", "conflict", "setback", "reaction", "dilemma", "decision")
+
+    @staticmethod
+    def _writer_brief_comparable(value: Any) -> Any:
+        """writer_brief_json 的可比形态：只取戏剧内容键、剥空值（空串与缺席等价）。"""
+        if not isinstance(value, dict):
+            return value
+        comparable: dict[str, Any] = {}
+        for key in SnowflakeWorkspaceService._BRIEF_CONTENT_KEYS:
+            item = value.get(key)
+            if item is None or (isinstance(item, str) and not item.strip()):
+                continue
+            comparable[key] = item
+        return comparable
+
     @staticmethod
     def _scene_card_diff(scene: SceneCard, patch: dict[str, Any]) -> dict[str, dict[str, Any]]:
         diff: dict[str, dict[str, Any]] = {}
         for field, after in patch.items():
             before = getattr(scene, field)
+            if field == "writer_brief_json" and (
+                SnowflakeWorkspaceService._writer_brief_comparable(before)
+                == SnowflakeWorkspaceService._writer_brief_comparable(after)
+            ):
+                continue
             if before != after:
                 diff[field] = {"before": before, "after": after}
         return diff
@@ -1675,6 +1739,8 @@ class SnowflakeWorkspaceService:
                     "triage_id": item.get("triage_id") or "",
                     "scene_plan_id": scene.scene_plan_id,
                     "scene_id": scene.scene_id,
+                    # FE 场景规划以 row_uid 为键（fe_scaffold 的 s.id）——带上它前端才能对位
+                    "row_uid": scene.row_uid or "",
                     "title": scene.title or scene.summary or scene.scene_id,
                     "primary_form": scene.scene_type,
                     "scene_type": scene.scene_type,

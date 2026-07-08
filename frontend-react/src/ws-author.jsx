@@ -10,6 +10,10 @@ import { wsKey, WsWorks } from "./ws-works.jsx";
 /* global React, I, ARR_ACTS, ARR_CHAPTERS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
 const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA } = React;
 
+/* 卷名/简介（盐与钟/回声讲堂…）是「潮汐档案」演示专属剧情；其它真实作品只显示
+   通用卷序（卷一/卷二/卷三），不泄漏演示卷名。章节本身走 WsCatalog（已按作品门控）。 */
+const arrIsTide = () => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } };
+
 /* ==========================================================
    章节编排 — Chapter Arrangement
    两种模式：
@@ -143,7 +147,7 @@ function ArrTensionCurve({ chapters, numOf, pickedId, onPick }) {
       {bands.map((b, i) => (
         <g key={b.a.id}>
           {i > 0 && <line x1={b.x0} y1={padT - 8} x2={b.x0} y2={padT + plotH + 6} className="arr-curve-actsep" />}
-          <text x={b.mid} y={18} className={`arr-curve-actlabel tone-${b.a.tone}`} textAnchor="middle">{b.a.n} · {b.a.name}</text>
+          <text x={b.mid} y={18} className={`arr-curve-actlabel tone-${b.a.tone}`} textAnchor="middle">{b.a.n}{arrIsTide() ? ` · ${b.a.name}` : ""}</text>
         </g>
       ))}
 
@@ -261,8 +265,8 @@ function ArrOverview({ chapters, numOf, pickedId, onOpen, chDnd, boardDnd, onNew
           <section className="arr-actsec" key={a.id}>
             <header className="arr-actsec-head">
               <span className={`arr-actsec-tag tone-${a.tone}`}>{a.n}</span>
-              <h3 className="arr-actsec-name text-serif">{a.name}</h3>
-              <span className="arr-actsec-blurb">{a.blurb}</span>
+              <h3 className="arr-actsec-name text-serif">{arrIsTide() ? a.name : ""}</h3>
+              <span className="arr-actsec-blurb">{arrIsTide() ? a.blurb : ""}</span>
               <span className="arr-actsec-meta tab-num">{items.length} 章 · {w.toLocaleString()} 字</span>
             </header>
             <div className="arr-board" {...boardDnd(a.id)}>
@@ -640,7 +644,7 @@ function ArrRail({ chapters, numOf, pickedId, onPick, chDnd, boardDnd, onBack, o
           const items = chapters.filter((c) => c.act === a.id);
           return (
             <div className="arr-rail-act" key={a.id} {...boardDnd(a.id)}>
-              <div className={`arr-rail-acthead tone-${a.tone}`}>{a.n} · {a.name}</div>
+              <div className={`arr-rail-acthead tone-${a.tone}`}>{a.n}{arrIsTide() ? ` · ${a.name}` : ""}</div>
               <ul>
                 {items.map((c) => {
                   const done = c.scenes.filter((s) => s.state === "done").length;
@@ -681,7 +685,7 @@ function WsAuthor() {
     // 单一真相源：WsCatalog（与主页 / 写作器 / 成稿中心同源）；缺席时回退到旧逻辑
     if (WsCatalog) return arrStampIds(WsCatalog.get());
     const saved = arrLsGet("arr.chapters", null);
-    return arrStampIds(Array.isArray(saved) && saved.length ? saved : ARR_CHAPTERS);
+    return arrStampIds(Array.isArray(saved) && saved.length ? saved : (arrIsTide() ? ARR_CHAPTERS : []));
   });
   const [chDragId, setChDragId] = useStA(null);
   const [scDragIdx, setScDragIdx] = useStA(null);

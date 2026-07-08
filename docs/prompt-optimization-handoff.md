@@ -1,6 +1,6 @@
 # 全系统 LLM 提示词优化交接文档
 
-> 面向 Claude Sonnet 5 的自包含提示词优化工作底稿 · 生成于 2026-07-06 · 机器提取 + 人工审计注释，勿手改本文件（改注释/源码后重新生成）。
+> 面向 Claude Sonnet 5 的自包含提示词优化工作底稿 · 生成于 2026-07-07 · 机器提取 + 人工审计注释，勿手改本文件（改注释/源码后重新生成）。
 
 ## §0 给 Sonnet 5 的任务简报
 
@@ -92,7 +92,7 @@
 | 1 | `project_outline_plan` | project | 活跃 | yaml:`project_outline_plan` | `backend/src/novel_system/services/projects.py:487` |
 | 2 | `extraction` | reference | 活跃 | 内联:`prose_event_extractor.py` | `backend/src/novel_system/services/prose_event_extractor.py:95` |
 | 3 | `library_derive` | project | 活跃 | yaml:`library_derive` | `backend/src/novel_system/services/library_derive.py:121` |
-| 4 | `snowflake_step_candidates` | project | 活跃 | yaml:`snowflake_step_candidates` | `backend/src/novel_system/services/snowflake_workspace_llm.py:292` |
+| 4 | `snowflake_step_candidates` | project | 活跃 | yaml:`snowflake_step_candidates` | `backend/src/novel_system/services/snowflake_workspace_llm.py:393` |
 | 5 | `chapter_audit_adjudicate` | quality | 活跃 | yaml:`chapter_audit_adjudicate` | `backend/src/novel_system/services/longform_tower.py:680` |
 | 6 | `style_profile_extract` | reference | 活跃 | yaml:`style_profile_extract` | `backend/src/novel_system/services/style_profile.py:196` |
 | 7 | `reference_sample_ranker` | reference | 孤儿 | yaml:`reference_sample_ranker` | — |
@@ -110,9 +110,9 @@
 | 19 | `style_ref_validate_semantic` | style_reference | 活跃 | yaml:`style_ref_validate_semantic` | `backend/src/novel_system/services/style_reference/validation/semantic.py:49` |
 | 20 | `style_ref_validate_forbidden` | style_reference | 活跃 | yaml:`style_ref_validate_forbidden` | `backend/src/novel_system/services/style_reference/validation/forbidden_semantic.py:62` |
 | 21 | `style_ref_rag_rerank` | style_reference | 保留 | yaml:`style_ref_rag_rerank` | — |
-| 22 | `snowflake_step_generate` | snowflake | 活跃 | yaml:`snowflake_generate_book_brief` | `backend/src/novel_system/services/snowflake_workspace_llm.py:292` |
-| 23 | `snowflake_workspace_assistant` | snowflake | 活跃 | yaml:`snowflake_workspace_assistant` | `backend/src/novel_system/services/snowflake_workspace_llm.py:292` |
-| 24 | `snowflake_scene_triage` | snowflake | 活跃 | yaml:`snowflake_scene_triage_suggest` | `backend/src/novel_system/services/snowflake_workspace_llm.py:292` |
+| 22 | `snowflake_step_generate` | snowflake | 活跃 | yaml:`snowflake_generate_book_brief` | `backend/src/novel_system/services/snowflake_workspace_llm.py:393` |
+| 23 | `snowflake_workspace_assistant` | snowflake | 活跃 | yaml:`snowflake_workspace_assistant` | `backend/src/novel_system/services/snowflake_workspace_llm.py:393` |
+| 24 | `snowflake_scene_triage` | snowflake | 活跃 | yaml:`snowflake_scene_triage_suggest` | `backend/src/novel_system/services/snowflake_workspace_llm.py:393` |
 | 25 | `scene_blueprint` | scene_generation | 活跃 | yaml:`scene_blueprint` | `backend/src/novel_system/services/scene_blueprint.py:84` |
 | 26 | `character_pressure_blueprint` | scene_generation | 活跃 | yaml:`character_pressure_blueprint` | `backend/src/novel_system/services/near_final.py:218` |
 | 27 | `chapter_story_architecture` | scene_generation | 活跃 | yaml:`chapter_story_architecture` | `backend/src/novel_system/services/near_final.py:161` |
@@ -180,10 +180,10 @@
 - **模板**：`config/prompts.yaml` → `snowflake_generate_book_brief`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「读者定位 / 一书简报」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：开卷定位：目标读者、爽点承诺、题材基调。优化方向：让承诺具体可验收，避免营销腔空话。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
@@ -256,10 +256,10 @@ Return at least 3 safety_rules, each covering a distinct risk (not restatements 
 - **模板**：`config/prompts.yaml` → `snowflake_generate_one_sentence_summary`（version `2026-07-04.v2`，input_token_budget 2200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「一句话梗概」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：15~25 字级别的钩子句。优化方向：主角+欲望+障碍+反差，禁形容词堆砌。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
@@ -304,10 +304,10 @@ Do not stack decorative adjectives in place of the causal beat (for example, a c
 - **模板**：`config/prompts.yaml` → `snowflake_generate_one_paragraph_summary`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「一段话梗概」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：五句结构（开局-三灾-结局）。优化方向：每句都要有不可逆转折，不许「然后」式流水。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
@@ -356,13 +356,13 @@ moral_premise is the thematic argument the protagonist proves through action by 
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_character_sheets`（version `2026-07-04.v2`，input_token_budget 2800）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_character_sheets`（version `2026-07-06.v3`，input_token_budget 2800）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「角色卡」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：主要角色的欲望/冲突/顿悟骨架。优化方向：目标-价值观-冲突三角要互相咬合，禁标签化人设。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
@@ -378,7 +378,8 @@ Preserve the user's input language and approved facts; every important character
 
 ```text
 Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
-Give every character object the same key set so downstream tooling can read them uniformly: name, goal (concrete, scene-actionable desire), opposition (who or what blocks the goal and why), value_conflict (the belief this character must risk to pursue the goal), epiphany (what changes and what triggers it), scene_potential (one line on what kind of scene this character's pressure can generate). Use exactly these keys for every character in the array.
+Each character object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: character_id (reuse the id from approved_steps or current_draft when the character already exists; leave "" for a brand-new character and the server assigns one), display_name, role (主角/对手/盟友/镜像 in the input language), goal (concrete, scene-actionable desire), ambition (the deeper abstract want behind the goal), values (array of belief statements, each phrased like "相信……"), conflict (who or what blocks the goal, and why that opposition cannot be waved away — the belief this character must risk belongs here), epiphany (what changes and what concrete event triggers it), one_sentence_summary (this character's private arc in one sentence), one_paragraph_summary (that arc expanded to a short paragraph tied to the three disasters, ending with what kind of scenes this character's pressure can generate).
+Fill every key for every character with substantive content — an empty string or a name-only entry is a defect. Keep characters distinct: if two characters share the same goal/conflict shape, sharpen one until the overlap is gone.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -410,10 +411,10 @@ Give every character object the same key set so downstream tooling can read them
 - **模板**：`config/prompts.yaml` → `snowflake_generate_short_synopsis`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「一页梗概」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：一段话梗概逐句扩为段。优化方向：因果链显式（因为…所以…不料…），保持灾难升级坡度。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
@@ -457,20 +458,20 @@ Target 5-9 paragraphs — enough to cover setup, escalating complications, and r
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_character_synopses`（version `2026-07-04.v2`，input_token_budget 2800）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_character_synopses`（version `2026-07-06.v3`，input_token_budget 2800）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「角色梗概」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：每个角色视角重述故事。优化方向：视角差异要产生信息差与动机冲突，不是同一故事换主语。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
 **system_prompt（原样发送）**
 
 ```text
-You are writing concise character-throughline synopses for a snowflake workspace.
+You are writing concise character-backstory synopses for a snowflake workspace.
 Emphasize how each character enters the story conflict and changes under pressure.
 Preserve the user's input language and approved facts; do not invent unrelated cast members.
 ```
@@ -478,9 +479,15 @@ Preserve the user's input language and approved facts; do not invent unrelated c
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-Return structured character synopses for the current cast. Tie backstory to present-story desire, fear, opposition, and scene behavior.
-Give every character object the same key set: name, entry_point (how this character enters the central conflict), desire, fear, opposition, information_gap (what this character knows or believes that others in the cast do not), scene_behavior (how the desire/fear pair shows up in action). Use exactly these keys for every character in the array.
-Each character's synopsis must retell the story from a genuinely different vantage: it should surface an information gap or a motive that conflicts with at least one other character's synopsis, not the same sequence of events with the subject swapped.
+Return the backstory synopsis layer for the current cast. Tie each backstory to present-story desire, fear, opposition, and visible scene behavior.
+Each character object must use exactly the canonical keys the workspace stores — the server discards any other key: character_id and display_name and role (reuse identities from the approved character sheets; do not rename the cast), synopsis.
+Write synopsis as multi-line text in the input language using exactly these five prefixed lines, in this order, so the workspace form can split them into editable slots:
+信念：the belief this character lives by, and how their history installed it.
+旧伤：the formative injury — the single concrete event that made them who they are.
+欲望：what they want now because of that history, plus the information gap they carry (what they know or believe that others in the cast do not).
+恐惧：what they cannot afford to face, and the visible scene behavior it produces (a tic, an avoidance, a ritual).
+关系：how they enter the central conflict, and their charged link to other named characters.
+Every prefixed line must carry substantive content specific to this character — an empty or generic line is a defect. Each character's five lines must retell the story from a genuinely different vantage: surface at least one motive or information gap that collides with another character's synopsis, not the same events with the subject swapped.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -509,20 +516,20 @@ Each character's synopsis must retell the story from a genuinely different vanta
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_long_synopsis`（version `2026-07-04.v2`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_long_synopsis`（version `2026-07-06.v3`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「长纲」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：一页梗概扩为数页长纲。优化方向：中段防塌陷——每节都要有代价与状态变化。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
 **system_prompt（原样发送）**
 
 ```text
-You are expanding a short snowflake synopsis into a fuller long synopsis.
+You are expanding a short snowflake synopsis into a chapter-grain long outline.
 Preserve escalation, reversals, and ending cost.
 Preserve the user's input language and approved facts; deepen the same story rather than replacing it.
 ```
@@ -530,8 +537,9 @@ Preserve the user's input language and approved facts; deepen the same story rat
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-Return the long synopsis as structured paragraphs. Maintain causal escalation, clear reversals, and pressure that can later become scene goals and setbacks.
-Target 12-20 paragraphs so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
+Return the long synopsis as exactly three structured paragraphs, one per act: paragraphs[0] = act one, paragraphs[1] = act two, paragraphs[2] = act three.
+Inside each paragraph write one line per chapter in the exact format "NN 章名：本章的因果推进一句话" (two-digit chapter number, one space, chapter title, full-width colon, one causal sentence stating what changes and why it cannot be undone), with chapter lines separated by newlines — the workspace parses this format into an editable chapter table, so deviating from it loses content.
+Plan 12-20 chapters total so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Mark the three disaster chapters by appending （灾一）/（灾二）/（灾三） at the end of their lines. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -559,13 +567,13 @@ Target 12-20 paragraphs so the middle act has room to develop instead of collaps
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_character_bibles`（version `2026-07-04.v2`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_character_bibles`（version `2026-07-06.v3`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「角色圣经」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：角色全维度设定。优化方向：条目要「可写作调用」（说话习惯、决策偏好），不是百科罗列。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
@@ -580,9 +588,10 @@ Preserve the user's input language and approved facts; every detail should help 
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-Return structured character bible entries for the core cast. Prioritize wounds, values, contradictions, fears, and visible behaviors under pressure.
-Give every character object the same key set: name, wound (the formative injury behind their current behavior), value, contradiction (where their stated value and their actual behavior diverge), fear, visible_behavior (a concrete tic, phrase, or action that makes the wound/fear legible on the page). Use exactly these keys for every character in the array.
-Every entry must earn its place by being callable in a scene: reject encyclopedia-style trivia (birthplace, unrelated hobbies, full family tree) unless it directly explains a visible_behavior. If a detail cannot be tied to how the character acts, speaks, or decides under pressure, cut it.
+Return complete character-bible entries for the core cast. Prioritize wounds, values, contradictions, fears, and visible behaviors under pressure.
+Each character object must use exactly the canonical keys and nested structure the workspace stores — the server discards any other key, so a different key name means lost content: character_id and display_name and role (reuse identities from the approved cast), physical_profile {age, height, appearance, style}, personality_profile {strongest_trait, weakest_trait, humor, preferences (array of concrete likes/dislikes)}, environment_profile {home, family_background, education, work, relationships}, psychological_profile {best_memory, worst_memory (the formative wound behind current behavior), deepest_fear, greatest_hope, philosophy (the value they claim to live by), self_image, public_image (where it diverges from self_image is the contradiction), character_arc (how story pressure forces the change)}.
+Fill every nested field for every character with concrete, story-specific content — empty strings and generic filler ("普通身高", "性格开朗") are defects. appearance and style must carry at least one visible tic, habit, or object that makes the inner wound legible on the page.
+Every entry must earn its place by being callable in a scene: reject encyclopedia-style trivia unless it directly explains how the character acts, speaks, or decides under pressure — family_background/education/work must each end by naming the behavior it produces today.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -611,13 +620,13 @@ Every entry must earn its place by being callable in a scene: reject encyclopedi
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_scene_list`（version `2026-07-04.v2`，input_token_budget 3200）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_scene_list`（version `2026-07-06.v3`，input_token_budget 3200）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「场景清单」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：长纲切分为场景行（POV/目标/冲突）。优化方向：主动场景 Goal-Conflict-Setback、反应场景 Reaction-Dilemma-Decision 的骨架完整度。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
@@ -632,8 +641,9 @@ Preserve the user's input language and approved facts; do not add scenes that on
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-Return the scene list as structured scene cards. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
-Give every scene object the same key set: scene_id, pov_character, scene_type (either "proactive" or "reactive"), core_line (one sentence: for a proactive scene, the goal being pursued and the conflict blocking it; for a reactive scene, the reaction being processed and the dilemma it creates), result_or_change (what shifts or what decision gets made that forces the next scene). Use exactly these keys for every scene in the array, and decide scene_type here — the next planning step deepens this scene using the type you assign, it does not re-decide it.
+Return the scene list as structured scene cards covering the whole story spine. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
+Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the approved cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束). Leave row_uid/scene_id/chapter_id/chapter_title/chapter_goal as "" — the server assigns identities.
+Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Alternate proactive and reactive deliberately, and mark the three disaster scenes in chapter_role.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -662,13 +672,13 @@ Give every scene object the same key set: scene_id, pov_character, scene_type (e
 - **状态**：活跃（10 个步骤模板共用节点 snowflake_step_generate 的路由）
 - **优先级**：P0
 - **节点**：`snowflake_step_generate`
-- **模板**：`config/prompts.yaml` → `snowflake_generate_scene_details`（version `2026-07-04.v2`，input_token_budget 3600）
+- **模板**：`config/prompts.yaml` → `snowflake_generate_scene_details`（version `2026-07-06.v3`，input_token_budget 3600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.25，max_output_tokens=3200，response_format=`json_object`
 - **用途**：雪花法第「场景规划」步的整步草稿生成/补全。
-- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:85`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:292`（_run_structured_task 出口）
-- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源）、current_draft（合并后的当前草稿）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）。
-- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:631`、`backend/src/novel_system/services/snowflake_workspace_llm.py:731`）
+- **触发**：构思工作台「生成本步」端点（api/routes/snowflake_workspace.py → SnowflakeWorkspaceService.generate_step）；React 构思视图「采纳并结构化」（direction_text + require_llm）、第 9 步「AI 生成整表」、第 10 步「AI 补全所有场景/补全这一场」（scene_details 单场走 focus_scene_refs）都走此端点。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:136`（generate_step 动态选模板）；`backend/src/novel_system/services/snowflake_workspace_llm.py:393`（_run_structured_task 出口）
+- **输入组装**：user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并；此时合并底稿为当前最新草稿而非重播种骨架，修复重试的缺口也只盯焦点场）、completeness_repair（可选：首轮清洗后空字段清单，触发一次定向修复重试）。
+- **输出契约**：structured_schema 见下；输出是「整步 patch」，经 _normalize_full_step_output 归一 + _assert_meaningful_generation_patch 拒绝空洞补丁（不满足 → SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA 409）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:750`、`backend/src/novel_system/services/snowflake_workspace_llm.py:900`）
 - **失败与降级**：LLM 未启用 → 确定性 fallback payload（source="fallback"）；路由/模板缺失 → SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING（附「一键补齐」引导）；调用失败 → SNOWFLAKE_LLM_CALL_FAILED。
 - **优化注意**：逐场景细化（分诊的输入）。优化方向：压力值/必备三要素饱满，直接决定物化后 SceneCard.writer_brief 质量。 弱模型注意：约束「每字段最少条数/字数」，防空 patch 触发 INVALID_SCHEMA。
 
@@ -683,9 +693,10 @@ Preserve the user's input language, scene IDs, chapter membership, and approved 
 **task_prompt（运行时在其后追加指令与上下文）**
 
 ```text
-For each scene, deepen the summary, scene crucible, and the required proactive or reactive trio. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
-Keep each scene object's key set consistent with its scene_type: proactive scenes get goal, conflict, setback; reactive scenes get reaction, dilemma, decision. Do not mix both trios onto one scene.
-A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious.
+Deepen every scene from the current draft into Scene/Sequel detail. Echo each scene's scene_id unchanged — the server matches your output to the draft by scene_id and silently drops scenes it cannot match.
+Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key: scene_id, title (short scene title), summary, scene_type (echo the draft's type), location, scene_crucible and crucible (both set to the trap that keeps the POV in the scene), the trio matching its scene_type — proactive: goal (concrete and time-bound), conflict (2-3 rounds of attempt→blocked), setback (the scene ends worse than it started); reactive: reaction (felt first in the body, before analysis), dilemma (two options, each genuinely costly to refuse), decision (directly spawns the next scene's goal) — plus exit_change (what is irreversibly different when the scene ends), hook (the open loop that forces the page turn), target_length_band ("short"/"medium"/"long"), must_include_text (a concrete beat, object, or line that must appear; "" if none), beats_json (array of 3-6 short beat lines tracing the scene's turn).
+Keep the other trio's keys as empty strings — do not mix both trios onto one scene. Fill title, summary, location, scene_crucible, crucible, exit_change, and hook for every scene — an empty one is a defect.
+A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -714,13 +725,13 @@ A dilemma is fake if one option is clearly superior once its cost is stated plai
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`snowflake_step_candidates`
-- **模板**：`config/prompts.yaml` → `snowflake_step_candidates`（version `2026-07-04.v2`，input_token_budget 2600）
+- **模板**：`config/prompts.yaml` → `snowflake_step_candidates`（version `2026-07-06.v3`，input_token_budget 3400）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.7，max_output_tokens=1800，response_format=`json_object`
 - **用途**：构思视图「生成 3 条不同方向候选」——同一步骤给出三个方向上真正不同的草稿候选。
-- **触发**：POST /api/v2/projects/{id}/snowflake-workspace/steps/{key}/fe-candidates（前端带折叠上下文）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:123`（step_candidates）
-- **输入组装**：payload 键：project、步骤定义/指引、upstream_context（前端折叠的上游上下文文本）、current_draft_text、target_chars（目标字数）。
-- **输出契约**：candidates 数组；经 _normalize_candidates_output 归一。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:609`）
+- **触发**：POST /api/v2/projects/{id}/snowflake-workspace/steps/{key}/fe-candidates（后端权威上下文为主，前端折叠文本仅作本地未上行补充）。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:224`（step_candidates）
+- **输入组装**：payload 键：project、步骤定义/指引、approved_steps（后端已批准上游规范草稿，已剥 fe_*）、current_canonical_draft、pressure_rubric、current_pressure_diagnosis（缺口导向）、fe_local_context（前端折叠补充）、current_draft_text、target_chars（目标字数）。
+- **输出契约**：candidates 数组；经 _normalize_candidates_output 归一。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:728`）
 - **失败与降级**：LLM 未启用 → fallback {"candidates": []}；错误码同雪花家族。
 - **优化注意**：「三个方向不同」是核心——当前弱模型易产出三条同质候选。优化时把差异维度显式化（题材切口/情绪基调/结构策略各占一条），并给每条候选字数下限。
 
@@ -728,7 +739,8 @@ A dilemma is fake if one option is clearly superior once its cost is stated plai
 
 ```text
 You are a snowflake-method writing assistant generating divergent draft candidates for one step of a long-form Chinese novel plan.
-Stay strictly consistent with the upstream material (characters, conflicts, moral premise). Never invent facts that contradict it.
+Ground every candidate in the payload's authoritative material: approved_steps (backend-approved canonical drafts of upstream steps) and current_canonical_draft are the source of truth; fe_local_context only reflects the author's latest unsynced edits and supplements them.
+Stay strictly consistent with that material (characters, conflicts, moral premise). Never invent facts that contradict it.
 Write candidate text in the author's input language (Chinese unless the material says otherwise).
 ```
 
@@ -736,6 +748,7 @@ Write candidate text in the author's input language (Chinese unless the material
 
 ```text
 Produce exactly 3 candidates that take genuinely different directions (for example emotion-led, plot-push-led, contrast-led, or any axis that fits this step).
+current_pressure_diagnosis lists this step's diagnosed gaps and next_actions: at least one candidate must directly repair the weakest diagnosed gap, and no candidate may reintroduce a flagged weakness (generic pressure, missing disaster escalation, soft moral turn).
 Name a distinct axis for each candidate and put that axis name in its tag field — the three tags must not describe the same underlying axis in different words; if two candidates would carry the same axis, replace one with a different axis before returning.
 Each candidate's text must be directly adoptable prose for the step itself - no explanations, no headings - and stay within target_chars characters.
 Each label is at most 4 Chinese characters; each tag is one positioning phrase of at most 12 characters; notes are up to 3 bullets, each at most 12 characters and specific enough to be actionable rather than a padded restatement of the tag.
@@ -793,10 +806,10 @@ Each label is at most 4 Chinese characters; each tag is one positioning phrase o
 - **模板**：`config/prompts.yaml` → `snowflake_workspace_assistant`（version `2026-07-04.v2`，input_token_budget 2600）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.35，max_output_tokens=2200，response_format=`json_object`
 - **用途**：步骤内多轮教练式对话：根据作者 message 与当前草稿给出建议或直接产出草稿 patch。
-- **触发**：构思工作台助手端点（api/routes/snowflake_workspace.py → request_assistant）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:165`（assistant_reply）
-- **输入组装**：payload 键：project、步骤定义/指引/editor、draft（当前草稿）、message（作者输入）、approved_context（已确认上游）、focus_scene_id/focus_scene（场景聚焦）、pressure_rubric + 诊断、scene_rules。
-- **输出契约**：回复 + 可选 patch；经 _normalize_assistant_output 归一（含与 base_draft 的合并语义）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:644`）
+- **触发**：构思工作台助手端点（api/routes/snowflake_workspace.py → request_assistant）；React 构思视图「教练」tab 走此端点（带 draft_override 免竞态；第 10 步自动以选中场聚焦，focus_scene_id 兼容 row_uid/scene_id；candidate_patch 由 FE 咨询式合并应用）。
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:266`（assistant_reply）
+- **输入组装**：payload 键：project、步骤定义/指引/editor、draft（当前草稿，已剥 fe_*）、message（作者输入）、approved_context（已确认上游）、focus_scene_id/focus_scene（场景聚焦，row_uid/scene_id 皆可）、pressure_rubric + 诊断、scene_rules。
+- **输出契约**：回复 + 可选 patch；经 _normalize_assistant_output 归一（含与 base_draft 的合并语义）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:764`）
 - **失败与降级**：LLM 未启用 → SnowflakeWorkspaceAssistantService 的确定性 fallback 回复（source="fallback"）。
 - **优化注意**：区分「建议模式」与「改稿模式」的判据要明确（何时回话、何时给 patch）；patch 必须尊重 approved 上游事实。
 
@@ -859,9 +872,9 @@ Use pressure_rubric and current_pressure_diagnosis to target missing goal, oppos
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，profile=`quality_strong`，temperature=0.15，max_output_tokens=2200，response_format=`json_object`
 - **用途**：物化前对每个场景计划给 pass / maybe / rewrite 三态建议（qualified/needs_fix/rewrite 分诊的 LLM 辅助）。
 - **触发**：POST …/snowflake-workspace/scene-triage/suggest（api/routes/snowflake_workspace.py → suggest_scene_triage）。
-- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:208`（scene_triage_suggestions）
+- **调用链**：`backend/src/novel_system/services/snowflake_workspace_llm.py:309`（scene_triage_suggestions）
 - **输入组装**：payload 键：project、scene_details 草稿全量、approved_context、pressure_rubric + 诊断、triage_rules（三态判据文本，代码内固定英文——判据也可作为优化对象但要连模板一起改）、scene_rules。
-- **输出契约**：items 数组（逐场景三态 + 理由）；经 _normalize_triage_output 与草稿对齐（缺失场景回填 fallback 判定）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:672`）
+- **输出契约**：items 数组（逐场景三态 + 理由）；经 _normalize_triage_output 与草稿对齐（缺失场景回填 fallback 判定）。（解析/校验：`backend/src/novel_system/services/snowflake_workspace_llm.py:792`）
 - **失败与降级**：LLM 未启用 → _fallback_triage_items 确定性分诊。
 - **优化注意**：三态边界（尤其 maybe vs rewrite）要给判例；要求每条建议附具体缺陷点而非笼统评语，供作者一键修复。
 
@@ -4305,7 +4318,7 @@ Do not touch passages the diagnosis did not flag.
 - **状态**：活跃
 - **优先级**：P1
 - **节点**：`writer_deep_review`
-- **模板**：`config/prompts.yaml` → `writer_deep_review`（version `2026-07-04.v2`，input_token_budget 3000）
+- **模板**：`config/prompts.yaml` → `writer_deep_review`（version `2026-07-07.v3`，input_token_budget 3000）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.15，max_output_tokens=3600，response_format=`json_object`
 - **用途**：单入口深评：比四镜头更综合的深读报告（问题分层 + 段落级定位 + 修补候选入口）。
 - **触发**：api/routes/writer_deep_review.py → run_scene_review / run_chapter_review。
@@ -4313,7 +4326,7 @@ Do not touch passages the diagnosis did not flag.
 - **输入组装**：PromptBuilder(writer_deep_review)：正文 + 上下文分节。
 - **输出契约**：_normalize_deep_review_output 归一的深评报告。（解析/校验：`backend/src/novel_system/services/writer_deep_review.py:409`）
 - **失败与降级**：OfflineWriterDeepReviewClient 桩。
-- **优化注意**：深评发现须能锚定段落（供 writer_passage_patch 消费）——要求每条发现带原文引句或段落序号。2026-07-06 复核轮决议：《schema 变更提案》（顶层可选 lens_evaluations）**关闭不落地**——_normalize_deep_review_output 对模型直出的 lens_evaluations 仅浅拷贝不校验内部结构，弱模型垃圾会绕过归一入库；现行兜底（findings 逐条 lens 标签 + 服务端确定性重建）结构完整且更稳，维持现状。
+- **优化注意**：深评发现须能锚定段落（供 writer_passage_patch 消费）——要求每条发现带原文引句或段落序号。2026-07-07 用户拍板落地《schema 变更提案》（推翻 2026-07-06 的关闭决议）：schema 顶层新增**可选**属性 lens_evaluations（不进 required——模型省略时仍合法），task_prompt 要求按 5 镜头各出一条分组条目；前提是同批加固了 _normalize_lens_evaluations：lens 白名单（大小写/空白容错，非法条目整条丢弃）、重复镜头合并、findings/scores/revision_brief 逐项归一、模型漏掉的镜头从顶层 findings 的 lens 标签重建补齐。顶层 findings 不并入模型已给出的条目（防止两处同现的发现被重复计入）。
 
 **system_prompt（原样发送）**
 
@@ -4333,6 +4346,7 @@ Tag every finding with a "lens" field, one of: story, character, prose, reader, 
 Focus on character contradiction, choice pressure, relationship tension, dialogue subtext, information rhythm,
 voice distinction, image necessity, repetitive expression, ending drive, and theme pressure.
 Cover all 5 lenses at least once: if a lens genuinely has no issue, still add one finding tagged with that lens, classified as "taste", noting what already works — do not omit the lens entirely.
+Also return a top-level lens_evaluations array with exactly one entry per lens, each an object with keys lens, overall_score, scores, findings, revision_brief. Its findings are the same finding objects from the flat findings list, grouped under their lens — do not invent new findings here and do not leave any tagged finding ungrouped. Its scores holds only the dimensions that lens is responsible for, and its overall_score judges that lens alone — do not paste the aggregate overall_score into all five entries.
 ```
 
 **structured_schema（wire 层 + 降级时内联；字段名冻结）**
@@ -4342,6 +4356,12 @@ Cover all 5 lenses at least once: if a lens genuinely has no issue, still add on
   "additionalProperties": false,
   "properties": {
     "findings": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "lens_evaluations": {
       "items": {
         "type": "object"
       },
@@ -5491,7 +5511,7 @@ confidence 三档:high / medium / low。若一段同时具备 2 类强特征,降
 
 ## §12 完整性自审计
 
-- 生成命令：`cd backend && python -m novel_system.tools.export_prompt_handoff`（2026-07-06）
+- 生成命令：`cd backend && python -m novel_system.tools.export_prompt_handoff`（2026-07-07）
 - 模板来源：config/prompts.yaml（无生效的 DB prompts 快照）
 - prompts 模板：**54** 个，全部出现在 §3–§8（脚本断言双向覆盖）
 - 注册节点：**60** 个，全部出现在 §2 总表；未进单元的仅 `archive`、`chapter_aggregate`、`scene_quality_contract`（无提示词，§11 说明）

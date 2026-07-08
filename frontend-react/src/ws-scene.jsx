@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog, WsDemoTag } from "./ws-catalog.jsx";
-import { scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnRunSave, scnAdoptToDoc, scnPickList } from "./ws-scene-run.jsx";
+import { scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnRunSave, scnAdoptToDoc, scnPickList, scnHydrateFromBackend, scnBackendQueueSids } from "./ws-scene-run.jsx";
 import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
@@ -280,7 +280,10 @@ function WsSceneDemo({ go, t, demo = true }) {
   if (!initRef.current) {
     const p = window.__scnEnqueue; window.__scnEnqueue = null;
     const sids = (scnQueueLoad ? scnQueueLoad() : []).slice();
-    if (p && p.sid && !sids.includes(p.sid)) sids.unshift(p.sid);
+    // 单场（写作台/编排「交给 AI」）与批量（构思物化后「去 AI 起草」）两种入列请求
+    const pushFront = (sid) => { if (sid && !sids.includes(sid)) sids.unshift(sid); };
+    if (p && Array.isArray(p.sids)) p.sids.slice().reverse().forEach(pushFront);
+    if (p && p.sid) pushFront(p.sid);
     const items = sids.map(sid => scnFromCatalog(sid)).filter(Boolean);
     const runs0 = {};
     items.forEach(it => { const r = scnRunLoad ? scnRunLoad(it.sid) : null; if (r) runs0[it.id] = r; });
@@ -309,8 +312,67 @@ function WsSceneDemo({ go, t, demo = true }) {
     });
     const r = scnRunLoad ? scnRunLoad(sid) : null;
     if (r) setRuns(m => ({ ...m, ["cq-" + sid]: r }));
+    else if (scnHydrateFromBackend) {
+      // 本地无记录：尝试从后端 workbench 恢复既有产出（不覆盖期间跑起来的运行）
+      scnHydrateFromBackend(sid)
+        .then(hr => { if (hr) { setRuns(m => (m["cq-" + sid] ? m : { ...m, ["cq-" + sid]: hr })); if (scnRunSave) scnRunSave(sid, hr); } })
+        .catch(() => {});
+    }
     setPicked("cq-" + sid);
   };
+
+  /* FE 补缝：本地没有 scn-run 记录的入列场，从后端 workbench 恢复运行态——
+     换浏览器 / 后台完成的运行不再「消失」；已有本地记录或期间跑起来的不覆盖 */
+  useEf8(() => {
+    if (!scnHydrateFromBackend) return;
+    let alive = true;
+    (async () => {
+      for (const it of initRef.current.items) {
+        if (initRef.current.runs0[it.id]) continue;
+        let r = null;
+        try { r = await scnHydrateFromBackend(it.sid); } catch (e) {}
+        if (!alive) return;
+        if (!r) continue;
+        setRuns(m => (m[it.id] ? m : { ...m, [it.id]: r }));
+        if (scnRunSave) scnRunSave(it.sid, r);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  /* 队列成员的后端恢复（贯通轮遗留 ①）：进过管线的场（scene-run-states）
+     并入队列——本地队列在前、后端恢复在后；localStorage 队列由此退化为
+     管线真相的读缓存，换浏览器队列成员不再是空的 */
+  useEf8(() => {
+    if (!scnBackendQueueSids) return;
+    let alive = true;
+    (async () => {
+      let sids = [];
+      try { sids = await scnBackendQueueSids(); } catch (e) {}
+      if (!alive || !sids.length) return;
+      setExtras(prev => {
+        const have = new Set(prev.map(i => i.sid));
+        const add = sids.filter(sid => !have.has(sid)).map(sid => scnFromCatalog(sid)).filter(Boolean);
+        if (!add.length) return prev;
+        const nx = [...prev, ...add];
+        if (scnQueueSave) scnQueueSave(nx.map(i => i.sid));
+        return nx;
+      });
+      /* 新并入的场恢复运行态；已在初始队列里的由上面的水合 effect 负责 */
+      const fresh = sids.filter(sid => !initRef.current.items.some(i => i.sid === sid));
+      for (const sid of fresh) {
+        const id = "cq-" + sid;
+        const local = scnRunLoad ? scnRunLoad(sid) : null;
+        if (local) { setRuns(m => (m[id] ? m : { ...m, [id]: local })); continue; }
+        if (!scnHydrateFromBackend) continue;
+        let hr = null;
+        try { hr = await scnHydrateFromBackend(sid); } catch (e) {}
+        if (!alive) return;
+        if (hr) { setRuns(m => (m[id] ? m : { ...m, [id]: hr })); if (scnRunSave) scnRunSave(sid, hr); }
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   useEf8(() => {
     const onDx = (e) => { const d = e.detail || {}; if (d.n) setDxDone(m => ({ ...m, [d.n]: d.count || 0 })); };

@@ -34,7 +34,7 @@ function canonFromFE(feKey, saved) {
   if (feKey === "audience") {
     return {
       category: txt(sc.genre), target_reader: txt(sc.reader), delight_reason: txt(sc.pleasure),
-      story_kind: txt(sc.source), genre_promise: txt(sc.exclude),
+      story_kind: txt(sc.source), genre_promise: txt(sc.exclude), expected_reader_emotion: txt(sc.emotion),
     };
   }
   if (feKey === "logline") return { summary: draftText.split("\n").filter(Boolean)[0] || "" };
@@ -104,7 +104,7 @@ function feFromCanon(feKey, draft) {
   const d = draft || {};
   const pad2 = (n) => String(n).padStart(2, "0");
   if (feKey === "audience") {
-    return { scaffold: { genre: d.category || "", reader: d.target_reader || "", pleasure: d.delight_reason || "", source: d.story_kind || "", exclude: d.genre_promise || "" } };
+    return { scaffold: { genre: d.category || "", reader: d.target_reader || "", pleasure: d.delight_reason || "", source: d.story_kind || "", exclude: d.genre_promise || "", emotion: d.expected_reader_emotion || "" } };
   }
   if (feKey === "logline") return { text: d.summary || "" };
   if (feKey === "paragraph") {
@@ -118,7 +118,19 @@ function feFromCanon(feKey, draft) {
       if (feKey === "characters") {
         chars[id] = { name: c.display_name || "", role: c.role || "主角", goal: c.goal || "", ambition: c.ambition || "", values: (c.values || []).join("、"), conflict: c.conflict || "", epiphany: c.epiphany || "" };
       } else if (feKey === "backstory") {
-        chars[id] = { name: c.display_name || "", role: c.role || "主角", belief: c.synopsis || "", wound: "", desire: "", fear: "", relation: "" };
+        // 往返保真：canonFromFE 打包成「信念：…\n旧伤：…」的前缀行，这里拆回五个字段；
+        // AI/自由文本没有前缀时整段进「信念」（旧行为），续行跟随最近一个前缀字段。
+        const bk = { name: c.display_name || "", role: c.role || "主角", belief: "", wound: "", desire: "", fear: "", relation: "" };
+        const prefixMap = { "信念": "belief", "旧伤": "wound", "欲望": "desire", "恐惧": "fear", "关系": "relation" };
+        let cursor = null, plain = [];
+        String(c.synopsis || "").split("\n").forEach(line => {
+          const m = /^(信念|旧伤|欲望|恐惧|关系)[：:]\s*(.*)$/.exec(line.trim());
+          if (m) { cursor = prefixMap[m[1]]; bk[cursor] = bk[cursor] ? bk[cursor] + "\n" + m[2] : m[2]; }
+          else if (cursor) bk[cursor] += (line.trim() ? "\n" + line : "");
+          else if (line.trim()) plain.push(line);
+        });
+        if (plain.length) bk.belief = (plain.join("\n") + (bk.belief ? "\n" + bk.belief : ""));
+        chars[id] = bk;
       } else {
         chars[id] = {
           name: c.display_name || "", role: c.role || "主角",
@@ -177,12 +189,74 @@ function canonHasContent(feKey, draft) {
 
 const BE_STATE_TO_FE = { approved: "done", skipped: "skip", stale: "warn" };
 
-/* push 片段与去重签名：snowPushKey（上行）与 snowHydrate（用后端真相预填 lastPushed）共用，
-   保证两侧 sig 计算完全一致——这是 BUG-2 防回退的前提。 */
-function buildStepFragment(feKey, cache) {
+/* ---------- 规范字段保真层（AI 融合 F1） ----------
+   后端 generate（结构化整步生成）产出的规范草稿比原型脚手架能表达的更富
+   （角色圣经四维、期待读者情绪等）。为了让上行 PATCH 不再把这些富字段剪掉，
+   这里维护一份「服务端规范草稿」内存镜像（hydrate / PATCH 回包 / 结构化采纳时刷新），
+   push 时把脚手架派生的规范字段深合并在它之上：
+   - 对象递归合并（FE 键覆盖，服务端独有键幸存——脚手架没有输入框的富字段靠这条活下来）；
+   - 数组以 FE 成员与顺序为准（作者删除即删除），成员按 id 对位继承服务端富字段；
+   - FE 出现的标量一律作者说了算（含清空为 ""），只有 FE 缺失(null/undefined)才保服务端值。 */
+const snowCanon = {}; // workId -> feKey -> 服务端规范草稿（已剥 fe_*）
+const stripFe = (draft) => {
+  const out = {};
+  Object.keys(draft || {}).forEach(k => { if (k.indexOf("fe_") !== 0) out[k] = draft[k]; });
+  return out;
+};
+const CANON_ID_KEYS = ["character_id", "row_uid", "scene_id"];
+function mergeCanon(server, fe) {
+  if (Array.isArray(fe)) {
+    if (!Array.isArray(server)) return fe;
+    return fe.map(item => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+      const idKey = CANON_ID_KEYS.find(k => item[k] != null && item[k] !== "");
+      const match = idKey ? server.find(s => s && typeof s === "object" && s[idKey] === item[idKey]) : null;
+      return match ? mergeCanon(match, item) : item;
+    });
+  }
+  if (fe && typeof fe === "object") {
+    if (!server || typeof server !== "object" || Array.isArray(server)) return fe;
+    const out = { ...server };
+    Object.keys(fe).forEach(k => { out[k] = mergeCanon(server[k], fe[k]); });
+    return out;
+  }
+  if (fe == null && server != null) return server;
+  return fe;
+}
+
+/* 咨询式补丁合并（教练 candidate_patch 用）：与 mergeCanon 的「FE 主权」语义相反——
+   补丁是建议不是全量替换：空串/空值不清空既有内容；数组按 id 对位合并、
+   不删除补丁里没提到的成员（membership 保持当前草稿）。 */
+function applyCanonPatch(base, patch) {
+  if (Array.isArray(patch)) {
+    if (!Array.isArray(base)) return patch;
+    const out = base.slice();
+    patch.forEach(p => {
+      if (!p || typeof p !== "object" || Array.isArray(p)) return;
+      const idKey = CANON_ID_KEYS.find(k => p[k] != null && p[k] !== "");
+      const i = idKey ? out.findIndex(b => b && typeof b === "object" && b[idKey] === p[idKey]) : -1;
+      if (i >= 0) out[i] = applyCanonPatch(out[i], p);
+      else out.push(p); // 补丁新增成员（如教练建议加一个镜像角色）
+    });
+    return out;
+  }
+  if (patch && typeof patch === "object") {
+    const out = (base && typeof base === "object" && !Array.isArray(base)) ? { ...base } : {};
+    Object.keys(patch).forEach(k => { out[k] = applyCanonPatch(out[k], patch[k]); });
+    return out;
+  }
+  if ((patch === "" || patch == null) && base != null && base !== "") return base;
+  return patch;
+}
+
+/* push 片段与去重签名：snowPushKey(上行) / snowHydrate(预填 lastPushed) /
+   applyServerStep(结构化采纳) 共用，保证各侧 sig 计算完全一致——BUG-2 防回退的前提。 */
+function buildStepFragment(feKey, cache, workId) {
   const c = cache || {};
+  const canon = canonFromFE(feKey, c);
+  const serverCanon = workId ? ((snowCanon[workId] || {})[feKey] || null) : null;
   const fragment = {
-    ...canonFromFE(feKey, c),
+    ...(serverCanon ? mergeCanon(serverCanon, canon) : canon),
     fe_text: ((c.drafts || {})[feKey]) || "",
     fe_scaffold: ((c.scaffolds || {})[feKey]) || null,
     fe_checks: ((c.checks || {})[feKey]) || [],
@@ -207,6 +281,49 @@ function stepSig(fragment) {
 const snowHydratedOnce = {};
 const snowReadyFlags = {};
 const snowUnsupported = {};
+/* 后端 per-step 权威健康（score/status/gaps/completeness）：只读后端真相，
+   与前端写穿缓存分开存（避免被本地 save 覆盖）。hydrate 时全量捕获，
+   每次 update_step 的 PATCH 响应里带最新 step.health → 增量更新。 */
+const snowHealth = {}; // workId -> feKey -> shaped health
+function shapeStepHealth(step) {
+  const h = (step && step.health) || {};
+  const comp = (step && step.completeness) || {};
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  return {
+    score: typeof h.score === "number" ? h.score : null,
+    status: h.status || null,                       // pass / maybe / rewrite
+    gaps: arr(h.gaps),
+    nextActions: arr(h.next_actions),
+    missingFields: arr(comp.missing_fields).length ? arr(comp.missing_fields) : arr(h.missing_fields),
+    filled: typeof comp.filled_count === "number" ? comp.filled_count : null,
+    total: typeof comp.total_count === "number" ? comp.total_count : null,
+    gateSatisfied: !!(step && step.gate_satisfied),
+    beStatus: (step && step.status) || null,        // draft / pending_review / approved / skipped
+  };
+}
+
+/* 物化后回流（FE 补接 resync）：workspace 回包自带 resync_status——物化过的场，
+   9/10 步再改动后与目录场景卡（SceneCard）的 diff。pendingCount>0 = 构思领先于目录，
+   写作台 / AI 起草台拿到的还是旧三拍。只读后端真相，与写穿缓存分开存。 */
+const snowResync = {}; // workId -> { pendingCount, pendingScenes }
+function shapeResync(ws) {
+  const rs = (ws && ws.resync_status) || {};
+  const scenes = Array.isArray(rs.pending_scenes) ? rs.pending_scenes : [];
+  return {
+    pendingCount: typeof rs.pending_count === "number" ? rs.pending_count : scenes.length,
+    pendingScenes: scenes.map(s => ({
+      scenePlanId: (s && s.scene_plan_id) || "",
+      sceneId: (s && s.scene_id) || "",
+      title: (s && s.title) || "",
+      changedFields: Array.isArray(s && s.changed_fields) ? s.changed_fields : [],
+    })),
+  };
+}
+function captureResync(workId, ws) {
+  if (!workId || !ws || !ws.resync_status) return;
+  snowResync[workId] = shapeResync(ws);
+  try { window.dispatchEvent(new CustomEvent("ws:snow-resync", { detail: workId })); } catch (e) {}
+}
 
 async function snowHydrate(workId, opts) {
   const force = !!(opts && opts.force);
@@ -222,12 +339,17 @@ async function snowHydrate(workId, opts) {
     return;
   }
   snowReadyFlags[workId] = !!(ws && ws.ready_to_materialize);
+  captureResync(workId, ws);
   const remote = { drafts: {}, scaffolds: {}, checks: {}, states: {}, _t: 0 };
+  const health = {};
   let any = false;
+  const canonMine = snowCanon[workId] || (snowCanon[workId] = {});
   (ws && ws.steps ? ws.steps : []).forEach(step => {
     const feKey = FE_BY_BE[step.step_key];
     if (!feKey) return;
+    health[feKey] = shapeStepHealth(step);
     const draft = step.draft || {};
+    canonMine[feKey] = stripFe(draft); // 服务端规范草稿镜像：先于 lastPushed 预填，保证 sig 一致
     if (draft.fe_scaffold || draft.fe_text || draft.fe_state) {
       any = true;
       if (draft.fe_text != null) remote.drafts[feKey] = draft.fe_text;
@@ -252,6 +374,8 @@ async function snowHydrate(workId, opts) {
       if (remote._t < 1) remote._t = 1; // 规范字段水合：极小时间戳，本地编辑永远赢
     }
   });
+  snowHealth[workId] = health;
+  try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId })); } catch (e) {}
   if (!any) return; // 服务端还没有构思数据：保留本地（含种子门控默认）
   // BUG-2 防回退：用后端真相预填 lastPushed（去重账本），使随后第一个 autosave 不再把这些未改动的步骤
   // 全量 re-push。否则新会话 lastPushed 为空 → snowPushKey 全量上行：后端 update_step 对非 pending_review
@@ -263,7 +387,7 @@ async function snowHydrate(workId, opts) {
       ...Object.keys(remote.drafts), ...Object.keys(remote.states), ...Object.keys(remote.scaffolds),
     ]);
     hydratedKeys.forEach(feKey => {
-      const frag = buildStepFragment(feKey, remote);
+      const frag = buildStepFragment(feKey, remote, workId);
       mine[feKey] = { sig: stepSig(frag), state: frag.fe_state };
     });
   } catch (e) {}
@@ -288,26 +412,54 @@ async function snowPushKey(cacheKey) {
   try { saved = JSON.parse(localStorage.getItem(cacheKey)); } catch (e) {}
   if (!saved) return;
   const mine = lastPushed[workId] || (lastPushed[workId] = {});
+  let pushedSceneish = false; // 9/10 步的改动会改变物化后的 resync_status
   for (const [feKey, beKey] of SNOW_STEPS) {
-    const fragment = buildStepFragment(feKey, saved);
+    const fragment = buildStepFragment(feKey, saved, workId);
     const sig = stepSig(fragment);
     const prev = mine[feKey] || {};
     if (prev.sig === sig) continue;
     try {
-      await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}`, { draft: fragment, force: true });
+      const patched = await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}`, { draft: fragment, force: true });
       mine[feKey] = { sig, state: fragment.fe_state };
+      if (feKey === "scenes" || feKey === "planning") pushedSceneish = true;
+      // update_step 回包带最新 step.health/completeness → 增量刷新后端权威评估（无需再拉全量）
+      try {
+        if (patched && patched.step) {
+          // 服务端把 draft 过了模板归一化（可能补齐空模板键）——刷新 canon 镜像并
+          // 用新镜像重算 sig 记账，否则下轮 save 会因归一化差异多推一次空转 PATCH
+          (snowCanon[workId] || (snowCanon[workId] = {}))[feKey] = stripFe(patched.step.draft || {});
+          mine[feKey] = { sig: stepSig(buildStepFragment(feKey, saved, workId)), state: fragment.fe_state };
+          (snowHealth[workId] || (snowHealth[workId] = {}))[feKey] = shapeStepHealth(patched.step);
+          window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId }));
+        }
+      } catch (e3) {}
       // 仅在「本会话内已观测到非 done 前态 → done」的真实跃迁时补 approve。
       // 新开页面时 prev 为空（prev.state===undefined），不要对所有已 done 步骤盲发 approve：
       // 后端对已批准步骤会幂等返回 200，但对未达 pending_review/前序闸门未过的步骤返回 409，
       // 虽被 catch 吞掉仍会污染 console/网络，并造成「一打开构思页就重写全部步骤」的副作用。
       if (fragment.fe_state === "done" && prev.state && prev.state !== "done") {
         // 确认步骤：尝试后端 approve（前序闸门不满足时静默跳过，不打断写作流）
-        try { await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/approve`, {}); } catch (e2) {}
+        try {
+          const appr = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/approve`, {});
+          // approve 成功回包 status=approved → 刷新后端权威态，让视图从「本地已确认」升为「已批准」
+          if (appr && appr.step) {
+            (snowHealth[workId] || (snowHealth[workId] = {}))[feKey] = shapeStepHealth(appr.step);
+            window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId }));
+          }
+        } catch (e2) {}
       }
     } catch (e) {
       if (e && e.status === 409 && e.code === "PROJECT_NOT_SNOWFLAKE") { snowUnsupported[workId] = true; return; }
       // 网络/校验失败：sig 不记账，下次保存重试
     }
+  }
+  // 物化过（目录里已有章）的作品：9/10 步保存后强制重拉一次工作台，让「N 场待同步」
+  // 的回流横幅跟上。hydrate 的 _t 比较保证较新的本地草稿不会被回写覆盖。
+  if (pushedSceneish) {
+    try {
+      const hasCatalog = !!(WsCatalog && WsCatalog.get && WsCatalog.get().length);
+      if (hasCatalog) await snowHydrate(workId, { force: true });
+    } catch (e) {}
   }
 }
 
@@ -337,6 +489,62 @@ setTimeout(() => snowHydrate(activeWork()), 600); // 启动水合（等 WsWorks 
 const SnowSync = {
   refetch(workId) { return snowHydrate(workId || activeWork(), { force: true }); },
   readyToMaterialize(workId) { return !!snowReadyFlags[workId || activeWork()]; },
+  /* 物化后回流状态：pending = 构思 9/10 步领先于目录场景卡的场（后端 resync_status 真相）。
+     随 ws:snow-resync 事件更新（hydrate 全量 / 9-10 步保存后的强制重拉 / resync 回包）。 */
+  resyncStatus(workId) { return snowResync[workId || activeWork()] || { pendingCount: 0, pendingScenes: [] }; },
+  /* 把构思的改动写回目录场景卡（POST /resync：SceneCard 三拍/POV/题名 + 章 brief），
+     成功后目录重拉，写作台 / AI 起草台即拿到最新场景卡。scenePlanIds 缺省 = 全部待同步场。
+     返回 { synced, skipped, results }；失败上抛由调用方诚实提示。 */
+  async resync(workId, scenePlanIds) {
+    const id = workId || activeWork();
+    const body = Array.isArray(scenePlanIds) && scenePlanIds.length ? { scene_plan_ids: scenePlanIds } : {};
+    const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/resync`, body);
+    if (data && data.workspace) captureResync(id, data.workspace);
+    try { if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh(id); } catch (e) {}
+    const results = (data && data.results) || [];
+    return {
+      synced: results.filter(r => r && r.synced).length,
+      skipped: results.filter(r => r && !r.synced).length,
+      results,
+    };
+  },
+  /* 后端 per-step 权威健康（feKey -> {score,status,gaps,nextActions,missingFields,gateSatisfied,...}）；
+     视图用它显示「后端评估」区，与本地实时估算区分。随 ws:snow-health / ws:snow-hydrated 更新。 */
+  health(workId) { return snowHealth[workId || activeWork()] || {}; },
+  /* 「采纳并结构化」接缝（AI 融合 F1）：generate 回包的 step 落进本地——
+     刷新 canon 镜像（后续 push 在它之上保真合并）与权威健康，并把规范草稿
+     反推成原型形状 {text?, scaffold?} 交视图写入 drafts/scaffolds。 */
+  applyServerStep(workId, feKey, step) {
+    const id = workId || activeWork();
+    if (!id || !feKey || !step) return null;
+    const canon = stripFe(step.draft || {});
+    (snowCanon[id] || (snowCanon[id] = {}))[feKey] = canon;
+    (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(step);
+    try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+    return feFromCanon(feKey, canon);
+  },
+  /* 视图把当前内存态折成本步规范草稿（如场景分诊的 draft_override）——
+     避免「刚编辑还没自动保存上行」的竞态；不含 fe_* 写穿键。 */
+  canonDraft(feKey, cache) { return canonFromFE(feKey, cache || {}); },
+  /* structuredGenerate 的 draft_override：与上行 PATCH 完全同源的规范草稿
+     （服务端 canon 镜像 ⊕ 当前脚手架，数组按 id 对位、FE 成员为准）——
+     generate 的底稿据此看到「刚加的角色/场还没自动保存上行」的内容，
+     且成员 id（character_id/scene_id）齐全，服务端能按 id 对位合并。 */
+  pushCanon(feKey, cache, workId) {
+    const id = workId || activeWork();
+    const canon = canonFromFE(feKey, cache || {});
+    const server = id ? ((snowCanon[id] || {})[feKey] || null) : null;
+    return server ? mergeCanon(server, canon) : canon;
+  },
+  /* 教练 candidate_patch 落地：以「服务端 canon 镜像 ⊕ 当前脚手架」为底，
+     咨询式合并补丁（空值不清空、按 id 对位、不删成员），反推回原型形状。 */
+  applyCanonPatch(feKey, cache, patch, workId) {
+    const id = workId || activeWork();
+    const canon = canonFromFE(feKey, cache || {});
+    const server = id ? ((snowCanon[id] || {})[feKey] || null) : null;
+    const base = server ? mergeCanon(server, canon) : canon;
+    return feFromCanon(feKey, applyCanonPatch(base, patch || {}));
+  },
   /* 物化主路径：approved scene plans → ChapterGoal/SceneCard（成功后目录重拉）。
      注意：materialize 端点只建 pending OutlinePlan，章节要 outline/approve 才落库——
      必须两步都走，否则目录为空却谎称「已并入 N 章」。返回真实 created_chapter_count。 */
@@ -352,4 +560,6 @@ const SnowSync = {
 
 Object.assign(window, { SnowSync });
 
-export { SnowSync };
+// mergeCanon / applyCanonPatch / feFromCanon / canonFromFE 一并导出：供 store 单测
+// 直接验证「保真合并」「咨询式补丁」与「规范字段 ↔ 原型形状」的往返契约
+export { SnowSync, mergeCanon, applyCanonPatch, feFromCanon, canonFromFE };

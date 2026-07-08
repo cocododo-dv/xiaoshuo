@@ -585,7 +585,11 @@ const WsCatalog = {
   },
   /* —— 雪花大纲 → 目录。FE-ALIGN F3：构思已接 v2 工作台——后端闸门全过
      （ready_to_materialize）时走 materialize 主路径（approved scene plans →
-     ChapterGoal/SceneCard，成功后目录重拉）；闸门未满足则沿用目录批量建章兜底。 */
+     ChapterGoal/SceneCard，成功后目录重拉）；闸门未满足时降级为目录直建：
+     优先走本地物化引擎（s2Materialize：章 + 场按脊柱锚点分配、带 GCS/RDD 三拍），
+     只有构思数据不足以出预览（09 还没有场）时才落到「只建章」的最后兜底——
+     旧兜底每章只塞一个「开场」占位场，9/10 步的场景卡全部丢失，正是
+     「物化出来的章是空壳、场孤立」的来源。 */
   async adoptOutline(list) {
     if (window.SnowSync && window.SnowSync.readyToMaterialize()) {
       // 物化 + 批准大纲（两步），返回后端真实落库章节数；失败上抛由调用方诚实提示，
@@ -593,6 +597,17 @@ const WsCatalog = {
       const res = await window.SnowSync.materialize();
       return (res && res.created_chapter_count) || 0;
     }
+    try {
+      const eng = window.s2Materialize;
+      const st = window.s2ExportState ? window.s2ExportState() : null;
+      if (eng && st) {
+        const preview = eng.preview(st.scaffolds || {});
+        if (preview && preview.ok) {
+          const r = eng.apply(preview); // WsCatalog.set 写穿目录 API（章+场一起落）
+          return r ? r.newCh : 0;
+        }
+      }
+    } catch (e) { /* 预览/应用失败：落到只建章兜底，不吞新章 */ }
     return this.__adoptByDiff(list);
   },
   __adoptByDiff(list) {

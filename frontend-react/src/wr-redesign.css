@@ -466,6 +466,7 @@
 .wr-cand.is-sel .wr-cand-key { background: var(--crimson); color: #fff; }
 .wr-cand-text { font-family: var(--font-serif); font-size: 14.5px; line-height: 1.75; color: var(--ink-1); flex: 1; }
 .wr-cand-note { font-size: 12px; color: var(--ink-3); line-height: 1.5; margin-top: 12px; padding-top: 11px; border-top: 1px dashed var(--line-1); }
+.wr-cand-note.is-err { color: var(--crimson); border-top: none; padding-top: 0; margin-top: 0; }
 .wr-cand-act { display: flex; gap: 8px; margin-top: 12px; }
 
 .wr-skel { pointer-events: none; }

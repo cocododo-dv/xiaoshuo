@@ -899,3 +899,197 @@ WsDemoTag 现存 4 处 = D1–D4，全部为上表记录在案的例外。
 - **后续(本轮明确不做)**:① D13 / 派生的真实 LLM 端到端验收(本环境 LLM 不可用);
   ② P3 低置信派生(断链 / 空降 / 张力 / 弧线)接真 + 真实数据校准;③ 非 tide 作品的
   审计层(lf3 `LF3_AUDIT.drifted`)与结构提示层(`LF2_RISKS`)的进一步真化。
+
+##### 雪花 AI 融合轮（2026-07-06,AI 融合 F1）
+
+- **痛点**:构思视图的 AI 只有 fe-candidates 一个口——上下文是前端折叠的
+  180 字/步有损文本,产物是纯文本候选,采纳只写自由草稿(`setDraft`),8/10 步的
+  后端规范字段全靠脚手架派生 → AI 产物对完备性闸门/health/物化零贡献;后端
+  真·结构化生成 `steps/{key}/generate`(每步专用模板+权威上游+压力诊断)与
+  assistant / scene-triage-suggest 全未接线,「AI 生成不贴合雪花系统、生硬、孤立」。
+- **B1 候选缺口导向** ✅ `fe_step_candidates` 服务端自组上下文:`approved_steps`
+  (已批上游规范草稿)+ `current_canonical_draft` + `pressure_rubric` +
+  `current_pressure_diagnosis` 入提示;前端折叠文本降级 `fe_local_context` 补充。
+  模板 `snowflake_step_candidates` 升 2026-07-06.v3(至少一条候选修最弱缺口)。
+- **B2 提示净化** ✅ `_sanitize_canonical_draft`:generate/candidates/assistant/triage
+  的提示上下文剥 `fe_*` 写穿键(脚手架 JSON/状态/历史账本不再吃 token 预算),
+  作者自由草稿以 `author_free_draft` 显式保留。
+- **B3 采纳方向通道** ✅ `generate_step` 接 `direction_text`(采纳候选正文 →
+  prompt `adopted_direction` + how_to_use 蓝本指令)与 `require_llm`(LLM 未启用
+  409 SNOWFLAKE_LLM_REQUIRED,绝不静默落启发式版本)。
+- **F1 采纳并结构化** ✅ ws-snow 候选双动作:AI 候选主按钮「采纳并结构化」走
+  generate → 回包经 `SnowSync.applyServerStep` 反推脚手架(`feFromCanon`)+
+  权威 health 即时刷新 + 留底可回滚;次按钮「仅作草稿」保留旧行为。编辑区死按钮
+  (让 AI 续写/再生 3 条/让句子更短/挑明动机)收敛为一个真按钮「让 AI 生成候选」。
+- **F2 规范字段保真合并** ✅ ws-snow-sync 新增 canon 镜像(hydrate/PATCH 回包/
+  applyServerStep 刷新)+ `mergeCanon` 深合并:上行 PATCH 在服务端规范草稿之上
+  合并脚手架派生字段——对象缺席键幸存(角色圣经四维等富字段不再被剪)、数组按
+  character_id/row_uid 对位继承、FE 标量作者主权。附带修复 backstory synopsis
+  前缀行往返拆解;audience 补「期待读者情绪」表单(此前 BE 必填字段前端无框可填)。
+- **验收**:后端新增 3 用例(权威上下文入提示+fe_*不泄漏 / adopted_direction 入
+  提示 / require_llm 409)全绿,雪花+prompt 相关 8 文件 95 passed;React vitest
+  新增 ws-snow-sync.test.jsx 4 用例,全套 **10 文件 58 用例** + `vite build` 绿;
+  隔离后端(:8010 + mock LLM :8111)真实链路冒烟:候选 3 条缺口导向、结构化采纳
+  落 summary + health 88、提示含 approved_steps/诊断/adopted_direction、无 fe_* 泄漏。
+- **后续(本轮明确不做)**:① assistant(驻场教练)与 scene-triage/suggest 的
+  React 接线(后端能力已在,继续候补);② steps history/restore、accept-stale、
+  resync 的前端面;③ backstory 散文型 synopsis 的字段级拆分(现整段进「信念」框)。
+
+##### 雪花 AI 融合轮·二(2026-07-06,结构化残缺根治)
+
+- **根因**:7-04 提示词优化批把 6 个生成模板的键名写脱离了后端契约——模板教模型
+  输出 `entry_point/wound/value_conflict/core_line/result_or_change` 等游离键,而
+  `_sanitize_character_items`/`_sanitize_scene_list_items` 只保留编辑器模板键 →
+  清洗后只剩人名/类型,「采纳并结构化」落库即残缺。scene_details 部分错位
+  (未点名 title/exit_change/hook),long_synopsis 让模型回散文段落而前端大纲表
+  按「NN 章名：摘要」行解析 → 章表切碎。
+- **修复三件套**:
+  ① 6 模板重写升 2026-07-06.v3(sheets/synopses/bibles/scene_list/scene_details/
+  long_synopsis):键名逐一对齐编辑器模板并显式警告「契约外键会被服务端丢弃」,
+  保留 7-04 批编辑学指导(把 wound/contradiction/visible_behavior 等映射进
+  worst_memory/self_image↔public_image/appearance-style 等规范字段);synopses 的
+  synopsis 规定为 信念/旧伤/欲望/恐惧/关系 五前缀行(前端解析器上一轮已备);
+  long_synopsis 改三幕段落×「NN 章名：因果一句（灾N）」章行格式,12-20 章。
+  ② `generate_step` 空字段定向重试(1 次):`_collect_generation_gaps` 按编辑器
+  模板对集合项逐字段下钻(嵌套档案维度整块全空计缺),非空则带 `completeness_repair`
+  (空字段清单+「契约外键会被丢弃」提醒)重试,仅当更完整才采用,失败保留首版。
+  ③ 契约守卫测试:从编辑器模板派生键名清单断言各模板 task_prompt 全部提及
+  (服务端指派键豁免),并显式禁止 8 个历史游离键回流;另有 gaps 下钻单测与
+  重试行为测试(缺→补齐、首轮完整只调一次)。
+- **验收**:test_snowflake_fe_candidates 10 passed;雪花+prompt 全家 84 passed;
+  export_prompt_handoff 对账通过(fe-candidates/generate 注释同步更新)。隔离后端
+  (:8010+mock :8111)复演:synopses 五前缀行落满、scene_list 内容键全非空+服务端
+  指派 scene_id、bibles 首轮故意回放游离键→触发 completeness_repair 重试→四维度
+  全部救回(LLM 调用 2 次,重试提示点名空维度)。
+- **后续**:① bibles 部分残缺(维度内个别子字段空)不触发重试——按「整块全空」
+  阈值设计,若实际使用仍见零星空洞可降阈值;② 弱模型若两轮都残缺则保留更完整的
+  一版,前端健康分/缺字段清单会如实亮红,作者可再点重新生成。
+
+##### 雪花 AI 融合轮·三(2026-07-06,9/10 步场景 AI 工具面)
+
+- **痛点**:场景列表(09)/场景规划(10)是全流程手工量最大的两步——候选(3 条短文本)
+  对表格步几乎无用,后端专为它们准备的场景分诊(scene-triage/suggest+repair_patch)
+  一直没接前端,逐场 GCS/RDD 只能手填。
+- **B1 单场定向生成** ✅ generate(scene_details) 接 `focus_scene_refs`(row_uid/
+  scene_id 皆可指):焦点场注入 prompt `focus_scenes`+只输出焦点场指令,清洗器按
+  scene_id 合并;**关键修复**——焦点模式合并底稿改用「当前最新草稿(剥 fe_*)」,
+  默认底稿是 scene_list 重播种骨架,会把焦点外场景的既有深化整体盖掉
+  (`_normalize_full_step_output` 增 `base_override`);修复重试的缺口过滤到焦点场;
+  指错场景 409 SNOWFLAKE_FOCUS_SCENE_NOT_FOUND。分诊条目补 `row_uid`(FE 规划以
+  row_uid 为键,此前只有 scene_id 对不上位)。
+- **F1 前端工具面** ✅ ws-snow:adoptStructured 泛化为 `structuredGenerate`
+  (direction/focus/focusRow 单场时只回写焦点场规划,防未上行编辑被盖);
+  09 统计栏「AI 生成整表」(非空表 confirm+留底);10 工具栏「AI 分诊」
+  (draft_override=SnowSync.canonDraft 免自动保存竞态;byRow 按 row_uid 索引)+
+  「AI 补全所有场景」;逐场:导航格分诊色条(tri-pass/maybe/rewrite)+选中场分诊卡
+  (状态/评分/诊断/修复步骤+「应用修复补丁」——GCS/RDD 进 10 的 plans,坩埚/摘要/
+  地点回写 09 场景行,均留底可回滚)+「AI 补全这一场」。
+- **验收**:后端新增 2 用例(focus 只改焦点场+焦外保留+提示含指令+缺口不误触重试+
+  指错 409;分诊条目带 row_uid)→ test_snowflake_fe_candidates **12 passed**;雪花
+  回归 57 passed;React build+vitest 54 passed;隔离后端冒烟:全量深化两场齐全 →
+  分诊(pass/maybe+row_uid+补丁)→ 单场定向只改 S2 的两难、S1 原样保留、health 随
+  回包刷新。export_prompt_handoff 对账通过(generate 单元注释补 focus/repair 键)。
+- **后续**:① 分诊结果尚未落 SnowflakeSceneTriageItem(FE 本地应用补丁→autosave
+  写穿,物化闸门的 triage_items 走的是后端 suggest 时的即时诊断;若要「重写场硬闸」
+  需接 save_scene_triage);② assistant 驻场教练(带 focus_scene_id 单场辅导)仍候补;
+  ③ 09 的整表生成是整体替换语义,「只补空行」的增量模式未做。
+
+##### 雪花 AI 融合轮·四(2026-07-06,驻场教练 + 分诊闸门落库)
+
+- **F1 教练 tab** ✅ ws-snow 新增第 5 个 tab「教练」:接后端
+  `snowflake_workspace_assistant`(回合 SnowflakeAssistantTurn 持久化,workspace
+  回包带 assistant_history → 进页懒加载,跨会话可见)。发送带 draft_override
+  (SnowSync.canonDraft 免自动保存竞态);第 10 步自动以当前选中场聚焦
+  (`_focus_scene_payload` 兼容 row_uid/scene_id);带 candidate_patch 的回合
+  (含历史回合)可一键「应用补丁」。快捷提问 3 条,LLM 未启用退规则建议并明示。
+- **F2 咨询式补丁合并** ✅ ws-snow-sync 新增 `applyCanonPatch`(+SnowSync 暴露):
+  与 mergeCanon 的「FE 主权」语义相反——补丁是建议:空值不清空既有内容、数组按
+  character_id/row_uid 对位合并、不删补丁未提到的成员(新成员追加);底稿取
+  「canon 镜像 ⊕ 当前脚手架」。应用前留底可回滚,仅当回合 step_key=当前步。
+- **F3 分诊落库** ✅ runTriage 在 suggest 后自动 `save_scene_triage` 存推荐态
+  (不写 manual_status,作者主权保留);会话内记 triage_id 复用防堆行(后端 save
+  无 id 会新建行,_triage_items 按 scene_plan_id 取最新);存档后 SnowSync.refetch
+  刷新 ready 标志。**闸门语义**:rewrite 场存档后 materialize 主路径 409
+  SNOWFLAKE_TRIAGE_BLOCKED;FE adoptOutline 在 ready=false 时本就走目录批量建章
+  兜底(既有设计),真物化管线则被真实拦住。
+- **验收**:后端 +3 用例(_focus_scene_payload row_uid / assistant 回复+历史持久化
+  +workspace 带历史 / save 带 triage_id 复诊不堆行且无 manual 态)→
+  test_snowflake_fe_candidates **15 passed**,雪花回归 52 passed;FE +1 用例
+  (applyCanonPatch 三条语义)→ vitest **55 passed** + build 绿;隔离后端冒烟:
+  教练回复+建议+expected_reader_emotion 补丁+历史 1 条 → 分诊存档 pass/rewrite
+  带 triage_id → materialize 409 SNOWFLAKE_TRIAGE_BLOCKED。handoff 对账通过
+  (assistant 单元注释补 React 接线)。
+- **后续**:① 教练补丁对 scene_details 的 focus 场景可以更细(现按整步补丁对位);
+  ② 分诊人工裁定(manual_status 覆盖推荐态)的 UI 未做——作者想强行放行 rewrite
+  场时需要;③ 09 整表「只补空行」增量模式仍未做(单场补全已覆盖大半场景)。
+
+##### 贯通轮(2026-07-07,雪花产物 ↔ 写作台/AI 起草台的四条缝)
+
+背景:用户反馈「雪花生成的章节/场景孤立,写作台、AI 起草、场景工作台各自为战」。
+核对结论:主链路(物化→目录→写作/起草)本通,断点在回流、降级通道、动线、起草台本地态四处。
+
+- **G1 resync 回流补接(React 主线此前完全没接)** ✅ ws-snow-sync:hydrate 捕获
+  workspace 回包 `resync_status`(新 `ws:snow-resync` 事件),SnowSync 暴露
+  `resyncStatus()/resync()`(POST /resync 空 body 全量;回包自带 workspace 就地刷新
+  + WsCatalog.__refresh 重拉目录);9/10 步 PATCH 上行后若目录非空**强制重拉工作台**,
+  横幅数字实时跟上(hydrate 的 _t 比较保证本地新草稿不被覆盖)。ws-snow 构思页
+  strip 下新增回流横幅(「构思已更新·N 场待同步」+一键「同步到目录」)。
+  **后端假阳性根修**:物化与 resync 对 writer_brief_json 的出处/富化键写法天生不同
+  (source=snowflake_method+outline_plan_id vs snowflake_resync+scene_plan_id+
+  primary_form+chapter_goal),_scene_card_diff 整体 != 导致**刚物化完就报全场待同步**;
+  改 `_writer_brief_comparable` 只比 7 个戏剧内容键(crucible+GCS+RDD,空串=缺席)。
+  注意:scene_goal 列=plan.summary 优先,只改 plan.goal 时 diff 落在 brief 而非列。
+- **G2 物化降级不再丢场** ✅ WsCatalog.adoptOutline:ready=false 时优先
+  window.s2Materialize.preview/apply(章+场按脊柱锚点直建、带 GCS/RDD 三拍),
+  仅预览不 ok(09 无场)才落 __adoptByDiff 空壳章;07 采用按钮 confirm 明示
+  「主路径落库 / 降级直建」哪条通道。
+- **G3 动线补齐** ✅ 07 并入成功后新增「去 AI 起草」(已规划 todo 场批量入列,
+  __scnEnqueue 支持 {sids:[…]},ws-scene init 数组消化);写作台 WrCtxScene 的
+  GMC 区块下新增「交给 AI 起草整场」(单场入列惯用法同 ws-author forkAI,
+  目录场存在才显示)。
+- **G4 起草台后端水合** ✅ ws-scene-run 新增 `scnHydrateFromBackend(sid)`:
+  GET /scenes/{id}/workbench 的 final/style/neutral 产出 → 本地复检(scnQC)
+  → ready(目录场 done → archived)运行对象;挂载时对无本地 scn-run 记录的
+  队列项异步水合,enqueueSid 同样兜底;setRuns 有记录不覆盖。
+- **验收**:FE vitest 60 passed(+5 新用例:resync 契约 2 + adoptOutline 降级 3)
+  + build 绿;后端新守卫 `test_snowflake_resync_fe_flow.py`(FE 调用序列端到端:
+  PATCH 步骤→pending=1→空 body resync→清零+brief 换新,含「刚物化完 pending=0」
+  假阳性回归)+ test_snowflake_workspace_v2 31 passed + fe_candidates 19 passed。
+- **后续**:① 起草台队列 membership 仍是 localStorage(运行态已可恢复,队列本身
+  换浏览器会空);② 控制塔「下游交付」仍走本地引擎,ready 时未切 materialize 主路径;
+  ③ 09 步「采用到当前章」的堆一章语义未动(07 已是主入口);④ blocked 稿与待办
+  收件箱的互通未做。
+
+##### 贯通轮二(2026-07-08,收掉上轮遗留 ①②④)
+
+背景:上轮「后续」四项中用户指示推进三项(①队列成员 localStorage、②控制塔
+下游交付未切主路径、④blocked 稿与收件箱不互通;③09 堆一章语义维持现状)。
+
+- **H1 起草台队列成员后端化(遗留①)** ✅ 后端新端点
+  `GET /api/v1/scene-run-states?project_id=`(routes/scenes.py):项目内
+  SceneRunState ⋈ 非回收 SceneCard,只返回离开过 ready 的场(=进过管线),
+  按 updated_at 倒序。FE `scnBackendQueueSids()`(ws-scene-run):run-states
+  → 目录 backendId→sid 对位(目录空则先 __refresh);ws-scene 挂载新 effect
+  把派生 sid 并入队列(本地在前、恢复在后,scnQueueSave 落缓存),新并入场
+  经 scnHydrateFromBackend 恢复运行态。localStorage 队列自此退化为管线
+  真相的读缓存——换浏览器队列成员+运行态都能恢复。
+- **H2 控制塔下游交付接物化主路径(遗留②)** ✅ ct-panels CTDownstream:
+  `SnowSync.readyToMaterialize()` 时 writeIn 走 `SnowSync.materialize()`
+  (与 adoptOutline 同语义,confirm 明示主路径),按钮/横幅文案跟随;未就绪
+  降级本地 s2Materialize 时 confirm 注明「降级为目录直建」。门槛区新增
+  主路径就绪 pill;本地预览不可用但后端闸门已过时(换浏览器冷启动)另有
+  主路径直达面板。监听 ws:snow-hydrated 让就绪标志随水合刷新。
+- **H3 管线 blocked 稿 ↔ 待办收件箱(遗留④)** ✅ review_derived 新增
+  `_pipeline_blocked`:SceneRunState 处于 7 个「等人拍板」态(human_review_
+  required/critical_scene_human_gate/near_final_revision_required/hard_qc_
+  partial|full_rewrite_required/soft_qc_patch_required/needs_replan)且目录场
+  未 done(作者主权)→ live decision 卡(priority 1,指纹=scene_status,状态
+  变化即复浮);动作 nav_to="scene"+nav_scene=slug。ws-review act() 新增起草台
+  深链:__scnEnqueue={sid}+ws:scene-enqueue 事件(与 forkAI 同源惯用法;
+  go("scene") 自动切高级模式)。
+- **验收**:后端 test_scene_run_jobs(+run-states 列表用例)+test_review_cards
+  (+blocked 卡生命周期:出卡/换指纹复浮/done 或 archived 消失)13 passed;
+  FE vitest 63 passed(+3:ws-scene-run.test.jsx 派生对位/空目录补拉/失败兜底)
+  + build 绿;后端全量(not chroma)见当轮记录。
+- **未动**:③09 步「采用到当前章」堆一章语义(07 已是主入口,维持);
+  run-states 端点未纳入 openapi 契约测试(项目无此惯例)。

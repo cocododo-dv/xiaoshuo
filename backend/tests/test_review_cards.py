@@ -1,7 +1,9 @@
 """FE-ALIGN Phase 5: 待办收件箱（卡片模型 / effect 后端执行 / 派生项 / badge）。"""
 from __future__ import annotations
 
-from novel_system.db.models import SceneCard
+from sqlalchemy import select
+
+from novel_system.db.models import SceneCard, SceneRunState
 from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
 
 _seq = 0
@@ -223,6 +225,57 @@ def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, sessi
     session.commit()
     items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
     assert all(not str(i["id"]).startswith("derived:catalog:hollow:") for i in items)
+
+
+def test_derived_pipeline_blocked_card_lifecycle(client, session):
+    """贯通轮遗留 ③：管线把稿停在人工闸门 → 收件箱出 decision 卡（深链起草台）；
+    作者采纳归档（目录场 done）或管线通过（archived）后自动消失。"""
+    seed_fe_demo_works(session)
+    session.commit()
+    scene = session.execute(
+        select(SceneCard).where(SceneCard.project_id == "tide", SceneCard.state != "done")
+    ).scalars().first()
+    assert scene is not None
+    state = session.get(SceneRunState, scene.scene_id)
+    if state is None:
+        state = SceneRunState(scene_id=scene.scene_id)
+        session.add(state)
+    state.scene_status = "human_review_required"
+    session.commit()
+
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    prefix = f"derived:pipeline:{scene.scene_id}:"
+    card = next((i for i in items if str(i["id"]).startswith(prefix)), None)
+    assert card is not None, [i["id"] for i in items]
+    assert card["live"] is True
+    assert card["kind"] == "decision"
+    assert card["priority"] == 1
+    nav = card["actions"][0]
+    assert nav["nav_to"] == "scene"
+    assert nav["nav_scene"], nav  # 场景 slug 深链（FE 入列惯用法用它）
+
+    # 状态变化 → 新指纹（旧指纹的 snooze 不再遮它）
+    state.scene_status = "soft_qc_patch_required"
+    session.commit()
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    refloated = next((i for i in items if str(i["id"]).startswith(prefix)), None)
+    assert refloated is not None
+    assert refloated["id"] != card["id"]
+
+    # 作者已在起草台采纳归档（目录场 done）→ 作者主权优先，不再投递
+    row = session.get(SceneCard, scene.scene_id)
+    row.state = "done"
+    row.words_current = 800
+    session.commit()
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    assert all(not str(i["id"]).startswith(prefix) for i in items)
+
+    # 管线通过（archived）也不投递
+    row.state = "todo"
+    state.scene_status = "archived"
+    session.commit()
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    assert all(not str(i["id"]).startswith(prefix) for i in items)
 
 
 def test_badge_counts_priority_one(client, session):

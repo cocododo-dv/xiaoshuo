@@ -1,0 +1,308 @@
+// SnowSync（雪花构思 ↔ snowflake-workspace v2）store 层单测：
+// AI 融合 F1 的两条核心契约——
+// 1) 规范字段保真合并：上行 PATCH 不再把「后端 generate 产出、脚手架表达不了的富字段」剪掉
+//    （对象缺席键幸存 / 数组按 id 对位继承 / FE 出现的标量作者说了算）；
+// 2) applyServerStep（采纳并结构化的接缝）：generate 回包 → canon 镜像 + 权威健康 + 原型形状反推。
+// 另测 feFromCanon 的 backstory 前缀行拆解与 audience 期待读者情绪的往返。
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { installApiRouter } from "./test-helpers.js";
+
+vi.mock("./lib/client.js", () => ({
+  apiGet: vi.fn(),
+  apiPost: vi.fn(),
+  apiPatch: vi.fn(),
+  apiDelete: vi.fn(),
+}));
+
+// SnowSync 只从 ws-snow.jsx 取 S2_BE_STEPS 这份纯映射；mock 掉避免拉入整张雪花视图模块。
+vi.mock("./ws-snow.jsx", () => ({
+  S2_BE_STEPS: [
+    ["audience", "book_brief"], ["logline", "one_sentence_summary"], ["paragraph", "one_paragraph_summary"],
+    ["characters", "character_sheets"], ["synopsis", "short_synopsis"], ["backstory", "character_synopses"],
+    ["outline", "long_synopsis"], ["profile", "character_bibles"], ["scenes", "scene_list"], ["planning", "scene_details"],
+  ],
+}));
+
+const T = { timeout: 5000, interval: 25 };
+const CACHE_KEY = "ws_snow_state_v2::tide";
+
+const BOOK_BRIEF_DRAFT = {
+  category: "文学悬疑",
+  target_reader: "想看旧案与家庭代价的读者",
+  story_kind: "家庭真相悬疑",
+  delight_reason: "线索逼近真相的同时抬高代价",
+  genre_promise: "真相越清晰失去越多",
+  expected_reader_emotion: "压迫与向前的拉力",
+  // 脚手架没有输入框的富字段——保真合并要让它在上行时活下来
+  safety_rules: ["只借鉴抽象手法", "不复制人物设定"],
+};
+
+const WS_WITH_BOOK_BRIEF = {
+  ready_to_materialize: false,
+  current_step_key: "book_brief",
+  steps: [{
+    step_key: "book_brief",
+    status: "approved",
+    gate_satisfied: true,
+    draft: { ...BOOK_BRIEF_DRAFT },
+    health: { score: 82, status: "pass", gaps: [], next_actions: [] },
+    completeness: { filled_count: 6, total_count: 6, missing_fields: [] },
+  }],
+};
+
+async function loadSync(opts) {
+  const client = await import("./lib/client.js");
+  installApiRouter(client, opts);
+  const mod = await import("./ws-snow-sync.jsx");
+  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("tide"), T);
+  return { mod, client };
+}
+
+function saveCache(cache) {
+  window.localStorage.setItem(CACHE_KEY, JSON.stringify({ _t: Date.now(), ...cache }));
+  window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: CACHE_KEY }));
+}
+
+const patchCallFor = (client, beKey) =>
+  client.apiPatch.mock.calls.find(c => String(c[0]).includes(`/steps/${beKey}`));
+
+// 窗口级污染免疫：resetModules 后旧模块实例的 ws:snow-saved 监听仍活着（jsdom window
+// 跨用例共享），而 vi.mock 的 client 是同一批 fn——旧实例（没有本用例的 canon 镜像）也会
+// 推一次同步骤 PATCH。按「携带服务端富字段」的内容特征定位当前实例的调用：若保真合并
+// 真的坏了，任何调用都不会带富字段，find 落空照样转红，可证伪性不受影响。
+const patchCallWith = (client, beKey, probe) =>
+  client.apiPatch.mock.calls.find(c => String(c[0]).includes(`/steps/${beKey}`) && probe(c[1].draft));
+
+describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("hydrate 后上行：脚手架字段作者说了算，脚手架表达不了的富字段（safety_rules）不被剪掉", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: WS_WITH_BOOK_BRIEF });
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "tide" }));
+    await vi.waitFor(() => expect((mod.SnowSync.health("tide").audience || {}).score).toBe(82), T);
+
+    client.apiPatch.mockClear();
+    saveCache({
+      drafts: {},
+      scaffolds: { audience: { genre: "都市怪谈", reader: "改后的读者画像", pleasure: "颤栗", source: "叙述", exclude: "不写猎奇", emotion: "压迫与向前的拉力" } },
+      checks: {}, states: { audience: "active" },
+    });
+
+    await vi.waitFor(() => expect(patchCallFor(client, "book_brief")).toBeTruthy(), T);
+    const body = patchCallFor(client, "book_brief")[1].draft;
+    expect(body.category).toBe("都市怪谈");                       // FE 脚手架赢
+    expect(body.target_reader).toBe("改后的读者画像");
+    expect(body.expected_reader_emotion).toBe("压迫与向前的拉力"); // 新增表单字段往返
+    expect(body.safety_rules).toEqual(BOOK_BRIEF_DRAFT.safety_rules); // 富字段幸存（无保真层时为 undefined）
+    expect(body.fe_scaffold.genre).toBe("都市怪谈");               // 写穿缓存契约不变
+  });
+
+  it("applyServerStep：generate 回包 → 原型形状反推 + 权威健康；后续上行按 id 继承角色富字段", async () => {
+    const { mod, client } = await loadSync({});
+    const beStep = {
+      step_key: "character_bibles",
+      status: "pending_review",
+      gate_satisfied: false,
+      draft: {
+        characters: [{
+          character_id: "c1", display_name: "林岑", role: "主角",
+          physical_profile: { appearance: "手指总带薄茧", posture: "背脊笔直" },
+          personality_profile: { strongest_trait: "沉静固执" },
+          environment_profile: { home: "修复室阁楼" },
+          psychological_profile: { philosophy: "记录即救赎", self_image: "旁观者", deepest_fear: "成为共谋" },
+        }],
+      },
+      health: { score: 74, status: "maybe", gaps: ["c1_pressure_too_soft"], next_actions: ["再压实变化"] },
+      completeness: { filled_count: 1, total_count: 1, missing_fields: [] },
+    };
+
+    const fe = mod.SnowSync.applyServerStep("tide", "profile", beStep);
+    expect(fe.scaffold.chars.c1.physical).toBe("手指总带薄茧");
+    expect(fe.scaffold.chars.c1.views).toBe("记录即救赎");
+    const h = mod.SnowSync.health("tide").profile;
+    expect(h.score).toBe(74);
+    expect(h.beStatus).toBe("pending_review");
+
+    // 作者只微调外貌一格后保存：posture（脚手架无此输入框）必须按 character_id 对位继承
+    client.apiPatch.mockClear();
+    saveCache({
+      drafts: {},
+      scaffolds: { profile: { sel: "c1", chars: { c1: {
+        name: "林岑", role: "主角", physical: "手指总带薄茧（左手更重）", psych: "成为共谋",
+        environment: "修复室阁楼", personality: "沉静固执", contradiction: "旁观者", views: "记录即救赎",
+      } } } },
+      checks: {}, states: { profile: "active" },
+    });
+
+    const hasPosture = (draft) => !!(((draft.characters || [])[0] || {}).physical_profile || {}).posture;
+    await vi.waitFor(() => expect(patchCallWith(client, "character_bibles", hasPosture)).toBeTruthy(), T);
+    const body = patchCallWith(client, "character_bibles", hasPosture)[1].draft;
+    expect(body.characters).toHaveLength(1);
+    expect(body.characters[0].physical_profile.appearance).toBe("手指总带薄茧（左手更重）"); // FE 赢
+    expect(body.characters[0].physical_profile.posture).toBe("背脊笔直");                   // 富字段幸存
+    expect(body.characters[0].psychological_profile.deepest_fear).toBe("成为共谋");
+  });
+
+  it("mergeCanon：数组成员以 FE 为准（删除即删除），未匹配 id 的服务端成员不复活", async () => {
+    const { mod } = await loadSync({});
+    const server = { characters: [
+      { character_id: "c1", display_name: "林岑", bio: "富字段" },
+      { character_id: "c2", display_name: "周岚", bio: "将被删" },
+    ] };
+    const fe = { characters: [{ character_id: "c1", display_name: "林岑（改）" }] };
+    const merged = mod.mergeCanon(server, fe);
+    expect(merged.characters).toHaveLength(1);
+    expect(merged.characters[0].display_name).toBe("林岑（改）");
+    expect(merged.characters[0].bio).toBe("富字段");
+  });
+
+  it("applyCanonPatch：咨询式补丁——空值不清空、按 id 对位合并、不删未提到的成员", async () => {
+    const { mod } = await loadSync({});
+    const base = {
+      summary: "既有一句话",
+      characters: [
+        { character_id: "c1", display_name: "林岑", goal: "旧目标", conflict: "旧冲突" },
+        { character_id: "c2", display_name: "周岚", goal: "对手目标" },
+      ],
+    };
+    const patch = {
+      summary: "",                                   // 空值：不清空既有内容
+      characters: [
+        { character_id: "c1", display_name: "", goal: "新目标" },   // 对位改一格，空名不清名
+        { character_id: "c3", display_name: "陈默", goal: "新盟友目标" }, // 新成员追加
+      ],
+    };
+    const out = mod.applyCanonPatch(base, patch);
+    expect(out.summary).toBe("既有一句话");
+    expect(out.characters).toHaveLength(3);
+    const c1 = out.characters.find(c => c.character_id === "c1");
+    expect(c1.goal).toBe("新目标");
+    expect(c1.display_name).toBe("林岑");
+    expect(c1.conflict).toBe("旧冲突");
+    expect(out.characters.find(c => c.character_id === "c2").goal).toBe("对手目标"); // 未提到的成员不删
+    expect(out.characters.find(c => c.character_id === "c3").goal).toBe("新盟友目标");
+  });
+
+  it("pushCanon（draft_override 载荷）：与上行 PATCH 同源——竞态窗口内的新成员进载荷、按 id 对位、富字段幸存", async () => {
+    const { mod } = await loadSync({});
+    // 服务端 canon 镜像：c1 带脚手架没有输入框的富字段（one_paragraph_summary）
+    mod.SnowSync.applyServerStep("tide", "characters", {
+      step_key: "character_sheets", status: "pending_review", gate_satisfied: false,
+      draft: { characters: [{
+        character_id: "c1", display_name: "林岑", role: "主角", goal: "拿到母本",
+        ambition: "被看见", values: ["真相"], conflict: "恩师挡路", epiphany: "给活人",
+        one_paragraph_summary: "服务端独有的富字段",
+      }] },
+      health: {}, completeness: {},
+    });
+    // 本地脚手架：c1 被作者改了 goal；c9 是刚加、还没自动保存上行的新角色
+    const cache = { drafts: {}, scaffolds: { characters: { sel: "c9", chars: {
+      c1: { name: "林岑", role: "主角", goal: "改后的目标", ambition: "被看见", values: "真相", conflict: "恩师挡路", epiphany: "给活人" },
+      c9: { name: "王五", role: "帮手", goal: "递出钥匙", ambition: "", values: "", conflict: "", epiphany: "" },
+    } } } };
+    const canon = mod.SnowSync.pushCanon("characters", cache, "tide");
+    const byId = Object.fromEntries(canon.characters.map((c) => [c.character_id, c]));
+    expect(Object.keys(byId).sort()).toEqual(["c1", "c9"]);
+    expect(byId.c1.goal).toBe("改后的目标");                          // 作者最新编辑赢
+    expect(byId.c1.one_paragraph_summary).toBe("服务端独有的富字段"); // 富字段不被剪掉
+    expect(byId.c9.display_name).toBe("王五");                        // 新成员（竞态窗口）进载荷
+    expect(byId.c9.goal).toBe("递出钥匙");
+  });
+
+  it("feFromCanon backstory：前缀行拆回五字段，无前缀散文整段进「信念」", async () => {
+    const { mod } = await loadSync({});
+    const withPrefix = mod.feFromCanon("backstory", { characters: [{
+      character_id: "c1", display_name: "林岑", role: "主角",
+      synopsis: "信念：记录即救赎\n旧伤：父亲失踪于那年潮汐\n关系：周岚的养女",
+    }] });
+    const c1 = withPrefix.scaffold.chars.c1;
+    expect(c1.belief).toBe("记录即救赎");
+    expect(c1.wound).toBe("父亲失踪于那年潮汐");
+    expect(c1.relation).toBe("周岚的养女");
+    expect(c1.desire).toBe("");
+
+    const prose = mod.feFromCanon("backstory", { characters: [{
+      character_id: "c2", display_name: "周岚", role: "对手", synopsis: "她在暴雨夜做了那个决定。\n此后每一年都在偿还。",
+    }] });
+    expect(prose.scaffold.chars.c2.belief).toBe("她在暴雨夜做了那个决定。\n此后每一年都在偿还。");
+  });
+
+  /* —— 物化后回流（resync 补接）：pending 状态只读后端真相；resync() 同步后
+     状态随回包刷新、目录重拉——写作台/AI 起草台才能拿到最新场景卡 —— */
+  it("hydrate 捕获 resync_status；resync() 全量同步 → 状态清零 + 目录重拉", async () => {
+    const wsPending = {
+      ready_to_materialize: false,
+      current_step_key: "book_brief",
+      steps: [],
+      resync_status: {
+        pending_count: 2,
+        pending_scene_plan_ids: ["sp1", "sp2"],
+        pending_scenes: [
+          { scene_plan_id: "sp1", scene_id: "s1", title: "改过的场", changed_fields: ["goal"] },
+          { scene_plan_id: "sp2", scene_id: "s2", title: "另一场", changed_fields: ["title", "conflict"] },
+        ],
+      },
+    };
+    const { mod, client } = await loadSync({ snowflakeWorkspace: wsPending });
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "tide" }));
+    await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(2), T);
+    expect(mod.SnowSync.resyncStatus("tide").pendingScenes[0]).toEqual(
+      { scenePlanId: "sp1", sceneId: "s1", title: "改过的场", changedFields: ["goal"] });
+
+    // resync 回包自带清零后的 workspace → 状态就地刷新（无需再拉全量）
+    client.apiPost.mockImplementation((url) => {
+      if (url.endsWith("/snowflake-workspace/resync")) return Promise.resolve({
+        dry_run: false,
+        results: [
+          { scene_plan_id: "sp1", scene_id: "s1", synced: true, reason: "changed" },
+          { scene_plan_id: "sp2", scene_id: "s2", synced: false, reason: "already_current" },
+        ],
+        workspace: { ...wsPending, resync_status: { pending_count: 0, pending_scene_plan_ids: [], pending_scenes: [] } },
+      });
+      return Promise.resolve({});
+    });
+    client.apiGet.mockClear();
+    const r = await mod.SnowSync.resync("tide");
+
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v2/projects/tide/snowflake-workspace/resync", {});
+    expect(r.synced).toBe(1);
+    expect(r.skipped).toBe(1);
+    expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(0);
+    // 同步成功后目录重拉（写作台/起草台的场景卡三拍才会换新）
+    await vi.waitFor(() =>
+      expect(client.apiGet.mock.calls.some(c => /\/projects\/tide\/catalog/.test(String(c[0])))).toBe(true), T);
+  });
+
+  it("9/10 步保存上行后强制重拉工作台：resync 待同步数跟上（目录已有章时）", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, current_step_key: "scene_list", steps: [] } });
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "tide" }));
+    // 目录装载（installApiRouter 默认一章一场）——强制重拉的前置条件
+    await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+    expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(0);
+
+    // 此后的 workspace GET 返回「1 场待同步」——模拟 9 步改动已在服务端形成 diff
+    const routed = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (/\/snowflake-workspace(\?|$)/.test(String(url))) return Promise.resolve({
+        ready_to_materialize: false, current_step_key: "scene_list", steps: [],
+        resync_status: { pending_count: 1, pending_scene_plan_ids: ["sp1"], pending_scenes: [
+          { scene_plan_id: "sp1", scene_id: "s1", title: "夜巡", changed_fields: ["goal"] },
+        ] },
+      });
+      return routed(url);
+    });
+
+    saveCache({
+      drafts: {},
+      scaffolds: { scenes: { lines: [], list: [{ id: "S01", type: "proactive", line: "main", pov: "c1", place: "堤上", event: "夜巡", crucible: "潮水上涨", fn: "", spine: "" }] } },
+      checks: {}, states: { scenes: "active" },
+    });
+
+    // 9 步 PATCH 后触发强制 hydrate → 捕获到最新 resync_status（若不强拉则永远是 0，可证伪）
+    await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(1), T);
+  });
+});

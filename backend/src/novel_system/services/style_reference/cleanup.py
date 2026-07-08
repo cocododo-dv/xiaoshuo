@@ -168,6 +168,16 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
         "runs",
     )
     session.flush()
+    # 进程内抄袭语料缓存按 (book_id, checksum) 键;删书/重分类后清一次,
+    # 避免陈旧条目滞留(命中键含 checksum,无正确性风险,纯内存卫生)
+    try:
+        from novel_system.services.style_reference.validation import (
+            clear_plagiarism_corpus_cache,
+        )
+
+        clear_plagiarism_corpus_cache()
+    except Exception:  # noqa: BLE001 — 缓存清理失败不阻断删除
+        pass
     return counts
 
 

@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SnowflakeStepRun, StoryProject
+from novel_system.db.models import SceneCard, SceneRunState, SnowflakeStepRun, StoryProject
 from novel_system.services.catalog import CatalogService
 from novel_system.services.snowflake_steps import list_step_definitions
 
@@ -42,6 +42,7 @@ def derive_cards(session: Session, project_id: str) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     cards.extend(_snowflake_gaps(session, project_id))
     cards.extend(_catalog_anomalies(session, project))
+    cards.extend(_pipeline_blocked(session, project))
     return cards
 
 
@@ -91,6 +92,91 @@ def _snowflake_gaps(session: Session, project_id: str) -> list[dict[str, Any]]:
                 ),
                 "actions": [
                     {"label": "去补全", "intent": "primary", "op": "nav", "nav_to": "snowflake", "nav_step": step["step_key"]},
+                    {"label": "稍后再说", "intent": "quiet", "op": "snooze"},
+                ],
+            }
+        )
+    return cards
+
+
+# 管线停稿的阻塞态（scene_run_states.scene_status）→ 卡片文案。
+# 只收「等人拍板/处理」的终局态；in-flight（bundle_built 等）与通过态不投递。
+_PIPELINE_BLOCKED_STATUSES: dict[str, tuple[str, str]] = {
+    "human_review_required": (
+        "人工审阅",
+        "管线把这稿停在人工审阅闸门——草稿已生成，等你在起草台裁决采纳或重跑。",
+    ),
+    "critical_scene_human_gate": (
+        "关键场人工把关",
+        "这被判为关键场景，管线强制人工把关——去起草台看候选与评语后拍板。",
+    ),
+    "near_final_revision_required": (
+        "临终稿修订",
+        "临终稿评审要求修订——去起草台看评语，带改写指令重跑或手工润色。",
+    ),
+    "hard_qc_partial_rewrite_required": (
+        "硬质检局部重写",
+        "硬质检要求局部重写——可在起草台带改写指令重跑这一场。",
+    ),
+    "hard_qc_full_rewrite_required": (
+        "硬质检整场重写",
+        "硬质检要求整场重写——可在起草台带改写指令重跑这一场。",
+    ),
+    "soft_qc_patch_required": (
+        "软质检补丁",
+        "软质检要求补丁——去起草台处理后再归档。",
+    ),
+    "needs_replan": (
+        "上游已变更",
+        "上游构思/设定的变更让这稿需要重新规划——确认场景卡后在起草台重跑。",
+    ),
+}
+
+
+def _pipeline_blocked(session: Session, project: StoryProject) -> list[dict[str, Any]]:
+    """贯通轮遗留 ③：管线 blocked 的稿子投递进待办收件箱。
+
+    真相源 = SceneRunState.scene_status（run job 的 blocked 终态落在这里）。
+    目录场已 done（作者已在起草台采纳归档）的不投递——作者主权优先；
+    指纹 = scene_status，状态变化即新卡（旧指纹的 snooze 不再遮它）。
+    """
+    rows = session.execute(
+        select(SceneRunState, SceneCard)
+        .join(SceneCard, SceneCard.scene_id == SceneRunState.scene_id)
+        .where(SceneCard.project_id == project.project_id, SceneCard.trashed_flag == 0)
+    ).all()
+    blocked = [
+        (state, card)
+        for state, card in rows
+        if state.scene_status in _PIPELINE_BLOCKED_STATUSES and str(card.state or "") != "done"
+    ]
+    if not blocked:
+        return []
+    catalog = CatalogService(session)
+    slug_map: dict[str, tuple[str, str, str]] = {}
+    for index, chapter in enumerate(catalog.chapter_rows(project.project_id)):
+        payload = catalog.chapter_payload(project, chapter, index)
+        for scene in payload["scenes"]:
+            slug_map[scene["scene_id"]] = (scene["slug"], scene["title"], payload["no"])
+    cards: list[dict[str, Any]] = []
+    for state, card in blocked:
+        slug, title, no = slug_map.get(card.scene_id, ("", "", ""))
+        if not slug:
+            continue
+        label, detail = _PIPELINE_BLOCKED_STATUSES[state.scene_status]
+        cards.append(
+            {
+                "id": f"derived:pipeline:{card.scene_id}:{_fingerprint(state.scene_status)}",
+                "live": True,
+                "kind": "decision",
+                "priority": 1,
+                "title": f"第 {no} 章《{title}》的 AI 稿被管线停下 · {label}",
+                "where": f"AI 起草台 · 第 {no} 章",
+                "source": "起草管线",
+                "time": "实时",
+                "detail": detail + " 处理（采纳归档 / 重跑 / 改场景卡）后这条会自动消失。",
+                "actions": [
+                    {"label": "去起草台裁决", "intent": "primary", "op": "nav", "nav_to": "scene", "nav_scene": slug},
                     {"label": "稍后再说", "intent": "quiet", "op": "snooze"},
                 ],
             }

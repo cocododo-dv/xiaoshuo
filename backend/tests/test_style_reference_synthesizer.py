@@ -73,7 +73,8 @@ def _ingest_with_finding(book_seed: str) -> tuple[str, str]:
                 confidence="high",
                 status="pending",
             )
-        # 1 个 quote
+        # 1 个 quote(经 evidence 挂到 observation finding 上——2026-07 起
+        # synthesizer 的 quotes 为 run-scoped,未关联 evidence 的引文不进聚合)
         repo.create_quote(
             quote_id=f"sr_quote_{book_seed}",
             book_id=book_id,
@@ -83,6 +84,13 @@ def _ingest_with_finding(book_seed: str) -> tuple[str, str]:
             quote_text="他低头看着脚下的路",
             illustrates_dims=["language.rhetoric"],
             extracted_features={"paragraph_type": "narration"},
+        )
+        repo.create_evidence(
+            evidence_id=f"sr_ev_{book_seed}",
+            finding_id=f"sr_find_{book_seed}_observation",
+            quote_id=f"sr_quote_{book_seed}",
+            anchor_kind="paragraph_quote",
+            is_synthetic=0,
         )
         session.commit()
         return book_id, run_id
@@ -248,7 +256,12 @@ def test_synthesize_excludes_rejected_findings() -> None:
 
 
 def test_synthesize_scene_samples_index_buckets_by_paragraph_type() -> None:
-    """scene_samples_index 按段落表实测类型分桶;合成反例/负空间/无段落锚点不入索引。"""
+    """scene_samples_index 按段落表实测类型分桶;合成反例/负空间/无段落锚点不入索引。
+
+    2026-07 起 quotes 为 run-scoped(仅本 run findings 经 evidence 关联的引文),
+    故本用例把每条 quote 经 evidence 挂到 run 的 finding 上——与真实抽取管线一致
+    (extractor 落库时 quote 总是伴随 evidence 行)。
+    """
     book_id, run_id = _ingest_with_finding("buckets")
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
@@ -257,6 +270,8 @@ def test_synthesize_scene_samples_index_buckets_by_paragraph_type() -> None:
         p_dlg, p_env = paras[0], paras[1]
         p_dlg.paragraph_type = "dialogue"
         p_env.paragraph_type = "description_env"
+        obs_finding = f"sr_find_buckets_observation"
+        fp_finding = f"sr_find_buckets_forbidden_pattern"
         # 真实原文引文(带 anchor_kind)→ 按段落表类型分桶
         repo.create_quote(
             quote_id="sr_quote_dlg_buckets",
@@ -267,6 +282,13 @@ def test_synthesize_scene_samples_index_buckets_by_paragraph_type() -> None:
             quote_text="对话引文",
             illustrates_dims=[],
             extracted_features={"anchor_kind": "paragraph_quote"},
+        )
+        repo.create_evidence(
+            evidence_id="sr_ev_dlg_buckets",
+            finding_id=obs_finding,
+            quote_id="sr_quote_dlg_buckets",
+            anchor_kind="paragraph_quote",
+            is_synthetic=0,
         )
         # legacy 行(无 anchor_kind)→ 默认按 paragraph_quote 处理,仍按段落表分桶
         repo.create_quote(
@@ -279,6 +301,13 @@ def test_synthesize_scene_samples_index_buckets_by_paragraph_type() -> None:
             illustrates_dims=[],
             extracted_features={},
         )
+        repo.create_evidence(
+            evidence_id="sr_ev_env_buckets",
+            finding_id=obs_finding,
+            quote_id="sr_quote_env_buckets",
+            anchor_kind="paragraph_quote",
+            is_synthetic=0,
+        )
         # 合成反例:与原作风格相悖,不能作为风格样例进 few-shot 索引
         repo.create_quote(
             quote_id="sr_quote_syn_buckets",
@@ -289,6 +318,13 @@ def test_synthesize_scene_samples_index_buckets_by_paragraph_type() -> None:
             quote_text="(反例)天是那样蓝",
             illustrates_dims=[],
             extracted_features={"anchor_kind": "counter_example"},
+        )
+        repo.create_evidence(
+            evidence_id="sr_ev_syn_buckets",
+            finding_id=fp_finding,
+            quote_id="sr_quote_syn_buckets",
+            anchor_kind="counter_example",
+            is_synthetic=1,
         )
         session.commit()
 

@@ -224,6 +224,13 @@ const WrDocVersions = {
 };
 
 const WrDocs = {
+  /* 解析 sid → 后端 author-draft draft_id（不存在则 ensure 建一份空稿）；
+     供"AI 续写"等需要真实 draft_id 发起 LLM 调用的功能复用同一份映射缓存。 */
+  async draftId(sid) {
+    if (!sid) return null;
+    const m = await ensureDraft(sid);
+    return m.draftId || null;
+  },
   /* 同步读：返回缓存（可能为 null = 从未写过）；后台触发水合 */
   load(sid) {
     if (!sid) return null;

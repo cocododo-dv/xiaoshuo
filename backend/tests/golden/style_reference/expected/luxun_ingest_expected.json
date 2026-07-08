@@ -82,19 +82,19 @@
       "std": 0.05814952196159717
     },
     "punctuation_density_per_1k": {
-      "mean": 204.07723964800783,
+      "mean": 204.56587801489056,
       "sample_count": 904,
-      "std": 39.2986414772222
+      "std": 36.86693537981354
     },
     "question_density_per_1k": {
-      "mean": 0.0,
+      "mean": 9.5098521575831,
       "sample_count": 904,
-      "std": 0.0
+      "std": 6.742918565839985
     },
     "semicolon_density_per_1k": {
-      "mean": 0.0,
+      "mean": 3.320020910952507,
       "sample_count": 904,
-      "std": 0.0
+      "std": 2.211209137007072
     },
     "sensory_auditory_per_1k": {
       "mean": 6.475718985918732,

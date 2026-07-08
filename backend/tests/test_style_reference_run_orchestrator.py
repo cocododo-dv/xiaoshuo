@@ -88,7 +88,9 @@ def test_run_orchestrator_happy_path_writes_4_tables(fake_extractor_llm) -> None
         orch = RunOrchestrator(
             session, llm_client=fake_extractor_llm("default"), llm_enabled=True
         )
-        result = orch.start_extract_run(book_id)
+        # SAMPLE_TEXT 仅百余字(assessment 全 skip),force 绕过输入量门槛,
+        # 本用例锁定的是 16 sub_dim 落 4 表
+        result = orch.start_extract_run(book_id, force=True)
         session.commit()
 
     assert result.status == "done"

@@ -113,6 +113,17 @@ class IngestService:
         idempotency_key: str | None = None,  # noqa: ARG002 (预留 PR-4 用)
     ) -> IngestResult:
         path = Path(file_path)
+        # 服务端路径导入只允许纯文本参考书后缀。这个端点按任意路径读服务器文件,
+        # 不加白名单时可把 /etc/passwd、.env、*.db 等读进 paragraphs 表并经 API
+        # 回读——收窄为与 upload 相同的文本格式(且 path 模式**必须**有后缀,
+        # 无后缀的系统文件一律拒绝)。
+        suffix = path.suffix.lower()
+        if suffix not in {".txt", ".md", ".markdown"}:
+            raise DomainError(
+                "STYLE_REFERENCE_BOOK_FORMAT_UNSUPPORTED",
+                "only .txt / .md / .markdown reference books can be imported by path",
+                status_code=400,
+            )
         if not path.exists():
             raise DomainError(
                 "STYLE_REFERENCE_BOOK_PATH_NOT_FOUND",

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from novel_system.db.models import QcReport
+from sqlalchemy import select
+
+from novel_system.db.models import QcReport, SceneCard, SceneRunState
 
 
 def _create_chapter_and_scene(client) -> None:
@@ -149,3 +151,37 @@ def test_scene_run_job_not_found_uses_structured_error(client) -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "RUN_JOB_NOT_FOUND"
+
+
+def test_scene_run_states_listing_backs_fe_queue_recovery(client, session) -> None:
+    """贯通轮遗留 ①：GET /scene-run-states 是起草台队列成员的后端派生源——
+    只返回离开过 ready 的场（进过管线），换浏览器后 FE 据此恢复队列。"""
+    from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+
+    seed_fe_demo_works(session)
+    session.commit()
+    scenes = session.execute(
+        select(SceneCard).where(SceneCard.project_id == "tide", SceneCard.trashed_flag == 0)
+    ).scalars().all()
+    assert len(scenes) >= 2
+    touched, untouched = scenes[0], scenes[1]
+    for scene, status in ((touched, "human_review_required"), (untouched, "ready")):
+        state = session.get(SceneRunState, scene.scene_id)
+        if state is None:
+            state = SceneRunState(scene_id=scene.scene_id)
+            session.add(state)
+        state.scene_status = status
+    session.commit()
+
+    response = client.get("/api/v1/scene-run-states?project_id=tide")
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    by_id = {item["scene_id"]: item for item in data["items"]}
+    assert touched.scene_id in by_id
+    assert by_id[touched.scene_id]["scene_status"] == "human_review_required"
+    assert by_id[touched.scene_id]["chapter_id"] == touched.chapter_id
+    # ready = 从未进管线，不参与队列恢复
+    assert untouched.scene_id not in by_id
+
+    missing = client.get("/api/v1/scene-run-states?project_id=no-such-project")
+    assert missing.status_code == 404

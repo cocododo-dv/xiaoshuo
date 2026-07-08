@@ -20,6 +20,7 @@ from novel_system.services.llm_client import LLMResponse
 from novel_system.services.writer_deep_review import LITERARY_REVISION_RUBRIC_ID
 from novel_system.services.writer_deep_review import WriterDeepReviewService
 from novel_system.services.writer_deep_review import _infer_scene_form
+from novel_system.services.writer_deep_review import _normalize_deep_review_output
 
 
 CHAPTER_ID = "DEEP_CH01"
@@ -30,6 +31,57 @@ FINAL_ROW_ID = "final_DEEP_CH01_SC01"
 def test_scene_form_inference_recognizes_chinese_atmosphere_markers() -> None:
     assert _infer_scene_form("雨夜里灯光晃了一下。") == "atmosphere_scene"
     assert _infer_scene_form("雪落在门前。") == "atmosphere_scene"
+
+
+def test_normalize_deep_review_output_validates_model_lens_evaluations() -> None:
+    normalized = _normalize_deep_review_output(
+        {
+            "overall_score": 0.6,
+            "scores": {"choice_pressure": 0.5},
+            "findings": [
+                {"lens": "story", "dimension": "choice_pressure", "severity": "revision", "issue": "选择没有落成动作。"},
+                {"lens": "reader", "dimension": "ending_drive", "severity": "taste", "issue": "结尾可以更硬。"},
+            ],
+            "revision_brief": [],
+            "requires_human_review": False,
+            "lens_evaluations": [
+                {"lens": " Story ", "overall_score": 1.7, "scores": {"choice_pressure": 0.5, "bogus_dim": 0.1}, "findings": [{"dimension": "choice_pressure", "severity": "nonsense", "issue": "a"}]},
+                {"lens": "story", "findings": [{"dimension": "dialogue_subtext", "severity": "taste", "issue": "b"}]},
+                {"lens": "camera"},
+                "garbage",
+            ],
+        }
+    )
+    by_lens = {entry["lens"]: entry for entry in normalized["lens_evaluations"]}
+    # 非法镜头名整条丢弃，大小写/空白容错，重复镜头合并，漏掉的镜头从顶层 findings 重建
+    assert set(by_lens) == {"story", "reader"}
+    assert by_lens["story"]["overall_score"] == 1.0
+    assert "bogus_dim" not in by_lens["story"]["scores"]
+    merged = by_lens["story"]["findings"]
+    assert [item["issue"] for item in merged] == ["a", "b"]
+    assert all(item["lens"] == "story" for item in merged)
+    assert merged[0]["severity"] == "revision"
+    assert by_lens["reader"]["findings"][0]["issue"] == "结尾可以更硬。"
+    assert len(by_lens["story"]["revision_brief"]) == 2
+
+
+def test_normalize_deep_review_output_rebuilds_lenses_when_model_omits_grouping() -> None:
+    normalized = _normalize_deep_review_output(
+        {
+            "overall_score": 0.7,
+            "scores": {},
+            "findings": [
+                {"lens": "THEME", "dimension": "theme_pressure", "severity": "revision", "issue": "主题压力未落到选择上。"},
+                {"lens": "看不懂", "dimension": "choice_pressure", "severity": "taste", "issue": "非法镜头归入 story。"},
+            ],
+            "revision_brief": [],
+            "requires_human_review": False,
+        }
+    )
+    by_lens = {entry["lens"]: entry for entry in normalized["lens_evaluations"]}
+    assert set(by_lens) == {"story", "theme"}
+    assert by_lens["theme"]["findings"][0]["issue"] == "主题压力未落到选择上。"
+    assert by_lens["story"]["findings"][0]["lens"] == "story"
 
 
 def _seed_finished_scene(session) -> None:

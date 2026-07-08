@@ -93,12 +93,20 @@ class RunOrchestrator:
         layers: list[Layer] | None = None,
         idempotency_key: str | None = None,  # noqa: ARG002 (预留 PR-4 路由层接入)
         background: bool = False,
+        force: bool = False,
     ) -> RunResult:
         """启动一次抽取 run;LLM 不可用 raise DomainError(STYLE_REFERENCE_LLM_REQUIRED)。
 
         ``background=True`` 时立即返回 RUNNING 的 RunResult,抽取在后台线程
         独立 session 中执行;调用方轮询 ``GET /runs/{run_id}`` 读取
         ``coverage_json["progress"]``(按 layer 粒度)与最终状态。
+
+        §6.4 输入量门槛(2026-07 接线):ingest 时按 input_thresholds 评估为
+        ``skip`` 的层**不消耗 LLM 调用**——此前该评估只算不执行,字数不足的书照样
+        全四层抽取,与前端矩阵页展示的 skip 相互矛盾。被剔除的层记录在
+        ``coverage_json["skipped_layers"]``;全部被剔除时 409
+        ``STYLE_REFERENCE_INPUT_TOO_SMALL``。``force=True`` 跳过该门槛(明知
+        字数不足仍要抽取的显式逃生门,样本饥饿风险自负)。
         """
         if not self._llm_enabled or self._llm_client is None:
             raise LLMRequiredError(operation="start_extract_run")
@@ -134,19 +142,44 @@ class RunOrchestrator:
                 status_code=400,
             )
 
+        # §6.4 — 输入量门槛执行:skip 层剔除,不消耗 LLM 调用
+        assessment = (book.stats_json or {}).get("input_assessment") or {}
+        skipped_layers: list[str] = []
+        if assessment and not force:
+            kept = [layer for layer in layers if assessment.get(layer.value) != "skip"]
+            skipped_layers = [layer.value for layer in layers if layer not in kept]
+            if not kept:
+                raise DomainError(
+                    "STYLE_REFERENCE_INPUT_TOO_SMALL",
+                    f"book {book_id!r} 的输入量不足:所请求层 "
+                    f"{[layer.value for layer in layers]} 均被评估为 skip"
+                    "(见 input_thresholds.yaml);请补足语料后重新导入,"
+                    "或以 force=true 强制抽取(样本饥饿风险自负)",
+                    status_code=409,
+                    details={
+                        "book_id": book_id,
+                        "input_assessment": assessment,
+                        "total_chars": int(getattr(book, "total_chars", 0) or 0),
+                    },
+                )
+            layers = kept
+
         run_id = f"sr_run_{uuid.uuid4().hex[:12]}"
+        coverage_json: dict[str, Any] = {
+            "progress": {
+                "layers_total": len(layers),
+                "layers_done": 0,
+                "current_layer": layers[0].value,
+            }
+        }
+        if skipped_layers:
+            coverage_json["skipped_layers"] = skipped_layers
         self.repo.create_run(
             run_id=run_id,
             book_id=book_id,
             status=RunStatus.RUNNING.value,
             phase=RunPhase.EXTRACT.value,
-            coverage_json={
-                "progress": {
-                    "layers_total": len(layers),
-                    "layers_done": 0,
-                    "current_layer": layers[0].value,
-                }
-            },
+            coverage_json=coverage_json,
             started_at=_utcnow_iso(),
         )
 
@@ -188,20 +221,33 @@ class RunOrchestrator:
         sub_dim_results: list[ExtractionRunResult] = []
         try:
             for i, layer in enumerate(layers):
-                if progress_commits and self._is_cancelled(run_id):
-                    self.repo.update_run(
-                        run_id,
-                        status=RunStatus.CANCELLED.value,
-                        finished_at=_utcnow_iso(),
-                    )
-                    self.session.commit()
-                    return RunResult(
-                        run_id=run_id,
-                        book_id=book_id,
-                        status=RunStatus.CANCELLED.value,
-                        layers=[la.value for la in layers],
-                        sub_dim_results=sub_dim_results,
-                    )
+                if progress_commits:
+                    observed = self._observed_status(run_id)
+                    if observed != RunStatus.RUNNING.value:
+                        # run 已被外部置为终态:CANCELLED(用户取消)补 finished_at;
+                        # FAILED(排队超时被 _reap_stale_runs 回收)等其它终态
+                        # **不得复活**——此前僵尸回收后排队 worker 开跑会把 FAILED
+                        # 拉回 RUNNING→DONE,并与同书新 run 并发互撞。
+                        final = observed or RunStatus.CANCELLED.value
+                        if final == RunStatus.CANCELLED.value:
+                            self.repo.update_run(
+                                run_id,
+                                status=RunStatus.CANCELLED.value,
+                                finished_at=_utcnow_iso(),
+                            )
+                            self.session.commit()
+                        else:
+                            logger.warning(
+                                "run %s already in terminal state %s; worker exits without resuming",
+                                run_id, final,
+                            )
+                        return RunResult(
+                            run_id=run_id,
+                            book_id=book_id,
+                            status=final,
+                            layers=[la.value for la in layers],
+                            sub_dim_results=sub_dim_results,
+                        )
                 self._write_progress(run_id, layers, layers_done=i, current=layer)
                 if progress_commits:
                     self.session.commit()
@@ -258,13 +304,14 @@ class RunOrchestrator:
             sub_dim_results=sub_dim_results,
         )
 
-    def _is_cancelled(self, run_id: str) -> bool:
+    def _observed_status(self, run_id: str) -> str | None:
+        """读 run 当前状态(跨事务可见);run 行消失返回 None(按 CANCELLED 处理)。"""
         run = self.repo.get_run(run_id)
         if run is None:
-            return True
-        # 后台 session:refresh 拿到其他事务提交的 cancel
+            return None
+        # 后台 session:refresh 拿到其他事务提交的 cancel / reap
         self.session.refresh(run)
-        return run.status == RunStatus.CANCELLED.value
+        return run.status
 
     def _write_progress(
         self,
