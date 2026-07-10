@@ -413,7 +413,7 @@ function ArrHandoffStrip({ prev, ch, next, numOf, onJump }) {
   );
 }
 
-function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDragHandle, sceneDropZone, onAddScene, onCycleScene, onCycleKind, onDeleteScene, onEditScene, onRestoreScene, onPatchTitle, onPatchDrama, onCycleState, onDeleteChapter, pickedScene, setPickedScene, onJump, onBack }) {
+function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDragHandle, sceneDropZone, onAddScene, onCycleScene, onCycleKind, onDeleteScene, onEditScene, onRestoreScene, onPatchTitle, onPatchDrama, onCycleState, onDeleteChapter, pickedScene, setPickedScene, onJump, onBack, snow }) {
   const tallies = { todo: 0, writing: 0, done: 0 };
   ch.scenes.forEach((s) => { tallies[s.state] = (tallies[s.state] || 0) + 1; });
   const recycled = ch.recycled || [];
@@ -450,7 +450,10 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
               <div className="card-title">戏剧卡</div>
               <div className="card-sub">让章节先有可读的承诺、推进和余味，再交给场景去写。</div>
             </div>
-            <button className="btn btn-quiet btn-sm" title="从雪花同步"><I.Refresh size={13} /> 从雪花同步</button>
+            <button className="btn btn-quiet btn-sm" onClick={snow && snow.onSync} disabled={snow && snow.busy}
+              title={(!snow || !snow.ready) ? "本作还没从构思物化——点此去构思整理章节结构" : (snow.pending ? `构思有 ${snow.pending} 场改动待回流，点此同步到目录` : "重新从雪花回流场景卡（三拍 / POV / 章 brief）")}>
+              <I.Refresh size={13} /> {snow && snow.busy ? "同步中…" : "从雪花同步"}{snow && snow.ready && snow.pending ? ` · ${snow.pending}` : ""}
+            </button>
           </div>
 
           <div className="arr-drama-groups">
@@ -551,7 +554,7 @@ function ArrCheckRow({ ok, warn, label, val }) {
   );
 }
 
-function ArrChapterContext({ ch, chapters, numOf }) {
+function ArrChapterContext({ ch, chapters, numOf, snow }) {
   const dramaKeys = ["promise", "spine", "arc", "problem", "aftertaste", "ending"];
   const dramaDone = dramaKeys.filter((k) => ch.drama[k] && !ch.drama[k].includes("（待")).length;
   const ready = ch.scenes.filter((s) => s.state === "done" || s.state === "writing").length;
@@ -614,8 +617,17 @@ function ArrChapterContext({ ch, chapters, numOf }) {
 
       <div className="ctx-block">
         <div className="ctx-head"><I.Snowflake size={13} /><span>从雪花同步</span></div>
-        <p className="arr-sync">本章戏剧卡来自雪花流程第 8 步。最近同步：今天 13:20。</p>
-        <button className="btn btn-ghost btn-sm" style={{ width: "100%" }}><I.Refresh size={13} /> 重新同步</button>
+        <p className="arr-sync">
+          {(!snow || !snow.ready)
+            ? "本作还没从「构思」物化过章节结构——先去构思把雪花大纲整理成章节，再回来同步。"
+            : snow.pending
+              ? `构思侧有 ${snow.pending} 场改动待回流到目录场景卡（三拍 / POV / 章 brief）。`
+              : "目录已与构思同步。"}
+          {snow && snow.note ? <span style={{ color: "var(--ink-2)" }}> · {snow.note}</span> : null}
+        </p>
+        <button className="btn btn-ghost btn-sm" style={{ width: "100%" }} onClick={snow && snow.onSync} disabled={snow && snow.busy}>
+          <I.Refresh size={13} /> {snow && snow.busy ? "同步中…" : ((!snow || !snow.ready) ? "去构思物化" : (snow.pending ? `重新同步 · ${snow.pending} 场` : "重新同步"))}
+        </button>
       </div>
     </aside>
   );
@@ -700,6 +712,41 @@ function WsAuthor() {
 
   const byId = useMemoA(() => Object.fromEntries(chapters.map((c) => [c.id, c])), [chapters]);
   const numOf = useMemoA(() => Object.fromEntries(chapters.map((c, i) => [c.id, String(i + 1).padStart(2, "0")])), [chapters]);
+
+  /* —— 从雪花同步（回流）：把构思 9/10 步的改动写回本作目录场景卡（三拍 / POV / 章 brief）。
+     能力来自全局 SnowSync（与构思页「重新同步」同源）；resync 内部已重拉 WsCatalog，
+     这里再把最新目录灌回本页 chapters。pending 来自后端 resync_status（真相），不再写死。
+     ⚠ 这些 hook 必须在下方「空作品」early-return 之前调用（React hooks 顺序规则）。 */
+  const readSnowResync = () => { try { return (window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0 }; } catch (e) { return { pendingCount: 0 }; } };
+  const [snowResync, setSnowResync] = useStA(readSnowResync);
+  const [snowBusy, setSnowBusy] = useStA(false);
+  const [snowNote, setSnowNote] = useStA(null);   // 最近一次同步结果的内联提示
+  useEfA(() => {
+    const refresh = () => setSnowResync(readSnowResync());
+    window.addEventListener("ws:snow-resync", refresh);
+    window.addEventListener("ws:snow-hydrated", refresh);
+    window.addEventListener("ws:work-changed", refresh);
+    return () => { window.removeEventListener("ws:snow-resync", refresh); window.removeEventListener("ws:snow-hydrated", refresh); window.removeEventListener("ws:work-changed", refresh); };
+  }, []);
+  const snowReady = (() => { try { return !!(window.SnowSync && window.SnowSync.readyToMaterialize && window.SnowSync.readyToMaterialize()); } catch (e) { return false; } })();
+  const syncFromSnow = async () => {
+    if (snowBusy) return;
+    if (!window.SnowSync || !window.SnowSync.resync) { window.alert("同步能力尚未就绪——请刷新页面，或先到「构思」把雪花大纲整理成章节结构。"); return; }
+    if (!snowReady) {   // 从没走过物化主路径：暂无可回流的场，引导去构思页
+      if (window.confirm("这部作品还没从「构思」物化过章节结构，暂无可回流的场。\n\n现在去构思页把雪花大纲整理成章节结构吗？")) location.hash = "#snowflake";
+      return;
+    }
+    setSnowBusy(true); setSnowNote(null);
+    try {
+      const r = await window.SnowSync.resync();                  // POST /resync，内部已 WsCatalog.__refresh
+      if (WsCatalog) setChapters(arrStampIds(WsCatalog.get()));  // 把重拉后的目录灌回本页视图
+      setSnowResync(readSnowResync());
+      setSnowNote((r && r.synced) ? `已同步 ${r.synced} 场的构思改动到目录` : "目录已是最新，无需同步");
+    } catch (e) {
+      window.alert("从雪花同步失败：" + ((e && e.message) || "请稍后重试，或检查构思各步是否已确认。"));
+    } finally { setSnowBusy(false); }
+  };
+  const snow = { pending: (snowResync && snowResync.pendingCount) || 0, busy: snowBusy, ready: snowReady, note: snowNote, onSync: syncFromSnow };
 
   /* 空白作品：还没有任何章节，先引导建立结构 */
   if (!chapters.length) {
@@ -912,8 +959,8 @@ function WsAuthor() {
               onDeleteScene={deleteScene} onEditScene={editScene} onRestoreScene={restoreScene}
               onPatchTitle={patchTitle} onPatchDrama={patchDrama} onCycleState={cycleState} onDeleteChapter={deleteChapter}
               pickedScene={pickedScene} setPickedScene={setPickedScene}
-              onJump={openChapter} onBack={() => setMode("overview")} />
-            <ArrChapterContext ch={ch} chapters={chapters} numOf={numOf} />
+              onJump={openChapter} onBack={() => setMode("overview")} snow={snow} />
+            <ArrChapterContext ch={ch} chapters={chapters} numOf={numOf} snow={snow} />
           </React.Fragment>
         )}
       </div>

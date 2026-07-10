@@ -2464,23 +2464,65 @@ function s2LineStats(list, lines) {
     return { ...ln, pos, count, span, clustered, noRefract };
   });
 }
+/* POV 显示/选择：场景的 pov 可能存的是角色 id（真实项目水合自 pov_character_id，
+   形如 <project>_CHAR01）或姓名（演示种子 / 手填）。名册（04 步）以 character_id 为键、
+   值含 name。统一解析成显示姓名；下拉选择存回角色 id，与后端 pov_character_id 对齐。 */
+function s2RosterList(refs) {
+  const chars = ((refs && refs.characters) || {}).chars || {};
+  return Object.entries(chars).map(([id, c]) => ({ id, name: ((c && c.name) || "").trim() || id }));
+}
+function s2PovLabel(pov, roster) {
+  if (!pov) return "";
+  const hit = (roster || []).find(r => r.id === pov);
+  return hit ? hit.name : pov;  // 已是姓名 / 自由文本 → 原样
+}
+/* 场景显示号：s.id 是不可变身份（真实项目里是 row_<uuid>，不宜直接示人）。
+   已是 Sxx / 纯数字则规范化，否则按位置给个友好的 S01 号。 */
+function s2SceneNo(id, idx) {
+  const s = String(id || "").trim();
+  if (/^S\d{1,3}$/i.test(s)) return "S" + s.slice(1).padStart(2, "0");
+  if (/^\d{1,3}$/.test(s)) return "S" + s.padStart(2, "0");
+  return "S" + String((idx || 0) + 1).padStart(2, "0");
+}
+
+/* POV 选择器：名册非空 → 下拉（value=角色id / label=姓名；名册对不上的旧值保留为
+   独立项，不丢内容）；名册为空（04 还没建角色）→ 退化成自由文本框，避免卡死作者。 */
+function S2PovPick({ value, roster, onChange, className, placeholder }) {
+  if (!roster || !roster.length) {
+    return <input className={className} value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder || "POV"} />;
+  }
+  const known = roster.find(r => r.id === value) || roster.find(r => r.name === value);
+  const unknown = value && !known;
+  return (
+    <select className={className} value={known ? known.id : (value || "")} onChange={(e) => onChange(e.target.value)} title="选择 POV 视角角色（来自 04 角色名册）">
+      <option value="">— POV —</option>
+      {roster.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+      {unknown && <option value={value}>{value}</option>}
+    </select>
+  );
+}
+
 function S2SceneList({ scaffold, onScaffold, refs, ai }) {
   const list = scaffold.list || [];
-  const lines = scaffold.lines || [{ id: "main", name: "主线", kind: "main", tone: "crimson", refract: "" }];
+  const lines = (scaffold.lines && scaffold.lines.length) ? scaffold.lines : [{ id: "main", name: "主线", kind: "main", tone: "crimson", refract: "" }];
+  const roster = s2RosterList(refs);
+  const placeOpts = [...new Set(list.map(s => (s.place || "").trim()).filter(Boolean))];
   const [hiLine, setHiLine] = useSS(null);
   /* 道德前提读 03 的活数据，不再用静态种子；默认 POV 取 04 名册的主角 */
   const para = (refs && refs.paragraph) || {};
   const premise = { f: (para.premiseF || "").trim(), t: (para.premiseT || "").trim() };
-  const mainChar = (() => {
-    const chars = ((refs && refs.characters) || {}).chars || {};
-    const hit = Object.values(chars).find(c => c.role === "主角") || Object.values(chars)[0];
-    return (hit && hit.name) || "";
+  const mainCharId = (() => {
+    const entry = roster.find(r => {
+      const chars = ((refs && refs.characters) || {}).chars || {};
+      return (chars[r.id] || {}).role === "主角";
+    }) || roster[0];
+    return (entry && entry.id) || "";
   })();
 
   const setScene = (i, f, v) => onScaffold(s => ({ ...s, list: s.list.map((sc, j) => j === i ? { ...sc, [f]: v } : sc) }));
   const addScene = () => onScaffold(s => {
     const n = (s.list.length + 1).toString().padStart(2, "0");
-    return { ...s, list: [...s.list, { id: "S" + n, type: "proactive", line: hiLine || "main", pov: mainChar, place: "", event: "", crucible: "", fn: "", spine: "" }] };
+    return { ...s, list: [...s.list, { id: "S" + n, type: "proactive", line: hiLine || "main", pov: mainCharId, place: "", event: "", crucible: "", fn: "", spine: "" }] };
   });
   const delScene = (i) => onScaffold(s => ({ ...s, list: s.list.filter((_, j) => j !== i) }));
   const moveScene = (i, d) => onScaffold(s => {
@@ -2636,7 +2678,7 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
           const dim = hiLine && (s.line || "main") !== hiLine;
           return (
           <div key={i} className={`sf-scene-row line-${lt} ${s.spine ? "is-spine" : ""} ${!(s.crucible || "").trim() ? "is-nocru" : ""} ${dim ? "is-dim" : ""}`}>
-            <span className="sc-c-id"><input className="sc-in sc-in-id" value={s.id} onChange={(e) => setScene(i, "id", e.target.value)} /></span>
+            <span className="sc-c-id"><span className="sc-no" title={s.id}>{s2SceneNo(s.id, i)}</span></span>
             <span className="sc-c-type">
               <button className={`sc-type ${s.type === "proactive" ? "is-pro" : "is-rea"}`} onClick={() => setScene(i, "type", s.type === "proactive" ? "reactive" : "proactive")} title="切换 主动 GCS / 反应 RDD">
                 {s.type === "proactive" ? "主动" : "反应"}
@@ -2647,9 +2689,9 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
                 {lines.map(ln => <option key={ln.id} value={ln.id}>{ln.name}</option>)}
               </select>
             </span>
-            <span className="sc-c-pov"><input className="sc-in" value={s.pov} onChange={(e) => setScene(i, "pov", e.target.value)} /></span>
+            <span className="sc-c-pov"><S2PovPick value={s.pov} roster={roster} onChange={(v) => setScene(i, "pov", v)} className="sc-in sc-pov" /></span>
             <span className="sc-c-place">
-              <input className="sc-in sc-in-place" value={s.place} onChange={(e) => setScene(i, "place", e.target.value)} placeholder="地点" />
+              <input className="sc-in sc-in-place" list="s2-place-opts" value={s.place} onChange={(e) => setScene(i, "place", e.target.value)} placeholder="地点" />
               <input className="sc-in sc-in-event" value={s.event} onChange={(e) => setScene(i, "event", e.target.value)} placeholder="发生什么" />
             </span>
             <span className="sc-c-cru"><input className="sc-in" value={s.crucible} onChange={(e) => setScene(i, "crucible", e.target.value)} placeholder="什么困住角色…" /></span>
@@ -2668,6 +2710,7 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
           );
         })}
       </div>
+      <datalist id="s2-place-opts">{placeOpts.map(p => <option key={p} value={p} />)}</datalist>
       <button className="sf-scene-add" onClick={addScene}><I.Plus size={14} /> 添加场景</button>
     </div>
   );
@@ -2677,6 +2720,7 @@ const S2_TRIAGE_LABEL = { pass: "可通过", maybe: "需修补", rewrite: "该�
 
 function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const list = ((refs && refs.scenes) || {}).list || [];
+  const roster = s2RosterList(refs);
   const plans = scaffold.plans || {};
   const selId = list.some(s => s.id === scaffold.sel) ? scaffold.sel : (list[0] ? list[0].id : "");
   const scene = list.find(s => s.id === selId) || null;
@@ -2759,15 +2803,15 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
       <div className="sf-plan-nav">
         <span className={`sf-plan-cov ${fully === list.length ? "is-all" : ""}`}><I.CheckCircle size={12} /> {fully} / {list.length} 场已规划</span>
         <div className="sf-plan-cells">
-          {list.map(s => {
+          {list.map((s, i) => {
             const st = stateOf(s.id);
             const tri = triOf(s.id);
             return (
               <button key={s.id}
                 className={`sf-plan-cell st-${st} ${s.id === selId ? "is-sel" : ""} ${s.type === "reactive" ? "is-rea" : "is-pro"} ${s.spine ? "is-spine" : ""} ${tri ? "tri-" + tri.status : ""}`}
                 onClick={() => selScene(s.id)}
-                title={`${s.id} · ${s.type === "reactive" ? "反应" : "主动"}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
-                {s.id.replace(/^S0?/, "")}
+                title={`${s2SceneNo(s.id, i)} · ${s.type === "reactive" ? "反应" : "主动"}${s.spine ? " · " + s.spine : ""} · ${st === 2 ? "三槽齐" : st === 1 ? "填了一半" : "未规划"}${tri ? " · 分诊：" + (S2_TRIAGE_LABEL[tri.status] || tri.status) : ""}`}>
+                {i + 1}
               </button>
             );
           })}
@@ -2777,14 +2821,14 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
 
       <div className="sf-scene-meta">
         <div className="sf-plan-cur">
-          <span className="sf-plan-cur-id">{scene.id}</span>
+          <span className="sf-plan-cur-id" title={scene.id}>{s2SceneNo(scene.id, selIdx)}</span>
           <span className="sf-plan-cur-body">
             <span className="sf-plan-cur-title">{scene.event || scene.place || "（未命名场景）"}</span>
             <span className="sf-plan-cur-sub">{scene.place}{scene.spine ? ` · ${scene.spine}` : ""}{scene.fn ? ` · ${scene.fn}` : ""}</span>
           </span>
         </div>
         <label className="sf-field is-short"><span className="sf-field-label">POV 角色</span>
-          <input className="sf-field-input" value={plan.pov} onChange={(e) => setPlan("pov", e.target.value)} placeholder={scene.pov || "POV"} /></label>
+          <S2PovPick value={plan.pov} roster={roster} onChange={(v) => setPlan("pov", v)} className="sf-field-input" placeholder={s2PovLabel(scene.pov, roster) || "POV"} /></label>
         <span className={`sf-plan-type ${proactive ? "is-pro" : "is-rea"}`} title="类型跟随 09 场景列表——要改去 09 切换">
           {proactive ? "主动 · GCS" : "反应 · RDD"}
           <button className="sf-plan-type-go" onClick={() => go && go("scenes")} title="在 09 修改类型">09</button>
@@ -2821,10 +2865,10 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
 
       {prev && (
         <div className={`sf-plan-seam ${prevSeam ? "" : "is-empty"}`}>
-          <span className="sf-plan-seam-tag"><I.ArrowRight size={10} /> 接上一场 {prev.id}</span>
+          <span className="sf-plan-seam-tag"><I.ArrowRight size={10} /> 接上一场 {s2SceneNo(prev.id, selIdx - 1)}</span>
           {prevSeam
             ? <span className="sf-plan-seam-text">{prev.type === "reactive" ? "决定" : "挫败"}：「{prevSeam}」——本场从这里接住。</span>
-            : <span className="sf-plan-seam-text">上一场还没写{prev.type === "reactive" ? "决定" : "挫败"}——链条在这里是断的。<button className="sf-plan-seam-go" onClick={() => selScene(prev.id)}>去补 {prev.id}</button></span>}
+            : <span className="sf-plan-seam-text">上一场还没写{prev.type === "reactive" ? "决定" : "挫败"}——链条在这里是断的。<button className="sf-plan-seam-go" onClick={() => selScene(prev.id)}>去补 {s2SceneNo(prev.id, selIdx - 1)}</button></span>}
         </div>
       )}
 
@@ -2842,9 +2886,9 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
       </div>
 
       <div className="sf-plan-foot">
-        <button className="btn btn-ghost btn-sm" disabled={selIdx <= 0} onClick={() => selScene(list[selIdx - 1].id)}><I.ChevronLeft size={13} /> {selIdx > 0 ? list[selIdx - 1].id : "上一场"}</button>
+        <button className="btn btn-ghost btn-sm" disabled={selIdx <= 0} onClick={() => selScene(list[selIdx - 1].id)}><I.ChevronLeft size={13} /> {selIdx > 0 ? s2SceneNo(list[selIdx - 1].id, selIdx - 1) : "上一场"}</button>
         <span className="text-muted text-sm">{selIdx + 1} / {list.length}</span>
-        <button className="btn btn-ghost btn-sm" disabled={selIdx >= list.length - 1} onClick={() => selScene(list[selIdx + 1].id)}>{selIdx < list.length - 1 ? list[selIdx + 1].id : "下一场"} <I.ChevronRight size={13} /></button>
+        <button className="btn btn-ghost btn-sm" disabled={selIdx >= list.length - 1} onClick={() => selScene(list[selIdx + 1].id)}>{selIdx < list.length - 1 ? s2SceneNo(list[selIdx + 1].id, selIdx + 1) : "下一场"} <I.ChevronRight size={13} /></button>
       </div>
     </div>
   );
@@ -3500,7 +3544,7 @@ function S2Styles() {
 .sf-rhythm-dot.is-pro { background: var(--crimson); }
 .sf-rhythm-dot.is-rea { background: var(--slate); }
 .sf-scene-table { display: flex; flex-direction: column; border: 1px solid var(--line-1); border-radius: 11px; overflow: hidden; }
-.sf-scene-thead, .sf-scene-row { display: grid; grid-template-columns: 2.8em 3.2em 4.6em 3.4em 1.5fr 1.3fr 1.2fr 3.8em; gap: 8px; align-items: center; }
+.sf-scene-thead, .sf-scene-row { display: grid; grid-template-columns: 2.6em 3.2em 4.6em 5em 1.5fr 1.3fr 1.2fr 3.8em; gap: 8px; align-items: center; }
 .sf-scene-thead { padding: 8px 12px; background: var(--paper-2); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700; color: var(--ink-3); }
 .sf-scene-row { padding: 8px 12px; border-top: 1px solid var(--line-1); position: relative; }
 .sf-scene-row.is-spine { background: var(--gold-wash); }
@@ -3511,6 +3555,9 @@ function S2Styles() {
 .sc-in:focus { outline: none; border-color: var(--crimson); background: var(--paper-0); }
 .sc-in::placeholder { color: var(--ink-4); }
 .sc-in-id { font-family: var(--font-mono); font-weight: 700; font-size: 11px; }
+.sc-no { font-family: var(--font-mono); font-weight: 700; font-size: 11px; color: var(--ink-3); padding: 4px 2px; display: inline-block; }
+.sc-pov { width: 100%; font-size: 11px; font-weight: 600; border: 1px solid var(--line-1); border-radius: 6px; background: var(--paper-0); color: var(--ink-1); padding: 3px 4px; cursor: pointer; }
+.sc-pov:focus { outline: none; border-color: var(--crimson); background: var(--paper-0); }
 .sc-c-place, .sc-c-fn { display: flex; flex-direction: column; gap: 3px; }
 .sc-in-place { font-weight: 600; }
 .sc-in-event, .sc-in-fn { font-size: 11.5px; color: var(--ink-2); }
