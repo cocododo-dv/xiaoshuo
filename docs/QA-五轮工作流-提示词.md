@@ -93,15 +93,17 @@
 
 | 用途 | 命令（PowerShell） | 关键产物 |
 |---|---|---|
-| **当前库闭环**（默认不 reset，原创近未来悬疑种子「玻璃雨停在零点」） | `$env:PLAYWRIGHT_FRONTEND_URL="http://127.0.0.1:5174"; $env:PLAYWRIGHT_API_BASE="http://127.0.0.1:8000"; node scripts/run-currentdb-three-chapter-qa.cjs` | `output/playwright/currentdb-three-chapter-qa-<ts>/`：markdown 报告 + 结果 JSON + `run-log.ndjson` + 截图 |
+| **当前库五章闭环**（默认不 reset，原创近未来悬疑种子「玻璃雨停在零点」，**默认 5 章 × 每章 3 场**，可用 `QA_CHAPTER_COUNT` / `QA_SCENES_PER_CHAPTER` 裁剪做诊断） | `$env:PLAYWRIGHT_FRONTEND_URL="http://127.0.0.1:5174"; $env:PLAYWRIGHT_API_BASE="http://127.0.0.1:8000"; node scripts/run-currentdb-three-chapter-qa.cjs` | `output/playwright/currentdb-three-chapter-qa-<ts>/`：markdown 报告 + 结果 JSON + `outcome-gate.json` + `outcome-gate-verdict.md` + `run-log.ndjson` + 截图 |
 | **从零 reset + 闭环**（真"从 0"，**破坏性**：会重置作者态） | 先停服务，再 `$env:QA_RESET_AUTHOR_STATE="1"; $env:QA_ASSUME_SERVICES_STOPPED="1"; $env:PLAYWRIGHT_FRONTEND_URL="http://127.0.0.1:5174"; $env:PLAYWRIGHT_API_BASE="http://127.0.0.1:8000"; node scripts/run-currentdb-three-chapter-qa.cjs` | 同上（目录前缀 `reset-`） |
-| **全云**（云模型 + 风格参考·只学技法，种子「盐钟」`CHOR01-03`，`lib/longzu-literary-scoring.cjs` 打分） | `$env:PLAYWRIGHT_FRONTEND_URL="http://127.0.0.1:5174"; $env:PLAYWRIGHT_API_BASE="http://127.0.0.1:8000"; node scripts/run-longzu-full-cloud-qa.cjs` | `output/playwright/longzu-full-cloud-qa-<ts>/` |
+| **全云**（云模型 + 风格参考·只学技法，种子「盐钟」`CHOR01-03`，参考安全 lane，3 章 × 1 场，`lib/longzu-literary-scoring.cjs` 打分） | `$env:PLAYWRIGHT_FRONTEND_URL="http://127.0.0.1:5174"; $env:PLAYWRIGHT_API_BASE="http://127.0.0.1:8000"; node scripts/run-longzu-full-cloud-qa.cjs` | `output/playwright/longzu-full-cloud-qa-<ts>/`（同样含 outcome-gate 产物） |
 
 **harness 报告自带的质量维度**（即 A8 的可测锚点，直接读它）：每章 `originality / conflictProgression / characterTension / sceneCausality / continuity / languageTexture / sourceLeakRisk + leakTerms + excerpt`；`chapterSetReview`（跨章 `repeated_patterns` + `reference_safety_findings`）；`writerExperience`（每个功能页的 `score / friction / trust`）；`llmRouteCoverage` + `llmFallbackAudit`（哪些 LLM 节点没配/被本地兜底）；`currentRunBlockers`（每章/每步真实卡点，含 QC `primary_issue_key` / `next_action`）；`rootCauseFindings`（已知"模型质量 vs 系统设计 vs workflow"分类）。
 
-**❗ 北极星硬缺口：两个 harness 都硬编码恰好三章**（`run-currentdb-three-chapter-qa.cjs` 的 `buildChapters()` 在 **scripts/run-currentdb-three-chapter-qa.cjs:1671** 返回固定 3 元素数组 `CDBQA_*_01/02/03`；`run-longzu-full-cloud-qa.cjs` 的 `chapters[]` 固定 `CHOR01/02/03`），**没有章数参数**。本次北极星要五章，处置如下：
-- **默认双轨产出模型**：① **harness 跑三章深链**——做出稿/QC/归档/源泄漏扫描/章组复审/LLM 兜底审计的**测量骨架**与 R0 工装信任门（覆盖种子故事 ch1–3 端到端）；② **林默手走真实浏览器旅程产出全五章**——这才是你要的"在浏览器中体验"，`#snowflake`→物化→`#author`→`#scene`"开始起草"→采纳归档→`#manuscripts` 全五章走 UI（A2 已证可手动驱动）。**章组复审与源泄漏扫描必须覆盖全五章的章号**（`/api/v1/literary-quality/chapter-set-review` 的 `chapter_ids` 传五个）。
-- **可选：把 harness 扩到五章**（**推荐有预算时做，属工装改动**）：在 `buildChapters()` 续写第 4 章（中段升级：赌注抬高、同盟受考验、第 1–2 章伏笔开始兑现）与第 5 章（首次转折/假胜利 + 新钩子），沿用同一场景卡 schema（`chapter_goal`/`main_plot_push`/`scene_writer_brief_json`/`beats_json`/`must_include_text`/`forbidden_text`/源泄漏红线 `protectedTerms`），章组复审会自动按 `chapters.map(c=>c.chapter_id)` 纳入新章。**此改动是测试工装，须走 R0 rig-trust 重验 + 保持脚本能跑通**（红→绿用"扩章后五章都进 `chapterScores` 且章组复审收到 5 个 chapter_id"断言）。
+**✅ Wave 0 已落地（结果闭环治理设计 v1.1 §8 Wave 0，2026-07-10）——结果门禁是唯一权威判定**：
+- **章数已参数化**：`run-currentdb-three-chapter-qa.cjs` 默认 **5 章 × 每章 3 场**（`buildChapters()` 内置玻璃雨五章十五场原创计划；`QA_CHAPTER_COUNT` / `QA_SCENES_PER_CHAPTER` 可裁剪做诊断子跑）；`run-longzu-full-cloud-qa.cjs` 保持 3 章 × 1 场（参考安全 lane），期望值取自自身计划。
+- **结果门禁**：运行收尾调用 `python scripts/playwright_audit_summary.py --outcome-gate <qa-live-results.json>`（判定逻辑由 `backend/tests/test_playwright_audit_summary.py` 全覆盖）。**任一计划场景缺少非空后端归档正文 → 进程退出码非零**；步骤表降级为诊断证据，"步骤完成即通过"语义已删除。判定器不可执行同样按失败处理。
+- **空章节守卫**：无归档正文的章节只输出 `no_draft: true` 标记，不再生成 originality/sourceLeakRisk 等"正常分数"或"暂无明显风险"式安全结论（旧实现空文本拿 originality 9 + sourceLeakRisk 10）。
+- **北极星六阶段通道记录**：`outcome.northstar_phases` 如实记录 `snowflake_planning / materialization / scene_execution / candidate_selection / archive / chapter_aggregation` 的通道（`ui` / `api` / `missing`）；门禁要求全部为 `ui` 才算北极星通过。**当前诚实值为 api/missing → 预期红灯**：候选终选 UI 到 Wave 3 才交付，Wave 1–3 完成前本基准整体红灯是设计内状态（红灯即 Wave 0 交付物），**不得为转绿而放宽判定**。该 lane 只进发布门（设计 §9.3），不进 PR CI。API 深链保留为诊断通道，不冒充 UI 北极星。
 
 **坑（⚠️ 这两脚本是 legacy 时代写的，对 React 主线有已知漂移，R0 工装信任门必须先验它能跑通）**：
 ① **前后端 URL 默认落 legacy**：`PLAYWRIGHT_FRONTEND_URL` 不显式给会默认落到 **5173(Vue)**、`API_BASE` 默认落到 **8001**——**务必显式指向 React 5174 + 真实后端**（核 `.codex-run/*.url`）。

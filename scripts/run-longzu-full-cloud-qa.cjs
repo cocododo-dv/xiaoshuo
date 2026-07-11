@@ -4,6 +4,7 @@ const {
   buildChapterScores,
   buildExperienceScores,
 } = require("./lib/longzu-literary-scoring.cjs");
+const outcomeGateLib = require("./lib/qa-outcome-gate.cjs");
 
 let chromium;
 try {
@@ -36,6 +37,11 @@ const apiBase =
   `http://127.0.0.1:${process.env.PLAYWRIGHT_BACKEND_PORT || "8001"}`;
 const operatorRef = process.env.PLAYWRIGHT_OPERATOR_REF || `qa.longzu.full-cloud.${runTimestamp}`;
 const referencePath = process.env.REFERENCE_BOOK_PATH || "C:\\Users\\duwei\\Downloads\\龙族.txt";
+const pythonExecutable = process.env.PYTHON || "python";
+// Wave 0：本 lane 是参考安全通道，计划为 3 章 × 每章 1 场；结果门禁期望值取自自身计划。
+// 五章北极星基准是 run-currentdb-three-chapter-qa.cjs（默认 5×3）。
+const expectedChapterCount = Math.max(1, Number(process.env.QA_CHAPTER_COUNT || "3"));
+const expectedScenesPerChapter = Math.max(1, Number(process.env.QA_SCENES_PER_CHAPTER || "1"));
 const terminalJobStatuses = new Set([
   "archived",
   "blocked",
@@ -56,7 +62,11 @@ const result = {
     operatorRef,
     referencePath,
     referenceCloudPolicy: "allow_full_cloud",
+    expectedChapterCount,
+    expectedScenesPerChapter,
   },
+  outcome: null,
+  outcomeGate: null,
   steps: [],
   experienceScores: {},
   chapterScores: {},
@@ -87,7 +97,7 @@ const protectedTerms = [
   "屠龙",
 ];
 
-const chapters = [
+const chapterPlan = [
   {
     chapter_id: "CHOR01",
     planned_scene_count: 1,
@@ -97,7 +107,7 @@ const chapters = [
     ending_effect: "残片在夜里敲出不属于当前年份的潮汛回声，迫使林岑承认档案正在被活人改写。",
     must_not: "不得出现梦醒、系统提示、参考书专名、原书人物、学院组织、血统等级或可识别桥段。",
     notes: "原创三章闭环 QA 第一章；只学习抽象节奏，不复刻源书设定。",
-    scene: {
+    scenes: [{
       scene_id: "CHOR01_SC01",
       scene_seq: 1,
       pov_character_id: "CHAR_LINCEN",
@@ -112,7 +122,7 @@ const chapters = [
       target_length_band: "short",
       scene_type: "inciting_clue",
       is_chapter_last: 1,
-    },
+    }],
   },
   {
     chapter_id: "CHOR02",
@@ -123,7 +133,7 @@ const chapters = [
     ending_effect: "监听站播放出失踪者活着的证词，却同时暴露有人正在实时监听他们。",
     must_not: "不得复刻参考书人物、组织、地名、课堂、血统或战斗桥段；不得使用源书式专名。",
     notes: "原创三章闭环 QA 第二章。",
-    scene: {
+    scenes: [{
       scene_id: "CHOR02_SC01",
       scene_seq: 1,
       pov_character_id: "CHAR_LINCEN",
@@ -138,7 +148,7 @@ const chapters = [
       target_length_band: "short",
       scene_type: "investigation_reversal",
       is_chapter_last: 1,
-    },
+    }],
   },
   {
     chapter_id: "CHOR03",
@@ -149,7 +159,7 @@ const chapters = [
     ending_effect: "二人选择先转移幸存者，公开证据被拆成两份，危险也因此升级。",
     must_not: "不得出现源书专名、设定、人物关系或可识别场景；不得把参考文本改写成同构剧情。",
     notes: "原创三章闭环 QA 第三章。",
-    scene: {
+    scenes: [{
       scene_id: "CHOR03_SC01",
       scene_seq: 1,
       pov_character_id: "CHAR_LINCEN",
@@ -164,9 +174,41 @@ const chapters = [
       target_length_band: "short",
       scene_type: "ethical_reveal",
       is_chapter_last: 1,
-    },
+    }],
   },
 ];
+
+const chapters = chapterPlan
+  .slice(0, expectedChapterCount)
+  .map((chapter) => {
+    const scenes = chapter.scenes
+      .slice(0, expectedScenesPerChapter)
+      .map((scene, index, arr) => ({ ...scene, is_chapter_last: index === arr.length - 1 ? 1 : 0 }));
+    return { ...chapter, planned_scene_count: scenes.length, scenes };
+  });
+const northstarPhases = {}; // 北极星六阶段通道记录（ui / api / missing），如实填报
+
+function recordPhase(phase, lane, evidence) {
+  northstarPhases[phase] = { phase, lane, evidence };
+}
+
+// Wave 0 结果门禁：权威判定在 scripts/playwright_audit_summary.py；
+// outcome 组装与调用在 scripts/lib/qa-outcome-gate.cjs（与 currentdb harness 共用）。
+function runOutcomeGate() {
+  return outcomeGateLib.runOutcomeGate({
+    repoRoot,
+    outDir,
+    pythonExecutable,
+    result,
+    chapters,
+    finalScenes,
+    expectedChapterCount,
+    expectedScenesPerChapter,
+    northstarPhases,
+    writeJson,
+    appendLog,
+  });
+}
 
 function readRunFile(fileName) {
   try {
@@ -552,11 +594,21 @@ async function createAuthorWorkspace(page) {
       must_not: chapter.must_not,
       notes: chapter.notes,
     });
-    await apiPost("/api/v1/scenes", { ...chapter.scene, chapter_id: chapter.chapter_id });
+    for (const scene of chapter.scenes) {
+      await apiPost("/api/v1/scenes", { ...scene, chapter_id: chapter.chapter_id });
+    }
   }
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
   await visit(page, "author", "author-workspace-view", "author-workspace-created");
-  return { chapters: chapters.map((item) => item.chapter_id), scenes: chapters.map((item) => item.scene.scene_id) };
+  recordPhase(
+    "materialization",
+    "api",
+    "章节与场景卡经 /api/v1/chapters、/api/v1/scenes 深链创建；UI 仅作证据面板。",
+  );
+  return {
+    chapters: chapters.map((item) => item.chapter_id),
+    scenes: chapters.flatMap((item) => item.scenes.map((scene) => scene.scene_id)),
+  };
 }
 
 async function approveAndPublishReview(reviewId) {
@@ -727,21 +779,51 @@ async function pollSceneRunJob(jobId, sceneId, maxPolls = 720) {
 
 async function exerciseSceneWorkbench(page) {
   await visit(page, "workbench", "scene-workbench-view", "scene-workbench");
+  // Wave 0：不再首败即抛错——逐场记录真实结果并继续，让结果门禁对全部计划场景判定。
   for (const chapter of chapters) {
-    const sceneId = chapter.scene.scene_id;
-    await page.getByTestId("scene-id-input").fill(sceneId).catch(() => null);
-    await page.getByTestId("scene-load-button").click().catch(() => null);
-    const start = await apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs`, {}, 30000);
-    const job = await pollSceneRunJob(start.job_id, sceneId);
-    const output = await collectSceneOutput(sceneId);
-    finalScenes[chapter.chapter_id] = { runJob: job, ...output };
-    await screenshot(page, `scene-workbench-${sceneId.toLowerCase()}`);
-    if (job.status === "failed" || output.sceneStatus !== "archived" || !output.finalRowId) {
-      throw new Error(
-        `${sceneId} did not archive; job=${job.status || "unknown"} scene=${output.sceneStatus || "unknown"} error=${job.error_code || ""} ${job.error_text || ""}`.trim(),
-      );
+    for (const scene of chapter.scenes) {
+      const sceneId = scene.scene_id;
+      const sceneStartedAt = Date.now();
+      const start = await apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs`, {}, 30000);
+      await page.getByTestId("scene-id-input").fill(sceneId).catch(() => null);
+      await page.getByTestId("scene-load-button").click().catch(() => null);
+      const job = await pollSceneRunJob(start.job_id, sceneId);
+      const output = await collectSceneOutput(sceneId);
+      const archived = job.status !== "failed" && output.sceneStatus === "archived" && Boolean(output.finalRowId);
+      const blockReason = archived
+        ? null
+        : `job=${job.status || "unknown"} scene=${output.sceneStatus || "unknown"} ${job.error_code || ""} ${job.error_text || ""}`.trim();
+      finalScenes[sceneId] = {
+        runJob: job,
+        attemptNo: 1,
+        durationMs: Date.now() - sceneStartedAt,
+        tokens: outcomeGateLib.tokensFromOutput(job, output),
+        blockReason,
+        ...output,
+      };
+      writeJson("final-scenes.json", finalScenes);
+      await screenshot(page, `scene-workbench-${sceneId.toLowerCase()}`);
+      if (!archived) {
+        result.warnings.push(`${sceneId} did not archive; ${blockReason}`);
+        appendLog({ type: "scene-job-blocker", sceneId, blockReason });
+      }
     }
   }
+  recordPhase(
+    "scene_execution",
+    "api",
+    "场景运行经 /api/v1/scenes/{id}/run/jobs 深链触发；工作台 UI 仅填表与截图证据。",
+  );
+  recordPhase(
+    "candidate_selection",
+    "missing",
+    "候选终选 UI 到 Wave 3 才交付；style-candidates 接口当前无前端消费者。",
+  );
+  recordPhase(
+    "archive",
+    "api",
+    "归档由后端管线自动完成，无作者 UI 采纳动作。",
+  );
   return finalScenes;
 }
 
@@ -771,13 +853,18 @@ async function exerciseChapterManuscripts(page) {
       120000,
     ).catch((error) => ({ blocked: error.message }));
   }
+  recordPhase(
+    "chapter_aggregation",
+    "api",
+    "章节聚合经 /api/v1/chapters/{id}/runtime/aggregate/final 深链触发；UI 仅走查证据。",
+  );
   await screenshot(page, "chapter-manuscripts-aggregate");
   return aggregates;
 }
 
 async function exerciseInteropCenter(page) {
   await visit(page, "interop", "interop-center-view", "interop-center");
-  const sourceScene = finalScenes.CHOR01 || {};
+  const sourceScene = finalScenes[chapters[0]?.scenes[0]?.scene_id] || {};
   const worksheetBundleId = `bundle_interop_full_cloud_${Date.now()}`;
   const worksheet = `
 bundle_id: ${worksheetBundleId}
@@ -922,18 +1009,25 @@ function buildReport() {
     .join("\n");
   const chapterSections = chapters
     .map((chapter) => {
-      const output = finalScenes[chapter.chapter_id] || {};
       const score = result.chapterScores[chapter.chapter_id] || {};
-      return `### ${chapter.chapter_id} / ${chapter.scene.scene_id}
-- 最终行：${output.finalRowId || "未生成"}
-- 状态：${output.sceneStatus || "unknown"}
-- Bundle：${output.bundleId || "none"}
-- 字数：${score.characters || 0}
-- 评分：原创性 ${score.originality || 0}/10，冲突推进 ${score.conflictProgression || 0}/10，人物张力 ${score.characterTension || 0}/10，场景因果 ${score.sceneCausality || 0}/10，连续性 ${score.continuity || 0}/10，源书泄漏风险控制 ${score.sourceLeakRisk || 0}/10
+      const sceneLines = chapter.scenes
+        .map((scene) => {
+          const output = finalScenes[scene.scene_id] || {};
+          return `- ${scene.scene_id}：状态 ${output.sceneStatus || "not_started"}，最终行 ${output.finalRowId || "未生成"}，字数 ${(output.finalText || "").length}，tokens ${output.tokens ?? "-"}，耗时 ${output.durationMs != null ? Math.round(output.durationMs / 1000) + "s" : "-"}${output.blockReason ? `，阻断 ${preview(output.blockReason, 120)}` : ""}`;
+        })
+        .join("\n");
+      const firstOutput = finalScenes[chapter.scenes[0]?.scene_id] || {};
+      const scoreLines = score.no_draft
+        ? `- 评分：无稿——不生成文学评分与来源安全结论（${score.note || "no draft"}）`
+        : `- 评分：原创性 ${score.originality || 0}/10，冲突推进 ${score.conflictProgression || 0}/10，人物张力 ${score.characterTension || 0}/10，场景因果 ${score.sceneCausality || 0}/10，连续性 ${score.continuity || 0}/10，源书泄漏风险控制 ${score.sourceLeakRisk || 0}/10
 - source_safety_scan：${JSON.stringify(score.source_safety_scan || null)}
 - 语言质感：${score.languageTexture || 0}/10
 - 人工审美备注：${score.manualRemark || "none"}
-- 摘录：${preview(output.finalText || "", 360)}
+- 摘录：${preview(firstOutput.finalText || "", 360)}`;
+      return `### ${chapter.chapter_id}（${chapter.scenes.length} 场）
+${sceneLines}
+- 章字数：${score.characters || 0}
+${scoreLines}
 `;
     })
     .join("\n");
@@ -942,9 +1036,21 @@ function buildReport() {
     .join("\n");
   const fixRows = result.systemFixes.map((item) => `| ${item.fix} | ${item.status} | ${item.verification} |`).join("\n");
   const screenshots = result.screenshots.map((item) => `- ${item}`).join("\n") || "- 无截图";
-  return `# Longzu Full-Cloud 三章闭环 QA 报告
+  const gate = result.outcomeGate;
+  const gateBlock = gate
+    ? `## 结果门禁（唯一权威判定）
+
+- 判定：**${gate.passed ? "通过" : "失败"}**${gate.error ? `（${gate.error}）` : ""}
+- 详情：outcome-gate-verdict.md
+- 语义：${expectedChapterCount} 章 × ${expectedScenesPerChapter} 场全部存在非空后端归档正文才算成稿成功；步骤表只是诊断证据。`
+    : `## 结果门禁（唯一权威判定）
+
+- 判定：**失败**（门禁未执行——运行提前中止或判定器不可用；门禁未执行不得视为通过）`;
+  return `# Longzu Full-Cloud 三章闭环 QA 报告（参考安全 lane，${expectedChapterCount} 章 × ${expectedScenesPerChapter} 场）
 
 生成时间：${new Date().toISOString()}
+
+${gateBlock}
 
 ## 环境
 - 前端：${frontendUrl}
@@ -954,7 +1060,7 @@ function buildReport() {
 - 参考策略：allow_full_cloud
 - 输出目录：${outDir}
 
-## 步骤证据
+## 步骤证据（仅诊断，不构成成稿判定）
 | 结果 | 步骤 | 耗时秒 | 备注 |
 | --- | --- | ---: | --- |
 ${stepRows}
@@ -1019,8 +1125,16 @@ async function main() {
     fillRootCauseFindings();
     result.meta.finishedAt = new Date().toISOString();
     writeJson("final-scenes.json", finalScenes);
+    // Wave 0：结果门禁是唯一权威判定——任一计划场景无非空归档正文即退出码非零。
+    const gatePassed = runOutcomeGate();
     writeJson("qa-live-results.json", result);
     fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
+    if (!gatePassed) {
+      process.exitCode = 1;
+      console.error(
+        `outcome gate FAIL: 要求 ${expectedChapterCount} 章 × ${expectedScenesPerChapter} 场全部存在非空后端归档正文；详见 ${path.join(outDir, "outcome-gate-verdict.md")}`,
+      );
+    }
   }
 }
 
@@ -1032,6 +1146,7 @@ main().catch((error) => {
   evaluateChapterScores();
   fillRootCauseFindings();
   writeJson("final-scenes.json", finalScenes);
+  runOutcomeGate();
   writeJson("qa-live-results.json", result);
   fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
   appendLog({ type: "fatal", error: result.meta.fatalError });

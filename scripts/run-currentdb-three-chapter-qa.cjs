@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const outcomeGateLib = require("./lib/qa-outcome-gate.cjs");
 
 let chromium;
 try {
@@ -31,6 +32,11 @@ const operatorRef = process.env.PLAYWRIGHT_OPERATOR_REF || `qa.currentdb.three-c
 const referencePath = process.env.REFERENCE_BOOK_PATH || "C:\\Users\\duwei\\Downloads\\龙族.txt";
 const referenceCloudPolicy = "segments_only";
 const maxSceneJobAttempts = Number(process.env.SCENE_JOB_ATTEMPTS || "3");
+// Wave 0（结果闭环治理设计 v1.1 §8）：章节数参数化，第一阶段基准固定 5 章 × 每章 3 场。
+// 结果门禁（scripts/playwright_audit_summary.py --outcome-gate）是唯一权威判定：
+// 任何计划场景缺少非空后端归档正文，整次运行退出码非零——与步骤 ok 标志无关。
+const expectedChapterCount = Math.max(1, Number(process.env.QA_CHAPTER_COUNT || "5"));
+const expectedScenesPerChapter = Math.max(1, Number(process.env.QA_SCENES_PER_CHAPTER || "3"));
 const terminalJobStatuses = new Set([
   "archived",
   "blocked",
@@ -59,8 +65,19 @@ const protectedTerms = [
   "屠龙",
 ];
 
-const chapters = buildChapters(runKey);
-const finalScenes = {};
+const chapters = buildChapters(runKey)
+  .slice(0, expectedChapterCount)
+  .map((chapter) => {
+    const scenes = chapter.scenes
+      .slice(0, expectedScenesPerChapter)
+      .map((scene, index, arr) => ({ ...scene, is_chapter_last: index === arr.length - 1 ? 1 : 0 }));
+    return { ...chapter, planned_scene_count: scenes.length, scenes };
+  });
+const plannedSceneList = chapters.flatMap((chapter) =>
+  chapter.scenes.map((scene) => ({ chapter_id: chapter.chapter_id, scene_id: scene.scene_id })),
+);
+const finalScenes = {}; // 按 scene_id 键控的每场结果记录
+const northstarPhases = {}; // 北极星六阶段通道记录（ui / api / missing），如实填报
 const result = {
   meta: {
     startedAt: new Date().toISOString(),
@@ -77,7 +94,12 @@ const result = {
     resetAuthorState,
     manageDevServices,
     assumeServicesStopped,
+    expectedChapterCount,
+    expectedScenesPerChapter,
+    plannedSceneCount: plannedSceneList.length,
   },
+  outcome: null,
+  outcomeGate: null,
   steps: [],
   writerExperience: {},
   chapterScores: {},
@@ -823,7 +845,7 @@ async function createOriginalWorkspace(page) {
   for (const chapter of chapters) {
     await apiPost("/api/v1/chapters", {
       chapter_id: chapter.chapter_id,
-      planned_scene_count: 1,
+      planned_scene_count: chapter.scenes.length,
       mid_aggregate_enabled: 0,
       chapter_goal: chapter.chapter_goal,
       main_plot_push: chapter.main_plot_push,
@@ -833,26 +855,40 @@ async function createOriginalWorkspace(page) {
       notes: chapter.notes,
       writer_brief_json: chapter.writer_brief_json,
     });
-    await apiPost("/api/v1/scenes", {
-      ...chapter.scene,
-      chapter_id: chapter.chapter_id,
-      writer_brief_json: chapter.scene_writer_brief_json,
-    });
+    for (const scene of chapter.scenes) {
+      await apiPost("/api/v1/scenes", {
+        ...scene,
+        chapter_id: chapter.chapter_id,
+      });
+    }
   }
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
   await visit(page, "author", "author-workspace-view", "author-workspace-created");
-  recordExperience("author workspace", 8, "API 建章稳定，UI 能作为证据面板；表单对批量三章仍偏慢。");
-  return { chapterIds: chapters.map((item) => item.chapter_id), sceneIds: chapters.map((item) => item.scene.scene_id) };
+  recordPhase(
+    "materialization",
+    "api",
+    "章节与场景卡经 /api/v1/chapters、/api/v1/scenes 深链创建；UI 仅作证据面板。北极星要求走雪花物化 UI（Wave 1–3 后翻绿）。",
+  );
+  recordExperience("author workspace", 8, "API 建章稳定，UI 能作为证据面板；表单对批量五章仍偏慢。");
+  return {
+    chapterIds: chapters.map((item) => item.chapter_id),
+    sceneIds: chapters.flatMap((item) => item.scenes.map((scene) => scene.scene_id)),
+  };
 }
 
 async function exerciseSnowflake(page) {
   await visit(page, "snowflake-workbench", "snowflake-workbench-view", "snowflake-workbench-currentdb");
-  recordExperience("snowflake planning", 7, "雪花规划适合从主题推到场景，但当前 QA 需要 API 保证三章 ID 隔离。");
+  recordPhase(
+    "snowflake_planning",
+    "api",
+    "雪花页仅作走查证据；规划数据由 harness 内置计划经 API 写入，未走真实雪花 UI 十步。",
+  );
+  recordExperience("snowflake planning", 7, "雪花规划适合从主题推到场景，但当前 QA 仍需 API 保证章节 ID 隔离。");
   return { seed: storySeed, plannedChapters: chapters.length };
 }
 
 async function exerciseWriterRoomAndDrafts(page) {
-  const sceneId = chapters[0].scene.scene_id;
+  const sceneId = chapters[0].scenes[0].scene_id;
   const ensured = await apiPost(`/api/v1/author-drafts/scene/${encodeURIComponent(sceneId)}/ensure-blank`, {});
   const draft = ensured.draft || ensured;
   const saved = await apiPatch(`/api/v1/author-drafts/${encodeURIComponent(draft.draft_id)}`, {
@@ -872,7 +908,7 @@ async function exerciseReviewInbox(page, reviewIds = []) {
     review_id: reviewId,
     item_type: "calibration_candidate",
     chapter_id: chapters[0].chapter_id,
-    scene_id: chapters[0].scene.scene_id,
+    scene_id: chapters[0].scenes[0].scene_id,
     status: "pending",
     candidate_text: "原创线索以选择代价推动，不搬运参考书专名、设定和标志性桥段。",
     active_on_approve: 1,
@@ -922,7 +958,7 @@ async function createKnowledgeReview(spec) {
     review_id: spec.review_id,
     item_type: spec.item_type,
     chapter_id: spec.chapter_id || chapters[0].chapter_id,
-    scene_id: spec.scene_id || chapters[0].scene.scene_id,
+    scene_id: spec.scene_id || chapters[0].scenes[0].scene_id,
     status: "pending",
     candidate_text: spec.candidate_text,
     active_on_approve: 1,
@@ -975,11 +1011,22 @@ async function exerciseCharacterKnowledge(page) {
           "The witness speaks in cautious fragments, protecting names and locations while giving one exact sensory detail per answer.",
       },
     },
+    {
+      review_id: `review_currentdb_voice_guqing_${runKey}`,
+      item_type: "voice_card_candidate",
+      candidate_text: "Voice profile for Gu Qing: information broker, half ally half threat, prices everything before feeling anything.",
+      candidate_payload_json: {
+        lineage_key: "VOICE_CHAR_GUQING",
+        character_id: "CHAR_GUQING",
+        text:
+          "Gu Qing speaks in offers and deadlines. Every sentence carries a price tag or an exit route; sincerity only leaks out in the last clause.",
+      },
+    },
     ...chapters.map((chapter, index) => ({
       review_id: `review_currentdb_calibration_${index + 1}_${runKey}`,
       item_type: "calibration_candidate",
       chapter_id: chapter.chapter_id,
-      scene_id: chapter.scene.scene_id,
+      scene_id: chapter.scenes[0].scene_id,
       candidate_text:
         "Chapter calibration: clue first, explanation later, one visible choice cost at the end, and no source-book named transfer.",
       candidate_payload_json: {
@@ -1030,63 +1077,98 @@ async function exerciseKnowledgeAndIndex(page) {
 async function exerciseSceneWorkbench(page) {
   await visit(page, "workbench", "scene-workbench-view", "scene-workbench-currentdb");
   for (const chapter of chapters) {
-    const sceneId = chapter.scene.scene_id;
-    let job = null;
-    let output = null;
-    for (let attemptNo = 1; attemptNo <= maxSceneJobAttempts; attemptNo += 1) {
-      await page.getByTestId("scene-id-input").fill(sceneId).catch(() => null);
-      await page.getByTestId("scene-load-button").click().catch(() => null);
-      const started = await apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs`, {}, 30000);
-      job = await pollSceneRunJob(started.job_id, sceneId);
-      output = await collectSceneOutput(sceneId);
-      finalScenes[chapter.chapter_id] = { runJob: job, attemptNo, ...output };
-      writeJson("final-scenes.json", finalScenes);
-      await screenshot(page, `scene-workbench-${sceneId.toLowerCase()}-attempt-${attemptNo}`);
-      if (output.sceneStatus === "archived" && output.finalRowId) {
+    for (const scene of chapter.scenes) {
+      const sceneId = scene.scene_id;
+      const sceneStartedAt = Date.now();
+      let job = null;
+      let output = null;
+      let blockReason = null;
+      let attemptsUsed = 0;
+      for (let attemptNo = 1; attemptNo <= maxSceneJobAttempts; attemptNo += 1) {
+        attemptsUsed = attemptNo;
+        await page.getByTestId("scene-id-input").fill(sceneId).catch(() => null);
+        await page.getByTestId("scene-load-button").click().catch(() => null);
+        const started = await apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs`, {}, 30000);
+        job = await pollSceneRunJob(started.job_id, sceneId);
+        output = await collectSceneOutput(sceneId);
+        finalScenes[sceneId] = {
+          runJob: job,
+          attemptNo,
+          durationMs: Date.now() - sceneStartedAt,
+          tokens: tokensFromOutput(job, output),
+          blockReason: null,
+          ...output,
+        };
+        writeJson("final-scenes.json", finalScenes);
+        await screenshot(page, `scene-workbench-${sceneId.toLowerCase()}-attempt-${attemptNo}`);
+        if (output.sceneStatus === "archived" && output.finalRowId) {
+          break;
+        }
+        if (attemptNo < maxSceneJobAttempts && isContinuableSceneRunState(output.sceneStatus)) {
+          const reason = `${output.sceneStatus}: ${output.hardQc?.next_action || output.nearFinalSummary?.failure_class || "continue"}`;
+          result.warnings.push(`${sceneId} continuing scene job after revision branch: ${reason}`);
+          appendLog({ type: "scene-job-continue", sceneId, attemptNo, reason });
+          await sleep(5000);
+          continue;
+        }
+        if (attemptNo < maxSceneJobAttempts && isRetryableSceneRunBlocker(job, output)) {
+          const reason = retryableSceneRunReason(job, output);
+          result.warnings.push(`${sceneId} retrying scene job after transient blocker: ${reason}`);
+          appendLog({ type: "scene-job-retry", sceneId, attemptNo, reason });
+          await sleep(15000);
+          continue;
+        }
+        const blocker = {
+          chapterId: chapter.chapter_id,
+          sceneId,
+          attemptNo,
+          jobStatus: job?.status || "unknown",
+          sceneStatus: output.sceneStatus || "unknown",
+          issueKeys: issueKeysFromQc(output.hardQc || job?.result_summary?.latest_qc || null),
+          primaryIssueKey:
+            output.hardQc?.primary_issue_key ||
+            issueKeysFromQc(output.hardQc || job?.result_summary?.latest_qc || null)[0] ||
+            null,
+          nextAction:
+            output.humanReviewSummary?.trigger_reason ||
+            output.humanReviewSummary?.recommended_action ||
+            output.nearFinalSummary?.failure_class ||
+            output.nearFinalSummary?.revision_candidate_id ||
+            output.hardQc?.next_action ||
+            job.result_summary?.next_action ||
+            "human review blocker",
+          humanReviewSummary: output.humanReviewSummary || null,
+          rewriteCounters: output.rewriteCounters || null,
+        };
+        blockReason = `${blocker.sceneStatus}: ${blocker.nextAction}`;
+        result.sceneRunBlockers.push(blocker);
+        result.warnings.push(`${sceneId} blocked after ${attemptNo} attempt(s): ${blocker.nextAction}`);
+        appendLog({ type: "scene-job-blocker", ...blocker });
         break;
       }
-      if (attemptNo < maxSceneJobAttempts && isContinuableSceneRunState(output.sceneStatus)) {
-        const reason = `${output.sceneStatus}: ${output.hardQc?.next_action || output.nearFinalSummary?.failure_class || "continue"}`;
-        result.warnings.push(`${sceneId} continuing scene job after revision branch: ${reason}`);
-        appendLog({ type: "scene-job-continue", sceneId, attemptNo, reason });
-        await sleep(5000);
-        continue;
+      if (finalScenes[sceneId]) {
+        finalScenes[sceneId].attemptNo = attemptsUsed;
+        finalScenes[sceneId].durationMs = Date.now() - sceneStartedAt;
+        finalScenes[sceneId].blockReason = blockReason;
+        writeJson("final-scenes.json", finalScenes);
       }
-      if (attemptNo < maxSceneJobAttempts && isRetryableSceneRunBlocker(job, output)) {
-        const reason = retryableSceneRunReason(job, output);
-        result.warnings.push(`${sceneId} retrying scene job after transient blocker: ${reason}`);
-        appendLog({ type: "scene-job-retry", sceneId, attemptNo, reason });
-        await sleep(15000);
-        continue;
-      }
-      const blocker = {
-        chapterId: chapter.chapter_id,
-        sceneId,
-        attemptNo,
-        jobStatus: job?.status || "unknown",
-        sceneStatus: output.sceneStatus || "unknown",
-        issueKeys: issueKeysFromQc(output.hardQc || job?.result_summary?.latest_qc || null),
-        primaryIssueKey:
-          output.hardQc?.primary_issue_key ||
-          issueKeysFromQc(output.hardQc || job?.result_summary?.latest_qc || null)[0] ||
-          null,
-        nextAction:
-          output.humanReviewSummary?.trigger_reason ||
-          output.humanReviewSummary?.recommended_action ||
-          output.nearFinalSummary?.failure_class ||
-          output.nearFinalSummary?.revision_candidate_id ||
-          output.hardQc?.next_action ||
-          job.result_summary?.next_action ||
-          "human review blocker",
-        humanReviewSummary: output.humanReviewSummary || null,
-        rewriteCounters: output.rewriteCounters || null,
-      };
-      result.sceneRunBlockers.push(blocker);
-      result.warnings.push(`${sceneId} blocked after ${attemptNo} attempt(s): ${blocker.nextAction}`);
-      appendLog({ type: "scene-job-blocker", ...blocker });
-      break;
     }
   }
+  recordPhase(
+    "scene_execution",
+    "api",
+    "场景运行经 /api/v1/scenes/{id}/run/jobs 深链触发；工作台 UI 仅填表与截图证据。",
+  );
+  recordPhase(
+    "candidate_selection",
+    "missing",
+    "候选终选 UI 到 Wave 3 才交付（设计 v1.1 §8 Wave 3）；style-candidates 接口当前无前端消费者。",
+  );
+  recordPhase(
+    "archive",
+    "api",
+    "归档由后端管线自动完成，无作者 UI 采纳动作；Wave 1 归档单入口 + Wave 3 终选后此阶段走 UI。",
+  );
   const blockedCount = result.sceneRunBlockers.length;
   recordExperience(
     "scene generation",
@@ -1166,6 +1248,11 @@ async function exerciseChapterManuscripts(page) {
       120000,
     ).catch((error) => ({ blocked: error.message }));
   }
+  recordPhase(
+    "chapter_aggregation",
+    "api",
+    "章节聚合经 /api/v1/chapters/{id}/runtime/aggregate/final 深链触发；UI 仅走查证据。",
+  );
   recordExperience("manuscripts", 8, "鎴愮鑱氬悎璁╀綔鑰呰兘浠庡満鏅浆涓虹珷鑺傞槄璇伙紝鏄笁绔犻棴鐜獙鏀跺繀椤诲叆鍙ｃ€?");
   await screenshot(page, "chapter-manuscripts-aggregate");
   return aggregates;
@@ -1192,7 +1279,7 @@ async function exerciseQualityAndChapterSet(page) {
 }
 
 async function exerciseDeepDeskAndLongform(page) {
-  const sceneId = chapters[0].scene.scene_id;
+  const sceneId = chapters[0].scenes[0].scene_id;
   const chapterId = chapters[0].chapter_id;
   await visit(page, "deepdesk", "writer-deep-desk", "writer-deep-desk-currentdb");
   const sceneReview = await apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/deep-review`, {}, 120000).catch((error) => ({
@@ -1210,11 +1297,12 @@ async function exerciseDeepDeskAndLongform(page) {
 
 async function exerciseInterop(page) {
   await visit(page, "interop", "interop-center-view", "interop-center-currentdb");
-  const sourceScene = finalScenes[chapters[0].chapter_id] || {};
+  const firstSceneId = chapters[0].scenes[0].scene_id;
+  const sourceScene = finalScenes[firstSceneId] || {};
   const worksheetBundleId = `bundle_currentdb_${runKey}`;
   const worksheet = `
 bundle_id: ${worksheetBundleId}
-scene_id: ${chapters[0].scene.scene_id}
+scene_id: ${firstSceneId}
 chapter_id: ${chapters[0].chapter_id}
 hash_contract_version: BSHASH_v1
 hash_alg: sha256
@@ -1223,11 +1311,11 @@ created_by_action: currentdb_three_chapter_qa
 snapshot:
   contract_version: BSHASH_v1
   stage_allowlist_name: bundle_build_allowlist_v1
-  scene_id: ${chapters[0].scene.scene_id}
+  scene_id: ${firstSceneId}
   chapter_id: ${chapters[0].chapter_id}
   source_version_refs:
     chapter_goal: ${chapters[0].chapter_id}
-    scene_card: ${chapters[0].scene.scene_id}
+    scene_card: ${firstSceneId}
   resolved_ref_ids:
     relation_ids: []
     world_rule_ids: []
@@ -1237,7 +1325,7 @@ snapshot:
       ref_id: ${chapters[0].chapter_id}
       digest_key: chapter_goal
     - slot: scene_card
-      ref_id: ${chapters[0].scene.scene_id}
+      ref_id: ${firstSceneId}
       digest_key: scene_card
   inline_digests:
     chapter_goal: glass rain at midnight records future disappearances
@@ -1327,14 +1415,37 @@ function evaluateChapterScores() {
   result.chapterScores = {};
   result.protectedTermScan = {};
   for (const chapter of chapters) {
-    const output = finalScenes[chapter.chapter_id] || {};
-    const finalText = output.finalText || "";
+    const sceneOutputs = chapter.scenes.map((scene) => ({
+      scene,
+      output: finalScenes[scene.scene_id] || {},
+    }));
+    const allArchived = sceneOutputs.every(
+      ({ output }) => output.sceneStatus === "archived" && output.finalRowId && (output.finalText || "").length > 0,
+    );
+    // Wave 0 实施项 4：空章节不得生成正常文学分数或"暂无明显风险"。
+    // 旧实现对空文本仍给 scoreByTokens 保底 4 分、originality 9、sourceLeakRisk 10——
+    // 空章节拿满分安全，正是"无稿但绿灯"的评分侧变体。无稿时只输出守卫标记。
+    if (!allArchived) {
+      result.chapterScores[chapter.chapter_id] = {
+        no_draft: true,
+        status_by_scene: Object.fromEntries(
+          sceneOutputs.map(({ scene, output }) => [scene.scene_id, output.sceneStatus || "not_started"]),
+        ),
+        note: "无稿：章内存在未归档或空正文场景，不生成文学评分与来源安全结论。",
+      };
+      result.protectedTermScan[chapter.chapter_id] = {
+        skipped: true,
+        reason: "no archived final text; safety verdict withheld",
+      };
+      continue;
+    }
+    const finalText = sceneOutputs.map(({ output }) => output.finalText || "").join("\n");
     const safety = scanProtectedTerms(finalText);
     result.protectedTermScan[chapter.chapter_id] = safety;
     result.chapterScores[chapter.chapter_id] = {
-      sceneId: chapter.scene.scene_id,
-      finalRowId: output.finalRowId || null,
-      status: output.sceneStatus || "unknown",
+      sceneIds: chapter.scenes.map((scene) => scene.scene_id),
+      finalRowIds: sceneOutputs.map(({ output }) => output.finalRowId || null),
+      status: "archived",
       characters: finalText.length,
       originality: safety.safe ? 9 : 4,
       conflictProgression: scoreByTokens(finalText, ["选择", "代价", "保护", "公开", "失踪", "反证"]),
@@ -1342,11 +1453,41 @@ function evaluateChapterScores() {
       sceneCausality: scoreByTokens(finalText, ["因为", "所以", "发现", "反证", "决定", "记录"]),
       continuity: scoreByTokens(finalText, ["玻璃雨", "零点", "废线站", "真相", "证人"]),
       sourceLeakRisk: safety.safe ? 10 : 0,
-      source_safety_scan: output.source_safety_scan || safety,
+      source_safety_scan: sceneOutputs.map(({ scene, output }) => ({
+        scene_id: scene.scene_id,
+        scan: output.source_safety_scan || null,
+      })),
       leakTerms: safety.blocked_terms.map((item) => item.term),
       excerpt: preview(finalText, 360),
     };
   }
+}
+
+function tokensFromOutput(job, output) {
+  return outcomeGateLib.tokensFromOutput(job, output);
+}
+
+function recordPhase(phase, lane, evidence) {
+  northstarPhases[phase] = { phase, lane, evidence };
+}
+
+// Wave 0 结果门禁：唯一权威判定在 scripts/playwright_audit_summary.py（pytest 全覆盖）；
+// outcome 结构组装与判定器调用在 scripts/lib/qa-outcome-gate.cjs（两个 harness 共用）。
+// 判定器不可执行时按失败处理，不得视为通过。
+function runOutcomeGate() {
+  return outcomeGateLib.runOutcomeGate({
+    repoRoot,
+    outDir,
+    pythonExecutable,
+    result,
+    chapters,
+    finalScenes,
+    expectedChapterCount,
+    expectedScenesPerChapter,
+    northstarPhases,
+    writeJson,
+    appendLog,
+  });
 }
 
 function scoreByTokens(text, tokens) {
@@ -1376,31 +1517,33 @@ function deriveCurrentRunBlockerFindings() {
     }
   }
   for (const chapter of chapters) {
-    const output = finalScenes[chapter.chapter_id] || {};
-    const sceneStatus = output.sceneStatus || "not_started";
-    if (sceneStatus === "archived" && output.finalRowId) {
-      continue;
+    for (const scene of chapter.scenes) {
+      const output = finalScenes[scene.scene_id] || {};
+      const sceneStatus = output.sceneStatus || "not_started";
+      if (sceneStatus === "archived" && output.finalRowId && (output.finalText || "").length > 0) {
+        continue;
+      }
+      const hardQc = output.hardQc || output.runJob?.result_summary?.latest_qc || null;
+      const issueKeys = issueKeysFromQc(hardQc);
+      blockers.push({
+        source: "scene",
+        chapterId: chapter.chapter_id,
+        sceneId: scene.scene_id,
+        sceneStatus,
+        finalRowId: output.finalRowId || null,
+        jobStatus: output.runJob?.status || null,
+        jobErrorCode: output.runJob?.error_code || null,
+        jobErrorText: preview(output.runJob?.error_text, 360),
+        primaryIssueKey: hardQc?.primary_issue_key || issueKeys[0] || null,
+        issueKeys,
+        nextAction:
+          output.nearFinalSummary?.failure_class ||
+          output.nearFinalSummary?.revision_candidate_id ||
+          hardQc?.next_action ||
+          output.runJob?.result_summary?.next_action ||
+          "inspect current scene blocker",
+      });
     }
-    const hardQc = output.hardQc || output.runJob?.result_summary?.latest_qc || null;
-    const issueKeys = issueKeysFromQc(hardQc);
-    blockers.push({
-      source: "scene",
-      chapterId: chapter.chapter_id,
-      sceneId: chapter.scene.scene_id,
-      sceneStatus,
-      finalRowId: output.finalRowId || null,
-      jobStatus: output.runJob?.status || null,
-      jobErrorCode: output.runJob?.error_code || null,
-      jobErrorText: preview(output.runJob?.error_text, 360),
-      primaryIssueKey: hardQc?.primary_issue_key || issueKeys[0] || null,
-      issueKeys,
-      nextAction:
-        output.nearFinalSummary?.failure_class ||
-        output.nearFinalSummary?.revision_candidate_id ||
-        hardQc?.next_action ||
-        output.runJob?.result_summary?.next_action ||
-        "inspect current scene blocker",
-    });
   }
   result.currentRunBlockers = blockers;
   return blockers;
@@ -1566,16 +1709,22 @@ function buildReport() {
     .join("\n");
   const chapterSections = chapters
     .map((chapter) => {
-      const output = finalScenes[chapter.chapter_id] || {};
       const score = result.chapterScores[chapter.chapter_id] || {};
-      return `### ${chapter.chapter_id} / ${chapter.scene.scene_id}
-- 最终行：${output.finalRowId || "未生成"}
-- 状态：${output.sceneStatus || "unknown"}
-- Bundle：${output.bundleId || "none"}
-- 字数：${score.characters || 0}
-- 评分：原创性 ${score.originality || 0}/10，冲突推进 ${score.conflictProgression || 0}/10，人物张力 ${score.characterTension || 0}/10，场景因果 ${score.sceneCausality || 0}/10，连续性 ${score.continuity || 0}/10，源书泄漏风险控制 ${score.sourceLeakRisk || 0}/10
+      const sceneLines = chapter.scenes
+        .map((scene) => {
+          const output = finalScenes[scene.scene_id] || {};
+          return `- ${scene.scene_id}：状态 ${output.sceneStatus || "not_started"}，最终行 ${output.finalRowId || "未生成"}，字数 ${(output.finalText || "").length}，tokens ${output.tokens ?? "-"}，耗时 ${output.durationMs != null ? Math.round(output.durationMs / 1000) + "s" : "-"}，重试 ${output.attemptNo ?? 0}${output.blockReason ? `，阻断 ${preview(output.blockReason, 120)}` : ""}`;
+        })
+        .join("\n");
+      const scoreLine = score.no_draft
+        ? `- 评分：无稿——不生成文学评分与来源安全结论（${score.note || "no draft"}）`
+        : `- 评分：原创性 ${score.originality || 0}/10，冲突推进 ${score.conflictProgression || 0}/10，人物张力 ${score.characterTension || 0}/10，场景因果 ${score.sceneCausality || 0}/10，连续性 ${score.continuity || 0}/10，源书泄漏风险控制 ${score.sourceLeakRisk || 0}/10
 - source_safety_scan：${JSON.stringify(score.source_safety_scan || null)}
-- 摘录：${score.excerpt || ""}
+- 摘录：${score.excerpt || ""}`;
+      return `### ${chapter.chapter_id}（${chapter.scenes.length} 场）
+${sceneLines}
+- 章字数：${score.characters || 0}
+${scoreLine}
 `;
     })
     .join("\n");
@@ -1597,9 +1746,22 @@ function buildReport() {
     result.layoutFindings
       .map((item) => `| ${item.screenshot} | ${item.type} | ${item.target || "-"} | ${preview(item.detail, 120)} |`)
       .join("\n") || "| - | clean | - | 未发现布局巡检问题 |";
-  return `# Current-DB 三章小说闭环 QA 报告
+  const gate = result.outcomeGate;
+  const gateBlock = gate
+    ? `## 结果门禁（唯一权威判定）
+
+- 判定：**${gate.passed ? "通过" : "失败"}**${gate.error ? `（${gate.error}）` : ""}
+- 详情：outcome-gate-verdict.md（每场归档/字数/token/耗时/阻断明细）
+- 语义：${expectedChapterCount} 章 × ${expectedScenesPerChapter} 场全部存在非空后端归档正文才算成稿成功；步骤表只是诊断证据，不构成成稿判定。
+- 阶段性红灯声明：候选终选 UI 到 Wave 3 交付，Wave 1–3 完成前本基准预期红灯（结果闭环治理设计 v1.1 §8 Wave 0）。`
+    : `## 结果门禁（唯一权威判定）
+
+- 判定：**失败**（门禁未执行——运行提前中止或判定器不可用；门禁未执行不得视为通过）`;
+  return `# Current-DB 五章小说结果闭环 QA 报告（${expectedChapterCount} 章 × ${expectedScenesPerChapter} 场）
 
 生成时间：${new Date().toISOString()}
+
+${gateBlock}
 
 ## 环境
 - 当前库：${resetAuthorState ? "是，运行前重置作者态" : "是，不 reset"}
@@ -1614,7 +1776,7 @@ function buildReport() {
 - 输出目录：${outDir}
 - 脏工作树：${preview(result.meta.preflight?.gitStatus || "clean", 500)}
 
-## 步骤证据
+## 步骤证据（仅诊断，不构成成稿判定）
 | 结果 | 步骤 | 耗时秒 | 备注 |
 | --- | --- | ---: | --- |
 ${stepRows}
@@ -1624,7 +1786,7 @@ ${stepRows}
 | --- | ---: | --- | --- | --- |
 ${experienceRows}
 
-## 三章创作结果
+## 各章创作结果
 ${chapterSections}
 
 ## 章组质量与参考安全
@@ -1670,10 +1832,11 @@ ${screenshots}
 
 function buildChapters(suffix) {
   const prefix = `CDBQA_${suffix}`;
+  const forbidden = "不得照搬参考书原句、专名、人物、学院组织、血统体系、屠龙或标志性桥段。";
   return [
     {
       chapter_id: `${prefix}_01`,
-      planned_scene_count: 1,
+      planned_scene_count: 3,
       chapter_goal: "第一章：零点玻璃雨落在未来失踪名单上，城市档案修复师沈闻发现记录并非预言，而是有人提前写入的失踪顺序。",
       main_plot_push: "建立玻璃雨、零点广播、未来失踪名单三者因果，逼沈闻从旁观修复者变成证人保护者。",
       emotional_target: "沈闻从职业冷静被迫转入道德焦虑：若公开名单，可能加速名单上的人消失。",
@@ -1686,44 +1849,109 @@ function buildChapters(suffix) {
         must_deliver: ["零点玻璃雨", "未来失踪记录", "保护证人的选择雏形"],
         avoid: protectedTerms,
       },
-      scene_writer_brief_json: {
-        scene_pressure: "沈闻必须决定先报警还是先找到名单上的活人。",
-        texture: "玻璃、站厅回声、雨停在半空的静电感。",
-        choice_under_pressure: "沈闻必须在点击公开前拔掉通讯线保护第一个活人，或保留联网公开证据之间二选一。",
-        power_shift: "沈闻从修复档案的旁观者变成握有危险证据的人，许照从质疑者变成拦住他冲动公开的人。",
-        new_information: "零点玻璃雨记录的日期晚于当前时间，名单第一人仍活着并已被锁定。",
-        emotional_turn: "沈闻把技术异常当作故障处理，转为意识到自己正在决定一个活人的风险。",
-        image_anchor: "停在半空的玻璃雨和伞面上尚未落下的碎片。",
-        reader_aftertaste: "未来并非预言，而是有人提前安排的名单；沈闻保护证人后被系统标成篡改嫌疑人。",
-      },
-      scene: {
-        scene_id: `${prefix}_01_SC01`,
-        scene_seq: 1,
-        pov_character_id: "CHAR_SHENWEN",
-        onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
-        location: "近未来南岸城零点档案站",
-        scene_goal: "沈闻在零点玻璃雨档案中发现未来失踪名单，拔掉联网通讯线保护名单第一人，并因此被系统标记为篡改嫌疑人。",
-        beats_json: [
-          "零点玻璃雨停在站顶",
-          "档案屏出现未来日期",
-          "沈闻反查失踪顺序",
-          "屏幕倒影里许照下颌收紧",
-          "沈闻拔掉通讯线阻止公开",
-          "系统把沈闻标记为篡改嫌疑人",
-          "名单第一人推门进站"
-        ],
-        must_include_text: "玻璃雨在零点停住；名单日期比当前时间晚三小时；许照的神态变化必须出现在屏幕倒影里；沈闻必须拔掉通讯线阻止名单公开；系统必须把沈闻标记为篡改嫌疑人；名单第一人带着明天玻璃雨碎片进站。",
-        forbidden_text: "不得照搬参考书句子、专名、人物、学院组织、血统等级、屠龙或标志性桥段。",
-        exit_change: "沈闻从修复档案转为保护证人，付出被系统标记为篡改嫌疑人的代价。",
-        hook: "名单第一个活人推门进站，伞面上嵌着明天才会落下的玻璃雨。",
-        target_length_band: "short",
-        scene_type: "inciting_clue",
-        is_chapter_last: 1,
-      },
+      scenes: [
+        {
+          scene_id: `${prefix}_01_SC01`,
+          scene_seq: 1,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN"],
+          location: "近未来南岸城零点档案站",
+          scene_goal: "沈闻在例行修复中发现零点玻璃雨档案里出现未来日期的失踪名单，反查后确认失踪顺序早于事件本身被写入。",
+          beats_json: [
+            "零点玻璃雨停在站顶",
+            "档案屏出现未来日期",
+            "沈闻按修复流程做完整性校验",
+            "反查失踪顺序发现写入时间异常",
+            "名单日期比当前时间晚三小时"
+          ],
+          must_include_text: "玻璃雨在零点停住；名单日期比当前时间晚三小时；沈闻必须先按职业流程校验再承认异常；写入时间早于失踪事件本身。",
+          forbidden_text: forbidden,
+          exit_change: "沈闻从把异常当故障处理，转为确认有人提前写入失踪顺序。",
+          hook: "名单不是预测，是排期。",
+          target_length_band: "short",
+          scene_type: "inciting_clue",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "职业流程要求上报公开，直觉告诉他公开会加速失踪。",
+            texture: "玻璃、站厅回声、雨停在半空的静电感。",
+            choice_under_pressure: "按流程上报存档，或暂缓上报私自反查写入源。",
+            power_shift: "沈闻从流水线修复员变成唯一知情人。",
+            new_information: "失踪名单的写入时间早于失踪事件。",
+            emotional_turn: "技术性好奇转为后颈发凉的道德警觉。",
+            image_anchor: "停在半空的玻璃雨。",
+            reader_aftertaste: "未来并非预言，而是有人提前安排的名单。",
+          },
+        },
+        {
+          scene_id: `${prefix}_01_SC02`,
+          scene_seq: 2,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "零点档案站主控台",
+          scene_goal: "许照发现沈闻私自反查并拦阻他冲动公开，沈闻在公开倒计时内拔掉通讯线保护名单第一人，被系统标记为篡改嫌疑人。",
+          beats_json: [
+            "许照发现主控台未授权查询",
+            "屏幕倒影里许照下颌收紧",
+            "两人争执公开还是暂缓",
+            "公开倒计时启动",
+            "沈闻拔掉通讯线阻止公开",
+            "系统把沈闻标记为篡改嫌疑人"
+          ],
+          must_include_text: "许照的神态变化必须出现在屏幕倒影里；沈闻必须拔掉通讯线阻止名单公开；系统必须把沈闻标记为篡改嫌疑人。",
+          forbidden_text: forbidden,
+          exit_change: "沈闻从旁观修复者变成握有危险证据的嫌疑人，许照从质疑者变成半个知情人。",
+          hook: "篡改嫌疑人的标记落在唯一想保护名单的人头上。",
+          target_length_band: "short",
+          scene_type: "pressure_choice",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "公开倒计时逼沈闻在暴露证人与保住职业身份之间二选一。",
+            texture: "主控台冷光、倒计时蜂鸣、通讯线断开的脆响。",
+            choice_under_pressure: "拔线保护第一个活人，或保留联网公开证据。",
+            power_shift: "许照从质疑者变成拦住他冲动公开的人。",
+            new_information: "名单第一人仍活着并已被系统锁定位置。",
+            emotional_turn: "沈闻意识到自己正在决定一个活人的风险。",
+            image_anchor: "被拔断的通讯线在桌沿晃。",
+            reader_aftertaste: "保护证人的代价是自己先成为嫌疑人。",
+          },
+        },
+        {
+          scene_id: `${prefix}_01_SC03`,
+          scene_seq: 3,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO", "CHAR_WITNESS_A"],
+          location: "零点档案站候车厅",
+          scene_goal: "名单第一人林晚推门进站，伞面嵌着明天才会落下的玻璃雨碎片，沈闻决定先于系统找到并保护证人。",
+          beats_json: [
+            "候车厅广播报出零点整",
+            "名单第一人推门进站",
+            "伞面上嵌着明天的玻璃雨碎片",
+            "林晚只肯给出一个精确时间",
+            "沈闻决定先于系统保护证人"
+          ],
+          must_include_text: "名单第一人必须带着明天玻璃雨碎片进站；证人说话谨慎零碎、每次只给一个精确细节；沈闻必须当场决定保护证人而非上报。",
+          forbidden_text: forbidden,
+          exit_change: "沈闻从确认阴谋转为背负具体的活人，保护对象从名单变成人。",
+          hook: "明天才会落下的玻璃雨已经嵌在今晚的伞面上。",
+          target_length_band: "short",
+          scene_type: "threshold_reveal",
+          is_chapter_last: 1,
+          writer_brief_json: {
+            scene_pressure: "证人就在眼前，系统的锁定也在收紧。",
+            texture: "伞面碎片折光、候车厅空椅、夜班末车的风。",
+            choice_under_pressure: "当场带走证人，或按程序移交并暴露她。",
+            power_shift: "林晚从名单上的编号变成有戒心的活人，掌握他们不知道的时间线。",
+            new_information: "玻璃雨碎片会先于事件出现在受害者身边。",
+            emotional_turn: "沈闻的道德焦虑落地为对具体一个人的责任。",
+            image_anchor: "伞面上明天的碎片。",
+            reader_aftertaste: "保护一个人，等于向整个排期系统宣战。",
+          },
+        },
+      ],
     },
     {
       chapter_id: `${prefix}_02`,
-      planned_scene_count: 1,
+      planned_scene_count: 3,
       chapter_goal: "第二章：沈闻和声学工程师许照进入地下废线站，利用倒放广播证明失踪记录被人篡改，未来不是命运而是操作痕迹。",
       main_plot_push: "把玻璃雨名单推进到地下废线站反证，揭开有人用零点广播制造失踪顺序。",
       emotional_target: "沈闻与许照从互相试探变成临时同盟，但两人都付出暴露私人隐瞒的代价。",
@@ -1736,43 +1964,108 @@ function buildChapters(suffix) {
         must_deliver: ["地下废线站", "倒放广播反证", "同盟代价"],
         avoid: protectedTerms,
       },
-      scene_writer_brief_json: {
-        scene_pressure: "如果他们取走磁带，幕后者会知道证人位置；如果不取，真相无法公开。",
-        texture: "废轨潮气、旧广播、电流在瓷砖缝里爬行。",
-        choice_under_pressure: "沈闻和许照必须在取走磁带暴露证人位置，或销毁磁带保住证人却失去反证之间二选一。",
-        power_shift: "许照从被怀疑的维护者转为掌握关键声纹的人，沈闻必须决定是否把证据链交给她。",
-        new_information: "倒放广播里的幸存者呼吸证明失踪顺序被人为篡改。",
-        emotional_turn: "沈闻从单独承担秘密转为承认自己需要一个不完全可信的同盟。",
-        image_anchor: "地下废线站、倒放广播、潮位图和三声玻璃撞击。",
-        reader_aftertaste: "真相更近了，但他们取走磁带后，证人藏身地的伪装电源被迫切断。",
-      },
-      scene: {
-        scene_id: `${prefix}_02_SC01`,
-        scene_seq: 1,
-        pov_character_id: "CHAR_SHENWEN",
-        onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
-        location: "南岸城地下废线站",
-        scene_goal: "沈闻和许照在废线站复原倒放广播，取走反证磁带，并切断证人藏身地的伪装电源作为代价。",
-        beats_json: [
-          "撬开废线站检修门",
-          "倒放零点广播",
-          "声纹对上幸存者",
-          "许照承认曾参与系统维护",
-          "二人取走反证磁带",
-          "证人藏身地伪装电源被迫切断"
-        ],
-        must_include_text: "废线站墙上有太阳色潮位图；倒放广播出现幸存者呼吸和三声玻璃撞击；二人必须取走实体磁带；取走磁带必须导致证人藏身地伪装电源被切断。",
-        forbidden_text: "不得出现参考书专名、学院、社团、血统、龙王、战斗体系或相似桥段。",
-        exit_change: "沈闻确认失踪案是被制造的，同时因切断伪装电源不得不暂时信任许照转移证人。",
-        hook: "废线站死线亮起，广播报出沈闻此刻的心跳。",
-        target_length_band: "short",
-        scene_type: "investigation_reversal",
-        is_chapter_last: 1,
-      },
+      scenes: [
+        {
+          scene_id: `${prefix}_02_SC01`,
+          scene_seq: 1,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "南岸城地下废线站检修口",
+          scene_goal: "沈闻和许照撬开废线站检修门潜入，布设倒放设备，在墙上的太阳色潮位图旁找到旧广播的物理接口。",
+          beats_json: [
+            "沿废轨避开巡检探头",
+            "撬开废线站检修门",
+            "墙上出现太阳色潮位图",
+            "许照布设倒放设备",
+            "旧广播接口仍有微弱电流"
+          ],
+          must_include_text: "废线站墙上必须有太阳色潮位图；进入必须经由撬开的检修门；旧广播接口必须仍带电。",
+          forbidden_text: forbidden,
+          exit_change: "两人从地面调查转入幕后者的物理管道，第一次踏进对方的地盘。",
+          hook: "废弃三年的广播接口，电流是活的。",
+          target_length_band: "short",
+          scene_type: "infiltration_setup",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "巡检周期只留给他们四十分钟。",
+            texture: "废轨潮气、瓷砖缝里的电流、探头扫过的红点。",
+            choice_under_pressure: "冒险接入带电接口，或撤回等下一个巡检窗口。",
+            power_shift: "许照的专业设备第一次成为行动的主导。",
+            new_information: "废线站并未真正废弃，有人维持着供电。",
+            emotional_turn: "沈闻从依赖档案转为依赖一个不完全可信的同伴。",
+            image_anchor: "太阳色潮位图。",
+            reader_aftertaste: "他们以为在潜入废墟，其实走进了运转中的机器。",
+          },
+        },
+        {
+          scene_id: `${prefix}_02_SC02`,
+          scene_seq: 2,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "南岸城地下废线站广播间",
+          scene_goal: "倒放零点广播还原出幸存者呼吸和三声玻璃撞击，声纹对上失踪名单，许照被迫承认自己曾参与系统维护。",
+          beats_json: [
+            "倒放零点广播",
+            "噪声里浮出幸存者呼吸",
+            "三声玻璃撞击对上名单时间戳",
+            "声纹比对锁定失踪者",
+            "许照承认曾参与系统维护"
+          ],
+          must_include_text: "倒放广播必须出现幸存者呼吸和三声玻璃撞击；声纹必须对上失踪名单；许照必须在此场承认参与过系统维护。",
+          forbidden_text: forbidden,
+          exit_change: "失踪案从悬案变成有操作痕迹的人为篡改，同盟关系因坦白而换血。",
+          hook: "证明未来被篡改的声音，是许照亲手装的广播放出来的。",
+          target_length_band: "short",
+          scene_type: "investigation_reversal",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "反证成立的同时，同伴的旧身份浮出水面。",
+            texture: "倒放的电流嘶声、呼吸声、玻璃三响。",
+            choice_under_pressure: "沈闻必须决定是否继续把证据链交给刚暴露旧身份的许照。",
+            power_shift: "许照从被怀疑的维护者转为掌握关键声纹的人。",
+            new_information: "倒放广播里的幸存者呼吸证明失踪顺序被人为篡改。",
+            emotional_turn: "沈闻从单独承担秘密转为承认自己需要同盟。",
+            image_anchor: "倒放中的旧广播喇叭。",
+            reader_aftertaste: "真相靠近一步，信任先付了利息。",
+          },
+        },
+        {
+          scene_id: `${prefix}_02_SC03`,
+          scene_seq: 3,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "南岸城地下废线站出口",
+          scene_goal: "两人取走反证磁带触发监听反制，证人藏身地的伪装电源被迫切断，广播在身后报出沈闻此刻的心跳。",
+          beats_json: [
+            "决定取走实体磁带",
+            "取带触发静默警报",
+            "证人藏身地伪装电源被切断",
+            "死线亮起封锁退路",
+            "广播报出沈闻此刻的心跳"
+          ],
+          must_include_text: "二人必须取走实体磁带；取走磁带必须导致证人藏身地伪装电源被切断；离开时广播必须报出沈闻此刻的心跳。",
+          forbidden_text: forbidden,
+          exit_change: "沈闻确认幕后者在实时监听，被迫暂时信任许照连夜转移证人。",
+          hook: "废线站死线亮起，广播报出沈闻此刻的心跳。",
+          target_length_band: "short",
+          scene_type: "cost_trigger",
+          is_chapter_last: 1,
+          writer_brief_json: {
+            scene_pressure: "拿走反证就等于向监听者自报位置。",
+            texture: "死线红光、磁带外壳的凉、心跳被广播念出来的错位感。",
+            choice_under_pressure: "取走磁带暴露证人位置，或销毁磁带保住证人却失去反证。",
+            power_shift: "幕后者第一次直接出手，主动权易手。",
+            new_information: "幕后者能实时监听并反制他们的每一次选择。",
+            emotional_turn: "胜利感在走出门前变成被注视的寒意。",
+            image_anchor: "亮起的死线。",
+            reader_aftertaste: "他们拿到了证据，也交出了证人的坐标。",
+          },
+        },
+      ],
     },
     {
       chapter_id: `${prefix}_03`,
-      planned_scene_count: 1,
+      planned_scene_count: 3,
       chapter_goal: "第三章：沈闻和许照在无灯船坞打开隐藏档案，必须选择立即公开真相，还是先转移仍活着的证人。",
       main_plot_push: "闭合玻璃雨、废线站反证和证人名单，明确幕后篡改动机，并留下下一阶段追查入口。",
       emotional_target: "沈闻的正义冲动转为责任选择：真相不是越快公开越安全。",
@@ -1780,45 +2073,338 @@ function buildChapters(suffix) {
       must_not: "不得出现参考书专名、人物、设定、标志性意象、学院组织、血统或可识别剧情同构。",
       notes: `${storySeed} current DB QA 第三章，公开真相与保护证人的选择。`,
       writer_brief_json: {
-        audience_contract: "结尾给出选择和代价，同时保留更大阴谋。",
+        audience_contract: "选择与代价章，同时保留更大阴谋。",
         voice: "克制但有伦理压力，避免宣讲式真相独白。",
         must_deliver: ["隐藏档案", "公开真相的代价", "保护证人优先"],
         avoid: protectedTerms,
       },
-      scene_writer_brief_json: {
-        scene_pressure: "公开证据会暴露证人，隐藏证据会让更多人继续失踪。",
-        texture: "无灯船坞、水面没有倒影、玻璃雨像倒计时的碎片。",
-        choice_under_pressure: "沈闻必须在上传完整证据暴露证人位置，或只公开剪掉坐标的证据并亲手销毁原始定位页之间二选一。",
-        power_shift: "沈闻从追求立刻公开的修复师，转为愿意承担延迟真相代价的保护者。",
-        new_information: "隐藏档案证明幸存者仍被追踪，篡改者不止一个。",
-        emotional_turn: "沈闻接受真相不是越快越安全，必须先让活人离开名单。",
-        image_anchor: "无灯船坞没有倒影的水面、玻璃雨钥匙、第二枚零点钟影。",
-        reader_aftertaste: "他们赢得的不是公开胜利，而是用烧毁原始定位页换来的证人撤离时间。",
+      scenes: [
+        {
+          scene_id: `${prefix}_03_SC01`,
+          scene_seq: 1,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "南岸城无灯船坞",
+          scene_goal: "两人潜入无灯船坞，用玻璃雨碎片作钥匙打开隐藏档案柜，找到幸存者录音与原始定位页。",
+          beats_json: [
+            "潜入无灯船坞",
+            "水面没有倒影",
+            "玻璃雨碎片嵌进档案柜锁槽",
+            "档案柜弹开",
+            "找到幸存者录音和定位页"
+          ],
+          must_include_text: "无灯船坞的水面没有倒影；隐藏档案必须用玻璃雨碎片作钥匙；柜内必须同时有幸存者录音与原始定位页。",
+          forbidden_text: forbidden,
+          exit_change: "调查从追证据转为持有能定罪也能杀人的完整档案。",
+          hook: "打开档案柜的钥匙，是受害者身边掉落的碎片。",
+          target_length_band: "short",
+          scene_type: "hidden_archive",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "档案在手，每多持有一分钟就多一分暴露。",
+            texture: "没有倒影的水面、船坞铁锈、碎片入锁的咔哒。",
+            choice_under_pressure: "当场翻录副本，或整柜带走。",
+            power_shift: "沈闻从被追踪者短暂变成握有全部底牌的人。",
+            new_information: "定位页记录着每个幸存者的实时坐标。",
+            emotional_turn: "拿到一切的瞬间，责任比恐惧更重。",
+            image_anchor: "嵌在锁槽里的玻璃雨碎片。",
+            reader_aftertaste: "最锋利的证据，同时是最精确的猎杀清单。",
+          },
+        },
+        {
+          scene_id: `${prefix}_03_SC02`,
+          scene_seq: 2,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "无灯船坞隐藏档案间",
+          scene_goal: "两人评估公开风险：完整证据会暴露证人位置，沈闻决定剪掉坐标后分阶段公开部分证据。",
+          beats_json: [
+            "许照演算公开后的追踪路径",
+            "确认完整公开会暴露证人",
+            "争论真相的时效与人命的权重",
+            "沈闻决定剪掉坐标",
+            "拟定分阶段公开顺序"
+          ],
+          must_include_text: "公开完整证据会暴露证人位置的推演必须成立；沈闻必须决定剪掉坐标后公开部分证据；分阶段公开顺序必须在场内定下。",
+          forbidden_text: forbidden,
+          exit_change: "沈闻从追求立刻公开，转为接受延迟真相以保护活人。",
+          hook: "真相被剪掉一角，才配得上安全落地。",
+          target_length_band: "short",
+          scene_type: "ethical_dilemma",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "每延迟一小时公开，名单可能新增一个名字。",
+            texture: "档案间灯泡的嗡鸣、剪刀口的反光、纸页边缘。",
+            choice_under_pressure: "上传完整证据，或只公开剪掉坐标的部分。",
+            power_shift: "沈闻从冲动的正义方转为承担延迟代价的决策者。",
+            new_information: "幸存者仍被实时追踪，篡改者不止一个。",
+            emotional_turn: "正义冲动冷却为对时序的精密责任。",
+            image_anchor: "被剪下的坐标纸角。",
+            reader_aftertaste: "他们选择让真相慢一步，让活人快一步。",
+          },
+        },
+        {
+          scene_id: `${prefix}_03_SC03`,
+          scene_seq: 3,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO", "CHAR_WITNESS_A"],
+          location: "无灯船坞外雾墙码头",
+          scene_goal: "沈闻烧毁原始定位页，证人车队离开船坞；雾墙上投出第二枚零点钟影，宣告篡改者不止一个。",
+          beats_json: [
+            "剪掉坐标后公开部分证据",
+            "沈闻烧毁原始定位页",
+            "林晚在车窗里回望",
+            "证人车队离开船坞",
+            "雾墙投出第二枚零点钟影"
+          ],
+          must_include_text: "沈闻必须亲手烧毁原始定位页；证人车队必须离开船坞；结尾必须出现第二枚零点钟影。",
+          forbidden_text: forbidden,
+          exit_change: "第一阶段以保护证人收束，追查对象从单个篡改者扩展为一个网络。",
+          hook: "船坞外的雾墙投出第二枚零点钟影，说明篡改者不止一个。",
+          target_length_band: "short",
+          scene_type: "ethical_reveal",
+          is_chapter_last: 1,
+          writer_brief_json: {
+            scene_pressure: "烧掉定位页意味着连他们自己也找不到证人了。",
+            texture: "纸页卷曲的火光、雾墙、车灯远去。",
+            choice_under_pressure: "保留一份加密副本，或烧到一页不剩。",
+            power_shift: "沈闻交出对证人行踪的最后控制权，换取她真正的安全。",
+            new_information: "第二枚零点钟影证明篡改是多人接力。",
+            emotional_turn: "如释重负与更大阴谋压顶同时到来。",
+            image_anchor: "雾墙上的第二枚钟影。",
+            reader_aftertaste: "赢下的不是公开胜利，而是证人撤离的时间。",
+          },
+        },
+      ],
+    },
+    {
+      chapter_id: `${prefix}_04`,
+      planned_scene_count: 3,
+      chapter_goal: "第四章：沈闻追查第二枚零点钟影，在潮汐钟楼发现篡改记录盖着自己的修复签名，并被迫与半盟半敌的顾磬交易。",
+      main_plot_push: "把单人篡改升级为接力网络，引入内部人顾磬与广播调度表，同时让沈闻背上被伪造的签名。",
+      emotional_target: "沈闻从追查者变成被构陷者，学会与不可信的人做有限交易。",
+      ending_effect: "按调度表设下的饵反被将计就计，新名单出现，第一个名字是沈闻自己。",
+      must_not: "不得出现参考书专名、人物、组织、血统体系或可识别桥段；不得引入超自然战斗。",
+      notes: `${storySeed} current DB QA 第四章，钟影溯源与身份构陷。`,
+      writer_brief_json: {
+        audience_contract: "构陷与交易章，敌我边界模糊，信息差驱动。",
+        voice: "冷静里带一点被背叛的钝痛，交易对话短促。",
+        must_deliver: ["潮汐钟楼", "被伪造的修复签名", "顾磬与调度表"],
+        avoid: protectedTerms,
       },
-      scene: {
-        scene_id: `${prefix}_03_SC01`,
-        scene_seq: 1,
-        pov_character_id: "CHAR_SHENWEN",
-        onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO", "CHAR_WITNESS_A"],
-        location: "南岸城无灯船坞隐藏档案间",
-        scene_goal: "沈闻和许照打开隐藏档案，剪掉证人坐标后公开部分证据，并烧毁原始定位页换取证人撤离时间。",
-        beats_json: [
-          "潜入无灯船坞",
-          "用玻璃雨碎片开档案柜",
-          "找到幸存者录音和定位页",
-          "判断公开风险",
-          "剪掉坐标后公开部分证据",
-          "沈闻烧毁原始定位页",
-          "证人车队离开船坞"
-        ],
-        must_include_text: "无灯船坞的水面没有倒影；隐藏档案用玻璃雨碎片作钥匙；公开完整证据会暴露证人位置；沈闻必须剪掉坐标后公开部分证据；沈闻必须烧毁原始定位页；证人车队必须离开船坞。",
-        forbidden_text: "不得复刻参考书原句、专名、超自然体系、学院组织、血统、战斗或标志性桥段。",
-        exit_change: "沈闻从追求立刻公开真相，转向先保护活人并承担烧毁原始定位页的责任。",
-        hook: "船坞外的雾墙投出第二枚零点钟影，说明篡改者不止一个。",
-        target_length_band: "short",
-        scene_type: "ethical_reveal",
-        is_chapter_last: 1,
+      scenes: [
+        {
+          scene_id: `${prefix}_04_SC01`,
+          scene_seq: 1,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "南岸城潮汐钟楼档案室",
+          scene_goal: "两人溯源第二枚钟影到潮汐钟楼，在投影机走带痕迹里发现篡改记录，每一条都盖着沈闻的修复签名。",
+          beats_json: [
+            "钟影角度反推投射源",
+            "潜入潮汐钟楼档案室",
+            "投影机走带痕迹犹新",
+            "调出篡改记录",
+            "每条记录盖着沈闻的修复签名"
+          ],
+          must_include_text: "钟影必须被反推到潮汐钟楼；篡改记录必须逐条盖着沈闻的修复签名；投影机必须有近期使用痕迹。",
+          forbidden_text: forbidden,
+          exit_change: "沈闻从追查者变成档案意义上的头号嫌疑人，敌人先他一步偷走了他的身份。",
+          hook: "追到源头，源头署着他自己的名字。",
+          target_length_band: "short",
+          scene_type: "identity_trap",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "报警等于自首，沉默等于坐实。",
+            texture: "钟楼齿轮油味、投影走带声、签名的压痕。",
+            choice_under_pressure: "销毁伪造记录自保，或保留它作为反查笔迹的证据。",
+            power_shift: "幕后网络从隐身转为主动构陷，沈闻失去清白身位。",
+            new_information: "篡改者能完美复刻沈闻的修复签名。",
+            emotional_turn: "愤怒之下是一层更冷的认知：对方了解他的一切。",
+            image_anchor: "盖着他签名的篡改记录。",
+            reader_aftertaste: "他一直在修复档案，档案却被用来改写他。",
+          },
+        },
+        {
+          scene_id: `${prefix}_04_SC02`,
+          scene_seq: 2,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO", "CHAR_GUQING"],
+          location: "潮汐钟楼底层机房",
+          scene_goal: "许照的前同事顾磬现身，半盟半敌，用零点广播调度表交换沈闻手里的反证磁带副本，交易在互不信任中成立。",
+          beats_json: [
+            "顾磬堵住机房唯一出口",
+            "亮出许照的旧工牌自证来历",
+            "开价：调度表换磁带副本",
+            "许照识破调度表缺了一页",
+            "顾磬补上缺页，交易成立"
+          ],
+          must_include_text: "顾磬必须以许照旧同事身份现身；交易必须是调度表换磁带副本；许照必须当场识破调度表缺页。",
+          forbidden_text: forbidden,
+          exit_change: "调查获得幕后网络的时刻表，代价是反证副本流入立场不明者手中。",
+          hook: "能出卖幕后者的人，同样能出卖他们。",
+          target_length_band: "short",
+          scene_type: "uneasy_alliance",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "不交易就空手而归，交易就武装了一个立场不明的人。",
+            texture: "机房低频震动、旧工牌的磨边、递出磁带的迟疑。",
+            choice_under_pressure: "交出完整副本，或偷偷抹掉副本里的关键三分钟。",
+            power_shift: "顾磬以信息掮客身份入局，三方博弈开始。",
+            new_information: "零点广播按调度表接力运行，存在换班空窗。",
+            emotional_turn: "沈闻学会在不信任里计算可交易的边界。",
+            image_anchor: "缺了一页又被补上的调度表。",
+            reader_aftertaste: "他们买到了时刻表，也卖出了一份风险。",
+          },
+        },
+        {
+          scene_id: `${prefix}_04_SC03`,
+          scene_seq: 3,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "零点档案站临时据点",
+          scene_goal: "两人按调度表空窗设饵引篡改者现身，反被将计就计：饵未咬钩，新名单在零点生成，第一个名字是沈闻。",
+          beats_json: [
+            "按调度表空窗布设假证人档案",
+            "零点整广播准时切换",
+            "饵无人咬钩",
+            "新名单在屏上生成",
+            "第一个名字是沈闻"
+          ],
+          must_include_text: "设饵必须依据顾磬的调度表空窗；饵必须落空；新名单第一个名字必须是沈闻本人。",
+          forbidden_text: forbidden,
+          exit_change: "沈闻从设局者沦为名单上的猎物，调度表的真实性与顾磬的立场同时存疑。",
+          hook: "他们钓鱼，鱼把他们写进了下一张名单。",
+          target_length_band: "short",
+          scene_type: "reversal_trap",
+          is_chapter_last: 1,
+          writer_brief_json: {
+            scene_pressure: "对方不但识破了饵，还证明能随时把任何人写进名单。",
+            texture: "据点里两块屏幕的冷光、零点整的静默、名字浮现。",
+            choice_under_pressure: "立即转移躲名单，或将计就计用自己当真饵。",
+            power_shift: "幕后网络展示对名单的即时写权，主动权彻底易手。",
+            new_information: "名单可以被实时改写，沈闻已被列为下一个失踪者。",
+            emotional_turn: "从猎手到猎物的失重感，被沈闻压成冷静的赌性。",
+            image_anchor: "屏上自己的名字。",
+            reader_aftertaste: "调度表也许是真的，陷阱也是。",
+          },
+        },
+      ],
+    },
+    {
+      chapter_id: `${prefix}_05`,
+      planned_scene_count: 3,
+      chapter_goal: "第五章：沈闻以名单上的自己为饵直取零点广播源头，发现篡改是接力值守的网络，最终以分阶段公开终止名单。",
+      main_plot_push: "闭合调度表、伪造签名与名单写权三条线，兑现分阶段公开，终止失踪排期并留下续作钩子。",
+      emotional_target: "沈闻完成从自保到担责的弧线：用自己的名字作赌注，换所有名字下线。",
+      ending_effect: "名单终止，玻璃雨真正落地；顾磬消失，只留下一枚新钟影残片。",
+      must_not: "不得出现参考书专名、人物、组织、血统体系或可识别桥段；结局不得靠超自然力量解围。",
+      notes: `${storySeed} current DB QA 第五章，零点源头与收束。`,
+      writer_brief_json: {
+        audience_contract: "收束章：对决靠信息差与时序，不靠武力；代价必须可见。",
+        voice: "节奏收紧，短句推进，结尾留一口余温。",
+        must_deliver: ["零点广播源机房", "以自己为饵的交换", "名单终止与新钟影残片"],
+        avoid: protectedTerms,
       },
+      scenes: [
+        {
+          scene_id: `${prefix}_05_SC01`,
+          scene_seq: 1,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO"],
+          location: "零点广播源机房外廊",
+          scene_goal: "两人循调度表进入零点广播源机房，发现篡改由多人接力值守，墙上排班表的下一班签名栏空着。",
+          beats_json: [
+            "循调度表空窗接近机房",
+            "值守座位还留着体温",
+            "墙上贴着接力排班表",
+            "历班签名对上伪造笔迹",
+            "下一班签名栏空着"
+          ],
+          must_include_text: "机房必须呈现多人接力值守的痕迹；排班表必须挂在墙上且下一班签名栏为空；历班签名必须与伪造沈闻签名同源。",
+          forbidden_text: forbidden,
+          exit_change: "敌人从一个'幕后者'具体化为一张排班表，沈闻明白名单不会因抓到一个人而停。",
+          hook: "排班表的下一班，还没人签名。",
+          target_length_band: "short",
+          scene_type: "source_reveal",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "换班空窗正在倒数，他们站在别人的岗位上。",
+            texture: "机房恒温的风、座椅余温、排班表纸角卷边。",
+            choice_under_pressure: "拆毁设备一了百了，或保全设备取走全部原始带。",
+            power_shift: "沈闻第一次站在名单的写入端。",
+            new_information: "篡改是制度化的接力值守，不是单人作案。",
+            emotional_turn: "复仇式的愤怒被'拆一台机器救不了名单'的清醒替代。",
+            image_anchor: "空着的下一班签名栏。",
+            reader_aftertaste: "系统作恶时，空缺的岗位比作恶的人更可怕。",
+          },
+        },
+        {
+          scene_id: `${prefix}_05_SC02`,
+          scene_seq: 2,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO", "CHAR_GUQING"],
+          location: "零点广播源机房",
+          scene_goal: "顾磬现身机房摊牌，沈闻提出用自己在名单上的位置作饵换全部原始带，许照拦下并用调度表缺口伪造换班空窗完成偷换。",
+          beats_json: [
+            "顾磬从值守暗门现身摊牌",
+            "沈闻开价：以自己为饵换原始带",
+            "许照拦下签名的手",
+            "用调度表缺口伪造换班空窗",
+            "原始带整箱偷换到手"
+          ],
+          must_include_text: "沈闻必须主动提出以自己为饵；许照必须在他签字前拦下；原始带必须经伪造换班空窗偷换而非武力夺取。",
+          forbidden_text: forbidden,
+          exit_change: "沈闻把最后一次篡改让给了拒绝篡改的人：他们没有写名单，而是偷走了名单的原稿。",
+          hook: "终止名单的办法，差一点就是再写一次名单。",
+          target_length_band: "short",
+          scene_type: "sacrifice_bargain",
+          is_chapter_last: 0,
+          writer_brief_json: {
+            scene_pressure: "签下去名单立刻少一个名字，也多一个篡改者。",
+            texture: "原始带箱的重量、签名笔尖悬停、暗门风声。",
+            choice_under_pressure: "亲手签最后一次篡改，或赌许照的伪造空窗。",
+            power_shift: "许照从技术支援变成道德底线的执剑人。",
+            new_information: "顾磬要的从来不是磁带，而是有人接他的班。",
+            emotional_turn: "沈闻承认：肯为名单赴死容易，肯不碰写权才难。",
+            image_anchor: "悬在签名栏上方的笔尖。",
+            reader_aftertaste: "他们赢在没有变成自己要终结的东西。",
+          },
+        },
+        {
+          scene_id: `${prefix}_05_SC03`,
+          scene_seq: 3,
+          pov_character_id: "CHAR_SHENWEN",
+          onstage_chars_json: ["CHAR_SHENWEN", "CHAR_XUZHAO", "CHAR_WITNESS_A"],
+          location: "南岸城零点档案站天台",
+          scene_goal: "分阶段公开如期兑现，名单在零点终止，玻璃雨第一次真正落地；顾磬去向不明，只留下一枚新钟影残片。",
+          beats_json: [
+            "第三阶段证据准时公开",
+            "零点广播沉默",
+            "名单状态翻为已终止",
+            "玻璃雨落地摔碎",
+            "林晚归还伞面碎片",
+            "残片盒里多出一枚新钟影残片"
+          ],
+          must_include_text: "分阶段公开必须按第三章定下的顺序兑现；名单必须在零点显示终止；玻璃雨必须真正落地；结尾必须出现顾磬留下的新钟影残片。",
+          forbidden_text: forbidden,
+          exit_change: "五章弧线收束：名单终止、证人自由、沈闻背着可赦免的篡改嫌疑换来全部真相落地。",
+          hook: "雨落干净了，残片盒里躺着下一场雨。",
+          target_length_band: "short",
+          scene_type: "resolution_hook",
+          is_chapter_last: 1,
+          writer_brief_json: {
+            scene_pressure: "公开的最后一步仍可能引来清算，零点前无人敢庆祝。",
+            texture: "天台夜风、真正下落的雨、碎片盒的轻响。",
+            choice_under_pressure: "把新钟影残片上报，或私下继续追。",
+            power_shift: "名单写权归零，普通人重新拥有自己的明天。",
+            new_information: "顾磬消失前留下新钟影残片：网络仍有残余。",
+            emotional_turn: "警惕松开一半，另一半留给下一枚钟影。",
+            image_anchor: "落地摔碎的玻璃雨。",
+            reader_aftertaste: "真相分期兑付完毕，续章的雨已经在盒子里。",
+          },
+        },
+      ],
     },
   ];
 }
@@ -1838,7 +2424,7 @@ async function main() {
     await step("preflight current DB, tools, provider routes and reference file", preflight, { fatal: true });
     await step("writer and advanced mode plus all visible app pages", () => exerciseUiModesAndPages(page));
     await step("snowflake planning evidence for original seed", () => exerciseSnowflake(page));
-    const workspace = await step("author workspace create unique three-chapter plan", () => createOriginalWorkspace(page), { fatal: true });
+    const workspace = await step(`author workspace create unique ${expectedChapterCount}-chapter plan`, () => createOriginalWorkspace(page), { fatal: true });
     await step("writer room create and save author draft", () => exerciseWriterRoomAndDrafts(page), { fatal: true });
     // QA-RIG-HOTFIX(2026-06-27): exerciseReferenceLearning hits the LEGACY reference-learning
     // API (/api/v1/reference-books/*), which the v2 Style Reference subsystem replaced with
@@ -1852,7 +2438,7 @@ async function main() {
     await step("review inbox approve release and reference review handling", () => exerciseReviewInbox(page, reference?.applyReviewIds || []));
     await step("knowledge and index recovery/promotion probes", () => exerciseKnowledgeAndIndex(page));
     await step("knowledge create original character voice and relation cards", () => exerciseCharacterKnowledge(page), { fatal: true });
-    await step("scene workbench run three scene jobs and archive final scenes", () => exerciseSceneWorkbench(page), { fatal: true });
+    await step("scene workbench run all planned scene jobs and archive final scenes", () => exerciseSceneWorkbench(page), { fatal: true });
     await step("chapter manuscripts aggregate final text", () => exerciseChapterManuscripts(page), { fatal: true });
     await step("literary quality chapter-set review and protected-term scan", () => exerciseQualityAndChapterSet(page), { fatal: true });
     await step("deep edit, writer review and longform diagnostics", () => exerciseDeepDeskAndLongform(page));
@@ -1867,8 +2453,17 @@ async function main() {
     fillRootCauseFindings();
     result.meta.finishedAt = new Date().toISOString();
     writeJson("final-scenes.json", finalScenes);
+    // Wave 0：结果门禁是唯一权威判定——步骤全绿但任一计划场景无非空归档正文，
+    // 退出码必须非零（删除"步骤完成即通过"的旧语义）。
+    const gatePassed = runOutcomeGate();
     writeJson("qa-live-results.json", result);
     fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
+    if (!gatePassed) {
+      process.exitCode = 1;
+      console.error(
+        `outcome gate FAIL: 五章基准要求 ${expectedChapterCount} 章 × ${expectedScenesPerChapter} 场全部存在非空后端归档正文；详见 ${path.join(outDir, "outcome-gate-verdict.md")}`,
+      );
+    }
   }
 }
 
@@ -1879,6 +2474,7 @@ main().catch((error) => {
   evaluateChapterScores();
   fillRootCauseFindings();
   writeJson("final-scenes.json", finalScenes);
+  runOutcomeGate();
   writeJson("qa-live-results.json", result);
   fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
   appendLog({ type: "fatal", error: result.meta.fatalError });

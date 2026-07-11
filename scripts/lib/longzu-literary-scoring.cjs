@@ -46,12 +46,34 @@ function buildExperienceScores(overrides = {}) {
 function buildChapterScores({ chapters, finalScenes, protectedTerms, manualRemarks = {} }) {
   const scores = {};
   for (const chapter of chapters || []) {
-    const output = finalScenes?.[chapter.chapter_id] || {};
-    const text = output.finalText || "";
+    // 兼容两种计划形状：scenes 数组（Wave 0 起）与单 scene 对象（旧）。
+    const scenes = Array.isArray(chapter.scenes) ? chapter.scenes : chapter.scene ? [chapter.scene] : [];
+    const outputs = scenes.map((scene) => ({
+      scene,
+      output: finalScenes?.[scene.scene_id] || finalScenes?.[chapter.chapter_id] || {},
+    }));
+    const allArchived =
+      outputs.length > 0 &&
+      outputs.every(
+        ({ output }) => output.sceneStatus === "archived" && output.finalRowId && (output.finalText || "").length > 0,
+      );
+    // Wave 0 实施项 4：空章节不得生成正常文学分数或"暂无明显风险"。
+    // 旧实现对空文本仍给 originality 9、sourceLeakRisk 10——无稿时只输出守卫标记。
+    if (!allArchived) {
+      scores[chapter.chapter_id] = {
+        no_draft: true,
+        status_by_scene: Object.fromEntries(
+          outputs.map(({ scene, output }) => [scene.scene_id, output.sceneStatus || "not_started"]),
+        ),
+        note: "无稿：章内存在未归档或空正文场景，不生成文学评分与来源安全结论。",
+      };
+      continue;
+    }
+    const text = outputs.map(({ output }) => output.finalText || "").join("\n");
     const leakTerms = (protectedTerms || []).filter((term) => term && text.includes(term));
     scores[chapter.chapter_id] = {
-      sceneId: chapter.scene?.scene_id || null,
-      finalRowId: output.finalRowId || null,
+      sceneIds: scenes.map((scene) => scene.scene_id),
+      finalRowIds: outputs.map(({ output }) => output.finalRowId || null),
       characters: [...text].length,
       originality: leakTerms.length ? 5 : 9,
       conflictProgression: scoreBySignals(text, ["发现", "决定", "证据", "风险", "追踪"], 7),
@@ -61,7 +83,10 @@ function buildChapterScores({ chapters, finalScenes, protectedTerms, manualRemar
       languageTexture: scoreBySignals(text, ["指腹", "潮", "盐", "声纹", "金属"], 7),
       sourceLeakRisk: leakTerms.length ? 4 : 10,
       leakTerms,
-      source_safety_scan: output.source_safety_scan || null,
+      source_safety_scan: outputs.map(({ scene, output }) => ({
+        scene_id: scene.scene_id,
+        scan: output.source_safety_scan || null,
+      })),
       manualRemark: manualRemarks[chapter.chapter_id] || "",
     };
   }
