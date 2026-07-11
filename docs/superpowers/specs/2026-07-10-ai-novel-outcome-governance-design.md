@@ -2,7 +2,7 @@
 
 > 日期：2026-07-10
 >
-> 状态：可交付实施规划
+> 状态：可交付实施规划（v1.1，已按代码逐项核实并修订）
 >
 > 产品目标：单作者本地创作工具为主，文学质量实验平台为证据体系
 >
@@ -58,6 +58,21 @@
 | G-11 | 数据完整性依赖人工 | SQLite 未启用 foreign keys，删除依靠手工级联 | 新表和新路径可能重新产生孤儿 | 存量孤儿盘点后分阶段启用 FK；补备份恢复演练 |
 | G-12 | 前端和服务体积过大 | 多个 1000–4000 行文件，单 JS chunk 约 1.22MB | 修改风险、上下文负担和启动成本增长 | 只沿本设计改动边界拆分，不做无关重写 |
 | G-13 | 演示与真实功能混杂 | `ct-*` 仍以 tide 演示数据为完整真值 | 用户误把演示能力当真实能力 | 演示功能显式隔离；未接真页面不进入主验收 |
+
+### 2.3 代码核实注记（v1.1）
+
+以下为对 §2.2 各声明的逐条代码核实结果，实施 AI 应以此为事实基线：
+
+- G-01 属实：`scripts/run-currentdb-three-chapter-qa.cjs` 将 `human_review_required` 列入 `terminalJobStatuses`，步骤 `ok` 只表示 API 调用完成，不校验 `FinalScene` 是否存在。
+- G-02 属实：`frontend-react/src/ws-manuscripts.jsx` 的章节正文取自 localStorage `wr-doc:{sid}`；`ws-scene-run.jsx` 归档动作本地置 `done`。注意：后端 `services/chapter_manuscripts.py` 的聚合（`_assembled_payload`）已经以 `FinalScene` 为唯一来源——Wave 1 的重心是前端换源与归档单入口，后端聚合半边已合规，不要重写。
+- G-03 属实：`orchestrator.py` 在软 QC `branch == "human_review_required"` 时置 `scene_status = human_review_required`，不产生 `FinalScene`。
+- G-04 属实：`api/routes/scenes.py:460/616` 存在读取/选择接口，React 与 Vue 均无消费者。但现有 GET 端点按 `adversarial_score` 降序返回并携带分数与 `selected` 标记，直接复用将违反 §5.5 盲化要求，必须先加盲化视图。选择端点已走 `execute_with_idempotency`，但没有终选锁定：重复提交不同 `row_id` 会直接覆盖。
+- G-05 属实且比原描述更宽：除 `format_state_for_prompt` 全量注入（含 `secret_held_by`、`believes_false` 的具体内容）外，`information_asymmetry_digest` 会直接输出 "Secrets held by X" 的秘密内容，是第二个泄漏注入点；Wave 4 必须一并治理。
+- G-09 属实：`LlmCall` 已有 `prompt_tokens/completion_tokens/total_tokens/latency_ms`，无价格与聚合。
+- G-11 属实：`db/session.py` 仅设 `journal_mode=WAL` 与 `busy_timeout`，未启用 `foreign_keys`。
+- G-12 部分核实：`ws-snow.jsx` 3961 行、`db/models.py` 2112 行、`qc_engine.py` 1890 行、`orchestrator.py` 1015 行；1.22MB chunk 为历史构建值，实施时以当次构建实测为准。
+- 数据模型核实：`SceneDraft`（不可变行）、`FinalScene`（`status` 默认 `approved`）、`QcReport.issues_json`（JSON 列表）、`HumanReviewEvent.details_json`、`SceneRunState` 均存在；§6.1 拟新增字段均不存在，需迁移。`SceneRunState` 已有 `attempt_budget=4` 次数预算与 `criticality_level`/`candidate_dispersion_score`。**仓库中不存在 `ChapterManuscript` 表**：章节聚合是 `chapter_manuscripts` 服务的动态聚合，§5.2 对它的约束是行为约束而非建表要求。
+- §2.1 的"后端 134 项 / React 63 项"为历史运行快照，进入 Wave 0 前应重跑取当前值。
 
 ## 3. 目标、非目标与约束
 
@@ -158,15 +173,16 @@ SceneDraft(不可变版本)
   -> 作者明确采纳
   -> FinalScene
   -> archive_final_scene 原子事务
-  -> ChapterManuscript 聚合
+  -> 章节聚合（chapter_manuscripts 服务）
 ```
 
 约束：
 
 - `SceneDraft` 版本不可原地覆盖。
 - `FinalScene` 只由服务端归档事务创建或提升。
-- `ChapterManuscript` 只聚合服务端已归档 `FinalScene`。
+- 章节聚合（`chapter_manuscripts` 服务，仓库中无 `ChapterManuscript` 表）只聚合服务端已归档 `FinalScene`，不读任何前端缓存。
 - React 的 `done` 只由服务端 `archived` 响应映射。
+- 状态词表必须统一：`FinalScene.status` 现默认 `approved`，本设计所称"归档态"以 `archiver.archive_final_scene` 事务写入的服务端权威状态为准，实现时统一命名并提供迁移映射；React 的 `done` 只映射该权威态，不得依赖字符串巧合。
 - `wr-doc` 缓存不得作为章节聚合来源。
 - 归档失败时保留草稿、候选选择和失败原因，允许使用同一幂等键重试。
 
@@ -176,11 +192,16 @@ SceneDraft(不可变版本)
 
 | author_state | 含义 | 是否有稿 | 是否可编辑 | 是否可归档 |
 |---|---|---:|---:|---:|
+| `not_started` | 尚未发起生成 | 否 | 否 | 否 |
+| `generating` | 生成任务进行中 | 不定 | 否 | 否 |
+| `generation_failed` | 生成失败且尚无任何有效稿 | 否 | 否 | 否 |
 | `draft_ready` | 已有有效正文 | 是 | 是 | 是 |
 | `quality_warning` | 有软质量问题 | 是 | 是 | 是 |
-| `awaiting_author_choice` | 关键场景等待候选终选 | 是，至少两份 | 是 | 否 |
+| `awaiting_author_choice` | 关键场景等待候选终选 | 是，至少一份（候选部分成功时允许单候选终选） | 是 | 否 |
 | `hard_blocked` | 有数据、安全或硬事实问题 | 是，保留最近有效稿 | 是 | 否 |
 | `archived` | 后端权威归档完成 | 是 | 通过新修订版本编辑 | 已完成 |
+
+`generation_failed` 必须携带明确的 `recovery_action`（重试、更换路由、修改配置）。空稿三态是 G-01 "跑完但无稿"场景的可表示状态——枚举若不能表示"无稿"，§9 的结果级断言就没有落点。
 
 API 必须同时返回：
 
@@ -209,6 +230,8 @@ API 必须同时返回：
 - 无法给出确定证据时自动降为 Q2。
 - 同一问题最多自动修订两次；仍失败时停止消耗，交付当前最好稿。
 - QC 超时、模型不可用或补丁失败时，不撤销已有正文。
+- Q0/Q1 采用"提案—复核"分离：LLM 只能提案；升为 Q0/Q1 必须由确定性校验器对 `authority_ref` 与 `evidence_spans` 复核通过，复核结果与提案模型是否与 writer 同源无关。
+- issue 的 `blocking` 字段由 `quality_level` 派生并强制校验一致（Q2/Q3 恒为 `false`），不允许出现"Q2 但 blocking=true"的自由组合。
 
 ### 5.5 Best-of-N 作者终选
 
@@ -224,14 +247,17 @@ API 必须同时返回：
   -> 归档
 ```
 
+补丁可能引入新违规，因此批判修订之后必须重跑确定性硬检查——顺序图中"硬检查"出现两次是有意设计，不是笔误。
+
 候选 UI 要求：
 
 - 展示完整正文，不只展示预览。
-- 默认隐藏模型、顺序和机器分数。
+- 默认隐藏模型、生成顺序和机器分数；列表展示顺序必须随机化并记录 `blinded_order`。按机器分数排序展示本身就是泄漏——现有 style-candidates GET 的按分降序输出必须在盲化视图中关闭。
 - 支持并排、单篇沉浸阅读和句段差异定位。
 - 支持整稿选择；局部拼接作为后续增强，不阻塞第一阶段。
 - 记录选择、放弃、无明显差异和选择耗时。
-- 机器分数只用于排序和标注，不删除仅因分数低而被判为有效的候选。
+- 机器分数只在作者主动展开后可见，用于标注而非默认排序；不删除仅因分数低而被判为有效的候选。
+- 终选一次写入：相同选择重复提交幂等返回；提交与已记录不同的 `row_id` 必须被拒绝，变更选择需显式"重开终选"动作并留审计。
 
 成本分配：
 
@@ -239,7 +265,10 @@ API 必须同时返回：
 - 标准场景：先 N=2，低分散时最多补到 N=3。
 - 关键场景：先 N=3，低分散时最多补到 N=5。
 - 候选、修订、硬检查和失败重试合计不得超过 5× 单发 token。
-- 预算接近上限时，优先保留候选生成和硬检查，取消重复软评审。
+- 预算接近上限时，优先保留候选生成和硬检查，取消重复软评审。预算优先级固定为：候选生成 > 确定性硬检查 > LLM 批判 > 补丁；补到 N=5 即意味着本场放弃 LLM 批判与补丁。
+- 预算按场景生命周期累计（计入 `scene_tokens_used`），作者手动重跑同样计入；预算耗尽后只能由作者显式"追加预算"扩容并留审计事件，任何自动流程不得重置。
+- token 预算与既有 `attempt_budget`（次数预算，现默认 4）双轨并存：次数预算防死循环，token 预算管成本，任一耗尽即停止自动调用。
+- 每次调用发起前按估算口径预留额度、结算后按实际用量冲正；并发候选生成必须先预留后发起，防止竞态超支。
 
 ### 5.6 POV 减法投影
 
@@ -263,6 +292,12 @@ API 必须同时返回：
 
 对历史事件缺少知识归属时，采用保守策略：只注入公共事实和 POV 直接参与事件，不把缺少归属的秘密默认为已知。
 
+投影必须覆盖全部注入槽位，而不只 `format_state_for_prompt`：`bundle_builder` 的 `_narrative_state_digest` 与 `information_asymmetry_digest`（现实现会直接输出 "Secrets held by X" 的秘密内容）都必须改走投影。Wave 4 的第一步是盘点 Bundle 内所有读取权威状态的注入槽位，再逐一切换，防止修一个口留一个口。
+
+证据脱敏：任何把 QC/批判 finding 回灌进写作或补丁提示词的路径，必须先对 finding 的证据做同一 POV 投影脱敏；引用了非 POV 已知事实的 Q1 finding 不得进入自动补丁提示词，只能走作者确认修订——否则硬 QC 会成为秘密绕过投影回流写作上下文的旁路。
+
+存量数据迁移：历史事件普遍缺少知识归属，直接启用保守策略会饿死上下文并诱发新的连续性错误。需先做归属回填（启发式：POV 在场场景的事件 → `known`；仅显式标注的 `secret_held_by`/`believes_false` 才视为秘密；未标注且非在场 → 不注入）。项目中不存在任何显式秘密/归属标注时，投影退化为与现行为等价的全量注入，保证渐进迁移；`NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED` 默认关闭时事件日志主要来自规划侧，投影的收益与风险都以显式标注为界。
+
 ### 5.7 模型独立性
 
 LLM 角色槽至少区分：
@@ -273,7 +308,7 @@ LLM 角色槽至少区分：
 - `judge_advisory`
 - `extractor_fast`
 
-生产默认要求 `critic_independent` 与 `writer_primary` 至少在模型或提供商之一不同。若无法满足，评审结果只能是 Q2/Q3 建议。
+生产默认要求 `critic_independent` 与 `writer_primary` 至少在模型或提供商之一不同。按 §5.4 的提案—复核纪律，LLM 评审在任何模型组合下都只能提案，Q0/Q1 必须经确定性复核——因此模型同源不改变阻断权（本来就没有），只影响咨询建议的权重与展示：同源时标记 `correlated_judge=true` 并降权提示。
 
 确定性规则和来源安全是唯一可以不依赖异源模型的硬门。
 
@@ -304,6 +339,8 @@ LLM 角色槽至少区分：
 - 允许取消尚未开始的新节点。
 - 已完成调用和草稿不可因取消而回滚。
 - 无法获取 provider usage 时使用本地 token 估算，并标记为估算值。
+- token 记录区分三口径：估算（调用前预留用）、实际（provider usage）、计费（含 prompt-cache 命中折扣；N 个候选共享同一冻结 Bundle 时缓存命中会显著压低计费口径）。5× 上限用估算口径判定，报告用实际与计费口径复核。
+- 跨 provider 的 token 不可直接相加比较（分词器不同）；角色槽跨模型混用时，预算判定按各角色槽的 token 分别累计，汇总展示以费用为准。
 
 ### 5.9 来源安全与不可信文本
 
@@ -314,6 +351,8 @@ LLM 角色槽至少区分：
 - 过滤参考文本中的系统提示词、工具调用、忽略前文等指令模式；原文仍可本地保存，但不作为可执行指令发送。
 - 关键成稿增加“桥段组合相似风险”人工检查卡，不自动作法律结论。
 - 来源安全检测器与写作模型分离，失败时不得把未检查正文标为安全。
+- “非指令数据”边界必须同样覆盖派生物：few-shot 例句、RAG 召回片段、画像 finding 的证据引文，全部按不可信数据封装后才可进入提示词；注入面在 `style_reference/injection.py` 的 A/B/C 三策略，不只 ingest 一处。
+- 指令模式过滤是纵深防御的次级层，天然不完备；主防线是数据边界封装与角色隔离，不得以“已过滤”替代封装。
 
 ## 6. 数据与接口设计
 
@@ -331,6 +370,8 @@ LLM 角色槽至少区分：
 - `scene_token_budget: int | null`
 - `scene_tokens_used: int`
 
+注意：`SceneRunState` 已有 `attempt_budget`（默认 4）次数预算，与新增 token 预算按 §5.5 双轨并存，不得删除或挪用。`author_state` 枚举必须含 §5.3 的空稿三态。所有新增列都必须同步 ORM 模型与 Alembic 迁移，并保持 `tests/test_metadata_isolation.py` 漂移守卫通过——只改模型不写迁移会在 CI 全绿的情况下运行期 500。
+
 #### QcReport.issues_json
 
 每条 issue 统一结构：
@@ -344,9 +385,12 @@ LLM 角色槽至少区分：
   "evidence_spans": [],
   "confidence": 1.0,
   "recommended_action": "string",
-  "source": "deterministic|llm_advisory|human"
+  "source": "deterministic|llm_advisory|human",
+  "verified_by": "deterministic checker id | null"
 }
 ```
+
+约束：`blocking` 由 `quality_level` 派生并校验一致；`verified_by` 在 Q0/Q1 时必填（§5.4 提案—复核纪律的落库形态），Q2/Q3 允许为空。
 
 #### HumanReviewEvent
 
@@ -398,6 +442,13 @@ LLM 角色槽至少区分：
 
 映射在投票前不得通过 API 返回给前端。
 
+实验有效性约束：
+
+- 每个 `scene_snapshot_hash` 至多贡献一个有效对比对；30 组必须来自 30 个不同的冻结快照。同一快照多对会造成票间相关（伪重复），破坏精确二项检验的独立性假设。
+- 实验快照必须与作者近期人工终选过的生产场景隔离（另建种子项目，或时间隔离）：作者刚在生产终选里通读过的候选正文，盲评时能被认出，盲即失效。
+- `next-pair` 接口只返回 `pair_id` 与左右纯文本；artifact 引用、策略名、模型、机器分数等元数据一律不得序列化给前端，投票落库后方可 reveal。本地单用户环境下直接读库可破盲——盲评的目标是防无意识偏倚，不是防蓄意作弊，按此设定威胁模型即可。
+- 平局照记但不计胜场；显著性在非平局有效对 n 上做双侧精确二项检验。收集持续到非平局对达到 30 组，此时阈值即 21 胜（p≈0.043）；若因供给受限停在更小的 n，按最小胜场阈值表判定（n=25→18、n=27→20、n=28→20、n=29→21，均为双侧 p<0.05）。
+
 ### 6.3 核心接口
 
 保留现有接口并补齐稳定契约：
@@ -416,6 +467,8 @@ LLM 角色槽至少区分：
 
 所有写接口必须使用操作意图级幂等键。候选选择和归档必须可安全重放。
 
+补充契约：`style-candidates/{row_id}/select` 现已走 `execute_with_idempotency`，但缺终选锁定——需补上：同键同选择幂等返回；已存在不同终选记录时新的 select 返回冲突错误；重开终选是独立的显式动作并写审计。`GET style-candidates` 需新增盲化视图（随机序 + 剥离分数与模型元数据），现实现的按分降序输出只保留给非盲化的诊断用途。
+
 ## 7. 错误处理与恢复不变量
 
 以下不变量任何实现不得破坏：
@@ -423,13 +476,15 @@ LLM 角色槽至少区分：
 1. 已经持久化的有效正文不会因后续 QC、评审、索引或聚合失败而被删除。
 2. `hard_blocked` 仍必须返回可查看、可导出的最近有效正文。
 3. 候选生成部分成功时，已有候选可进入作者选择，不要求全部成功。
-4. 作者完成选择后，重复提交相同选择返回相同结果。
+4. 作者完成选择后，重复提交相同选择返回相同结果；提交不同选择被拒绝，除非先执行显式重开动作。
 5. 归档事务要么完整成功，要么保持未归档草稿状态，不能出现前端完成、后端缺稿。
 6. 章节聚合失败不回滚已经归档的场景。
 7. 事件抽取、向量索引、主题、张力和漂移等辅助模块失败只产生可观察降级，不撤销成稿。
 8. 来源安全未完成时可以保存草稿，但不能标记为已安全归档。
 9. 预算耗尽时返回当前最佳版本与明确原因，不再继续自动调用。
 10. 清除浏览器缓存后，所有已归档正文和作者决策都能从后端恢复。
+11. 回灌进任何写作或补丁提示词的 QC 证据，必须先按 §5.6 做 POV 投影脱敏；硬 QC 自身始终读全量权威状态。
+12. 场景 token 预算与次数预算都不得被自动流程重置；只有作者显式追加预算可以扩容，且必须留审计。
 
 ## 8. 分阶段实施方案
 
@@ -446,6 +501,7 @@ LLM 角色槽至少区分：
 5. 测试必须从空白项目走真实雪花 UI、物化、场景执行、候选选择、归档、章节聚合。
 6. 保留 API 深链作为诊断 lane，但不能替代 UI 北极星。
 7. 输出每场 token、耗时、重试、阻断、最终稿和来源安全结果。
+8. 阶段性红灯声明：候选终选 UI 到 Wave 3 才存在，因此该 harness 在 Wave 1–3 完成前对五章基准预期整体红灯——红灯本身就是本 Wave 的交付物（“先让测试能够正确失败”）。该 lane 只进发布门（§9.3），不进普通 PR CI。
 
 主要文件：
 
@@ -470,6 +526,7 @@ LLM 角色槽至少区分：
 5. `wr-doc-store` 启动时服务端优先；本地较新时创建冲突副本并让作者选择。
 6. `ws-manuscripts` 只读取后端章节聚合。
 7. 增加清 localStorage、重启服务、重新加载后的恢复 E2E。
+8. 后端 `chapter_manuscripts` 聚合已以 `FinalScene` 为源（§2.3），本 Wave 的重心是 React 换源（`ws-manuscripts` 停止读 `wr-doc:*` 作正文来源）与归档单入口，不要重写已合规的后端聚合。
 
 主要文件：
 
@@ -477,6 +534,8 @@ LLM 角色槽至少区分：
 - `backend/src/novel_system/services/archiver.py`
 - `backend/src/novel_system/services/chapter_manuscripts.py`
 - `backend/src/novel_system/services/chapter_state.py`
+- `backend/src/novel_system/db/models.py` 及配套 Alembic 迁移（新增列）
+- `backend/tests/test_metadata_isolation.py`（漂移守卫保持通过）
 - `backend/src/novel_system/api/routes/scenes.py`
 - `backend/src/novel_system/api/routes/chapter_manuscripts.py`
 - `frontend-react/src/ws-scene-run.jsx`
@@ -525,12 +584,15 @@ LLM 角色槽至少区分：
 5. 将低分散补救改为渐进补候选，不能一次生成后再无上限重试。
 6. 所有调用计入场景总预算；达到 5× 立即停止。
 7. 标准场景保留机器下限选择，关键场景强制作者终选。
+8. 改造 style-candidates GET 增加盲化视图：随机展示序并记录 `blinded_order`，默认剥离 `adversarial_score` 与模型元数据（现实现按分数降序且携带分数，直接复用即违背盲化）。
+9. select 端点增加终选锁定与显式重开动作（§6.3 补充契约）。
 
 主要文件：
 
 - `backend/src/novel_system/services/orchestrator.py`
 - `backend/src/novel_system/services/scene_generation.py`
 - `backend/src/novel_system/services/scene_criticality.py`
+- `backend/src/novel_system/db/models.py` 及配套 Alembic 迁移（`run_policy`、预算字段）
 - `backend/src/novel_system/api/routes/scenes.py`
 - `frontend-react/src/ws-scene-run.jsx`
 - `frontend-react/src/ws-signals.jsx`
@@ -544,10 +606,11 @@ LLM 角色槽至少区分：
 实施内容：
 
 1. 扩展事件知识归属和公开级别。
-2. 实现 POV 投影服务，替换写作提示中的全量状态注入。
-3. 硬 QC 仍读取全量权威状态。
+2. 盘点 Bundle 内全部权威状态注入槽位（至少 `_narrative_state_digest` 与 `information_asymmetry_digest`），实现 POV 投影服务并逐一替换全量注入。
+3. 硬 QC 仍读取全量权威状态；按 §5.6/§7.11 落实 finding 证据脱敏，堵住 QC 回灌旁路。
 4. 加入秘密、错误信念、怀疑和公共事实 golden 用例。
 5. 使用悬疑样本做真实 LLM 对照，检查角色是否提前行动或暗示秘密。
+6. 对存量事件做知识归属回填迁移（§5.6 启发式）；无显式秘密标注的项目投影退化为现行为，保证不饿死上下文。
 
 主要文件：
 
@@ -572,6 +635,7 @@ LLM 角色槽至少区分：
 5. treatment 至少赢 21/30 个有效对比，且双侧精确检验 `p < 0.05`，才允许作为默认严格模式。
 6. 依次消融自动批判、风格 few-shot/RAG、漂移修正和结构约束强度。
 7. 任何未通过人评的高成本模块默认改为可选。
+8. 快照独立性与项目隔离按 §6.2 实验有效性约束执行；消融是一个多假设序列，任何"升级为默认"的决策必须用新一批 30 组非平局对复验一次，避免多重比较膨胀假阳性。
 
 主要文件：
 
@@ -603,7 +667,7 @@ LLM 角色槽至少区分：
 实施内容：
 
 1. 将五章 harness 扩展为 30 章耐久测试，允许使用成本较低模型，但必须走真实持久化和重启。
-2. 每五章记录连续性、声音漂移、跨章重复、伏笔债、数据库大小、查询延迟和平均成本。
+2. 每五章记录连续性、声音漂移、跨章重复、伏笔债、数据库大小、查询延迟和平均成本。（允许低价模型，但漂移与重复指标必须按模型分层记录基线，避免跨模型混杂误报。）
 3. 对参考文本增加不可信内容封装和导入权属记录。
 4. 盘点存量孤儿，增加修复迁移，再评估启用 SQLite foreign keys。
 5. 增加数据库备份、WAL 一致性备份和恢复演练脚本。
@@ -624,6 +688,9 @@ LLM 角色槽至少区分：
 - POV 知识投影。
 - 价格与 token 聚合。
 - 盲化映射不泄漏和投票统计。
+- `author_state` 空稿三态（not_started/generating/generation_failed）映射与 `recovery_action`。
+- issue `blocking` 与 `quality_level` 的派生一致性、Q0/Q1 必带 `verified_by`。
+- finding 回灌的 POV 脱敏。
 
 ### 9.2 集成测试
 
@@ -634,7 +701,7 @@ LLM 角色槽至少区分：
 - 章节聚合失败不回滚场景归档。
 - 来源检查失败时草稿可保存但不可安全归档。
 - 清缓存和重启后的服务端水合。
-- writer 与 critic 同模型时，所有由 LLM 产生的阻断建议自动降为 Q2；确定性 Q0/Q1 不受影响。
+- 未经确定性复核的 LLM issue 在任何模型组合（含 writer/critic 同模型）下都不得阻断；经确定性复核的 Q0/Q1 与模型是否同源无关，不受影响。
 
 ### 9.3 真实模型门禁
 
@@ -665,8 +732,8 @@ LLM 角色槽至少区分：
 - Q0/Q1 未解决项为 0。
 - 来源安全泄漏为 0。
 - 任一关键场景不超过单发 token 的 5×。
-- 普通场景至少 90% 在第一次任务中产生可编辑正文；本次 15 场基准按至少 14/15 场计算。
-- 30 组有效盲评达到 21 胜且双侧精确检验 `p < 0.05`，否则高成本策略不升级为默认。
+- 15 场中至少 14 场在第一次任务中产生可编辑正文（关键场景以候选产出计；此单一口径取代"普通场景 90%"与"14/15"的双口径）。
+- 30 组盲评实验已完成并产出可复算报告，默认策略已按其结果设置：非平局 30 组达到 21 胜且双侧精确检验 `p < 0.05` 时，Best-of-N 终选升级为关键场景默认；未达标时该策略保持可选。负结果是有效结论，不构成本发布门失败。
 - 第 4–5 章硬事实 Q0/Q1 为 0；不得存在未被作者接受的高严重度声音漂移；跨章自我重复服务不得报告高严重度命中。
 
 “通过”不使用模糊的综合分抵消红线：以上任一项失败，五章发布门失败并输出具体章节、场景和证据。
@@ -692,6 +759,8 @@ LLM 角色槽至少区分：
 - `cross_chapter_continuity_error_rate`
 
 北极星指标为 `archived_publishable_chapters_per_100k_tokens`，同时看结果、质量和成本，避免单独优化调用成功率或内部质量分。
+
+`publishable` 的确定性定义：后端权威归档、Q0/Q1 未解决项为 0、且无未被作者接受的高严重度声音漂移或跨章重复的章节。不引入主观"可发表"评分。
 
 ## 11. 禁止性规则
 
@@ -724,6 +793,8 @@ LLM 角色槽至少区分：
 8. 检查工作树，只提交本 Wave 文件。
 9. 输出证据：命令、通过数、失败数、真实产物路径和剩余风险。
 
+涉及 ORM 模型改动的 Wave，第 3 步必须同时交付 Alembic 迁移，第 5 步必须包含 `tests/test_metadata_isolation.py` 漂移守卫；模型与迁移不同步是本仓库已知的"CI 全绿、运行期 500"陷阱。
+
 在 Wave 0–3 完成前，禁止把工作重点转移到样式美化、控制塔演示或新文学指标。
 
 ## 13. 风险与缓解
@@ -738,6 +809,11 @@ LLM 角色槽至少区分：
 | 异源裁判提高成本 | 只用于关键场景和实验；不能独立硬阻断 |
 | 五章真实模型测试波动 | 冻结输入、记录路由与快照、运行多次并分离模型失败与系统失败 |
 | 启用 FK 暴露存量孤儿 | 先盘点、修复、验证，再分阶段开启 |
+| QC 证据回灌把秘密带回写作提示词 | finding 回灌一律过 POV 脱敏；含非 POV 已知事实的 Q1 只走作者确认（§5.6/§7.11） |
+| 盲评被作者近期终选记忆污染 | 实验快照与生产终选场景隔离（另建种子项目或时间隔离）；分 session 投票并留冷却间隔 |
+| 同一快照多对造成伪重复、检验失真 | 每快照至多一个有效对；显著性在非平局 n 上计算（§6.2） |
+| 手动重跑绕过场景预算 | 预算按场景生命周期累计；扩容只能作者显式追加并审计（§7.12） |
+| 消融序列多重比较产生假阳性 | 升默认需第二批 30 组非平局对复验（Wave 5 第 8 条） |
 | 设计范围过大 | 每个 Wave 独立门禁；前一 Wave 未完成不得开始后一 Wave |
 
 ## 14. 最终交付物
@@ -767,3 +843,15 @@ LLM 角色槽至少区分：
 6. 每一个高成本模块是否能说清楚自己的边际贡献？
 
 任何一个问题回答为否，就继续修结果闭环，不新增外围能力。
+
+## 附录 A：v1.1 修订记录（基于代码逐项核实）
+
+2026-07-10 对 v1.0 做代码核实与漏洞修订。原则、路线、Wave 划分不变，修订集中在：
+
+1. **事实基线**：新增 §2.3 代码核实注记；更正 `ChapterManuscript` 为聚合服务而非表；指出后端聚合已以 `FinalScene` 为源、select 端点已幂等但缺终选锁定、style-candidates 现实现（按分降序带分数）与盲化要求冲突、`SceneRunState` 已有 `attempt_budget`、`information_asymmetry_digest` 是第二个 POV 泄漏点。
+2. **状态机**：`author_state` 增加空稿三态（not_started/generating/generation_failed），使 G-01 场景可表示；`awaiting_author_choice` 放宽为至少一份候选，消除与不变量 7.3 的矛盾；统一归档状态词表（`FinalScene.status` 现值为 `approved`）。
+3. **阻断纪律**：确立 Q0/Q1 的"LLM 提案—确定性复核"门径与 `verified_by` 落库；`blocking` 由级别派生校验；§5.7 与 §9.2 相应改写，消除"同模型降 Q2"与"LLM 本就不能单独 Q0/Q1"的规则冲突。
+4. **盲化与终选**：候选默认随机序、分数折叠、记录 `blinded_order`；终选一次写入、变更须显式重开；实验对独立性（每快照一对）、实验与生产项目隔离防记忆污染、平局规则与最小胜场阈值表、next-pair 不下发元数据。
+5. **POV**：投影覆盖全部注入槽位；新增不变量 11（finding 证据脱敏）堵住 QC 回灌旁路；存量归属回填与无标注时的等价降级。
+6. **预算**：新增不变量 12（预算不可被自动流程重置，扩容须作者显式追加）；与 `attempt_budget` 双轨并存；预留—结算语义防并发超支；估算/实际/计费三口径；"补到 N=5 即放弃批判修订"显式化。
+7. **工程与门禁**：动模型的 Wave 强制"模型 + Alembic 迁移 + 漂移守卫"三件套；Wave 0 阶段性红灯声明；Wave 7 跨模型漂移分层；§9.4 出稿率双口径统一为 14/15、盲评负结果不挡发布；北极星 `publishable` 给出确定性定义。
