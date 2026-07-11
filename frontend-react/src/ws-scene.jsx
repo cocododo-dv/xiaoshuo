@@ -495,7 +495,8 @@ function WsSceneDemo({ go, t, demo = true }) {
       const r = runs[sc.id];
       if (!r || !r.draft || r.state !== "ready") return;
       // Wave 1 归档单入口：先后端 adopt-current 成功，本地才置 archived
-      const res = await scnAdoptToDoc(sc.sid, r.draft);
+      // Wave 2：gate（作者可见状态门）随手递入——hard_blocked 前置拦截
+      const res = await scnAdoptToDoc(sc.sid, r.draft, r.gate);
       if (!res.ok) { if (res.reason && res.reason !== "已取消") window.alert("归档失败：" + res.reason); return; }
       const nr = { ...r, state: "archived", justArchived: true, archivedAt: new Date().toLocaleString("zh-CN") };
       setRuns(m => ({ ...m, [sc.id]: nr }));
@@ -967,8 +968,31 @@ function DecisionBar({ scene, state, go, onArchive, onRun, onCreateCards }) {
 
   // ready → the real decision moment
   const v = scene.verdict || {};
+  /* Wave 2（治理 §5.3/§5.4）：「无法继续」与「已有稿但建议修改」分开展示。
+     hard_blocked = 已证实 Q0/Q1 → 归档禁用（正文保留可接管）；
+     quality_warning = Q2/Q3 建议 → 照常可归档，建议随行。 */
+  const gate = scene.gate || null;
+  const gateBlocked = !!(gate && gate.canArchive === false);
+  const gateWarn = !!(gate && !gateBlocked && gate.authorState === "quality_warning");
+  const gateKeys = (list) => (list || []).map(f => f.issue_key || f.kind).filter(Boolean).slice(0, 4).join("、");
   return (
     <div className="scn2-decide-wrap">
+      {gateBlocked && (
+        <div className="scn2-decide is-wait" style={{ borderColor: "var(--crimson)", marginBottom: 8 }}>
+          <div className="scn2-decide-sum">
+            <I.AlertTriangle size={14} style={{ color: "var(--crimson)" }} />
+            无法继续：已证实的硬问题（Q0/Q1）{gateKeys(gate.blocking) ? `：${gateKeys(gate.blocking)}` : ""} · 正文已保留，处理或重跑后再归档
+          </div>
+        </div>
+      )}
+      {gateWarn && (
+        <div className="scn2-decide is-wait" style={{ borderColor: "var(--gold)", marginBottom: 8 }}>
+          <div className="scn2-decide-sum">
+            <I.AlertTriangle size={14} style={{ color: "var(--gold)" }} />
+            已有稿，建议修改：{(gate.warnings || []).length} 条质量建议（Q2/Q3）{gateKeys(gate.warnings) ? `：${gateKeys(gate.warnings)}` : ""} · 可直接归档，警告随稿留痕
+          </div>
+        </div>
+      )}
       {rework && (
         <div className="scn2-rework">
           <div className="scn2-rework-head">
@@ -999,7 +1023,12 @@ function DecisionBar({ scene, state, go, onArchive, onRun, onCreateCards }) {
         <div className="scn2-decide-acts">
           <button className="btn btn-ghost btn-sm" onClick={toWriterDeep}><I.Microscope size={13} /> 送写作台深改</button>
           <button className={`btn btn-quiet btn-sm ${rework ? "is-on" : ""}`} onClick={() => setRework(r => !r)}><I.Refresh size={13} /> 退回重写</button>
-          <button className="btn btn-accent" onClick={onArchive}><I.Check size={14} /> 采纳并归档</button>
+          <button
+            className="btn btn-accent"
+            onClick={onArchive}
+            disabled={gateBlocked}
+            title={gateBlocked ? "存在已证实的 Q0/Q1 硬问题，暂不能归档（正文已保留）" : undefined}
+          ><I.Check size={14} /> {gateBlocked ? "需处理硬问题" : "采纳并归档"}</button>
         </div>
       </div>
     </div>

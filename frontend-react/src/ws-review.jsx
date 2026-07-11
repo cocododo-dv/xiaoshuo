@@ -58,6 +58,9 @@ function rvAdapt(card) {
     id: card.id,
     kind: card.kind || "note",
     priority: card.priority || 2,
+    /* Wave 2（治理 §5.4）：后端卡带质量分级时透传——Q0/Q1=阻断、Q2/Q3=建议，
+       视图据此把「无法继续」与「有稿建议修改」标开；无分级不猜 */
+    qualityLevel: card.quality_level || undefined,
     title: card.title,
     where: card.where || "",
     source: card.source || "",
@@ -653,6 +656,12 @@ function RvItem({ item, open, removing, selected, onToggle, onAct }) {
           <div className="rv-row-main">
             <div className="rv-meta">
               <span className={`pill pill-${m.tone} text-xs`}><span className="pill-dot" />{m.label}</span>
+              {item.qualityLevel && (
+                <span
+                  className={`pill pill-${item.qualityLevel === "Q0" || item.qualityLevel === "Q1" ? "crimson" : "gold"} text-xs`}
+                  title={item.qualityLevel === "Q0" || item.qualityLevel === "Q1" ? "阻断级：处理前不能归档（正文已保留）" : "建议级：不拦归档，按需修改"}
+                ><span className="pill-dot" />{item.qualityLevel === "Q0" || item.qualityLevel === "Q1" ? `${item.qualityLevel} 阻断` : `${item.qualityLevel} 建议`}</span>
+              )}
               <span className="rv-where">{item.where}</span>
             </div>
             <h3 className="rv-item-title">{item.title}</h3>

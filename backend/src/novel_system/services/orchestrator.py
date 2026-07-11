@@ -48,7 +48,19 @@ class Orchestrator:
         self.planning_service = planning_service or NearFinalPlanningService(session, llm_runner=llm_runner)
         self.near_final_service = near_final_service or NearFinalAcceptanceService(session, llm_runner=llm_runner)
 
-    def run_scene(self, scene_id: str, from_step: str = "bundle", resume: bool = False, author_note: str | None = None) -> dict:
+    def run_scene(
+        self,
+        scene_id: str,
+        from_step: str = "bundle",
+        resume: bool = False,
+        author_note: str | None = None,
+        run_policy: str = "reliable",
+    ) -> dict:
+        # Wave 2（治理 §5.4 / Wave 2 项 7）：run_policy 为请求级参数（列属 Wave 3）。
+        # reliable（默认）：Q2/Q3 警告随稿归档；strict：存在 Q2 时停在可归档的
+        # quality_warning，由作者经 adopt-current 显式接受；auto 保留给 Wave 3
+        # （按 criticality 决策），当前按 reliable 处理。Q0/Q1 阻断与模式无关。
+        strict_mode = run_policy == "strict"
         self.version_manager.recover_stuck_jobs()
         scene = self.session.get(SceneCard, scene_id)
         if scene is None:
@@ -125,11 +137,11 @@ class Orchestrator:
         )
         if not hard_qc.should_continue:
             self.session.flush()
-            return {
+            # Wave 2 项 5：所有早退结果都携带 author_state 契约（含 latest_valid 指针）
+            return self._with_author_projection(scene_id, state, {
                 "scene_status": state.scene_status,
                 "current_bundle_id": bundle["bundle_id"],
                 "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                "current_final_scene_row_id": state.current_final_scene_row_id,
                 "current_qc_report_id": state.current_qc_report_id,
                 "current_human_review_event_id": state.current_human_review_event_id,
                 "hard_qc": {
@@ -140,7 +152,7 @@ class Orchestrator:
                     "next_action": hard_qc.next_action,
                     "stop_reason": hard_qc.stop_reason,
                 },
-            }
+            })
 
         n_candidates = self._best_of_n_count(contract, criticality=criticality)
         candidate_summaries: list[dict[str, Any]] = []
@@ -247,12 +259,13 @@ class Orchestrator:
             )
 
         if soft_qc.branch == "human_review_required":
+            # Wave 2：软 QC 只在 verified Q0/Q1 时才会走到这里（LLM-only 意见已在
+            # 引擎内降级为 waive）——这是真硬阻断，正文保留、契约随行。
             self.session.flush()
-            return {
+            return self._with_author_projection(scene_id, state, {
                 "scene_status": state.scene_status,
                 "current_bundle_id": bundle["bundle_id"],
                 "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                "current_final_scene_row_id": state.current_final_scene_row_id,
                 "current_qc_report_id": state.current_qc_report_id,
                 "current_human_review_event_id": state.current_human_review_event_id,
                 "hard_qc": {
@@ -265,7 +278,7 @@ class Orchestrator:
                 },
                 "soft_qc": self._soft_qc_result_payload(soft_qc),
                 "planning": planning,
-            }
+            })
 
         rewrite_count = 0
         near_final = self.near_final_service.evaluate_scene(
@@ -291,28 +304,39 @@ class Orchestrator:
                 source_content=final_generation.content,
             )
         near_final_payload = self._near_final_result_payload(near_final, rewrite_count=rewrite_count)
-        if not near_final["pass_flag"]:
-            state.scene_status = "human_review_required" if near_final.get("requires_human_review") else "near_final_revision_required"
-            self.session.flush()
-            return {
-                "scene_status": state.scene_status,
-                "current_bundle_id": bundle["bundle_id"],
-                "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                "current_final_scene_row_id": state.current_final_scene_row_id,
-                "current_qc_report_id": state.current_qc_report_id,
-                "current_human_review_event_id": state.current_human_review_event_id,
-                "hard_qc": {
-                    "branch": hard_qc.branch,
-                    "qc_report_id": hard_qc.qc_report_id,
-                    "human_review_event_id": hard_qc.human_review_event_id,
-                    "resolution_code": hard_qc.resolution_code,
-                    "next_action": hard_qc.next_action,
-                    "stop_reason": hard_qc.stop_reason,
-                },
-                "soft_qc": self._soft_qc_result_payload(soft_qc),
-                "planning": planning,
-                "near_final": near_final_payload,
-            }
+        # Wave 2（§5.4 / Wave 2 项 4）：near-final 是 LLM 提案层（Q2/Q3）——达自动
+        # 修订上限（软补丁 ≤1 + 准终稿重写 ≤1 = 2 次）后不再断头，交付当前最好稿；
+        # 其 requires_human_review 亦为提案，不得产生 human_review_required 断头。
+        near_final_warnings = self._near_final_warning_findings(near_final)
+
+        # 严格模式停点：存在 Q2 级警告（软 QC 报告或 near-final 未过）时不自动归档，
+        # 停在可归档的 quality_warning，由作者经 adopt-current 显式接受（留审计）。
+        if strict_mode:
+            strict_warnings = self._collect_q2_warnings(state, near_final_warnings)
+            if strict_warnings:
+                state.scene_status = "quality_warning_pending_acceptance"
+                self.session.flush()
+                result = self._with_author_projection(scene_id, state, {
+                    "scene_status": state.scene_status,
+                    "current_bundle_id": bundle["bundle_id"],
+                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                    "current_qc_report_id": state.current_qc_report_id,
+                    "current_human_review_event_id": state.current_human_review_event_id,
+                    "hard_qc": {
+                        "branch": hard_qc.branch,
+                        "qc_report_id": hard_qc.qc_report_id,
+                        "human_review_event_id": hard_qc.human_review_event_id,
+                        "resolution_code": hard_qc.resolution_code,
+                        "next_action": hard_qc.next_action,
+                        "stop_reason": hard_qc.stop_reason,
+                    },
+                    "soft_qc": self._soft_qc_result_payload(soft_qc),
+                    "planning": planning,
+                    "near_final": near_final_payload,
+                    "run_policy": run_policy,
+                })
+                result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
+                return result
 
         if criticality.human_gate and near_final.get("pass_flag"):
             gate_event = self._create_criticality_human_gate(scene, criticality, bundle, final_generation)
@@ -320,11 +344,10 @@ class Orchestrator:
                 state.scene_status = "critical_scene_human_gate"
                 state.current_human_review_event_id = gate_event.event_id
                 self.session.flush()
-                return {
+                return self._with_author_projection(scene_id, state, {
                     "scene_status": state.scene_status,
                     "current_bundle_id": bundle["bundle_id"],
                     "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                    "current_final_scene_row_id": state.current_final_scene_row_id,
                     "current_qc_report_id": state.current_qc_report_id,
                     "current_human_review_event_id": gate_event.event_id,
                     "hard_qc": {
@@ -343,7 +366,7 @@ class Orchestrator:
                         "reasons": criticality.reasons,
                         "human_gate": True,
                     },
-                }
+                })
 
         final_row_id = versioned_scene_artifact_id("final_scene", scene_id, bundle)
         soft_risk_acceptance_event_id = self._soft_risk_acceptance_event_id(soft_qc)
@@ -354,6 +377,16 @@ class Orchestrator:
                     "kind": "soft_risk_acceptance",
                     "human_review_event_id": soft_risk_acceptance_event_id,
                     "qc_report_id": soft_qc.qc_report_id,
+                }
+            )
+        if not near_final.get("pass_flag"):
+            # Wave 2：达修订上限仍未过的 near-final 意见随稿归档留痕（作者行动建议）
+            carry_notes_json.append(
+                {
+                    "kind": "near_final_unresolved",
+                    "failure_class": near_final.get("failure_class"),
+                    "rewrite_count": rewrite_count,
+                    "recommended_action": "author_review_optional_fix",
                 }
             )
         self.session.add(
@@ -411,7 +444,7 @@ class Orchestrator:
             chapter_near_final = self.near_final_service.evaluate_chapter(scene.chapter_id)
             self._detect_and_store_style_drift(scene)
 
-        return {
+        result = self._with_author_projection(scene_id, state, {
             "scene_status": archive_result["scene_status"],
             "current_bundle_id": bundle["bundle_id"],
             "current_bundle_hash": bundle["bundle_snapshot_hash"],
@@ -431,13 +464,18 @@ class Orchestrator:
             "near_final": near_final_payload,
             "chapter_near_final": chapter_near_final,
             "style_candidates": candidate_summaries if candidate_summaries else None,
+            "run_policy": run_policy,
             # §6.3 Blueprint: "终选决定质量上界，归人。" Signal for critical scenes
             # that human candidate selection is recommended (pipeline auto-selected
             # adversarial-ranked #1, but the human should review all candidates).
             "candidate_selection_recommended": (
                 bool(criticality and criticality.human_gate and len(candidate_summaries) > 1)
             ),
-        }
+        })
+        result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
+        if near_final_warnings and "author_review_optional_fix" not in (result.get("recommended_actions") or []):
+            result["recommended_actions"] = [*(result.get("recommended_actions") or []), "author_review_optional_fix"]
+        return result
 
     def _consecutive_transition_count(self, scene: SceneCard) -> int:
         """Count how many consecutive transition-level scenes precede *scene* in this chapter.
@@ -542,6 +580,49 @@ class Orchestrator:
                 "Rewrite the full scene so forced choice, paid cost, relationship turn, and ending action are visible."
             )
         return rewrite_brief
+
+    def _with_author_projection(self, scene_id: str, state: SceneRunState, payload: dict[str, Any]) -> dict[str, Any]:
+        """Wave 2 项 5：run 结果（含全部早退路径）统一附 §5.3 作者状态契约。"""
+        from novel_system.services.author_state import compute_author_state
+
+        projection = compute_author_state(self.session, scene_id, state)
+        return {**payload, **projection}
+
+    @staticmethod
+    def _near_final_warning_findings(near_final: dict[str, Any]) -> list[dict[str, Any]]:
+        """near-final 未过 → Q2/Q3 警告条目（LLM 提案层，不阻断）。"""
+        if near_final.get("pass_flag"):
+            return []
+        failure_class = str(near_final.get("failure_class") or "near_final_unresolved")
+        level = "Q3" if failure_class == "prose_model_voice" else "Q2"
+        first_finding = next(
+            (item for item in near_final.get("findings") or [] if isinstance(item, dict)),
+            {},
+        )
+        return [
+            {
+                "issue_key": f"near_final_{failure_class}",
+                "quality_level": level,
+                "message": str(first_finding.get("issue") or failure_class),
+                "recommended_action": "author_review_optional_fix",
+                "verified_by": None,
+            }
+        ]
+
+    def _collect_q2_warnings(self, state: SceneRunState, near_final_warnings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """严格模式停点判据：当前 QC 报告的 Q2 条目 + near-final Q2 警告（Q3 只诊断不停）。"""
+        warnings = [item for item in near_final_warnings if item.get("quality_level") == "Q2"]
+        report = self.session.get(QcReport, state.current_qc_report_id) if state.current_qc_report_id else None
+        for issue in (report.issues_json or []) if report else []:
+            if isinstance(issue, dict) and issue.get("quality_level") == "Q2":
+                warnings.append(issue)
+        return warnings
+
+    @staticmethod
+    def _merged_warnings(existing: Any, additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged = [item for item in (existing or []) if isinstance(item, dict)]
+        merged.extend(additions)
+        return merged
 
     @staticmethod
     def _near_final_result_payload(near_final: dict[str, Any], *, rewrite_count: int) -> dict[str, Any]:

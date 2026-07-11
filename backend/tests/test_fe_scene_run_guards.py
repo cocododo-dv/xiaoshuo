@@ -174,9 +174,10 @@ def test_run_full_forwards_author_note_to_orchestrator(client, session, monkeypa
         def __init__(self, _session):
             pass
 
-        def run_scene(self, scene_id, author_note=None):
+        def run_scene(self, scene_id, author_note=None, run_policy="reliable"):
             captured["scene_id"] = scene_id
             captured["author_note"] = author_note
+            captured["run_policy"] = run_policy
             return {"scene_status": "stubbed"}
 
     monkeypatch.setattr(scenes_routes, "Orchestrator", _StubOrchestrator)
@@ -187,7 +188,7 @@ def test_run_full_forwards_author_note_to_orchestrator(client, session, monkeypa
         headers={"X-Idempotency-Key": "fe-run-note-full"},
     )
     assert response.status_code == 200, response.text
-    assert captured == {"scene_id": scene_id, "author_note": "雨景贯穿全场。"}
+    assert captured == {"scene_id": scene_id, "author_note": "雨景贯穿全场。", "run_policy": "reliable"}
 
 
 

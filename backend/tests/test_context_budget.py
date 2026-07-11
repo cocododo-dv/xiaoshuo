@@ -319,27 +319,29 @@ def test_hard_qc_engine_escalates_continuity_warning_before_llm_call(session) ->
     session.commit()
 
     report = session.execute(select(QcReport)).scalars().one()
-    event = session.execute(select(HumanReviewEvent)).scalars().one()
     attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "hard_qc")).scalars().one()
     llm_call = session.execute(select(LlmCall).where(LlmCall.step == "hard_qc")).scalars().one()
 
+    # Wave 2（§5.4/§7.7）：continuity 预算超限 = QC 自身执行失败——降级续跑 +
+    # Q2 警告（含完整 continuity_warning 载荷），不再断头撤销交付
     assert client.requests == []
-    assert decision.branch == "human_review_required"
+    assert decision.branch == "continue"
+    assert decision.should_continue is True
     assert decision.stop_reason == "hard_qc_continuity_budget_exceeded"
     assert attempt.details_json["llm_call_id"] == llm_call.llm_call_id
-    assert attempt.details_json["continuity_warning"]["requires_scene_split"] is True
     assert llm_call.error_code == "CONTINUITY_BUDGET_EXCEEDED"
-    assert report.next_action == "human_review_required"
-    assert report.issues_json[0]["issue_key"] == "continuity_budget_exceeded"
-    assert report.issues_json[0]["message"] == continuity_warning["message"]
-    assert report.issues_json[0]["continuity_warning"]["code"] == continuity_warning["code"]
-    assert report.issues_json[0]["continuity_warning"]["recommended_action"] == "split_scene"
-    assert report.issues_json[0]["continuity_warning"]["requires_scene_split"] is True
-    assert report.issues_json[0]["continuity_warning"]["target_input_tokens"] == 60
-    assert isinstance(report.issues_json[0]["continuity_warning"]["estimated_input_tokens"], int)
-    assert report.rewrite_brief_json == [{"instruction": "Split the scene and retry QC with a smaller continuity scope."}]
-    assert event.details_json["trigger_reason"] == "hard_qc_continuity_budget_exceeded"
-    assert event.details_json["replay_context"]["continuity_warning"] == report.issues_json[0]["continuity_warning"]
+    assert report.next_action == "pass"
+    issue = report.issues_json[0]
+    assert issue["issue_key"] == "continuity_budget_exceeded"
+    assert issue["quality_level"] == "Q2"
+    assert issue["blocking"] is False
+    assert issue["message"] == continuity_warning["message"]
+    assert issue["continuity_warning"]["code"] == continuity_warning["code"]
+    assert issue["continuity_warning"]["recommended_action"] == "split_scene"
+    assert issue["continuity_warning"]["requires_scene_split"] is True
+    assert issue["continuity_warning"]["target_input_tokens"] == 60
+    assert isinstance(issue["continuity_warning"]["estimated_input_tokens"], int)
+    assert session.execute(select(HumanReviewEvent)).scalars().all() == []
 
 
 def test_hard_qc_engine_recomputes_budget_for_final_prompt_before_llm_call(session) -> None:
@@ -381,8 +383,9 @@ def test_hard_qc_engine_recomputes_budget_for_final_prompt_before_llm_call(sessi
     report = session.execute(select(QcReport)).scalars().one()
 
     assert client.requests == []
-    assert decision.branch == "human_review_required"
+    assert decision.branch == "continue"
     assert report.issues_json[0]["issue_key"] == "continuity_budget_exceeded"
+    assert report.issues_json[0]["blocking"] is False
 
 
 def test_soft_qc_engine_escalates_continuity_warning_before_llm_call(session) -> None:
@@ -441,27 +444,32 @@ def test_soft_qc_engine_escalates_continuity_warning_before_llm_call(session) ->
     session.commit()
 
     report = session.execute(select(QcReport)).scalars().one()
-    event = session.execute(select(HumanReviewEvent)).scalars().one()
     attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "soft_qc")).scalars().one()
     llm_call = session.execute(select(LlmCall).where(LlmCall.step == "soft_qc")).scalars().one()
 
+    # Wave 2（§5.4/§7.7）：软 QC continuity 预算超限降级为 waive 续跑 + Q2 警告
+    # + carry note 留痕，不再断头撤销交付
     assert client.requests == []
-    assert decision.branch == "human_review_required"
+    assert decision.branch == "waive"
+    assert decision.should_continue is True
     assert decision.stop_reason == "soft_qc_continuity_budget_exceeded"
     assert attempt.details_json["llm_call_id"] == llm_call.llm_call_id
-    assert attempt.details_json["continuity_warning"]["requires_scene_split"] is True
     assert llm_call.error_code == "CONTINUITY_BUDGET_EXCEEDED"
-    assert report.next_action == "human_review_required"
-    assert report.issues_json[0]["issue_key"] == "continuity_budget_exceeded"
-    assert report.issues_json[0]["message"] == continuity_warning["message"]
-    assert report.issues_json[0]["continuity_warning"]["code"] == continuity_warning["code"]
-    assert report.issues_json[0]["continuity_warning"]["recommended_action"] == "split_scene"
-    assert report.issues_json[0]["continuity_warning"]["requires_scene_split"] is True
-    assert report.issues_json[0]["continuity_warning"]["target_input_tokens"] == 60
-    assert isinstance(report.issues_json[0]["continuity_warning"]["estimated_input_tokens"], int)
-    assert report.rewrite_brief_json == [{"instruction": "Split the scene and retry QC with a smaller continuity scope."}]
-    assert event.details_json["trigger_reason"] == "soft_qc_continuity_budget_exceeded"
-    assert event.details_json["replay_context"]["continuity_warning"] == report.issues_json[0]["continuity_warning"]
+    assert report.resolution_code == "soft_waive"
+    assert report.next_action == "pass_with_notes"
+    issue = report.issues_json[0]
+    assert issue["issue_key"] == "continuity_budget_exceeded"
+    assert issue["quality_level"] == "Q2"
+    assert issue["blocking"] is False
+    assert issue["message"] == continuity_warning["message"]
+    assert issue["continuity_warning"]["code"] == continuity_warning["code"]
+    assert issue["continuity_warning"]["recommended_action"] == "split_scene"
+    assert issue["continuity_warning"]["requires_scene_split"] is True
+    assert issue["continuity_warning"]["target_input_tokens"] == 60
+    assert isinstance(issue["continuity_warning"]["estimated_input_tokens"], int)
+    carry_notes = [entry for entry in report.rewrite_brief_json if entry.get("kind") == "carry_forward_note"]
+    assert carry_notes and "degraded" in carry_notes[0]["carry_note_text"]
+    assert session.execute(select(HumanReviewEvent)).scalars().all() == []
 
 
 def test_soft_qc_engine_recomputes_budget_for_final_prompt_before_llm_call(session) -> None:
@@ -503,5 +511,6 @@ def test_soft_qc_engine_recomputes_budget_for_final_prompt_before_llm_call(sessi
     report = session.execute(select(QcReport)).scalars().one()
 
     assert client.requests == []
-    assert decision.branch == "human_review_required"
+    assert decision.branch == "waive"
     assert report.issues_json[0]["issue_key"] == "continuity_budget_exceeded"
+    assert report.issues_json[0]["blocking"] is False

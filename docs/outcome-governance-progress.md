@@ -134,6 +134,93 @@ chapter-manuscripts 可回放全文）+ vitest「done 只由 adopt 成功响应�
   计划 D5 边界）；人工稿归档经 adopt 的 author-draft 兜底路径覆盖。
 - adopt 端点 Wave 1 只做确定性来源安全 Q0 守卫；Q0–Q3 分级阻断策略归 Wave 2。
 
-## Wave 2：QC 分级和可靠成稿模式 —— 未开始（待 Wave 1 完成门确认）
+## Wave 2：QC 分级和可靠成稿模式 —— 已完成（2026-07-11）
+
+实施计划：`docs/superpowers/specs/2026-07-11-wave2-implementation-plan.md`
+
+> Wave 1 完成门开工前复核（本机）：定向 30 项 + 漂移守卫通过；全量回归
+> 1422 passed / 4 skipped；vitest 73 项 + 构建通过。
+
+### 交付内容
+
+1. **统一质量分级分类器**（§5.4/§6.1，测试先行）：新增
+   `services/quality_classifier.py`——issue_key 注册表映射 Q0–Q3；`blocking`
+   由级别派生强制一致（Q2/Q3 恒 false）；**LLM 提案不能单独 Q0/Q1**：升级
+   必须过确定性复核器（source_safety 重扫 / must_include 缺失证实 /
+   forbidden 命中 / 代词漂移检测器 / 事件日志 keyword / 约束冲突注解），
+   `verified_by` 落库；无确定性证据自动降 Q2 并记 `downgraded_from`；
+   未注册 key 默认 Q2。`QcReport.issues_json` 每条携带 §6.1 契约字段。
+2. **阻断策略统一（G-03 主修复）**：硬/软 QC 分支改由分级器单一裁决——
+   无 verified Q0/Q1 时，LLM 的 full_rewrite/human_review 意见降级为
+   pass/waive 随稿警告，正文照常交付归档；确定性 Q1（代词漂移、必备元素
+   缺失等）仍阻断且 latest_valid 保留。旧阻断词表
+   `BLOCKING_QC_ISSUE_KEYS`（其中 3 键全仓无确定性生产者）退出裁决路径。
+   style gate 只保留确定性抄袭命中（Q0）的阻断权，fail/partial 降为 Q3 诊断
+   （双向测试：fail 归档带 Q3 警告 / plagiarism 仍 human_review + Q0 verified）。
+3. **QC 执行失败不再丢稿**（§5.4/§7.7）：硬/软 QC 的 LLM 超时/不可用/
+   payload 无效/continuity 超预算从 human_review_required 断头改为降级续跑
+   （Q2 警告随报告；确定性 gates 照跑仍可阻断）；near-final 执行失败同理
+   （`_execution_failure_payload` 不再 requires_human_review）。
+4. **自动修订 ≤2 与交付最佳稿**：near-final 二评仍 fail 不再断头——reliable
+   直接归档并以 carry note `near_final_unresolved` + `recommended_actions`
+   留痕；其 `requires_human_review`（LLM 提案）不产生断头。
+5. **可靠/严格模式**（请求级 `run_policy`，列属 Wave 3）：run/full 与
+   run/jobs 接受 `reliable|strict|auto`（非法值 422）；strict 在存在 Q2 警告时
+   停在新词值 `quality_warning_pending_acceptance`（可归档的 quality_warning），
+   作者经 adopt-current 显式接受（carry note `quality_warning_acceptance` 审计）；
+   Q0/Q1 阻断与模式无关。
+6. **早退契约 + 投影精化**：orchestrator 全部返回路径附 §5.3 契约
+   （author_state / latest_valid_draft_row_id / blocking_findings / …）；
+   `compute_author_state` 从当前 QcReport 分级条目精化 findings——**阻断状态词
+   残留但无 verified Q0/Q1 → quality_warning 可接管**（「只有真实 Q0/Q1 能
+   阻断归档」对历史行同样成立）；adopt-current 对 hard_blocked 409
+   `HARD_BLOCKED`（正文保留，红线 4）。
+7. **React 分开展示**：`ws-scene-run.jsx` 新增 `scnGateFrom`（从 workbench/
+   status 投影提取 gate，随运行记录持久化）+ `scnAdoptToDoc` 前置拦截
+   canArchive=false；`ws-scene.jsx` 裁决条——hard_blocked 红条「无法继续：
+   已证实硬问题，正文已保留」+ 归档按钮禁用，quality_warning 金条「已有稿，
+   建议修改」照常归档；`ws-review.jsx` 审阅卡透传 quality_level 标注
+   阻断/建议。
+
+### 完成门验证（本机 CentOS 7）
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/test_quality_classifier.py tests/test_qc_grading_reliable_mode.py -q   # 33 passed（16+17，先红后绿）
+cd backend && .venv/bin/python -m pytest tests/test_qc_engine.py tests/test_author_state_projection.py -q             # 51 passed（含语义更新）
+cd backend && .venv/bin/python -m pytest tests/test_context_budget.py tests/test_fe_scene_run_guards.py -q            # continuity 预算降级续跑 + run_policy 透传（语义更新）
+cd backend && .venv/bin/python -m pytest tests/test_qc_engine_style_validation_gate.py tests/test_orchestrator_flow.py \
+  tests/test_near_final_engine.py tests/test_scene_adopt_archive.py tests/test_scene_run_jobs.py \
+  tests/test_metadata_isolation.py tests/test_quality_classifier.py tests/test_qc_grading_reliable_mode.py -q         # 69 passed（漂移守卫过，本 Wave 零迁移）
+cd backend && .venv/bin/python -m pytest -q -m "not chroma_integration"          # 1457 passed / 4 skipped（0 failed）
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npx vitest run    # 77 passed（13 文件，+4 gate 测试）
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run build     # 构建通过
+# 隔离后端端到端（真实 HTTP + alembic + uvicorn，离线 LLM 管线）：
+#   3 场 run/full → 3/3 archived + author_state=archived + 章节聚合 3 场
+#   证据：.codex-run/wave2-e2e/wave2-e2e-evidence.json（verdict=PASS）
+```
+
+完成门「重复旧三章场景至少交付三份可编辑正文」可复算证明：
+`test_qc_grading_reliable_mode.py` 用旧三章的阻断形状回放（软 QC LLM 要求
+人工审阅 / 硬 QC LLM 要求整场重写 / near-final 二评 fail / QC 执行失败）——
+四种形状全部交付并归档非空 FinalScene；隔离后端 e2e 三场真实 HTTP 归档。
+「只有真实 Q0/Q1 能阻断归档」双向证明：LLM-only 词表键（scene_conflict_missing
+等）降 Q2 不阻断；确定性 Q1（代词漂移/必备缺失）管线内阻断 + adopt-current
+409 HARD_BLOCKED，且正文/latest_valid 保留。
+
+### 剩余风险
+
+- 完成门字面口径的「当前真实模型」三章复跑需 Windows lane / 云 LLM 额度
+  （本机 node16 无 fetch、不动用户额度）——行为语义已由 mock 回放全覆盖，
+  真实模型波动性验证归 §9.3 发布门（与 Wave 0 R0 工装信任门同批）。
+- strict 模式为请求级参数（run_policy 不落列），Wave 3 落列后语义不变；
+  scene_run_jobs 对 `quality_warning_pending_acceptance` 记 completed +
+  `awaiting_author_acceptance`。
+- 历史 human_review_required 行（无分级报告）投影从 hard_blocked 放宽为
+  quality_warning 可采纳——这是设计要求的行为（只有真实 Q0/Q1 阻断），
+  但旧库作者会看到部分场从「阻断」变「建议」，属预期语义迁移。
+- Q1 的作者解除通道复用既有 human-review resolve/accept_soft_risk 流程
+  （代词漂移接受测试已覆盖）；逐条差异定位的细化 UI 不在本 Wave。
+- `ws-scene.jsx` 裁决条视觉（红/金 gate 条）需 Windows lane 实跑走查；
+  逻辑层已有 vitest 覆盖（gate 提取/拦截/放行 4 项）。
 
 ## Wave 3–7 —— 未开始

@@ -34,7 +34,14 @@ class SceneRunJobService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create_job(self, scene_id: str, *, actor_ref: str = "operator", author_note: str | None = None) -> ChapterRunJob:
+    def create_job(
+        self,
+        scene_id: str,
+        *,
+        actor_ref: str = "operator",
+        author_note: str | None = None,
+        run_policy: str = "reliable",
+    ) -> ChapterRunJob:
         scene = AuthorLifecycleService(self.session).require_active_scene(scene_id)
         run_preflight = SceneRunPreflightService(self.session).build(scene, {})
         can_run = bool(run_preflight.get("can_run"))
@@ -57,6 +64,8 @@ class SceneRunJobService:
                 "lock_wait_ms": 0,
                 "run_preflight_status": run_preflight.get("overall_status"),
                 **({"author_note": note} if note else {}),
+                # Wave 2：运行策略随任务下发（reliable|strict|auto，列属 Wave 3）
+                **({"run_policy": run_policy} if run_policy and run_policy != "reliable" else {}),
             },
             result_summary_json={
                 "scene_id": scene_id,
@@ -245,11 +254,18 @@ def _run_scene_job_worker(job_id: str) -> None:
         scene_id = str((job.payload_json or {}).get("scene_id") or "")
         service.mark_running(job, current_step="neutral_running")
         session.commit()
-        result = Orchestrator(session).run_scene(scene_id, author_note=str((job.payload_json or {}).get("author_note") or "") or None)
+        result = Orchestrator(session).run_scene(
+            scene_id,
+            author_note=str((job.payload_json or {}).get("author_note") or "") or None,
+            run_policy=str((job.payload_json or {}).get("run_policy") or "reliable") or "reliable",
+        )
         state = session.get(SceneRunState, scene_id)
         scene_status = result.get("scene_status") if isinstance(result, dict) else state.scene_status if state else ""
         if scene_status == "archived":
             service.mark_finished(job, status="completed", current_step="archived", result=result)
+        elif scene_status == "quality_warning_pending_acceptance":
+            # Wave 2 严格模式停点：有稿可归档，等作者显式接受——任务算完成而非阻塞
+            service.mark_finished(job, status="completed", current_step="awaiting_author_acceptance", result=result)
         elif scene_status == "human_review_required":
             service.mark_finished(job, status="blocked", current_step="blocked", result=result)
         elif scene_status == "near_final_revision_required":

@@ -883,8 +883,33 @@ def test_run_scene_ignores_unsubstantiated_unknown_pronoun_hard_qc(session) -> N
     assert hard_report.issues_json == []
 
 
+def _seed_pronoun_drift_setup(session) -> None:
+    """Wave 2：软 QC 阻断需要确定性 Q1 证据——用「代词契约 她 / 文本 他」的
+    确定性漂移贯穿 style 与 patch 稿（neutral 用 她，硬 QC 不拦）。"""
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.pov_character_id = "LIN_CEN"
+    scene.onstage_chars_json = ["LIN_CEN"]
+    scene.must_include_text = ""
+    voice = session.get(VoiceProfile, "voice_profile_VOICE_CHAR_A_v1")
+    voice.voice_profile_id = "VOICE_LIN_CEN"
+    voice.character_id = "LIN_CEN"
+    voice.content = "角色名：林岑\n代词：她\n角色职责：档案修复师"
+    session.commit()
+
+
+# 前缀保持 "Provider-generated "：near-final 的占位稿判定跳过内容 gate，
+# 阻断证据只来自确定性代词漂移本身。
+_DRIFT_SCENE_PAYLOADS = [
+    {"scene_text": "Provider-generated 林岑站在灯下，她把盐钟残片放好。", "continuity_notes": []},
+    {"scene_text": "Provider-generated 林岑站在灯下。他把刻痕对准光。", "style_notes": []},
+    {"scene_text": "Provider-generated 林岑收起残片。他仍不说话。", "style_notes": []},
+]
+
+
 def test_run_scene_does_not_waive_blocking_soft_qc_repeat_patch(session) -> None:
+    """Wave 2 语义：重复补丁后仍存在 verified Q1（确定性代词漂移）→ 阻断不豁免。"""
     _seed_scene(session)
+    _seed_pronoun_drift_setup(session)
     orchestrator = _make_orchestrator(
         session,
         hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
@@ -892,21 +917,17 @@ def test_run_scene_does_not_waive_blocking_soft_qc_repeat_patch(session) -> None
             _base_soft_qc_payload(
                 resolution_code="soft_patch",
                 next_action="patch",
-                issues=[{"issue_key": "style_profile_drift", "message": "The opening needs more immediacy."}],
+                issues=[{"issue_key": "cadence_flat", "message": "The opening needs more immediacy."}],
                 rewrite_brief=["Tighten the first paragraph."],
             ),
             _base_soft_qc_payload(
                 resolution_code="soft_patch",
                 next_action="patch",
-                issues=[
-                    {
-                        "issue_key": "character_pronoun_drift",
-                        "message": "林岑 expects pronoun 她 but nearby text uses 他.",
-                    }
-                ],
-                rewrite_brief=["修正林岑的代词，必要时重复角色姓名。"],
+                issues=[{"issue_key": "cadence_flat", "message": "The rhythm is still too even."}],
+                rewrite_brief=["修正节奏，必要时重复角色姓名。"],
             ),
         ],
+        scene_client=FakeFixedSceneClient(list(_DRIFT_SCENE_PAYLOADS)),
     )
 
     result = orchestrator.run_scene("CH100_SC01")
@@ -926,7 +947,10 @@ def test_run_scene_does_not_waive_blocking_soft_qc_repeat_patch(session) -> None
     assert qc_report is not None
     assert qc_report.resolution_code == "soft_block_human"
     assert qc_report.next_action == "human_review_required"
-    assert qc_report.issues_json[0]["issue_key"] == "character_pronoun_drift"
+    drift_issue = next(issue for issue in qc_report.issues_json if issue["issue_key"] == "character_pronoun_drift")
+    assert drift_issue["quality_level"] == "Q1"
+    assert drift_issue["blocking"] is True
+    assert drift_issue["verified_by"]
 
 
 def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_style_generation(session) -> None:
@@ -936,7 +960,8 @@ def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_styl
         hard_qc_payload=_base_qc_payload(
             resolution_code="hard_fail_partial",
             next_action="partial_rewrite",
-            issues=[{"issue_key": "missing_red_envelope", "message": "The required handoff is absent."}],
+            # Wave 2：阻断需 verified Q1——must_include 确实缺失（确定性复核成立）
+            issues=[{"issue_key": "missing_required_text", "message": "缺少必备元素：红包交接未在正文出现"}],
         ),
     )
 
@@ -949,9 +974,11 @@ def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_styl
     assert result["scene_status"] == "hard_qc_partial_rewrite_required"
     assert result["hard_qc"]["branch"] == "rewrite_partial"
     assert report.resolution_code == "hard_fail_partial"
+    assert report.issues_json[0]["quality_level"] == "Q1"
+    assert report.issues_json[0]["verified_by"] == "scene_card_required_text"
     assert state.hard_partial_rewrite_count == 1
     assert state.hard_full_rewrite_count == 0
-    assert state.repeat_issue_key == "missing_red_envelope"
+    assert state.repeat_issue_key == "missing_required_text"
     assert state.repeat_issue_count == 1
     assert state.current_final_scene_row_id is None
     assert session.execute(select(SceneDraft).where(SceneDraft.stage == "style_draft")).scalars().all() == []
@@ -1066,8 +1093,11 @@ def test_hard_qc_required_term_evidence_does_not_force_human_review(session) -> 
     report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
     issue = report.issues_json[0]
 
-    assert decision.branch == "rewrite_partial"
-    assert report.next_action == "partial_rewrite"
+    # Wave 2：must_include 已满足 → LLM 意见无确定性佐证 → 降 Q2 继续（不重写也不升审）
+    assert decision.branch == "continue"
+    assert report.next_action == "pass"
+    assert issue["quality_level"] == "Q2"
+    assert issue["blocking"] is False
     assert issue["evidence_spans"][0]["text"] == "证人"
     assert issue["conflicts_with"] == []
 
@@ -1079,7 +1109,7 @@ def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -
         hard_qc_payload=_base_qc_payload(
             resolution_code="hard_fail_partial",
             next_action="partial_rewrite",
-            issues=[{"issue_key": "missing_red_envelope", "message": "The required handoff is absent."}],
+            issues=[{"issue_key": "missing_required_text", "message": "缺少必备元素：红包交接未在正文出现"}],
         ),
     )
 
@@ -1091,7 +1121,7 @@ def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -
         hard_qc_payload=_base_qc_payload(
             resolution_code="hard_fail_partial",
             next_action="partial_rewrite",
-            issues=[{"issue_key": "missing_red_envelope", "message": "The required handoff is still absent."}],
+            issues=[{"issue_key": "missing_required_text", "message": "缺少必备元素：红包交接仍未在正文出现"}],
         ),
     )
 
@@ -1105,7 +1135,7 @@ def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -
     assert second_result["scene_status"] == "human_review_required"
     assert second_result["hard_qc"]["branch"] == "human_review_required"
     assert second_result["hard_qc"]["stop_reason"] == "repeat_issue_key_limit"
-    assert state.repeat_issue_key == "missing_red_envelope"
+    assert state.repeat_issue_key == "missing_required_text"
     assert state.repeat_issue_count == 2
     assert state.hard_partial_rewrite_count == 2
     assert state.current_human_review_event_id == event.event_id
@@ -1280,7 +1310,7 @@ def test_hard_qc_engine_sends_structured_response_schema(session) -> None:
     )
 
 
-def test_hard_qc_engine_turns_malformed_payload_into_human_review_required(session) -> None:
+def test_hard_qc_engine_degrades_malformed_payload_to_continue_with_warning(session) -> None:
     _seed_scene(session)
     session.add(
         SceneDraft(
@@ -1313,18 +1343,23 @@ def test_hard_qc_engine_turns_malformed_payload_into_human_review_required(sessi
     session.commit()
 
     report = session.execute(select(QcReport)).scalars().one()
-    event = session.execute(select(HumanReviewEvent)).scalars().one()
     attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "hard_qc")).scalars().one()
     llm_call = session.execute(select(LlmCall).where(LlmCall.step == "hard_qc")).scalars().one()
 
-    assert decision.branch == "human_review_required"
+    # Wave 2（§5.4/§7.7）：payload 无效 = QC 自身失败——降级续跑 + Q2 警告，不再断头
+    assert decision.branch == "continue"
+    assert decision.should_continue is True
+    assert decision.stop_reason == "invalid_hard_qc_payload"
     assert attempt.details_json["llm_call_id"] == llm_call.llm_call_id
     assert llm_call.error_code is None
-    assert report.resolution_code == "hard_block_human"
-    assert report.next_action == "human_review_required"
-    assert report.pass_flag == 0
-    assert event.details_json["trigger_reason"] == "invalid_hard_qc_payload"
-    assert "validation" in event.details_json["failure_reason"]
+    assert report.resolution_code == "hard_pass"
+    assert report.next_action == "pass"
+    assert report.pass_flag == 1
+    warning = next(issue for issue in report.issues_json if issue["issue_key"] == "invalid_hard_qc_payload")
+    assert warning["quality_level"] == "Q2"
+    assert warning["blocking"] is False
+    assert "validation failed" in warning["message"]
+    assert session.execute(select(HumanReviewEvent)).scalars().all() == []
 
 
 def test_generation_originated_human_review_event_matches_existing_inbox_shape(client, session) -> None:
@@ -1443,33 +1478,47 @@ def test_hard_generation_review_does_not_allow_soft_risk_acceptance(client, sess
 
 
 def test_accepted_soft_risk_lets_matching_soft_qc_rerun_continue_with_audit(session) -> None:
+    """Wave 2 语义：软 QC 阻断需 verified Q1（确定性代词漂移）；作者接受该风险
+    （Q1 的「交作者确认」通道）后，同稿重跑豁免续跑并留审计。"""
     _seed_scene(session)
-    soft_block_payload = _base_soft_qc_payload(
-        resolution_code="soft_block_human",
-        next_action="human_review_required",
-        issues=[{"issue_key": "cadence_flat", "message": "The rhythm is still too even."}],
-        rewrite_brief=["Accept this only if pacing matters more than cadence polish."],
-    )
+    _seed_pronoun_drift_setup(session)
+    soft_patch_payloads = [
+        _base_soft_qc_payload(
+            resolution_code="soft_patch",
+            next_action="patch",
+            issues=[{"issue_key": "cadence_flat", "message": "The rhythm is still too even."}],
+            rewrite_brief=["Tighten the pacing."],
+        ),
+        _base_soft_qc_payload(
+            resolution_code="soft_patch",
+            next_action="patch",
+            issues=[{"issue_key": "cadence_flat", "message": "The rhythm is still too even."}],
+            rewrite_brief=["Tighten the pacing again."],
+        ),
+    ]
     first_run = _make_orchestrator(
         session,
         hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
-        soft_qc_payloads=[soft_block_payload],
+        soft_qc_payloads=[dict(item) for item in soft_patch_payloads],
+        scene_client=FakeFixedSceneClient(list(_DRIFT_SCENE_PAYLOADS)),
     )
 
     blocked = first_run.run_scene("CH100_SC01")
+    assert blocked["scene_status"] == "human_review_required"
     event_id = blocked["current_human_review_event_id"]
     HumanReviewManager(session).run_action(
         event_id,
         "accept_soft_risk",
         actor_ref="author.duwei",
-        payload={"reason": "Pacing is more important than this soft cadence risk."},
+        payload={"reason": "接受代词处理风险：这一场刻意用他指代镜中人。"},
     )
     session.commit()
 
     second_run = _make_orchestrator(
         session,
         hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
-        soft_qc_payloads=[soft_block_payload],
+        soft_qc_payloads=[dict(item) for item in soft_patch_payloads],
+        scene_client=FakeFixedSceneClient(list(_DRIFT_SCENE_PAYLOADS)),
     )
     result = second_run.run_scene("CH100_SC01")
     session.commit()
@@ -1497,7 +1546,7 @@ def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(se
         hard_qc_payload=_base_qc_payload(
             resolution_code="hard_fail_partial",
             next_action="partial_rewrite",
-            issues=[{"issue_key": "missing_red_envelope", "message": "The required handoff is absent."}],
+            issues=[{"issue_key": "missing_required_text", "message": "缺少必备元素：红包交接未在正文出现"}],
         ),
     )
 
@@ -1598,7 +1647,7 @@ def test_run_scene_resets_soft_patch_state_between_reruns(session) -> None:
     assert human_reviews == []
 
 
-def test_hard_qc_engine_turns_runtime_failure_into_human_review_with_distinct_reason(session) -> None:
+def test_hard_qc_engine_degrades_runtime_failure_to_continue_with_warning(session) -> None:
     _seed_scene(session)
     session.add(
         SceneDraft(
@@ -1628,15 +1677,17 @@ def test_hard_qc_engine_turns_runtime_failure_into_human_review_with_distinct_re
     session.commit()
 
     report = session.execute(select(QcReport)).scalars().one()
-    event = session.execute(select(HumanReviewEvent)).scalars().one()
     attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "hard_qc")).scalars().one()
     llm_call = session.execute(select(LlmCall).where(LlmCall.step == "hard_qc")).scalars().one()
 
-    assert decision.branch == "human_review_required"
+    # Wave 2（§5.4/§7.7）：QC 运行时失败降级续跑；LlmCall 仍留错误审计
+    assert decision.branch == "continue"
+    assert decision.should_continue is True
+    assert decision.stop_reason == "hard_qc_execution_failed"
     assert attempt.details_json["llm_call_id"] == llm_call.llm_call_id
-    assert attempt.details_json["error_code"] == "RuntimeError"
     assert llm_call.error_code == "RuntimeError"
-    assert report.resolution_code == "hard_block_human"
-    assert event.details_json["trigger_reason"] == "hard_qc_execution_failed"
-    assert "execution failed" in event.details_json["failure_reason"]
-    assert "timed out" in event.details_json["failure_reason"]
+    assert report.resolution_code == "hard_pass"
+    warning = next(issue for issue in report.issues_json if issue["issue_key"] == "hard_qc_execution_failed")
+    assert warning["quality_level"] == "Q2"
+    assert "timed out" in warning["message"]
+    assert session.execute(select(HumanReviewEvent)).scalars().all() == []

@@ -153,19 +153,37 @@ def _create_scene(session: Session, payload: dict) -> dict:
     return {"scene_id": scene.scene_id}
 
 
+def _parse_run_policy(payload: dict | None) -> str:
+    run_policy = str((payload or {}).get("run_policy") or "reliable").strip() or "reliable"
+    if run_policy not in {"reliable", "strict", "auto"}:
+        raise DomainError(
+            "INVALID_RUN_POLICY",
+            "run_policy must be one of reliable|strict|auto",
+            status_code=422,
+            details={"run_policy": run_policy},
+        )
+    return run_policy
+
+
 @router.post("/api/v1/scenes/{scene_id}/run/full")
 def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
     # FE-ALIGN G3：作者改写指令随请求下发（注入风格生成提示词；幂等键随 note 变化）
     author_note = str((payload or {}).get("author_note") or "").strip()[:500] or None
+    # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict|auto；列属 Wave 3）
+    run_policy = _parse_run_policy(payload)
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/run/full",
-        payload={"scene_id": scene_id, **({"author_note": author_note} if author_note else {})},
-        action=lambda: Orchestrator(session).run_scene(scene_id, author_note=author_note),
+        payload={
+            "scene_id": scene_id,
+            **({"author_note": author_note} if author_note else {}),
+            **({"run_policy": run_policy} if run_policy != "reliable" else {}),
+        },
+        action=lambda: Orchestrator(session).run_scene(scene_id, author_note=author_note, run_policy=run_policy),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -338,7 +356,12 @@ def rollback_auto_rewrite_run(run_id: str, request: Request, session: Session = 
 def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     service = SceneRunJobService(session)
-    job = service.create_job(scene_id, actor_ref=actor_ref, author_note=(payload or {}).get("author_note"))
+    job = service.create_job(
+        scene_id,
+        actor_ref=actor_ref,
+        author_note=(payload or {}).get("author_note"),
+        run_policy=_parse_run_policy(payload),
+    )
     payload = service.serialize_job(job)
     session.commit()
     if start and job.status == "queued":
@@ -715,6 +738,20 @@ def adopt_current_scene(
                 "author_state": compute_author_state(session, scene_id, state),
             }
 
+        # Wave 2（治理 §5.3/§5.4）：只有真实 Q0/Q1 能阻断归档——投影为 hard_blocked
+        # （当前 QC 报告存在 verified Q0/Q1 分级条目）时拒绝采纳，正文保留（§7.2）。
+        projection = compute_author_state(session, scene_id, state)
+        if projection["author_state"] == "hard_blocked":
+            raise DomainError(
+                "HARD_BLOCKED",
+                "verified Q0/Q1 findings block adoption — resolve or revise before archiving",
+                status_code=409,
+                details={
+                    "scene_id": scene_id,
+                    "blocking_findings": projection["blocking_findings"],
+                },
+            )
+
         # 1) 内容源解析
         final: FinalScene | None = None
         if state.current_final_scene_row_id:
@@ -794,10 +831,27 @@ def adopt_current_scene(
         if source_draft_row_id:
             state.latest_valid_draft_row_id = source_draft_row_id
 
+        carry_notes: list[dict[str, Any]] = [{"kind": "author_adoption", "actor_ref": actor_ref}]
+        quality_warnings = [item for item in projection.get("quality_warnings") or [] if isinstance(item, dict)]
+        if quality_warnings:
+            # Wave 2（Wave 2 项 7）：采纳带 Q2/Q3 警告的稿 = 作者显式接受，留审计
+            carry_notes.append(
+                {
+                    "kind": "quality_warning_acceptance",
+                    "actor_ref": actor_ref,
+                    "accepted": [
+                        {
+                            "issue_key": item.get("issue_key") or item.get("kind"),
+                            "quality_level": item.get("quality_level"),
+                        }
+                        for item in quality_warnings[:10]
+                    ],
+                }
+            )
         archive_result = Archiver(session).archive_final_scene(
             scene_id,
             final.row_id,
-            carry_notes_json=[{"kind": "author_adoption", "actor_ref": actor_ref}],
+            carry_notes_json=carry_notes,
         )
         return {
             "scene_id": scene_id,

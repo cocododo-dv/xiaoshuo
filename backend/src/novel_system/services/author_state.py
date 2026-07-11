@@ -18,9 +18,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterRunJob, FinalScene, SceneDraft, SceneRunState
+from novel_system.db.models import ChapterRunJob, FinalScene, QcReport, SceneDraft, SceneRunState
 
 # scene_status → 有稿态映射（不在表内且有稿 → draft_ready）
+# Wave 2（§5.4）：硬阻断词值只是候选——是否真 hard_blocked 由当前 QC 报告里
+# verified Q0/Q1 的分级条目决定；状态词残留但无阻断证据 → quality_warning
+# （有稿可接管），落实「只有真实 Q0/Q1 能阻断归档」。
 _HARD_BLOCKED_STATUSES = frozenset(
     {
         "hard_qc_partial_rewrite_required",
@@ -34,6 +37,7 @@ _QUALITY_WARNING_STATUSES = frozenset(
         "soft_qc_patch_required",
         "near_final_revision_required",
         "soft_qc_passed_with_notes",
+        "quality_warning_pending_acceptance",
     }
 )
 
@@ -66,6 +70,9 @@ def compute_author_state(
     if not has_draft:
         return _empty_draft_projection(session, scene_id, scene_status, state)
 
+    # Wave 2（D6）：从当前 QC 报告的分级条目精化 blocking/warning（§6.1 结构）
+    classified_blocking, classified_warnings = _classified_findings(session, state)
+
     if scene_status == "archived" and final_row_id:
         author_state = "archived"
         can_archive = False
@@ -73,8 +80,14 @@ def compute_author_state(
         author_state = "awaiting_author_choice"
         can_archive = False
     elif scene_status in _HARD_BLOCKED_STATUSES:
-        author_state = "hard_blocked"
-        can_archive = False
+        if classified_blocking:
+            author_state = "hard_blocked"
+            can_archive = False
+        else:
+            # 阻断状态词残留但报告里没有 verified Q0/Q1 —— 有稿即可接管
+            #（含 Wave 2 前的历史行）：只有真实 Q0/Q1 能阻断归档。
+            author_state = "quality_warning"
+            can_archive = True
     elif scene_status in _QUALITY_WARNING_STATUSES:
         author_state = "quality_warning"
         can_archive = True
@@ -86,13 +99,16 @@ def compute_author_state(
     quality_warnings: list[dict[str, Any]] = []
     recommended_actions: list[str] = []
     if author_state == "hard_blocked":
-        blocking_findings.append({"kind": "scene_status", "value": scene_status})
+        blocking_findings.extend(classified_blocking or [{"kind": "scene_status", "value": scene_status}])
+        quality_warnings.extend(classified_warnings)
         recommended_actions.append("review_pipeline_gate")
     elif author_state == "quality_warning":
-        quality_warnings.append({"kind": "scene_status", "value": scene_status})
+        quality_warnings.extend(classified_warnings or [{"kind": "scene_status", "value": scene_status}])
         recommended_actions.append("adopt_or_patch")
     elif author_state == "awaiting_author_choice":
         recommended_actions.append("select_candidate")
+    elif author_state == "archived" and classified_warnings:
+        quality_warnings.extend(classified_warnings)
 
     return {
         "author_state": author_state,
@@ -142,6 +158,35 @@ def _empty_draft_projection(
         "can_archive": False,
         "recovery_action": recovery_action,
     }
+
+
+def _classified_findings(
+    session: Session,
+    state: SceneRunState | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """当前 QC 报告里已分级（§6.1）条目 → (blocking, warnings) 瘦身形态。"""
+    if state is None or not state.current_qc_report_id:
+        return [], []
+    report = session.get(QcReport, state.current_qc_report_id)
+    if report is None:
+        return [], []
+    blocking: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    for issue in report.issues_json or []:
+        if not isinstance(issue, dict) or not issue.get("quality_level"):
+            continue
+        slim = {
+            "issue_key": issue.get("issue_key"),
+            "quality_level": issue.get("quality_level"),
+            "message": issue.get("message") or issue.get("human_readable_reason") or "",
+            "recommended_action": issue.get("recommended_action"),
+            "verified_by": issue.get("verified_by"),
+        }
+        if issue.get("blocking"):
+            blocking.append(slim)
+        else:
+            warnings.append(slim)
+    return blocking, warnings
 
 
 def _recovery_action_for(job: ChapterRunJob | None) -> str:

@@ -16,7 +16,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
    · 持久化：每场的运行结果存 scn-run:sid（按作品隔离），刷新不丢
    ========================================================== */
 
-const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words"];
+const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate"];
 const scnRunKey = (sid) => (wsKey ? wsKey("scn-run:" + sid) : "scn-run:" + sid);
 const scnQueueKey = () => (wsKey ? wsKey("scn-queue:v1") : "scn-queue:v1");
 
@@ -194,6 +194,35 @@ function scnQC(paras, reactive) {
   };
 }
 
+/* ---- 作者可见状态门（Wave 2 · 治理 §5.3/§5.4）----
+   从 workbench/status 的 author_state 投影提取「无法继续 vs 有稿建议修改」：
+   · hard_blocked（verified Q0/Q1）→ 不可归档，正文保留可接管
+   · quality_warning（Q2/Q3）→ 有稿可归档，警告随行
+   gate 随运行记录持久化，裁决条据此分开展示、归档前先拦。 ---- */
+function scnGateFrom(src) {
+  const a = src && src.author_state;
+  if (!a || typeof a !== "object") return null;
+  return {
+    authorState: a.author_state || null,
+    blocking: Array.isArray(a.blocking_findings) ? a.blocking_findings : [],
+    warnings: Array.isArray(a.quality_warnings) ? a.quality_warnings : [],
+    recommended: Array.isArray(a.recommended_actions) ? a.recommended_actions : [],
+    canArchive: a.can_archive !== false,
+  };
+}
+
+function scnGateLog(gate, tm) {
+  if (!gate) return null;
+  if (gate.authorState === "hard_blocked") {
+    const keys = gate.blocking.map(f => f.issue_key || f.kind).filter(Boolean).join("、");
+    return { t: tm, who: "pipeline", text: `无法继续：存在已证实的硬问题（Q0/Q1${keys ? "：" + keys : ""}）——正文已保留，处理后可续跑；此稿暂不可归档` };
+  }
+  if (gate.authorState === "quality_warning") {
+    return { t: tm, who: "pipeline", text: `已有稿，建议修改：${gate.warnings.length} 条质量建议（Q2/Q3）随稿附上——可直接采纳归档，也可按建议改后重跑` };
+  }
+  return null;
+}
+
 /* ---- 完整一跑：后端 scenes run 管线（FE-ALIGN F6）----
    投递 run job（POST run/jobs）→ 轮询 run-jobs/{id} → workbench 取产出
    → 本地确定性复检。失败/阻塞给明确引导（执行契约缺字段 / LLM 未启用 /
@@ -265,11 +294,13 @@ async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-v
   const secs = Math.round((Date.now() - t0) / 1000);
   const tm = (off) => new Date(t0 + off * 1000).toTimeString().slice(0, 8);
   const pipeState = wb && wb.scene_run_state ? wb.scene_run_state.scene_status : last.status;
+  // Wave 2：提取作者可见状态门（无法继续 vs 有稿建议修改），随运行记录持久化
+  qc.gate = scnGateFrom(wb);
   qc.log = [
     { t: tm(0), who: "system", text: "已投递后端起草任务（scenes run 管线：预检 → 蓝图 → 起草 → 硬/软双层质检）" },
     note ? { t: tm(0), who: "system", text: "改写指令已随任务下发（注入风格生成阶段，优先级最高）" } : null,
     { t: tm(secs), who: "pipeline", text: `管线结束 · 任务 ${last.status} · 场景状态 ${pipeState} · ${qc.words} 字 · 用时 ${secs}s` },
-    last.status === "blocked" ? { t: tm(secs), who: "pipeline", text: "管线把这稿停在人工审阅/重写闸门——草稿已取回，可在此采纳或回管线处理" } : null,
+    scnGateLog(qc.gate, tm(secs)),
     { t: tm(secs + 1), who: "qc", text: `本地复检：短句率 ${qc.metrics[0].val} · 句式重复 ${qc.metrics[1].val} · ${qc.verdict.risks}` },
   ].filter(Boolean);
   qc.cost = [
@@ -305,11 +336,13 @@ async function scnHydrateFromBackend(sid) {
   qc.state = done ? "archived" : "ready";
   qc.attempt = 1;
   qc.at = Date.now();
+  qc.gate = scnGateFrom(wb);
   qc.attempts = [{ n: 1, time: "后端恢复", result: done ? "已归档" : "待裁决", tone: done ? "sage" : "gold", note: "从后端管线取回的最新产出" }];
   qc.log = [
     { t: now, who: "system", text: `已从后端恢复这一场的最新产出（场景状态 ${pipeState || "—"}）——运行在别处完成或页面关闭前未取回` },
+    scnGateLog(qc.gate, now),
     { t: now, who: "qc", text: `本地复检：短句率 ${qc.metrics[0].val} · 句式重复 ${qc.metrics[1].val} · ${qc.verdict.risks}` },
-  ];
+  ].filter(Boolean);
   qc.cost = [
     { k: "起草", v: "后端管线 · 已恢复" },
     { k: "质检", v: "硬/软双层 + 本地复检" },
@@ -348,8 +381,14 @@ async function scnBackendQueueSids() {
    后端拒绝（无稿 NO_VALID_DRAFT / 来源安全 SOURCE_SAFETY_BLOCKED）时
    不动本地任何状态，faithful 返回失败原因。 ---- */
 function scnEscape(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-async function scnAdoptToDoc(sid, draft) {
+async function scnAdoptToDoc(sid, draft, gate) {
   if (!sid || !WsCatalog) return { ok: false, reason: "没有场景卡" };
+  // Wave 2（治理 §5.4）：只有真实 Q0/Q1 阻断归档——gate 前置拦截给即时反馈，
+  // 后端 adopt-current 的 HARD_BLOCKED 409 仍是权威裁决（绕过前端也拦得住）。
+  if (gate && gate.canArchive === false) {
+    const keys = (gate.blocking || []).map(f => f.issue_key || f.kind).filter(Boolean).join("、");
+    return { ok: false, reason: `存在已证实的硬问题（Q0/Q1${keys ? "：" + keys : ""}），暂不能归档——正文已保留，处理或重跑后再采纳` };
+  }
   const html = (draft || []).map(p => "<p>" + scnEscape(p.parts.map(x => x.text).join("")) + "</p>").join("");
   const text = (draft || []).map(p => p.parts.map(x => x.text).join("")).join("");
   const key = wsKey ? wsKey("wr-doc:" + sid) : "wr-doc:" + sid;
@@ -420,7 +459,7 @@ function scnPickList(queuedSids) {
   } catch (e) { return []; }
 }
 
-Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids });
+Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids };
+export { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom };

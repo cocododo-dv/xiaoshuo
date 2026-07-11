@@ -12,6 +12,7 @@ from __future__ import annotations
 from novel_system.db.models import (
     ChapterRunJob,
     FinalScene,
+    QcReport,
     SceneCard,
     SceneDraft,
     SceneRunState,
@@ -179,35 +180,102 @@ def test_draft_ready_with_style_draft(session):
     assert payload["can_archive"] is True
 
 
+def _make_blocking_report(session, scene_id: str, report_id: str) -> QcReport:
+    """Wave 2（§5.4/§6.1）：verified Q1 分级条目——hard_blocked 的证据载体。"""
+    report = QcReport(
+        qc_report_id=report_id,
+        scene_id=scene_id,
+        chapter_id="chapter_as_1",
+        qc_type="hard_qc",
+        source_draft_row_id="draft_src",
+        source_bundle_id="bundle_as",
+        resolution_code="hard_fail_partial",
+        pass_flag=0,
+        next_action="partial_rewrite",
+        issues_json=[
+            {
+                "issue_key": "missing_required_text",
+                "message": "必备元素缺失",
+                "quality_level": "Q1",
+                "blocking": True,
+                "verified_by": "scene_card_required_text",
+                "source": "llm_advisory",
+                "recommended_action": "confirm_or_revise",
+            }
+        ],
+        rewrite_brief_json=[],
+    )
+    session.add(report)
+    session.flush()
+    return report
+
+
 def test_hard_blocked_keeps_latest_valid_draft(session):
+    """Wave 2 语义：hard_blocked = 阻断状态词 + 报告里有 verified Q0/Q1 条目。"""
     scene = _make_scene(session)
     draft = _make_draft(session, scene.scene_id, "draft_as_style_2")
+    report = _make_blocking_report(session, scene.scene_id, "qc_as_block_1")
     _make_state(
         session, scene.scene_id,
         scene_status="human_review_required",
         latest_valid_draft_row_id=draft.row_id,
+        current_qc_report_id=report.qc_report_id,
     )
     payload = compute_author_state(session, scene.scene_id)
     assert payload["author_state"] == "hard_blocked"
     assert payload["latest_valid_draft_row_id"] == draft.row_id
     assert payload["can_edit"] is True
     assert payload["can_archive"] is False
+    assert payload["blocking_findings"][0]["issue_key"] == "missing_required_text"
+    assert payload["blocking_findings"][0]["quality_level"] == "Q1"
+
+
+def test_hard_status_without_verified_findings_downgrades_to_quality_warning(session):
+    """Wave 2（§5.4）：阻断状态词残留但无 verified Q0/Q1 → 有稿可接管。
+    只有真实 Q0/Q1 能阻断归档——历史 LLM-only 阻断行不再锁死采纳。"""
+    scene = _make_scene(session)
+    draft = _make_draft(session, scene.scene_id, "draft_as_style_2b")
+    _make_state(
+        session, scene.scene_id,
+        scene_status="human_review_required",
+        latest_valid_draft_row_id=draft.row_id,
+    )
+    payload = compute_author_state(session, scene.scene_id)
+    assert payload["author_state"] == "quality_warning"
+    assert payload["can_archive"] is True
+    assert payload["latest_valid_draft_row_id"] == draft.row_id
 
 
 def test_latest_valid_survives_pointer_clear(session):
     """§4.3：重写路径清掉 current_* 指针后，latest_valid 仍在 → 仍算有稿。"""
     scene = _make_scene(session)
     draft = _make_draft(session, scene.scene_id, "draft_as_style_3")
+    report = _make_blocking_report(session, scene.scene_id, "qc_as_block_2")
     _make_state(
         session, scene.scene_id,
         scene_status="hard_qc_full_rewrite_required",
         current_style_draft_row_id=None,
         current_neutral_draft_row_id=None,
         latest_valid_draft_row_id=draft.row_id,
+        current_qc_report_id=report.qc_report_id,
     )
     payload = compute_author_state(session, scene.scene_id)
     assert payload["author_state"] == "hard_blocked"
     assert payload["latest_valid_draft_row_id"] == draft.row_id
+
+
+def test_quality_warning_pending_acceptance_status(session):
+    """Wave 2 严格模式停点：quality_warning_pending_acceptance → 可归档的 quality_warning。"""
+    scene = _make_scene(session)
+    draft = _make_draft(session, scene.scene_id, "draft_as_style_3b")
+    _make_state(
+        session, scene.scene_id,
+        scene_status="quality_warning_pending_acceptance",
+        latest_valid_draft_row_id=draft.row_id,
+    )
+    payload = compute_author_state(session, scene.scene_id)
+    assert payload["author_state"] == "quality_warning"
+    assert payload["can_archive"] is True
 
 
 def test_quality_warning_soft_patch(session):

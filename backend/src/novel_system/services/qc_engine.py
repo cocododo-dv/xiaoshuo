@@ -21,8 +21,8 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.character_continuity import (
     detect_character_pronoun_drift,
     detect_mechanical_required_beat_listing,
-    has_blocking_qc_issue,
 )
+from novel_system.services.quality_classifier import classify_issue, classify_issues, has_blocking
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
 from novel_system.services.style_profile import StyleScoreService
 
@@ -384,6 +384,11 @@ def _deterministic_quality_issues(scene: SceneCard, bundle: dict[str, Any], cont
     issues.extend(_event_log_consistency_issues(scene, content))
     issues.extend(_theme_relevance_issues(scene))
     issues.extend(_tension_curve_issues(scene))
+    # Wave 2（§5.4 提案—复核）：确定性检测器的产出打上来源标——检测器即复核器，
+    # 分类器据此允许 Q0/Q1 升级；LLM 提案没有这个标，只能走内联复核或降 Q2。
+    for issue in issues:
+        if isinstance(issue, dict):
+            issue.setdefault("source", "deterministic")
     return issues
 
 
@@ -644,6 +649,9 @@ class HardQcEngine:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         llm_call_id: str | None = None
+        degraded_reason: str | None = None
+        # Wave 2（§5.4/§7.7）：QC 自身执行失败不再撤销正文交付——降级为 pass +
+        # Q2 警告 issue 继续管线；确定性 gates 照跑，verified Q0/Q1 仍能阻断。
         try:
             prompt = self.prompt_builder.build(bundle["snapshot"], "hard_qc")
             final_user_prompt = self._build_user_prompt(prompt["user_prompt"], neutral_content)
@@ -663,80 +671,46 @@ class HardQcEngine:
             llm_call_id = node_result.llm_call_id
             payload = node_result.response.structured_output or {}
         except LLMNodeContinuityError as exc:
-            self._clear_downstream_outputs(state)
-            return self._human_review_decision(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                neutral_draft_row_id=neutral_draft_row_id,
-                failure_reason=(
-                    "hard_qc prompt exceeded the safe continuity budget after deterministic compaction; "
-                    "split the scene before retrying QC."
-                ),
-                trigger_reason="hard_qc_continuity_budget_exceeded",
-                fallback_payload=self._fallback_block_payload(
-                    issue_key=_continuity_warning_issue_key(exc.continuity_warning),
-                    message=_continuity_warning_message(exc.continuity_warning),
-                    rewrite_brief=[CONTINUITY_BUDGET_REWRITE],
-                    continuity_warning=exc.continuity_warning,
-                ),
+            llm_call_id = exc.llm_call_id
+            degraded_reason = "hard_qc_continuity_budget_exceeded"
+            payload = self._degraded_pass_payload(
+                issue_key=_continuity_warning_issue_key(exc.continuity_warning),
+                message=_continuity_warning_message(exc.continuity_warning),
                 continuity_warning=exc.continuity_warning,
-                llm_call_id=exc.llm_call_id,
-                error_code=exc.error_code,
-                retryable=exc.retryable,
             )
         except LLMNodeExecutionError as exc:
-            return self._human_review_decision(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                neutral_draft_row_id=neutral_draft_row_id,
-                failure_reason=f"hard_qc execution failed before a valid QC payload was produced: {exc.message}",
-                trigger_reason="hard_qc_execution_failed",
-                fallback_payload=self._fallback_block_payload(
-                    issue_key="hard_qc_execution_failed",
-                    message=f"QC execution failed: {exc.message}",
-                ),
-                llm_call_id=exc.llm_call_id,
-                error_code=exc.error_code,
-                retryable=exc.retryable,
+            llm_call_id = exc.llm_call_id
+            degraded_reason = "hard_qc_execution_failed"
+            payload = self._degraded_pass_payload(
+                issue_key="hard_qc_execution_failed",
+                message=f"QC execution failed: {exc.message}",
             )
         except Exception as exc:
-            return self._human_review_decision(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                neutral_draft_row_id=neutral_draft_row_id,
-                failure_reason=f"hard_qc execution failed before a valid QC payload was produced: {exc}",
-                trigger_reason="hard_qc_execution_failed",
-                fallback_payload=self._fallback_block_payload(
-                    issue_key="hard_qc_execution_failed",
-                    message=f"QC execution failed: {exc}",
-                ),
+            degraded_reason = "hard_qc_execution_failed"
+            payload = self._degraded_pass_payload(
+                issue_key="hard_qc_execution_failed",
+                message=f"QC execution failed: {exc}",
             )
-        try:
-            report = validate_qc_report("hard_qc", payload)
-        except (QCValidationError, ValidationError) as exc:
-            return self._human_review_decision(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                neutral_draft_row_id=neutral_draft_row_id,
-                failure_reason=f"hard_qc validation failed: {exc}",
-                trigger_reason="invalid_hard_qc_payload",
-                fallback_payload=self._fallback_block_payload(
+        if degraded_reason is None:
+            try:
+                # 只对真实 LLM payload 做 normalize（dump 会把 issue 重建为
+                # issue_key+message）；此后管线内部字段（source/quality_level 等）
+                # 不得再经 validate→dump 往返，否则分级契约被剥掉。
+                report = validate_qc_report("hard_qc", payload)
+                payload = report.model_dump()
+            except (QCValidationError, ValidationError) as exc:
+                degraded_reason = "invalid_hard_qc_payload"
+                payload = self._degraded_pass_payload(
                     issue_key="invalid_hard_qc_payload",
                     message=f"QC payload validation failed: {exc}",
-                ),
-                llm_call_id=llm_call_id,
-            )
+                )
 
-        payload = self._apply_deterministic_sanity(scene, neutral_content, report.model_dump())
+        payload = self._apply_deterministic_sanity(scene, neutral_content, payload)
         payload = self._apply_deterministic_quality_gates(scene, bundle, neutral_content, payload)
-        report = validate_qc_report("hard_qc", payload)
-        payload = report.model_dump()
         payload = _annotate_qc_issues(scene, neutral_content, payload)
         payload = _promote_constraint_conflicts_to_human_review(payload)
+        payload = self._apply_quality_grading(scene, neutral_content, payload)
+        validate_qc_report("hard_qc", payload)  # 组合合法性校验（不回写 dump）
         qc_report = self._persist_qc_report(
             scene=scene,
             state=state,
@@ -748,18 +722,25 @@ class HardQcEngine:
         branch = self._branch_for(payload["next_action"])
 
         # PR-8 §6.6 — style_reference validation gate(qc pass 时二次裁决)
+        # Wave 2（§5.4）：只有确定性 n-gram 抄袭命中（Q0）保留阻断权；
+        # fail/partial 是量化容差/语义评审（Q3 风格层），降为诊断警告不断头。
         if branch == "continue":
             style_verdict = self._apply_style_validation_gate(scene, neutral_content)
-            if style_verdict == "partial":
-                branch = "rewrite_partial"
-                qc_report.resolution_code = "style_validation_partial"
-                qc_report.next_action = "partial_rewrite"
-                self.session.flush()
-            elif style_verdict in ("fail", "plagiarism"):
-                qc_report.resolution_code = f"style_validation_{style_verdict}"
+            if style_verdict == "plagiarism":
+                plagiarism_issue = classify_issue(
+                    {
+                        "issue_key": "style_plagiarism",
+                        "message": "style_reference plagiarism check hit (deterministic n-gram overlap)",
+                        "source": "deterministic",
+                    },
+                    scene=scene,
+                    content=neutral_content,
+                )
+                qc_report.resolution_code = "style_validation_plagiarism"
                 qc_report.next_action = "human_review_required"
+                qc_report.issues_json = [*(qc_report.issues_json or []), plagiarism_issue]
                 self.session.flush()
-                self._apply_issue_tracking(state, payload["issues"])
+                self._apply_issue_tracking(state, qc_report.issues_json)
                 self._apply_branch_counters(state, "human_review_required")
                 self._clear_downstream_outputs(state)
                 return self._escalate_existing_report(
@@ -769,10 +750,22 @@ class HardQcEngine:
                     neutral_draft_row_id=neutral_draft_row_id,
                     qc_report=qc_report,
                     branch="human_review_required",
-                    failure_reason=f"style_reference validation produced {style_verdict} verdict; human review is required.",
-                    trigger_reason=f"style_validation_{style_verdict}",
+                    failure_reason="style_reference validation found deterministic plagiarism evidence; human review is required.",
+                    trigger_reason="style_validation_plagiarism",
                     llm_call_id=llm_call_id,
                 )
+            if style_verdict in ("fail", "partial"):
+                style_issue = classify_issue(
+                    {
+                        "issue_key": f"style_validation_{style_verdict}",
+                        "message": f"style_reference validation verdict: {style_verdict}（风格层诊断，不阻断交付）",
+                        "source": "deterministic",
+                    },
+                    scene=scene,
+                    content=neutral_content,
+                )
+                qc_report.issues_json = [*(qc_report.issues_json or []), style_issue]
+                self.session.flush()
 
         self._apply_issue_tracking(state, payload["issues"])
         self._apply_branch_counters(state, branch)
@@ -831,6 +824,7 @@ class HardQcEngine:
             resolution_code=qc_report.resolution_code or "",
             next_action=qc_report.next_action or "",
             should_continue=branch == "continue",
+            stop_reason=degraded_reason,
         )
 
     @staticmethod
@@ -847,23 +841,48 @@ class HardQcEngine:
         }[next_action]
 
     @staticmethod
-    def _fallback_block_payload(
+    def _degraded_pass_payload(
         *,
         issue_key: str,
         message: str,
-        rewrite_brief: list[str] | None = None,
         continuity_warning: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        issue = {"issue_key": issue_key, "message": message}
+        """QC 执行失败的降级形状：pass + Q2 警告 issue（§5.4——不撤销已有正文）。"""
+        issue: dict[str, Any] = {"issue_key": issue_key, "message": message}
         if continuity_warning is not None:
             issue["continuity_warning"] = continuity_warning
         return {
-            "resolution_code": "hard_block_human",
-            "pass_flag": False,
-            "next_action": "human_review_required",
+            "resolution_code": "hard_pass",
+            "pass_flag": True,
+            "next_action": "pass",
             "issues": [issue],
-            "rewrite_brief": rewrite_brief or [],
+            "rewrite_brief": [],
         }
+
+    def _apply_quality_grading(self, scene: SceneCard, neutral_content: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Wave 2（§5.4）：统一分级 + 阻断裁决单一来源。
+
+        全部 issue 过分类器（LLM 提案无确定性复核自动降 Q2）。存在 verified
+        Q0/Q1 → 保留阻断分支（LLM 说 pass 也升级为 partial_rewrite）；否则任何
+        非 pass 意见降级为 pass，原意见以 Q2/Q3 警告随报告交付（G-03：软性
+        意见不再让作者无稿可用）。
+        """
+        classified = classify_issues(payload.get("issues") or [], scene=scene, content=neutral_content)
+        graded = {**payload, "issues": classified}
+        if has_blocking(classified):
+            if graded.get("next_action") == "pass":
+                rewrite_brief = graded.get("rewrite_brief") if isinstance(graded.get("rewrite_brief"), list) else []
+                return {
+                    **graded,
+                    "resolution_code": "hard_fail_partial",
+                    "pass_flag": False,
+                    "next_action": "partial_rewrite",
+                    "rewrite_brief": rewrite_brief or ["Resolve the verified hard-fact issue before continuing."],
+                }
+            return graded
+        if graded.get("next_action") != "pass":
+            return {**graded, "resolution_code": "hard_pass", "pass_flag": True, "next_action": "pass"}
+        return graded
 
     @staticmethod
     def _serialize_rewrite_brief(
@@ -939,23 +958,13 @@ class HardQcEngine:
         )
         if not deterministic_issues:
             return payload
+        # Wave 2：gate 只做合并——是否改判分支由分级器统一裁决（只有 verified Q0/Q1
+        # 才升级为 partial_rewrite；theme/tension 等 Q2/Q3 不再强制重写）。
         existing_issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
         rewrite_brief = payload.get("rewrite_brief") if isinstance(payload.get("rewrite_brief"), list) else []
         merged_issues = _dedupe_issues([*existing_issues, *deterministic_issues])
-        if payload.get("next_action") != "pass":
-            return {
-                **payload,
-                "issues": merged_issues,
-                "rewrite_brief": _append_unique_rewrite_briefs(
-                    rewrite_brief,
-                    _rewrite_briefs_for_deterministic_issues(deterministic_issues),
-                ),
-            }
         return {
             **payload,
-            "resolution_code": "hard_fail_partial",
-            "pass_flag": False,
-            "next_action": "partial_rewrite",
             "issues": merged_issues,
             "rewrite_brief": _append_unique_rewrite_briefs(
                 rewrite_brief,
@@ -1201,43 +1210,6 @@ class HardQcEngine:
         state.current_style_draft_row_id = None
         state.current_final_scene_row_id = None
 
-    def _human_review_decision(
-        self,
-        *,
-        scene: SceneCard,
-        state: SceneRunState,
-        bundle: dict[str, Any],
-        neutral_draft_row_id: str,
-        failure_reason: str,
-        trigger_reason: str,
-        fallback_payload: dict[str, Any],
-        continuity_warning: dict[str, Any] | None = None,
-        llm_call_id: str | None = None,
-        error_code: str | None = None,
-        retryable: bool | None = None,
-    ) -> HardQcDecision:
-        qc_report = self._persist_qc_report(
-            scene=scene,
-            state=state,
-            bundle=bundle,
-            neutral_draft_row_id=neutral_draft_row_id,
-            payload=fallback_payload,
-        )
-        return self._escalate_existing_report(
-            scene=scene,
-            state=state,
-            bundle=bundle,
-            neutral_draft_row_id=neutral_draft_row_id,
-            qc_report=qc_report,
-            branch="human_review_required",
-            failure_reason=failure_reason,
-            trigger_reason=trigger_reason,
-            continuity_warning=continuity_warning,
-            llm_call_id=llm_call_id,
-            error_code=error_code,
-            retryable=retryable,
-        )
-
     def _escalate_existing_report(
         self,
         *,
@@ -1336,6 +1308,9 @@ class SoftQcEngine:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         llm_call_id: str | None = None
+        degraded_reason: str | None = None
+        # Wave 2（§5.4/§7.7）：软 QC 执行失败不再断头——降级为 waive + Q2 警告
+        # 继续交付；确定性 gates 照跑，verified Q0/Q1 仍能阻断。
         try:
             prompt = self.prompt_builder.build(bundle["snapshot"], "soft_qc")
             final_user_prompt = self._build_user_prompt(prompt["user_prompt"], source_draft_content)
@@ -1355,92 +1330,54 @@ class SoftQcEngine:
             llm_call_id = node_result.llm_call_id
             payload = node_result.response.structured_output or {}
         except LLMNodeContinuityError as exc:
-            self._clear_downstream_outputs(state)
-            return self._human_review_decision(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                source_draft_row_id=source_draft_row_id,
-                failure_reason=(
-                    "soft_qc prompt exceeded the safe continuity budget after deterministic compaction; "
-                    "split the scene before retrying QC."
-                ),
-                trigger_reason="soft_qc_continuity_budget_exceeded",
-                fallback_payload=self._fallback_block_payload(
-                    issue_key=_continuity_warning_issue_key(exc.continuity_warning),
-                    message=_continuity_warning_message(exc.continuity_warning),
-                    rewrite_brief=[CONTINUITY_BUDGET_REWRITE],
-                    continuity_warning=exc.continuity_warning,
-                ),
+            llm_call_id = exc.llm_call_id
+            degraded_reason = "soft_qc_continuity_budget_exceeded"
+            payload = self._degraded_waive_payload(
+                issue_key=_continuity_warning_issue_key(exc.continuity_warning),
+                message=_continuity_warning_message(exc.continuity_warning),
                 continuity_warning=exc.continuity_warning,
-                llm_call_id=exc.llm_call_id,
-                error_code=exc.error_code,
-                retryable=exc.retryable,
             )
         except LLMNodeExecutionError as exc:
-            return self._human_review_decision(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                source_draft_row_id=source_draft_row_id,
-                failure_reason=f"soft_qc execution failed before a valid QC payload was produced: {exc.message}",
-                trigger_reason="soft_qc_execution_failed",
-                fallback_payload=self._fallback_block_payload(
-                    issue_key="soft_qc_execution_failed",
-                    message=f"soft QC execution failed: {exc.message}",
-                ),
-                llm_call_id=exc.llm_call_id,
-                error_code=exc.error_code,
-                retryable=exc.retryable,
+            llm_call_id = exc.llm_call_id
+            degraded_reason = "soft_qc_execution_failed"
+            payload = self._degraded_waive_payload(
+                issue_key="soft_qc_execution_failed",
+                message=f"soft QC execution failed: {exc.message}",
             )
         except Exception as exc:
-            return self._human_review_decision(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                source_draft_row_id=source_draft_row_id,
-                failure_reason=f"soft_qc execution failed before a valid QC payload was produced: {exc}",
-                trigger_reason="soft_qc_execution_failed",
-                fallback_payload=self._fallback_block_payload(
-                    issue_key="soft_qc_execution_failed",
-                    message=f"soft QC execution failed: {exc}",
-                ),
+            degraded_reason = "soft_qc_execution_failed"
+            payload = self._degraded_waive_payload(
+                issue_key="soft_qc_execution_failed",
+                message=f"soft QC execution failed: {exc}",
             )
-        try:
-            report = validate_qc_report("soft_qc", payload)
-        except (QCValidationError, ValidationError) as exc:
-            return self._human_review_decision(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                source_draft_row_id=source_draft_row_id,
-                failure_reason=f"soft_qc validation failed: {exc}",
-                trigger_reason="invalid_soft_qc_payload",
-                fallback_payload=self._fallback_block_payload(
+        if degraded_reason is None:
+            try:
+                # 同 hard 侧：只对真实 LLM payload 做 normalize；分级后的 issue
+                # 字段不得再经 validate→dump 往返（会被剥成 issue_key+message）。
+                report = validate_qc_report("soft_qc", payload)
+                payload = report.model_dump()
+            except (QCValidationError, ValidationError) as exc:
+                degraded_reason = "invalid_soft_qc_payload"
+                payload = self._degraded_waive_payload(
                     issue_key="invalid_soft_qc_payload",
                     message=f"soft QC payload validation failed: {exc}",
-                ),
-                llm_call_id=llm_call_id,
-            )
+                )
 
-        payload = report.model_dump()
         payload = self._apply_deterministic_quality_gates(scene, bundle, source_draft_content, payload)
-        report = validate_qc_report("soft_qc", payload)
-        payload = report.model_dump()
-        branch = self._branch_for(report.next_action)
+        payload = self._apply_quality_grading(scene, source_draft_content, payload)
+        validate_qc_report("soft_qc", payload)  # 组合合法性校验（不回写 dump）
+        branch = self._branch_for(payload["next_action"])
         if branch == "patch" and state.soft_patch_count >= 1:
-            if has_blocking_qc_issue(payload.get("issues", [])):
+            if has_blocking(payload.get("issues", [])):
                 payload = self._block_repeat_patch_payload(payload)
             else:
                 payload = self._waive_repeat_patch_payload(payload)
-            report = validate_qc_report("soft_qc", payload)
-            payload = report.model_dump()
-            branch = self._branch_for(report.next_action)
-        elif branch == "waive" and has_blocking_qc_issue(payload.get("issues", [])):
+            validate_qc_report("soft_qc", payload)
+            branch = self._branch_for(payload["next_action"])
+        elif branch == "waive" and has_blocking(payload.get("issues", [])):
             payload = self._block_repeat_patch_payload(payload)
-            report = validate_qc_report("soft_qc", payload)
-            payload = report.model_dump()
-            branch = self._branch_for(report.next_action)
+            validate_qc_report("soft_qc", payload)
+            branch = self._branch_for(payload["next_action"])
 
         qc_report = self._persist_qc_report(
             scene=scene,
@@ -1451,7 +1388,7 @@ class SoftQcEngine:
         )
 
         if branch == "human_review_required":
-            blocking_issue = has_blocking_qc_issue(payload.get("issues", []))
+            blocking_issue = has_blocking(payload.get("issues", []))
             trigger_reason = "blocking_soft_qc_issue" if blocking_issue else "soft_qc_requested_human_review"
             source_draft_content_hash = _content_hash(source_draft_content)
             accepted_waiver = self.human_review_manager.accepted_soft_risk_waiver(
@@ -1533,6 +1470,7 @@ class SoftQcEngine:
             resolution_code=qc_report.resolution_code or "",
             next_action=qc_report.next_action or "",
             should_continue=branch in {"continue", "waive"},
+            stop_reason=degraded_reason,
         )
 
     @staticmethod
@@ -1549,25 +1487,77 @@ class SoftQcEngine:
         }[next_action]
 
     @staticmethod
-    def _fallback_block_payload(
+    def _degraded_waive_payload(
         *,
         issue_key: str,
         message: str,
-        rewrite_brief: list[str] | None = None,
         continuity_warning: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        issue = {"issue_key": issue_key, "message": message}
+        """软 QC 执行失败的降级形状：waive + Q2 警告 issue（§5.4——不撤销已有正文）。"""
+        issue: dict[str, Any] = {"issue_key": issue_key, "message": message}
         if continuity_warning is not None:
             issue["continuity_warning"] = continuity_warning
         return {
-            "resolution_code": "soft_block_human",
-            "pass_flag": False,
-            "next_action": "human_review_required",
+            "resolution_code": "soft_waive",
+            "pass_flag": True,
+            "next_action": "pass_with_notes",
             "issues": [issue],
-            "rewrite_brief": rewrite_brief or [],
-            "carry_forward_note": False,
-            "note_scope": None,
-            "carry_note_text": None,
+            "rewrite_brief": [],
+            "carry_forward_note": True,
+            "note_scope": "scene_memory",
+            "carry_note_text": f"soft QC degraded ({issue_key}): {message}"[:500],
+        }
+
+    def _apply_quality_grading(self, scene: SceneCard, source_draft_content: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Wave 2（§5.4）：统一分级 + 阻断裁决单一来源（软 QC 侧）。
+
+        - 全部 issue 过分类器；确定性 Q1/Q2 在 LLM 说 pass 时仍触发一次受控补丁
+          （自动修订 ≤2 的第一次），Q3（tension/theme 之外的风格层）不再强制补丁。
+        - LLM 主动要求人工审阅但无 verified Q0/Q1 → 降级为 waive 携带 carry note，
+          正文照常交付（G-03）。
+        """
+        classified = classify_issues(payload.get("issues") or [], scene=scene, content=source_draft_content)
+        graded = {**payload, "issues": classified}
+        if graded.get("next_action") == "pass" and any(
+            issue.get("source") == "deterministic" and issue.get("quality_level") in ("Q1", "Q2")
+            for issue in classified
+        ):
+            rewrite_brief = [item for item in graded.get("rewrite_brief", []) if isinstance(item, str) and item.strip()]
+            rewrite_brief = _append_unique_rewrite_briefs(
+                rewrite_brief, _rewrite_briefs_for_deterministic_issues(classified)
+            ) or ["修复确定性质检发现的问题后重检。"]
+            graded = {
+                **graded,
+                "resolution_code": "soft_patch",
+                "pass_flag": False,
+                "next_action": "patch",
+                "rewrite_brief": rewrite_brief,
+                "carry_forward_note": False,
+                "note_scope": None,
+                "carry_note_text": None,
+            }
+        if graded.get("next_action") == "human_review_required" and not has_blocking(classified):
+            graded = self._waive_no_blocking_payload(graded)
+        return graded
+
+    @staticmethod
+    def _waive_no_blocking_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        briefs = [item.strip() for item in payload.get("rewrite_brief", []) if isinstance(item, str) and item.strip()]
+        if not briefs:
+            briefs = [
+                str(issue.get("message") or issue.get("issue_key") or "").strip()
+                for issue in payload.get("issues", [])
+                if isinstance(issue, dict)
+            ][:3]
+        summary = "; ".join(item for item in briefs if item) or "soft QC advisory retained"
+        return {
+            **payload,
+            "resolution_code": "soft_waive",
+            "pass_flag": True,
+            "next_action": "pass_with_notes",
+            "carry_forward_note": True,
+            "note_scope": "scene_memory",
+            "carry_note_text": f"软性质检意见无确定性 Q0/Q1 佐证，正文照常交付；意见随行：{summary}"[:500],
         }
 
     @staticmethod
@@ -1585,31 +1575,17 @@ class SoftQcEngine:
         )
         if not deterministic_issues:
             return payload
+        # Wave 2：gate 只做合并——是否触发补丁/阻断由分级器统一裁决。
         existing_issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
         rewrite_brief = payload.get("rewrite_brief") if isinstance(payload.get("rewrite_brief"), list) else []
         merged_issues = _dedupe_issues([*existing_issues, *deterministic_issues])
-        if payload.get("next_action") in {"patch", "human_review_required"}:
-            return {
-                **payload,
-                "issues": merged_issues,
-                "rewrite_brief": _append_unique_rewrite_briefs(
-                    rewrite_brief,
-                    _rewrite_briefs_for_deterministic_issues(deterministic_issues),
-                ),
-            }
         return {
             **payload,
-            "resolution_code": "soft_patch",
-            "pass_flag": False,
-            "next_action": "patch",
             "issues": merged_issues,
             "rewrite_brief": _append_unique_rewrite_briefs(
                 rewrite_brief,
                 _rewrite_briefs_for_deterministic_issues(deterministic_issues),
             ),
-            "carry_forward_note": False,
-            "note_scope": None,
-            "carry_note_text": None,
         }
 
     @staticmethod
@@ -1768,43 +1744,6 @@ class SoftQcEngine:
     def _clear_downstream_outputs(state: SceneRunState) -> None:
         state.current_style_draft_row_id = None
         state.current_final_scene_row_id = None
-
-    def _human_review_decision(
-        self,
-        *,
-        scene: SceneCard,
-        state: SceneRunState,
-        bundle: dict[str, Any],
-        source_draft_row_id: str,
-        failure_reason: str,
-        trigger_reason: str,
-        fallback_payload: dict[str, Any],
-        continuity_warning: dict[str, Any] | None = None,
-        llm_call_id: str | None = None,
-        error_code: str | None = None,
-        retryable: bool | None = None,
-    ) -> SoftQcDecision:
-        qc_report = self._persist_qc_report(
-            scene=scene,
-            state=state,
-            bundle=bundle,
-            source_draft_row_id=source_draft_row_id,
-            payload=fallback_payload,
-        )
-        return self._escalate_existing_report(
-            scene=scene,
-            state=state,
-            bundle=bundle,
-            source_draft_row_id=source_draft_row_id,
-            qc_report=qc_report,
-            branch="human_review_required",
-            failure_reason=failure_reason,
-            trigger_reason=trigger_reason,
-            continuity_warning=continuity_warning,
-            llm_call_id=llm_call_id,
-            error_code=error_code,
-            retryable=retryable,
-        )
 
     def _escalate_existing_report(
         self,

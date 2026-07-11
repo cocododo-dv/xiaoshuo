@@ -177,3 +177,88 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+/* ==========================================================
+   Wave 2（结果闭环治理 §5.3/§5.4）：作者可见状态门。
+   「无法继续」（hard_blocked = verified Q0/Q1，不可归档）与
+   「已有稿但建议修改」（quality_warning = Q2/Q3，可归档）必须分开：
+   · scnGateFrom 从 workbench/status 的 author_state 投影提取 gate
+   · scnAdoptToDoc 对 canArchive=false 前置拦截（不发 adopt POST）
+   · quality_warning 不拦归档
+   ========================================================== */
+describe("作者状态门（Wave 2：无法继续 vs 有稿建议修改）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const DRAFT = [{ id: "p1", beat: null, parts: [{ text: "潮水退去，她看清了闸门上的名字。" }] }];
+
+  const HARD_BLOCKED_PROJECTION = {
+    author_state: "hard_blocked",
+    blocking_findings: [{ issue_key: "missing_required_text", quality_level: "Q1", verified_by: "scene_card_required_text" }],
+    quality_warnings: [],
+    recommended_actions: ["review_pipeline_gate"],
+    can_archive: false,
+  };
+  const QUALITY_WARNING_PROJECTION = {
+    author_state: "quality_warning",
+    blocking_findings: [],
+    quality_warnings: [{ issue_key: "pacing_flat", quality_level: "Q2" }],
+    recommended_actions: ["adopt_or_patch"],
+    can_archive: true,
+  };
+
+  it("scnGateFrom：hard_blocked 投影 → canArchive=false + 阻断条目", async () => {
+    const { mod } = await loadSceneRun();
+    const gate = mod.scnGateFrom({ author_state: HARD_BLOCKED_PROJECTION });
+    expect(gate.authorState).toBe("hard_blocked");
+    expect(gate.canArchive).toBe(false);
+    expect(gate.blocking[0].issue_key).toBe("missing_required_text");
+  });
+
+  it("scnGateFrom：quality_warning 投影 → 可归档 + 警告随行；无投影 → null", async () => {
+    const { mod } = await loadSceneRun();
+    const gate = mod.scnGateFrom({ author_state: QUALITY_WARNING_PROJECTION });
+    expect(gate.authorState).toBe("quality_warning");
+    expect(gate.canArchive).toBe(true);
+    expect(gate.warnings.length).toBe(1);
+    expect(mod.scnGateFrom({})).toBeNull();
+  });
+
+  it("scnAdoptToDoc：gate 不可归档 → 前置拦截，不发 adopt-current POST", async () => {
+    const { mod, client } = await loadSceneRun();
+    const cat = await import("./ws-catalog.jsx");
+    await vi.waitFor(() => expect(cat.WsCatalog.get().length).toBeGreaterThan(0), T);
+    const gate = mod.scnGateFrom({ author_state: HARD_BLOCKED_PROJECTION });
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT, gate);
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("Q0/Q1");
+    const adoptCalls = client.apiPost.mock.calls.filter(c => /adopt-current/.test(c[0]));
+    expect(adoptCalls).toEqual([]);
+    // 正文保留、不置 done、不写缓存
+    expect(Object.keys(window.localStorage).filter(k => k.includes("wr-doc:ch01s1"))).toEqual([]);
+  });
+
+  it("scnAdoptToDoc：quality_warning 的 gate 不拦归档（Q2/Q3 照常交付）", async () => {
+    const { mod, client } = await loadSceneRun();
+    const cat = await import("./ws-catalog.jsx");
+    await vi.waitFor(() => expect(cat.WsCatalog.get().length).toBeGreaterThan(0), T);
+    client.apiPost.mockImplementation((url) => {
+      if (/adopt-current$/.test(url)) {
+        return Promise.resolve({ scene_id: "s1", scene_status: "archived", final_scene_row_id: "final_s1_v1" });
+      }
+      return Promise.resolve({});
+    });
+    const gate = mod.scnGateFrom({ author_state: QUALITY_WARNING_PROJECTION });
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT, gate);
+
+    expect(result.ok).toBe(true);
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/adopt-current", expect.anything());
+  });
+});

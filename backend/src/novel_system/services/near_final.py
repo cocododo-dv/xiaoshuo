@@ -1014,25 +1014,28 @@ def _has_ending_action(text: str) -> bool:
 
 
 def _execution_failure_payload(message: str) -> dict[str, Any]:
+    # Wave 2（治理 §5.4/§7.7）：评审自身执行失败不是正文的错——不再返回
+    # human_review_required 硬语义；fail + 非自动重写 failure_class，由编排层
+    # 按 Q2 警告随稿交付（QC 超时/模型不可用不撤销已有正文）。
     return {
-        "near_final_status": "human_review_required",
+        "near_final_status": "revision_required",
         "pass_flag": False,
         "overall_score": None,
         "scores": {},
         "findings": [
             {
                 "dimension": "near_final_payload",
-                "severity": "blocker",
+                "severity": "revision",
                 "issue": message,
-                "recommendation": "请人工确认本次准定稿验收，或修复模型输出后重跑。",
+                "recommendation": "准定稿验收未能执行；正文照常交付，可修复模型输出后重跑验收。",
                 "evidence_excerpt": "",
                 "evidence_location": "review execution",
-                "why_it_matters": "无效验收不能作为准定稿依据。",
+                "why_it_matters": "无效验收不能作为准定稿依据，但也不能撤销已有正文。",
             }
         ],
         "revision_brief": [],
         "failure_class": "fact_blocker",
-        "requires_human_review": True,
+        "requires_human_review": False,
     }
 
 
