@@ -22,6 +22,7 @@ from novel_system.db.models import (
     SceneRunState,
     utcnow,
 )
+from novel_system.services.archiver import Archiver
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import analyze_literary_quality
@@ -379,18 +380,20 @@ class SceneAutoRewriteService:
             scene_id=run.scene_id,
             chapter_id=run.chapter_id,
             content=draft.content,
-            status="approved",
             source_bundle_id=draft.source_bundle_id,
             source_bundle_hash=draft.source_bundle_hash,
             generation_llm_call_id=draft.generation_llm_call_id,
         )
         self.session.add(final)
+        self.session.flush()
         run.promoted_final_scene_row_id = final.row_id
         run.rollback_target_final_scene_row_id = run.source_final_scene_row_id
         run.status = "promoted"
         run.actor_ref = actor_ref or run.actor_ref
         state.current_final_scene_row_id = final.row_id
-        state.scene_status = "archived"
+        # 治理 §5.2 归档单入口：提升也经 Archiver 事务（统一 archived 词表 +
+        # 重建 SceneMemory/滚动笔记）——直接置 scene_status 会让记忆链留在旧正文
+        Archiver(self.session).archive_final_scene(run.scene_id, final.row_id)
         self.session.add(
             AttemptTracker(
                 scene_id=run.scene_id,
@@ -419,7 +422,8 @@ class SceneAutoRewriteService:
         if target is None:
             raise DomainError("AUTO_REWRITE_ROLLBACK_TARGET_MISSING", "rollback target final scene not found", status_code=404)
         state.current_final_scene_row_id = target.row_id
-        state.scene_status = "archived"
+        # 治理 §5.2 归档单入口：回滚同样经 Archiver（记忆链指回旧正文）
+        Archiver(self.session).archive_final_scene(run.scene_id, target.row_id)
         run.status = "rolled_back"
         run.actor_ref = actor_ref or run.actor_ref
         self.session.add(

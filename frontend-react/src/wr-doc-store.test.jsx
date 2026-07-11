@@ -162,6 +162,100 @@ describe("WrDocs 跨作品 sid 前缀防污染（历史 bug 回归）", () => {
   });
 });
 
+/* ==========================================================
+   Wave 1（结果闭环治理 · 设计项 5）：跨会话「本地较新」冲突检测。
+   旧缺口：pushSave 失败后 dirty 只在内存 docMeta——重启浏览器丢失，
+   下次 hydrate 用服务端旧版静默覆盖 localStorage 里较新的本地稿。
+   新契约：保存失败 → 持久化 pending 标记；重启后 hydrate 发现标记且
+   本地 ≠ 服务端 → 本地稿备份为冲突副本 + alert 让作者选择；保存成功清标记。
+   ========================================================== */
+describe("WrDocs 跨会话 pending 冲突（Wave 1）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("保存失败留持久化 pending 标记；保存成功清除", async () => {
+    const { mod, client } = await loadDocs();
+    client.apiPatch.mockRejectedValueOnce(new Error("network"));
+    await mod.WrDocs.save("ch01s1", "<p>没保上的本地稿</p>");
+    const pendingKeys = () => Object.keys(window.localStorage).filter(k => k.includes("wr-doc-pending:ch01s1"));
+    expect(pendingKeys().length).toBe(1);
+
+    // 下一次保存成功 → 标记清除
+    await mod.WrDocs.save("ch01s1", "<p>这次保上了</p>");
+    await vi.waitFor(() => expect(pendingKeys().length).toBe(0), T);
+  });
+
+  it("重启会话后：pending 标记 + 本地≠服务端 → 冲突副本 + alert，服务端版本上屏", async () => {
+    // —— 会话 1：保存失败留底 ——
+    const first = await loadDocs();
+    first.client.apiPatch.mockRejectedValue(new Error("network"));
+    await first.mod.WrDocs.save("ch01s1", "<p>重启前较新的本地稿</p>");
+    expect(Object.keys(window.localStorage).some(k => k.includes("wr-doc-pending:ch01s1"))).toBe(true);
+
+    // —— 会话 2：重启（resetModules 清 docMeta 内存态），服务端有旧版内容 ——
+    vi.resetModules();
+    const second = await (async () => {
+      const client = await import("./lib/client.js");
+      installApiRouter(client);
+      client.apiPost.mockImplementation((url) => {
+        if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+          return Promise.resolve({ draft: { draft_id: "d1", revision_no: 5, content: "服务端的旧版正文" } });
+        }
+        return Promise.resolve({});
+      });
+      await import("./ws-catalog.jsx");
+      await settleActive("tide");
+      await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+      const mod = await import("./wr-doc-store.jsx");
+      return { mod, client };
+    })();
+
+    second.mod.WrDocs.load("ch01s1"); // 触发 hydrate
+    // 本地较新稿备份为冲突副本，作者可找回
+    await vi.waitFor(() => {
+      const conflictKeys = Object.keys(window.localStorage).filter(k => k.includes("wr-doc:ch01s1") && k.includes("conflict"));
+      expect(conflictKeys.length).toBe(1);
+      expect(window.localStorage.getItem(conflictKeys[0])).toBe("<p>重启前较新的本地稿</p>");
+    }, T);
+    // alert 让作者知道有副本可选（可证伪：静默覆盖则红）
+    await vi.waitFor(() => expect(window.alert).toHaveBeenCalled(), T);
+    // 服务端版本上屏（服务端优先）
+    await vi.waitFor(() => expect(second.mod.WrDocs.load("ch01s1")).toContain("服务端的旧版正文"), T);
+    // pending 标记已消费
+    expect(Object.keys(window.localStorage).some(k => k.includes("wr-doc-pending:ch01s1"))).toBe(false);
+  });
+
+  it("pending 标记 + 本地==服务端（上次实际保上了）→ 静默清标记，无副本无 alert", async () => {
+    const first = await loadDocs();
+    first.client.apiPatch.mockRejectedValue(new Error("network"));
+    await first.mod.WrDocs.save("ch01s1", "<p>同一份内容</p>");
+
+    vi.resetModules();
+    const client = await import("./lib/client.js");
+    installApiRouter(client);
+    client.apiPost.mockImplementation((url) => {
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        return Promise.resolve({ draft: { draft_id: "d1", revision_no: 5, content: "<p>同一份内容</p>" } });
+      }
+      return Promise.resolve({});
+    });
+    await import("./ws-catalog.jsx");
+    await settleActive("tide");
+    const mod = (await import("./wr-doc-store.jsx"));
+
+    mod.WrDocs.load("ch01s1");
+    await vi.waitFor(() => {
+      expect(Object.keys(window.localStorage).some(k => k.includes("wr-doc-pending:ch01s1"))).toBe(false);
+    }, T);
+    expect(Object.keys(window.localStorage).filter(k => k.includes("conflict"))).toEqual([]);
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+});
+
 describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => {
   beforeEach(() => {
     vi.resetModules();

@@ -267,6 +267,8 @@ class SceneGenerationService:
         self.session.flush()
 
         state.current_neutral_draft_row_id = neutral_row_id
+        # 治理 §4.3：latest_valid 与 current_* 分轨——重写/失败路径清 current_* 时该指针保留
+        state.latest_valid_draft_row_id = neutral_row_id
         state.current_bundle_id = bundle["bundle_id"]
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         state.total_attempt_count += 1
@@ -546,6 +548,7 @@ class SceneGenerationService:
 
         best_result = candidates[0][0]
         state.current_style_draft_row_id = best_result.row_id
+        state.latest_valid_draft_row_id = best_result.row_id
         state.current_bundle_id = bundle["bundle_id"]
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         # §6 Defect D: persist dispersion score for author-facing quality signal
@@ -760,6 +763,7 @@ class SceneGenerationService:
         self.session.flush()
 
         state.current_style_draft_row_id = row_id
+        state.latest_valid_draft_row_id = row_id
         state.current_bundle_id = bundle["bundle_id"]
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         self.session.flush()
@@ -893,6 +897,7 @@ class SceneGenerationService:
         self.session.flush()
 
         state.current_style_draft_row_id = row_id
+        state.latest_valid_draft_row_id = row_id
         state.current_bundle_id = bundle["bundle_id"]
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         self.session.flush()
@@ -1008,6 +1013,7 @@ class SceneGenerationService:
         self.session.flush()
 
         state.current_style_draft_row_id = row_id
+        state.latest_valid_draft_row_id = row_id
         state.current_bundle_id = bundle["bundle_id"]
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         self.session.flush()

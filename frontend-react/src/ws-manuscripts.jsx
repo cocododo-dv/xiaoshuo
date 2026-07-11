@@ -1,8 +1,9 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
-import { wsKey, WsWorks } from "./ws-works.jsx";
+import { WsWorks } from "./ws-works.jsx";
 import { rvPush } from "./ws-review.jsx";
+import { WsManuStore } from "./ws-manuscripts-store.jsx";
 
 /* global React, I */
 const { useState: useSt9, useRef: useRef9, useEffect: useEf9 } = React;
@@ -129,19 +130,16 @@ const M_BODY = {
   },
 };
 
-/* ---------- 真实正文：从写作器落盘的 wr-doc 文档取段落 ---------- */
-function manuDocParas(sid) {
-  if (!sid) return null;
-  let raw = null;
-  try { raw = localStorage.getItem(wsKey ? wsKey("wr-doc:" + sid) : "wr-doc:" + sid); } catch (e) {}
-  if (raw == null) return null;
-  const div = document.createElement("div");
-  div.innerHTML = raw;
-  let paras = Array.from(div.querySelectorAll("p, li")).map(p => (p.textContent || "").trim()).filter(Boolean);
-  if (!paras.length) { const t = (div.textContent || "").trim(); paras = t ? t.split(/\n+/).map(x => x.trim()).filter(Boolean) : []; }
-  /* 写作器的占位文档不算正文 */
-  if (paras.length === 1 && /^在这里开始写/.test(paras[0])) return null;
-  return paras.length ? paras : null;
+/* ---------- 真实正文（Wave 1 · 治理 §5.2 换源）：唯一来源是后端章节聚合
+   （WsManuStore ← GET /chapter-manuscripts/{id}，服务端以 FinalScene 归档行
+   为源）。localStorage 的 wr-doc:* 是写作器编辑缓存，不再作为成稿正文来源
+   ——清缓存不丢稿的前提是稿在后端。 ---------- */
+function manuArchivedParas(catCh, s) {
+  if (!catCh || !catCh.backendId || !s || !s.backendId || !WsManuStore) return null;
+  const ms = WsManuStore.body(catCh.backendId);
+  if (!ms) return null;
+  const hit = (ms.scenes || []).find(x => x.sceneId === s.backendId);
+  return hit && hit.live && hit.paras.length ? hit.paras : null;
 }
 /* 目录戏剧卡 → 阅读器概要卡四字段 */
 function manuDramaOf(c) {
@@ -150,12 +148,12 @@ function manuDramaOf(c) {
   if (!pick(d.promise) && !pick(d.spine) && !pick(d.arc) && !pick(d.aftertaste)) return null;
   return { promise: pick(d.promise), thrust: pick(d.spine), turn: pick(d.arc), after: pick(d.aftertaste) };
 }
-/* 章正文：优先写作器真实文档；潮汐档案种子章回落到演示归档 */
+/* 章正文：唯一来源=后端归档聚合；潮汐档案种子章回落到演示归档 */
 function manuBuildBody(catCh, isTide) {
   if (!catCh) return null;
   const scenes = [];
   (catCh.scenes || []).forEach((s, i) => {
-    const paras = manuDocParas(s.sid);
+    const paras = manuArchivedParas(catCh, s);
     if (paras) scenes.push({ idx: String(i + 1).padStart(2, "0"), title: s.title, paras, live: true });
   });
   if (scenes.length) return { drama: manuDramaOf(catCh), scenes, live: true };
@@ -175,6 +173,13 @@ function manuDownload(name, content, mime) {
     return true;
   } catch (e) { return false; }
 }
+/* 导出前把 scope 内各章的后端归档聚合拉齐（compile 同步读 store 缓存） */
+async function manuRefreshChapters(catChs, scopeIds) {
+  if (!WsManuStore) return;
+  const targets = (catChs || []).filter(c => scopeIds.includes(c.id) && c.backendId);
+  await Promise.all(targets.map(c => WsManuStore.refresh(c.backendId)));
+}
+
 function manuCompile(book, catChs, scopeIds, fmt, opts, isTide) {
   const sel = (catChs || []).filter(c => scopeIds.includes(c.id));
   const chunks = [];
@@ -281,7 +286,19 @@ function WsManuscripts({ go }) {
   const [returnOpen, setReturnOpen] = useSt9(false);
   const picked = chs.find(c => c.id === pickedId) || chs[0];
   const catPicked = (catChs || []).find(c => c.id === (picked && picked.id)) || null;
-  /* 正文：优先写作器真实文档，潮汐档案种子章回落演示归档 */
+  /* Wave 1 换源：选中章拉后端归档聚合；loaded 事件驱动重渲染（store 同步缓存） */
+  const [, manuBump] = useSt9(0);
+  useEf9(() => {
+    if (catPicked && catPicked.backendId && WsManuStore) {
+      WsManuStore.refresh(catPicked.backendId).then(() => manuBump(n => n + 1));
+    }
+  }, [catPicked && catPicked.backendId]);
+  useEf9(() => {
+    const onLoaded = () => manuBump(n => n + 1);
+    window.addEventListener("ws:manuscripts-loaded", onLoaded);
+    return () => window.removeEventListener("ws:manuscripts-loaded", onLoaded);
+  }, []);
+  /* 正文：唯一来源=后端归档聚合，潮汐档案种子章回落演示归档 */
   const body = catPicked ? manuBuildBody(catPicked, isTide) : (isTide ? M_BODY[pickedId] : null);
   /* 状态流转：全部写穿目录单一真相源；批准时盖上真实时间戳 */
   const setChapterState = (id, state) => {
@@ -323,7 +340,8 @@ function WsManuscripts({ go }) {
     }
   };
 
-  const exportChapter = (c) => {
+  const exportChapter = async (c) => {
+    await manuRefreshChapters(catChs, [c.id]);
     const out = manuCompile({ title: `${book.title} · 第 ${c.n} 章 ${c.title}`, kind: book.kind }, catChs || [], [c.id], "md", { toc: false, appendix: false }, isTide);
     manuDownload(out.name, out.content, out.mime);
   };
@@ -548,8 +566,9 @@ function ManuExport({ ctx }) {
   const scopeWords = chs.filter(c => scopeIds.includes(c.id)).reduce((s, c) => s + (c.words || 0), 0);
   const canExport = scopeIds.length > 0;
 
-  const run = () => {
+  const run = async () => {
     if (!canExport) return;
+    await manuRefreshChapters(catChs, scopeIds);
     const out = manuCompile(book, catChs, scopeIds, fmt, { toc, appendix }, isTide);
     if (manuDownload(out.name, out.content, out.mime)) {
       setDone(`已生成「${out.name}」`);
@@ -682,7 +701,7 @@ function ManuStructure({ picked, body, catCh }) {
   /* 场景拼接：优先目录真实场景（含状态/字数），种子章回落演示归档 */
   const rows = catCh && (catCh.scenes || []).length
     ? catCh.scenes.map((s, i) => {
-        const paras = manuDocParas(s.sid);
+        const paras = manuArchivedParas(catCh, s);
         return {
           idx: String(i + 1).padStart(2, "0"), title: s.title,
           meta: paras ? `${paras.join("").length} 字 · 已归档` : (typeof s.words === "number" && s.words > 0 ? `${s.words.toLocaleString()} 字` : "未展开"),

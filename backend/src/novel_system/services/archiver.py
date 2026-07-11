@@ -73,6 +73,9 @@ class Archiver:
             rolling.note_text = final_scene.content
             rolling.revision_no += 1
 
+        # 治理 §5.2 状态词表统一：归档态由本事务写入的权威状态表示，
+        # 下游（章节聚合/回放）不再依赖 approved/near_final_ready 的字符串巧合
+        final_scene.status = "archived"
         state.scene_status = "archived"
         self.session.add(
             AttemptTracker(

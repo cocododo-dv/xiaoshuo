@@ -99,3 +99,81 @@ describe("scnBackendQueueSids（队列成员的后端派生）", () => {
     expect(sids).toEqual([]);
   });
 });
+
+/* ==========================================================
+   Wave 1（结果闭环治理 §5.2）：采纳归档必须先打后端单入口。
+   旧实现 scnAdoptToDoc 只写 wr-doc 缓存 + 目录置 done——前端「完成」
+   与后端归档态可以分裂（G-02）。新契约：
+   · 成功路径 = POST /scenes/{id}/adopt-current 成功 → 才写缓存/置 done
+   · 后端拒绝（无稿/来源安全）→ 不置 done、不写缓存，faithful 返回失败
+   ========================================================== */
+describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const DRAFT = [{ id: "p1", beat: null, parts: [{ text: "潮水退去，她看清了闸门上的名字。" }] }];
+
+  async function loadWithCatalog(opts) {
+    const { mod, client } = await loadSceneRun(opts);
+    const cat = await import("./ws-catalog.jsx");
+    await vi.waitFor(() => expect(cat.WsCatalog.get().length).toBeGreaterThan(0), T);
+    return { mod, client, cat };
+  }
+
+  it("成功：POST adopt-current 后才置 done + 写正文缓存", async () => {
+    const { mod, client, cat } = await loadWithCatalog();
+    client.apiPost.mockImplementation((url) => {
+      if (/\/api\/v1\/scenes\/s1\/adopt-current$/.test(url)) {
+        return Promise.resolve({ scene_id: "s1", scene_status: "archived", final_scene_row_id: "final_s1_v1" });
+      }
+      return Promise.resolve({});
+    });
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT);
+
+    expect(result.ok).toBe(true);
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/adopt-current", expect.anything());
+    // done 只由服务端 archived 响应映射，且写穿到目录 PATCH（mock 后端重拉
+    // 会把乐观缓存收敛回 mock 值，故断言写穿动作而非最终缓存态）
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
+      expect.stringMatching(/\/scenes\/s1$/),
+      expect.objectContaining({ state: "done" })
+    ), T);
+    void cat;
+    // 正文写作器缓存同步（写穿主路径或缓存）
+    const wrKeys = Object.keys(window.localStorage).filter(k => k.includes("wr-doc:ch01s1"));
+    expect(wrKeys.length).toBeGreaterThan(0);
+  });
+
+  it("后端拒绝（409 无稿/来源安全）：不置 done、不写缓存、faithful 返回失败", async () => {
+    const { mod, client, cat } = await loadWithCatalog();
+    const blocked = Object.assign(new Error("blocked"), { code: "SOURCE_SAFETY_BLOCKED" });
+    client.apiPost.mockImplementation((url) => {
+      if (/\/adopt-current$/.test(url)) return Promise.reject(blocked);
+      return Promise.resolve({});
+    });
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT);
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("SOURCE_SAFETY_BLOCKED");
+    // 可证伪：先本地置 done 的旧实现会发出 state:"done" 的目录 PATCH，此断言转红
+    const donePatches = client.apiPatch.mock.calls.filter(c => c[1] && c[1].state === "done");
+    expect(donePatches).toEqual([]);
+    const scene = cat.WsCatalog.get()[0].scenes.find(s => s.sid === "ch01s1");
+    expect(scene.state).not.toBe("done");
+    expect(Object.keys(window.localStorage).filter(k => k.includes("wr-doc:ch01s1"))).toEqual([]);
+  });
+
+  it("目录未同步到后端（无 backendId）：不静默装成功", async () => {
+    const { mod } = await loadSceneRun({ catalog: [] });
+    const cat = await import("./ws-catalog.jsx");
+    await vi.waitFor(() => expect(cat.WsCatalog.ready()).toBe(true), T);
+    const result = await mod.scnAdoptToDoc("ch99s9", DRAFT);
+    expect(result.ok).toBe(false);
+  });
+});

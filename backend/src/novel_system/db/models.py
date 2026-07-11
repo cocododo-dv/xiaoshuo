@@ -535,6 +535,9 @@ class SceneRunState(Base):
     current_neutral_draft_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     current_style_draft_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     current_final_scene_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 治理 §4.3：最近有效正文指针——与 current_* 不同，失败/重写路径不清空，
+    # 任何后续失败都能回退到该版本（仅项目级运行时失效才重置）
+    latest_valid_draft_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     current_human_review_event_id: Mapped[str | None] = mapped_column(String, nullable=True)
     current_qc_report_id: Mapped[str | None] = mapped_column(String, nullable=True)
     bundle_build_count: Mapped[int] = mapped_column(Integer, default=0)

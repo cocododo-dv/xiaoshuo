@@ -259,6 +259,8 @@ class ProjectRuntimeInvalidationService:
             state.current_final_scene_row_id = None
             state.current_human_review_event_id = None
             state.current_qc_report_id = None
+            # 治理 §4.3：latest_valid 在失败/重写路径保留，唯独项目级运行时失效才重置
+            state.latest_valid_draft_row_id = None
 
         for chapter_id in chapter_ids:
             state = self.session.get(ChapterState, chapter_id)

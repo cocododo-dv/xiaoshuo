@@ -10,6 +10,7 @@ from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.db.models import (
     AttemptTracker,
+    AuthorDraft,
     ChapterGoal,
     FinalScene,
     HumanReviewEvent,
@@ -23,7 +24,9 @@ from novel_system.db.models import (
     SceneRunState,
     WriterEvaluation,
 )
+from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.author_state import compute_author_state
 from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
@@ -370,6 +373,8 @@ def list_scene_run_states(project_id: str, request: Request, session: Session = 
             "scene_id": state.scene_id,
             "chapter_id": card.chapter_id,
             "scene_status": state.scene_status,
+            # 治理 §5.3：列表恢复面也带作者可见态（枚举），FE 不再从 scene_status 猜
+            "author_state": compute_author_state(session, state.scene_id, state)["author_state"],
             "total_attempt_count": state.total_attempt_count,
             "updated_at": state.updated_at,
         }
@@ -396,6 +401,8 @@ def scene_status(scene_id: str, request: Request, session: Session = Depends(get
                 "current_final_scene_row_id": None,
                 "repeat_issue_key": None,
                 "repeat_issue_count": 0,
+                # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
+                **compute_author_state(session, scene_id, None),
             },
             req_id=getattr(request.state, "request_id", None),
         )
@@ -409,6 +416,8 @@ def scene_status(scene_id: str, request: Request, session: Session = Depends(get
             "current_final_scene_row_id": state.current_final_scene_row_id,
             "repeat_issue_key": state.repeat_issue_key,
             "repeat_issue_count": state.repeat_issue_count,
+            # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
+            **compute_author_state(session, scene_id, state),
         },
         req_id=getattr(request.state, "request_id", None),
     )
@@ -638,6 +647,8 @@ def select_style_candidate(
         if state is None:
             raise DomainError("SCENE_STATE_NOT_FOUND", "Scene run state not found", status_code=404)
         state.current_style_draft_row_id = row_id
+        # 治理 §4.3：候选选择也是「最近有效正文」的维护点
+        state.latest_valid_draft_row_id = row_id
         session.flush()
         return {"scene_id": scene_id, "selected_row_id": row_id, "message": "Candidate selected for human terminal review"}
 
@@ -649,6 +660,162 @@ def select_style_candidate(
         payload={"scene_id": scene_id, "row_id": row_id},
         action=lambda: _select(session),
         actor_ref=getattr(request.state, "operator_ref", None) or "operator",
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+def _author_draft_plain_text(html: str | None) -> str:
+    """author-draft 存 HTML（<p> 分段）；归档正文按段落还原为纯文本。"""
+    import re
+
+    if not html:
+        return ""
+    text = re.sub(r"</p\s*>|<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
+@router.post("/api/v1/scenes/{scene_id}/adopt-current")
+def adopt_current_scene(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    payload: dict | None = Body(default=None),
+):
+    """治理 §5.2：作者采纳归档的单一服务入口。
+
+    前端「归档/置 done」动作必须打到这里——FinalScene 只由服务端归档事务
+    创建或提升（复用 Archiver，不建第二实现）。内容源优先级：未归档的
+    current_final_scene → 管线草稿（latest_valid > style > neutral）→
+    author-draft 人工稿兜底。守卫：无任何有效稿 409 NO_VALID_DRAFT；
+    确定性来源安全扫描命中 409 SOURCE_SAFETY_BLOCKED（草稿保留可重试，
+    设计红线 8：来源安全未通过可保存草稿但不能标记为已安全归档）。
+    """
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+
+    def _adopt(session: Session) -> dict[str, Any]:
+        from uuid import uuid4
+
+        scene = AuthorLifecycleService(session).require_active_scene(scene_id)
+        state = session.get(SceneRunState, scene_id)
+        if state is None:
+            state = SceneRunState(scene_id=scene_id, scene_status="ready")
+            session.add(state)
+            session.flush()
+
+        # 已归档：幂等返回现状，不重复归档
+        if state.scene_status == "archived" and state.current_final_scene_row_id:
+            return {
+                "scene_id": scene_id,
+                "scene_status": "archived",
+                "final_scene_row_id": state.current_final_scene_row_id,
+                "already_archived": True,
+                "author_state": compute_author_state(session, scene_id, state),
+            }
+
+        # 1) 内容源解析
+        final: FinalScene | None = None
+        if state.current_final_scene_row_id:
+            row = session.get(FinalScene, state.current_final_scene_row_id)
+            if row is not None and (row.content or "").strip():
+                final = row
+        source_draft_row_id: str | None = None
+        content: str | None = None
+        source_bundle_id: str | None = None
+        source_bundle_hash: str | None = None
+        if final is None:
+            for row_id in (
+                state.latest_valid_draft_row_id,
+                state.current_style_draft_row_id,
+                state.current_neutral_draft_row_id,
+            ):
+                if not row_id:
+                    continue
+                draft = session.get(SceneDraft, row_id)
+                if draft is not None and (draft.content or "").strip():
+                    source_draft_row_id = row_id
+                    content = draft.content
+                    source_bundle_id = draft.source_bundle_id
+                    source_bundle_hash = draft.source_bundle_hash
+                    break
+            if content is None:
+                author_draft = session.execute(
+                    select(AuthorDraft).where(
+                        AuthorDraft.object_type == "scene",
+                        AuthorDraft.object_id == scene_id,
+                        AuthorDraft.status == "current",
+                    )
+                ).scalars().first()
+                text = _author_draft_plain_text(author_draft.content) if author_draft else ""
+                if text.strip():
+                    content = text
+                    source_bundle_id = f"author_draft:{author_draft.draft_id}"
+                    source_bundle_hash = f"author_draft_rev_{author_draft.revision_no}"
+            if content is None:
+                raise DomainError(
+                    "NO_VALID_DRAFT",
+                    "no valid draft content to adopt — generate or write the scene first",
+                    status_code=409,
+                    details={"scene_id": scene_id},
+                )
+
+        # 2) 确定性来源安全守卫（Q0 红线；Q0–Q3 分级阻断策略随 Wave 2 落地）
+        target_content = final.content if final is not None else (content or "")
+        bundle = session.get(SceneBundle, state.current_bundle_id) if state.current_bundle_id else None
+        scan = scan_source_safety(
+            target_content,
+            source_profile_ids=source_profile_ids_from_snapshot(
+                bundle.frozen_snapshot_json if bundle else None
+            ),
+        )
+        if not scan.get("safe", True):
+            raise DomainError(
+                "SOURCE_SAFETY_BLOCKED",
+                "source-safety scan blocked adoption — draft is kept and can be revised",
+                status_code=409,
+                details={"scene_id": scene_id, "blocked_terms": scan.get("blocked_terms") or []},
+            )
+
+        # 3) FinalScene 建行或提升，经归档事务统一置权威态
+        if final is None:
+            final = FinalScene(
+                row_id=f"final_scene_{scene_id}_adopt_{uuid4().hex[:10]}",
+                scene_id=scene_id,
+                chapter_id=scene.chapter_id,
+                content=content or "",
+                source_bundle_id=source_bundle_id or "author_adopt",
+                source_bundle_hash=source_bundle_hash or "author_adopt",
+            )
+            session.add(final)
+            session.flush()
+        state.current_final_scene_row_id = final.row_id
+        if source_draft_row_id:
+            state.latest_valid_draft_row_id = source_draft_row_id
+
+        archive_result = Archiver(session).archive_final_scene(
+            scene_id,
+            final.row_id,
+            carry_notes_json=[{"kind": "author_adoption", "actor_ref": actor_ref}],
+        )
+        return {
+            "scene_id": scene_id,
+            "scene_status": archive_result["scene_status"],
+            "final_scene_row_id": final.row_id,
+            "scene_memory_row_id": archive_result["scene_memory_row_id"],
+            "source_safety_scan": scan,
+            "author_state": compute_author_state(session, scene_id, state),
+        }
+
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/adopt-current",
+        payload={"scene_id": scene_id, **(payload or {})},
+        action=lambda: _adopt(session),
+        actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
@@ -706,6 +873,8 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
                 "current_bundle_hash": state.current_bundle_hash,
                 "current_final_scene_row_id": state.current_final_scene_row_id,
             },
+            # 治理 §5.3：作者可见状态投影块（完整契约字段）
+            "author_state": compute_author_state(session, scene_id, state),
             "chapter_state": chapter_state,
             "run_preflight": run_preflight,
             "bundle": {

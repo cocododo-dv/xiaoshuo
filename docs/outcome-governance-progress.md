@@ -68,6 +68,72 @@ node --check scripts/run-longzu-full-cloud-qa.cjs                               
   由下一次真实运行检验；已为新角色顾磬补 voice 卡候选。
 - longzu lane 的五章扩展与"授权/公版参考文本"替换遗留至 §9.3 发布门 2 重整。
 
-## Wave 1：统一正文真值和归档 —— 未开始（Wave 0 完成门已过，可启动）
+## Wave 1：统一正文真值和归档 —— 已完成（2026-07-11）
 
-## Wave 2–7 —— 未开始
+实施计划：`docs/superpowers/specs/2026-07-11-wave1-implementation-plan.md`
+
+### 交付内容
+
+1. **author_state 投影服务**（§5.3，测试先行）：`services/author_state.py` 新增
+   `compute_author_state()`——判定先分「有稿性」，无稿走空稿三态
+   （`not_started` / `generating` / `generation_failed`+`recovery_action`），
+   有稿走 `draft_ready` / `quality_warning` / `awaiting_author_choice` /
+   `hard_blocked` / `archived`；返回 §5.3 全部契约字段（can_edit / can_archive /
+   latest_valid_draft_row_id / blocking_findings / …）。挂载到
+   `GET /scenes/{id}/status`、`GET /scenes/{id}/workbench`、`GET /scene-run-states`。
+   G-01 核心回归：`human_review_required` 且库里无稿 → `generation_failed`，
+   不得再伪装成「有稿待审」。
+2. **最近有效正文指针**（§4.3）：`SceneRunState.latest_valid_draft_row_id` 新列
+   （迁移 `20260711_0061`，带存在性守卫；漂移守卫通过）。维护点：
+   `scene_generation.py` 全部 5 个草稿写点 + 候选 select + adopt 归档；
+   失败/重写路径**不清空**（区别于 current_*），仅项目级运行时失效重置。
+3. **归档单入口 + 状态词表统一**（§5.2）：`Archiver.archive_final_scene` 事务内
+   统一置 `FinalScene.status="archived"`；4 处消费方
+   （bundle_builder ×3、style_drift_detector）词表同步扩展；迁移把历史
+   被 archived 运行态指向的行映射为 `archived`。新端点
+   `POST /api/v1/scenes/{scene_id}/adopt-current`（幂等）：作者采纳归档，
+   内容源 = 未归档 FinalScene > 管线草稿 > author-draft 人工稿兜底；
+   无稿 409 `NO_VALID_DRAFT`；来源安全命中 409 `SOURCE_SAFETY_BLOCKED`
+   （草稿保留，红线 8）。
+4. **React 归档先后端**：`ws-scene-run.jsx` `scnAdoptToDoc` 改 async——先 POST
+   adopt-current 成功才写缓存/置 done/重拉服务端状态；后端拒绝时不动本地任何
+   状态。`ws-scene.jsx` 调用点同步改 await。
+5. **成稿中心换源**：新 store `ws-manuscripts-store.jsx`（`WsManuStore`，
+   API-backed 同步缓存），`ws-manuscripts.jsx` 的正文/结构/导出全部改从后端
+   章节聚合取（detail 的 `scenes[].final_scene` 新带 `content` 全文），
+   localStorage `wr-doc:*` 不再作为成稿正文来源；tide 演示种子回落保留。
+6. **wr-doc 跨会话冲突**（设计项 5）：保存失败写持久化 `wr-doc-pending:{sid}`
+   标记；重启后水合发现标记且本地≠服务端 → 本地稿备份冲突副本 + alert 让作者
+   选择（不再静默覆盖）；保存成功/409 路径消费标记。
+
+### 完成门验证（本机 CentOS 7）
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/test_author_state_projection.py tests/test_scene_adopt_archive.py -q   # 26 passed（16+10，先红后绿）
+cd backend && .venv/bin/python -m pytest tests/test_metadata_isolation.py -q    # 4 passed（漂移守卫）
+cd backend && .venv/bin/python -m pytest -q -m "not chroma_integration"         # 全量回归
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npx vitest run   # 73 passed（12 文件）
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run build    # 构建通过
+# 迁移验证（隔离库）：alembic upgrade head → latest_valid_draft_row_id 列存在
+```
+
+完成门「前端显示完成的场景必须存在可回放的后端归档稿」由
+`test_adopt_promotes_style_draft_to_archived_final`（归档后 workbench /
+chapter-manuscripts 可回放全文）+ vitest「done 只由 adopt 成功响应映射、
+后端拒绝不置 done」可复算证明；「缓存清除不丢稿」由 vitest
+「清空 localStorage 后正文仍完整来自 API」+「重启会话 pending 冲突副本」证明。
+
+### 剩余风险
+
+- Playwright 级「清缓存重启恢复」E2E 本机无法实跑（node16 无 fetch /
+  无 Windows 服务栈），vitest 模拟为本 Wave 可复算证明；smoke 级验证与
+  Wave 0 采集侧复核同批（Windows lane）。
+- `ws-manuscripts.jsx` 换源后的视觉回归（阅读器/结构/导出）需 Windows lane
+  实跑复核；store/取数层已有 vitest 覆盖。
+- author-draft 人工编辑不维护 `latest_valid_draft_row_id`（两个 id 体系，
+  计划 D5 边界）；人工稿归档经 adopt 的 author-draft 兜底路径覆盖。
+- adopt 端点 Wave 1 只做确定性来源安全 Q0 守卫；Q0–Q3 分级阻断策略归 Wave 2。
+
+## Wave 2：QC 分级和可靠成稿模式 —— 未开始（待 Wave 1 完成门确认）
+
+## Wave 3–7 —— 未开始

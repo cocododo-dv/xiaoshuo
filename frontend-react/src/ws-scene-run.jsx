@@ -341,9 +341,14 @@ async function scnBackendQueueSids() {
   return items.map(it => bySceneId[it.scene_id]).filter(Boolean);
 }
 
-/* ---- 归档：写入写作器正文 + 字数回写 + 场景卡置 done ---- */
+/* ---- 归档（Wave 1 · 治理 §5.2 归档单入口）----
+   「完成」的真值在后端：先 POST adopt-current（服务端归档事务建/提升
+   FinalScene 并置权威 archived 态），成功响应后才写写作器缓存、回写字数、
+   目录卡置 done——done 只由服务端 archived 响应映射，不再先本地置位。
+   后端拒绝（无稿 NO_VALID_DRAFT / 来源安全 SOURCE_SAFETY_BLOCKED）时
+   不动本地任何状态，faithful 返回失败原因。 ---- */
 function scnEscape(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-function scnAdoptToDoc(sid, draft) {
+async function scnAdoptToDoc(sid, draft) {
   if (!sid || !WsCatalog) return { ok: false, reason: "没有场景卡" };
   const html = (draft || []).map(p => "<p>" + scnEscape(p.parts.map(x => x.text).join("")) + "</p>").join("");
   const text = (draft || []).map(p => p.parts.map(x => x.text).join("")).join("");
@@ -354,8 +359,19 @@ function scnAdoptToDoc(sid, draft) {
   if (hasReal && !window.confirm("这一场在写作器里已有正文。归档会覆盖现有正文（写作器的版本会丢失），确定继续？")) {
     return { ok: false, reason: "已取消" };
   }
-  /* FE-ALIGN P8：正文写穿 author-drafts 主路径（WrDocs 缓存+PATCH），
-     不再绕过后端直写 localStorage */
+  // 1) 后端归档单入口（先于一切本地写入）
+  let sceneId = null;
+  try { sceneId = WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null; } catch (e) {}
+  if (!sceneId) return { ok: false, reason: "这一场还没同步到后端目录——稍候片刻或刷新后重试" };
+  try {
+    const { apiPost } = await import("./lib/client.js");
+    await apiPost(`/api/v1/scenes/${sceneId}/adopt-current`, {});
+  } catch (e) {
+    const code = (e && e.code) || "";
+    const msg = (e && e.message) || String(e || "");
+    return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}` };
+  }
+  // 2) 归档成功 → 正文写穿 author-drafts 主路径（WrDocs 缓存+PATCH）
   try {
     if (window.WrDocs) window.WrDocs.save(sid, html);
     else localStorage.setItem(key, html);
@@ -369,7 +385,14 @@ function scnAdoptToDoc(sid, draft) {
       ...c, scenes: (c.scenes || []).map(s => s.sid === sid ? { ...s, state: "done" } : s),
     })));
   } catch (e) {}
-  return { ok: true, words: count };
+  // 3) 治理设计项 4：归档后重新拉服务端状态（起草台运行记录与管线真相收敛）
+  try {
+    const { apiGet } = await import("./lib/client.js");
+    const status = await apiGet(`/api/v1/scenes/${sceneId}/status`);
+    return { ok: true, words: count, serverStatus: (status && status.scene_status) || "archived", authorState: status && status.author_state };
+  } catch (e) {
+    return { ok: true, words: count, serverStatus: "archived" };
+  }
 }
 
 /* 已生成稿件的实时重算：阈值改动后，风险标记 / 指标 / 判词跟着变 */

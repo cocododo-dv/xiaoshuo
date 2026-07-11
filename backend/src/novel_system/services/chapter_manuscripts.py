@@ -127,6 +127,8 @@ class ChapterManuscriptService:
             return None
         return {
             "row_id": final_scene.row_id,
+            # Wave 1 前端换源：成稿中心逐场正文以后端归档为源，不再读 wr-doc 缓存
+            "content": final_scene.content or "",
             "char_count": len(final_scene.content or ""),
             "created_at": final_scene.created_at,
         }

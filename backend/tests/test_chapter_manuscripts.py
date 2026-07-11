@@ -118,6 +118,8 @@ def test_chapter_manuscript_detail_assembles_current_final_scenes_and_marks_miss
     assert [scene["scene_id"] for scene in data["scenes"]] == ["CHM100_SC01", "CHM100_SC02", "CHM100_SC03"]
     assert data["scenes"][0]["final_scene"] == {
         "row_id": "final_scene_CHM100_SC01_v1",
+        # Wave 1 前端换源：detail 逐场携带归档正文全文
+        "content": "first scene text",
         "char_count": len("first scene text"),
         "created_at": data["scenes"][0]["final_scene"]["created_at"],
     }

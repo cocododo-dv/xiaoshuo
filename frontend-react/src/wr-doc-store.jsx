@@ -14,6 +14,20 @@ import { apiGet, apiPatch, apiPost } from "./lib/client.js";
    ========================================================== */
 
 const wrKeyOf = (sid) => (window.wsKey ? window.wsKey("wr-doc:" + sid) : "wr-doc:" + sid);
+// Wave 1（治理 · 设计项 5）：保存失败的持久化标记——dirty 只在内存 docMeta，
+// 重启浏览器即丢，下次水合会用服务端旧版静默覆盖较新的本地稿。标记跨会话存活，
+// 启动水合时据此走「冲突副本 + 作者选择」而不是静默覆盖。
+const wrPendingKeyOf = (sid) => (window.wsKey ? window.wsKey("wr-doc-pending:" + sid) : "wr-doc-pending:" + sid);
+
+function pendingRead(sid) {
+  try { return localStorage.getItem(wrPendingKeyOf(sid)); } catch (e) { return null; }
+}
+function pendingWrite(sid) {
+  try { localStorage.setItem(wrPendingKeyOf(sid), String(Date.now())); } catch (e) {}
+}
+function pendingClear(sid) {
+  try { localStorage.removeItem(wrPendingKeyOf(sid)); } catch (e) {}
+}
 
 // 作品id::sid → { draftId, revision, hydrated, dirty, chain }
 // 必须带作品前缀：同名 slug（ch01s1）在每部作品都存在，裸 sid 会把
@@ -86,6 +100,25 @@ async function hydrate(sid) {
     if (m.draftId != null && !m.dirty) {
       const html = toDocHTML(m.serverContent || "");
       const cached = cacheRead(sid);
+      // Wave 1：上个会话保存失败留下的 pending 标记——本地较新稿不得被静默覆盖
+      if (pendingRead(sid) != null) {
+        if (cached != null && cached !== html) {
+          let backupKey = null;
+          try {
+            backupKey = `${wrKeyOf(sid)}:conflict-${Date.now()}`;
+            localStorage.setItem(backupKey, cached);
+          } catch (e3) { backupKey = null; }
+          pendingClear(sid);
+          try {
+            window.alert(
+              "上次会话有未保存到服务端的本地正文，已加载服务端版本。" +
+              (backupKey ? `\n你的本地稿已备份到浏览器缓存（键：${backupKey}），可从中找回。` : "")
+            );
+          } catch (e2) {}
+        } else {
+          pendingClear(sid); // 内容一致（上次实际保上了）：静默消费标记
+        }
+      }
       if (html && html !== cached) {
         cacheWrite(sid, html);
         notifyLoaded(sid);
@@ -115,6 +148,7 @@ async function pushSave(sid, html) {
     const draft = data && data.draft;
     if (draft) m.revision = draft.revision_no;
     m.dirty = false;
+    pendingClear(sid); // 保存成功：消费跨会话失败标记
     if (data && data.words_rollup && window.WsCatalog && window.WsCatalog.__applyWordsRollup) {
       window.WsCatalog.__applyWordsRollup(sid, data.words_rollup);
     }
@@ -130,6 +164,7 @@ async function pushSave(sid, html) {
       m.draftId = null;
       m.hydrated = false;
       m.dirty = false;
+      pendingClear(sid); // 409 路径已自带冲突副本，勿让水合再重复备份
       await hydrate(sid);
       try {
         window.alert(
@@ -138,6 +173,8 @@ async function pushSave(sid, html) {
         );
       } catch (e2) {}
     } else {
+      // Wave 1：非 409 失败留持久化标记——重启后水合据此走冲突副本而非静默覆盖
+      pendingWrite(sid);
       console.warn("[WrDocs] 正文保存失败（缓存已留底，下次保存重试）:", e);
     }
   }

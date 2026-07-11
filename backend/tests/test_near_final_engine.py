@@ -360,7 +360,8 @@ def test_orchestrator_archives_only_after_near_final_acceptance(session) -> None
     llm_steps = [row.step for row in session.execute(select(LlmCall).order_by(LlmCall.created_at.asc())).scalars().all()]
     assert result["scene_status"] == "archived"
     assert result["near_final"]["near_final_status"] == "near_final_ready"
-    assert final_scene.status == "near_final_ready"
+    # Wave 1 词表统一：归档事务把 FinalScene 置权威 archived 态（建行时为 near_final_ready）
+    assert final_scene.status == "archived"
     assert evaluation.overall_score == 0.86
     assert "near_final_acceptance_review" in llm_steps
     assert "style_draft" in llm_steps

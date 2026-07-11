@@ -489,12 +489,13 @@ function WsSceneDemo({ go, t, demo = true }) {
     setRuns(m => ({ ...m, [sc.id]: { ...(m[sc.id] || {}), state: "queued", progress: 0, error: "已中止 · 本次返回的结果将被丢弃" } }));
   };
 
-  const onArchive = () => {
+  const onArchive = async () => {
     const sc = sceneOfX(pickedId);
     if (sc && sc.fromCard) {
       const r = runs[sc.id];
       if (!r || !r.draft || r.state !== "ready") return;
-      const res = scnAdoptToDoc(sc.sid, r.draft);
+      // Wave 1 归档单入口：先后端 adopt-current 成功，本地才置 archived
+      const res = await scnAdoptToDoc(sc.sid, r.draft);
       if (!res.ok) { if (res.reason && res.reason !== "已取消") window.alert("归档失败：" + res.reason); return; }
       const nr = { ...r, state: "archived", justArchived: true, archivedAt: new Date().toLocaleString("zh-CN") };
       setRuns(m => ({ ...m, [sc.id]: nr }));

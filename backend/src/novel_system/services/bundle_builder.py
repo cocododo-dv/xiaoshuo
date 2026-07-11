@@ -647,7 +647,8 @@ class BundleBuilder:
             .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
             .where(
                 FinalScene.chapter_id == scene.chapter_id,
-                FinalScene.status == "approved",
+                # Wave 1 词表统一：archived 是归档事务写入的权威成稿态，必须与旧值并列
+                FinalScene.status.in_(("approved", "near_final_ready", "archived")),
                 SceneCard.trashed_flag == 0,
                 SceneCard.scene_seq < scene.scene_seq,
             )
@@ -798,7 +799,7 @@ class BundleBuilder:
                 .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
                 .where(
                     FinalScene.chapter_id == prev_chapter.chapter_id,
-                    FinalScene.status.in_(("approved", "near_final_ready")),
+                    FinalScene.status.in_(("approved", "near_final_ready", "archived")),
                     SceneCard.trashed_flag == 0,
                 )
                 .order_by(SceneCard.scene_seq.desc(), FinalScene.created_at.desc())
@@ -823,7 +824,7 @@ class BundleBuilder:
                 select(FinalScene)
                 .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
                 .where(
-                    FinalScene.status.in_(("approved", "near_final_ready")),
+                    FinalScene.status.in_(("approved", "near_final_ready", "archived")),
                     SceneCard.trashed_flag == 0,
                     SceneCard.scene_id != scene.scene_id,
                     SceneCard.project_id == scene.project_id,
