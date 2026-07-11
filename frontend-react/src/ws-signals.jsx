@@ -32,11 +32,14 @@ export function OrchestrationSignals({ sceneId }) {
   const fs = data.foreshadow_health;
   const budget = Array.isArray(data.theme_budget) ? data.theme_budget : [];
   const drift = data.style_drift;
+  /* Wave 3（治理 §5.5/§5.8）：场景 token 预算——5× 上限使用率 */
+  const tok = data.token_budget && data.token_budget.budget != null ? data.token_budget : null;
+  const tokRatio = tok ? Math.min(1, (tok.used || 0) / Math.max(1, tok.budget)) : 0;
 
   const hasAny = (
     disp.score != null || crit ||
     (fs && fs.total_open > 0) || budget.length > 0 ||
-    (drift && drift.active)
+    (drift && drift.active) || tok
   );
   if (!hasAny) return null;
 
@@ -55,6 +58,13 @@ export function OrchestrationSignals({ sceneId }) {
                 title="Best-of-N 候选分散度：过低说明采样没探到分布尾巴，再选也难有惊喜">
             候选分散度 {Number(disp.score).toFixed(2)}
             {disp.signal === "low" ? " · 偏低" : " · 正常"}
+          </span>
+        )}
+        {tok && (
+          <span className={`ws-sig-chip ${tokRatio >= 1 ? "tone-crimson" : tokRatio >= 0.8 ? "tone-rose" : "tone-slate"}`}
+                title={`场景 token 预算（5× 单发基线）：已用 ${tok.used} / ${tok.budget}${tok.run_policy ? ` · 策略 ${tok.run_policy}` : ""}——耗尽后停止新调用，返回已有最佳稿`}>
+            预算 {Math.round(tokRatio * 100)}%
+            {tokRatio >= 1 ? " · 已耗尽" : ""}
           </span>
         )}
       </div>

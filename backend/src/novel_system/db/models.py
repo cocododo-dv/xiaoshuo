@@ -553,6 +553,12 @@ class SceneRunState(Base):
     # §6 criticality classification result for this run
     criticality_level: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     criticality_reasons_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
+    # Wave 3（治理 §5.5/§6.1）：运行策略 + 场景 token 预算（与 attempt_budget
+    # 次数预算双轨）。预算按场景生命周期累计，自动流程不得重置（§7.12），
+    # 扩容唯一入口是作者显式 topup（留审计）。
+    run_policy: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    scene_token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    scene_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 

@@ -56,11 +56,10 @@ class Orchestrator:
         author_note: str | None = None,
         run_policy: str = "reliable",
     ) -> dict:
-        # Wave 2（治理 §5.4 / Wave 2 项 7）：run_policy 为请求级参数（列属 Wave 3）。
+        # Wave 2/3（治理 §5.4/§5.5）：run_policy 现已落列（Wave 3 迁移 0062）。
         # reliable（默认）：Q2/Q3 警告随稿归档；strict：存在 Q2 时停在可归档的
-        # quality_warning，由作者经 adopt-current 显式接受；auto 保留给 Wave 3
-        # （按 criticality 决策），当前按 reliable 处理。Q0/Q1 阻断与模式无关。
-        strict_mode = run_policy == "strict"
+        # quality_warning，由作者经 adopt-current 显式接受；auto 保留（按
+        # criticality 决策），当前按 reliable 处理。Q0/Q1 阻断与模式无关。
         self.version_manager.recover_stuck_jobs()
         scene = self.session.get(SceneCard, scene_id)
         if scene is None:
@@ -100,9 +99,15 @@ class Orchestrator:
                 },
             )
         self._prepare_state_for_run(state)
+        # Wave 3（§6.1）：本次运行的生效策略落列（预算/使用量不在 _prepare 重置，§7.12）
+        state.run_policy = run_policy
         self.scene_blueprint_service.ensure_for_scene(scene_id)
         planning = self.planning_service.ensure_scene_planning(scene_id)
         bundle = self.bundle_builder.build(scene_id, "P2")
+
+        # Wave 3（§4.6/§5.5）：确立场景 token 预算 = 5 × 单发基线（已设不覆盖）
+        from novel_system.services import scene_budget
+        scene_budget.ensure_budget(state, scene_budget.estimate_baseline_tokens(self.session, bundle["snapshot"]))
 
         from novel_system.services.scene_criticality import classify_scene
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
@@ -154,6 +159,8 @@ class Orchestrator:
                 },
             })
 
+        # Wave 3（§5.5 成本分配）：初始 N（关键 3/标准 2/过渡 1），低分散在预算内
+        # 渐进补候选至上限（关键 5/标准 3）——不再一次生成后整批无上限重试。
         n_candidates = self._best_of_n_count(contract, criticality=criticality)
         candidate_summaries: list[dict[str, Any]] = []
         if n_candidates > 1:
@@ -164,12 +171,9 @@ class Orchestrator:
                 neutral_content=neutral_content,
                 author_note=author_note,
                 n_candidates=n_candidates,
+                max_candidates=criticality.max_best_of_n if criticality else n_candidates,
             )
-            # §6.3 Blueprint: "终选决定质量上界，归人。"
-            # Critical scenes: auto-select adversarial-ranked #1 but signal that
-            # human terminal selection is recommended.  Pipeline continues (no block)
-            # so downstream QC and archival still run; the frontend/review inbox gets
-            # the candidate_selection_recommended flag to surface the choice.
+            # 标准场景：机器下限选择（adversarial #1）继续管线；关键场景在下方暂停终选。
             from novel_system.services.literary_quality import adversarial_rank_score
             for idx, cand in enumerate(candidates):
                 cand_score = adversarial_rank_score(cand.content)
@@ -190,6 +194,85 @@ class Orchestrator:
                 neutral_content=neutral_content,
                 author_note=author_note,
             )
+            candidates = [style_generation]
+
+        hard_qc_payload = {
+            "branch": hard_qc.branch,
+            "qc_report_id": hard_qc.qc_report_id,
+            "human_review_event_id": hard_qc.human_review_event_id,
+            "resolution_code": hard_qc.resolution_code,
+            "next_action": hard_qc.next_action,
+            "stop_reason": hard_qc.stop_reason,
+        }
+
+        # Wave 3（§5.5）：关键场景在候选生成后暂停编排——确定性坏稿淘汰 →
+        # 匿名终选 gate；作者选择后经 resume-after-selection 从批判修订/QC 继续。
+        # 「§6.3 终选决定质量上界，归人」从推荐信号升级为强制暂停。
+        if criticality.human_gate:
+            offered_row_ids = self._offer_candidates_for_selection(scene, state, bundle, candidates)
+            if offered_row_ids is not None:
+                self.session.flush()
+                return self._with_author_projection(scene_id, state, {
+                    "scene_status": state.scene_status,
+                    "current_bundle_id": bundle["bundle_id"],
+                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                    "current_qc_report_id": state.current_qc_report_id,
+                    "current_human_review_event_id": state.current_human_review_event_id,
+                    "hard_qc": hard_qc_payload,
+                    "planning": planning,
+                    "run_policy": run_policy,
+                    # 盲化：暂停响应只报数量，不带分数/预览（候选经盲化视图取用）
+                    "candidate_count": len(offered_row_ids),
+                    "candidate_selection_required": True,
+                })
+
+        return self._finalize_after_style(
+            scene=scene,
+            state=state,
+            contract=contract,
+            bundle=bundle,
+            criticality=criticality,
+            planning=planning,
+            hard_qc_payload=hard_qc_payload,
+            style_generation=style_generation,
+            candidate_summaries=candidate_summaries if candidate_summaries else None,
+            candidates_total=len(candidates),
+            run_policy=run_policy,
+        )
+
+    def _finalize_after_style(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        contract,
+        bundle: dict[str, Any],
+        criticality,
+        planning,
+        hard_qc_payload: dict[str, Any],
+        style_generation,
+        candidate_summaries: list[dict[str, Any]] | None,
+        candidates_total: int,
+        run_policy: str,
+    ) -> dict:
+        """§5.5 顺序的后半段：批判修订 → 软 QC → near-final → 严格停点 → 归档。
+
+        run_scene 与 resume_after_selection 共用。可选支出（LLM 批判、补丁、
+        near-final 重写）过预算闸（§5.8 预算耗尽停止新调用、交付最佳稿）；
+        候选补满上限的场按 §5.5 固定预算优先级放弃 LLM 批判与补丁。
+        """
+        from novel_system.services import scene_budget
+
+        scene_id = scene.scene_id
+        strict_mode = run_policy == "strict"
+        gave_up_optional = (
+            criticality is not None
+            and criticality.max_best_of_n > 1
+            and candidates_total >= criticality.max_best_of_n
+        )
+
+        def _optional_spend_allowed() -> bool:
+            return (not gave_up_optional) and scene_budget.can_spend(state, scene_budget.budget_unit(state))
 
         # §8 reflexion-style auto-critique pass (after best-of-N selection, before soft QC).
         # Default: rule-based pass only. Opt-in (NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED +
@@ -198,7 +281,9 @@ class Orchestrator:
         critique = None
         try:
             from novel_system.services.auto_critique import llm_auto_critique
-            _critique_runner = self._resolve_auto_critique_runner()
+            # Wave 3（§5.5/§5.8）：LLM 批判是可选支出——预算不足或候选已补满上限
+            # 时降级为纯规则批判（runner=None），不烧新调用。
+            _critique_runner = self._resolve_auto_critique_runner() if _optional_spend_allowed() else None
             critique = llm_auto_critique(
                 style_generation.content,
                 scene_context=self._scene_critique_context(scene, contract),
@@ -213,25 +298,29 @@ class Orchestrator:
                 "auto-critique flagged %d dimensions for scene %s: %s",
                 len(critique.flagged_dimensions), scene_id, critique.flagged_dimensions,
             )
-            # 补丁生成失败与 critique 本身失败分开兜底：保留未修订稿继续主流程，
-            # 但失败必须以 WARNING 可见（scene_generation 内部已落 AttemptTracker/LlmCall）。
-            try:
-                from novel_system.services.auto_critique import format_critique_brief
-                critique_brief = format_critique_brief(critique)
-                style_generation = self.scene_generation_service.generate_style_patch(
-                    scene_id,
-                    bundle,
-                    source_style_draft_row_id=style_generation.row_id,
-                    source_style_content=style_generation.content,
-                    rewrite_brief=critique_brief,
-                    source_qc_report_id=f"auto_critique_{scene_id}",
-                )
-            except Exception:
-                _LOGGER.warning(
-                    "auto-critique patch failed for scene %s; keeping unpatched style draft",
-                    scene_id,
-                    exc_info=True,
-                )
+            if not _optional_spend_allowed():
+                # §5.5 预算优先级：补丁排最后——预算不足/候选补满即放弃，保留未修订稿
+                _LOGGER.warning("critique patch skipped for scene %s (budget/candidate cap)", scene_id)
+            else:
+                # 补丁生成失败与 critique 本身失败分开兜底：保留未修订稿继续主流程，
+                # 但失败必须以 WARNING 可见（scene_generation 内部已落 AttemptTracker/LlmCall）。
+                try:
+                    from novel_system.services.auto_critique import format_critique_brief
+                    critique_brief = format_critique_brief(critique)
+                    style_generation = self.scene_generation_service.generate_style_patch(
+                        scene_id,
+                        bundle,
+                        source_style_draft_row_id=style_generation.row_id,
+                        source_style_content=style_generation.content,
+                        rewrite_brief=critique_brief,
+                        source_qc_report_id=f"auto_critique_{scene_id}",
+                    )
+                except Exception:
+                    _LOGGER.warning(
+                        "auto-critique patch failed for scene %s; keeping unpatched style draft",
+                        scene_id,
+                        exc_info=True,
+                    )
 
         soft_qc = self.soft_qc_engine.evaluate(
             scene_id=scene_id,
@@ -242,21 +331,25 @@ class Orchestrator:
 
         final_generation = style_generation
         if soft_qc.branch == "patch":
-            rewrite_brief = self._rewrite_brief_from_report(soft_qc.qc_report_id)
-            final_generation = self.scene_generation_service.generate_style_patch(
-                scene_id,
-                bundle,
-                source_style_draft_row_id=style_generation.row_id,
-                source_style_content=style_generation.content,
-                rewrite_brief=rewrite_brief,
-                source_qc_report_id=soft_qc.qc_report_id,
-            )
-            soft_qc = self.soft_qc_engine.evaluate(
-                scene_id=scene_id,
-                bundle=bundle,
-                source_draft_row_id=final_generation.row_id,
-                source_draft_content=final_generation.content,
-            )
+            if not _optional_spend_allowed():
+                # §5.8 预算耗尽停止新调用：跳过软补丁，带既有稿继续（QC 报告已留意见）
+                _LOGGER.warning("soft patch skipped for scene %s (budget/candidate cap)", scene_id)
+            else:
+                rewrite_brief = self._rewrite_brief_from_report(soft_qc.qc_report_id)
+                final_generation = self.scene_generation_service.generate_style_patch(
+                    scene_id,
+                    bundle,
+                    source_style_draft_row_id=style_generation.row_id,
+                    source_style_content=style_generation.content,
+                    rewrite_brief=rewrite_brief,
+                    source_qc_report_id=soft_qc.qc_report_id,
+                )
+                soft_qc = self.soft_qc_engine.evaluate(
+                    scene_id=scene_id,
+                    bundle=bundle,
+                    source_draft_row_id=final_generation.row_id,
+                    source_draft_content=final_generation.content,
+                )
 
         if soft_qc.branch == "human_review_required":
             # Wave 2：软 QC 只在 verified Q0/Q1 时才会走到这里（LLM-only 意见已在
@@ -268,14 +361,7 @@ class Orchestrator:
                 "current_bundle_hash": bundle["bundle_snapshot_hash"],
                 "current_qc_report_id": state.current_qc_report_id,
                 "current_human_review_event_id": state.current_human_review_event_id,
-                "hard_qc": {
-                    "branch": hard_qc.branch,
-                    "qc_report_id": hard_qc.qc_report_id,
-                    "human_review_event_id": hard_qc.human_review_event_id,
-                    "resolution_code": hard_qc.resolution_code,
-                    "next_action": hard_qc.next_action,
-                    "stop_reason": hard_qc.stop_reason,
-                },
+                "hard_qc": hard_qc_payload,
                 "soft_qc": self._soft_qc_result_payload(soft_qc),
                 "planning": planning,
             })
@@ -288,21 +374,25 @@ class Orchestrator:
             source_content=final_generation.content,
         )
         if not near_final["pass_flag"] and near_final.get("should_rewrite"):
-            rewrite_count = 1
-            final_generation = self.scene_generation_service.generate_near_final_rewrite(
-                scene_id,
-                bundle,
-                source_draft_row_id=final_generation.row_id,
-                source_content=final_generation.content,
-                revision_brief=self._near_final_rewrite_brief(near_final),
-                source_evaluation_id=str(near_final.get("evaluation_id") or ""),
-            )
-            near_final = self.near_final_service.evaluate_scene(
-                scene_id,
-                bundle=bundle,
-                source_draft_row_id=final_generation.row_id,
-                source_content=final_generation.content,
-            )
+            if not _optional_spend_allowed():
+                # §5.8：预算耗尽不烧重写，直接交付当前最好稿（意见随 carry note 留痕）
+                _LOGGER.warning("near-final rewrite skipped for scene %s (budget/candidate cap)", scene_id)
+            else:
+                rewrite_count = 1
+                final_generation = self.scene_generation_service.generate_near_final_rewrite(
+                    scene_id,
+                    bundle,
+                    source_draft_row_id=final_generation.row_id,
+                    source_content=final_generation.content,
+                    revision_brief=self._near_final_rewrite_brief(near_final),
+                    source_evaluation_id=str(near_final.get("evaluation_id") or ""),
+                )
+                near_final = self.near_final_service.evaluate_scene(
+                    scene_id,
+                    bundle=bundle,
+                    source_draft_row_id=final_generation.row_id,
+                    source_content=final_generation.content,
+                )
         near_final_payload = self._near_final_result_payload(near_final, rewrite_count=rewrite_count)
         # Wave 2（§5.4 / Wave 2 项 4）：near-final 是 LLM 提案层（Q2/Q3）——达自动
         # 修订上限（软补丁 ≤1 + 准终稿重写 ≤1 = 2 次）后不再断头，交付当前最好稿；
@@ -322,14 +412,7 @@ class Orchestrator:
                     "current_bundle_hash": bundle["bundle_snapshot_hash"],
                     "current_qc_report_id": state.current_qc_report_id,
                     "current_human_review_event_id": state.current_human_review_event_id,
-                    "hard_qc": {
-                        "branch": hard_qc.branch,
-                        "qc_report_id": hard_qc.qc_report_id,
-                        "human_review_event_id": hard_qc.human_review_event_id,
-                        "resolution_code": hard_qc.resolution_code,
-                        "next_action": hard_qc.next_action,
-                        "stop_reason": hard_qc.stop_reason,
-                    },
+                    "hard_qc": hard_qc_payload,
                     "soft_qc": self._soft_qc_result_payload(soft_qc),
                     "planning": planning,
                     "near_final": near_final_payload,
@@ -338,35 +421,8 @@ class Orchestrator:
                 result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
                 return result
 
-        if criticality.human_gate and near_final.get("pass_flag"):
-            gate_event = self._create_criticality_human_gate(scene, criticality, bundle, final_generation)
-            if gate_event:
-                state.scene_status = "critical_scene_human_gate"
-                state.current_human_review_event_id = gate_event.event_id
-                self.session.flush()
-                return self._with_author_projection(scene_id, state, {
-                    "scene_status": state.scene_status,
-                    "current_bundle_id": bundle["bundle_id"],
-                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                    "current_qc_report_id": state.current_qc_report_id,
-                    "current_human_review_event_id": gate_event.event_id,
-                    "hard_qc": {
-                        "branch": hard_qc.branch,
-                        "qc_report_id": hard_qc.qc_report_id,
-                        "human_review_event_id": hard_qc.human_review_event_id,
-                        "resolution_code": hard_qc.resolution_code,
-                        "next_action": hard_qc.next_action,
-                        "stop_reason": hard_qc.stop_reason,
-                    },
-                    "soft_qc": self._soft_qc_result_payload(soft_qc),
-                    "planning": planning,
-                    "near_final": near_final_payload,
-                    "criticality": {
-                        "level": criticality.level,
-                        "reasons": criticality.reasons,
-                        "human_gate": True,
-                    },
-                })
+        # Wave 3：旧的 near-final 后置 critical_scene_human_gate 被前移的候选终选
+        # gate 取代（§5.5 顺序——终选在批判修订/硬检查之前，此处不再二次人工门）。
 
         final_row_id = versioned_scene_artifact_id("final_scene", scene_id, bundle)
         soft_risk_acceptance_event_id = self._soft_risk_acceptance_event_id(soft_qc)
@@ -451,26 +507,13 @@ class Orchestrator:
             "current_final_scene_row_id": final_row_id,
             "current_qc_report_id": state.current_qc_report_id,
             "current_human_review_event_id": state.current_human_review_event_id,
-            "hard_qc": {
-                "branch": hard_qc.branch,
-                "qc_report_id": hard_qc.qc_report_id,
-                "human_review_event_id": hard_qc.human_review_event_id,
-                "resolution_code": hard_qc.resolution_code,
-                "next_action": hard_qc.next_action,
-                "stop_reason": hard_qc.stop_reason,
-            },
+            "hard_qc": hard_qc_payload,
             "soft_qc": self._soft_qc_result_payload(soft_qc),
             "planning": planning,
             "near_final": near_final_payload,
             "chapter_near_final": chapter_near_final,
             "style_candidates": candidate_summaries if candidate_summaries else None,
             "run_policy": run_policy,
-            # §6.3 Blueprint: "终选决定质量上界，归人。" Signal for critical scenes
-            # that human candidate selection is recommended (pipeline auto-selected
-            # adversarial-ranked #1, but the human should review all candidates).
-            "candidate_selection_recommended": (
-                bool(criticality and criticality.human_gate and len(candidate_summaries) > 1)
-            ),
         })
         result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
         if near_final_warnings and "author_review_optional_fix" not in (result.get("recommended_actions") or []):
@@ -993,39 +1036,180 @@ class Orchestrator:
         if not get_settings().llm_enabled:
             return 1
         if criticality is not None:
-            return criticality.best_of_n
+            # Wave 3（§5.5 成本分配）：初始 N；低分散在预算内渐进补到 max_best_of_n
+            return criticality.initial_best_of_n
         payload = contract.payload_json or {}
         crucible = payload.get("scene_crucible") or ""
         if crucible and len(crucible) > 10:
             return 3
         return 1
 
-    def _create_criticality_human_gate(self, scene, criticality, bundle, final_generation):
-        """Blueprint §13 Step 7: proactive human gate for critical scenes."""
+    def _offer_candidates_for_selection(self, scene, state, bundle, candidates) -> list[str] | None:
+        """Wave 3（§4.4/§5.5）：确定性坏稿淘汰后建立匿名候选终选 gate。
+
+        机器只淘汰空文本与来源安全 Q0 命中的无效候选（不按机器分数删，
+        §4.4）；全部无效时返回 None——管线继续，由 QC 层裁决，不装作可选。
+        blinded_order 是随机置换（§5.5 展示顺序必须随机化并记录）。
+        """
+        import random
         import uuid
         from novel_system.db.models import HumanReviewEvent
+        from novel_system.services.source_safety import scan_source_safety
+
+        valid_row_ids: list[str] = []
+        for cand in candidates:
+            content = (getattr(cand, "content", "") or "").strip()
+            if not content:
+                continue
+            if not scan_source_safety(content).get("safe", True):
+                continue
+            valid_row_ids.append(cand.row_id)
+        if not valid_row_ids:
+            _LOGGER.warning(
+                "no deterministically valid candidate to offer for scene %s; pipeline continues",
+                scene.scene_id,
+            )
+            return None
+        blinded_order = list(valid_row_ids)
+        random.shuffle(blinded_order)
         event = HumanReviewEvent(
-            event_id=f"hre_gate_{uuid.uuid4().hex[:12]}",
+            event_id=f"hre_sel_{uuid.uuid4().hex[:12]}",
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
-            object_ref=f"criticality_gate:{scene.scene_id}",
-            event_source="criticality_gate",
+            object_ref=f"candidate_selection:{scene.scene_id}",
+            event_source="candidate_selection",
             priority="high",
             status="awaiting_review",
-            allowed_actions_json=["approve", "request_revision", "redirect"],
+            allowed_actions_json=["select", "reopen"],
             details_json={
-                "gate_type": "critical_scene_proactive",
-                "criticality_level": criticality.level,
-                "criticality_reasons": criticality.reasons,
-                "bundle_id": bundle["bundle_id"],
-                "draft_row_id": final_generation.row_id,
-                "content_preview": (final_generation.content or "")[:500],
+                "gate_type": "style_candidate_selection",
+                "candidate_row_ids": valid_row_ids,
+                "blinded_order": blinded_order,
+                "decision_status": "awaiting",
+                "selected_row_id": None,
+                "tokens_used": int(state.scene_tokens_used or 0),
+                "decision_history": [],
             },
-            default_action="approve",
+            default_action="select",
         )
         self.session.add(event)
+        state.scene_status = "awaiting_candidate_selection"
+        state.current_human_review_event_id = event.event_id
         self.session.flush()
-        return event
+        return valid_row_ids
+
+    def _latest_selection_gate(self, scene_id: str):
+        from novel_system.db.models import HumanReviewEvent
+        events = self.session.execute(
+            select(HumanReviewEvent)
+            .where(
+                HumanReviewEvent.scene_id == scene_id,
+                HumanReviewEvent.event_source == "candidate_selection",
+            )
+            .order_by(HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc())
+        ).scalars().all()
+        for event in events:
+            if (event.details_json or {}).get("gate_type") == "style_candidate_selection":
+                return event
+        return None
+
+    def resume_after_selection(self, scene_id: str) -> dict:
+        """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。
+
+        前置：场景停在 awaiting_candidate_selection 且终选 gate 已 selected。
+        选中稿即后续批判/软 QC/near-final 的输入（§4.4 上限归人）。
+        """
+        scene = self.session.get(SceneCard, scene_id)
+        if scene is None:
+            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+        state = self.session.get(SceneRunState, scene_id)
+        if state is None or state.scene_status != "awaiting_candidate_selection":
+            raise DomainError(
+                "RESUME_NOT_AVAILABLE",
+                "scene is not awaiting candidate selection",
+                status_code=409,
+                details={"scene_id": scene_id, "scene_status": getattr(state, "scene_status", None)},
+            )
+        gate = self._latest_selection_gate(scene_id)
+        details = dict(gate.details_json or {}) if gate is not None else {}
+        selected_row_id = details.get("selected_row_id")
+        if gate is None or details.get("decision_status") != "selected" or not selected_row_id:
+            raise DomainError(
+                "SELECTION_REQUIRED",
+                "author terminal selection is required before resuming",
+                status_code=409,
+                details={"scene_id": scene_id},
+            )
+        draft = self.session.get(SceneDraft, selected_row_id)
+        if draft is None or not (draft.content or "").strip():
+            raise DomainError(
+                "CANDIDATE_NOT_FOUND",
+                f"selected candidate {selected_row_id} not found or empty",
+                status_code=409,
+                details={"scene_id": scene_id, "selected_row_id": selected_row_id},
+            )
+
+        bundle = self._rebuild_bundle(state)
+        contract = self.execution_contract_service.get_or_create(scene_id, actor_ref="orchestrator")
+        from novel_system.services.scene_criticality import classify_scene
+        chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        criticality = classify_scene(
+            scene,
+            chapter_seq=chapter.display_order if chapter and chapter.display_order is not None else None,
+            constraint_intensity=getattr(scene, "constraint_intensity", None),
+        )
+        planning = self.planning_service.ensure_scene_planning(scene_id)
+
+        state.current_style_draft_row_id = draft.row_id
+        state.latest_valid_draft_row_id = draft.row_id
+        gate.status = "resolved"
+        gate.details_json = {**details, "resumed": True}
+        self.session.flush()
+
+        from types import SimpleNamespace
+        style_generation = SimpleNamespace(
+            row_id=draft.row_id,
+            content=draft.content,
+            llm_call_id=draft.generation_llm_call_id,
+        )
+        hard_qc_payload = {
+            "branch": "continue",
+            "qc_report_id": state.current_qc_report_id,
+            "human_review_event_id": None,
+            "resolution_code": "resume_after_selection",
+            "next_action": "pass",
+            "stop_reason": None,
+        }
+        candidates_total = len(details.get("candidate_row_ids") or []) or 1
+        return self._finalize_after_style(
+            scene=scene,
+            state=state,
+            contract=contract,
+            bundle=bundle,
+            criticality=criticality,
+            planning=planning,
+            hard_qc_payload=hard_qc_payload,
+            style_generation=style_generation,
+            candidate_summaries=None,
+            candidates_total=candidates_total,
+            run_policy=state.run_policy or "reliable",
+        )
+
+    def _rebuild_bundle(self, state: SceneRunState) -> dict[str, Any]:
+        from novel_system.db.models import SceneBundle
+        row = self.session.get(SceneBundle, state.current_bundle_id) if state.current_bundle_id else None
+        if row is None:
+            raise DomainError(
+                "BUNDLE_NOT_FOUND",
+                "frozen bundle for resume not found — rerun the scene",
+                status_code=409,
+                details={"bundle_id": state.current_bundle_id},
+            )
+        return {
+            "bundle_id": row.bundle_id,
+            "bundle_snapshot_hash": row.bundle_snapshot_hash,
+            "snapshot": row.frozen_snapshot_json or {},
+        }
 
     def _scene_critique_context(self, scene: SceneCard, contract):
         """Build the §8 SceneContext for the LLM editor critic (best-effort; the critic

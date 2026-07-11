@@ -223,4 +223,87 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
 - `ws-scene.jsx` 裁决条视觉（红/金 gate 条）需 Windows lane 实跑走查；
   逻辑层已有 vitest 覆盖（gate 提取/拦截/放行 4 项）。
 
-## Wave 3–7 —— 未开始
+## Wave 3：Best-of-N 人类终选与 5× 预算 —— 已完成（2026-07-11）
+
+实施计划：`docs/superpowers/specs/2026-07-11-wave3-implementation-plan.md`
+
+> Wave 2 完成门提交前已确认（84762b4：全量 1457 passed + e2e PASS）。
+
+### 交付内容
+
+1. **三件套落列**（迁移 `20260711_0062`，漂移守卫通过）：`SceneRunState` 增
+   `run_policy` / `scene_token_budget` / `scene_tokens_used`；`_prepare_state_for_run`
+   不重置预算字段（§7.12）。
+2. **5× token 预算**（§4.6/§5.8，新 `services/scene_budget.py`）：单发基线 =
+   writer 路由估算输入 + 配置输出上限（确定性，不可得回退常量）；run 启动确立
+   `budget = 5×基线`（已设不覆盖）；`llm_task_runner._persist_call` 结算钩子——
+   凡带 scene_id 的调用（成功/失败）累计 `scene_tokens_used`；可选支出（补候选/
+   LLM 批判/补丁/near-final 重写）过 `can_spend` 前置闸，预算耗尽只停新调用、
+   交付最佳稿；扩容唯一入口 `POST /scenes/{id}/budget/topup`（OperationLog 审计）。
+3. **渐进补候选**（Wave 3 项 5）：`SceneCriticality` 拆 initial/max（关键 3→5、
+   标准 2→3、过渡 1）；低分散补救从「整批温度重试 + 多策略爆发（单场可到
+   ~9-11 个候选）」改为**逐个**补候选（温度加宽/发散提示/风格侧重轮换逐次
+   取用），每步过预算闸、失败即停、补满上限即止；补满 = 本场放弃 LLM 批判
+   与补丁（§5.5 固定预算优先级）。
+4. **关键场景暂停（时点前移）**：候选生成后确定性坏稿淘汰（空文本 + 来源
+   安全 Q0；不按分数删，§4.4）→ 终选 gate 事件（`gate_type=
+   style_candidate_selection`，含 candidate_row_ids / **blinded_order 随机置换** /
+   tokens_used / decision_history）→ `awaiting_candidate_selection`（投影
+   awaiting_author_choice、can_archive=false）。旧的 near-final 后置
+   `critical_scene_human_gate` 被取代（§5.5 顺序：终选在批判修订之前）。
+   run_scene 尾部抽取为 `_finalize_after_style`，与 resume 共用。
+5. **盲化视图**（F1 修复）：GET style-candidates 默认按 blinded_order 输出
+   全文、剥离 adversarial_score/selected；`include_scores=true` 主动展开附分
+   不重排；无 gate 保留旧诊断形状（`blinded:false`）。
+6. **终选锁定与重开**（§6.3 补充契约）：select 绑定 gate——同选幂等、异选
+   409 `SELECTION_LOCKED`、gate 外候选 409 `CANDIDATE_NOT_IN_GATE`；记录
+   no_clear_difference/耗时/decision_history；`POST /style-candidates/reopen`
+   显式重开留审计；无 gate 的旧路径首次 select 补建已决 gate（锁定语义全场生效）。
+7. **resume-after-selection**：前置校验（awaiting + 已 selected，否则 409
+   `SELECTION_REQUIRED`）；bundle 从 SceneBundle 冻结快照重建；选中稿进入
+   批判修订 → 软 QC → near-final → 归档；gate 闭合（resolved）。adopt-current
+   对 awaiting_author_choice 409 `SELECTION_REQUIRED`（未选择前不可归档双入口封死）。
+8. **FE**：`ws-scene-run.jsx` 增 `scnCandidates/scnSelectCandidate/scnResumeAfterSelection`；
+   `ws-scene.jsx` 新增 CandidatePicker——awaiting_author_choice 时替换复核舞台：
+   匿名候选全文逐稿阅读、「选这稿」、「无明显差异·用候选 A」，选择后自动续跑
+   并重拉后端状态；`ws-signals.jsx` 编排信号面板加预算使用率 chip（后端
+   orchestration-signals 新增 token_budget 节）。
+
+### 完成门验证（本机 CentOS 7）
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/test_candidate_selection_gate.py tests/test_scene_token_budget.py tests/test_metadata_isolation.py -q   # 19 passed（先红后绿）
+cd backend && .venv/bin/python -m pytest tests/test_orchestrator_flow.py tests/test_qc_grading_reliable_mode.py tests/test_qc_engine.py \
+  tests/test_scene_adopt_archive.py tests/test_scene_run_jobs.py tests/test_author_state_projection.py \
+  tests/test_context_budget.py tests/test_fe_scene_run_guards.py tests/test_quality_classifier.py -q                  # 128 passed
+cd backend && .venv/bin/python -m pytest -q -m "not chroma_integration"
+#   1470 passed / 2 failed——仅 test_generation_persistence 硬编码 alembic head
+#   （0061→0062 版本号常量，随迁移例行更新），修复后该文件 6/6 定向复跑通过
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npx vitest run    # 79 passed（+2 终选测试）
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run build     # 构建通过
+# 隔离后端端到端（alembic 0062 + uvicorn + 真实 HTTP）：关键场 run → 暂停
+#   awaiting_candidate_selection（can_archive=false）→ adopt 409 SELECTION_REQUIRED
+#   → 盲化候选（无分数、全文）→ select → resume → archived；token_budget=5×基线
+#   证据：.codex-run/wave3-e2e/wave3-e2e-evidence.json（verdict=PASS）
+```
+
+完成门自证：
+- 「关键场景未选择前不可归档」：管线暂停无 FinalScene + adopt 409（pytest + e2e 双证）。
+- 「选择后可安全续跑」：select→resume→archived，终稿=选中稿或其唯一一次批判
+  修订稿（血缘断言指向选中稿）；重复 resume 不重复归档（FinalScene 恒 1 行）。
+- 「总 token 不超过基线 5×」：可控 fake usage 全管线断言 `used ≤ budget`；
+  预算耗尽跳过 near-final 重写/批判/补丁但正文照常交付（生成调用数断言）；
+  重跑累计不重置；topup 是唯一扩容口（审计断言）。
+
+### 剩余风险
+
+- token 三口径（估算/实际/计费）只落「实际累计 + 估算判定」；prompt-cache
+  折扣与跨 provider 分槽累计归 Wave 6 成本聚合；usage 缺失记 0（本地估算
+  口径未实装，§5.8 记入 Wave 6）。
+- 顺序管线无并发候选生成，预留-结算竞态语义未实装（引入并行时回补）。
+- 离线模式关键场为单候选终选（§5.3 允许）；多候选盲化与真实模型走查归
+  Windows lane；CandidatePicker 视觉走查同批。
+- 并排对比/句段差异定位 UI 为后续增强（§5.5 明示不阻塞第一阶段）。
+- 存量停在 `critical_scene_human_gate` 的场按既有 human-review resolve 收尾。
+
+## Wave 4–7 —— 未开始

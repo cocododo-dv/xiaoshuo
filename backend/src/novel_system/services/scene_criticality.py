@@ -22,13 +22,20 @@ GOLDEN_SCENE_SEQ_HEURISTIC = 9
 class SceneCriticality:
     level: str  # "critical" | "standard" | "transition"
     reasons: list[str]
-    best_of_n: int
+    best_of_n: int  # 候选上限（= max_best_of_n；保留旧字段名兼容既有消费方）
     skip_critique: bool  # advisory: transition scenes may skip proactive editor passes
-    human_gate: bool  # critical scenes get proactive human review before archival
+    human_gate: bool  # critical scenes pause for author terminal selection (Wave 3 §5.5)
+    # Wave 3（治理 §5.5 成本分配）：初始候选数——关键先 3 补到 5、标准先 2 补到 3、
+    # 过渡恒 1；低分散时按预算逐个补到 best_of_n 上限（渐进补候选）。
+    initial_best_of_n: int = 1
 
     @property
     def is_critical(self) -> bool:
         return self.level == "critical"
+
+    @property
+    def max_best_of_n(self) -> int:
+        return self.best_of_n
 
 
 def classify_scene(
@@ -95,6 +102,7 @@ def classify_scene(
                 best_of_n=1,
                 skip_critique=True,
                 human_gate=False,
+                initial_best_of_n=1,
             )
         elif constraint_intensity >= 0.8:
             return SceneCriticality(
@@ -103,6 +111,7 @@ def classify_scene(
                 best_of_n=5,
                 skip_critique=False,
                 human_gate=True,
+                initial_best_of_n=3,
             )
         else:
             return SceneCriticality(
@@ -111,6 +120,7 @@ def classify_scene(
                 best_of_n=3,
                 skip_critique=False,
                 human_gate=False,
+                initial_best_of_n=2,
             )
 
     if score >= 4:
@@ -120,6 +130,7 @@ def classify_scene(
             best_of_n=5,
             skip_critique=False,
             human_gate=True,
+            initial_best_of_n=3,
         )
     elif score >= 2:
         return SceneCriticality(
@@ -128,6 +139,7 @@ def classify_scene(
             best_of_n=3,
             skip_critique=False,
             human_gate=False,
+            initial_best_of_n=2,
         )
     else:
         # §6.4 mitigation: probabilistic promotion after consecutive transitions
@@ -139,6 +151,7 @@ def classify_scene(
                 best_of_n=3,
                 skip_critique=False,
                 human_gate=False,
+                initial_best_of_n=2,
             )
         return SceneCriticality(
             level="transition",
@@ -146,4 +159,5 @@ def classify_scene(
             best_of_n=1,
             skip_critique=True,
             human_gate=False,
+            initial_best_of_n=1,
         )

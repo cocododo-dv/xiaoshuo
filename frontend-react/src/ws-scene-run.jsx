@@ -374,6 +374,31 @@ async function scnBackendQueueSids() {
   return items.map(it => bySceneId[it.scene_id]).filter(Boolean);
 }
 
+/* ---- 候选终选（Wave 3 · 治理 §5.5）----
+   关键场景管线暂停在 awaiting_author_choice：盲化候选（后端 blinded_order
+   随机序、默认无分数）→ 作者整稿选择 → resume 从批判修订/QC 续跑到归档。
+   终选一次写入：改选须显式 reopen（后端锁定，SELECTION_LOCKED 上抛）。 ---- */
+async function scnBackendIdOf(sid) {
+  const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
+  if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
+  return sceneId;
+}
+async function scnCandidates(sid) {
+  const { apiGet } = await import("./lib/client.js");
+  const sceneId = await scnBackendIdOf(sid);
+  return apiGet(`/api/v1/scenes/${sceneId}/style-candidates`);
+}
+async function scnSelectCandidate(sid, rowId, opts) {
+  const { apiPost } = await import("./lib/client.js");
+  const sceneId = await scnBackendIdOf(sid);
+  return apiPost(`/api/v1/scenes/${sceneId}/style-candidates/${encodeURIComponent(rowId)}/select`, opts || {});
+}
+async function scnResumeAfterSelection(sid) {
+  const { apiPost } = await import("./lib/client.js");
+  const sceneId = await scnBackendIdOf(sid);
+  return apiPost(`/api/v1/scenes/${sceneId}/resume-after-selection`, {});
+}
+
 /* ---- 归档（Wave 1 · 治理 §5.2 归档单入口）----
    「完成」的真值在后端：先 POST adopt-current（服务端归档事务建/提升
    FinalScene 并置权威 archived 态），成功响应后才写写作器缓存、回写字数、
@@ -459,7 +484,7 @@ function scnPickList(queuedSids) {
   } catch (e) { return []; }
 }
 
-Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom });
+Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom };
+export { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

@@ -76,7 +76,8 @@ def compute_author_state(
     if scene_status == "archived" and final_row_id:
         author_state = "archived"
         can_archive = False
-    elif scene_status == "critical_scene_human_gate":
+    elif scene_status in ("critical_scene_human_gate", "awaiting_candidate_selection"):
+        # awaiting_candidate_selection：Wave 3 候选终选暂停态（§5.3 可归档=否）
         author_state = "awaiting_author_choice"
         can_archive = False
     elif scene_status in _HARD_BLOCKED_STATUSES:

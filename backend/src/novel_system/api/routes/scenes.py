@@ -489,15 +489,83 @@ def scene_generation_history(scene_id: str, request: Request, session: Session =
     )
 
 
-@router.get("/api/v1/scenes/{scene_id}/style-candidates")
-def get_scene_style_candidates(scene_id: str, request: Request, session: Session = Depends(get_session)):
-    """Blueprint §6/§14: retrieve all Best-of-N style draft candidates for human terminal selection.
+def _latest_selection_gate_event(session: Session, scene_id: str) -> HumanReviewEvent | None:
+    events = session.execute(
+        select(HumanReviewEvent)
+        .where(
+            HumanReviewEvent.scene_id == scene_id,
+            HumanReviewEvent.event_source == "candidate_selection",
+        )
+        .order_by(HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc())
+    ).scalars().all()
+    for event in events:
+        if (event.details_json or {}).get("gate_type") == "style_candidate_selection":
+            return event
+    return None
 
-    Returns all style draft candidates with their adversarial quality scores,
-    allowing the author to pick 'the one with life' from the available options.
+
+@router.get("/api/v1/scenes/{scene_id}/style-candidates")
+def get_scene_style_candidates(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    include_scores: bool = False,
+    diagnostic: bool = False,
+):
+    """Wave 3（治理 §5.5/§6.3）：候选终选取数——默认盲化视图。
+
+    存在终选 gate 时：按 gate 的 blinded_order 输出**完整正文**，默认剥离
+    机器分数与预选标记（按分排序展示本身就是泄漏）；`include_scores=true`
+    为作者主动展开——附分数但不改顺序。无 gate（标准场/历史诊断）保留旧的
+    按分降序形状（`diagnostic` 用途），并标 `blinded:false`。
     """
     AuthorLifecycleService(session).require_active_scene(scene_id)
     from novel_system.services.literary_quality import adversarial_rank_score
+    state = session.get(SceneRunState, scene_id)
+    gate = _latest_selection_gate_event(session, scene_id)
+    dispersion_score = state.candidate_dispersion_score if state else None
+    criticality_info = None
+    if state and state.criticality_level:
+        criticality_info = {
+            "level": state.criticality_level,
+            "reasons": state.criticality_reasons_json or [],
+        }
+
+    if gate is not None and not diagnostic:
+        details = gate.details_json or {}
+        blinded_order = [str(r) for r in (details.get("blinded_order") or details.get("candidate_row_ids") or [])]
+        candidates = []
+        for row_id in blinded_order:
+            draft = session.get(SceneDraft, row_id)
+            if draft is None:
+                continue
+            entry: dict[str, Any] = {
+                "row_id": draft.row_id,
+                "content": draft.content,
+                "created_at": str(draft.created_at) if draft.created_at else None,
+            }
+            if include_scores:
+                # 主动展开：分数只做标注，不重排（§5.5）
+                entry["adversarial_score"] = round(adversarial_rank_score(draft.content) if draft.content else 0.0, 3)
+            candidates.append(entry)
+        return ok(
+            {
+                "scene_id": scene_id,
+                "blinded": True,
+                "candidates": candidates,
+                "total": len(candidates),
+                "selection": {
+                    "decision_status": details.get("decision_status"),
+                    "selected_row_id": details.get("selected_row_id") if details.get("decision_status") == "selected" else None,
+                    "event_id": gate.event_id,
+                },
+                "dispersion_score": dispersion_score,
+                "criticality": criticality_info,
+            },
+            req_id=getattr(request.state, "request_id", None),
+        )
+
+    # 无终选 gate：旧诊断形状（按分降序、带分数）——仅限非盲化诊断用途
     drafts = list(session.execute(
         select(SceneDraft)
         .where(
@@ -506,10 +574,9 @@ def get_scene_style_candidates(scene_id: str, request: Request, session: Session
         )
         .order_by(SceneDraft.created_at.desc())
     ).scalars().all())
-    state = session.get(SceneRunState, scene_id)
     selected_row_id = state.current_style_draft_row_id if state else None
     candidates = []
-    for idx, d in enumerate(drafts):
+    for d in drafts:
         score = adversarial_rank_score(d.content) if d.content else 0.0
         candidates.append({
             "row_id": d.row_id,
@@ -520,17 +587,10 @@ def get_scene_style_candidates(scene_id: str, request: Request, session: Session
             "created_at": str(d.created_at) if d.created_at else None,
         })
     candidates.sort(key=lambda c: c["adversarial_score"], reverse=True)
-    # §6 Defect D: surface dispersion and criticality as author-facing quality signals
-    dispersion_score = state.candidate_dispersion_score if state else None
-    criticality_info = None
-    if state and state.criticality_level:
-        criticality_info = {
-            "level": state.criticality_level,
-            "reasons": state.criticality_reasons_json or [],
-        }
     return ok(
         {
             "scene_id": scene_id,
+            "blinded": False,
             "candidates": candidates,
             "total": len(candidates),
             "dispersion_score": dispersion_score,
@@ -579,6 +639,19 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
         "criticality": (
             {"level": state.criticality_level, "reasons": state.criticality_reasons_json or []}
             if state and state.criticality_level else None
+        ),
+        # Wave 3（§5.5/§5.8）：场景 token 预算——5× 上限使用率的编排信号
+        "token_budget": (
+            {
+                "budget": state.scene_token_budget,
+                "used": int(state.scene_tokens_used or 0),
+                "remaining": (
+                    max(0, int(state.scene_token_budget) - int(state.scene_tokens_used or 0))
+                    if state.scene_token_budget is not None else None
+                ),
+                "run_policy": state.run_policy,
+            }
+            if state is not None else None
         ),
     }
 
@@ -651,13 +724,20 @@ def select_style_candidate(
     row_id: str,
     request: Request,
     session: Session = Depends(get_session),
+    payload: dict | None = Body(default=None),
 ):
-    """Blueprint §6/§14: human terminal selection — author picks a candidate.
+    """Wave 3（治理 §5.5/§6.3）：作者终选——一次写入 + 锁定。
 
-    Sets the selected candidate as the current style draft, so subsequent
-    auto-critique / soft QC / archival will operate on the human-chosen version.
+    相同选择重复提交幂等返回；已存在不同终选记录时新的 select 返回
+    409 SELECTION_LOCKED；变更选择需先显式 reopen（留审计）。记录
+    选择耗时/无明显差异标记（§5.5 记录选择、放弃、无明显差异和选择耗时）。
     """
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    body = payload or {}
+
     def _select(session: Session) -> dict[str, Any]:
+        from novel_system.services.versioning.shared import now_iso
+
         AuthorLifecycleService(session).require_active_scene(scene_id)
         draft = session.get(SceneDraft, row_id)
         if draft is None or draft.scene_id != scene_id:
@@ -669,20 +749,250 @@ def select_style_candidate(
         state = session.get(SceneRunState, scene_id)
         if state is None:
             raise DomainError("SCENE_STATE_NOT_FOUND", "Scene run state not found", status_code=404)
+
+        gate = _latest_selection_gate_event(session, scene_id)
+        if gate is not None:
+            details = dict(gate.details_json or {})
+            decision_status = details.get("decision_status")
+            if decision_status == "selected":
+                if details.get("selected_row_id") == row_id:
+                    # 相同选择重复提交：幂等返回（§7.4）
+                    return {
+                        "scene_id": scene_id,
+                        "selected_row_id": row_id,
+                        "decision_status": "selected",
+                        "message": "Candidate already selected",
+                    }
+                raise DomainError(
+                    "SELECTION_LOCKED",
+                    "terminal selection is locked — reopen explicitly before changing the choice",
+                    status_code=409,
+                    details={"scene_id": scene_id, "selected_row_id": details.get("selected_row_id")},
+                )
+            candidate_row_ids = [str(r) for r in (details.get("candidate_row_ids") or [])]
+            if candidate_row_ids and row_id not in candidate_row_ids:
+                raise DomainError(
+                    "CANDIDATE_NOT_IN_GATE",
+                    "candidate is not part of the terminal-selection gate",
+                    status_code=409,
+                    details={"scene_id": scene_id, "row_id": row_id},
+                )
+            history = list(details.get("decision_history") or [])
+            history.append(
+                {
+                    "action": "select",
+                    "row_id": row_id,
+                    "actor_ref": actor_ref,
+                    "at": now_iso(),
+                    "no_clear_difference": bool(body.get("no_clear_difference")),
+                    **({"duration_ms": int(body["duration_ms"])} if isinstance(body.get("duration_ms"), (int, float)) else {}),
+                }
+            )
+            gate.details_json = {
+                **details,
+                "decision_status": "selected",
+                "selected_row_id": row_id,
+                "decided_at": now_iso(),
+                "no_clear_difference": bool(body.get("no_clear_difference")),
+                "decision_history": history,
+            }
+        else:
+            # 无 gate 的旧路径（标准场直接 select）：首次 select 补建已决 gate，
+            # 使终选锁定语义对所有场景生效（§6.3 补充契约）。
+            from uuid import uuid4
+            gate = HumanReviewEvent(
+                event_id=f"hre_sel_{uuid4().hex[:12]}",
+                scene_id=scene_id,
+                chapter_id=draft.chapter_id,
+                object_ref=f"candidate_selection:{scene_id}",
+                event_source="candidate_selection",
+                priority="high",
+                status="resolved",
+                allowed_actions_json=["select", "reopen"],
+                details_json={
+                    "gate_type": "style_candidate_selection",
+                    "candidate_row_ids": [row_id],
+                    "blinded_order": [row_id],
+                    "decision_status": "selected",
+                    "selected_row_id": row_id,
+                    "decided_at": now_iso(),
+                    "no_clear_difference": bool(body.get("no_clear_difference")),
+                    "decision_history": [
+                        {"action": "select", "row_id": row_id, "actor_ref": actor_ref, "at": now_iso()}
+                    ],
+                    "tokens_used": int(getattr(state, "scene_tokens_used", 0) or 0),
+                },
+                default_action="select",
+            )
+            session.add(gate)
+
         state.current_style_draft_row_id = row_id
         # 治理 §4.3：候选选择也是「最近有效正文」的维护点
         state.latest_valid_draft_row_id = row_id
         session.flush()
-        return {"scene_id": scene_id, "selected_row_id": row_id, "message": "Candidate selected for human terminal review"}
+        return {
+            "scene_id": scene_id,
+            "selected_row_id": row_id,
+            "decision_status": "selected",
+            "message": "Candidate selected for human terminal review",
+        }
 
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select",
-        payload={"scene_id": scene_id, "row_id": row_id},
+        payload={"scene_id": scene_id, "row_id": row_id, **({k: body[k] for k in ("no_clear_difference",) if k in body})},
         action=lambda: _select(session),
-        actor_ref=getattr(request.state, "operator_ref", None) or "operator",
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/scenes/{scene_id}/style-candidates/reopen")
+def reopen_style_candidate_selection(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    payload: dict | None = Body(default=None),
+):
+    """Wave 3（§6.3）：显式重开终选——唯一允许变更选择的动作，留审计。"""
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    reason = str((payload or {}).get("reason") or "").strip()[:300]
+
+    def _reopen(session: Session) -> dict[str, Any]:
+        from novel_system.services.versioning.shared import now_iso
+
+        AuthorLifecycleService(session).require_active_scene(scene_id)
+        gate = _latest_selection_gate_event(session, scene_id)
+        if gate is None:
+            raise DomainError(
+                "SELECTION_GATE_NOT_FOUND",
+                "no terminal-selection gate exists for this scene",
+                status_code=409,
+                details={"scene_id": scene_id},
+            )
+        details = dict(gate.details_json or {})
+        if details.get("decision_status") != "selected":
+            return {"scene_id": scene_id, "decision_status": details.get("decision_status"), "message": "selection is not locked"}
+        history = list(details.get("decision_history") or [])
+        history.append(
+            {
+                "action": "reopen",
+                "previous_row_id": details.get("selected_row_id"),
+                "actor_ref": actor_ref,
+                "reason": reason,
+                "at": now_iso(),
+            }
+        )
+        gate.details_json = {
+            **details,
+            "decision_status": "reopened",
+            "selected_row_id": None,
+            "decision_history": history,
+        }
+        gate.status = "awaiting_review"
+        session.flush()
+        return {"scene_id": scene_id, "decision_status": "reopened", "event_id": gate.event_id}
+
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/style-candidates/reopen",
+        payload={"scene_id": scene_id, "reason": reason},
+        action=lambda: _reopen(session),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/scenes/{scene_id}/resume-after-selection")
+def resume_after_selection(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。"""
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/resume-after-selection",
+        payload={"scene_id": scene_id},
+        action=lambda: Orchestrator(session).resume_after_selection(scene_id),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/scenes/{scene_id}/budget/topup")
+def topup_scene_budget(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    payload: dict | None = Body(default=None),
+):
+    """Wave 3（§5.5/§7.12）：作者显式追加场景 token 预算——唯一扩容入口，留审计。"""
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    body = payload or {}
+    try:
+        extra_tokens = int(body.get("extra_tokens") or 0)
+    except (TypeError, ValueError):
+        extra_tokens = 0
+    if extra_tokens <= 0:
+        raise DomainError(
+            "INVALID_BUDGET_TOPUP",
+            "extra_tokens must be a positive integer",
+            status_code=422,
+            details={"extra_tokens": body.get("extra_tokens")},
+        )
+    reason = str(body.get("reason") or "").strip()[:300]
+
+    def _topup(session: Session) -> dict[str, Any]:
+        from novel_system.db.models import OperationLog
+
+        AuthorLifecycleService(session).require_active_scene(scene_id)
+        state = session.get(SceneRunState, scene_id)
+        if state is None:
+            state = SceneRunState(scene_id=scene_id, scene_status="ready")
+            session.add(state)
+            session.flush()
+        state.scene_token_budget = int(state.scene_token_budget or 0) + extra_tokens
+        session.add(
+            OperationLog(
+                event_type="scene_budget_topup",
+                object_type="scene",
+                object_ref=scene_id,
+                payload_json={
+                    "extra_tokens": extra_tokens,
+                    "reason": reason,
+                    "actor_ref": actor_ref,
+                    "scene_token_budget": state.scene_token_budget,
+                    "scene_tokens_used": int(state.scene_tokens_used or 0),
+                },
+            )
+        )
+        session.flush()
+        return {
+            "scene_id": scene_id,
+            "scene_token_budget": state.scene_token_budget,
+            "scene_tokens_used": int(state.scene_tokens_used or 0),
+        }
+
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/budget/topup",
+        payload={"scene_id": scene_id, "extra_tokens": extra_tokens, "reason": reason},
+        action=lambda: _topup(session),
+        actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
@@ -750,6 +1060,14 @@ def adopt_current_scene(
                     "scene_id": scene_id,
                     "blocking_findings": projection["blocking_findings"],
                 },
+            )
+        # Wave 3（§5.5 完成门）：关键场景未终选前不可归档——adopt 旁路同样封死
+        if projection["author_state"] == "awaiting_author_choice":
+            raise DomainError(
+                "SELECTION_REQUIRED",
+                "author terminal selection is required before archiving this critical scene",
+                status_code=409,
+                details={"scene_id": scene_id},
             )
 
         # 1) 内容源解析

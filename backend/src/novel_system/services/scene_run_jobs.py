@@ -263,6 +263,9 @@ def _run_scene_job_worker(job_id: str) -> None:
         scene_status = result.get("scene_status") if isinstance(result, dict) else state.scene_status if state else ""
         if scene_status == "archived":
             service.mark_finished(job, status="completed", current_step="archived", result=result)
+        elif scene_status == "awaiting_candidate_selection":
+            # Wave 3 关键场景终选停点：候选已就绪等作者选择——任务算完成而非阻塞
+            service.mark_finished(job, status="completed", current_step="awaiting_candidate_selection", result=result)
         elif scene_status == "quality_warning_pending_acceptance":
             # Wave 2 严格模式停点：有稿可归档，等作者显式接受——任务算完成而非阻塞
             service.mark_finished(job, status="completed", current_step="awaiting_author_acceptance", result=result)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from novel_system.services.llm_node_registry import llm_node_route_fallbacks
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
 
+
+_LOGGER = logging.getLogger(__name__)
 
 # 审计 P-15：llm_calls 审计载荷的单段文本上限。完整 prompt 由 prompt_hash 留痕、
 # 生成正文由 SceneDraft/FinalScene 行持有——审计行只需可读证据，不承担全文存储。
@@ -473,6 +476,18 @@ class LLMNodeRunner:
                 error_code=error_code,
             )
         )
+        # Wave 3（治理 §5.5/§5.8）：场景生命周期 token 结算——凡带 scene_id 且存在
+        # 运行态行的调用（成功/失败）都累计入 scene_tokens_used；usage 缺失记 0。
+        try:
+            from novel_system.services.scene_budget import record_usage
+
+            record_usage(
+                self.session,
+                scene_id,
+                response.usage.get("total_tokens", 0) if response is not None and response.usage else 0,
+            )
+        except Exception:
+            _LOGGER.warning("scene token accounting degraded for %s", scene_id, exc_info=True)
         self.session.flush()
 
 

@@ -244,6 +244,55 @@ describe("作者状态门（Wave 2：无法继续 vs 有稿建议修改）", () 
     expect(Object.keys(window.localStorage).filter(k => k.includes("wr-doc:ch01s1"))).toEqual([]);
   });
 
+  it("Wave 3 终选三函数：盲化取数 / 选择提交 / 续跑（sid→后端 id 对位）", async () => {
+    const { mod, client } = await loadSceneRun();
+    const cat = await import("./ws-catalog.jsx");
+    await vi.waitFor(() => expect(cat.WsCatalog.get().length).toBeGreaterThan(0), T);
+    const base = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (/\/api\/v1\/scenes\/s1\/style-candidates$/.test(url)) {
+        return Promise.resolve({
+          blinded: true,
+          candidates: [
+            { row_id: "cand_b", content: "候选乙全文" },
+            { row_id: "cand_a", content: "候选甲全文" },
+          ],
+          selection: { decision_status: "awaiting", selected_row_id: null },
+        });
+      }
+      return base(url);
+    });
+    client.apiPost.mockImplementation((url) => Promise.resolve({ ok: true, url }));
+
+    const list = await mod.scnCandidates("ch01s1");
+    // 盲化契约：按后端 blinded_order 原样呈现，不重排、无分数字段
+    expect(list.blinded).toBe(true);
+    expect(list.candidates.map(c => c.row_id)).toEqual(["cand_b", "cand_a"]);
+    expect(list.candidates.every(c => !("adversarial_score" in c))).toBe(true);
+
+    await mod.scnSelectCandidate("ch01s1", "cand_b", { no_clear_difference: true });
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/scenes/s1/style-candidates/cand_b/select",
+      expect.objectContaining({ no_clear_difference: true })
+    );
+
+    await mod.scnResumeAfterSelection("ch01s1");
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/resume-after-selection", expect.anything());
+  });
+
+  it("Wave 3 终选锁定：SELECTION_LOCKED 拒绝原样上抛（不静默吞掉）", async () => {
+    const { mod, client } = await loadSceneRun();
+    const cat = await import("./ws-catalog.jsx");
+    await vi.waitFor(() => expect(cat.WsCatalog.get().length).toBeGreaterThan(0), T);
+    const locked = Object.assign(new Error("selection locked"), { code: "SELECTION_LOCKED" });
+    client.apiPost.mockImplementation((url) => {
+      if (/\/select$/.test(url)) return Promise.reject(locked);
+      return Promise.resolve({});
+    });
+
+    await expect(mod.scnSelectCandidate("ch01s1", "cand_x", {})).rejects.toMatchObject({ code: "SELECTION_LOCKED" });
+  });
+
   it("scnAdoptToDoc：quality_warning 的 gate 不拦归档（Q2/Q3 照常交付）", async () => {
     const { mod, client } = await loadSceneRun();
     const cat = await import("./ws-catalog.jsx");

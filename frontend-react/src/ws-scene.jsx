@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog, WsDemoTag } from "./ws-catalog.jsx";
-import { scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnRunSave, scnAdoptToDoc, scnPickList, scnHydrateFromBackend, scnBackendQueueSids } from "./ws-scene-run.jsx";
+import { scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnRunSave, scnAdoptToDoc, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
 import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
@@ -540,7 +540,15 @@ function WsSceneDemo({ go, t, demo = true }) {
         <div className="scn2-stage-body">
           {effState === "queued"   && <Preflight scene={scene} />}
           {effState === "running"  && <RunningStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} logOpen={logOpen} setLogOpen={setLogOpen} />}
-          {effState === "ready"    && <ReviewStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
+          {effState === "ready" && scene.fromCard && scene.gate && scene.gate.authorState === "awaiting_author_choice"
+            ? <CandidatePicker sid={scene.sid} onDone={async () => {
+                const fresh = await scnHydrateFromBackend(scene.sid);
+                if (fresh) {
+                  setRuns(m => ({ ...m, [scene.id]: { ...(m[scene.id] || {}), ...fresh } }));
+                  if (scnRunSave) scnRunSave(scene.sid, { ...(runs[scene.id] || {}), ...fresh });
+                }
+              }} />
+            : effState === "ready" && <ReviewStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
           {effState === "archived" && <ArchivedStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
         </div>
         <DecisionBar scene={scene} state={effState} go={go} onArchive={onArchive} onRun={startRun} onCreateCards={createCards} />
@@ -862,6 +870,83 @@ function RunningStage({ scene, activeBeat, setActiveBeat, logOpen, setLogOpen })
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ============================ Candidate terminal selection (Wave 3 §5.5) ============================ */
+
+function CandidatePicker({ sid, onDone }) {
+  const [st, setSt] = useSt8({ loading: true, error: null, candidates: [], picking: null, resuming: false });
+  useEf8(() => {
+    let on = true;
+    setSt({ loading: true, error: null, candidates: [], picking: null, resuming: false });
+    (async () => {
+      try {
+        const data = await scnCandidates(sid);
+        if (!on) return;
+        setSt(s => ({ ...s, loading: false, candidates: (data && data.candidates) || [] }));
+      } catch (e) {
+        if (on) setSt(s => ({ ...s, loading: false, error: (e && e.message) || "候选拉取失败，请重试" }));
+      }
+    })();
+    return () => { on = false; };
+  }, [sid]);
+
+  const choose = async (rowId, tie) => {
+    setSt(s => ({ ...s, picking: rowId, error: null }));
+    try {
+      await scnSelectCandidate(sid, rowId, tie ? { no_clear_difference: true } : {});
+      setSt(s => ({ ...s, resuming: true }));
+      await scnResumeAfterSelection(sid);
+      onDone && (await onDone());
+    } catch (e) {
+      setSt(s => ({ ...s, picking: null, resuming: false, error: (e && e.message) || "终选失败，请重试" }));
+    }
+  };
+
+  return (
+    <div className="scn2-review scn2-scroll">
+      <div className="scn2-decide is-wait" style={{ marginBottom: 10 }}>
+        <div className="scn2-decide-sum">
+          <I.Users size={14} /> 关键场景 · 匿名候选终选：全文读完再选——顺序已随机化，机器分数默认折叠，选中后管线自动续跑（批判修订 → 质检 → 归档）
+        </div>
+      </div>
+      {st.error && (
+        <div className="scn2-decide is-wait" style={{ borderColor: "var(--crimson)", marginBottom: 10 }}>
+          <div className="scn2-decide-sum"><I.AlertTriangle size={14} style={{ color: "var(--crimson)" }} /> {st.error}</div>
+        </div>
+      )}
+      {st.loading && <p className="scn2-draft-foot">候选拉取中……</p>}
+      {!st.loading && !st.candidates.length && !st.error && (
+        <p className="scn2-draft-foot">没有可选候选——可退回重写重新生成。</p>
+      )}
+      {st.candidates.map((c, i) => (
+        <article key={c.row_id} style={{ border: "1px solid var(--line-1)", borderRadius: 10, padding: "14px 16px", marginBottom: 12 }}>
+          <header style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span className="pill pill-slate text-xs"><span className="pill-dot" />候选 {String.fromCharCode(65 + i)}</span>
+            <span style={{ flex: 1 }} />
+            <button
+              className="btn btn-accent btn-sm"
+              disabled={!!st.picking || st.resuming}
+              onClick={() => choose(c.row_id, false)}
+            >
+              <I.Check size={13} /> {st.picking === c.row_id ? (st.resuming ? "续跑中…" : "提交中…") : "选这稿"}
+            </button>
+          </header>
+          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.9, fontSize: "var(--scn-font)" }}>{c.content}</div>
+        </article>
+      ))}
+      {!st.loading && st.candidates.length > 1 && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+          <button className="btn btn-quiet btn-sm" disabled={!!st.picking || st.resuming}
+            title="记录「无明显差异」并采用候选 A（终选耗时与平局照实入档）"
+            onClick={() => choose(st.candidates[0].row_id, true)}>
+            两稿无明显差异 · 用候选 A
+          </button>
+        </div>
+      )}
+      <p className="scn2-draft-foot">终选一次写入：提交后改选需在后端显式重开（留审计）。</p>
     </div>
   );
 }
