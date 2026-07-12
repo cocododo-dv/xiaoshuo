@@ -1773,6 +1773,57 @@ class SystemSecret(Base):
 
 
 # ---------------------------------------------------------------------------
+# Wave 5（结果闭环治理 §6.2）— 质量实验通道：匿名 A/B 人类盲评三张表。
+# 实验通道**不写 FinalScene**，只写实验产物；实验失败不影响生产状态（§5.1）。
+# ---------------------------------------------------------------------------
+
+
+class EvaluationExperiment(Base):
+    __tablename__ = "evaluation_experiments"
+
+    experiment_id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    hypothesis: Mapped[str] = mapped_column(String, default="")
+    treatment_policy_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    control_policy_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String, default="collecting")
+    # §6.2 项目隔离：实验快照须与作者近期生产终选场隔离（另建种子项目或时间隔离）。
+    isolation_mode: Mapped[str | None] = mapped_column(String, nullable=True)
+    snapshot_source_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class EvaluationPair(Base):
+    __tablename__ = "evaluation_pairs"
+
+    pair_id: Mapped[str] = mapped_column(String, primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(String, index=True)
+    # §6.2：每个快照至多一个有效对比对（服务层强制唯一）。
+    scene_snapshot_hash: Mapped[str] = mapped_column(String, index=True)
+    left_artifact_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    right_artifact_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 冻结纯文本——next-pair 直供前端（只出 pair_id + 左右文本）。
+    left_text: Mapped[str] = mapped_column(Text, default="")
+    right_text: Mapped[str] = mapped_column(Text, default="")
+    # 隐藏盲化键：{"treatment_slot": "left"|"right"}。**永不序列化给前端**，投票后 reveal。
+    blind_mapping_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    token_cost_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    no_contrast: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class EvaluationVote(Base):
+    __tablename__ = "evaluation_votes"
+
+    vote_id: Mapped[str] = mapped_column(String, primary_key=True)
+    pair_id: Mapped[str] = mapped_column(String, index=True)
+    choice: Mapped[str] = mapped_column(String)  # left | right | tie
+    reviewer_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+# ---------------------------------------------------------------------------
 # Style Reference (v1.1) — 11 张表
 # 参见 plans/style-reference-v1-1-fancy-shannon.md 与
 # 《风格参考模块重构执行手册 v1.1》§4。

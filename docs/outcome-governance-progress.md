@@ -393,4 +393,90 @@ cd backend && .venv/bin/python -m pytest -q -m "not chroma_integration"         
   收益与风险以显式标注为界（§5.6）；prose_event_extractor 写侧零改动（`log_event`
   已透传 payload，suspected 标注按需由写侧传入）。
 
-## Wave 5–7 —— 未开始
+## Wave 5：质量实验室与人类盲评 —— 已完成（2026-07-12）
+
+实施计划：`docs/superpowers/specs/2026-07-12-wave5-implementation-plan.md`
+
+> Wave 4 完成门开工前复核（本机）：前置 3 文件 30 passed 基线绿。
+
+### 交付内容
+
+1. **统计扩展**（复用现有 `best_of_n_blind_eval.py` 纯函数核心，不重写）：
+   - `BlindEvalResult` 加 `ties` 字段；`tally_votes_with_ties`——平局照记、不计胜场、
+     不进显著性分母（§6.2）。
+   - `min_wins_for_significance(n)`——最小胜场阈值表（计算式），锚点 n=30→21、25→18、
+     27→20、28→20、29→21，且各阈值双侧精确二项 p<0.05、阈值-1 不显著（测试锁定）。
+   - `default_strategy_decision`——§9.4 判据：非平局 n≥30 且 treatment≥21 且双侧 p<0.05 →
+     `upgrade_to_default`；control 显著更优 → `disable`；其余 → `keep_optional`（负结果
+     有效）。`requires_fresh_replication` 标消融序列升级默认前须第二批 30 组复验（§8 项 8）。
+2. **三张表 + 迁移三件套**（§6.2）：`EvaluationExperiment`/`EvaluationPair`/`EvaluationVote`
+   （models.py）；迁移 `20260712_0063`（head 0062→0063，`op.create_table` + has_table 守卫，
+   命名索引与 ORM `index=True` 自动名一致）；同步更新 `test_generation_persistence.py`
+   硬编码 head 常量；漂移守卫通过。`EvaluationPair` 除 §6.2 字段外加 `left_text`/`right_text`
+   （冻结纯文本供 next-pair 直供）与 `blind_mapping_json`（隐藏键，永不下发）、`no_contrast`。
+3. **实验服务** `services/evaluation_experiment.py`：`create_experiment`/`add_pair`（服务端
+   随机盲化左右 + 隐藏键 + `SNAPSHOT_ALREADY_USED` 每快照唯一）/`next_pair`（**只出
+   pair_id + 左右纯文本**，映射/token/快照哈希一律不含）/`record_vote`（left|right|tie；
+   同 (pair,reviewer) 幂等，改选 `VOTE_ALREADY_RECORDED`）/`build_report`（折叠隐藏键 →
+   treatment/control/tie，出偏好率/非平局 n/双侧 p/最小胜场阈值/token 倍率/耗时/verdict/
+   每模块 keep-downgrade-disable 结论 + 伪重复守卫「30 组来自 30 互异快照」）。实验通道
+   **不写 FinalScene**（§5.1）。
+4. **路由** `api/routes/evaluation_experiments.py`（app.py 挂载）：`POST /evaluation-experiments`、
+   `POST /evaluation-experiments/{id}/pairs`（seeding，服务端盲化）、`GET .../{id}/next-pair`
+   （响应体断言只含 pair_id+左右文本）、`POST /evaluation-pairs/{id}/vote`、
+   `GET .../{id}/report`。全部写接口走 `execute_with_idempotency`（§6.3 操作意图级幂等键）。
+5. **可复算报告 CLI** `tools/evaluation_experiment_report.py`：`--db EXPERIMENT_ID`（生产路径
+   同源）或 `--from-json`（纯离线折叠，同输入同输出，可脱运行时复算归档）——完成门
+   「可复算报告」的复算入口。
+6. **最小 React 盲评页** `frontend-react/src/ws-eval.jsx`（`WsEval` store + 视图，接入 ws-app
+   高级/生产组「盲评实验」导航）：盲化消费——store **只读** pair_id+左右文本、只回传
+   choice+耗时，乐观推进 + 投票失败回滚告警；`src/ws-eval.test.jsx` 5 项锁定盲化不泄漏。
+7. **不自动翻转生产默认**（§11 规则 7）：报告只输出 keep/upgrade/downgrade/disable 建议；
+   翻默认需真实人评（§9.4），另行执行。消融序列多假设由 `requires_fresh_replication` 标注。
+
+### 完成门验证（本机 CentOS 7）
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/test_best_of_n_blind_eval.py \
+  tests/test_evaluation_experiment_service.py tests/test_evaluation_experiment_routes.py \
+  tests/test_evaluation_experiment_store.py -q                                    # 58 passed（含三件套守卫）
+cd backend && .venv/bin/python -m pytest tests/test_metadata_isolation.py \
+  tests/test_generation_persistence.py -q                                         # 漂移守卫 + head 常量
+cd backend && .venv/bin/python -m pytest -q -m "not chroma_integration"           # 全量回归：1517 passed / 5 skipped / 0 failed
+# 迁移全新库链验证：NOVEL_SYSTEM_DATABASE_URL=…fresh.db alembic upgrade head →
+#   三表齐、head=20260712_0063、索引 ix_evaluation_pairs_experiment_id/…scene_snapshot_hash
+# 真实可复算报告产物：.codex-run/wave5-blind-eval-report.{txt,json}
+#   （合成 30 对：21/30，双侧 p=0.0428<0.05，阈值 21，UPGRADE_TO_DEFAULT，token 倍率 5.0）
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npx vitest run # 84 passed（13 文件，+ws-eval 5）
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run build  # 构建通过（chunk 告警历史遗留）
+```
+
+完成门「产出可复算的 30 组投票报告 + 每模块保留/降级/关闭结论」自证：
+- 可复算：`test_tool_report_from_pairs_reproducible`（同输入两次 `report_from_pairs` 相等）+
+  `test_report_reproducible_verdict`（API 端到端 30 对 21 胜 → upgrade_to_default、p<0.05、
+  token 倍率 5.0、30 互异快照）。
+- 每模块结论：`build_report.decision`/`module_conclusion` 给 keep/downgrade/disable。
+- 盲化不泄漏：`test_next_pair_response_leaks_no_metadata`（响应体无 treatment_slot/
+  blind_mapping/token_cost/scene_snapshot_hash）+ vitest `ws-eval` 盲化消费。
+- §6.2 有效性：每快照唯一（`SNAPSHOT_ALREADY_USED`）+ 伪重复守卫（30 互异快照）+ 平局
+  不进分母；§9.4 判据（21/30 双侧 p<0.05 → 升级，否则可选）。
+
+### 离线边界（归 §9.3 发布门）
+
+真实 treatment/control **正文生成需 LLM**、真实 **30 次人类投票需用户本人**——本机
+（CentOS7/node16/无额度）不可跑。本 Wave 交付**基础设施 + 可复算报告机制**，用合成
+pair/投票证明报告正确与判据自洽；真实 30 票跑归发布门（设计 §9.4 明确「30 组盲评已完成
+并产出可复算报告」是发布门项，与 Wave 0 红灯、Wave 4 悬疑 LLM 同批）。
+
+### 剩余风险
+
+- 真实人评 + 真实模型生成本机不可跑 → 发布门；报告机制离线可复算已证。
+- 项目隔离以「唯一快照 + 声明 `isolation_mode`」为可测核心；与生产终选场内容重叠的强校验
+  （需生产内容哈希）归发布门。
+- 报告只出建议、不翻生产默认（§11 规则 7）；翻默认需真实人评另行执行。消融序列升级默认
+  须第二批 30 组非平局对复验（`requires_fresh_replication`）。
+- 多 reviewer 聚合未实装：`build_report` 每对取最早一票为该对结论，保二项检验独立性
+  （单用户盲评模型，§6.2）；多评审者一致性归后续。
+- React 盲评页浏览器走查归 Windows lane；store 盲化消费逻辑已由 vitest 覆盖。
+
+## Wave 6–7 —— 未开始

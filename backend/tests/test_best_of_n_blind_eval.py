@@ -14,11 +14,14 @@ from novel_system.services.best_of_n_blind_eval import (
     binomial_one_sided_p,
     binomial_two_sided_p,
     build_blind_plan,
+    default_strategy_decision,
     evaluate,
     format_report,
     min_n_for_significance,
+    min_wins_for_significance,
     select_best_of_n,
     tally_votes,
+    tally_votes_with_ties,
 )
 
 # A clean (low AI-flavor) vs slop (high AI-flavor) pair — the ranker must prefer clean.
@@ -176,3 +179,66 @@ def test_full_flow_demo_report() -> None:
     assert v.verdict == "justified"
     report = format_report(v)
     assert "VERDICT: JUSTIFIED" in report
+
+
+# ===========================================================================
+# Wave 5（§6.2 / §9.4）：平局处理 + 最小胜场阈值表 + 默认策略判据
+# ===========================================================================
+
+def test_tally_votes_with_ties_excludes_ties_from_wins() -> None:
+    sets = [{"scene_id": f"s{i}", "candidates": [SLOP, CLEAN]} for i in range(5)]
+    plan = build_blind_plan(sets, seed=3)
+    votes = {}
+    # 3 票投 treatment，1 票投 control，1 票平局
+    for i, c in enumerate(plan):
+        if i < 3:
+            votes[c.comparison_id] = c.treatment_slot
+        elif i == 3:
+            votes[c.comparison_id] = "A" if c.treatment_slot == "B" else "B"
+        else:
+            votes[c.comparison_id] = "tie"
+    res = tally_votes_with_ties(plan, votes)
+    assert res.treatment_wins == 3
+    assert res.control_wins == 1
+    assert res.ties == 1
+    assert res.decisive == 4          # 非平局有效对
+    # 平局不计入任一胜场
+
+
+def test_min_wins_threshold_table_matches_design() -> None:
+    # 设计 §6.2 锚点：均为双侧精确二项 p<0.05 的最小胜场
+    expected = {30: 21, 25: 18, 27: 20, 28: 20, 29: 21}
+    for n, wins in expected.items():
+        assert min_wins_for_significance(n) == wins, f"n={n} 阈值应为 {wins}"
+        assert binomial_two_sided_p(wins, n) < 0.05, f"{wins}/{n} 应显著"
+        assert binomial_two_sided_p(wins - 1, n) >= 0.05, f"{wins-1}/{n} 不应显著"
+
+
+def test_report_upgrade_requires_21_of_30_nontie() -> None:
+    # 30 非平局、21 胜 → upgrade_to_default 且双侧 p<0.05
+    dec = default_strategy_decision(_ties_result(21, 9, ties=0))
+    assert dec.non_tie_n == 30
+    assert dec.significant is True
+    assert dec.p_value < 0.05
+    assert dec.decision == "upgrade_to_default"
+    # 20 胜 → 不达标，保持可选（负结果有效）
+    dec2 = default_strategy_decision(_ties_result(20, 10, ties=0))
+    assert dec2.decision == "keep_optional"
+    assert dec2.significant is False
+
+
+def test_report_disable_when_control_significantly_wins() -> None:
+    # treatment 显著更差（control 21/30）→ disable 模块
+    dec = default_strategy_decision(_ties_result(9, 21, ties=0))
+    assert dec.decision == "disable"
+
+
+def test_ties_do_not_count_toward_significance_denominator() -> None:
+    # 21 胜 9 负 + 20 平局：非平局 n 仍是 30 → 升级；平局不稀释显著性
+    dec = default_strategy_decision(_ties_result(21, 9, ties=20))
+    assert dec.non_tie_n == 30
+    assert dec.decision == "upgrade_to_default"
+
+
+def _ties_result(t: int, c: int, ties: int = 0) -> BlindEvalResult:
+    return BlindEvalResult(treatment_wins=t, control_wins=c, ties=ties)

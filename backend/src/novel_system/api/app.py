@@ -15,6 +15,7 @@ from novel_system.api.routes import (
     chapter_manuscripts,
     chapters,
     domain,
+    evaluation_experiments,
     indexing,
     interop,
     knowledge,
@@ -146,6 +147,7 @@ def create_app() -> FastAPI:
     app.include_router(system_config.router)
     app.include_router(work_profile.router)
     app.include_router(literary_eval.router)
+    app.include_router(evaluation_experiments.router)
     app.include_router(literary_quality.router)
     app.include_router(style_profile.router)
     app.include_router(style_reference.router)

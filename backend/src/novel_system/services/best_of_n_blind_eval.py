@@ -135,10 +135,11 @@ class BlindEvalResult:
     no_contrast: int = 0
     invalid: int = 0
     unvoted: int = 0
+    ties: int = 0  # Wave 5（§6.2）：平局照记，但不计入胜场、不进显著性分母
 
     @property
     def decisive(self) -> int:
-        """Votes that actually compared two different candidates."""
+        """Votes that actually compared two different candidates (ties excluded)."""
         return self.treatment_wins + self.control_wins
 
 
@@ -154,6 +155,34 @@ def tally_votes(plan: list[BlindComparison], votes: dict[str, str]) -> BlindEval
             result.unvoted += 1
             continue
         vote = str(vote).strip().upper()
+        if vote not in ("A", "B"):
+            result.invalid += 1
+            continue
+        if vote == cmp.treatment_slot:
+            result.treatment_wins += 1
+        else:
+            result.control_wins += 1
+    return result
+
+
+def tally_votes_with_ties(plan: list[BlindComparison], votes: dict[str, str]) -> BlindEvalResult:
+    """Wave 5（§6.2）：折叠 A/B/tie 投票。平局照记（``ties``），不计胜场、不进分母。
+
+    votes: ``{comparison_id: "A"|"B"|"tie"}``（大小写不敏感；"tie"/"平局" 均记平局）。
+    """
+    result = BlindEvalResult()
+    for cmp in plan:
+        if cmp.no_contrast:
+            result.no_contrast += 1
+            continue
+        raw = votes.get(cmp.comparison_id)
+        if raw is None:
+            result.unvoted += 1
+            continue
+        vote = str(raw).strip().upper()
+        if vote in ("TIE", "平局", "T"):
+            result.ties += 1
+            continue
         if vote not in ("A", "B"):
             result.invalid += 1
             continue
@@ -201,6 +230,104 @@ def min_n_for_significance(observed_rate: float, *, alpha: float = 0.05, cap: in
         if binomial_two_sided_p(k, n) < alpha:
             return n
     return None
+
+
+def min_wins_for_significance(n: int, *, alpha: float = 0.05) -> int | None:
+    """Wave 5（§6.2）：n 个非平局对上，达到双侧精确二项 p<alpha 所需的最小胜场（多数方向）。
+
+    设计 §6.2 阈值表锚点（alpha=0.05）：n=30→21、25→18、27→20、28→20、29→21。
+    返回满足 ``k > n/2`` 且 ``binomial_two_sided_p(k, n) < alpha`` 的最小 k；不存在返回 None。
+    """
+    if n <= 0:
+        return None
+    for k in range(n // 2 + 1, n + 1):
+        if k * 2 > n and binomial_two_sided_p(k, n, 0.5) < alpha:
+            return k
+    return None
+
+
+@dataclass(slots=True)
+class StrategyDecision:
+    """§9.4 默认策略判据 + §8 项 7 每模块 keep/downgrade/disable 结论。"""
+
+    non_tie_n: int
+    treatment_wins: int
+    control_wins: int
+    ties: int
+    preference_rate: float
+    p_value: float
+    min_wins: int | None
+    significant: bool          # treatment 在多数方向达到双侧显著
+    decision: str              # upgrade_to_default | keep_optional | disable | need_more_samples
+    requires_fresh_replication: bool
+    rationale: str
+
+
+def default_strategy_decision(
+    result: BlindEvalResult,
+    *,
+    target_n: int = 30,
+    target_wins: int = 21,
+    alpha: float = 0.05,
+    is_ablation: bool = True,
+) -> StrategyDecision:
+    """把盲评 tally 折成 §9.4 的默认策略决定与每模块结论。
+
+    - ``upgrade_to_default``：非平局 n≥target_n(30) 且 treatment 胜≥target_wins(21) 且双侧 p<alpha。
+    - ``disable``：control 显著更优（treatment 显著更差）——该模块应关闭。
+    - ``keep_optional``：其余（含"显著但欠功效 n<30"、"不显著")——负结果是有效结论，保持可选。
+    - ``need_more_samples``：非平局 n==0。
+
+    不自动翻转任何生产默认（§11 规则 7）；``requires_fresh_replication`` 标记消融序列升级
+    默认前需第二批 30 组非平局对复验（§8 项 8 防多重比较假阳性）。
+    """
+    t, c, ties = result.treatment_wins, result.control_wins, result.ties
+    non_tie_n = t + c
+    if non_tie_n == 0:
+        return StrategyDecision(
+            non_tie_n=0, treatment_wins=t, control_wins=c, ties=ties,
+            preference_rate=0.0, p_value=1.0, min_wins=None, significant=False,
+            decision="need_more_samples", requires_fresh_replication=False,
+            rationale="无非平局有效对，无法判定。",
+        )
+    rate = t / non_tie_n
+    p = binomial_two_sided_p(t, non_tie_n, 0.5)
+    min_wins = min_wins_for_significance(non_tie_n, alpha=alpha)
+    treatment_sig = min_wins is not None and t >= min_wins
+    control_sig = min_wins is not None and c >= min_wins
+
+    if control_sig:
+        decision = "disable"
+        requires_replication = False
+        rationale = (
+            f"Control 显著更优（{c}/{non_tie_n}，双侧 p={p:.3f}<{alpha}）：该模块使偏好下降，建议关闭。"
+        )
+    elif non_tie_n >= target_n and t >= target_wins and p < alpha:
+        decision = "upgrade_to_default"
+        requires_replication = is_ablation
+        rationale = (
+            f"treatment 偏好 {rate:.0%}（{t}/{non_tie_n}，双侧 p={p:.3f}<{alpha}），达 {target_wins}/{target_n} 门槛，"
+            f"可升级为默认" + ("；作为消融序列须再取一批 30 组非平局对复验（§8 项 8）。" if is_ablation else "。")
+        )
+    else:
+        decision = "keep_optional"
+        requires_replication = False
+        if treatment_sig and non_tie_n < target_n:
+            rationale = (
+                f"treatment 在 n={non_tie_n} 上显著（≥{min_wins} 胜），但未达 30 组功效门槛，暂保持可选，补足样本再定。"
+            )
+        else:
+            rationale = (
+                f"treatment 偏好 {rate:.0%}（{t}/{non_tie_n}，双侧 p={p:.3f}）未达显著/门槛，保持可选（负结果是有效结论）。"
+            )
+
+    return StrategyDecision(
+        non_tie_n=non_tie_n, treatment_wins=t, control_wins=c, ties=ties,
+        preference_rate=round(rate, 4), p_value=round(p, 6), min_wins=min_wins,
+        significant=treatment_sig and non_tie_n >= target_n and t >= target_wins,
+        decision=decision, requires_fresh_replication=requires_replication,
+        rationale=rationale,
+    )
 
 
 # ---------------------------------------------------------------------------
