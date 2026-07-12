@@ -479,4 +479,85 @@ pair/投票证明报告正确与判据自洽；真实 30 票跑归发布门（�
   （单用户盲评模型，§6.2）；多评审者一致性归后续。
 - React 盲评页浏览器走查归 Windows lane；store 盲化消费逻辑已由 vitest 覆盖。
 
-## Wave 6–7 —— 未开始
+## Wave 6：成本、模型独立性和运维可见性 —— 已完成（2026-07-12）
+
+实施计划：`docs/superpowers/specs/2026-07-12-wave6-implementation-plan.md`
+
+> Wave 5 完成门提交前已确认（cbb03e7：全量 1517 passed + vitest 84 + build）。
+> **零 ORM 改动**：价格走 config、成本/独立性运行时计算——无新列、无迁移，
+> 漂移守卫保持不变通过（与 Wave 4 同款零迁移策略）。
+
+### 交付内容
+
+1. **价格快照**（§5.8）：新增 `config/pricing.yaml`（per (provider,model) +
+   effective_at 单价，**占位价全部 `is_estimate:true` 诚实标注**，运维可替换真实单价）
+   + `services/pricing.py`（`resolve_price` 取生效最新快照/未命中回落 `default_estimate`；
+   `compute_cost` = tokens/1000×单价；文件缺失硬回退不抛，读路径永不 500）。
+2. **模型独立性**（§5.7，测试先行）：新增 `services/model_independence.py`——§5.7 五槽
+   （writer_primary=`style_draft` / writer_explorer=`neutral_draft` /
+   critic_independent=`soft_qc`（auto_critique_llm 实际路由目标）/
+   judge_advisory=`near_final_acceptance_review` / extractor_fast=`style_profile_extract`）
+   → 经 `task_config` 解析 `(provider,model)`，失败降级注册表默认、绝不 500。
+   `judge_independence` config 口径 + `observed_correlated_judge` 从已记录 LlmCall 判定；
+   `correlated_judge=(writer==critic on provider+model)`，同源标 `weight_hint=downweight`
+   （§5.7 只降权、不改阻断权）。**不改**既有 `ROLE_SLOTS`（设置 UI 分工，另一层抽象）。
+   观测评审集**刻意不含 `hard_qc`**——§5.7「确定性/硬门是唯一无需异源的门」，含之会误报同源。
+3. **成本聚合**（§5.8/§10）：新增 `services/cost_aggregation.py`——`classify_phase`
+   四阶段（候选生成/QC/修订/评审）+other；`scene_cost` 返回总成本+币种、
+   **`tokens_by_provider`（跨 provider 不相加、汇总以费用为准）**、phase 占比、
+   `budget`（5× 上限使用率/over_budget，源 SceneRunState）、三口径 calibers
+   （estimate/actual/billed，billed 标估算：prompt-cache 折扣未接入）、`extra_cost`
+   归因（失败重试/重复 QC/低分散补候选 + retry_cost_ratio）、`judge_independence`
+   （observed 优先、无评审调用回退 config）；`chapter_cost`/`project_cost` rollup +
+   归档指标（tokens_per_archived_scene/cost_per_archived_chapter）。
+4. **端点**（§6.3）：新增 `api/routes/cost.py` `GET /api/v2/projects/{id}/cost-summary`
+   （app.py 挂载；`?scene_id`/`?chapter_id` 三级下钻；只读；空项目不 500）。
+5. **编排信号扩展**（§8 项 5）：`orchestration-signals` 增 `cost`（总成本/阶段占比/
+   over_budget/extra_cost）+ `judge_independence`（correlated_judge），各自 try/except
+   防面板整体失败——**完成门「一读可解释总成本/占比/是否超预算/评审是否独立」的落点**。
+6. **前端**：新 `frontend-react/src/ws-cost.jsx`（`WsCost` store+成本页，接入 ws-app
+   运维工具组「成本看板」导航）；`ws-signals.jsx` 加成本 chip + 裁判独立性 chip
+   （同源亮警示）。均只读。
+7. **取消/预算/失败恢复测试**（§8 项 4 / §5.8 硬行为 / §7 不变量 1·2·5·9）：无独立取消
+   端点，「取消尚未开始的新节点」= 预算闸 `can_spend`（Wave 3）；本 Wave 锁定「停摆不丢稿
+   + 成本仍可解释」——预算耗尽/失败调用/超预算下 `latest_valid_draft_row_id`、FinalScene
+   均不回滚，且失败调用成本归 `extra_cost.failed_call_cost`。**不新建取消子系统**（超范围）。
+
+### 完成门验证（本机 CentOS 7）
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/test_pricing.py tests/test_model_independence.py \
+  tests/test_cost_aggregation.py tests/test_cost_summary_route.py \
+  tests/test_orchestration_signals_cost.py tests/test_scene_cost_cancellation_recovery.py \
+  tests/test_metadata_isolation.py -q                                    # 38 passed（34 新 + 4 漂移守卫，先红后绿）
+cd backend && .venv/bin/python -m pytest -q -m "not chroma_integration"  # 全量回归：1551 passed / 5 skipped / 0 failed
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npx vitest run   # 89 passed（14 文件，+ws-cost 5）
+cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run build    # 构建通过（>500KB chunk 告警历史遗留，归 Wave 7）
+```
+
+完成门「任意场景可解释总成本、各阶段占比、是否超预算、评审是否独立」自证：
+- `test_orchestration_signals_cost.py`：一读 orchestration-signals 即拿到 `cost`
+  （total_cost>0 + phase_breakdown + over_budget）与 `judge_independence.correlated_judge`。
+- `test_cost_summary_route.py`：project/chapter/scene 三级下钻，成本页数据齐。
+- 真实可复算产物：`.codex-run/wave6-cost-summary.json`（关键场景 3+1 候选/2QC/1评审/1失败补丁
+  + 归档终稿）——总成本 93.94 USD（估算）、阶段占比 候选生成 91%/QC 5.5%/修订 2.7%/评审 1%、
+  预算使用率 61%、额外成本占比 25.9%（失败重试+重复 QC+低分散补候选）、裁判独立、
+  tokens_per_archived_scene 24750。生成器同输入同输出可复算。
+
+### 剩余风险
+
+- auto_critique/event-extract 咨询 token 离 LlmCall 账（`run_task` 不落库，且 LLM 批判
+  默认关闭）→ 成本聚合不含其 token；本 Wave 守 §5.8「基于现有 LlmCall 聚合，不复制调用
+  日志」未改 `run_task`。批判计成本待其落 LlmCall 后自动纳入。
+- 三口径（估算/实际/计费）当前多重合：无 per-call 预留落库、无 prompt-cache 折扣数据，
+  billed 标 `is_estimate` 等同实际；结构已就位，精度待 cache/预留口径落库。
+- 占位价格为估算（`config/pricing.yaml` 全 `is_estimate:true`）；真实计费需运维替换单价。
+- extra_cost 归因为启发式（补候选按 criticality 初始 N、重复 QC 按阶段计数第 2 次起、
+  失败按 error_code）——口径已注释，非精确因果。
+- 无真实作者取消 UI/端点：取消语义以预算闸等价覆盖（顺序管线无并发未开始节点）；
+  显式取消动作归后续。
+- 预算跨 provider 分槽累计（§5.8）仍沿用 Wave 3 全局累计；成本页以 `tokens_by_provider`
+  分列 + 费用汇总补足透明度，per-slot 预算判定归后续。
+- React 成本页/信号 chip 浏览器走查归 Windows lane；store/取数逻辑 vitest 覆盖。
+
+## Wave 7 —— 未开始

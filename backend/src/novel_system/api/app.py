@@ -14,6 +14,7 @@ from novel_system.api.routes import (
     catalog,
     chapter_manuscripts,
     chapters,
+    cost,
     domain,
     evaluation_experiments,
     indexing,
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(chapters.router)
     app.include_router(projects.router)
     app.include_router(project_overview.router)
+    app.include_router(cost.router)
     app.include_router(author_drafts.router)
     app.include_router(author_desk.router)
     app.include_router(chapter_manuscripts.router)

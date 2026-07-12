@@ -35,11 +35,14 @@ export function OrchestrationSignals({ sceneId }) {
   /* Wave 3（治理 §5.5/§5.8）：场景 token 预算——5× 上限使用率 */
   const tok = data.token_budget && data.token_budget.budget != null ? data.token_budget : null;
   const tokRatio = tok ? Math.min(1, (tok.used || 0) / Math.max(1, tok.budget)) : 0;
+  /* Wave 6（治理 §5.8/§5.7）：场景成本 + 裁判独立性 */
+  const cost = data.cost && data.cost.total_cost != null ? data.cost : null;
+  const ji = data.judge_independence || null;
 
   const hasAny = (
     disp.score != null || crit ||
     (fs && fs.total_open > 0) || budget.length > 0 ||
-    (drift && drift.active) || tok
+    (drift && drift.active) || tok || cost || ji
   );
   if (!hasAny) return null;
 
@@ -65,6 +68,22 @@ export function OrchestrationSignals({ sceneId }) {
                 title={`场景 token 预算（5× 单发基线）：已用 ${tok.used} / ${tok.budget}${tok.run_policy ? ` · 策略 ${tok.run_policy}` : ""}——耗尽后停止新调用，返回已有最佳稿`}>
             预算 {Math.round(tokRatio * 100)}%
             {tokRatio >= 1 ? " · 已耗尽" : ""}
+          </span>
+        )}
+        {cost && (
+          <span className={`ws-sig-chip ${cost.over_budget ? "tone-crimson" : "tone-slate"}`}
+                title={`本场累计成本（${cost.is_estimate ? "估算" : "计费"}${cost.cross_provider ? " · 跨 provider 以费用汇总" : ""}）——${
+                  Object.entries(cost.phase_breakdown || {})
+                    .filter(([, v]) => (v.share || 0) > 0)
+                    .map(([k, v]) => `${k} ${Math.round((v.share || 0) * 100)}%`).join(" · ")}`}>
+            成本 {Number(cost.total_cost).toFixed(3)} {cost.currency || "USD"}
+            {cost.over_budget ? " · 超预算" : ""}
+          </span>
+        )}
+        {ji && (
+          <span className={`ws-sig-chip ${ji.correlated_judge ? "tone-rose" : "tone-sage"}`}
+                title={ji.reason || (ji.correlated_judge ? "评审与写作同源——咨询意见降权" : "评审与写作异源——独立")}>
+            {ji.correlated_judge ? "裁判同源" : "裁判独立"}
           </span>
         )}
       </div>

@@ -16,6 +16,7 @@ import { WsManuscripts } from "./ws-manuscripts.jsx";
 import { WsLongform6 } from "./lf6-app.jsx";
 import { WsQuality } from "./ws-quality.jsx";
 import { WsEval } from "./ws-eval.jsx";
+import { WsCost } from "./ws-cost.jsx";
 import { WsIndex, WsInterop } from "./ws-ops.jsx";
 import { WsSettings } from "./ws-settings.jsx";
 import { WsPalette } from "./ws-palette.jsx";
@@ -23,7 +24,7 @@ import { WsPalette } from "./ws-palette.jsx";
 /* global React, ReactDOM, I, useTweaks, TweaksPanel, TweakSection, TweakSlider, TweakToggle, TweakRadio,
    WsHome, WsReview, useReviewBadge, WsSnowflake, WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, SceneTweaks,
    WsFlowmap, WsLibrary, WsTrash, WsStyleRef, WsAuthor, WsScene, WsManuscripts, WsLongform6, WsQuality, WsEval,
-   WsIndex, WsInterop, WsSettings, WsPalette, WsWorks, useActiveWork, useWorks */
+   WsCost, WsIndex, WsInterop, WsSettings, WsPalette, WsWorks, useActiveWork, useWorks */
 const { useState: useAS, useEffect: useAE, useRef: useARef } = React;
 const wsPortal = ReactDOM.createPortal;
 
@@ -81,6 +82,7 @@ const WS_NAV_GROUPS = [
   {
     id: "ops", label: "运维工具", advanced: true,
     items: [
+      { id: "cost",    label: "成本看板", icon: "Coins" },
       { id: "index",   label: "发布索引", icon: "UploadCloud" },
       { id: "interop", label: "导入导出", icon: "FileInput" },
     ],
@@ -204,6 +206,7 @@ function App() {
       case "longform":    return <WsLongform6 go={go} />;
       case "quality":     return <WsQuality go={go} />;
       case "eval":        return <WsEval go={go} />;
+      case "cost":        return <WsCost go={go} />;
       case "index":       return <WsIndex go={go} />;
       case "interop":     return <WsInterop go={go} />;
       case "settings":    return <WsSettings go={go} t={t} setTweak={setTweak} />;

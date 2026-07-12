@@ -670,6 +670,35 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
     except Exception:
         signals["degraded_slots"] = None
 
+    # Wave 6（§5.8/§10）：场景成本——总成本 / 各阶段占比 / 是否超预算（编排信号一读可解释）
+    try:
+        from novel_system.services.cost_aggregation import scene_cost
+        sc = scene_cost(session, scene_id)
+        signals["cost"] = {
+            "total_cost": sc["total_cost"],
+            "currency": sc["currency"],
+            "is_estimate": sc["is_estimate"],
+            "total_tokens": sc["total_tokens"],
+            "cross_provider": sc["cross_provider"],
+            "phase_breakdown": {
+                ph: {"cost": v["cost"], "share": v["share"]}
+                for ph, v in sc["phase_breakdown"].items()
+            },
+            "over_budget": sc["budget"]["over_budget"],
+            "usage_ratio": sc["budget"]["usage_ratio"],
+            "extra_cost": sc["extra_cost"],
+        }
+    except Exception:
+        signals["cost"] = None
+
+    # Wave 6（§5.7）：裁判独立性——critic 是否与 writer 同源（correlated_judge）
+    try:
+        from novel_system.services.model_independence import judge_independence, observed_correlated_judge
+        observed = observed_correlated_judge(session, scene_id)
+        signals["judge_independence"] = observed if observed is not None else judge_independence(session)
+    except Exception:
+        signals["judge_independence"] = None
+
     # §5 foreshadow debt health (best-effort — never fail the whole panel)
     try:
         from novel_system.services.foreshadow_lifecycle import ForeshadowLifecycleService

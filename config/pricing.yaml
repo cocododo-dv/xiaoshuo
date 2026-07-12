@@ -1,0 +1,35 @@
+# 价格快照（结果闭环治理设计 §5.8，Wave 6）
+#
+# per (provider, model) 的生效时间单价，单位：每 1000 token（USD 除非另注 currency）。
+# 成本聚合服务用它把 LlmCall 的 token 折算成费用。设计要求「不向每条调用写死价格」，
+# 价格集中在这里、按 effective_at 生效，可随时替换。
+#
+# 重要：以下为**占位估算单价**，全部标 is_estimate: true —— 它们不是权威计费口径。
+# 运维接入真实 provider 计费后，把对应快照的 is_estimate 改 false 并填真实单价。
+# 未命中 (provider, model) 时回落 default_estimate（同样标估算）。
+
+version: 1
+
+# 任何未在 snapshots 命中的 (provider, model) 的兜底口径。
+default_estimate:
+  input_per_1k: 0.5
+  output_per_1k: 1.5
+  currency: USD
+  is_estimate: true
+
+snapshots:
+  # —— openai_compatible 默认路由用到的模型（models.yaml task_routing）——
+  - provider: openai_compatible
+    model: gpt-5
+    effective_at: "2026-01-01T00:00:00Z"
+    input_per_1k: 1.25
+    output_per_1k: 10.0
+    currency: USD
+    is_estimate: true
+  - provider: openai_compatible
+    model: gpt-5-mini
+    effective_at: "2026-01-01T00:00:00Z"
+    input_per_1k: 0.25
+    output_per_1k: 2.0
+    currency: USD
+    is_estimate: true
