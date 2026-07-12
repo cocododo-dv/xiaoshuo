@@ -560,4 +560,24 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
   分列 + 费用汇总补足透明度，per-slot 预算判定归后续。
 - React 成本页/信号 chip 浏览器走查归 Windows lane；store/取数逻辑 vitest 覆盖。
 
-## Wave 7 —— 未开始
+## Wave 7：长篇耐久、安全和结构收敛 —— 进行中（2026-07-12）
+
+实施计划：`docs/superpowers/specs/2026-07-12-wave7-implementation-plan.md`
+
+> 本 session 范围（用户确认）：items 1/2、3、4、5、8 各自独立提交、测试先行；
+> 大文件拆分(6) + React 懒加载(7) 留后续独立提交（§11.8）。真实 30 章模型跑 /
+> 重启恢复 / p95 延迟归 §9.3/§9.4 发布门（本机不可跑真实模型）。
+
+### 提交 7a：数据库备份 / WAL 一致性 / 恢复演练（item 5）—— 已完成
+
+- 新增 `backend/src/novel_system/tools/db_backup.py`：SQLite **在线备份 API**
+  （`sqlite3.Connection.backup`）产一致性单文件快照（含未 checkpoint 的 WAL 写入；备份前
+  `wal_checkpoint(TRUNCATE)`）；写 sidecar `.meta.json`（sha256+页数+integrity+时间戳）；
+  `verify_backup`（integrity_check + checksum 双校验）；`restore_database`（校验通过才原子
+  替换 `os.replace`，损坏备份拒绝、不碰现库）；`--backup/--restore/--verify` CLI。
+- 新增 `scripts/db_backup_drill.sh`：Linux 恢复演练（复制生产副本 → 备份 → 破坏副本 →
+  恢复 → integrity_check 绿；不动真正现库）。
+- 测试 `tests/test_db_backup.py` 6 项（先红后绿）：可校验快照 / WAL 未 checkpoint 写入进
+  备份 / 恢复数据等价 / verify 拒损坏 / restore 拒损坏备份不碰现库 / URL 解析。
+- 验证（本机）：`pytest tests/test_db_backup.py -q` 6 passed；恢复演练脚本端到端
+  5 步全绿（真实 sqlite 库）；产物 `.codex-run/wave7-backup-meta.json`。
