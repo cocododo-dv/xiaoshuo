@@ -54,6 +54,43 @@ from novel_system.services.style_reference.text_utils import (
 )
 
 
+def _normalize_rights_declaration(
+    declaration: dict[str, Any] | None, policy: CloudPolicy
+) -> dict[str, Any]:
+    """归一并校验导入权属声明（§5.9 / §11 规则 9）。
+
+    未声明 → 记 ``{declared: False}``（向后兼容，不改既有 cloud_policy 行为）。
+    声明 ``send_rights=False`` 却选了会送云端的策略（非 local_only）→ 矛盾拒绝：
+    不得默认拥有云端发送权。
+    """
+    import datetime
+
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not declaration:
+        return {
+            "declared": False,
+            "analysis_rights": None,
+            "send_rights": None,
+            "declared_by": None,
+            "declared_at": now,
+        }
+    analysis = bool(declaration.get("analysis_rights", False))
+    send = bool(declaration.get("send_rights", False))
+    if policy != CloudPolicy.LOCAL_ONLY and not send:
+        raise DomainError(
+            "STYLE_REFERENCE_SEND_RIGHTS_REQUIRED",
+            "云端策略需要用户声明发送权（send_rights=true）；未授权发送请改用 local_only。",
+            status_code=400,
+        )
+    return {
+        "declared": True,
+        "analysis_rights": analysis,
+        "send_rights": send,
+        "declared_by": declaration.get("declared_by"),
+        "declared_at": now,
+    }
+
+
 @dataclass
 class IngestResult:
     """ingest_path / ingest_upload 的返回结构。"""
@@ -110,6 +147,7 @@ class IngestService:
         title: str,
         author_label: str | None,
         cloud_policy: str | CloudPolicy,
+        rights_declaration: dict[str, Any] | None = None,
         idempotency_key: str | None = None,  # noqa: ARG002 (预留 PR-4 用)
     ) -> IngestResult:
         path = Path(file_path)
@@ -138,6 +176,7 @@ class IngestService:
             title=(title or "").strip() or path.stem,
             author_label=author_label,
             cloud_policy=cloud_policy,
+            rights_declaration=rights_declaration,
         )
 
     def ingest_upload(
@@ -148,6 +187,7 @@ class IngestService:
         title: str,
         author_label: str | None,
         cloud_policy: str | CloudPolicy,
+        rights_declaration: dict[str, Any] | None = None,
         idempotency_key: str | None = None,  # noqa: ARG002 (预留 PR-4 用)
     ) -> IngestResult:
         if file_name:
@@ -166,6 +206,7 @@ class IngestService:
             title=(title or "").strip() or fallback_title,
             author_label=author_label,
             cloud_policy=cloud_policy,
+            rights_declaration=rights_declaration,
         )
 
     def reclassify(self, book_id: str) -> int:
@@ -224,6 +265,7 @@ class IngestService:
         title: str,
         author_label: str | None,
         cloud_policy: str | CloudPolicy,
+        rights_declaration: dict[str, Any] | None = None,
     ) -> IngestResult:
         normalized = normalize_text(decode_text(raw_bytes))
         if not normalized:
@@ -231,6 +273,9 @@ class IngestService:
 
         # cloud_policy Pydantic 校验
         policy = CloudPolicy(cloud_policy) if isinstance(cloud_policy, str) else cloud_policy
+
+        # Wave 7 §5.9 / §11 规则 9 — 记录导入权属声明（不得默认拥有云端发送权）
+        rights = _normalize_rights_declaration(rights_declaration, policy)
 
         checksum = compute_text_checksum(normalized)
         book_id = f"sr_book_{checksum[:12]}"
@@ -259,6 +304,7 @@ class IngestService:
             **self._classification_stats(paragraph_spans, seg_result),
             "input_assessment": assess_input_size(len(normalized)),
             "safety": safety_payload,
+            "rights_declaration": rights,
         }
 
         book = self.repo.create_book(

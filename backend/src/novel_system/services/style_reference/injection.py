@@ -622,6 +622,16 @@ class InjectionService:
             # 预算截断,不参与上面三块的比例分配)
             few_shot = self._render_few_shot(profile, drift_ptype_priority=drift_ptype_priority)
 
+        # Wave 7 §5.9 — few-shot 例句与 RAG 召回片段是参考书**原文派生物**,进 LLM 前
+        # 必须先中和指令模式再用「非指令数据」边界封装(主防线),堵不可信文本提示词注入。
+        # positive/forbidden/metric 是抽象特征(非原文),不封装;anti_plagiarism 是我方红线。
+        from novel_system.services.style_reference.untrusted_data import secure_reference_block
+
+        if few_shot.strip():
+            few_shot = secure_reference_block(few_shot, kind="few_shot")
+        if rag_block.strip():
+            rag_block = secure_reference_block(rag_block, kind="rag")
+
         # §A.5 / §11 风险 11 — 抄袭事前预防红线段:任一风格 block 非空时必随注入,
         # 不参与任何预算截断;few-shot 引用原文片段,更必须带红线
         anti_plagiarism = ""

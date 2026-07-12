@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -68,6 +69,8 @@ class ImportPathRequest(BaseModel):
     title: str
     author_label: str | None = None
     cloud_policy: str
+    # Wave 7 §5.9 — 导入权属声明 {analysis_rights, send_rights, declared_by}
+    rights_declaration: dict[str, Any] | None = None
 
 
 class StartRunRequest(BaseModel):
@@ -310,6 +313,7 @@ def import_book_path(
             title=body["title"],
             author_label=body.get("author_label"),
             cloud_policy=body["cloud_policy"],
+            rights_declaration=body.get("rights_declaration"),
         )
         return {
             "book": _serialize_book(result.book),
@@ -339,6 +343,7 @@ async def import_book_upload(
     title: str = Form(...),
     author_label: str | None = Form(default=None),
     cloud_policy: str = Form(...),
+    rights_declaration: str | None = Form(default=None),
     session: Session = Depends(get_session),
 ):
     raw_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
@@ -348,11 +353,20 @@ async def import_book_upload(
             f"upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
             status_code=413,
         )
+    # Wave 7 §5.9 — 权属声明以 JSON 串走 multipart form；解析失败当未声明
+    rights_obj: dict[str, Any] | None = None
+    if rights_declaration:
+        try:
+            parsed = json.loads(rights_declaration)
+            rights_obj = parsed if isinstance(parsed, dict) else None
+        except (ValueError, TypeError):
+            rights_obj = None
     payload: dict[str, Any] = {
         "file_name": file.filename,
         "title": title,
         "author_label": author_label,
         "cloud_policy": cloud_policy,
+        "rights_declaration": rights_obj,
     }
 
     def _do() -> dict[str, Any]:
@@ -363,6 +377,7 @@ async def import_book_upload(
             title=payload["title"],
             author_label=payload.get("author_label"),
             cloud_policy=payload["cloud_policy"],
+            rights_declaration=payload.get("rights_declaration"),
         )
         return {
             "book": _serialize_book(result.book),
