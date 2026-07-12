@@ -581,3 +581,25 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
   备份 / 恢复数据等价 / verify 拒损坏 / restore 拒损坏备份不碰现库 / URL 解析。
 - 验证（本机）：`pytest tests/test_db_backup.py -q` 6 passed；恢复演练脚本端到端
   5 步全绿（真实 sqlite 库）；产物 `.codex-run/wave7-backup-meta.json`。
+
+### 提交 7b：存量孤儿盘点 + 修复迁移（item 4 / §11.10）—— 已完成
+
+- 新增 `backend/src/novel_system/tools/orphan_inventory.py`：**只读**盘点——扫「child.fk
+  非空却指向不存在 parent.pk」的孤儿；**仅纳入声明了 ForeignKey 的关系**（13 条：11 条
+  style_reference 派生表族 + scene_run_states.scene_id→scene_cards + scene_cards.chapter_id→
+  chapter_goals）。**故意不纳入** scene_drafts/final_scenes/qc_reports.scene_id——它们是裸
+  String（非 FK）的审计/历史行，§11.10 只为「启用 FK」前清障，不删无约束历史行（否则误删
+  合法审计，且实测会破坏 test_generation_persistence 的 0006 种子行）。`--json` 报告；退出码
+  有孤儿=1/干净=0。
+- 修复迁移 `alembic/versions/20260712_0064_purge_orphans.py`：**幂等**删除孤儿（FK-reverse
+  序、`has_table`/列守卫、缺表跳过）；**纯数据迁移无 DDL** → 漂移守卫不受影响；自持冻结关系
+  快照（不依赖会演化的项目代码）；downgrade no-op。**三件套**：迁移 + head 常量同步
+  （`test_generation_persistence.py:380/540` 0063→0064）+ 漂移守卫通过。
+- **FK 启用「再评估」结论**：本 Wave **不开** `PRAGMA foreign_keys=ON`（§11.10：先盘点+修复+
+  验证）。盘点工具 + 修复迁移就绪；**FK 实际启用待一次全量存量盘点为 0 后另行执行**（顺序：
+  跑 orphan_inventory → 若非 0 跑 0064 迁移 → 复盘为 0 → 再在 `db/session.py` 开 FK pragma）。
+- 测试 `tests/test_orphan_inventory.py` 7 项（先红后绿）：干净库 0 孤儿 / 检出 scene_run_state
+  + evidence 孤儿 / 有效链不误报 / 计数+by_table / 迁移删孤儿且幂等 / 迁移不误删有效行。
+- 验证（本机）：`pytest tests/test_orphan_inventory.py tests/test_metadata_isolation.py
+  tests/test_generation_persistence.py -q` 17 passed；全新库 `alembic upgrade head` 干净到达
+  `20260712_0064`；对该库跑盘点 CLI → 0 孤儿 exit 0；产物 `.codex-run/wave7-orphan-inventory.json`。
