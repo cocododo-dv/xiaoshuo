@@ -306,7 +306,9 @@ class Orchestrator:
                 # 但失败必须以 WARNING 可见（scene_generation 内部已落 AttemptTracker/LlmCall）。
                 try:
                     from novel_system.services.auto_critique import format_critique_brief
-                    critique_brief = format_critique_brief(critique)
+                    critique_brief = self._pov_desensitize_brief(
+                        scene, contract, format_critique_brief(critique),
+                    )
                     style_generation = self.scene_generation_service.generate_style_patch(
                         scene_id,
                         bundle,
@@ -335,7 +337,9 @@ class Orchestrator:
                 # §5.8 预算耗尽停止新调用：跳过软补丁，带既有稿继续（QC 报告已留意见）
                 _LOGGER.warning("soft patch skipped for scene %s (budget/candidate cap)", scene_id)
             else:
-                rewrite_brief = self._rewrite_brief_from_report(soft_qc.qc_report_id)
+                rewrite_brief = self._pov_desensitize_brief(
+                    scene, contract, self._rewrite_brief_from_report(soft_qc.qc_report_id),
+                )
                 final_generation = self.scene_generation_service.generate_style_patch(
                     scene_id,
                     bundle,
@@ -563,6 +567,38 @@ class Orchestrator:
             state.hard_full_rewrite_count = 0
             state.repeat_issue_key = None
             state.repeat_issue_count = 0
+
+    def _pov_desensitize_brief(self, scene: SceneCard, contract, brief: list[str]) -> list[str]:
+        """Wave 4（§5.6/§7.11/不变量 11）：回灌自动补丁提示词前做 POV 证据脱敏。
+
+        引用了非 POV 已知秘密的 brief 条目不得进入自动补丁——剔除后只能走作者确认修订。
+        硬 QC 自身始终读全量权威状态，不经此路径。pov 缺失或项目无秘密时无副作用；
+        脱敏失败降级为原 brief（不阻断主流程），失败以 WARNING 可见。
+        """
+        if not brief:
+            return brief
+        try:
+            from novel_system.services.pov_knowledge_projection import (
+                PovKnowledgeProjection,
+            )
+            payload = getattr(contract, "payload_json", None) or {}
+            pov = scene.pov_character_id or payload.get("pov_character_id")
+            if not pov:
+                return brief
+            project_id = scene.project_id or payload.get("project_id") or (
+                scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id
+            )
+            return PovKnowledgeProjection(self.session).redact_brief(
+                brief, project_id, scene.scene_seq or 0,
+                pov_character_id=pov,
+                onstage_character_ids=scene.onstage_chars_json or [],
+            )
+        except Exception:
+            _LOGGER.warning(
+                "pov brief desensitization degraded for scene %s; keeping raw brief",
+                scene.scene_id, exc_info=True,
+            )
+            return brief
 
     def _rewrite_brief_from_report(self, qc_report_id: str) -> list[str]:
         report = self.session.get(QcReport, qc_report_id)

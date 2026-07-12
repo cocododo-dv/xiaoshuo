@@ -325,3 +325,59 @@ class TestRealisticConsistency:
             f"FALSE ALARM on {p.label}: "
             f"{[(v.fact_key, v.actual, v.evidence) for v in report.violations]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Wave 4（§5.6 / 完成门）：POV 投影只减**写作提示词**，硬 QC 仍读全量权威状态。
+# 守卫这条分离不变量——秘密从写作提示词消失，但硬 QC 仍能用全量事实发现矛盾。
+# ---------------------------------------------------------------------------
+class TestHardQcReadsFullStateDespitePovProjection:
+
+    def test_hard_qc_still_sees_full_state_when_project_has_secrets(self, session) -> None:
+        """项目含秘密时，check_consistency 仍读全量 → 死人行动矛盾照旧检出。"""
+        from novel_system.services.pov_knowledge_projection import PovKnowledgeProjection
+
+        log = _seed(session)
+        # 追加：沧澜城城主持有一个秘密（写作提示词应对非持有者 POV 隐藏）。
+        log.log_event(
+            project_id=PROJECT_ID, chapter_id=CHAPTER_ID, scene_id=SETUP_SCENE_IDS[2],
+            event_type="character_state", entity_type="character", entity_id="沧澜城城主",
+            fact_key="secret_held_by", fact_value="城主藏了传国玉玺",
+        )
+        session.commit()
+
+        # (1) 硬 QC：城主已死却"睁开双眼开口"——即便项目有秘密，全量读取仍检出。
+        report = log.check_consistency(
+            "沧澜城城主缓缓睁开双眼,沙哑地开口,问眼前的人究竟是谁。",
+            PROJECT_ID, TARGET_SCENE_ID,
+        )
+        assert not report.passed
+        assert any(v.fact_key == "alive" for v in report.violations)
+
+        # (2) 硬 QC 的全量投影仍持有秘密（供确定性校验/人工确认使用）。
+        full_state = log.project_character_state("沧澜城城主", PROJECT_ID, up_to_scene_seq=4)
+        assert full_state.get("secret_held_by") == "城主藏了传国玉玺"
+
+        # (3) 但**写作提示词**（POV=林远，非秘密持有者）不含该秘密正文。
+        writing_prompt = PovKnowledgeProjection(session).format_state_for_prompt(
+            PROJECT_ID, scene_seq=5,
+            pov_character_id="林远", onstage_character_ids=["林远", "沧澜城城主"],
+        )
+        assert "城主藏了传国玉玺" not in writing_prompt
+
+
+# ---------------------------------------------------------------------------
+# §9.3 发布门 lane（离线跳过）：悬疑样本真实 LLM 对照——检查 POV 视角是否提前
+# 据未知秘密行动或暗示。本机无 LLM 额度（CentOS7 / node16），发布门实跑。
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(
+    __import__("os").environ.get("NOVEL_SYSTEM_LLM_ENABLED", "").lower() not in ("1", "true"),
+    reason="悬疑 POV LLM 对照属 §9.3 发布门 lane，需真实 LLM 额度；离线跳过（golden 覆盖逻辑门）",
+)
+def test_suspense_pov_no_early_action_release_gate() -> None:  # pragma: no cover
+    """占位：发布门实跑时，用悬疑样本生成 POV 场景并核验不提前泄漏/据未知秘密行动。
+
+    离线由 test_pov_knowledge_projection.py 的 golden 用例覆盖投影极性；真实模型
+    行为波动性验证归发布门（设计 §9.3 / §8 Wave 4 项 5）。
+    """
+    raise AssertionError("release-gate only; must be run with NOVEL_SYSTEM_LLM_ENABLED")

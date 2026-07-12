@@ -199,6 +199,48 @@ def test_format_state_for_prompt(session) -> None:
     assert "Authoritative Character State" in prompt_section
 
 
+def test_format_state_for_prompt_pov_hides_other_secret(session) -> None:
+    """Wave 4：传入 pov 时，format_state_for_prompt 委派投影，隐藏他人秘密正文。"""
+    _seed_project(session)
+    log = NarrativeEventLog(session)
+    log.log_event(
+        project_id="PROJ1", scene_id="CH_EVT01_SC01", chapter_id="CH_EVT01",
+        event_type="character_state", entity_type="character", entity_id="CHAR_X",
+        fact_key="secret_held_by", fact_value="CHAR_X是内奸",
+    )
+    log.log_event(
+        project_id="PROJ1", scene_id="CH_EVT01_SC01", chapter_id="CH_EVT01",
+        event_type="character_state", entity_type="character", entity_id="CHAR_X",
+        fact_key="location", fact_value="议事厅",
+    )
+    session.commit()
+
+    out = log.format_state_for_prompt(
+        "PROJ1", scene_seq=2,
+        pov_character_id="CHAR_POV", onstage_character_ids=["CHAR_X", "CHAR_POV"],
+    )
+    assert "CHAR_X是内奸" not in out          # 秘密正文被投影抑制
+    assert "location: 议事厅" in out          # 公共事实保留
+
+
+def test_information_asymmetry_digest_pov_hides_secrets(session) -> None:
+    """Wave 4：传入 pov 时，信息不对称摘要不再打印 'Secrets held by X' 正文。"""
+    _seed_project(session)
+    log = NarrativeEventLog(session)
+    log.log_event(
+        project_id="PROJ1", scene_id="CH_EVT01_SC01", chapter_id="CH_EVT01",
+        event_type="character_state", entity_type="character", entity_id="CHAR_X",
+        fact_key="secret_held_by", fact_value="毒药在酒里",
+    )
+    session.commit()
+
+    out = log.information_asymmetry_digest(
+        "PROJ1", 2, ["CHAR_X", "CHAR_POV"], pov_character_id="CHAR_POV",
+    )
+    assert "毒药在酒里" not in out
+    assert "Secrets held by CHAR_X" not in out
+
+
 def test_log_events_batch(session) -> None:
     _seed_project(session)
     log = NarrativeEventLog(session)

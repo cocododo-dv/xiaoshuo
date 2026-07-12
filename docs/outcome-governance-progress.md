@@ -306,4 +306,91 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
 - 并排对比/句段差异定位 UI 为后续增强（§5.5 明示不阻塞第一阶段）。
 - 存量停在 `critical_scene_human_gate` 的场按既有 human-review resolve 收尾。
 
-## Wave 4–7 —— 未开始
+## Wave 4：POV 减法投影 —— 已完成（2026-07-12）
+
+实施计划：`docs/superpowers/specs/2026-07-12-wave4-implementation-plan.md`
+
+> Wave 3 完成门开工前复核（本机）：定向 4 文件 28 passed 基线绿。
+
+### 交付内容
+
+1. **注入槽位盘点（Wave 4 第一步）**：核实 Bundle 内**仅两个**槽位读事件日志权威
+   状态——`bundle_builder._narrative_state_digest`（`format_state_for_prompt`）与
+   `_information_asymmetry_digest`（`information_asymmetry_digest`），且这两个 log
+   方法全仓仅被 bundle_builder 消费；其余提示词槽位不读权威状态。两个泄漏点确认：
+   `format_state_for_prompt` 经 `as_dict()` 注入 `secret_held_by`/`believes_false` 值；
+   `information_asymmetry_digest` 直接打印 "Secrets held by X"。
+2. **`PovKnowledgeProjection` 服务**（新 `services/pov_knowledge_projection.py`，测试
+   先行）：6 个知识级别（known/believed_false/suspected/unknown/public/secret_owner）
+   由现有事件结构派生——**无 schema 迁移**（`payload_json.knowledge_status='suspected'`
+   表怀疑；`secret_held_by`/`believes_false` 表秘密；`character_learns` 表已知；
+   `revealed_to` 表已揭示）。投影为**逐事实过滤**：只对信息不对称键做 POV 过滤，公共
+   事实照旧 → "无显式秘密→等价全量注入"（§5.6）是自然性质，非全局开关。
+3. **两个 log 方法委派 + bundle 自动切换**：`NarrativeEventLog.format_state_for_prompt`
+   与 `information_asymmetry_digest` 在**传入 pov** 时委派投影（减法），`pov=None`
+   保持全量（全知视角，逐字节不变——既有 pov=None 测试全绿）。bundle_builder 两槽位
+   已传/补传 `scene.pov_character_id`，自动走投影。
+4. **硬 QC 全量不回归（完成门后半）**：`check_consistency`→`project_character_state`
+   全量路径零改动；`_CHECKABLE_FACT_KEYS` 不含秘密键——投影只减写作提示词，硬 QC 仍
+   读全量。加守卫测试锁定：项目含秘密时死人行动矛盾照旧检出、全量态仍持有秘密、但
+   POV 写作提示词不含秘密正文。
+5. **finding 证据脱敏堵 QC 回灌旁路**（§7.11/不变量 11）：`desensitize_findings` /
+   `redact_brief`——引用非 POV 已知秘密的 finding/brief 条目从**自动补丁提示词**剔除、
+   改标 `author_confirmation_only`。挂载 orchestrator 两条回灌路径（auto-critique
+   `format_critique_brief` + soft-QC `_rewrite_brief_from_report`）经 `_pov_desensitize_brief`
+   过滤后才进 `generate_style_patch`；pov 缺失/无秘密/脱敏失败均降级为原 brief 不阻断。
+6. **存量回填 = 投影时派生（非持久化迁移）**：`_onstage_public_values`——POV 在场场景
+   断言的**公共**事实计入 POV 已知（防饿死上下文，§5.6）；秘密不因在场默认已知（保守）。
+   **刻意不落地"插入合成 character_learns 事件"的持久化工具**——设计 §13 风险表与
+   §5.6 均警告插入合成事件会污染 append-only"单一真相源"、影响其他场景重放。投影时
+   派生等价满足"不饿死上下文 + 无秘密退化"，且不可逆风险为零（对 §8 Wave 4 项 6 的
+   等价、更安全实现）。
+7. **golden + 发布门骨架**：秘密/错误信念/怀疑/公共事实四类 golden 已并入投影测试；
+   悬疑真实 LLM 对照为 `@skipif(NOVEL_SYSTEM_LLM_ENABLED)` 发布门占位（§9.3），本机
+   离线跳过，逻辑门由 golden 覆盖。
+
+### 完成门验证（本机 CentOS 7）
+
+```bash
+cd backend && .venv/bin/python -m pytest tests/test_pov_knowledge_projection.py \
+  tests/test_pov_finding_desensitization.py -q                                   # 14 passed（9+5，先红后绿）
+cd backend && .venv/bin/python -m pytest tests/test_narrative_event_log.py \
+  tests/test_consistency_validation_realistic.py -q                              # 委派 + 硬 QC 守卫（+1 skip 发布门）
+cd backend && .venv/bin/python -m pytest tests/test_orchestrator_flow.py \
+  tests/test_metadata_isolation.py tests/test_blueprint_v2_modules.py \
+  tests/test_qc_engine.py tests/test_bundle_injection_efficacy.py \
+  tests/test_prose_event_extraction.py tests/test_scene_generation_injection.py -q  # 116 passed（含漂移守卫，零列变更）
+cd backend && .venv/bin/python -m pytest -q -m "not chroma_integration"          # 1489 passed / 5 skipped / 0 failed
+```
+
+完成门自证：
+- 「POV 提示词快照不含秘密正文」：`test_projection_suppresses_non_pov_secret_content` /
+  `test_format_state_for_prompt_pov_hides_other_secret` /
+  `test_information_asymmetry_digest_pov_hides_secrets` /
+  `test_asymmetry_digest_pov_hides_other_secret` —— 非 POV 的 `secret_held_by`/
+  `believes_false` 正文与 "Secrets held by X" 均不出现在写作提示词。
+- 「硬 QC 仍能利用全量事实发现冲突」：`test_hard_qc_still_sees_full_state_when_project_has_secrets`
+  —— 同一含秘密项目，`check_consistency` 全量检出死人行动矛盾，全量态仍持秘密，
+  而 POV 写作提示词不含该秘密。
+- 「回灌脱敏」：`test_finding_referencing_non_pov_secret_excluded_from_auto_patch` /
+  `test_redact_brief_drops_secret_lines` —— 引用非 POV 秘密的 finding/brief 被剔出
+  自动补丁、改标作者确认。
+- 「退化不破坏存量」：`test_projection_no_secrets_public_facts_identical_to_full` +
+  既有全部 pov=None 测试全绿（全量回归 0 failed）。
+
+前端无改动（Wave 4 纯后端输入层），未跑 vitest/build。
+
+### 剩余风险
+
+- 悬疑真实 LLM 对照本机不可实跑（node16/无额度）——归 §9.3 发布门；离线 golden 覆盖
+  投影极性逻辑门，真实模型"是否提前据未知秘密行动"的波动性归发布门实跑。
+- 存量回填走**投影时派生**、不落库：若未来引入并发/持久化事件抽取，需复核派生与落库
+  归属的一致性；当前 append-only 日志保持纯净（无合成事件污染）。
+- 秘密"已被 POV 获知"的判定依赖显式 `revealed_to`/`character_learns` 写侧数据质量；
+  投影对"不确定"一律保守抑制（宁漏注入不泄密，§5.6），对标注稀疏项目可能略减 POV 可见
+  秘密——符合设计保守策略。
+- `NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED` 默认关闭时事件日志主要来自规划侧，投影
+  收益与风险以显式标注为界（§5.6）；prose_event_extractor 写侧零改动（`log_event`
+  已透传 payload，suspected 标注按需由写侧传入）。
+
+## Wave 5–7 —— 未开始

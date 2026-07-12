@@ -531,7 +531,22 @@ class NarrativeEventLog:
         pov_character_id: str | None = None,
         onstage_character_ids: list[str] | None = None,
     ) -> str:
-        """Format projected entity states as a prompt section for injection."""
+        """Format projected entity states as a prompt section for injection.
+
+        Wave 4（§5.6）：这是**写作提示词**槽位。当指定 ``pov_character_id`` 时，委派
+        `PovKnowledgeProjection` 做 POV 减法投影，隐藏非 POV 秘密内容；``pov=None``
+        保持全知视角全量注入（逐字节不变）。**硬 QC 不走此方法**——它读
+        `project_character_state` / `all_facts_at_scene` 的全量权威状态，不受投影影响。
+        """
+        if pov_character_id:
+            from novel_system.services.pov_knowledge_projection import (
+                PovKnowledgeProjection,
+            )
+            return PovKnowledgeProjection(self.session).format_state_for_prompt(
+                project_id, scene_seq,
+                pov_character_id=pov_character_id,
+                onstage_character_ids=onstage_character_ids,
+            )
         chars = onstage_character_ids or self._characters_in_project(project_id)
         lines: list[str] = []
         lines.append("## Authoritative Character State (from event log, do NOT contradict)")
@@ -589,12 +604,26 @@ class NarrativeEventLog:
         project_id: str,
         scene_seq: int,
         onstage_character_ids: list[str],
+        *,
+        pov_character_id: str | None = None,
     ) -> str:
         """Blueprint §2/§11: format information gaps between onstage characters for prompt injection.
 
         For each pair of onstage characters, identify what one knows that the other doesn't.
         Also surface active secrets and false beliefs.
+
+        Wave 4（§5.6）：写作提示词槽位。指定 ``pov_character_id`` 时委派
+        `PovKnowledgeProjection`——只展示 POV 独有认知，他人独有内容/秘密只给
+        内容无关的盲区提示，绝不打印 "Secrets held by X" 正文。``pov=None`` 保持全量。
         """
+        if pov_character_id:
+            from novel_system.services.pov_knowledge_projection import (
+                PovKnowledgeProjection,
+            )
+            return PovKnowledgeProjection(self.session).information_asymmetry_digest(
+                project_id, scene_seq, onstage_character_ids,
+                pov_character_id=pov_character_id,
+            )
         if len(onstage_character_ids) < 2:
             return ""
 
