@@ -643,3 +643,32 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
 - 验证（本机）：`pytest tests/test_endurance_metrics.py -q` 10 passed；产物
   `.codex-run/wave7-endurance-metrics.json`（合成 30 章：passed，21–30 比值 1.375 在阈内，
   6 桶，gpt-5/gpt-5-mini 分层）。
+
+### 提交 7e：演示隔离（item 8 / §2.2 G-13）—— 已完成
+
+- 盘点结论：React 主线**已有完善的演示隔离约定**——`WsDemoTag`（ws-catalog.jsx:800）已用于
+  5 个演示面（`ct-app` 构思控制塔 + `ctIsTide` 真实作品空态门控 / `lf6-app` 长篇控制塔 +
+  isTide 门控 / `ws-quality` / `ws-scene` 起草台 CH07/08 演示场 / `ws-styleref` 内置样书），
+  且演示叠加数据全部门控到 tide 演示作品（真实作品得 null/空态，不泄漏演示剧情）。
+- **唯一遗漏补齐**：`ws-flowmap`（日常导航「流程」，普通作家最常见）的「流程体检」卡已用
+  `isTide` 把 LF2/LF3 演示叠加层门控到 tide，但缺显式 `WsDemoTag` 标注。本提交按既有约定
+  补上——仅 tide 演示作品的流程体检显示「演示」标注（真实作品的体检只来自目录/章节/场景
+  真实状态，不加标）。最小改动、与其它 5 个演示面一致。
+- 未新增组件渲染测试：本仓库 vitest 惯例是 store 单测（非组件渲染，`ws-flowmap` 依赖过重、
+  渲染测试脆弱且违惯例）；以全量 vitest + build 零回归 + 盘点既有隔离约定为验证。
+- 验证（本机）：`npx vitest run` 89 passed（14 文件，零回归）+ `npm run build` 通过。
+
+## Wave 7 本 session 小结（items 1/2·3·4·5·8 完成；6·7 留后续）
+
+| 提交 | 子项 | 内容 | 验证 |
+|---|---|---|---|
+| `de3cb04` 7a | 5 | DB 备份/WAL 一致性/恢复演练 | 6 tests + 演练脚本 5 步绿 |
+| `a667878` 7b | 4 | 孤儿盘点 + 修复迁移 0064（FK 留再评估） | 17 tests（含漂移+head） |
+| `b72753a` 7c | 3 | 参考文本不可信封装 + 指令过滤 + 导入权属 | 15 新 + 62 注入 + 90 精简回归 |
+| `bb0e45f` 7d | 1/2 | 耐久分层指标收集器 | 10 tests |
+| （本提交）7e | 8 | 演示隔离补齐（ws-flowmap WsDemoTag） | vitest 89 + build |
+
+**归发布门（§9.3/§9.4，本机不可跑真实模型）**：真实 30 章模型耐久跑 + 重启恢复 + p95 延迟
+（7d 收集器是其判定逻辑）；FK 实际启用（7b 工具+迁移就绪，待全量存量盘点为 0）。
+**留后续独立提交（§11.8）**：item 6 大文件拆分（orchestrator/ws-scene-run/ws-snow）+
+item 7 React 路由级懒加载（主 chunk <500KB gzip）——纯结构重构、回归风险高，与行为改动分离。

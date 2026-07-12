@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { ARR_CHAPTERS } from "./ws-author-data.jsx";
 import { S2_STEPS, s2StepSummary } from "./ws-snow.jsx";
 import { WsWorks } from "./ws-works.jsx";
-import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
+import { WsCatalog, useCatalogChapters, WsDemoTag } from "./ws-catalog.jsx";
 
 /* global React, I, window */
 const { useState: useStFM, useEffect: useEfFM, useRef: useRefFM, useMemo: useMemoFM } = React;
@@ -496,7 +496,15 @@ function WsFlowmap({ go }) {
           <div className="card flow-bottle">
             <div className="card-head">
               <div>
-                <div className="card-title">流程体检</div>
+                {/* Wave 7 §8 项 8 — 演示隔离：「潮汐档案」演示作品的流程体检叠加了内置
+                    示例数据集（LF2/LF3 演示的回流/断链/风险）；真实作品的体检只来自你的
+                    目录/章节/场景真实状态，不含演示剧情。仅演示作品显式标注，与其它演示面
+                    （控制塔/长篇塔/起草台）的 WsDemoTag 约定一致。 */}
+                <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  流程体检
+                  {(() => { try { return WsWorks && WsWorks.activeId && WsWorks.activeId() === "tide"; } catch (e) { return false; } })()
+                    && WsDemoTag && <WsDemoTag note="「潮汐档案」演示作品的流程体检叠加了内置示例的回流 / 断链 / 风险（LF2·LF3 演示数据集）；导入或新建真实作品后，体检只来自你的目录、章节与场景真实状态，不含演示剧情。" />}
+                </div>
                 <div className="card-sub">系统看到的回流、瓶颈与风险（按严重度）</div>
               </div>
               <span className="pill pill-crimson"><span className="pill-dot" />{M.diag.length} 处</span>
