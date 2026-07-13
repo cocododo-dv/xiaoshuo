@@ -18,8 +18,6 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import text
 
-from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
-
 
 revision = "20260713_0065"
 down_revision = "20260712_0064"
@@ -27,6 +25,7 @@ branch_labels = None
 depends_on = None
 
 
+MIGRATION_PROVIDER_ATTEMPT_BUDGET = 32
 ACCOUNTING_STATUS_SQL = (
     "accounting_status IN "
     "('reserved','settled','failed','released','rejected','usage_exceeds_reservation')"
@@ -44,7 +43,7 @@ SCENE_COLUMNS = (
         "provider_attempt_budget",
         sa.Integer(),
         nullable=False,
-        server_default=str(DEFAULT_PROVIDER_ATTEMPT_BUDGET),
+        server_default=str(MIGRATION_PROVIDER_ATTEMPT_BUDGET),
     ),
     sa.Column("active_execution_id", sa.String(), nullable=True),
     sa.Column("run_execution_status", sa.String(), nullable=True),
@@ -211,6 +210,8 @@ def _backfill_llm_calls() -> None:
                 budget_charged_tokens = 0,
                 usage_is_estimate = 1,
                 accounting_status = {status_sql}
+            WHERE scope_type IS NULL
+              AND scope_id IS NULL
             """
         )
     )

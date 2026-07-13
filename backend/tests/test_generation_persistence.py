@@ -646,8 +646,9 @@ def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path:
     migration_source = (
         backend_dir / "alembic" / "versions" / "20260713_0065_llm_accounting_budget_cancel.py"
     ).read_text(encoding="utf-8")
-    assert "from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET" in migration_source
-    assert "server_default=str(DEFAULT_PROVIDER_ATTEMPT_BUDGET)" in migration_source
+    assert "novel_system" not in migration_source
+    assert "MIGRATION_PROVIDER_ATTEMPT_BUDGET = 32" in migration_source
+    assert "server_default=str(MIGRATION_PROVIDER_ATTEMPT_BUDGET)" in migration_source
     db_path = tmp_path / "c1b-legacy-0064.sqlite"
     _build_c1b_legacy_0064_database(db_path)
 
@@ -773,6 +774,79 @@ def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path:
         assert "scene_tokens_reserved" not in _pragma_columns_by_name(connection, "scene_run_states")
         assert "scope_type" not in _pragma_columns_by_name(connection, "llm_calls")
         assert "scene_id" not in _pragma_columns_by_name(connection, "chapter_run_jobs")
+
+
+def test_c1b_migration_partial_replay_preserves_new_accounting_rows(tmp_path: Path) -> None:
+    backend_dir = Path(__file__).resolve().parents[1]
+    db_path = tmp_path / "c1b-partial-replay.sqlite"
+    _build_c1b_legacy_0064_database(db_path)
+    _run_alembic(backend_dir, db_path, "20260713_0065")
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, project_id, total_tokens, created_at,
+                scope_type, scope_id, run_job_id, execution_id, execution_step_key,
+                estimated_tokens, reserved_tokens, budget_charged_tokens,
+                usage_is_estimate, accounting_status, request_dispatched_at, settled_at
+            ) VALUES (
+                'call-post-0065', 'new_accounting', 'PRJ_DENORMALIZED', 13,
+                '2026-07-13T01:02:03+00:00',
+                'project', 'PRJ_AUTHORITATIVE', 'job-new', 'execution-new', 'step-new',
+                77, 80, 70, 0, 'settled',
+                '2026-07-13T01:02:00+00:00', '2026-07-13T01:02:03+00:00'
+            )
+            """
+        )
+        new_row_before_replay = connection.execute(
+            "SELECT * FROM llm_calls WHERE llm_call_id = 'call-post-0065'"
+        ).fetchone()
+        connection.execute(
+            "UPDATE alembic_version SET version_num = '20260712_0064'"
+        )
+
+    _run_alembic(backend_dir, db_path, "20260713_0065")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "20260713_0065",
+        )
+        assert connection.execute(
+            "SELECT * FROM llm_calls WHERE llm_call_id = 'call-post-0065'"
+        ).fetchone() == new_row_before_replay
+        assert connection.execute(
+            """
+            SELECT llm_call_id, scope_type, scope_id, estimated_tokens,
+                   reserved_tokens, budget_charged_tokens, usage_is_estimate,
+                   accounting_status
+            FROM llm_calls
+            WHERE llm_call_id != 'call-post-0065'
+            ORDER BY llm_call_id
+            """
+        ).fetchall() == [
+            ("call-chapter", "chapter", "CH001", 99, 0, 0, 1, "failed"),
+            ("call-project", "project", "PRJ001", 30, 0, 0, 1, "settled"),
+            ("call-scene", "scene", "SC001", 42, 0, 0, 1, "settled"),
+            ("call-system", "system", "legacy_failure", 0, 0, 0, 1, "failed"),
+        ]
+        assert EXPECTED_LLM_CALL_ATTEMPT_COLUMNS == _pragma_columns_by_name(
+            connection, "llm_call_attempts"
+        ).keys()
+        attempt_table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'llm_call_attempts'"
+        ).fetchone()[0]
+        for constraint_name in (
+            "ck_llm_call_attempts_provider_attempt_no_nonnegative",
+            "ck_llm_call_attempts_budget_charged_within_reservation",
+            "ck_llm_call_attempts_accounting_status",
+            "ck_llm_call_attempts_dispatch_kind",
+            "uq_llm_call_attempts_call_ordinal",
+        ):
+            assert constraint_name in attempt_table_sql
+        assert "ix_llm_call_attempts_call_status" in {
+            row[1] for row in connection.execute("PRAGMA index_list(llm_call_attempts)")
+        }
 
 
 def _run_alembic(backend_dir: Path, db_path: Path, revision: str, *, backup_root: Path | None = None) -> None:
