@@ -8,11 +8,15 @@ PR-3 BaseExtractor / PR-4 ProfileSynthesizer / PR-4 PreviewService 各自实现�
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
 from novel_system.services.prompt_builder import load_prompt_templates
+from novel_system.services.style_reference.untrusted_data import (
+    UntrustedPayload,
+    render_untrusted_system_prompt,
+    render_untrusted_user_prompt,
+)
 
 # 路由未显式配置 timeout_seconds 时 style_ref 节点的调用超时保底(秒)
 DEFAULT_TIMEOUT_SECONDS = 120.0
@@ -30,11 +34,21 @@ class LLMNodeError(Exception):
         self.node_id = node_id
 
 
-def call_llm_node(node_id: str, payload: dict[str, Any], llm_client: Any) -> dict[str, Any]:
+def call_llm_node(
+    node_id: str,
+    payload: UntrustedPayload,
+    llm_client: Any,
+) -> dict[str, Any]:
     """对指定 task_name 节点发起一次 LLM 调用,返回 structured_output 字典。
 
     失败统一 raise LLMNodeError(caller 负责降级)。
     """
+    if not isinstance(payload, UntrustedPayload):
+        raise LLMNodeError(
+            f"node {node_id!r} requires UntrustedPayload",
+            node_id=node_id,
+        )
+
     try:
         routing = load_model_routing_config()
         # 与 llm_task_runner / segmentation.llm 同序:DB 节点路由(系统设置「模型与
@@ -53,11 +67,12 @@ def call_llm_node(node_id: str, payload: dict[str, Any], llm_client: Any) -> dic
             node_id=node_id,
         ) from exc
 
-    user_prompt = template.task_prompt + "\n\n" + json.dumps(payload, ensure_ascii=False)
+    system_prompt = render_untrusted_system_prompt(template.system_prompt)
+    user_prompt = render_untrusted_user_prompt(template.task_prompt, payload, kind=node_id)
     request = LLMRequest(
         model=task_config.model,
         messages=[
-            {"role": "system", "content": template.system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=task_config.temperature,

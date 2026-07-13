@@ -41,6 +41,7 @@ from novel_system.services.style_reference.schemas import (
     ValidationTargetKind,
 )
 from novel_system.services.style_reference.validation import run_sync_validate
+from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,10 @@ class PreviewService:
     def _call_llm(self, payload: dict) -> dict[str, Any]:
         # PR-8 §"_call_llm 统一" — 复用 _llm_helper.call_llm_node
         try:
-            return call_llm_node(PREVIEW_NODE_ID, payload, self._llm_client)
+            return call_llm_node(
+                PREVIEW_NODE_ID,
+                UntrustedPayload(payload),
+                self._llm_client,
+            )
         except LLMNodeError as exc:
             raise PreviewError(str(exc)) from exc

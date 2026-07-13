@@ -377,7 +377,9 @@ def test_style_ref_helper_applies_timeout_floor(monkeypatch) -> None:
             captured["timeout"] = request.timeout_seconds
             return SimpleNamespace(structured_output={})
 
-    _llm_helper.call_llm_node("n1", {}, _C())
+    from novel_system.services.style_reference.untrusted_data import UntrustedPayload
+
+    _llm_helper.call_llm_node("n1", UntrustedPayload({}), _C())
     assert captured["timeout"] == _llm_helper.DEFAULT_TIMEOUT_SECONDS
 
 

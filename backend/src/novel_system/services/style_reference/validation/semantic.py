@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.schemas import SemanticReportItem
+from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
 if TYPE_CHECKING:
     from novel_system.db.models import StyleReferenceProfile
@@ -46,7 +47,7 @@ def check_semantic(
         "style_features": style_features,
         "narrative_summary": narrative_summary,
     }
-    raw = call_llm_node(SEMANTIC_NODE_ID, payload, llm_client)
+    raw = call_llm_node(SEMANTIC_NODE_ID, UntrustedPayload(payload), llm_client)
     dimension_scores = raw.get("dimension_scores") or []
 
     reports: list[SemanticReportItem] = []

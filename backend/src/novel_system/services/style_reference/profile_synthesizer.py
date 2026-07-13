@@ -33,6 +33,7 @@ from novel_system.services.style_reference.schemas import (
     ProfileStatus,
     SynthesizedProfile,
 )
+from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
 if TYPE_CHECKING:
     from novel_system.db.models import (
@@ -169,7 +170,7 @@ class ProfileSynthesizer:
     def _call_llm(self, node_id: str, payload: dict) -> dict[str, Any]:
         # PR-8 §"_call_llm 统一" — 复用 _llm_helper.call_llm_node
         try:
-            return call_llm_node(node_id, payload, self._llm_client)
+            return call_llm_node(node_id, UntrustedPayload(payload), self._llm_client)
         except LLMNodeError as exc:
             raise SynthesizeError(str(exc)) from exc
 

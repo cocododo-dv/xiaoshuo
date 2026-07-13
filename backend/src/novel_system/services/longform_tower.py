@@ -653,6 +653,7 @@ class LongformTowerService:
         self, project_id: str, chapter_id: str, receipt: dict[str, Any], llm_client: Any | None
     ) -> list[dict[str, Any]]:
         from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
+        from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
         client = llm_client or self._build_llm_client()
         constraints = (receipt.get("contract") or {}).get("constraints") or []
@@ -677,7 +678,11 @@ class LongformTowerService:
             "chapter_prose": self._chapter_prose_for_audit(chapter_id)[:12000],
         }
         try:
-            structured = call_llm_node(AUDIT_ADJUDICATE_NODE_ID, payload, client)
+            structured = call_llm_node(
+                AUDIT_ADJUDICATE_NODE_ID,
+                UntrustedPayload(payload),
+                client,
+            )
         except LLMNodeError as exc:
             logger.warning("chapter audit adjudicate llm call failed: %s", exc)
             return []

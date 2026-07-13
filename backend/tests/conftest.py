@@ -183,15 +183,15 @@ def fake_extractor_llm():
             self.response_format = "json_object"
 
     def _extract_payload(user_msg: str) -> dict:
-        # base.py 拼接约定:`task_prompt + "\n\n" + json.dumps(payload)`,payload
-        # JSON 一定在 user_msg 的尾部。找最后一段 "\n\n{" 即可定位外层 JSON 起点。
-        marker = "\n\n{"
-        marker_pos = user_msg.rfind(marker)
-        if marker_pos < 0:
+        # 共享 helper 约定:payload JSON 位于唯一显式不可信数据边界内。
+        opening = re.search(r"\[UNTRUSTED_REFERENCE_DATA:[^\]]+\]\n", user_msg)
+        if opening is None:
             return {}
-        start = marker_pos + len(marker) - 1  # 指向 '{'
+        closing = user_msg.find("\n[/UNTRUSTED_REFERENCE_DATA]", opening.end())
+        if closing < 0:
+            return {}
         try:
-            return json.loads(user_msg[start:])
+            return json.loads(user_msg[opening.end():closing])
         except json.JSONDecodeError:
             return {}
 

@@ -111,6 +111,7 @@ class LibraryDeriveService:
 
     def _extract(self, project_id: str, chapter_id: str, content: str) -> list[dict[str, Any]]:
         from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
+        from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
         client = self._llm_client or self._build_client()
         payload = {
@@ -118,7 +119,7 @@ class LibraryDeriveService:
             "known_names": sorted(self._known_names(project_id)),
         }
         try:
-            structured = call_llm_node(DERIVE_NODE_ID, payload, client)
+            structured = call_llm_node(DERIVE_NODE_ID, UntrustedPayload(payload), client)
         except LLMNodeError as exc:
             logger.warning("library derive llm call failed: %s", exc)
             return []
