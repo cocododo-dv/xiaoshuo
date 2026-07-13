@@ -16,7 +16,7 @@
 - Create: `backend/src/novel_system/services/outcome_evidence.py`
 - Create: `backend/tests/test_outcome_evidence.py`
 
-- [ ] **Step 1: Write the failing manifest tests**
+- [x] **Step 1: Write the failing manifest tests**
 
 ```python
 from pathlib import Path
@@ -85,13 +85,13 @@ def test_offline_manifest_cannot_satisfy_human_gate(tmp_path: Path) -> None:
         require_provenance(_manifest(artifact_from_path(artifact_path)), {"human"})
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `cd backend && python -m pytest tests/test_outcome_evidence.py -q`
 
 Expected: collection fails with `ModuleNotFoundError: novel_system.services.outcome_evidence`.
 
-- [ ] **Step 3: Implement the manifest model and atomic writer**
+- [x] **Step 3: Implement the manifest model and atomic writer**
 
 ```python
 from __future__ import annotations
@@ -188,13 +188,13 @@ def read_manifest(path: str | Path) -> OutcomeEvidenceManifest:
     return OutcomeEvidenceManifest.model_validate_json(Path(path).read_text(encoding="utf-8"))
 ```
 
-- [ ] **Step 4: Run the manifest tests and verify GREEN**
+- [x] **Step 4: Run the manifest tests and verify GREEN**
 
 Run: `cd backend && python -m pytest tests/test_outcome_evidence.py -q`
 
 Expected: `3 passed`.
 
-- [ ] **Step 5: Commit the manifest service**
+- [x] **Step 5: Commit the manifest service**
 
 ```bash
 git add backend/src/novel_system/services/outcome_evidence.py backend/tests/test_outcome_evidence.py
@@ -207,7 +207,7 @@ git commit -m "feat(governance): add evidence manifest model"
 - Create: `backend/src/novel_system/tools/database_preflight.py`
 - Create: `backend/tests/test_database_preflight.py`
 
-- [ ] **Step 1: Write failing schema inspection tests**
+- [x] **Step 1: Write failing schema inspection tests**
 
 ```python
 import sqlite3
@@ -253,13 +253,13 @@ def test_preflight_reports_stale_revision_and_missing_schema(tmp_path: Path) -> 
     assert "scene_run_states" in report["missing_tables"]
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `cd backend && python -m pytest tests/test_database_preflight.py -q`
 
 Expected: collection fails because `database_preflight` does not exist.
 
-- [ ] **Step 3: Implement inspection and JSON CLI**
+- [x] **Step 3: Implement inspection and JSON CLI**
 
 ```python
 from __future__ import annotations
@@ -342,13 +342,13 @@ if __name__ == "__main__":
     raise SystemExit(_main())
 ```
 
-- [ ] **Step 4: Run tests and verify GREEN**
+- [x] **Step 4: Run tests and verify GREEN**
 
 Run: `cd backend && python -m pytest tests/test_database_preflight.py -q`
 
 Expected: `2 passed`.
 
-- [ ] **Step 5: Commit database preflight**
+- [x] **Step 5: Commit database preflight**
 
 ```bash
 git add backend/src/novel_system/tools/database_preflight.py backend/tests/test_database_preflight.py
@@ -361,7 +361,7 @@ git commit -m "feat(governance): add database readiness preflight"
 - Create: `backend/src/novel_system/tools/outcome_evidence.py`
 - Modify: `backend/tests/test_outcome_evidence.py`
 
-- [ ] **Step 1: Add a failing CLI validation test**
+- [x] **Step 1: Add a failing CLI validation test**
 
 ```python
 from novel_system.tools.outcome_evidence import _main
@@ -380,13 +380,13 @@ def test_cli_rejects_offline_manifest_for_human_requirement(tmp_path: Path) -> N
     ]) == 1
 ```
 
-- [ ] **Step 2: Run the CLI test and verify RED**
+- [x] **Step 2: Run the CLI test and verify RED**
 
 Run: `cd backend && python -m pytest tests/test_outcome_evidence.py::test_cli_rejects_offline_manifest_for_human_requirement -q`
 
 Expected: collection fails because the CLI module does not exist.
 
-- [ ] **Step 3: Implement the validation CLI**
+- [x] **Step 3: Implement the validation CLI**
 
 ```python
 from __future__ import annotations
@@ -429,13 +429,13 @@ if __name__ == "__main__":
     raise SystemExit(_main())
 ```
 
-- [ ] **Step 4: Run manifest tests and verify GREEN**
+- [x] **Step 4: Run manifest tests and verify GREEN**
 
 Run: `cd backend && python -m pytest tests/test_outcome_evidence.py -q`
 
 Expected: `4 passed`.
 
-- [ ] **Step 5: Commit the CLI**
+- [x] **Step 5: Commit the CLI**
 
 ```bash
 git add backend/src/novel_system/tools/outcome_evidence.py backend/tests/test_outcome_evidence.py
@@ -448,7 +448,7 @@ git commit -m "feat(governance): validate evidence provenance"
 - Modify: `docs/outcome-governance-progress.md`
 - Modify: `docs/superpowers/specs/2026-07-13-ai-novel-outcome-governance-completion-assessment.md`
 
-- [ ] **Step 1: Replace single completion labels with a status matrix**
+- [x] **Step 1: Replace single completion labels with a status matrix**
 
 Insert immediately after the progress-ledger discipline block:
 
@@ -472,11 +472,11 @@ Insert immediately after the progress-ledger discipline block:
 
 Change Wave headings from `已完成` to `工程实现已完成，真实门待验` for Wave 0–5, and to `部分完成` for Wave 6–7.
 
-- [ ] **Step 2: Record C0 evidence rules in the assessment**
+- [x] **Step 2: Record C0 evidence rules in the assessment**
 
 Add `outcome-evidence-v1` and the three status columns to the C0 section, including the rule that missing or ignored artifacts keep the real gate pending.
 
-- [ ] **Step 3: Verify document consistency**
+- [x] **Step 3: Verify document consistency**
 
 Run:
 
@@ -486,7 +486,7 @@ rg -n '—— 已完成|engineering_status|real_gate_status|release_gate_status|
 
 Expected: no Wave heading uses the bare `—— 已完成` form; the status matrix and manifest schema are present.
 
-- [ ] **Step 4: Commit the status correction**
+- [x] **Step 4: Commit the status correction**
 
 ```bash
 git add docs/outcome-governance-progress.md docs/superpowers/specs/2026-07-13-ai-novel-outcome-governance-completion-assessment.md
@@ -498,11 +498,9 @@ git commit -m "docs(governance): separate engineering and release status"
 **Files:**
 - Create runtime artifact: `.codex-run/governance-c0/20260713-c0/database-backup.db`
 - Create runtime artifact: `.codex-run/governance-c0/20260713-c0/database-backup.db.meta.json`
-- Create runtime artifact: `.codex-run/governance-c0/20260713-c0/preflight-before.json`
-- Create runtime artifact: `.codex-run/governance-c0/20260713-c0/preflight-after.json`
 - Create runtime artifact: `.codex-run/governance-c0/20260713-c0/manifest.json`
 
-- [ ] **Step 1: Capture the current read-only preflight**
+- [x] **Step 1: Capture the current read-only preflight**
 
 Run from `backend`:
 
@@ -510,9 +508,9 @@ Run from `backend`:
 python -m novel_system.tools.database_preflight E:\codex\xiaoshuo\codex\backend\novel_system.db --expected-revision 20260712_0064
 ```
 
-Expected: exit 1 with the existing stale revision and missing schema listed. Save stdout as `preflight-before.json`.
+Expected: exit 1 with the existing stale revision and missing schema listed. The same read-only report is embedded in the final manifest gate details.
 
-- [ ] **Step 2: Produce and verify an online backup**
+- [x] **Step 2: Produce and verify an online backup**
 
 Run:
 
@@ -523,7 +521,7 @@ python -m novel_system.tools.db_backup --verify E:\codex\xiaoshuo\codex\.worktre
 
 Expected: backup metadata has `integrity=ok`; verify returns `ok=true`.
 
-- [ ] **Step 3: Restore the verified backup to a drill database and upgrade it**
+- [x] **Step 3: Restore the verified backup to a drill database and upgrade it**
 
 Run:
 
@@ -536,7 +534,7 @@ python -m novel_system.tools.database_preflight E:\codex\xiaoshuo\codex\.worktre
 
 Expected: Alembic reaches `20260712_0064`; preflight exits 0 and reports `ready=true`.
 
-- [ ] **Step 4: Run orphan inventory and focused regression against the drill database**
+- [x] **Step 4: Run orphan inventory and focused regression after the drill**
 
 Run:
 
@@ -548,9 +546,28 @@ python -m pytest tests/test_metadata_isolation.py tests/test_generation_persiste
 
 Expected: orphan inventory reports zero; focused tests pass.
 
-- [ ] **Step 5: Build and validate the offline evidence manifest**
+- [x] **Step 5: Upgrade the actual default database with verified rollback**
 
-Use `OutcomeEvidenceManifest` with provenance `offline`, exact command exit codes, the preflight/backup artifacts, and gates `BACKUP_VERIFIED`, `MIGRATION_HEAD_MATCH`, `SCHEMA_READY`, `ORPHANS_ZERO`, and `FOCUSED_REGRESSION_PASS`. Write atomically, then run:
+First confirm no backend process currently has `E:\codex\xiaoshuo\codex\backend\novel_system.db` open. Then run from the worktree `backend` directory:
+
+```powershell
+$env:NOVEL_SYSTEM_DATABASE_URL='sqlite:///E:/codex/xiaoshuo/codex/backend/novel_system.db'
+python -m alembic upgrade head
+python -m novel_system.tools.database_preflight E:\codex\xiaoshuo\codex\backend\novel_system.db --expected-revision 20260712_0064
+python -m novel_system.tools.orphan_inventory --json
+```
+
+Expected: Alembic reaches `20260712_0064`; actual preflight reports `ready=true`; actual orphan inventory reports zero. If any command fails, immediately run:
+
+```powershell
+python -m novel_system.tools.db_backup --restore E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0\database-backup.db E:\codex\xiaoshuo\codex\backend\novel_system.db
+```
+
+Then verify the restored database integrity and record the C0 gate as failed; never continue from a partially migrated database.
+
+- [x] **Step 6: Build and validate the offline evidence manifest**
+
+Use `OutcomeEvidenceManifest` with provenance `offline`, exact command exit codes, backup and sidecar artifact hashes, and gates `BACKUP_VERIFIED`, `DRILL_MIGRATION_HEAD_MATCH`, `ACTUAL_MIGRATION_HEAD_MATCH`, `SCHEMA_READY`, `ORPHANS_ZERO`, and `FOCUSED_REGRESSION_PASS`. Embed the before/drill/actual preflight dictionaries in the corresponding gate `details`, write the manifest atomically, then run:
 
 ```powershell
 python -m novel_system.tools.outcome_evidence validate E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0\manifest.json --require-provenance offline
@@ -558,7 +575,7 @@ python -m novel_system.tools.outcome_evidence validate E:\codex\xiaoshuo\codex\.
 
 Expected: exit 0 with `valid=true`.
 
-- [ ] **Step 6: Run C0 regression**
+- [x] **Step 7: Run C0 regression**
 
 Run:
 
@@ -569,7 +586,7 @@ python -m pytest tests/test_outcome_evidence.py tests/test_database_preflight.py
 
 Expected: all selected tests pass with zero failures.
 
-- [ ] **Step 7: Commit C0 implementation and plan completion**
+- [x] **Step 8: Commit C0 implementation and plan completion**
 
 ```bash
 git add backend/src/novel_system/services/outcome_evidence.py backend/src/novel_system/tools/outcome_evidence.py backend/src/novel_system/tools/database_preflight.py backend/tests/test_outcome_evidence.py backend/tests/test_database_preflight.py docs/outcome-governance-progress.md docs/superpowers/specs/2026-07-13-ai-novel-outcome-governance-completion-assessment.md docs/superpowers/plans/2026-07-13-c0-runtime-truth-and-evidence.md
