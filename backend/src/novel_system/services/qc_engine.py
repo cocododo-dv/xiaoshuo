@@ -10,10 +10,18 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.contracts.qc import SoftQCOutput
-from novel_system.db.models import AttemptTracker, QcReport, SceneCard, SceneRunState
+from novel_system.db.models import (
+    AttemptTracker,
+    LlmCall,
+    LlmCallAttempt,
+    QcReport,
+    SceneCard,
+    SceneRunState,
+)
 from novel_system.services.human_review_manager import HumanReviewManager
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_task_runner import LLMNodeContinuityError, LLMNodeExecutionError, LLMNodeRunner
@@ -37,6 +45,168 @@ HARD_QC_STYLE_ONLY_ISSUE_KEYS = {"style_compliance", "style_rule_violation", "st
 HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS = {"character_role_inconsistency"}
 UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {"character_pronoun_ambiguity", "character_pronoun_continuity"}
 
+_QC_CONTROL_PLANE_ERROR_CODES = {
+    "CONTINUITY_BUDGET_EXCEEDED",
+    "LLM_USAGE_EXCEEDS_RESERVATION",
+}
+
+
+def _is_proven_dispatched_provider_failure(
+    session: Session,
+    *,
+    error: LLMNodeExecutionError,
+    scene: SceneCard,
+    state: SceneRunState,
+    expected_step: str,
+    execution_step_key: str,
+) -> bool:
+    """Allow QC degradation only for an exact, durable provider-failure ledger."""
+    error_code = str(error.error_code or "")
+    if (
+        not error_code
+        or error_code.startswith("RUN_")
+        or error_code.startswith("LLM_ACCOUNTING_")
+        or error_code.startswith("LLM_SCENE_")
+        or error_code.startswith("LLM_PROVIDER_ATTEMPT_")
+        or error_code in _QC_CONTROL_PLANE_ERROR_CODES
+    ):
+        return False
+    current_execution_id = str(state.active_execution_id or "").strip()
+    if not current_execution_id:
+        return False
+    parent = session.get(LlmCall, error.llm_call_id)
+    if parent is None:
+        return False
+    if (
+        parent.scope_type != "scene"
+        or parent.scope_id != scene.scene_id
+        or parent.scene_id != scene.scene_id
+        or parent.chapter_id != scene.chapter_id
+        or parent.execution_id != current_execution_id
+        or parent.execution_step_key != execution_step_key
+        or parent.step != expected_step
+        or parent.node_id != expected_step
+        or parent.accounting_status != "failed"
+        or parent.error_code != error_code
+        or parent.request_dispatched_at is None
+        or parent.settled_at is None
+    ):
+        return False
+    attempts = list(
+        session.scalars(
+            select(LlmCallAttempt)
+            .where(LlmCallAttempt.llm_call_id == parent.llm_call_id)
+            .order_by(LlmCallAttempt.provider_attempt_no)
+        )
+    )
+    if not attempts or [row.provider_attempt_no for row in attempts] != list(range(len(attempts))):
+        return False
+
+    aggregate_fields = (
+        "estimated_tokens",
+        "reserved_tokens",
+        "budget_charged_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "latency_ms",
+    )
+    for attempt in attempts:
+        numeric_values = (
+            attempt.provider_attempt_no,
+            attempt.request_max_output_tokens,
+            *(getattr(attempt, field) for field in aggregate_fields),
+        )
+        if any(not isinstance(value, int) or value < 0 for value in numeric_values):
+            return False
+        if (
+            attempt.accounting_status != "failed"
+            or attempt.request_dispatched_at is None
+            or attempt.settled_at is None
+            or attempt.estimated_tokens > attempt.reserved_tokens
+            or attempt.budget_charged_tokens > attempt.reserved_tokens
+            or attempt.budget_charged_tokens
+            != min(attempt.total_tokens, attempt.reserved_tokens)
+            or attempt.total_tokens != attempt.prompt_tokens + attempt.completion_tokens
+            or not str(attempt.error_code or "").strip()
+        ):
+            return False
+
+    for field in aggregate_fields:
+        parent_value = getattr(parent, field)
+        if (
+            not isinstance(parent_value, int)
+            or parent_value < 0
+            or parent_value != sum(getattr(attempt, field) for attempt in attempts)
+        ):
+            return False
+    if parent.usage_is_estimate != any(attempt.usage_is_estimate for attempt in attempts):
+        return False
+    if (
+        parent.estimated_tokens > parent.reserved_tokens
+        or parent.budget_charged_tokens != min(parent.total_tokens, parent.reserved_tokens)
+    ):
+        return False
+
+    final_attempt = attempts[-1]
+    return bool(
+        final_attempt.error_code == error_code
+        and any(attempt.error_code == error_code for attempt in attempts)
+    )
+
+
+def _is_proven_undispatched_continuity_rejection(
+    session: Session,
+    *,
+    error: LLMNodeContinuityError,
+    scene: SceneCard,
+    state: SceneRunState,
+    expected_step: str,
+    execution_step_key: str,
+) -> bool:
+    """Allow continuity degradation only from the exact pre-dispatch rejection ledger."""
+    current_execution_id = str(state.active_execution_id or "").strip()
+    if not current_execution_id or error.error_code != "CONTINUITY_BUDGET_EXCEEDED":
+        return False
+    parent = session.get(LlmCall, error.llm_call_id)
+    if parent is None:
+        return False
+    if (
+        parent.scope_type != "scene"
+        or parent.scope_id != scene.scene_id
+        or parent.scene_id != scene.scene_id
+        or parent.chapter_id != scene.chapter_id
+        or parent.execution_id != current_execution_id
+        or parent.execution_step_key != execution_step_key
+        or parent.step != expected_step
+        or parent.node_id != expected_step
+        or parent.accounting_status != "rejected"
+        or parent.error_code != "CONTINUITY_BUDGET_EXCEEDED"
+        or parent.request_dispatched_at is not None
+        or parent.settled_at is None
+        or parent.usage_is_estimate is not True
+        or any(
+            getattr(parent, field) != 0
+            for field in (
+                "estimated_tokens",
+                "reserved_tokens",
+                "budget_charged_tokens",
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "latency_ms",
+            )
+        )
+    ):
+        return False
+    return session.scalar(
+        select(LlmCallAttempt.attempt_id)
+        .where(
+            LlmCallAttempt.llm_call_id == parent.llm_call_id,
+        )
+        .limit(1)
+    ) is None
+
 
 def _build_qc_report_id(
     scene_id: str,
@@ -58,6 +228,8 @@ class HardQcDecision:
     next_action: str
     should_continue: bool
     stop_reason: str | None = None
+    llm_call_id: str | None = None
+    execution_step_key: str | None = None
 
 
 @dataclass(slots=True)
@@ -69,6 +241,8 @@ class SoftQcDecision:
     next_action: str
     should_continue: bool
     stop_reason: str | None = None
+    llm_call_id: str | None = None
+    execution_step_key: str | None = None
 
 
 class OfflineHardQcClient:
@@ -645,6 +819,7 @@ class HardQcEngine:
         bundle: dict[str, Any],
         neutral_draft_row_id: str,
         neutral_content: str,
+        execution_step_key: str = "hard_qc:0",
     ) -> HardQcDecision:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -667,10 +842,20 @@ class HardQcEngine:
                 offline_client_factory=OfflineHardQcClient,
                 source_draft_row_id=neutral_draft_row_id,
                 source_draft_content=neutral_content,
+                execution_step_key=execution_step_key,
             )
             llm_call_id = node_result.llm_call_id
             payload = node_result.response.structured_output or {}
         except LLMNodeContinuityError as exc:
+            if not _is_proven_undispatched_continuity_rejection(
+                self.session,
+                error=exc,
+                scene=scene,
+                state=state,
+                expected_step="hard_qc",
+                execution_step_key=execution_step_key,
+            ):
+                raise
             llm_call_id = exc.llm_call_id
             degraded_reason = "hard_qc_continuity_budget_exceeded"
             payload = self._degraded_pass_payload(
@@ -679,17 +864,20 @@ class HardQcEngine:
                 continuity_warning=exc.continuity_warning,
             )
         except LLMNodeExecutionError as exc:
+            if not _is_proven_dispatched_provider_failure(
+                self.session,
+                error=exc,
+                scene=scene,
+                state=state,
+                expected_step="hard_qc",
+                execution_step_key=execution_step_key,
+            ):
+                raise
             llm_call_id = exc.llm_call_id
             degraded_reason = "hard_qc_execution_failed"
             payload = self._degraded_pass_payload(
                 issue_key="hard_qc_execution_failed",
                 message=f"QC execution failed: {exc.message}",
-            )
-        except Exception as exc:
-            degraded_reason = "hard_qc_execution_failed"
-            payload = self._degraded_pass_payload(
-                issue_key="hard_qc_execution_failed",
-                message=f"QC execution failed: {exc}",
             )
         if degraded_reason is None:
             try:
@@ -753,6 +941,7 @@ class HardQcEngine:
                     failure_reason="style_reference validation found deterministic plagiarism evidence; human review is required.",
                     trigger_reason="style_validation_plagiarism",
                     llm_call_id=llm_call_id,
+                    execution_step_key=execution_step_key,
                 )
             if style_verdict in ("fail", "partial"):
                 style_issue = classify_issue(
@@ -782,6 +971,7 @@ class HardQcEngine:
                 failure_reason=self._failure_reason_for_circuit_breaker(circuit_breaker_reason, branch),
                 trigger_reason=circuit_breaker_reason,
                 llm_call_id=llm_call_id,
+                execution_step_key=execution_step_key,
             )
 
         if branch == "human_review_required":
@@ -796,6 +986,7 @@ class HardQcEngine:
                 failure_reason="hard_qc explicitly requested human review before style generation.",
                 trigger_reason="hard_qc_requested_human_review",
                 llm_call_id=llm_call_id,
+                execution_step_key=execution_step_key,
             )
 
         if branch == "rewrite_partial":
@@ -815,6 +1006,7 @@ class HardQcEngine:
             next_action=qc_report.next_action or "",
             human_review_event_id=None,
             llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
         )
         self.session.flush()
         return HardQcDecision(
@@ -825,6 +1017,8 @@ class HardQcEngine:
             next_action=qc_report.next_action or "",
             should_continue=branch == "continue",
             stop_reason=degraded_reason,
+            llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
         )
 
     @staticmethod
@@ -1176,6 +1370,7 @@ class HardQcEngine:
         next_action: str,
         human_review_event_id: str | None,
         llm_call_id: str | None = None,
+        execution_step_key: str = "hard_qc:0",
         error_code: str | None = None,
         retryable: bool | None = None,
         continuity_warning: dict[str, Any] | None = None,
@@ -1185,6 +1380,7 @@ class HardQcEngine:
             "resolution_code": resolution_code,
             "next_action": next_action,
             "human_review_event_id": human_review_event_id,
+            "execution_step_key": execution_step_key,
         }
         if llm_call_id is not None:
             details_json["llm_call_id"] = llm_call_id
@@ -1223,6 +1419,7 @@ class HardQcEngine:
         trigger_reason: str,
         continuity_warning: dict[str, Any] | None = None,
         llm_call_id: str | None = None,
+        execution_step_key: str = "hard_qc:0",
         error_code: str | None = None,
         retryable: bool | None = None,
     ) -> HardQcDecision:
@@ -1268,6 +1465,7 @@ class HardQcEngine:
             next_action=qc_report.next_action or "",
             human_review_event_id=event.event_id,
             llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
             error_code=error_code,
             retryable=retryable,
             continuity_warning=continuity_warning,
@@ -1281,6 +1479,8 @@ class HardQcEngine:
             next_action=qc_report.next_action or "",
             should_continue=False,
             stop_reason=trigger_reason,
+            llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
         )
 
 class SoftQcEngine:
@@ -1304,6 +1504,7 @@ class SoftQcEngine:
         bundle: dict[str, Any],
         source_draft_row_id: str,
         source_draft_content: str,
+        execution_step_key: str = "soft_qc:0",
     ) -> SoftQcDecision:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -1326,10 +1527,20 @@ class SoftQcEngine:
                 offline_client_factory=OfflineSoftQcClient,
                 source_draft_row_id=source_draft_row_id,
                 source_draft_content=source_draft_content,
+                execution_step_key=execution_step_key,
             )
             llm_call_id = node_result.llm_call_id
             payload = node_result.response.structured_output or {}
         except LLMNodeContinuityError as exc:
+            if not _is_proven_undispatched_continuity_rejection(
+                self.session,
+                error=exc,
+                scene=scene,
+                state=state,
+                expected_step="soft_qc",
+                execution_step_key=execution_step_key,
+            ):
+                raise
             llm_call_id = exc.llm_call_id
             degraded_reason = "soft_qc_continuity_budget_exceeded"
             payload = self._degraded_waive_payload(
@@ -1338,17 +1549,20 @@ class SoftQcEngine:
                 continuity_warning=exc.continuity_warning,
             )
         except LLMNodeExecutionError as exc:
+            if not _is_proven_dispatched_provider_failure(
+                self.session,
+                error=exc,
+                scene=scene,
+                state=state,
+                expected_step="soft_qc",
+                execution_step_key=execution_step_key,
+            ):
+                raise
             llm_call_id = exc.llm_call_id
             degraded_reason = "soft_qc_execution_failed"
             payload = self._degraded_waive_payload(
                 issue_key="soft_qc_execution_failed",
                 message=f"soft QC execution failed: {exc.message}",
-            )
-        except Exception as exc:
-            degraded_reason = "soft_qc_execution_failed"
-            payload = self._degraded_waive_payload(
-                issue_key="soft_qc_execution_failed",
-                message=f"soft QC execution failed: {exc}",
             )
         if degraded_reason is None:
             try:
@@ -1412,6 +1626,7 @@ class SoftQcEngine:
                     human_review_event_id=accepted_waiver["event_id"],
                     rewrite_brief=payload["rewrite_brief"],
                     llm_call_id=llm_call_id,
+                    execution_step_key=execution_step_key,
                 )
                 self.session.flush()
                 return SoftQcDecision(
@@ -1422,6 +1637,8 @@ class SoftQcEngine:
                     next_action=qc_report.next_action or "",
                     should_continue=True,
                     stop_reason=f"accepted_soft_risk:{accepted_waiver['event_id']}",
+                    llm_call_id=llm_call_id,
+                    execution_step_key=execution_step_key,
                 )
             self._clear_downstream_outputs(state)
             return self._escalate_existing_report(
@@ -1439,6 +1656,7 @@ class SoftQcEngine:
                 trigger_reason=trigger_reason,
                 source_draft_content_hash=source_draft_content_hash,
                 llm_call_id=llm_call_id,
+                execution_step_key=execution_step_key,
             )
 
         self._apply_issue_tracking(state, payload["issues"])
@@ -1461,6 +1679,7 @@ class SoftQcEngine:
             human_review_event_id=None,
             rewrite_brief=payload["rewrite_brief"],
             llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
         )
         self.session.flush()
         return SoftQcDecision(
@@ -1471,6 +1690,8 @@ class SoftQcEngine:
             next_action=qc_report.next_action or "",
             should_continue=branch in {"continue", "waive"},
             stop_reason=degraded_reason,
+            llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
         )
 
     @staticmethod
@@ -1709,6 +1930,7 @@ class SoftQcEngine:
         human_review_event_id: str | None,
         rewrite_brief: list[str],
         llm_call_id: str | None = None,
+        execution_step_key: str = "soft_qc:0",
         error_code: str | None = None,
         retryable: bool | None = None,
         continuity_warning: dict[str, Any] | None = None,
@@ -1720,6 +1942,7 @@ class SoftQcEngine:
             "source_draft_row_id": source_draft_row_id,
             "human_review_event_id": human_review_event_id,
             "rewrite_brief": rewrite_brief,
+            "execution_step_key": execution_step_key,
         }
         if llm_call_id is not None:
             details_json["llm_call_id"] = llm_call_id
@@ -1758,6 +1981,7 @@ class SoftQcEngine:
         trigger_reason: str,
         continuity_warning: dict[str, Any] | None = None,
         llm_call_id: str | None = None,
+        execution_step_key: str = "soft_qc:0",
         error_code: str | None = None,
         retryable: bool | None = None,
         source_draft_content_hash: str | None = None,
@@ -1813,6 +2037,7 @@ class SoftQcEngine:
             human_review_event_id=event.event_id,
             rewrite_brief=qc_report.rewrite_brief_json or [],
             llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
             error_code=error_code,
             retryable=retryable,
             continuity_warning=continuity_warning,
@@ -1826,4 +2051,6 @@ class SoftQcEngine:
             next_action=qc_report.next_action or "",
             should_continue=False,
             stop_reason=trigger_reason,
+            llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
         )

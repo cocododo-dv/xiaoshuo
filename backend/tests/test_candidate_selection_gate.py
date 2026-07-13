@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import func, select
 
 from novel_system.db.models import (
     ChapterGoal,
     ChapterState,
     FinalScene,
     HumanReviewEvent,
+    LlmCall,
+    QcReport,
     RelationProfile,
     SceneCard,
     SceneDraft,
@@ -167,6 +170,9 @@ def test_critical_scene_pauses_before_selection(session) -> None:
 
     gate = _selection_gate(session)
     details = gate.details_json
+    assert state.run_checkpoint == "selection_wait"
+    assert state.run_checkpoint_json["artifact_refs"]["selection_event_id"] == gate.event_id
+    assert state.run_checkpoint_json["artifact_refs"]["selection_candidate_row_ids"] == details["candidate_row_ids"]
     assert details["decision_status"] == "awaiting"
     assert details["candidate_row_ids"]
     assert sorted(details["blinded_order"]) == sorted(details["candidate_row_ids"])
@@ -382,6 +388,10 @@ def test_select_then_resume_archives_the_chosen_candidate(client, session) -> No
     assert data["author_state"] == "archived"
 
     state = session.get(SceneRunState, SCENE_ID)
+    assert state.run_checkpoint == "archived"
+    assert state.run_execution_status == "completed"
+    assert state.active_execution_id == "idempotency:w3-resume-1"
+    assert state.run_checkpoint_json["execution_id"] == "idempotency:w3-resume-1"
     final = session.get(FinalScene, state.current_final_scene_row_id)
     assert final is not None and final.status == "archived"
     # 终稿=作者选中稿，或其唯一一次批判修订稿（§5.5 允许；血缘必须指向选中稿）
@@ -409,3 +419,308 @@ def test_select_then_resume_archives_the_chosen_candidate(client, session) -> No
     session.refresh(gate)
     assert gate.details_json["decision_status"] == "selected"
     assert gate.status != "awaiting_review"  # gate 已闭合
+
+
+def test_select_then_resume_accepts_completed_de_template_candidate_without_replaying_style_provider(
+    client,
+    session,
+    monkeypatch,
+) -> None:
+    _seed_scene(session)
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation._anti_template_quality_gate",
+        lambda *args, **kwargs: {
+            "triggered": True,
+            "rewrite_pass": 1,
+            "score": 0.0,
+            "risk_dimensions": ["model_voice"],
+            "quality_signal_ids": ["quality:selection-resume-de-template"],
+            "findings": [],
+        },
+    )
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+
+    gate = _selection_gate(session)
+    offered_row_ids = gate.details_json["candidate_row_ids"]
+    chosen = next(
+        session.get(SceneDraft, row_id)
+        for row_id in offered_row_ids
+        if session.get(SceneDraft, row_id).stage == "de_template"
+    )
+    state = session.get(SceneRunState, SCENE_ID)
+    work_items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
+    chosen_item = next(item for item in work_items if item["final"]["row_id"] == chosen.row_id)
+    assert chosen_item["de_template_outcome"]["status"] == "completed"
+    assert chosen_item["base"]["row_id"] != chosen_item["final"]["row_id"]
+
+    assert client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen.row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-de-template"},
+    ).status_code == 200
+    style_rows_before = list(
+        session.execute(
+            select(SceneDraft.row_id)
+            .where(
+                SceneDraft.scene_id == SCENE_ID,
+                SceneDraft.stage.in_(("style_draft", "de_template")),
+            )
+            .order_by(SceneDraft.row_id)
+        ).scalars()
+    )
+    style_call_ids_before = list(
+        session.execute(
+            select(LlmCall.llm_call_id)
+            .where(
+                LlmCall.scene_id == SCENE_ID,
+                LlmCall.step.in_(("style_draft", "de_template")),
+            )
+            .order_by(LlmCall.llm_call_id)
+        ).scalars()
+    )
+
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-de-template"},
+    )
+
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["data"]["scene_status"] == "archived"
+    assert list(
+        session.execute(
+            select(SceneDraft.row_id)
+            .where(
+                SceneDraft.scene_id == SCENE_ID,
+                SceneDraft.stage.in_(("style_draft", "de_template")),
+            )
+            .order_by(SceneDraft.row_id)
+        ).scalars()
+    ) == style_rows_before
+    assert list(
+        session.execute(
+            select(LlmCall.llm_call_id)
+            .where(
+                LlmCall.scene_id == SCENE_ID,
+                LlmCall.step.in_(("style_draft", "de_template")),
+            )
+            .order_by(LlmCall.llm_call_id)
+        ).scalars()
+    ) == style_call_ids_before
+
+
+def test_resume_rejects_selected_candidate_with_non_style_lineage_stage_without_provider_replay(
+    client,
+    session,
+) -> None:
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    chosen_row_id = gate.details_json["candidate_row_ids"][0]
+    assert client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-invalid-stage"},
+    ).status_code == 200
+    chosen = session.get(SceneDraft, chosen_row_id)
+    chosen.stage = "soft_patch"
+    session.commit()
+    before_calls = session.scalar(select(func.count()).select_from(LlmCall))
+
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-invalid-stage"},
+    )
+
+    assert resumed.status_code == 409
+    assert resumed.json()["error"]["code"] == "RUN_CHECKPOINT_CORRUPT"
+    assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
+
+
+@pytest.mark.parametrize("mutation", ("budget", "basis", "counter"))
+def test_selection_resume_validates_budget_checkpoint_before_provider_work(
+    client,
+    session,
+    mutation: str,
+) -> None:
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    chosen_row_id = gate.details_json["candidate_row_ids"][0]
+    assert client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": f"w3-select-budget-{mutation}"},
+    ).status_code == 200
+    state = session.get(SceneRunState, SCENE_ID)
+    if mutation == "budget":
+        state.scene_token_budget += 1
+    elif mutation == "basis":
+        state.scene_budget_basis_json = {"tampered": True}
+    else:
+        state.total_attempt_count = state.attempt_budget + 1
+    session.commit()
+    before_calls = session.scalar(select(func.count()).select_from(LlmCall))
+
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": f"w3-resume-budget-{mutation}"},
+    )
+
+    assert resumed.status_code == 409
+    assert resumed.json()["error"]["code"] == "RUN_CHECKPOINT_CORRUPT"
+    assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
+
+
+def test_resume_rejects_selected_candidate_whose_durable_source_was_tampered(client, session) -> None:
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    chosen_row_id = gate.details_json["candidate_row_ids"][0]
+
+    selected = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-tampered"},
+    )
+    assert selected.status_code == 200
+    draft = session.get(SceneDraft, chosen_row_id)
+    draft.source_bundle_hash = "sha256:tampered"
+    session.commit()
+
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-tampered"},
+    )
+    assert resumed.status_code == 409
+    assert resumed.json()["error"]["code"] == "RUN_CHECKPOINT_CORRUPT"
+
+
+def test_resume_reports_missing_checkpoint_candidate_without_provider_replay(client, session) -> None:
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    chosen_row_id = gate.details_json["candidate_row_ids"][0]
+    assert client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-missing-candidate"},
+    ).status_code == 200
+    session.delete(session.get(SceneDraft, chosen_row_id))
+    session.commit()
+    before_calls = session.scalar(select(func.count()).select_from(LlmCall))
+
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-missing-candidate"},
+    )
+
+    assert resumed.status_code == 409
+    assert resumed.json()["error"]["code"] == "RUN_CHECKPOINT_OUTPUT_MISSING"
+    assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
+
+
+def test_resume_validates_neutral_prefix_before_post_selection_provider_work(client, session) -> None:
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    chosen_row_id = gate.details_json["candidate_row_ids"][0]
+    assert client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-missing-neutral"},
+    ).status_code == 200
+    state = session.get(SceneRunState, SCENE_ID)
+    neutral_row_id = state.run_checkpoint_json["artifact_refs"]["neutral_draft_row_id"]
+    session.delete(session.get(SceneDraft, neutral_row_id))
+    session.commit()
+    before_calls = session.scalar(select(func.count()).select_from(LlmCall))
+
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-missing-neutral"},
+    )
+
+    assert resumed.status_code == 409
+    assert resumed.json()["error"]["code"] == "RUN_CHECKPOINT_OUTPUT_MISSING"
+    assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
+
+
+def test_resume_validates_hard_qc_report_content_hash_before_provider_work(client, session) -> None:
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    chosen_row_id = gate.details_json["candidate_row_ids"][0]
+    assert client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-corrupt-hard-report"},
+    ).status_code == 200
+    state = session.get(SceneRunState, SCENE_ID)
+    report = session.get(QcReport, state.run_checkpoint_json["artifact_refs"]["qc_report_id"])
+    report.rewrite_brief_json = [{"instruction": "tampered after checkpoint"}]
+    session.commit()
+    before_calls = session.scalar(select(func.count()).select_from(LlmCall))
+
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-corrupt-hard-report"},
+    )
+
+    assert resumed.status_code == 409
+    assert resumed.json()["error"]["code"] == "RUN_CHECKPOINT_CORRUPT"
+    assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
+
+
+def test_resume_uses_contiguous_hashes_when_first_generated_candidate_is_filtered(
+    client,
+    session,
+    monkeypatch,
+) -> None:
+    from novel_system.services import source_safety
+
+    _seed_scene(session)
+    original_scan = source_safety.scan_source_safety
+
+    def _filter_first_style_candidate(text: str, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        if "draft #2" in text:
+            return {"safe": False, "matches": [{"rule": "test-filter"}]}
+        return original_scan(text, *args, **kwargs)
+
+    monkeypatch.setattr(source_safety, "scan_source_safety", _filter_first_style_candidate)
+    monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    offered = gate.details_json["candidate_row_ids"]
+    state = session.get(SceneRunState, SCENE_ID)
+    all_candidates = state.run_checkpoint_json["artifact_refs"]["candidate_row_ids"]
+    assert len(offered) < len(all_candidates)
+    assert offered[0] != all_candidates[0]
+    chosen_row_id = offered[0]
+
+    assert client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-filtered-first"},
+    ).status_code == 200
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-filtered-first"},
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["data"]["scene_status"] == "archived"

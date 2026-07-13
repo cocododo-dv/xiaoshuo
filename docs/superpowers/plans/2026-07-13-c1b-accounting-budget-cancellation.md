@@ -190,20 +190,25 @@ git commit -m "feat(accounting): centralize provider call ledger"
 - Modify: `backend/tests/test_idempotency_contract.py`
 - Modify: `backend/tests/test_generation_persistence.py`
 
-- [ ] 为每次作者动作建立稳定 `execution_id`：同步 run 使用 `idempotency:<X-Idempotency-Key>`，scene job 使用 `job_id`，chapter runner 使用 `chapter_job_id:scene_id`；禁止随机重试 id 冒充同一执行。
-- [ ] `active_execution_id` 用 CAS 获取：同 id 的 active/failed execution 可恢复；不同 id 只能在旧 execution 已 failed/completed/cancelled 后原子 supersede。两个不同同步 key、scene job、chapter job 并发只允许一个获胜；旧 id 被取代后再重试稳定返回 `RUN_EXECUTION_SUPERSEDED`，不得覆盖新游标。
-- [ ] 同一 execution 也必须有唯一 owner lease：同步路径用 IdempotencyKey 的唯一 `worker_id/attempt_no/lease_expires_at`，job 路径用 ChapterRunJob owner/lease。started reclaim 必须做包含旧 owner、attempt、expiry 的条件 UPDATE；活 lease 一律 `IN_PROGRESS`，只有过期 lease 的 CAS 单赢家能恢复。
-- [ ] 每个 durable checkpoint 续租；provider 调用前按 `request.timeout_seconds + grace` 延长 lease，覆盖长网络节点，调用后再次续租。禁止继续沿用“固定 TTL 且中途不续租”的旧注释/实现。
-- [ ] checkpoint 固定宏阶段并按顺序推进：`budget_ready -> planning_ready -> bundle_ready -> neutral_ready -> hard_qc_ready -> style_ready -> selection_wait|soft_qc_ready -> near_final_ready -> archived`，另有 `cancelled`。checkpoint JSON 同时保存 `node_key + sub_index`（候选序号、continuation 分段、QC/patch/rewrite 迭代）以及恢复所需 bundle/draft/report/candidate/final row id、hash、策略和分支结果；每个子调用产物提交后推进，不能等整批完成才记录。
-- [ ] 当前节点的有效业务产物与 checkpoint 在同一事务提交；同 `execution_id` 重试先校验 checkpoint 所指行与 bundle hash，再从下一节点继续，不调用已完成 provider、不重复扣 token、不重复插确定性 PK。
-- [ ] 新 `execution_id` 才允许初始化新的运行游标；即使新执行也不得重置生命周期 token、reserved、attempt count/budget 或 latest-valid。
-- [ ] 每条 scene LlmCall 写 `execution_id + execution_step_key`；同步/异步都按该键与 checkpoint 对账，不能只靠 nullable `run_job_id` 或 scene 历史猜测。checkpoint 引用缺行/hash 不符时稳定失败 `RUN_CHECKPOINT_CORRUPT`，不得静默重跑已计费节点。若本 execution/step 账本已 settled 但产物尚未形成 checkpoint（进程在极窄窗口崩溃），返回 `RUN_CHECKPOINT_OUTPUT_MISSING` 并要求作者显式新执行，不能自动二次收费。
-- [ ] checkpoint 恢复复用 Task2 dispatch 状态：未 dispatch 的遗留 reservation 可释放后重做当前 step；已 dispatch/未知或已 settled 但无产物一律保守结算并阻断同 execution 自动重发。
-- [ ] `_prepare_state_for_run` 只在新的 execution 上清理可清理的 current 指针，不再对同 execution retry 清空；`from_step/resume` 要么接到 checkpoint 服务，要么删除无效参数，禁止保留“看似可恢复、实际未使用”的接口。
-- [ ] 集成红测：neutral 和 style 已 commit，下一节点失败；同 key 重试后 neutral/style provider call_count 与 used 不增、无重复 SceneDraft PK、latest-valid 保留、从失败节点继续。另测 Best-of-N 候选 1 已提交、候选 2 失败：重试只从候选 2 开始。
-- [ ] 集成红测：同 key 在 `IdempotencyKey.status=started/failed` 后重入复用同 execution；不同 payload 仍 409，不并发二次执行。
-- [ ] 两 Session/两个 owner barrier 红测：活 lease 下同 key 第二请求只能 IN_PROGRESS；过期 lease 并发 reclaim 只有一个 CAS 成功，provider 与 budget 只执行一次。
-- [ ] barrier 红测：两个不同 execution 同时 acquire 只允许一个；失败 execution 被新 execution supersede 后，旧 key 重试不改变 checkpoint、budget 或 active execution。
+- [x] 为每次作者动作建立稳定 `execution_id`：同步 run 使用 `idempotency:<X-Idempotency-Key>`，scene job 使用 `job_id`，chapter runner 使用 `chapter_job_id:scene_id`；禁止随机重试 id 冒充同一执行。
+- [x] `active_execution_id` 用 CAS 获取：同 id 的 active/failed execution 可恢复；不同 id 只能在旧 execution 已 failed/completed/cancelled 后原子 supersede。两个不同同步 key、scene job、chapter job 并发只允许一个获胜；旧 id 被取代后再重试稳定返回 `RUN_EXECUTION_SUPERSEDED`，不得覆盖新游标。
+- [x] 同一 execution 也必须有唯一 owner lease：同步路径用 IdempotencyKey 的唯一 `worker_id/attempt_no/lease_expires_at`，job 路径用 ChapterRunJob owner/lease。started reclaim 必须做包含旧 owner、attempt、expiry 的条件 UPDATE；活 lease 一律 `IN_PROGRESS`，只有过期 lease 的 CAS 单赢家能恢复。
+- [x] 每个 durable checkpoint 续租；provider 调用前按 `request.timeout_seconds + grace` 延长 lease，覆盖长网络节点，调用后再次续租。禁止继续沿用“固定 TTL 且中途不续租”的旧注释/实现。
+- [x] checkpoint 固定宏阶段并按顺序推进：`budget_ready -> planning_ready -> bundle_ready -> neutral_ready -> hard_qc_ready -> style_ready -> selection_wait|soft_qc_ready -> near_final_ready -> archived`，另有 `cancelled`。checkpoint JSON 同时保存 `node_key + sub_index`（候选序号、continuation 分段、QC/patch/rewrite 迭代）以及恢复所需 bundle/draft/report/candidate/final row id、hash、策略和分支结果；每个子调用产物提交后推进，不能等整批完成才记录。
+- [x] 当前节点的有效业务产物与 checkpoint 在同一事务提交；同 `execution_id` 重试先校验 checkpoint 所指行与 bundle hash，再从下一节点继续，不调用已完成 provider、不重复扣 token、不重复插确定性 PK。
+- [x] 新 `execution_id` 才允许初始化新的运行游标；即使新执行也不得重置生命周期 token、reserved、attempt count/budget 或 latest-valid。
+- [x] 每条 scene LlmCall 写 `execution_id + execution_step_key`；同步/异步都按该键与 checkpoint 对账，不能只靠 nullable `run_job_id` 或 scene 历史猜测。checkpoint 引用缺行/hash 不符时稳定失败 `RUN_CHECKPOINT_CORRUPT`，不得静默重跑已计费节点。若本 execution/step 账本已 settled 但产物尚未形成 checkpoint（进程在极窄窗口崩溃），返回 `RUN_CHECKPOINT_OUTPUT_MISSING` 并要求作者显式新执行，不能自动二次收费。
+- [x] checkpoint 恢复复用 Task2 dispatch 状态：未 dispatch 的遗留 reservation 可释放后重做当前 step；已 dispatch/未知或已 settled 但无产物一律保守结算并阻断同 execution 自动重发。
+- [x] `_prepare_state_for_run` 只在新的 execution 上清理可清理的 current 指针，不再对同 execution retry 清空；`from_step/resume` 要么接到 checkpoint 服务，要么删除无效参数，禁止保留“看似可恢复、实际未使用”的接口。
+- [x] 集成红测：neutral 和 style 已 commit，下一节点失败；同 key 重试后 neutral/style provider call_count 与 used 不增、无重复 SceneDraft PK、latest-valid 保留、从失败节点继续。另测 Best-of-N 候选 1 已提交、候选 2 失败：重试只从候选 2 开始。
+- [x] `generate_long_form_continuation` 当前无生产 caller；本 Task 只交付 service 级稳定 segment row/step、累计描述和 resume 验证。未来任何生产接入必须同时传 `segment_checkpoint` 与 `step_reconciler`：caller 在每个首缺 segment 的 provider 调用前按稳定 `long_form_continuation:<index>` 对账，已 dispatched/settled 但 segment 缺失时阻断为 `RUN_CHECKPOINT_OUTPUT_MISSING`、不得重发；成功后把 segment SceneDraft + AttemptTracker + cumulative descriptor + sub_index 在同一事务 commit。禁止依赖 service 内 commit；无 callback 仅保留测试/工具的旧单事务兼容语义。
+- [x] Task 3F 边界审计：`run_scene` 与 `resume_after_selection` 在 `_finalize_after_style` 汇合。soft 之后至 `archived` 的剩余 provider 出口只有可选 auto critique 的 `auto_critique.llm_auto_critique -> run_task`、可选正文事件抽取的 `prose_event_extractor.extract_events_from_prose -> run_task`，以及章末 `NearFinalAcceptanceService.evaluate_chapter -> run`；全仓 `rg` 与 AST 函数归属盘点未发现该可达区间的其他 provider 出口。前两项必须随 Task 4 的 `run_task/execute_accounted_call` 迁移收口，章末评价也必须在 Task 4 的归档子游标收口；因此 Task 3 不宣称这三个延后出口已具备 exactly-once。归档器、规则事件写入、向量索引、章/卷聚合与风格漂移虽不是 provider 出口，也处在同一归档故障窗口，统一延后到 Task 4 的单调 archive subcursor 验收，禁止继续依赖最后一个整体 `archived` checkpoint。
+- [x] Task 3F 的实现边界仅覆盖 scene-scoped durable `LLMNodeRunner.run`；无 runtime 的在线 `run`、全部 `run_task`（含 auto critique 与 prose extraction）以及 archive 子游标均明确留在 Task 4，Task 3F 不对这些路径宣称已闭环。
+- [x] 集成红测：同 key 在 `IdempotencyKey.status=started/failed` 后重入复用同 execution；不同 payload 仍 409，不并发二次执行。
+- [x] 两 Session/两个 owner barrier 红测：活 lease 下同 key 第二请求只能 IN_PROGRESS；过期 lease 并发 reclaim 只有一个 CAS 成功，provider 与 budget 只执行一次。
+- [x] barrier 红测：两个不同 execution 同时 acquire 只允许一个；失败 execution 被新 execution supersede 后，旧 key 重试不改变 checkpoint、budget 或 active execution。
+
+验收记录：五轮独立规范/质量复审最终均为 `APPROVED`；文件型 SQLite 崩溃窗口、父子账本篡改、owner lease、终态 claim、continuity 本地降级与 checkpoint 完整性均有聚焦回归覆盖。Task 4 延后边界保持在第 205–206 行，不在本任务冒充完成。
 
 Run:
 
@@ -228,6 +233,9 @@ git commit -m "feat(scene-run): resume durable node checkpoints"
 - Modify: `backend/src/novel_system/services/prose_event_extractor.py`
 - Modify: `backend/src/novel_system/services/narrative_event_log.py`
 - Modify: `backend/src/novel_system/services/reverse_causal_skeleton.py`
+- Modify: `backend/src/novel_system/services/near_final.py`
+- Modify: `backend/src/novel_system/services/archiver.py`
+- Modify: `backend/src/novel_system/services/aggregator.py`
 - Modify: `backend/src/novel_system/services/orchestrator.py`
 - Create: `backend/tests/test_scene_budget_reservations.py`
 - Modify: `backend/tests/test_scene_token_budget.py`
@@ -237,6 +245,8 @@ git commit -m "feat(scene-run): resume durable node checkpoints"
 - Modify: `backend/tests/test_blueprint_v2_modules.py`
 - Modify: `backend/tests/test_scene_blueprint.py`
 - Modify: `backend/tests/test_scene_quality_auto_rewrite.py`
+- Modify: `backend/tests/test_scene_run_checkpoint_resume.py`
+- Modify: `backend/tests/test_near_final_engine.py`
 
 - [ ] 测试 `reserve -> settle`、`reserve -> release`、重复 settle/release 幂等、reserved 永不为负。
 - [ ] 用两个独立 Session 和 barrier 测试并发预留：单 in-flight fence 只允许一个成功，失败线程不调用 provider；前者结算释放后后者可重新预留。
@@ -249,20 +259,24 @@ git commit -m "feat(scene-run): resume durable node checkpoints"
 - [ ] 把 `run` 和 `run_task` 都接到 `execute_accounted_call`；`run_task` 强制接收 typed context，不提供可漏 scope 的默认值，成功和失败均落账。
 - [ ] 逐一修改 4 个生产 `run_task` caller：auto critique、prose event extractor、narrative consistency、reverse causal refine。前两条由 Orchestrator 显式传 scene/chapter/project/run_job，因此进入同一生命周期预算；无场景对象的 causal refine 也必须传明确 project/system scope。
 - [ ] AST 守卫所有生产 `run_task(...)` 调用都存在 `context=`，并用集成测试证明 auto critique/event extraction 会增加同一 scene 的 LlmCall 与 budget charged，预算不足时 caller 降级且 provider count=0。
+- [ ] auto critique 的返回产品必须携带稳定父 `llm_call_id` 与 `execution_step_key`（同一 execution 固定 step，不得由重试随机生成）；`soft_qc_ready/sub_index=0` 同事务保存 critique 产品快照、产品 hash、父 call id、step 和 execution owner。恢复先逐项验证产品/hash/call/owner，再从 soft sub1 继续；产品缺行、父/子账不完整或任一字段被篡改时稳定 `RUN_CHECKPOINT_CORRUPT`，provider call count 与 budget charged 均不得增加。规则模式/预算拒绝/降级也必须保存明确的无调用 outcome，不能把“没有 call”与“call 引用丢失”混为一谈。
+- [ ] 在 `near_final_ready/sub_index=3` 与最终 `archived` 之间建立单调 archive subcursor，并让首次运行与 `_archive_near_final_checkpoint` 走同一实现。至少逐项保存、散列并恢复验证：Archiver 的 `FinalScene(status=archived)`、`SceneMemory`、`ChapterRollingNote`、archive AttemptTracker；规则生成的 NarrativeEvent 行；可选 prose extraction 的父 call/step/owner、抽取结果及对应 NarrativeEvent 行（含显式 skipped/degraded outcome）；向量索引的幂等结果/失败 outcome；章末 `ChapterMemory` 聚合、卷聚合结果或 no-op/degraded outcome；章末 `WriterEvaluation` 及其父 call/step/owner；风格漂移 guidance 或 no-op/degraded outcome。任一步产品与本级 subcursor 同事务提交，任一步失败后同 execution 只从下一未完成步骤继续；已完成分支不得重复写副作用、调用 provider 或扣预算，缺行/错绑/hash 篡改必须阻断恢复。只有全部适用步骤验证通过后才能写最终 `archived` checkpoint。
 - [ ] 删除 `_persist_call` 中 usage 缺失记 0 的旧逻辑和 `record_usage` 旁路；所有场景扣账只走 reservation settlement。
 - [ ] 父 LlmCall 聚合所有 physical attempts；SceneDraft 等业务引用仍指向父 `llm_call_id`，不能指向某次 retry 子行。成本测试证明父/子不双计。
+- [ ] `LLMNodeRunner.run` 与 `run_task` 的 attempt 子账是强制不变量：每个真实 dispatched provider attempt（含 transport/parse retry 与 degrade hop）都必须存在 `LlmCallAttempt`，父 `LlmCall` 必须由子行聚合状态与 token；offline/no-dispatch 只能使用明确可验证的零 attempt 语义，不允许以 legacy 父行或 AttemptTracker 冒充 physical attempt。
+- [ ] Task 3D/3F 延后到本任务收紧：当 `LLMNodeRunner.run/run_task` 全部迁到 `execute_accounted_call` 后，style/de-template、auto critique、prose extraction 与章末 evaluate_chapter 的恢复校验必须移除“仅 legacy parent + AttemptTracker”兼容分支，强制校验连续 ordinal、dispatch/status、父子 token 聚合、attempt PK/FK 以及 checkpoint 的 call/step/execution owner；缺行或篡改必须 `RUN_CHECKPOINT_CORRUPT`，且 provider/budget 不增。
 - [ ] 保留外层有效稿；账本提交不得清空 `latest_valid_draft_row_id`。
 
 Run:
 
 ```powershell
-python -m pytest backend/tests/test_scene_budget_reservations.py backend/tests/test_scene_token_budget.py backend/tests/test_llm_critique_integration.py backend/tests/test_prose_event_extraction.py backend/tests/test_narrative_event_log.py backend/tests/test_blueprint_v2_modules.py backend/tests/test_scene_blueprint.py backend/tests/test_scene_quality_auto_rewrite.py -q
+python -m pytest backend/tests/test_scene_budget_reservations.py backend/tests/test_scene_token_budget.py backend/tests/test_llm_critique_integration.py backend/tests/test_prose_event_extraction.py backend/tests/test_narrative_event_log.py backend/tests/test_blueprint_v2_modules.py backend/tests/test_scene_blueprint.py backend/tests/test_scene_quality_auto_rewrite.py backend/tests/test_scene_run_checkpoint_resume.py backend/tests/test_near_final_engine.py -q
 ```
 
 Commit:
 
 ```powershell
-git add backend/src/novel_system/services/scene_budget.py backend/src/novel_system/services/llm_task_runner.py backend/src/novel_system/services/auto_critique.py backend/src/novel_system/services/prose_event_extractor.py backend/src/novel_system/services/narrative_event_log.py backend/src/novel_system/services/reverse_causal_skeleton.py backend/src/novel_system/services/orchestrator.py backend/tests/test_scene_budget_reservations.py backend/tests/test_scene_token_budget.py backend/tests/test_llm_critique_integration.py backend/tests/test_prose_event_extraction.py backend/tests/test_narrative_event_log.py backend/tests/test_blueprint_v2_modules.py backend/tests/test_scene_blueprint.py backend/tests/test_scene_quality_auto_rewrite.py
+git add backend/src/novel_system/services/scene_budget.py backend/src/novel_system/services/llm_task_runner.py backend/src/novel_system/services/auto_critique.py backend/src/novel_system/services/prose_event_extractor.py backend/src/novel_system/services/narrative_event_log.py backend/src/novel_system/services/reverse_causal_skeleton.py backend/src/novel_system/services/near_final.py backend/src/novel_system/services/archiver.py backend/src/novel_system/services/aggregator.py backend/src/novel_system/services/orchestrator.py backend/tests/test_scene_budget_reservations.py backend/tests/test_scene_token_budget.py backend/tests/test_llm_critique_integration.py backend/tests/test_prose_event_extraction.py backend/tests/test_narrative_event_log.py backend/tests/test_blueprint_v2_modules.py backend/tests/test_scene_blueprint.py backend/tests/test_scene_quality_auto_rewrite.py backend/tests/test_scene_run_checkpoint_resume.py backend/tests/test_near_final_engine.py
 git commit -m "feat(budget): reserve scene tokens before every call"
 ```
 

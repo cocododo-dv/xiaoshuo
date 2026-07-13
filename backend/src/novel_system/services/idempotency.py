@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
+from uuid import uuid4
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -12,6 +16,7 @@ from novel_system.db.models import IdempotencyKey, OperationLog, ReviewItem, Sce
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
 from novel_system.services.human_review_support import structured_target
+from novel_system.services.scene_run_checkpoint import idempotency_execution_id
 from novel_system.settings import get_settings
 
 
@@ -19,7 +24,7 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _lease_ttl_seconds() -> int:
+def owner_lease_ttl_seconds() -> int:
     """幂等租约 TTL：优先 models 配置 job_runtime.idempotency_claim_ttl_seconds。
 
     审计 P-8：此前该配置键无人消费（settings 硬编码 90s 是唯一生效值），
@@ -37,10 +42,189 @@ def _lease_ttl_seconds() -> int:
     return get_settings().idempotency_ttl_seconds
 
 
+def owner_lease_grace_seconds() -> int:
+    try:
+        from novel_system.services.llm_client import load_model_routing_config
+
+        value = load_model_routing_config().job_runtime.get("heartbeat_interval_seconds")
+        if value is not None:
+            return max(1, int(value))
+    except Exception:
+        pass
+    return max(1, min(45, owner_lease_ttl_seconds() // 2))
+
+
 def canonical_request_hash(method: str, path_template: str, payload: Any) -> str:
     body = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     raw = f"{method.upper()}::{path_template}::{body}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class IdempotencyLease:
+    idempotency_key: str
+    request_hash: str
+    worker_id: str
+    attempt_no: int
+    lease_expires_at: str
+    status: str = "started"
+    response_json: dict[str, Any] | None = None
+    reclaimed: bool = False
+    _service: "IdempotencyLeaseService" = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
+
+    @property
+    def execution_id(self) -> str:
+        return idempotency_execution_id(self.idempotency_key)
+
+    def renew(self, *, lease_seconds: int) -> str:
+        self.lease_expires_at = self._service.renew(self, lease_seconds=lease_seconds)
+        return self.lease_expires_at
+
+
+class IdempotencyLeaseService:
+    """Claims and renews an idempotency owner with conditional UPDATE fences."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def claim(
+        self,
+        *,
+        idempotency_key: str,
+        request_hash: str,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> IdempotencyLease:
+        now = utcnow()
+        now_iso = now.isoformat()
+        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
+        record = self.session.get(IdempotencyKey, idempotency_key)
+        if record is None:
+            record = IdempotencyKey(
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                status="started",
+                worker_id=worker_id,
+                attempt_no=1,
+                heartbeat_at=now_iso,
+                lease_expires_at=expires,
+            )
+            self.session.add(record)
+            try:
+                self.session.flush()
+            except IntegrityError as exc:
+                self.session.rollback()
+                raise _in_progress_error() from exc
+            return self._lease(record)
+
+        self.session.refresh(record)
+        if record.request_hash != request_hash:
+            raise DomainError(
+                "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD",
+                "idempotency key reused with different payload",
+                status_code=409,
+            )
+        if record.status == "succeeded":
+            return self._lease(record)
+        if record.status == "started" and record.lease_expires_at and record.lease_expires_at > now_iso:
+            raise _in_progress_error()
+
+        old_attempt = int(record.attempt_no or 0)
+        old_status = record.status
+        old_expiry = record.lease_expires_at
+        conditions = [
+            IdempotencyKey.idempotency_key == idempotency_key,
+            IdempotencyKey.request_hash == request_hash,
+            IdempotencyKey.status == old_status,
+            IdempotencyKey.attempt_no == old_attempt,
+        ]
+        if record.worker_id is None:
+            conditions.append(IdempotencyKey.worker_id.is_(None))
+        else:
+            conditions.append(IdempotencyKey.worker_id == record.worker_id)
+        if old_expiry is None:
+            conditions.append(IdempotencyKey.lease_expires_at.is_(None))
+        else:
+            conditions.append(IdempotencyKey.lease_expires_at == old_expiry)
+        claimed = self.session.execute(
+            update(IdempotencyKey)
+            .where(*conditions)
+            .values(
+                status="started",
+                response_json=None,
+                worker_id=worker_id,
+                attempt_no=old_attempt + 1,
+                heartbeat_at=now_iso,
+                lease_expires_at=expires,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            self.session.rollback()
+            raise _in_progress_error()
+        self.session.flush()
+        record = self.session.get(IdempotencyKey, idempotency_key)
+        assert record is not None
+        self.session.refresh(record)
+        lease = self._lease(record)
+        lease.reclaimed = True
+        return lease
+
+    def renew(self, lease: IdempotencyLease, *, lease_seconds: int) -> str:
+        now = utcnow()
+        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
+        renewed = self.session.execute(
+            update(IdempotencyKey)
+            .where(
+                IdempotencyKey.idempotency_key == lease.idempotency_key,
+                IdempotencyKey.request_hash == lease.request_hash,
+                IdempotencyKey.status == "started",
+                IdempotencyKey.worker_id == lease.worker_id,
+                IdempotencyKey.attempt_no == lease.attempt_no,
+            )
+            .values(heartbeat_at=now.isoformat(), lease_expires_at=expires)
+            .execution_options(synchronize_session=False)
+        )
+        if renewed.rowcount != 1:
+            self.session.rollback()
+            raise DomainError(
+                "RUN_OWNER_LEASE_LOST",
+                "idempotency execution owner lease was lost",
+                status_code=409,
+                details={
+                    "idempotency_key": lease.idempotency_key,
+                    "worker_id": lease.worker_id,
+                    "attempt_no": lease.attempt_no,
+                },
+            )
+        self.session.flush()
+        return expires
+
+    def _lease(self, record: IdempotencyKey) -> IdempotencyLease:
+        return IdempotencyLease(
+            idempotency_key=record.idempotency_key,
+            request_hash=record.request_hash,
+            worker_id=str(record.worker_id or ""),
+            attempt_no=int(record.attempt_no or 0),
+            lease_expires_at=str(record.lease_expires_at or ""),
+            status=record.status,
+            response_json=dict(record.response_json or {}) if record.response_json is not None else None,
+            _service=self,
+        )
+
+
+def _in_progress_error() -> DomainError:
+    return DomainError(
+        "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+        "request with the same idempotency key is still running",
+        status_code=409,
+        details={
+            "retryable": True,
+            "next_action": "wait for the original request to finish, then retry or poll the related resource",
+        },
+    )
+
+
 
 
 def execute_with_idempotency(
@@ -50,105 +234,63 @@ def execute_with_idempotency(
     method: str,
     path_template: str,
     payload: Any,
-    action: Callable[[], dict],
+    action: Callable[..., dict],
     actor_ref: str = "operator",
+    worker_id: str | None = None,
 ) -> tuple[dict, str | None]:
     if not idempotency_key:
         raise DomainError("IDEMPOTENCY_KEY_REQUIRED", "missing X-Idempotency-Key", status_code=400)
 
     request_hash = canonical_request_hash(method, path_template, payload)
-    record = session.get(IdempotencyKey, idempotency_key)
-    now = utcnow()
-    # 注：不做执行中途的心跳续租——SQLite 单写者下，续租需独立事务提交，
-    # 会与"action 失败整体回滚"的原子性冲突；改为把 TTL 配到覆盖最长 run 时长。
-    lease_expires_at = (now + timedelta(seconds=_lease_ttl_seconds())).isoformat()
-    operator_action_context = _prepare_operator_action_context(session, path_template=path_template, payload=payload)
+    operator_action_context = _prepare_operator_action_context(
+        session,
+        path_template=path_template,
+        payload=payload,
+    )
+    lease = IdempotencyLeaseService(session).claim(
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        worker_id=worker_id or f"http:{uuid4().hex}",
+        lease_seconds=owner_lease_ttl_seconds(),
+    )
+    if lease.status == "succeeded":
+        return lease.response_json or {}, "replayed"
 
-    if record is None:
-        record = IdempotencyKey(
-            idempotency_key=idempotency_key,
-            request_hash=request_hash,
-            status="started",
-            worker_id="http",
-            attempt_no=1,
-            heartbeat_at=now.isoformat(),
-            lease_expires_at=lease_expires_at,
+    session.add(
+        OperationLog(
+            event_type="idempotency_started",
+            object_type="idempotency_key",
+            object_ref=idempotency_key,
+            payload_json={
+                "request_hash": request_hash,
+                "request_method": method.upper(),
+                "request_path_template": path_template,
+                "request_payload": payload or {},
+                "attempt_no": lease.attempt_no,
+                "worker_id": lease.worker_id,
+                "execution_id": lease.execution_id,
+                "actor_ref": actor_ref,
+            },
         )
-        session.add(record)
-        session.add(
-            OperationLog(
-                event_type="idempotency_started",
-                object_type="idempotency_key",
-                object_ref=idempotency_key,
-                payload_json={
-                    "request_hash": request_hash,
-                    "request_method": method.upper(),
-                    "request_path_template": path_template,
-                    "request_payload": payload or {},
-                    "attempt_no": record.attempt_no,
-                    "actor_ref": actor_ref,
-                },
-            )
-        )
-        try:
-            session.flush()
-        except IntegrityError as exc:
-            session.rollback()
-            raise DomainError(
-                "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-                "request with the same idempotency key is still running",
-                status_code=409,
-                details={
-                    "retryable": True,
-                    "next_action": "wait for the original request to finish, then retry or poll the related resource",
-                },
-            ) from exc
-    else:
-        if record.request_hash != request_hash:
-            raise DomainError(
-                "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD",
-                "idempotency key reused with different payload",
-                status_code=409,
-            )
-        if record.status == "succeeded":
-            return record.response_json or {}, "replayed"
-        if record.status == "started" and record.lease_expires_at and record.lease_expires_at > now.isoformat():
-            raise DomainError(
-                "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-                "request with the same idempotency key is still running",
-                status_code=409,
-            )
-        record.status = "started"
-        record.attempt_no += 1
-        record.worker_id = "http"
-        record.heartbeat_at = now.isoformat()
-        record.lease_expires_at = lease_expires_at
-        session.add(
-            OperationLog(
-                event_type="idempotency_started",
-                object_type="idempotency_key",
-                object_ref=idempotency_key,
-                payload_json={
-                    "request_hash": request_hash,
-                    "request_method": method.upper(),
-                    "request_path_template": path_template,
-                    "request_payload": payload or {},
-                    "attempt_no": record.attempt_no,
-                    "actor_ref": actor_ref,
-                },
-            )
-        )
+    )
+    if lease.reclaimed:
         session.add(
             OperationLog(
                 event_type="lease_reclaim",
                 object_type="idempotency_key",
                 object_ref=idempotency_key,
-                payload_json={"attempt_no": record.attempt_no, "actor_ref": actor_ref},
+                payload_json={
+                    "attempt_no": lease.attempt_no,
+                    "worker_id": lease.worker_id,
+                    "actor_ref": actor_ref,
+                },
             )
         )
+    # Publish the owner fence before entering a potentially long provider call.
+    session.commit()
 
     try:
-        result = action()
+        result = _invoke_idempotent_action(action, lease)
         if "actor_ref" not in result:
             result = {**result, "actor_ref": actor_ref}
         operator_action_record = _build_operator_action_record(
@@ -162,10 +304,26 @@ def execute_with_idempotency(
         )
         if operator_action_record is not None:
             session.add(operator_action_record)
-        record.status = "succeeded"
-        record.response_json = result
-        record.heartbeat_at = now.isoformat()
-        record.lease_expires_at = lease_expires_at
+        now_iso = utcnow().isoformat()
+        completed = session.execute(
+            update(IdempotencyKey)
+            .where(
+                IdempotencyKey.idempotency_key == idempotency_key,
+                IdempotencyKey.request_hash == request_hash,
+                IdempotencyKey.status == "started",
+                IdempotencyKey.worker_id == lease.worker_id,
+                IdempotencyKey.attempt_no == lease.attempt_no,
+            )
+            .values(status="succeeded", response_json=result, heartbeat_at=now_iso)
+            .execution_options(synchronize_session=False)
+        )
+        if completed.rowcount != 1:
+            session.rollback()
+            raise DomainError(
+                "RUN_OWNER_LEASE_LOST",
+                "idempotency owner was replaced before completion",
+                status_code=409,
+            )
         session.add(
             OperationLog(
                 event_type="idempotency_succeeded",
@@ -177,26 +335,10 @@ def execute_with_idempotency(
         session.commit()
         return result, None
     except DomainError:
-        _rollback_and_mark_failed(
-            session,
-            idempotency_key=idempotency_key,
-            request_hash=request_hash,
-            attempt_no=record.attempt_no,
-            now_iso=now.isoformat(),
-            lease_expires_at=lease_expires_at,
-            actor_ref=actor_ref,
-        )
+        _mark_owned_idempotency_failed(session, lease=lease, actor_ref=actor_ref)
         raise
     except OperationalError as exc:
-        _rollback_and_mark_failed(
-            session,
-            idempotency_key=idempotency_key,
-            request_hash=request_hash,
-            attempt_no=record.attempt_no,
-            now_iso=now.isoformat(),
-            lease_expires_at=lease_expires_at,
-            actor_ref=actor_ref,
-        )
+        _mark_owned_idempotency_failed(session, lease=lease, actor_ref=actor_ref)
         if is_database_busy_error(exc):
             raise DomainError(
                 "DATABASE_BUSY",
@@ -206,66 +348,62 @@ def execute_with_idempotency(
             ) from exc
         raise
     except Exception as exc:
-        _rollback_and_mark_failed(
-            session,
-            idempotency_key=idempotency_key,
-            request_hash=request_hash,
-            attempt_no=record.attempt_no,
-            now_iso=now.isoformat(),
-            lease_expires_at=lease_expires_at,
-            actor_ref=actor_ref,
-        )
+        _mark_owned_idempotency_failed(session, lease=lease, actor_ref=actor_ref)
         raise DomainError("INTERNAL_ERROR", str(exc), status_code=500) from exc
 
 
-def _rollback_and_mark_failed(
+def _invoke_idempotent_action(action: Callable[..., dict], lease: IdempotencyLease) -> dict:
+    try:
+        signature = inspect.signature(action)
+    except (TypeError, ValueError):
+        return action()
+    positional = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if positional:
+        return action(lease)
+    return action()
+
+
+def _mark_owned_idempotency_failed(
     session: Session,
     *,
-    idempotency_key: str,
-    request_hash: str,
-    attempt_no: int,
-    now_iso: str,
-    lease_expires_at: str,
+    lease: IdempotencyLease,
     actor_ref: str,
 ) -> None:
-    """action 失败时**先回滚**半成品写入,再单独落失败标记。
-
-    旧实现直接 ``record.status="failed"; session.commit()``,会把 action 已
-    flush 的部分行连同失败标记一起提交(半提交)。回滚会连带撤销本请求内
-    创建的 record 与 started 日志,故此处重建 failed record + 失败审计日志。
-    """
     session.rollback()
-    record = session.get(IdempotencyKey, idempotency_key)
-    if record is None:
-        record = IdempotencyKey(
-            idempotency_key=idempotency_key,
-            request_hash=request_hash,
-            status="failed",
-            worker_id="http",
-            attempt_no=attempt_no,
-            heartbeat_at=now_iso,
-            lease_expires_at=lease_expires_at,
+    now_iso = utcnow().isoformat()
+    failed = session.execute(
+        update(IdempotencyKey)
+        .where(
+            IdempotencyKey.idempotency_key == lease.idempotency_key,
+            IdempotencyKey.request_hash == lease.request_hash,
+            IdempotencyKey.status == "started",
+            IdempotencyKey.worker_id == lease.worker_id,
+            IdempotencyKey.attempt_no == lease.attempt_no,
         )
-        session.add(record)
-    else:
-        record.status = "failed"
-        record.request_hash = request_hash
-        record.attempt_no = attempt_no
-        record.heartbeat_at = now_iso
-        record.lease_expires_at = lease_expires_at
-    session.add(
-        OperationLog(
-            event_type="idempotency_failed",
-            object_type="idempotency_key",
-            object_ref=idempotency_key,
-            payload_json={
-                "request_hash": request_hash,
-                "attempt_no": attempt_no,
-                "actor_ref": actor_ref,
-            },
-        )
+        .values(status="failed", heartbeat_at=now_iso)
+        .execution_options(synchronize_session=False)
     )
-    session.commit()
+    if failed.rowcount == 1:
+        session.add(
+            OperationLog(
+                event_type="idempotency_failed",
+                object_type="idempotency_key",
+                object_ref=lease.idempotency_key,
+                payload_json={
+                    "request_hash": lease.request_hash,
+                    "attempt_no": lease.attempt_no,
+                    "worker_id": lease.worker_id,
+                    "actor_ref": actor_ref,
+                },
+            )
+        )
+        session.commit()
+    else:
+        session.rollback()
 
 
 def _prepare_operator_action_context(session: Session, *, path_template: str, payload: Any) -> dict[str, Any] | None:

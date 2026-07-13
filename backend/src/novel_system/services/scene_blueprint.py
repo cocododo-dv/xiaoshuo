@@ -64,13 +64,29 @@ class SceneBlueprintService:
     def latest_payload(self, scene_id: str) -> dict[str, Any] | None:
         return self.serialize(self.latest(scene_id))
 
-    def ensure_for_scene(self, scene_id: str, actor_ref: str = "operator") -> SceneBlueprint:
+    def ensure_for_scene(
+        self,
+        scene_id: str,
+        actor_ref: str = "operator",
+        *,
+        execution_step_key: str | None = None,
+    ) -> SceneBlueprint:
         latest = self.latest(scene_id)
         if latest is not None:
             return latest
-        return self.generate(scene_id, actor_ref=actor_ref)
+        return self.generate(
+            scene_id,
+            actor_ref=actor_ref,
+            execution_step_key=execution_step_key,
+        )
 
-    def generate(self, scene_id: str, actor_ref: str = "operator") -> SceneBlueprint:
+    def generate(
+        self,
+        scene_id: str,
+        actor_ref: str = "operator",
+        *,
+        execution_step_key: str | None = None,
+    ) -> SceneBlueprint:
         scene = self._require_scene(scene_id)
         chapter = self._require_chapter(scene.chapter_id)
         source = self._source_snapshot(scene, chapter)
@@ -91,6 +107,7 @@ class SceneBlueprintService:
                     source=source,
                 ),
                 offline_client_factory=OfflineSceneBlueprintClient,
+                execution_step_key=execution_step_key,
             )
             payload = _validate_blueprint_payload(node_result.response.structured_output)
             llm_call_id = node_result.llm_call_id

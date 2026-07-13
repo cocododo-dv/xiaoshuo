@@ -10,6 +10,7 @@ from novel_system.services.context_budget import (
     finalize_request_budget,
 )
 from novel_system.services.llm_client import LLMRequest
+from novel_system.services.llm_task_runner import begin_llm_execution, end_llm_execution
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 
@@ -63,6 +64,14 @@ def _seed_scene(session) -> None:
     )
     session.add(SceneRunState(scene_id="CH100_SC01", scene_status="ready"))
     session.commit()
+
+
+def _begin_qc_execution(session, execution_id: str):
+    state = session.get(SceneRunState, "CH100_SC01")
+    state.active_execution_id = execution_id
+    state.run_execution_status = "active"
+    session.commit()
+    return begin_llm_execution(execution_id)
 
 
 class TrackingClient:
@@ -306,16 +315,20 @@ def test_hard_qc_engine_escalates_continuity_warning_before_llm_call(session) ->
         "continuity_warning": continuity_warning,
     }
 
-    decision = engine.evaluate(
-        scene_id="CH100_SC01",
-        bundle={
-            "bundle_id": "bundle_CH100_SC01",
-            "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
-            "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
-        },
-        neutral_draft_row_id="draft_neutral_CH100_SC01",
-        neutral_content="Neutral draft under review.",
-    )
+    token = _begin_qc_execution(session, "exec-hard-qc-continuity")
+    try:
+        decision = engine.evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            neutral_draft_row_id="draft_neutral_CH100_SC01",
+            neutral_content="Neutral draft under review.",
+        )
+    finally:
+        end_llm_execution(token)
     session.commit()
 
     report = session.execute(select(QcReport)).scalars().one()
@@ -368,16 +381,20 @@ def test_hard_qc_engine_recomputes_budget_for_final_prompt_before_llm_call(sessi
         "continuity_warning": None,
     }
 
-    decision = engine.evaluate(
-        scene_id="CH100_SC01",
-        bundle={
-            "bundle_id": "bundle_CH100_SC01",
-            "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
-            "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
-        },
-        neutral_draft_row_id="draft_neutral_CH100_SC01",
-        neutral_content=" ".join(["oversized neutral draft"] * 80),
-    )
+    token = _begin_qc_execution(session, "exec-hard-qc-final-prompt-continuity")
+    try:
+        decision = engine.evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            neutral_draft_row_id="draft_neutral_CH100_SC01",
+            neutral_content=" ".join(["oversized neutral draft"] * 80),
+        )
+    finally:
+        end_llm_execution(token)
     session.commit()
 
     report = session.execute(select(QcReport)).scalars().one()
@@ -431,16 +448,20 @@ def test_soft_qc_engine_escalates_continuity_warning_before_llm_call(session) ->
         "continuity_warning": continuity_warning,
     }
 
-    decision = engine.evaluate(
-        scene_id="CH100_SC01",
-        bundle={
-            "bundle_id": "bundle_CH100_SC01",
-            "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
-            "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
-        },
-        source_draft_row_id="draft_style_CH100_SC01",
-        source_draft_content="Styled draft under review.",
-    )
+    token = _begin_qc_execution(session, "exec-soft-qc-continuity")
+    try:
+        decision = engine.evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            source_draft_row_id="draft_style_CH100_SC01",
+            source_draft_content="Styled draft under review.",
+        )
+    finally:
+        end_llm_execution(token)
     session.commit()
 
     report = session.execute(select(QcReport)).scalars().one()
@@ -496,16 +517,20 @@ def test_soft_qc_engine_recomputes_budget_for_final_prompt_before_llm_call(sessi
         "continuity_warning": None,
     }
 
-    decision = engine.evaluate(
-        scene_id="CH100_SC01",
-        bundle={
-            "bundle_id": "bundle_CH100_SC01",
-            "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
-            "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
-        },
-        source_draft_row_id="draft_style_CH100_SC01",
-        source_draft_content=" ".join(["oversized styled draft"] * 80),
-    )
+    token = _begin_qc_execution(session, "exec-soft-qc-final-prompt-continuity")
+    try:
+        decision = engine.evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            source_draft_row_id="draft_style_CH100_SC01",
+            source_draft_content=" ".join(["oversized styled draft"] * 80),
+        )
+    finally:
+        end_llm_execution(token)
     session.commit()
 
     report = session.execute(select(QcReport)).scalars().one()

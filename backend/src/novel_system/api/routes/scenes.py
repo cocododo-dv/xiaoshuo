@@ -165,10 +165,22 @@ def _parse_run_policy(payload: dict | None) -> str:
     return run_policy
 
 
+def _reject_manual_checkpoint_controls(payload: dict | None) -> None:
+    supplied = sorted({"from_step", "resume"}.intersection((payload or {}).keys()))
+    if supplied:
+        raise DomainError(
+            "RUN_CHECKPOINT_CONTROL_FORBIDDEN",
+            "scene runs resume only from the server-owned durable checkpoint",
+            status_code=422,
+            details={"unsupported_fields": supplied},
+        )
+
+
 @router.post("/api/v1/scenes/{scene_id}/run/full")
 def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
+    _reject_manual_checkpoint_controls(payload)
     # FE-ALIGN G3：作者改写指令随请求下发（注入风格生成提示词；幂等键随 note 变化）
     author_note = str((payload or {}).get("author_note") or "").strip()[:500] or None
     # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict|auto；列属 Wave 3）
@@ -183,7 +195,13 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
             **({"author_note": author_note} if author_note else {}),
             **({"run_policy": run_policy} if run_policy != "reliable" else {}),
         },
-        action=lambda: Orchestrator(session).run_scene(scene_id, author_note=author_note, run_policy=run_policy),
+        action=lambda lease: Orchestrator(session).run_scene(
+            scene_id,
+            author_note=author_note,
+            run_policy=run_policy,
+            execution_id=lease.execution_id,
+            lease_renewer=lease.renew,
+        ),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -355,6 +373,7 @@ def rollback_auto_rewrite_run(run_id: str, request: Request, session: Session = 
 @router.post("/api/v1/scenes/{scene_id}/run/jobs")
 def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    _reject_manual_checkpoint_controls(payload)
     service = SceneRunJobService(session)
     job = service.create_job(
         scene_id,
@@ -953,7 +972,11 @@ def resume_after_selection(
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/resume-after-selection",
         payload={"scene_id": scene_id},
-        action=lambda: Orchestrator(session).resume_after_selection(scene_id),
+        action=lambda lease: Orchestrator(session).resume_after_selection(
+            scene_id,
+            execution_id=lease.execution_id,
+            lease_renewer=lease.renew,
+        ),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}

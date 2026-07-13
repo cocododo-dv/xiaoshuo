@@ -6,8 +6,9 @@ import logging
 import re
 import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,7 @@ from novel_system.services.llm_task_runner import (
     LLMNodeContinuityError,
     LLMNodeExecutionError,
     LLMNodeRunner,
+    current_llm_execution_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.style_reference.injection import (
@@ -41,6 +43,8 @@ class NeutralGenerationResult:
     llm_call_id: str
     bundle_id: str
     bundle_hash: str
+    execution_step_key: str | None = None
+    artifact_execution_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -50,6 +54,20 @@ class StyleGenerationResult:
     llm_call_id: str
     bundle_id: str
     bundle_hash: str
+    execution_step_key: str | None = None
+    artifact_execution_id: str | None = None
+
+
+@dataclass(slots=True)
+class LongFormContinuationSegmentResult:
+    segment_index: int
+    row_id: str
+    content: str
+    llm_call_id: str
+    bundle_id: str
+    bundle_hash: str
+    execution_step_key: str
+    artifact_execution_id: str | None = None
 
 
 JSON_SCHEMA_INSTRUCTION = "Return JSON that matches the structured schema exactly."
@@ -61,6 +79,21 @@ ANTI_TEMPLATE_GATE_DIMENSIONS = {
     "summary_ending",
     "expository_dialogue",
 }
+
+
+def _continuation_text_hash(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _continuation_json_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _seal_continuation_descriptor(descriptor: dict[str, Any]) -> dict[str, Any]:
+    sealed = deepcopy(descriptor)
+    sealed.pop("descriptor_hash", None)
+    sealed["descriptor_hash"] = _continuation_json_hash(sealed)
+    return sealed
 
 # §6.3 multi-strategy diversification prompts for low-dispersion retry
 _DIVERSIFICATION_PROMPT = (
@@ -221,6 +254,7 @@ class SceneGenerationService:
                 bundle=bundle,
                 llm_call_id=fallback_llm_call_id,
                 step="neutral_draft",
+                execution_step_key="neutral_draft",
                 started_at=started_at,
                 task_config=None,
                 prompt=prompt,
@@ -297,6 +331,7 @@ class SceneGenerationService:
             llm_call_id=node_result.llm_call_id,
             bundle_id=bundle["bundle_id"],
             bundle_hash=bundle["bundle_snapshot_hash"],
+            execution_step_key="neutral_draft",
         )
 
     def generate_style_draft(
@@ -307,6 +342,9 @@ class SceneGenerationService:
         neutral_draft_row_id: str,
         neutral_content: str,
         author_note: str | None = None,
+        resume_base: StyleGenerationResult | None = None,
+        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None = None,
+        step_reconciler: Callable[[str], None] | None = None,
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -327,7 +365,13 @@ class SceneGenerationService:
             source_draft_row_id=neutral_draft_row_id,
             source_draft_content=neutral_content,
             client_kind="style",
+            execution_step_key="style_draft:0",
             attempt_details_extra={"source_neutral_draft_row_id": neutral_draft_row_id},
+            product_slot_key="initial:0",
+            product_slot_order=0,
+            resume_base=resume_base,
+            product_callback=product_callback,
+            step_reconciler=step_reconciler,
         )
 
     def generate_style_draft_candidates(
@@ -340,6 +384,12 @@ class SceneGenerationService:
         author_note: str | None = None,
         n_candidates: int = 3,
         max_candidates: int | None = None,
+        resume_candidates: list[StyleGenerationResult] | None = None,
+        candidate_checkpoint: Callable[[int, StyleGenerationResult], None] | None = None,
+        step_reconciler: Callable[[str], None] | None = None,
+        resume_bases: dict[str, StyleGenerationResult] | None = None,
+        resume_products: dict[str, StyleGenerationResult] | None = None,
+        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None = None,
     ) -> list[StyleGenerationResult]:
         """Generate N style-draft candidates sorted by adversarial quality (best first).
 
@@ -374,10 +424,25 @@ class SceneGenerationService:
             ]
             temperatures = [max(0.0, min(2.0, t)) for t in temperatures]
 
-        candidates: list[tuple[StyleGenerationResult, float]] = []
+        durable_products = dict(resume_products or {})
+        durable_bases = dict(resume_bases or {})
+        if not durable_products:
+            durable_products.update(
+                (f"initial:{index}", candidate)
+                for index, candidate in enumerate(resume_candidates or [])
+            )
+        candidates: list[tuple[StyleGenerationResult, float]] = [
+            (candidate, adversarial_rank_score(candidate.content, weights=_project_weights))
+            for candidate in durable_products.values()
+        ]
         for idx, temp in enumerate(temperatures):
+            slot_key = f"initial:{idx}"
+            if slot_key in durable_products:
+                continue
             cand_row_id = versioned_scene_artifact_id("draft_style_cand", scene_id, bundle) + f"_{idx}"
             try:
+                if step_reconciler is not None and slot_key not in durable_bases:
+                    step_reconciler(f"style_draft:{idx}")
                 result = self._run_style_generation(
                     scene=scene,
                     state=state,
@@ -396,17 +461,27 @@ class SceneGenerationService:
                     source_draft_content=neutral_content,
                     client_kind="style",
                     temperature_override=temp,
+                    execution_step_key=f"style_draft:{idx}",
                     attempt_details_extra={
                         "source_neutral_draft_row_id": neutral_draft_row_id,
                         "candidate_index": idx,
                         "temperature_override": temp,
                         "n_candidates": n_candidates,
                     },
+                    product_slot_key=slot_key,
+                    product_slot_order=idx,
+                    resume_base=durable_bases.get(slot_key),
+                    product_callback=product_callback,
+                    step_reconciler=step_reconciler,
                 )
                 score = adversarial_rank_score(result.content, weights=_project_weights)
                 candidates.append((result, score))
+                if candidate_checkpoint is not None:
+                    candidate_checkpoint(idx, result)
             except (DomainError, LLMNodeExecutionError):
                 _LOGGER.warning("candidate %d/%d failed for scene %s", idx + 1, n_candidates, scene_id)
+                if candidate_checkpoint is not None or product_callback is not None:
+                    raise
                 continue
 
         if not candidates:
@@ -415,6 +490,8 @@ class SceneGenerationService:
                 neutral_draft_row_id=neutral_draft_row_id,
                 neutral_content=neutral_content,
                 author_note=author_note,
+                product_callback=product_callback,
+                step_reconciler=step_reconciler,
             )]
 
         candidates.sort(key=lambda pair: pair[1], reverse=True)
@@ -426,20 +503,34 @@ class SceneGenerationService:
             from novel_system.services.scene_budget import budget_unit, can_spend
 
             variants = _progressive_top_up_variants(base_temp)
-            top_up_index = 0
+            known_top_up_indices = {
+                int(slot_key.rsplit(":", 1)[-1])
+                for slot_key in {*durable_products, *durable_bases}
+                if slot_key.startswith("topup:") and slot_key.rsplit(":", 1)[-1].isdigit()
+            }
+            pending_top_up_indices = sorted(
+                index
+                for index in known_top_up_indices
+                if f"topup:{index}" in durable_bases and f"topup:{index}" not in durable_products
+            )
+            top_up_index = max(known_top_up_indices, default=0)
             while len(candidates) < candidate_cap:
                 dispersion = _candidate_dispersion([c.content for c, _ in candidates])
-                if dispersion >= 0.15:
+                pending_top_up_index = pending_top_up_indices.pop(0) if pending_top_up_indices else None
+                if pending_top_up_index is None and dispersion >= 0.15:
                     break
-                if not can_spend(state, budget_unit(state)):
+                if pending_top_up_index is None and not can_spend(state, budget_unit(state)):
                     _LOGGER.warning(
                         "budget exhausted — stop progressive candidate top-up for scene %s "
                         "(dispersion=%.3f, %d candidates)",
                         scene_id, dispersion, len(candidates),
                     )
                     break
-                temp, prefix, strategy = variants[top_up_index % len(variants)]
-                top_up_index += 1
+                if pending_top_up_index is None:
+                    top_up_index += 1
+                else:
+                    top_up_index = pending_top_up_index
+                temp, prefix, strategy = variants[(top_up_index - 1) % len(variants)]
                 _LOGGER.warning(
                     "low candidate dispersion (%.3f) for scene %s — progressive top-up #%d via %s (§5.5)",
                     dispersion, scene_id, top_up_index, strategy,
@@ -448,7 +539,10 @@ class SceneGenerationService:
                     versioned_scene_artifact_id("draft_style_cand", scene_id, bundle)
                     + f"_topup_{top_up_index}"
                 )
+                slot_key = f"topup:{top_up_index}"
                 try:
+                    if step_reconciler is not None and slot_key not in durable_bases:
+                        step_reconciler(f"style_draft:topup:{top_up_index}")
                     result = self._run_style_generation(
                         scene=scene, state=state, bundle=bundle,
                         row_id=top_up_row_id, stage="style_draft", llm_step="style_draft",
@@ -462,6 +556,7 @@ class SceneGenerationService:
                         source_draft_content=neutral_content,
                         client_kind="style",
                         temperature_override=temp,
+                        execution_step_key=f"style_draft:topup:{top_up_index}",
                         extra_system_prefix=prefix,
                         attempt_details_extra={
                             "source_neutral_draft_row_id": neutral_draft_row_id,
@@ -472,11 +567,20 @@ class SceneGenerationService:
                             "diversification_strategy": strategy,
                             "progressive_top_up": True,
                         },
+                        product_slot_key=slot_key,
+                        product_slot_order=n_candidates + top_up_index - 1,
+                        resume_base=durable_bases.get(slot_key),
+                        product_callback=product_callback,
+                        step_reconciler=step_reconciler,
                     )
                     candidates.append((result, adversarial_rank_score(result.content, weights=_project_weights)))
+                    if candidate_checkpoint is not None:
+                        candidate_checkpoint(len(candidates) - 1, result)
                 except (DomainError, LLMNodeExecutionError):
                     # 失败即停：不无上限重试（Wave 3 项 5）
                     _LOGGER.warning("progressive top-up #%d failed for scene %s — stop", top_up_index, scene_id)
+                    if candidate_checkpoint is not None or product_callback is not None:
+                        raise
                     break
             candidates.sort(key=lambda pair: pair[1], reverse=True)
 
@@ -502,6 +606,7 @@ class SceneGenerationService:
         source_style_content: str,
         rewrite_brief: list[str],
         source_qc_report_id: str,
+        execution_step_key: str = "soft_patch:0",
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -520,6 +625,7 @@ class SceneGenerationService:
             source_draft_row_id=source_style_draft_row_id,
             source_draft_content=source_style_content,
             client_kind="patch",
+            execution_step_key=execution_step_key,
             attempt_details_extra={
                 "source_qc_report_id": source_qc_report_id,
                 "source_style_draft_row_id": source_style_draft_row_id,
@@ -538,6 +644,7 @@ class SceneGenerationService:
         source_content: str,
         revision_brief: list[str],
         source_evaluation_id: str,
+        execution_step_key: str = "near_final_rewrite:0",
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -559,6 +666,7 @@ class SceneGenerationService:
             source_draft_row_id=source_draft_row_id,
             source_draft_content=source_content,
             client_kind="style",
+            execution_step_key=execution_step_key,
             attempt_details_extra={
                 "source_evaluation_id": source_evaluation_id,
                 "source_style_draft_row_id": source_draft_row_id,
@@ -574,7 +682,33 @@ class SceneGenerationService:
         source_draft_row_id: str,
         source_content: str,
         target_continuation_chars: int,
+        segment_checkpoint: Callable[
+            [int, LongFormContinuationSegmentResult, dict[str, Any]], None
+        ] | None = None,
+        step_reconciler: Callable[[str], None] | None = None,
+        resume_segments: list[LongFormContinuationSegmentResult] | None = None,
+        resume_cumulative_descriptor: dict[str, Any] | None = None,
     ) -> StyleGenerationResult:
+        """Generate a continuation as independently durable segments.
+
+        The service deliberately never commits. A production caller must provide
+        ``segment_checkpoint`` plus ``step_reconciler`` and commit each segment
+        row, attempt ledger and its cumulative descriptor in the same transaction.
+        Calls without a callback retain the legacy single-transaction behavior for
+        tests/tools only.
+        """
+        has_checkpoint_callback = segment_checkpoint is not None
+        has_step_reconciler = step_reconciler is not None
+        has_resume_input = bool(resume_segments) or bool(resume_cumulative_descriptor)
+        if (
+            has_checkpoint_callback != has_step_reconciler
+            or (has_resume_input and not (has_checkpoint_callback and has_step_reconciler))
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "durable continuation requires a checkpoint callback and step reconciler pair",
+                status_code=409,
+            )
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         fallback_llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
@@ -606,14 +740,43 @@ class SceneGenerationService:
         if refresh_every_chars > 0:
             segment_count = max(1, (target_chars + refresh_every_chars - 1) // refresh_every_chars)
         # 立项 C §12 — 首段注入用源稿尾部作 RAG query;后续每段按已生成正文刷新(防漂移)
+        parameters = {
+            "source_draft_row_id": source_draft_row_id,
+            "source_content_hash": _continuation_text_hash(source_content),
+            "bundle_id": bundle["bundle_id"],
+            "bundle_hash": bundle["bundle_snapshot_hash"],
+            "target_continuation_chars": target_chars,
+            "refresh_every_chars": refresh_every_chars,
+            "segment_count": segment_count,
+        }
+        parameters_hash = _continuation_json_hash(parameters)
+        resumed, cumulative_descriptor = self._load_long_form_resume_segments(
+            scene=scene,
+            bundle=bundle,
+            parameters=parameters,
+            parameters_hash=parameters_hash,
+            resume_segments=resume_segments,
+            resume_cumulative_descriptor=resume_cumulative_descriptor,
+            require_durable_owner=segment_checkpoint is not None or resume_segments is not None,
+        )
+        continuation_parts = [segment.content for segment in resumed]
+        all_segments = list(resumed)
         active_prompt = self._inject_style_reference(
             prompt, scene, task_type="long_form_continuation",
             context_text=(source_content or "")[-2000:],
         )
-        continuation_parts: list[str] = []
-        llm_call_ids: list[str] = []
+        for completed_index in range(len(continuation_parts)):
+            if completed_index + 1 < segment_count:
+                accumulated = "".join(continuation_parts[: completed_index + 1])
+                active_prompt = self._inject_style_reference(
+                    prompt,
+                    scene,
+                    task_type="long_form_continuation",
+                    context_text=(f"{source_content}\n{accumulated}".strip())[-2000:],
+                )
 
-        for segment_index in range(segment_count):
+        for segment_index in range(len(resumed), segment_count):
+            execution_step_key = f"long_form_continuation:{segment_index}"
             existing_continuation = "".join(continuation_parts)
             user_prompt = self._build_long_form_continuation_user_prompt(
                 active_prompt["user_prompt"],
@@ -621,6 +784,8 @@ class SceneGenerationService:
                 source_row_id=source_draft_row_id,
                 existing_continuation=existing_continuation,
             )
+            if step_reconciler is not None:
+                step_reconciler(execution_step_key)
             try:
                 node_result = self._llm_runner.run(
                     scene_id=scene.scene_id,
@@ -638,9 +803,9 @@ class SceneGenerationService:
                         if existing_continuation
                         else source_content
                     ),
+                    execution_step_key=execution_step_key,
                 )
-                continuation_parts.append(_extract_scene_text(node_result.response))
-                llm_call_ids.append(node_result.llm_call_id)
+                segment_content = _extract_scene_text(node_result.response)
             except LLMNodeExecutionError as exc:
                 self._record_runner_failure_attempt(
                     scene=scene,
@@ -652,6 +817,42 @@ class SceneGenerationService:
                     source_draft_row_id=source_draft_row_id,
                 )
                 self._raise_original_runner_error(exc)
+            prior_cumulative_hash = _continuation_text_hash(existing_continuation)
+            continuation_parts.append(segment_content)
+            cumulative_content = "".join(continuation_parts)
+            segment_result = self._persist_long_form_segment(
+                scene=scene,
+                bundle=bundle,
+                segment_index=segment_index,
+                segment_content=segment_content,
+                llm_call_id=node_result.llm_call_id,
+                source_draft_row_id=source_draft_row_id,
+                source_content_hash=parameters["source_content_hash"],
+                prior_cumulative_hash=prior_cumulative_hash,
+                cumulative_hash=_continuation_text_hash(cumulative_content),
+                parameters_hash=parameters_hash,
+            )
+            all_segments.append(segment_result)
+            cumulative_descriptor["segments"].append(
+                self._long_form_segment_descriptor(
+                    segment_result,
+                    source_draft_row_id=source_draft_row_id,
+                    source_content_hash=parameters["source_content_hash"],
+                    prior_cumulative_hash=prior_cumulative_hash,
+                    cumulative_hash=_continuation_text_hash(cumulative_content),
+                    parameters_hash=parameters_hash,
+                )
+            )
+            cumulative_descriptor["cumulative_content_hash"] = _continuation_text_hash(cumulative_content)
+            cumulative_descriptor = _seal_continuation_descriptor(cumulative_descriptor)
+            if segment_checkpoint is not None:
+                if not isinstance(segment_result.artifact_execution_id, str):
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "durable continuation callback requires an execution owner",
+                        status_code=409,
+                    )
+                segment_checkpoint(segment_index, segment_result, deepcopy(cumulative_descriptor))
             if segment_index + 1 < segment_count:
                 # 防漂移:用累计已生成正文尾部重做 RAG 召回 → 样例随上下文变化
                 accumulated = "".join(continuation_parts)
@@ -660,22 +861,152 @@ class SceneGenerationService:
                     context_text=(f"{source_content}\n{accumulated}".strip())[-2000:],
                 )
 
-        content = "".join(continuation_parts)
-        row_id = versioned_scene_artifact_id("draft_long_form_continuation", scene_id, bundle)
+        if len(all_segments) != segment_count:
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment prefix is incomplete", status_code=409)
+        return self._persist_long_form_final(
+            scene=scene,
+            state=state,
+            bundle=bundle,
+            segments=all_segments,
+            cumulative_descriptor=cumulative_descriptor,
+            parameters=parameters,
+            parameters_hash=parameters_hash,
+        )
+
+    def _persist_long_form_final(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        bundle: dict[str, Any],
+        segments: list[LongFormContinuationSegmentResult],
+        cumulative_descriptor: dict[str, Any],
+        parameters: dict[str, Any],
+        parameters_hash: str,
+    ) -> StyleGenerationResult:
+        content = "".join(segment.content for segment in segments)
+        llm_call_ids = [segment.llm_call_id for segment in segments]
+        if (
+            len(segments) != parameters["segment_count"]
+            or cumulative_descriptor.get("cumulative_content_hash") != _continuation_text_hash(content)
+            or cumulative_descriptor.get("parameters_hash") != parameters_hash
+            or cumulative_descriptor.get("parameters") != parameters
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation final does not match its segment ledger", status_code=409)
+        row_id = versioned_scene_artifact_id("draft_long_form_continuation", scene.scene_id, bundle)
+        existing = self.session.get(SceneDraft, row_id)
+        if existing is None:
+            self.session.add(
+                SceneDraft(
+                    row_id=row_id,
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    stage="long_form_continuation",
+                    content=content,
+                    source_bundle_id=bundle["bundle_id"],
+                    source_bundle_hash=bundle["bundle_snapshot_hash"],
+                    generation_llm_call_id=llm_call_ids[-1],
+                )
+            )
+            self.session.flush()
+            self.session.add(
+                AttemptTracker(
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    step="long_form_continuation",
+                    status="completed",
+                    source_bundle_id=bundle["bundle_id"],
+                    details_json={
+                        "row_id": row_id,
+                        "content_hash": _continuation_text_hash(content),
+                        "llm_call_id": llm_call_ids[-1],
+                        "segment_count": len(segments),
+                        "llm_call_ids": llm_call_ids,
+                        "source_draft_row_id": parameters["source_draft_row_id"],
+                        "source_content_hash": parameters["source_content_hash"],
+                        "refresh_every_chars": parameters["refresh_every_chars"],
+                        "target_continuation_chars": parameters["target_continuation_chars"],
+                        "parameters_hash": parameters_hash,
+                        "cumulative_descriptor_hash": cumulative_descriptor["descriptor_hash"],
+                    },
+                )
+            )
+            self.session.flush()
+            existing = self.session.get(SceneDraft, row_id)
+        final_attempts = []
+        for attempt in self.session.query(AttemptTracker).filter_by(
+            scene_id=scene.scene_id,
+            step="long_form_continuation",
+            status="completed",
+            source_bundle_id=bundle["bundle_id"],
+        ):
+            details = attempt.details_json or {}
+            if details.get("row_id") == row_id and details.get("segment_index") is None:
+                final_attempts.append(attempt)
+        details = final_attempts[0].details_json if len(final_attempts) == 1 else {}
+        if (
+            existing is None
+            or existing.scene_id != scene.scene_id
+            or existing.stage != "long_form_continuation"
+            or existing.content != content
+            or existing.source_bundle_id != bundle["bundle_id"]
+            or existing.source_bundle_hash != bundle["bundle_snapshot_hash"]
+            or existing.generation_llm_call_id != llm_call_ids[-1]
+            or len(final_attempts) != 1
+            or details.get("content_hash") != _continuation_text_hash(content)
+            or details.get("llm_call_ids") != llm_call_ids
+            or details.get("parameters_hash") != parameters_hash
+            or details.get("cumulative_descriptor_hash") != cumulative_descriptor["descriptor_hash"]
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation final identity/hash mismatch", status_code=409)
+        state.current_style_draft_row_id = row_id
+        state.latest_valid_draft_row_id = row_id
+        state.current_bundle_id = bundle["bundle_id"]
+        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+        self.session.flush()
+        return StyleGenerationResult(
+            row_id=row_id,
+            content=content,
+            llm_call_id=llm_call_ids[-1],
+            bundle_id=bundle["bundle_id"],
+            bundle_hash=bundle["bundle_snapshot_hash"],
+            execution_step_key=segments[-1].execution_step_key,
+            artifact_execution_id=segments[-1].artifact_execution_id,
+        )
+
+    def _persist_long_form_segment(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        segment_index: int,
+        segment_content: str,
+        llm_call_id: str,
+        source_draft_row_id: str,
+        source_content_hash: str,
+        prior_cumulative_hash: str,
+        cumulative_hash: str,
+        parameters_hash: str,
+    ) -> LongFormContinuationSegmentResult:
+        execution_step_key = f"long_form_continuation:{segment_index}"
+        row_id = (
+            versioned_scene_artifact_id("draft_long_form_continuation_segment", scene.scene_id, bundle)
+            + f"_{segment_index}"
+        )
         self.session.add(
             SceneDraft(
                 row_id=row_id,
                 scene_id=scene.scene_id,
                 chapter_id=scene.chapter_id,
-                stage="long_form_continuation",
-                content=content,
+                stage="long_form_continuation_segment",
+                content=segment_content,
                 source_bundle_id=bundle["bundle_id"],
                 source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=llm_call_ids[-1] if llm_call_ids else None,
+                generation_llm_call_id=llm_call_id,
             )
         )
         self.session.flush()
-
+        owner = current_llm_execution_id()
         self.session.add(
             AttemptTracker(
                 scene_id=scene.scene_id,
@@ -685,30 +1016,215 @@ class SceneGenerationService:
                 source_bundle_id=bundle["bundle_id"],
                 details_json={
                     "row_id": row_id,
-                    "llm_call_id": llm_call_ids[-1] if llm_call_ids else None,
-                    "segment_count": len(continuation_parts),
-                    "llm_call_ids": llm_call_ids,
+                    "llm_call_id": llm_call_id,
+                    "segment_index": segment_index,
                     "source_draft_row_id": source_draft_row_id,
-                    "refresh_every_chars": refresh_every_chars,
-                    "target_continuation_chars": target_chars,
+                    "source_content_hash": source_content_hash,
+                    "prior_cumulative_hash": prior_cumulative_hash,
+                    "cumulative_hash": cumulative_hash,
+                    "parameters_hash": parameters_hash,
+                    "execution_step_key": execution_step_key,
+                    "artifact_execution_id": owner,
                 },
             )
         )
         self.session.flush()
-
-        state.current_style_draft_row_id = row_id
-        state.latest_valid_draft_row_id = row_id
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        self.session.flush()
-
-        return StyleGenerationResult(
+        return LongFormContinuationSegmentResult(
+            segment_index=segment_index,
             row_id=row_id,
-            content=content,
-            llm_call_id=llm_call_ids[-1] if llm_call_ids else "",
+            content=segment_content,
+            llm_call_id=llm_call_id,
             bundle_id=bundle["bundle_id"],
             bundle_hash=bundle["bundle_snapshot_hash"],
+            execution_step_key=execution_step_key,
+            artifact_execution_id=owner,
         )
+
+    @staticmethod
+    def _long_form_segment_descriptor(
+        segment: LongFormContinuationSegmentResult,
+        *,
+        source_draft_row_id: str,
+        source_content_hash: str,
+        prior_cumulative_hash: str,
+        cumulative_hash: str,
+        parameters_hash: str,
+    ) -> dict[str, Any]:
+        return {
+            "segment_index": segment.segment_index,
+            "row_id": segment.row_id,
+            "content_hash": _continuation_text_hash(segment.content),
+            "source_draft_row_id": source_draft_row_id,
+            "source_content_hash": source_content_hash,
+            "prior_cumulative_hash": prior_cumulative_hash,
+            "cumulative_hash": cumulative_hash,
+            "bundle_id": segment.bundle_id,
+            "bundle_hash": segment.bundle_hash,
+            "llm_call_id": segment.llm_call_id,
+            "execution_step_key": segment.execution_step_key,
+            "artifact_execution_id": segment.artifact_execution_id,
+            "parameters_hash": parameters_hash,
+        }
+
+    def _load_long_form_resume_segments(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        parameters: dict[str, Any],
+        parameters_hash: str,
+        resume_segments: list[LongFormContinuationSegmentResult] | None,
+        resume_cumulative_descriptor: dict[str, Any] | None,
+        require_durable_owner: bool,
+    ) -> tuple[list[LongFormContinuationSegmentResult], dict[str, Any]]:
+        if resume_segments is None and resume_cumulative_descriptor is None:
+            descriptor = {
+                "version": 1,
+                "parameters": deepcopy(parameters),
+                "parameters_hash": parameters_hash,
+                "segments": [],
+                "cumulative_content_hash": _continuation_text_hash(""),
+            }
+            return [], _seal_continuation_descriptor(descriptor)
+        if not isinstance(resume_segments, list) or not isinstance(resume_cumulative_descriptor, dict):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "continuation resume segments and descriptor must be supplied together",
+                status_code=409,
+            )
+        descriptor = deepcopy(resume_cumulative_descriptor)
+        supplied_hash = descriptor.get("descriptor_hash")
+        if (
+            not isinstance(supplied_hash, str)
+            or _seal_continuation_descriptor(descriptor).get("descriptor_hash") != supplied_hash
+            or descriptor.get("version") != 1
+            or descriptor.get("parameters") != parameters
+            or descriptor.get("parameters_hash") != parameters_hash
+            or not isinstance(descriptor.get("segments"), list)
+            or len(descriptor["segments"]) != len(resume_segments)
+            or len(resume_segments) > parameters["segment_count"]
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation resume descriptor is invalid", status_code=409)
+        accumulated = ""
+        for index, (segment, segment_descriptor) in enumerate(
+            zip(resume_segments, descriptor["segments"], strict=True)
+        ):
+            if not isinstance(segment, LongFormContinuationSegmentResult) or not isinstance(segment_descriptor, dict):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment cursor is invalid", status_code=409)
+            expected_row_id = (
+                versioned_scene_artifact_id("draft_long_form_continuation_segment", scene.scene_id, bundle)
+                + f"_{index}"
+            )
+            expected_step_key = f"long_form_continuation:{index}"
+            prior_hash = _continuation_text_hash(accumulated)
+            accumulated += segment.content
+            cumulative_hash = _continuation_text_hash(accumulated)
+            expected_descriptor = self._long_form_segment_descriptor(
+                segment,
+                source_draft_row_id=parameters["source_draft_row_id"],
+                source_content_hash=parameters["source_content_hash"],
+                prior_cumulative_hash=prior_hash,
+                cumulative_hash=cumulative_hash,
+                parameters_hash=parameters_hash,
+            )
+            row = self.session.get(SceneDraft, segment.row_id)
+            if row is None:
+                raise DomainError(
+                    "RUN_CHECKPOINT_OUTPUT_MISSING",
+                    "durable continuation segment is missing",
+                    status_code=409,
+                    details={"row_id": segment.row_id},
+                )
+            if (
+                segment.segment_index != index
+                or segment.row_id != expected_row_id
+                or segment.execution_step_key != expected_step_key
+                or segment.bundle_id != bundle["bundle_id"]
+                or segment.bundle_hash != bundle["bundle_snapshot_hash"]
+                or segment_descriptor != expected_descriptor
+                or row.scene_id != scene.scene_id
+                or row.stage != "long_form_continuation_segment"
+                or row.content != segment.content
+                or row.source_bundle_id != bundle["bundle_id"]
+                or row.source_bundle_hash != bundle["bundle_snapshot_hash"]
+                or row.generation_llm_call_id != segment.llm_call_id
+            ):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment identity/hash mismatch", status_code=409)
+            self._validate_long_form_segment_ledgers(
+                scene=scene,
+                bundle=bundle,
+                segment=segment,
+                descriptor=segment_descriptor,
+                require_durable_owner=require_durable_owner,
+            )
+        if descriptor.get("cumulative_content_hash") != _continuation_text_hash(accumulated):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation cumulative hash mismatch", status_code=409)
+        return list(resume_segments), descriptor
+
+    def _validate_long_form_segment_ledgers(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        segment: LongFormContinuationSegmentResult,
+        descriptor: dict[str, Any],
+        require_durable_owner: bool,
+    ) -> None:
+        owner = segment.artifact_execution_id
+        current_owner = current_llm_execution_id()
+        call = self.session.get(LlmCall, segment.llm_call_id)
+        if (
+            (require_durable_owner and not isinstance(owner, str))
+            or (current_owner is not None and owner != current_owner)
+            or call is None
+            or call.scene_id != scene.scene_id
+            or call.step != "long_form_continuation"
+            or call.execution_id != owner
+            or call.execution_step_key != segment.execution_step_key
+            or not isinstance(call.provider, str)
+            or not call.provider
+            or not isinstance(call.model, str)
+            or not call.model
+            or call.accounting_status != "settled"
+            or call.request_dispatched_at is None
+            or any(
+                not isinstance(value, int) or value < 0
+                for value in (
+                    call.estimated_tokens,
+                    call.reserved_tokens,
+                    call.budget_charged_tokens,
+                    call.prompt_tokens,
+                    call.completion_tokens,
+                    call.total_tokens,
+                )
+            )
+            or call.budget_charged_tokens > call.reserved_tokens
+            or call.total_tokens != call.prompt_tokens + call.completion_tokens
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment call ledger is invalid", status_code=409)
+        matching_attempts = []
+        for attempt in self.session.query(AttemptTracker).filter_by(
+            scene_id=scene.scene_id,
+            step="long_form_continuation",
+            status="completed",
+            source_bundle_id=bundle["bundle_id"],
+        ):
+            details = attempt.details_json or {}
+            if (
+                details.get("row_id") == segment.row_id
+                and details.get("llm_call_id") == segment.llm_call_id
+                and details.get("segment_index") == segment.segment_index
+                and details.get("source_draft_row_id") == descriptor["source_draft_row_id"]
+                and details.get("source_content_hash") == descriptor["source_content_hash"]
+                and details.get("prior_cumulative_hash") == descriptor["prior_cumulative_hash"]
+                and details.get("cumulative_hash") == descriptor["cumulative_hash"]
+                and details.get("parameters_hash") == descriptor["parameters_hash"]
+                and details.get("execution_step_key") == segment.execution_step_key
+                and details.get("artifact_execution_id") == owner
+            ):
+                matching_attempts.append(attempt)
+        if len(matching_attempts) != 1:
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment attempt ledger is invalid", status_code=409)
 
     def _run_style_generation(
         self,
@@ -730,6 +1246,12 @@ class SceneGenerationService:
         attempt_details_extra: dict[str, Any] | None = None,
         temperature_override: float | None = None,
         extra_system_prefix: str | None = None,
+        execution_step_key: str | None = None,
+        product_slot_key: str | None = None,
+        product_slot_order: int | None = None,
+        resume_base: StyleGenerationResult | None = None,
+        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None = None,
+        step_reconciler: Callable[[str], None] | None = None,
     ) -> StyleGenerationResult:
         fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
         started_at = time.perf_counter()
@@ -745,6 +1267,7 @@ class SceneGenerationService:
                 bundle=bundle,
                 llm_call_id=fallback_llm_call_id,
                 step=llm_step,
+                execution_step_key=execution_step_key,
                 started_at=started_at,
                 task_config=None,
                 prompt=prompt,
@@ -770,76 +1293,114 @@ class SceneGenerationService:
             extra_instruction=extra_instruction,
             patch_brief=patch_brief,
         )
-        node_id = "style_patch" if llm_step == "soft_patch" else llm_step
-        try:
-            node_result = self._llm_runner.run(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
+        if resume_base is None:
+            node_id = "style_patch" if llm_step == "soft_patch" else llm_step
+            try:
+                node_result = self._llm_runner.run(
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    bundle_id=bundle["bundle_id"],
+                    bundle_hash=bundle["bundle_snapshot_hash"],
+                    node_id=node_id,
+                    step=llm_step,
+                    prompt=prompt,
+                    user_prompt=user_prompt,
+                    offline_client_factory=lambda: OfflineStyleClient(patch_mode=client_kind == "patch"),
+                    source_draft_row_id=source_draft_row_id,
+                    source_draft_content=source_draft_content,
+                    temperature_override=temperature_override,
+                    execution_step_key=execution_step_key,
+                )
+                style_content = _extract_scene_text(node_result.response)
+            except LLMNodeExecutionError as exc:
+                self._record_runner_failure_attempt(
+                    scene=scene,
+                    state=state,
+                    bundle=bundle,
+                    step=llm_step,
+                    prompt=prompt,
+                    exc=exc,
+                    source_draft_row_id=source_draft_row_id,
+                )
+                self._raise_original_runner_error(exc)
+            self.session.add(
+                SceneDraft(
+                    row_id=row_id,
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    stage=stage,
+                    content=style_content,
+                    source_bundle_id=bundle["bundle_id"],
+                    source_bundle_hash=bundle["bundle_snapshot_hash"],
+                    generation_llm_call_id=node_result.llm_call_id,
+                )
+            )
+            self.session.flush()
+
+            self.session.add(
+                AttemptTracker(
+                    scene_id=scene.scene_id,
+                    chapter_id=scene.chapter_id,
+                    step=llm_step,
+                    status="completed",
+                    source_bundle_id=bundle["bundle_id"],
+                    details_json={
+                        "row_id": row_id,
+                        "llm_call_id": node_result.llm_call_id,
+                        "source_draft_row_id": source_draft_row_id,
+                        **(attempt_details_extra or {}),
+                    },
+                )
+            )
+            self.session.flush()
+
+            state.current_style_draft_row_id = row_id
+            state.latest_valid_draft_row_id = row_id
+            state.current_bundle_id = bundle["bundle_id"]
+            state.current_bundle_hash = bundle["bundle_snapshot_hash"]
+            self.session.flush()
+            base_result = StyleGenerationResult(
+                row_id=row_id,
+                content=style_content,
+                llm_call_id=node_result.llm_call_id,
                 bundle_id=bundle["bundle_id"],
                 bundle_hash=bundle["bundle_snapshot_hash"],
-                node_id=node_id,
-                step=llm_step,
-                prompt=prompt,
-                user_prompt=user_prompt,
-                offline_client_factory=lambda: OfflineStyleClient(patch_mode=client_kind == "patch"),
-                source_draft_row_id=source_draft_row_id,
-                source_draft_content=source_draft_content,
-                temperature_override=temperature_override,
+                execution_step_key=execution_step_key,
             )
-            style_content = _extract_scene_text(node_result.response)
-        except LLMNodeExecutionError as exc:
-            self._record_runner_failure_attempt(
-                scene=scene,
-                state=state,
-                bundle=bundle,
-                step=llm_step,
-                prompt=prompt,
-                exc=exc,
-                source_draft_row_id=source_draft_row_id,
-            )
-            self._raise_original_runner_error(exc)
-
-        self.session.add(
-            SceneDraft(
-                row_id=row_id,
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                stage=stage,
-                content=style_content,
-                source_bundle_id=bundle["bundle_id"],
-                source_bundle_hash=bundle["bundle_snapshot_hash"],
-                generation_llm_call_id=node_result.llm_call_id,
-            )
-        )
-        self.session.flush()
-
-        self.session.add(
-            AttemptTracker(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                step=llm_step,
-                status="completed",
-                source_bundle_id=bundle["bundle_id"],
-                details_json={
-                    "row_id": row_id,
-                    "llm_call_id": node_result.llm_call_id,
-                    "source_draft_row_id": source_draft_row_id,
-                    **(attempt_details_extra or {}),
-                },
-            )
-        )
-        self.session.flush()
-
-        state.current_style_draft_row_id = row_id
-        state.latest_valid_draft_row_id = row_id
-        state.current_bundle_id = bundle["bundle_id"]
-        state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        self.session.flush()
+            if product_callback is not None and product_slot_key is not None:
+                product_callback(
+                    product_slot_key,
+                    "base",
+                    base_result,
+                    {
+                        "slot_order": product_slot_order,
+                        "source_neutral_draft_row_id": source_draft_row_id,
+                        "gate_decision": None,
+                        "source_base_row_id": None,
+                    },
+                )
+        else:
+            if (
+                resume_base.row_id != row_id
+                or resume_base.bundle_id != bundle["bundle_id"]
+                or resume_base.bundle_hash != bundle["bundle_snapshot_hash"]
+                or resume_base.execution_step_key != execution_step_key
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "resumed style base does not match its locked work item",
+                    status_code=409,
+                )
+            base_result = resume_base
+            style_content = resume_base.content
 
         if stage == "style_draft":
             quality_gate = _anti_template_quality_gate(style_content, scene_id=scene.scene_id, chapter_id=scene.chapter_id)
             if quality_gate["triggered"]:
-                de_template_result = self._run_de_template_pass(
+                de_template_step_key = f"{execution_step_key}:de_template" if execution_step_key else None
+                if step_reconciler is not None and de_template_step_key is not None:
+                    step_reconciler(de_template_step_key)
+                de_template_result, de_template_outcome = self._run_de_template_pass(
                     scene=scene,
                     state=state,
                     bundle=bundle,
@@ -847,17 +1408,42 @@ class SceneGenerationService:
                     source_row_id=row_id,
                     source_content=style_content,
                     quality_gate=quality_gate,
+                    execution_step_key=de_template_step_key,
                 )
                 if de_template_result is not None:
+                    if product_callback is not None and product_slot_key is not None:
+                        product_callback(
+                            product_slot_key,
+                            "final",
+                            de_template_result,
+                            {
+                                "slot_order": product_slot_order,
+                                "source_neutral_draft_row_id": source_draft_row_id,
+                                "gate_decision": quality_gate,
+                                "source_base_row_id": base_result.row_id,
+                                "de_template_outcome": de_template_outcome,
+                            },
+                        )
                     return de_template_result
+            if product_callback is not None and product_slot_key is not None:
+                product_callback(
+                    product_slot_key,
+                    "final",
+                    base_result,
+                    {
+                        "slot_order": product_slot_order,
+                        "source_neutral_draft_row_id": source_draft_row_id,
+                        "gate_decision": quality_gate,
+                        "source_base_row_id": base_result.row_id,
+                        "de_template_outcome": (
+                            de_template_outcome
+                            if quality_gate["triggered"]
+                            else {"status": "not_required"}
+                        ),
+                    },
+                )
 
-        return StyleGenerationResult(
-            row_id=row_id,
-            content=style_content,
-            llm_call_id=node_result.llm_call_id,
-            bundle_id=bundle["bundle_id"],
-            bundle_hash=bundle["bundle_snapshot_hash"],
-        )
+        return base_result
 
     def _run_de_template_pass(
         self,
@@ -869,7 +1455,8 @@ class SceneGenerationService:
         source_row_id: str,
         source_content: str,
         quality_gate: dict[str, Any],
-    ) -> StyleGenerationResult | None:
+        execution_step_key: str | None,
+    ) -> tuple[StyleGenerationResult | None, dict[str, Any]]:
         # 每个触发去模板的候选（source_row_id 已带 _{idx}/_retry_{idx}）必须派生唯一的去模板稿 row_id，
         # 否则 Best-of-N 下 ≥2 个候选都触发反模板闸时，第二条 SceneDraft 撞主键 → IntegrityError → 整跑崩溃。
         # SceneDraft.row_id 为 opaque 主键、不被下游解析，故追加 source_row_id 的短哈希后缀即可（唯一且长度有界）。
@@ -901,6 +1488,7 @@ class SceneGenerationService:
                 offline_client_factory=lambda: OfflineStyleClient(patch_mode=True),
                 source_draft_row_id=source_row_id,
                 source_draft_content=source_content,
+                execution_step_key=execution_step_key,
             )
             rewritten_content = _extract_scene_text(node_result.response)
         except LLMNodeExecutionError as exc:
@@ -913,7 +1501,15 @@ class SceneGenerationService:
                 exc=exc,
                 source_draft_row_id=source_row_id,
             )
-            return None
+            call = self.session.get(LlmCall, exc.llm_call_id)
+            return None, {
+                "status": "failed",
+                "llm_call_id": exc.llm_call_id,
+                "execution_step_key": execution_step_key,
+                "artifact_execution_id": call.execution_id if call is not None else current_llm_execution_id(),
+                "accounting_status": call.accounting_status if call is not None else None,
+                "error_code": exc.error_code,
+            }
 
         self.session.add(
             SceneDraft(
@@ -952,12 +1548,22 @@ class SceneGenerationService:
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
         self.session.flush()
 
-        return StyleGenerationResult(
-            row_id=row_id,
-            content=rewritten_content,
-            llm_call_id=node_result.llm_call_id,
-            bundle_id=bundle["bundle_id"],
-            bundle_hash=bundle["bundle_snapshot_hash"],
+        return (
+            StyleGenerationResult(
+                row_id=row_id,
+                content=rewritten_content,
+                llm_call_id=node_result.llm_call_id,
+                bundle_id=bundle["bundle_id"],
+                bundle_hash=bundle["bundle_snapshot_hash"],
+                execution_step_key=execution_step_key,
+            ),
+            {
+                "status": "completed",
+                "llm_call_id": node_result.llm_call_id,
+                "execution_step_key": execution_step_key,
+                "artifact_execution_id": current_llm_execution_id(),
+                "accounting_status": "settled",
+            },
         )
 
     @staticmethod
@@ -1148,6 +1754,7 @@ class SceneGenerationService:
         bundle: dict[str, Any],
         llm_call_id: str,
         step: str,
+        execution_step_key: str | None = None,
         started_at: float,
         task_config: Any | None,
         prompt: dict[str, Any] | None,
@@ -1173,6 +1780,12 @@ class SceneGenerationService:
                 step=step,
                 scene_id=scene.scene_id,
                 chapter_id=scene.chapter_id,
+                execution_id=current_llm_execution_id(),
+                execution_step_key=execution_step_key,
+                estimated_tokens=0,
+                reserved_tokens=0,
+                budget_charged_tokens=0,
+                accounting_status="rejected",
                 request_payload_summary=request_summary,
                 response_payload_summary=_error_summary(exc),
                 prompt_tokens=0,
@@ -1188,6 +1801,7 @@ class SceneGenerationService:
             "llm_call_id": llm_call_id,
             "error_code": error_code,
             "message": str(exc),
+            "execution_step_key": execution_step_key,
         }
         if prompt is not None:
             details_json["template_name"] = prompt.get("template_name")

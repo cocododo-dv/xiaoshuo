@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, QcReport, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.errors import DomainError
+from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.scene_run_checkpoint import scene_job_execution_id
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 
 JOB_TYPE_SCENE_FULL = "scene_run_full"
@@ -28,6 +31,19 @@ SCENE_RUN_STAGE_ORDER = [
     "near_final",
     "archived",
 ]
+
+
+@dataclass
+class SceneRunJobLease:
+    job_id: str
+    worker_id: str
+    attempt_no: int
+    lease_expires_at: str
+    _service: "SceneRunJobService" = field(repr=False, compare=False)
+
+    def renew(self, *, lease_seconds: int) -> str:
+        self.lease_expires_at = self._service.renew_lease(self, lease_seconds=lease_seconds)
+        return self.lease_expires_at
 
 
 class SceneRunJobService:
@@ -127,18 +143,145 @@ class SceneRunJobService:
             "result_summary": summary,
         }
 
-    def mark_running(self, job: ChapterRunJob, *, current_step: str) -> None:
-        now = utcnow()
-        job.status = "running"
-        job.started_at = job.started_at or now
-        job.heartbeat_at = now
-        job.worker_id = "scene-job-thread"
-        job.attempt_no = (job.attempt_no or 0) + 1
+    def claim_running(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        current_step: str,
+        lease_seconds: int,
+    ) -> SceneRunJobLease:
+        job = self.get_job(job_id)
+        self.session.refresh(job)
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
+        if job.status == "running" and (
+            not job.lease_expires_at or job.lease_expires_at > now_iso
+        ):
+            raise DomainError(
+                "RUN_JOB_IN_PROGRESS",
+                "scene run job is already owned by an active worker",
+                status_code=409,
+                details={"job_id": job_id, "worker_id": job.worker_id},
+            )
+
+        summary = job.result_summary_json if isinstance(job.result_summary_json, dict) else {}
+        error_details = summary.get("error_details")
+        failed_is_retryable = (
+            job.status == "failed"
+            and isinstance(error_details, dict)
+            and error_details.get("retryable") is True
+        )
+        if job.status not in {"queued", "running"} and not failed_is_retryable:
+            raise DomainError(
+                "RUN_JOB_NOT_CLAIMABLE",
+                "scene run job status cannot be claimed by a worker",
+                status_code=409,
+                details={"job_id": job_id, "status": job.status},
+            )
+
+        old_status = job.status
+        old_worker = job.worker_id
+        old_attempt = int(job.attempt_no or 0)
+        old_expiry = job.lease_expires_at
+        conditions = [
+            ChapterRunJob.job_id == job_id,
+            ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
+            ChapterRunJob.status == old_status,
+            ChapterRunJob.attempt_no == old_attempt,
+        ]
+        conditions.append(
+            ChapterRunJob.worker_id.is_(None)
+            if old_worker is None
+            else ChapterRunJob.worker_id == old_worker
+        )
+        conditions.append(
+            ChapterRunJob.lease_expires_at.is_(None)
+            if old_expiry is None
+            else ChapterRunJob.lease_expires_at == old_expiry
+        )
+        claimed = self.session.execute(
+            update(ChapterRunJob)
+            .where(*conditions)
+            .values(
+                status="running",
+                worker_id=worker_id,
+                attempt_no=old_attempt + 1,
+                started_at=job.started_at or now_iso,
+                heartbeat_at=now_iso,
+                lease_expires_at=expires,
+                finished_at=None,
+                error_code=None,
+                error_text=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            self.session.rollback()
+            raise DomainError(
+                "RUN_JOB_IN_PROGRESS",
+                "another worker won the scene run job claim",
+                status_code=409,
+                details={"job_id": job_id},
+            )
+        self.session.flush()
+        job = self.get_job(job_id)
+        self.session.refresh(job)
         self._update_payload(job, current_step=current_step)
         self._update_summary(job, current_step=current_step)
         self.session.flush()
+        return SceneRunJobLease(
+            job_id=job_id,
+            worker_id=worker_id,
+            attempt_no=old_attempt + 1,
+            lease_expires_at=expires,
+            _service=self,
+        )
 
-    def mark_finished(self, job: ChapterRunJob, *, status: str, current_step: str, result: dict[str, Any]) -> None:
+    def renew_lease(self, owner: SceneRunJobLease, *, lease_seconds: int) -> str:
+        now = datetime.now(UTC)
+        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
+        renewed = self.session.execute(
+            update(ChapterRunJob)
+            .where(
+                ChapterRunJob.job_id == owner.job_id,
+                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
+                ChapterRunJob.status == "running",
+                ChapterRunJob.worker_id == owner.worker_id,
+                ChapterRunJob.attempt_no == owner.attempt_no,
+            )
+            .values(heartbeat_at=now.isoformat(), lease_expires_at=expires)
+            .execution_options(synchronize_session=False)
+        )
+        if renewed.rowcount != 1:
+            self.session.rollback()
+            raise DomainError(
+                "RUN_OWNER_LEASE_LOST",
+                "scene run job owner lease was lost",
+                status_code=409,
+                details={
+                    "job_id": owner.job_id,
+                    "worker_id": owner.worker_id,
+                    "attempt_no": owner.attempt_no,
+                },
+            )
+        self.session.flush()
+        return expires
+
+    def mark_finished(
+        self,
+        job: ChapterRunJob,
+        *,
+        status: str,
+        current_step: str,
+        result: dict[str, Any],
+        owner: SceneRunJobLease | None = None,
+    ) -> None:
+        if owner is not None:
+            self._transition_owned_job(owner, status=status)
+            job = self.get_job(owner.job_id)
+            self.session.refresh(job)
         job.status = status
         job.finished_at = utcnow()
         job.error_code = None
@@ -157,7 +300,19 @@ class SceneRunJobService:
         )
         self.session.flush()
 
-    def mark_failed(self, job: ChapterRunJob, *, error_code: str, error_text: str, details: dict[str, Any] | None = None) -> None:
+    def mark_failed(
+        self,
+        job: ChapterRunJob,
+        *,
+        error_code: str,
+        error_text: str,
+        details: dict[str, Any] | None = None,
+        owner: SceneRunJobLease | None = None,
+    ) -> None:
+        if owner is not None:
+            self._transition_owned_job(owner, status="failed")
+            job = self.get_job(owner.job_id)
+            self.session.refresh(job)
         job.status = "failed"
         job.finished_at = utcnow()
         job.error_code = error_code
@@ -170,6 +325,29 @@ class SceneRunJobService:
             latest_error={"code": error_code, "message": error_text, "details": error_details},
             error_details=error_details,
         )
+        self.session.flush()
+
+    def _transition_owned_job(self, owner: SceneRunJobLease, *, status: str) -> None:
+        changed = self.session.execute(
+            update(ChapterRunJob)
+            .where(
+                ChapterRunJob.job_id == owner.job_id,
+                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
+                ChapterRunJob.status == "running",
+                ChapterRunJob.worker_id == owner.worker_id,
+                ChapterRunJob.attempt_no == owner.attempt_no,
+            )
+            .values(status=status, finished_at=utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if changed.rowcount != 1:
+            self.session.rollback()
+            raise DomainError(
+                "RUN_OWNER_LEASE_LOST",
+                "scene run job owner was replaced before terminal update",
+                status_code=409,
+                details={"job_id": owner.job_id, "attempt_no": owner.attempt_no},
+            )
         self.session.flush()
 
     def _latest_qc_summary(self, scene_id: str) -> dict[str, Any] | None:
@@ -251,50 +429,67 @@ def start_scene_run_job_worker(job_id: str) -> None:
 
 def _run_scene_job_worker(job_id: str) -> None:
     session = SessionLocal()
+    owner: SceneRunJobLease | None = None
     try:
         service = SceneRunJobService(session)
         job = service.get_job(job_id)
         scene_id = str(job.scene_id or (job.payload_json or {}).get("scene_id") or "")
-        service.mark_running(job, current_step="neutral_running")
+        owner = service.claim_running(
+            job_id,
+            worker_id=f"scene-job-thread:{uuid4().hex}",
+            current_step="neutral_running",
+            lease_seconds=owner_lease_ttl_seconds(),
+        )
         session.commit()
         result = Orchestrator(session).run_scene(
             scene_id,
             author_note=str((job.payload_json or {}).get("author_note") or "") or None,
             run_policy=str((job.payload_json or {}).get("run_policy") or "reliable") or "reliable",
+            execution_id=scene_job_execution_id(job_id),
+            lease_renewer=owner.renew,
         )
+        job = service.get_job(job_id)
         state = session.get(SceneRunState, scene_id)
         scene_status = result.get("scene_status") if isinstance(result, dict) else state.scene_status if state else ""
         if scene_status == "archived":
-            service.mark_finished(job, status="completed", current_step="archived", result=result)
+            service.mark_finished(job, status="completed", current_step="archived", result=result, owner=owner)
         elif scene_status == "awaiting_candidate_selection":
             # Wave 3 关键场景终选停点：候选已就绪等作者选择——任务算完成而非阻塞
-            service.mark_finished(job, status="completed", current_step="awaiting_candidate_selection", result=result)
+            service.mark_finished(job, status="completed", current_step="awaiting_candidate_selection", result=result, owner=owner)
         elif scene_status == "quality_warning_pending_acceptance":
             # Wave 2 严格模式停点：有稿可归档，等作者显式接受——任务算完成而非阻塞
-            service.mark_finished(job, status="completed", current_step="awaiting_author_acceptance", result=result)
+            service.mark_finished(job, status="completed", current_step="awaiting_author_acceptance", result=result, owner=owner)
         elif scene_status == "human_review_required":
-            service.mark_finished(job, status="blocked", current_step="blocked", result=result)
+            service.mark_finished(job, status="blocked", current_step="blocked", result=result, owner=owner)
         elif scene_status == "near_final_revision_required":
-            service.mark_finished(job, status="blocked", current_step="acceptance_review_running", result=result if isinstance(result, dict) else {})
+            service.mark_finished(job, status="blocked", current_step="acceptance_review_running", result=result if isinstance(result, dict) else {}, owner=owner)
         else:
-            service.mark_finished(job, status="blocked", current_step="rewrite_running", result=result if isinstance(result, dict) else {})
+            service.mark_finished(job, status="blocked", current_step="rewrite_running", result=result if isinstance(result, dict) else {}, owner=owner)
         session.commit()
     except DomainError as exc:
         session.rollback()
-        _mark_worker_failure(job_id, exc.code, exc.message, details=exc.details)
+        _mark_worker_failure(job_id, exc.code, exc.message, details=exc.details, owner=owner)
     except Exception as exc:  # pragma: no cover - defensive worker boundary
         session.rollback()
-        _mark_worker_failure(job_id, "RUN_JOB_FAILED", str(exc) or "run job failed")
+        _mark_worker_failure(job_id, "RUN_JOB_FAILED", str(exc) or "run job failed", owner=owner)
     finally:
         session.close()
 
 
-def _mark_worker_failure(job_id: str, error_code: str, error_text: str, details: dict[str, Any] | None = None) -> None:
+def _mark_worker_failure(
+    job_id: str,
+    error_code: str,
+    error_text: str,
+    details: dict[str, Any] | None = None,
+    owner: SceneRunJobLease | None = None,
+) -> None:
+    if owner is None:
+        return
     session = SessionLocal()
     try:
         service = SceneRunJobService(session)
         job = service.get_job(job_id)
-        service.mark_failed(job, error_code=error_code, error_text=error_text, details=details)
+        service.mark_failed(job, error_code=error_code, error_text=error_text, details=details, owner=owner)
         session.commit()
     finally:
         session.close()

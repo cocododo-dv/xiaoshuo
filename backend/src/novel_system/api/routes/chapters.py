@@ -161,7 +161,7 @@ def run_chapter_full(chapter_id: str, request: Request, session: Session = Depen
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/run/full",
         payload={"chapter_id": chapter_id},
-        action=lambda: ChapterRunnerService(session).run_full(chapter_id),
+        action=lambda lease: ChapterRunnerService(session).run_full(chapter_id, request_lease=lease),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}

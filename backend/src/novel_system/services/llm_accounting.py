@@ -160,6 +160,12 @@ def _begin_claim_transaction(session: Session) -> None:
 
 
 def _execution_step_conflict(existing_call: LlmCall) -> LLMAccountingError:
+    details = {
+        "llm_call_id": existing_call.llm_call_id,
+        "execution_id": existing_call.execution_id,
+        "execution_step_key": existing_call.execution_step_key,
+        "accounting_status": existing_call.accounting_status,
+    }
     if (
         existing_call.request_dispatched_at is not None
         and existing_call.accounting_status in {"reserved", "failed"}
@@ -167,20 +173,24 @@ def _execution_step_conflict(existing_call: LlmCall) -> LLMAccountingError:
         return LLMAccountingError(
             "RUN_CHECKPOINT_OUTPUT_MISSING",
             "this execution step may already have reached the provider; automatic resend is blocked",
+            details=details,
         )
     if existing_call.accounting_status == "usage_exceeds_reservation":
         return LLMAccountingError(
             "LLM_USAGE_EXCEEDS_RESERVATION",
             "this execution step exceeded its reservation; automatic resend is blocked",
+            details=details,
         )
     if existing_call.accounting_status == "reserved":
         return LLMAccountingError(
             "LLM_ACCOUNTING_EXECUTION_STEP_IN_PROGRESS",
             "this execution step already has an active accounting claim",
+            details=details,
         )
     return LLMAccountingError(
         "LLM_ACCOUNTING_EXECUTION_STEP_EXISTS",
         f"this execution step already has a {existing_call.accounting_status} provider call",
+        details=details,
     )
 
 
@@ -1070,7 +1080,8 @@ def _finalize_parent_failure(
         parent.total_tokens = request_estimate.estimated_tokens
         parent.usage_is_estimate = True
     parent.error_code = getattr(error, "code", error.__class__.__name__)
-    parent.latency_ms = max(parent.latency_ms or 0, latency_ms)
+    if not attempts:
+        parent.latency_ms = max(parent.latency_ms or 0, latency_ms)
     parent.settled_at = utcnow()
     usage_overage_tokens = _usage_overage_tokens(session, call_id)
     if usage_overage_tokens:
