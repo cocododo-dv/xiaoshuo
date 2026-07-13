@@ -103,25 +103,25 @@ POST /api/v1/run-jobs/{job_id}/cancel
 - Modify: `backend/tests/test_metadata_isolation.py`
 - Modify: `backend/tests/test_system_config.py`
 
-- [ ] 编写失败测试，要求 `SceneRunState` 存在：
+- [x] 编写失败测试，要求 `SceneRunState` 存在：
   - `scene_tokens_reserved INTEGER NOT NULL DEFAULT 0`
   - `scene_budget_basis_json JSON NULL`
   - `provider_attempts_used INTEGER NOT NULL DEFAULT 0`、`provider_attempt_budget INTEGER NOT NULL DEFAULT 32`
   - `active_execution_id TEXT NULL`、`run_execution_status TEXT NULL`、`run_checkpoint TEXT NULL`、`run_checkpoint_json JSON NULL`
   - `active_run_job_id TEXT NULL`（同场景 active job 的 CAS 锁，不允许 query-then-insert）
-- [ ] 编写失败测试，要求 `LlmCall` 存在：
+- [x] 编写失败测试，要求 `LlmCall` 存在：
   - `scope_type TEXT NOT NULL`, `scope_id TEXT NOT NULL`, `run_job_id TEXT NULL`
   - `execution_id TEXT NULL`, `execution_step_key TEXT NULL`（同步 idempotency 与异步 job 共用的恢复关联键）
   - `estimated_tokens INTEGER NOT NULL DEFAULT 0`, `reserved_tokens INTEGER NOT NULL DEFAULT 0`, `budget_charged_tokens INTEGER NOT NULL DEFAULT 0`
   - `usage_is_estimate BOOLEAN NOT NULL DEFAULT true`, `accounting_status TEXT NOT NULL`, `request_dispatched_at TEXT NULL`, `settled_at TEXT NULL`
-- [ ] 为三类 token 与 `scene_tokens_reserved` 加非负 CheckConstraint，为 accounting status 加固定枚举约束；NULL/负数不能绕过预算聚合和条件更新。
-- [ ] `config/models.yaml retry_budget.provider_attempt_budget=32` 是独立安全上限，不冒充 LLMClient retry/degrade 的理论最大值；耗尽时允许提前停止内部重试。ORM default、0065 server_default/backfill 和 runtime fallback 都必须使用同一常量/配置测试，basis JSON 记录 config key/value，后续只能作者 topup。
-- [ ] 新增 `LlmCallAttempt`：`attempt_id` PK、`llm_call_id` FK→`llm_calls.llm_call_id`（审计行不级联删除）、父调用内 ordinal `provider_attempt_no`、`dispatch_kind`、request max output、provider request id、prompt/completion/total、estimated/reserved/charged、usage_is_estimate、accounting_status、request_dispatched_at/settled_at、latency/error；`(llm_call_id, provider_attempt_no)` 唯一，token 非负、status/dispatch kind 有枚举约束。
-- [ ] `ChapterRunJob` 新增 `scene_id TEXT NULL`，新 scene job 必填；0065 从旧 `payload_json/result_summary_json` 保守回填。加 `(scene_id, created_at)` 索引，使 latest terminal job 在 active lock 清除后仍可权威恢复。
-- [ ] 加索引：LlmCall 的 `(scope_type, scope_id, created_at)`、`run_job_id`、`(execution_id, execution_step_key)`、`accounting_status`；LlmCallAttempt 的 `llm_call_id/status`；ChapterRunJob 的 `(scene_id, created_at)`。
-- [ ] 迁移采用仓库已有 SQLite 存在性守卫；旧行不能伪造 provenance：统一回填 `usage_is_estimate=1`，`error_code IS NOT NULL` 回填 `accounting_status='failed'`，其余为 `settled`，`reserved=0`，token 字段只能从现有值保守复制，无法重建的历史失败维持 0 并在迁移/evidence 中声明不可追溯。旧 scope 依次从 scene/project/chapter 推导，均为空时回填 `system/<node_id-or-legacy>`。历史 logical call 不伪造 physical attempt 子行，audit 明确计为 legacy unreconstructable。downgrade 明确删除新增表/索引/列。
-- [ ] `database_preflight` 使用 revision-specific schema profile：`--expected-revision 0064` 仍按旧必需列验证迁移前 actual，0065 才要求 SceneRunState/LlmCall/LlmCallAttempt/ChapterRunJob 新列；generation persistence 同步 0065 head、attempt FK/orphan 盘点与旧行回填断言，不能只改 ORM/迁移。即使 actual `PRAGMA foreign_keys=0`，audit 也必须验证 attempt orphan=0。preflight CLI 增 `--output` 以无 BOM UTF-8 原子写 JSON，供证据直接哈希。
-- [ ] 迁移副本 `0064 -> 0065`，运行 metadata drift 和关键列检查。
+- [x] 为三类 token 与 `scene_tokens_reserved` 加非负 CheckConstraint，为 accounting status 加固定枚举约束；NULL/负数不能绕过预算聚合和条件更新。
+- [x] `config/models.yaml retry_budget.provider_attempt_budget=32` 是独立安全上限，不冒充 LLMClient retry/degrade 的理论最大值；耗尽时允许提前停止内部重试。ORM default、0065 server_default/backfill 和 runtime fallback 都必须使用同一常量/配置测试，basis JSON 记录 config key/value，后续只能作者 topup。
+- [x] 新增 `LlmCallAttempt`：`attempt_id` PK、`llm_call_id` FK→`llm_calls.llm_call_id`（审计行不级联删除）、父调用内 ordinal `provider_attempt_no`、`dispatch_kind`、request max output、provider request id、prompt/completion/total、estimated/reserved/charged、usage_is_estimate、accounting_status、request_dispatched_at/settled_at、latency/error；`(llm_call_id, provider_attempt_no)` 唯一，token 非负、status/dispatch kind 有枚举约束。
+- [x] `ChapterRunJob` 新增 `scene_id TEXT NULL`，新 scene job 必填；0065 从旧 `payload_json/result_summary_json` 保守回填。加 `(scene_id, created_at)` 索引，使 latest terminal job 在 active lock 清除后仍可权威恢复。
+- [x] 加索引：LlmCall 的 `(scope_type, scope_id, created_at)`、`run_job_id`、`(execution_id, execution_step_key)`、`accounting_status`；LlmCallAttempt 的 `llm_call_id/status`；ChapterRunJob 的 `(scene_id, created_at)`。
+- [x] 迁移采用仓库已有 SQLite 存在性守卫；旧行不能伪造 provenance：统一回填 `usage_is_estimate=1`，`error_code IS NOT NULL` 回填 `accounting_status='failed'`，其余为 `settled`，`reserved=0`，token 字段只能从现有值保守复制，无法重建的历史失败维持 0 并在迁移/evidence 中声明不可追溯。旧 scope 依次从 scene/project/chapter 推导，均为空时回填 `system/<node_id-or-legacy>`。历史 logical call 不伪造 physical attempt 子行，audit 明确计为 legacy unreconstructable。downgrade 明确删除新增表/索引/列。
+- [x] `database_preflight` 使用 revision-specific schema profile：`--expected-revision 0064` 仍按旧必需列验证迁移前 actual，0065 才要求 SceneRunState/LlmCall/LlmCallAttempt/ChapterRunJob 新列；generation persistence 同步 0065 head、attempt FK/orphan 盘点与旧行回填断言，不能只改 ORM/迁移。即使 actual `PRAGMA foreign_keys=0`，audit 也必须验证 attempt orphan=0。preflight CLI 增 `--output` 以无 BOM UTF-8 原子写 JSON，供证据直接哈希。
+- [x] 迁移副本 `0064 -> 0065`，运行 metadata drift 和关键列检查。
 
 Run:
 
