@@ -24,8 +24,13 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.llm_client import LLMRequest, LLMResponse
-from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.llm_task_runner import (
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+    current_llm_execution_id,
+)
 from novel_system.services.prompt_builder import PromptBuilder
 
 WRITER_RUBRIC_ID = "drama_effectiveness_v1"
@@ -758,6 +763,33 @@ class WriterReviewService:
                 source=source,
                 writer_context=writer_context,
             )
+            chapter = self._require_chapter(chapter_id)
+            execution_id = current_llm_execution_id()
+            if object_type == "chapter":
+                context = LLMCallContext(
+                    scope_type="chapter",
+                    scope_id=chapter.chapter_id,
+                    project_id=chapter.project_id,
+                    chapter_id=chapter.chapter_id,
+                    node_id=node_id,
+                    step=node_id,
+                    execution_id=execution_id,
+                    execution_step_key=node_id if execution_id is not None else None,
+                    provider_execution_mode=self._llm_runner.provider_execution_mode,
+                )
+            else:
+                context = LLMCallContext(
+                    scope_type="scene",
+                    scope_id=object_id,
+                    project_id=chapter.project_id,
+                    chapter_id=chapter.chapter_id,
+                    scene_id=scene_id,
+                    node_id=node_id,
+                    step=node_id,
+                    execution_id=execution_id,
+                    execution_step_key=node_id if execution_id is not None else None,
+                    provider_execution_mode=self._llm_runner.provider_execution_mode,
+                )
             node_result = self._llm_runner.run(
                 scene_id=scene_id or f"chapter_{chapter_id}",
                 chapter_id=chapter_id,
@@ -770,6 +802,8 @@ class WriterReviewService:
                 offline_client_factory=OfflineWriterReviewClient,
                 source_draft_row_id=source.get("source_text_ref"),
                 source_draft_content=source.get("content"),
+                execution_step_key=node_id,
+                context=context,
             )
             payload = _validate_writer_diagnosis_payload(node_result.response.structured_output)
             return {"blocked": False, "payload": payload, "llm_call_id": node_result.llm_call_id}
@@ -837,6 +871,19 @@ class WriterReviewService:
             source=source,
             diagnosis_payload=diagnosis_payload,
         )
+        execution_step_key = "writer_chapter_revision"
+        execution_id = current_llm_execution_id()
+        context = LLMCallContext(
+            scope_type="chapter",
+            scope_id=chapter.chapter_id,
+            project_id=chapter.project_id,
+            chapter_id=chapter.chapter_id,
+            node_id="writer_chapter_revision",
+            step="writer_chapter_revision",
+            execution_id=execution_id,
+            execution_step_key=execution_step_key if execution_id is not None else None,
+            provider_execution_mode=self._llm_runner.provider_execution_mode,
+        )
         node_result = self._llm_runner.run(
             scene_id=f"chapter_{chapter.chapter_id}",
             chapter_id=chapter.chapter_id,
@@ -849,6 +896,8 @@ class WriterReviewService:
             offline_client_factory=OfflineWriterReviewClient,
             source_draft_row_id=source.get("source_text_ref"),
             source_draft_content=source.get("content"),
+            execution_step_key=execution_step_key,
+            context=context,
         )
         return _validate_chapter_revision_payload(
             node_result.response.structured_output,

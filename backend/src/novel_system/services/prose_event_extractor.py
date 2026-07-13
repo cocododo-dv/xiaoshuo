@@ -22,6 +22,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+
 logger = logging.getLogger(__name__)
 
 EXTRACT_TASK_NAME = "narrative_event_extract"
@@ -83,11 +85,17 @@ def extract_events_from_prose(
     content: str,
     *,
     llm_runner: Any | None = None,
+    llm_context: LLMCallContext | None = None,
     max_chars: int = 6000,
 ) -> list[ExtractedEvent]:
     """Return prose-grounded events, or ``[]`` when disabled/unavailable/on any error."""
     if llm_runner is None or not content or not content.strip():
         return []
+    if llm_context is None:
+        raise LLMAccountingRejected(
+            "LLM_ACCOUNTING_CONTEXT_REQUIRED",
+            "prose event extraction requires explicit accounting context",
+        )
 
     task_prompt = f"## Scene prose\n\n{content[:max_chars]}"
     try:
@@ -95,6 +103,7 @@ def extract_events_from_prose(
             task_name=EXTRACT_TASK_NAME,
             prompt_text=task_prompt,
             system_prompt=EXTRACTOR_SYSTEM_PROMPT,
+            context=llm_context,
         )
     except Exception:
         logger.warning("prose event extraction call failed; skipping", exc_info=True)

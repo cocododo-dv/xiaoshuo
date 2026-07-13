@@ -23,8 +23,13 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.llm_client import LLMRequest, LLMResponse
-from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.llm_task_runner import (
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+    current_llm_execution_id,
+)
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.settings import get_settings
 
@@ -60,11 +65,80 @@ PATCH_CATEGORIES: tuple[str, ...] = (
 )
 
 
+class OfflineWriterDeepReviewClient:
+    def __init__(self, *, source_text: str) -> None:
+        self.source_text = source_text
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        payload = {
+            "overall_score": 0.0 if not self.source_text.strip() else 0.65,
+            "scores": {dimension: 0.65 for dimension in LITERARY_REVISION_DIMENSIONS},
+            "findings": [],
+            "revision_brief": [],
+            "requires_human_review": not bool(self.source_text.strip()),
+            "lens_evaluations": [],
+        }
+        zero_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        return LLMResponse(
+            request_id=f"offline_{request.node_id}",
+            provider="offline_deterministic",
+            model=request.model,
+            text=json.dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format=request.response_format,
+            raw_response={"id": f"offline_{request.node_id}", "usage": zero_usage},
+            usage=zero_usage,
+            raw_usage=zero_usage,
+            usage_present=True,
+            usage_complete=True,
+            finish_reason="offline_fallback",
+        )
+
+
 class WriterDeepReviewService:
     def __init__(self, session: Session, *, llm_client: Any | None = None, llm_runner: LLMNodeRunner | None = None) -> None:
         self.session = session
         self.prompt_builder = PromptBuilder()
         self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
+
+    def _llm_context(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        chapter_id: str | None,
+        scene_id: str | None,
+        node_id: str,
+        execution_step_key: str,
+    ) -> LLMCallContext:
+        execution_id = current_llm_execution_id()
+        if object_type == "scene":
+            scene = self._require_scene(scene_id or object_id)
+            chapter = self._require_chapter(scene.chapter_id)
+            return LLMCallContext(
+                scope_type="scene",
+                scope_id=scene.scene_id,
+                project_id=scene.project_id or chapter.project_id,
+                chapter_id=chapter.chapter_id,
+                scene_id=scene.scene_id,
+                node_id=node_id,
+                step=node_id,
+                execution_id=execution_id,
+                execution_step_key=execution_step_key if execution_id is not None else None,
+                provider_execution_mode=self._llm_runner.provider_execution_mode,
+            )
+        chapter = self._require_chapter(chapter_id or object_id)
+        return LLMCallContext(
+            scope_type="chapter",
+            scope_id=chapter.chapter_id,
+            project_id=chapter.project_id,
+            chapter_id=chapter.chapter_id,
+            node_id=node_id,
+            step=node_id,
+            execution_id=execution_id,
+            execution_step_key=execution_step_key if execution_id is not None else None,
+            provider_execution_mode=self._llm_runner.provider_execution_mode,
+        )
 
     def scene_summary(self, scene_id: str) -> dict[str, Any]:
         self._require_scene(scene_id)
@@ -381,6 +455,15 @@ class WriterDeepReviewService:
             "chapter_summary": source.get("content") if object_type == "chapter" else None,
         }
         prompt = self.prompt_builder.build(snapshot, "writer_deep_review")
+        execution_step_key = f"writer_deep_review:{object_type}:{object_id}"
+        context = self._llm_context(
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=chapter_id,
+            scene_id=scene_id,
+            node_id="writer_deep_review",
+            execution_step_key=execution_step_key,
+        )
         try:
             node_result = self._llm_runner.run(
                 scene_id=scene_id or object_id,
@@ -392,6 +475,8 @@ class WriterDeepReviewService:
                 prompt=prompt,
                 user_prompt=prompt["user_prompt"],
                 offline_client_factory=lambda: OfflineWriterDeepReviewClient(source_text=source.get("content") or ""),
+                execution_step_key=execution_step_key,
+                context=context,
             )
         except LLMNodeExecutionError as exc:
             raise DomainError(
@@ -514,6 +599,17 @@ class WriterDeepReviewService:
             preference=preference,
         )
         prompt = self.prompt_builder.build(snapshot, "writer_passage_patch")
+        object_type = _required_text(payload, "object_type")
+        object_id = _required_text(payload, "object_id")
+        execution_step_key = f"writer_passage_patch:{object_type}:{object_id}"
+        context = self._llm_context(
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=_optional_text(payload, "chapter_id"),
+            scene_id=_optional_text(payload, "scene_id"),
+            node_id="writer_passage_patch",
+            execution_step_key=execution_step_key,
+        )
         node_result = self._llm_runner.run(
             scene_id=_optional_text(payload, "scene_id") or _required_text(payload, "object_id"),
             chapter_id=_optional_text(payload, "chapter_id") or _required_text(payload, "object_id"),
@@ -535,6 +631,8 @@ class WriterDeepReviewService:
                 issue_dimension=issue_dimension,
                 target_text_ref=target_text_ref,
             ),
+            execution_step_key=execution_step_key,
+            context=context,
         )
         normalized = _normalize_patch_output(
             node_result.response.structured_output,

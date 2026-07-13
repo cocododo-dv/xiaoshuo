@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -772,6 +773,22 @@ class LlmCall(Base):
         Index("ix_llm_calls_scope_created", "scope_type", "scope_id", "created_at"),
         Index("ix_llm_calls_run_job", "run_job_id"),
         Index("ix_llm_calls_execution_step", "execution_id", "execution_step_key"),
+        Index(
+            "uq_llm_calls_execution_step_claim",
+            "execution_id",
+            "execution_step_key",
+            unique=True,
+            sqlite_where=text(
+                "execution_id IS NOT NULL AND execution_step_key IS NOT NULL "
+                "AND NOT (request_dispatched_at IS NULL "
+                "AND accounting_status IN ('released','rejected'))"
+            ),
+            postgresql_where=text(
+                "execution_id IS NOT NULL AND execution_step_key IS NOT NULL "
+                "AND NOT (request_dispatched_at IS NULL "
+                "AND accounting_status IN ('released','rejected'))"
+            ),
+        ),
         Index("ix_llm_calls_accounting_status", "accounting_status"),
     )
 

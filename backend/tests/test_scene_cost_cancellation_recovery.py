@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from novel_system.db.models import FinalScene, LlmCall, SceneCard, SceneDraft, SceneRunState
 from novel_system.services import cost_aggregation as ca
-from novel_system.services.scene_budget import can_spend, record_usage
+from novel_system.services import scene_budget
+from novel_system.services.scene_budget import can_spend
 
 
 def _scene_with_valid_draft(session, scene_id, chapter_id="CCH", *, budget=1000, used=0):
@@ -91,9 +92,5 @@ def test_archived_final_survives_after_stop(session):
     assert fs is not None and fs.status == "archived" and fs.content == "已归档正文"
 
 
-def test_record_usage_accumulates_and_never_resets(session):
-    _scene_with_valid_draft(session, "CX5", budget=1000, used=200)
-    record_usage(session, "CX5", 150)
-    state = session.get(SceneRunState, "CX5")
-    # 累计而非重置（§7.12：自动流程不得重置预算账目）
-    assert state.scene_tokens_used == 350
+def test_legacy_record_usage_bypass_is_not_available():
+    assert not hasattr(scene_budget, "record_usage")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Request
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
@@ -46,6 +46,7 @@ from novel_system.services.text_validation import validate_user_text_payload
 from novel_system.services.writer_review import WriterReviewService, normalize_scene_writer_brief
 
 router = APIRouter(tags=["scenes"])
+INT64_MAX = (1 << 63) - 1
 
 
 @router.post("/api/v1/scenes/trash")
@@ -993,29 +994,55 @@ def topup_scene_budget(
     """Wave 3（§5.5/§7.12）：作者显式追加场景 token 预算——唯一扩容入口，留审计。"""
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload or {}
-    try:
-        extra_tokens = int(body.get("extra_tokens") or 0)
-    except (TypeError, ValueError):
-        extra_tokens = 0
-    if extra_tokens <= 0:
+    raw_extra_tokens = body.get("extra_tokens")
+    if (
+        type(raw_extra_tokens) is not int
+        or raw_extra_tokens <= 0
+        or raw_extra_tokens > INT64_MAX
+    ):
         raise DomainError(
             "INVALID_BUDGET_TOPUP",
             "extra_tokens must be a positive integer",
             status_code=422,
-            details={"extra_tokens": body.get("extra_tokens")},
+            details={"extra_tokens": raw_extra_tokens, "max_scene_token_budget": INT64_MAX},
         )
+    extra_tokens = raw_extra_tokens
     reason = str(body.get("reason") or "").strip()[:300]
 
     def _topup(session: Session) -> dict[str, Any]:
         from novel_system.db.models import OperationLog
+        from novel_system.services.scene_budget import ensure_scene_budget_initialized
 
         AuthorLifecycleService(session).require_active_scene(scene_id)
+        ensure_scene_budget_initialized(session, scene_id)
+        new_budget = session.execute(
+            update(SceneRunState)
+            .where(
+                SceneRunState.scene_id == scene_id,
+                SceneRunState.scene_token_budget.is_not(None),
+                SceneRunState.scene_token_budget <= INT64_MAX - extra_tokens,
+            )
+            .values(scene_token_budget=SceneRunState.scene_token_budget + extra_tokens)
+            .returning(SceneRunState.scene_token_budget)
+        ).scalar_one_or_none()
+        if new_budget is None:
+            current_budget = session.scalar(
+                select(SceneRunState.scene_token_budget).where(
+                    SceneRunState.scene_id == scene_id
+                )
+            )
+            raise DomainError(
+                "INVALID_BUDGET_TOPUP",
+                "scene token budget topup exceeds the signed 64-bit limit",
+                status_code=422,
+                details={
+                    "extra_tokens": extra_tokens,
+                    "scene_token_budget": current_budget,
+                    "max_scene_token_budget": INT64_MAX,
+                },
+            )
         state = session.get(SceneRunState, scene_id)
-        if state is None:
-            state = SceneRunState(scene_id=scene_id, scene_status="ready")
-            session.add(state)
-            session.flush()
-        state.scene_token_budget = int(state.scene_token_budget or 0) + extra_tokens
+        assert state is not None
         session.add(
             OperationLog(
                 event_type="scene_budget_topup",
@@ -1025,7 +1052,7 @@ def topup_scene_budget(
                     "extra_tokens": extra_tokens,
                     "reason": reason,
                     "actor_ref": actor_ref,
-                    "scene_token_budget": state.scene_token_budget,
+                    "scene_token_budget": int(new_budget),
                     "scene_tokens_used": int(state.scene_tokens_used or 0),
                 },
             )
@@ -1033,7 +1060,7 @@ def topup_scene_budget(
         session.flush()
         return {
             "scene_id": scene_id,
-            "scene_token_budget": state.scene_token_budget,
+            "scene_token_budget": int(new_budget),
             "scene_tokens_used": int(state.scene_tokens_used or 0),
         }
 

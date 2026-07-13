@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import inspect
+import ast
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
     ChapterGoal,
+    ChapterRunJob,
     LlmCall,
     LlmCallAttempt,
     SceneCard,
@@ -22,6 +27,7 @@ from novel_system.services.llm_client import (
     OnlineAccountedExecution,
     TaskModelConfig,
 )
+from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_task_runner import (
     LLMNodeContinuityError,
@@ -105,7 +111,7 @@ def _offline_settings() -> Settings:
     )
 
 
-class RecordingClient:
+class RecordingClient(OnlineAccountedExecution):
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
 
@@ -125,10 +131,19 @@ class RecordingClient:
             attempt_count=2,
             max_retries=3,
             retryable=False,
+            raw_usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+            usage_present=True,
+            usage_complete=True,
         )
 
+    def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:  # noqa: ANN001
+        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+        response = self.generate(request)
+        accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
 
-class FailingClient:
+
+class FailingClient(OnlineAccountedExecution):
     def generate(self, request: LLMRequest) -> LLMResponse:
         raise LLMHTTPError(
             "LLM_HTTP_REQUEST_FAILED",
@@ -136,6 +151,21 @@ class FailingClient:
             retryable=True,
             details={"attempt_count": 3, "max_retries": 2},
         )
+
+    def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:  # noqa: ANN001
+        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+        try:
+            return self.generate(request)
+        except Exception as exc:
+            accounting_hook.after_error(
+                handle,
+                request=request,
+                error=exc,
+                raw_response=None,
+                provider_request_id=None,
+                latency_ms=1,
+            )
+            raise
 
 
 class _SimulatedProcessCrash(BaseException):
@@ -182,6 +212,36 @@ class _UnsupportedDurableOnlineClient:
         raise AssertionError("unsupported client must be rejected before provider I/O")
 
 
+class _LegacyOfflineClient:
+    def __init__(self, *, valid: bool = True) -> None:
+        self.valid = valid
+        self.call_count = 0
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.call_count += 1
+        if self.valid:
+            provider = "offline_deterministic"
+            usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        else:
+            provider = "fake-online-provider"
+            usage = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        payload = {"scene_text": "offline scene"}
+        return LLMResponse(
+            request_id="offline-runner",
+            provider=provider,
+            model=request.model,
+            text=json.dumps(payload),
+            structured_output=payload,
+            response_format=request.response_format,
+            raw_response={"id": "offline-runner"},
+            usage=usage,
+            raw_usage=usage,
+            usage_present=True,
+            usage_complete=True,
+            finish_reason="offline_fallback",
+        )
+
+
 def _seed_durable_runner_scene(session) -> None:
     session.add(StoryProject(project_id="PROJECT_RUNNER", title="runner", outline_text="outline"))
     session.add(
@@ -215,8 +275,45 @@ def _seed_durable_runner_scene(session) -> None:
     session.commit()
 
 
-def _run_durable_runner(session, client, *, execution_id: str = "exec-runner"):
-    token = begin_llm_execution(execution_id)
+def _seed_legacy_runner_scene(session) -> None:
+    session.add(StoryProject(project_id="PROJECT100", title="runner", outline_text="outline"))
+    session.add(
+        ChapterGoal(
+            chapter_id="CH100",
+            project_id="PROJECT100",
+            planned_scene_count=1,
+            chapter_goal="runner unit test",
+        )
+    )
+    session.add(
+        SceneCard(
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            project_id="PROJECT100",
+            scene_seq=1,
+            scene_goal="exercise the runner",
+            beats_json=[],
+        )
+    )
+    session.add(
+        SceneRunState(
+            scene_id="CH100_SC01",
+            scene_status="ready",
+            scene_token_budget=50_000,
+            provider_attempt_budget=8,
+        )
+    )
+    session.commit()
+
+
+def _run_durable_runner(
+    session,
+    client,
+    *,
+    execution_id: str = "exec-runner",
+    run_job_id: str | None = None,
+):
+    token = begin_llm_execution(execution_id, run_job_id=run_job_id)
     try:
         return LLMNodeRunner(
             session,
@@ -476,6 +573,493 @@ def test_explicit_accounted_client_with_disabled_settings_still_uses_durable_acc
     assert attempt.accounting_status == "settled"
 
 
+def test_online_run_without_runtime_still_uses_parent_and_physical_attempt_ledger(session) -> None:
+    _seed_durable_runner_scene(session)
+    client = _AccountedRecordingClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+
+    result = runner.run(
+        scene_id="CH_RUNNER_SC01",
+        chapter_id="CH_RUNNER",
+        bundle_id="bundle-runner",
+        bundle_hash="sha256:runner",
+        node_id="neutral_draft",
+        step="neutral_draft",
+        prompt=_prompt(),
+        user_prompt="Return JSON.",
+        offline_client_factory=_LegacyOfflineClient,
+        execution_step_key="ignored-without-runtime",
+    )
+
+    parent = session.execute(select(LlmCall)).scalar_one()
+    attempt = session.execute(select(LlmCallAttempt)).scalar_one()
+    assert result.llm_call_id == parent.llm_call_id == result.response.llm_call_id
+    assert client.post_count == 1
+    assert parent.accounting_status == "settled"
+    assert parent.execution_id is None
+    assert parent.execution_step_key is None
+    assert attempt.accounting_status == "settled"
+    assert attempt.request_dispatched_at is not None
+
+
+def test_online_run_without_runtime_rejects_hookless_client_before_provider_io(session) -> None:
+    _seed_durable_runner_scene(session)
+    client = _UnsupportedDurableOnlineClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+
+    with pytest.raises(LLMNodeExecutionError) as rejected:
+        runner.run(
+            scene_id="CH_RUNNER_SC01",
+            chapter_id="CH_RUNNER",
+            bundle_id="bundle-runner",
+            bundle_hash="sha256:runner",
+            node_id="neutral_draft",
+            step="neutral_draft",
+            prompt=_prompt(),
+            user_prompt="Return JSON.",
+            offline_client_factory=_LegacyOfflineClient,
+        )
+
+    assert rejected.value.error_code == "LLM_ACCOUNTING_HOOK_UNSUPPORTED"
+    assert client.provider_io_count == 0
+    parent = session.execute(select(LlmCall)).scalar_one()
+    assert parent.accounting_status == "rejected"
+    assert parent.request_dispatched_at is None
+    assert session.execute(select(LlmCallAttempt)).scalars().all() == []
+
+
+def test_standard_offline_run_uses_verified_zero_attempt_accounting(session) -> None:
+    _seed_durable_runner_scene(session)
+    offline = _LegacyOfflineClient(valid=True)
+    runner = LLMNodeRunner(
+        session,
+        routing_config=_routing_config(),
+        settings=_offline_settings(),
+    )
+
+    result = runner.run(
+        scene_id="CH_RUNNER_SC01",
+        chapter_id="CH_RUNNER",
+        bundle_id="bundle-runner",
+        bundle_hash="sha256:runner",
+        node_id="neutral_draft",
+        step="neutral_draft",
+        prompt=_prompt(),
+        user_prompt="Return JSON.",
+        offline_client_factory=lambda: offline,
+    )
+
+    parent = session.execute(select(LlmCall)).scalar_one()
+    assert offline.call_count == 1
+    assert result.response.llm_call_id == parent.llm_call_id
+    assert parent.provider == "offline_deterministic"
+    assert parent.accounting_status == "settled"
+    assert parent.total_tokens == 0
+    assert session.execute(select(LlmCallAttempt)).scalars().all() == []
+
+
+def test_standard_offline_run_rejects_response_that_is_not_provably_offline(session) -> None:
+    _seed_durable_runner_scene(session)
+    invalid = _LegacyOfflineClient(valid=False)
+    runner = LLMNodeRunner(
+        session,
+        routing_config=_routing_config(),
+        settings=_offline_settings(),
+    )
+
+    with pytest.raises(LLMNodeExecutionError) as rejected:
+        runner.run(
+            scene_id="CH_RUNNER_SC01",
+            chapter_id="CH_RUNNER",
+            bundle_id="bundle-runner",
+            bundle_hash="sha256:runner",
+            node_id="neutral_draft",
+            step="neutral_draft",
+            prompt=_prompt(),
+            user_prompt="Return JSON.",
+            offline_client_factory=lambda: invalid,
+        )
+
+    assert rejected.value.error_code == "LLM_OFFLINE_RESPONSE_INVALID"
+    parent = session.execute(select(LlmCall)).scalar_one()
+    assert parent.accounting_status == "rejected"
+    assert parent.request_dispatched_at is None
+    assert session.execute(select(LlmCallAttempt)).scalars().all() == []
+
+
+def test_run_task_requires_explicit_context_without_a_default() -> None:
+    parameter = inspect.signature(LLMNodeRunner.run_task).parameters["context"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_all_production_run_task_calls_pass_explicit_context() -> None:
+    source_root = Path(__file__).parents[1] / "src" / "novel_system"
+    calls: list[tuple[str, int]] = []
+    offenders: list[tuple[str, int]] = []
+    for path in source_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "run_task"
+            ):
+                continue
+            location = (str(path.relative_to(source_root)), node.lineno)
+            calls.append(location)
+            if not any(keyword.arg == "context" for keyword in node.keywords):
+                offenders.append(location)
+
+    assert len(calls) == 4
+    assert offenders == []
+
+
+def test_legacy_accounting_bypasses_are_removed_from_production() -> None:
+    assert not hasattr(LLMNodeRunner, "_persist_call")
+
+    source_root = Path(__file__).parents[1] / "src" / "novel_system"
+    offenders: list[tuple[str, int]] = []
+    for path in source_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id == "record_usage":
+                offenders.append((str(path.relative_to(source_root)), node.lineno))
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "record_usage":
+                offenders.append((str(path.relative_to(source_root)), node.lineno))
+
+    assert offenders == []
+
+
+def test_only_the_twelve_verified_scene_run_calls_may_derive_context() -> None:
+    source_root = Path(__file__).parents[1] / "src" / "novel_system"
+    allowed_without_context = {
+        ("services/near_final.py", "NearFinalPlanningService", "_generate_chapter_architecture"),
+        ("services/near_final.py", "NearFinalPlanningService", "_generate_character_pressure"),
+        ("services/near_final.py", "NearFinalAcceptanceService", "evaluate_scene"),
+        ("services/scene_generation.py", "SceneGenerationService", "generate_neutral_draft"),
+        ("services/scene_generation.py", "SceneGenerationService", "generate_long_form_continuation"),
+        ("services/scene_generation.py", "SceneGenerationService", "_run_style_generation"),
+        ("services/scene_generation.py", "SceneGenerationService", "_run_de_template_pass"),
+        ("services/scene_blueprint.py", "SceneBlueprintService", "generate"),
+        ("services/qc_engine.py", "HardQcEngine", "evaluate"),
+        ("services/qc_engine.py", "SoftQcEngine", "evaluate"),
+        ("services/scene_quality.py", "SceneAutoRewriteService", "_generate_llm_candidate"),
+        ("services/writer_review.py", "WriterReviewService", "_run_scene_revision"),
+    }
+    calls: list[tuple[str, str, str, bool]] = []
+
+    class RunVisitor(ast.NodeVisitor):
+        def __init__(self, relative_path: str) -> None:
+            self.relative_path = relative_path
+            self.class_name = ""
+            self.function_name = ""
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            previous = self.class_name
+            self.class_name = node.name
+            self.generic_visit(node)
+            self.class_name = previous
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            previous = self.function_name
+            self.function_name = node.name
+            self.generic_visit(node)
+            self.function_name = previous
+
+        def visit_Call(self, node: ast.Call) -> None:
+            keyword_names = {keyword.arg for keyword in node.keywords}
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "run"
+                and {"bundle_id", "node_id", "offline_client_factory"} <= keyword_names
+            ):
+                calls.append(
+                    (
+                        self.relative_path,
+                        self.class_name,
+                        self.function_name,
+                        "context" in keyword_names,
+                    )
+                )
+            self.generic_visit(node)
+
+    for path in source_root.rglob("*.py"):
+        relative_path = path.relative_to(source_root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        RunVisitor(relative_path).visit(tree)
+
+    assert len(calls) == 21
+    actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
+    assert actual_without_context == allowed_without_context
+
+
+def test_online_run_task_uses_parent_and_physical_attempt_ledger(session) -> None:
+    _seed_durable_runner_scene(session)
+    client = _AccountedRecordingClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="neutral_draft",
+        step="advisory:test",
+    )
+
+    response = runner.run_task(
+        task_name="neutral_draft",
+        prompt_text="Return JSON.",
+        system_prompt="You are a critic.",
+        context=context,
+    )
+
+    parent = session.get(LlmCall, response.llm_call_id)
+    attempt = session.execute(select(LlmCallAttempt)).scalar_one()
+    assert client.post_count == 1
+    assert parent.scope_type == "scene"
+    assert parent.step == "advisory:test"
+    assert parent.accounting_status == "settled"
+    assert attempt.llm_call_id == parent.llm_call_id
+    assert attempt.accounting_status == "settled"
+
+
+def test_run_task_rejects_offline_execution_explicitly(session) -> None:
+    _seed_durable_runner_scene(session)
+    runner = LLMNodeRunner(
+        session,
+        routing_config=_routing_config(),
+        settings=_offline_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="neutral_draft",
+        step="advisory:offline",
+        provider_execution_mode="offline_deterministic",
+    )
+
+    with pytest.raises(LLMAccountingRejected) as rejected:
+        runner.run_task(
+            task_name="neutral_draft",
+            prompt_text="Return JSON.",
+            system_prompt="You are a critic.",
+            context=context,
+        )
+
+    assert rejected.value.code == "LLM_RUN_TASK_OFFLINE_UNSUPPORTED"
+    assert session.execute(select(LlmCall)).scalars().all() == []
+
+
+def test_run_task_business_attempt_budget_exhaustion_has_zero_provider_io(session) -> None:
+    _seed_durable_runner_scene(session)
+    state = session.get(SceneRunState, "CH_RUNNER_SC01")
+    state.total_attempt_count = state.attempt_budget
+    session.commit()
+    client = _AccountedRecordingClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="neutral_draft",
+        step="advisory:attempt-exhausted",
+    )
+
+    with pytest.raises(LLMNodeExecutionError) as rejected:
+        runner.run_task(
+            task_name="neutral_draft",
+            prompt_text="Return JSON.",
+            system_prompt="You are a critic.",
+            context=context,
+        )
+
+    assert rejected.value.error_code == "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED"
+    assert client.post_count == 0
+    assert session.execute(select(LlmCallAttempt)).scalars().all() == []
+    assert session.execute(select(LlmCall)).scalar_one().accounting_status == "rejected"
+
+
+def test_run_task_rejects_context_node_that_does_not_match_resolved_route(session) -> None:
+    _seed_durable_runner_scene(session)
+    client = _AccountedRecordingClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="tampered_node",
+        step="advisory:wrong-node",
+    )
+
+    with pytest.raises(LLMAccountingRejected) as rejected:
+        runner.run_task(
+            task_name="neutral_draft",
+            prompt_text="Return JSON.",
+            system_prompt="You are a critic.",
+            context=context,
+        )
+
+    assert rejected.value.code == "LLM_ACCOUNTING_CONTEXT_INVALID"
+    assert client.post_count == 0
+    assert session.execute(select(LlmCall)).scalars().all() == []
+
+
+def test_run_task_provider_failure_exposes_the_real_parent_call_id(session) -> None:
+    _seed_durable_runner_scene(session)
+    runner = LLMNodeRunner(
+        session,
+        llm_client=FailingClient(),
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="neutral_draft",
+        step="advisory:provider-failure",
+    )
+
+    with pytest.raises(LLMNodeExecutionError) as failed:
+        runner.run_task(
+            task_name="neutral_draft",
+            prompt_text="Return JSON.",
+            system_prompt="You are a critic.",
+            context=context,
+        )
+
+    parent = session.get(LlmCall, failed.value.llm_call_id)
+    assert parent is not None
+    assert parent.error_code == "LLM_HTTP_REQUEST_FAILED"
+    assert parent.accounting_status == "failed"
+    assert session.execute(select(LlmCallAttempt)).scalar_one().llm_call_id == parent.llm_call_id
+
+
+@pytest.mark.parametrize(
+    "tampered_context",
+    [
+        {"project_id": "PROJECT_TAMPERED"},
+    ],
+)
+def test_explicit_scene_context_tampering_is_rejected_before_provider_io(
+    session,
+    tampered_context: dict[str, str],
+) -> None:
+    _seed_durable_runner_scene(session)
+    client = _AccountedRecordingClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    context = replace(
+        LLMCallContext(
+            scope_type="scene",
+            scope_id="CH_RUNNER_SC01",
+            project_id="PROJECT_RUNNER",
+            chapter_id="CH_RUNNER",
+            scene_id="CH_RUNNER_SC01",
+            node_id="neutral_draft",
+            step="neutral_draft",
+        ),
+        **tampered_context,
+    )
+
+    with pytest.raises(LLMNodeExecutionError) as rejected:
+        runner.run(
+            scene_id="CH_RUNNER_SC01",
+            chapter_id="CH_RUNNER",
+            bundle_id="bundle-runner",
+            bundle_hash="sha256:runner",
+            node_id="neutral_draft",
+            step="neutral_draft",
+            prompt=_prompt(),
+            user_prompt="Return JSON.",
+            offline_client_factory=_LegacyOfflineClient,
+            context=context,
+        )
+
+    assert rejected.value.error_code == "LLM_ACCOUNTING_CONTEXT_INVALID"
+    assert client.post_count == 0
+    assert session.execute(select(LlmCall)).scalars().all() == []
+
+
+def test_explicit_chapter_context_records_chapter_owned_parent_without_synthetic_scene(session) -> None:
+    _seed_durable_runner_scene(session)
+    client = _AccountedRecordingClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="chapter",
+        scope_id="CH_RUNNER",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        node_id="neutral_draft",
+        step="chapter_evaluate",
+    )
+
+    result = runner.run(
+        scene_id="chapter_eval_CH_RUNNER",
+        chapter_id="CH_RUNNER",
+        bundle_id="bundle-chapter",
+        bundle_hash="sha256:chapter",
+        node_id="neutral_draft",
+        step="chapter_evaluate",
+        prompt=_prompt(),
+        user_prompt="Evaluate the chapter.",
+        offline_client_factory=_LegacyOfflineClient,
+        context=context,
+    )
+
+    parent = session.get(LlmCall, result.llm_call_id)
+    assert client.post_count == 1
+    assert (parent.scope_type, parent.scope_id) == ("chapter", "CH_RUNNER")
+    assert parent.scene_id is None
+    assert parent.chapter_id == "CH_RUNNER"
+
+
 def test_durable_online_intent_with_missing_scene_fails_before_provider_io(session) -> None:
     client = RecordingClient()
     runner = LLMNodeRunner(
@@ -505,6 +1089,138 @@ def test_durable_online_intent_with_missing_scene_fails_before_provider_io(sessi
     assert rejected.value.error_code == "LLM_ACCOUNTING_CONTEXT_INVALID"
     assert client.requests == []
     assert session.execute(select(LlmCall)).scalars().all() == []
+
+
+def test_active_scene_job_is_recorded_and_cannot_be_omitted_before_provider(session) -> None:
+    _seed_durable_runner_scene(session)
+    job_id = "scene-job-runner"
+    session.add(
+        ChapterRunJob(
+            job_id=job_id,
+            chapter_id="CH_RUNNER",
+            scene_id="CH_RUNNER_SC01",
+            status="running",
+            job_type="scene_run_full",
+            payload_json={"scene_id": "CH_RUNNER_SC01"},
+        )
+    )
+    state = session.get(SceneRunState, "CH_RUNNER_SC01")
+    state.active_run_job_id = job_id
+    session.commit()
+
+    client = _AccountedRecordingClient()
+    result = _run_durable_runner(session, client, run_job_id=job_id)
+    assert session.get(LlmCall, result.llm_call_id).run_job_id == job_id
+    assert client.post_count == 1
+
+    chapter_client = _AccountedRecordingClient()
+    chapter_runner = LLMNodeRunner(
+        session,
+        llm_client=chapter_client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    chapter_context = LLMCallContext(
+        scope_type="chapter",
+        scope_id="CH_RUNNER",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        node_id="neutral_draft",
+        step="chapter_evaluate",
+        execution_id="exec-scene-job-chapter-evaluate",
+        execution_step_key="chapter_evaluate",
+        run_job_id=job_id,
+    )
+    token = begin_llm_execution("exec-scene-job-chapter-evaluate", run_job_id=job_id)
+    try:
+        chapter_result = chapter_runner.run(
+            scene_id="chapter_eval_CH_RUNNER",
+            chapter_id="CH_RUNNER",
+            bundle_id="bundle-chapter",
+            bundle_hash="sha256:chapter",
+            node_id="neutral_draft",
+            step="chapter_evaluate",
+            prompt=_prompt(),
+            user_prompt="Evaluate the chapter.",
+            offline_client_factory=_LegacyOfflineClient,
+            context=chapter_context,
+            execution_step_key="chapter_evaluate",
+        )
+    finally:
+        end_llm_execution(token)
+    assert session.get(LlmCall, chapter_result.llm_call_id).run_job_id == job_id
+    assert chapter_client.post_count == 1
+
+    omitted_client = _AccountedRecordingClient()
+    with pytest.raises(LLMNodeExecutionError) as omitted:
+        _run_durable_runner(
+            session,
+            omitted_client,
+            execution_id="exec-runner-omitted-job",
+        )
+    assert omitted.value.error_code == "LLM_ACCOUNTING_CONTEXT_INVALID"
+    assert omitted_client.post_count == 0
+
+
+def test_chapter_job_owns_scene_and_chapter_scoped_calls(session) -> None:
+    _seed_durable_runner_scene(session)
+    job_id = "chapter-job-runner"
+    session.add(
+        ChapterRunJob(
+            job_id=job_id,
+            chapter_id="CH_RUNNER",
+            status="running",
+            job_type="chapter_run_full",
+            payload_json={
+                "scene_ids": ["CH_RUNNER_SC01"],
+                "current_scene_id": "CH_RUNNER_SC01",
+            },
+        )
+    )
+    session.get(SceneRunState, "CH_RUNNER_SC01").active_run_job_id = job_id
+    session.commit()
+
+    scene_client = _AccountedRecordingClient()
+    scene_result = _run_durable_runner(session, scene_client, run_job_id=job_id)
+    assert session.get(LlmCall, scene_result.llm_call_id).run_job_id == job_id
+
+    chapter_client = _AccountedRecordingClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=chapter_client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="chapter",
+        scope_id="CH_RUNNER",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        node_id="neutral_draft",
+        step="chapter_evaluate",
+        execution_id="exec-chapter-evaluate",
+        execution_step_key="chapter_evaluate",
+        run_job_id=job_id,
+    )
+    token = begin_llm_execution("exec-chapter-evaluate", run_job_id=job_id)
+    try:
+        chapter_result = runner.run(
+            scene_id="chapter_eval_CH_RUNNER",
+            chapter_id="CH_RUNNER",
+            bundle_id="bundle-chapter",
+            bundle_hash="sha256:chapter",
+            node_id="neutral_draft",
+            step="chapter_evaluate",
+            prompt=_prompt(),
+            user_prompt="Evaluate the chapter.",
+            offline_client_factory=_LegacyOfflineClient,
+            context=context,
+            execution_step_key="chapter_evaluate",
+        )
+    finally:
+        end_llm_execution(token)
+    assert session.get(LlmCall, chapter_result.llm_call_id).run_job_id == job_id
+    assert chapter_client.post_count == 1
 
 
 @pytest.mark.parametrize("missing_field", ["project", "execution", "step"])
@@ -583,6 +1299,7 @@ def test_unexpected_request_build_failure_is_not_masked_by_accounted_branch_flag
     session,
     monkeypatch,
 ) -> None:
+    _seed_legacy_runner_scene(session)
     runner = LLMNodeRunner(
         session,
         llm_client=_UnsupportedDurableOnlineClient(),
@@ -598,8 +1315,8 @@ def test_unexpected_request_build_failure_is_not_masked_by_accounted_branch_flag
     try:
         with pytest.raises(LLMNodeExecutionError) as failed:
             runner.run(
-                scene_id="missing-scene",
-                chapter_id="missing-chapter",
+                scene_id="CH100_SC01",
+                chapter_id="CH100",
                 bundle_id="bundle-runner",
                 bundle_hash="sha256:runner",
                 node_id="neutral_draft",
@@ -618,6 +1335,7 @@ def test_unexpected_request_build_failure_is_not_masked_by_accounted_branch_flag
 
 
 def test_llm_node_runner_builds_request_and_persists_successful_call(session) -> None:
+    _seed_legacy_runner_scene(session)
     client = RecordingClient()
     runner = LLMNodeRunner(session, llm_client=client, routing_config=_routing_config())
 
@@ -650,6 +1368,7 @@ def test_llm_node_runner_builds_request_and_persists_successful_call(session) ->
 
 
 def test_llm_node_runner_falls_back_for_scene_blueprint_when_active_config_is_older(session) -> None:
+    _seed_legacy_runner_scene(session)
     client = RecordingClient()
     runner = LLMNodeRunner(session, llm_client=client, routing_config=_routing_config())
 
@@ -676,6 +1395,7 @@ def test_llm_node_runner_falls_back_for_scene_blueprint_when_active_config_is_ol
 
 
 def test_llm_node_runner_live_mode_blocks_missing_direct_node_route(session) -> None:
+    _seed_legacy_runner_scene(session)
     client = RecordingClient()
     runner = LLMNodeRunner(
         session,
@@ -703,6 +1423,7 @@ def test_llm_node_runner_live_mode_blocks_missing_direct_node_route(session) -> 
 
 
 def test_llm_node_runner_live_mode_does_not_inherit_legacy_stylize_route(session) -> None:
+    _seed_legacy_runner_scene(session)
     client = RecordingClient()
     stylize_config = TaskModelConfig(
         provider="openai_compatible",
@@ -745,6 +1466,7 @@ def test_llm_node_runner_live_mode_does_not_inherit_legacy_stylize_route(session
 
 
 def test_llm_node_runner_falls_back_for_scene_literary_rewrite_when_active_config_is_older(session) -> None:
+    _seed_legacy_runner_scene(session)
     client = RecordingClient()
     runner = LLMNodeRunner(session, llm_client=client, routing_config=_routing_config())
 
@@ -771,6 +1493,7 @@ def test_llm_node_runner_falls_back_for_scene_literary_rewrite_when_active_confi
 
 
 def test_llm_node_runner_persists_failed_provider_call_with_retry_metadata(session) -> None:
+    _seed_legacy_runner_scene(session)
     runner = LLMNodeRunner(session, llm_client=FailingClient(), routing_config=_routing_config())
 
     with pytest.raises(LLMNodeExecutionError) as exc_info:
@@ -801,6 +1524,7 @@ def test_llm_node_runner_persists_failed_provider_call_with_retry_metadata(sessi
 
 
 def test_llm_node_runner_persists_continuity_failure_before_provider_call(session) -> None:
+    _seed_legacy_runner_scene(session)
     client = RecordingClient()
     runner = LLMNodeRunner(session, llm_client=client, routing_config=_routing_config())
 

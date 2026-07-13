@@ -430,6 +430,7 @@ def start_scene_run_job_worker(job_id: str) -> None:
 def _run_scene_job_worker(job_id: str) -> None:
     session = SessionLocal()
     owner: SceneRunJobLease | None = None
+    scene_id = ""
     try:
         service = SceneRunJobService(session)
         job = service.get_job(job_id)
@@ -440,12 +441,23 @@ def _run_scene_job_worker(job_id: str) -> None:
             current_step="neutral_running",
             lease_seconds=owner_lease_ttl_seconds(),
         )
+        state = session.get(SceneRunState, scene_id)
+        if state is None:
+            raise DomainError("SCENE_NOT_FOUND", "scene run state not found", status_code=404)
+        if state.active_run_job_id not in {None, job_id}:
+            raise DomainError(
+                "RUN_JOB_IN_PROGRESS",
+                "scene is owned by another active run job",
+                status_code=409,
+            )
+        state.active_run_job_id = job_id
         session.commit()
         result = Orchestrator(session).run_scene(
             scene_id,
             author_note=str((job.payload_json or {}).get("author_note") or "") or None,
             run_policy=str((job.payload_json or {}).get("run_policy") or "reliable") or "reliable",
             execution_id=scene_job_execution_id(job_id),
+            run_job_id=job_id,
             lease_renewer=owner.renew,
         )
         job = service.get_job(job_id)
@@ -473,6 +485,19 @@ def _run_scene_job_worker(job_id: str) -> None:
         session.rollback()
         _mark_worker_failure(job_id, "RUN_JOB_FAILED", str(exc) or "run job failed", owner=owner)
     finally:
+        try:
+            session.execute(
+                update(SceneRunState)
+                .where(
+                    SceneRunState.scene_id == scene_id,
+                    SceneRunState.active_run_job_id == job_id,
+                )
+                .values(active_run_job_id=None)
+                .execution_options(synchronize_session=False)
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
         session.close()
 
 

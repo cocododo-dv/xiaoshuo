@@ -87,6 +87,12 @@ LLM_INDEXES = {
     "ix_llm_calls_execution_step": ("execution_id", "execution_step_key"),
     "ix_llm_calls_accounting_status": ("accounting_status",),
 }
+EXECUTION_STEP_CLAIM_INDEX = "uq_llm_calls_execution_step_claim"
+EXECUTION_STEP_CLAIM_PREDICATE = (
+    "execution_id IS NOT NULL AND execution_step_key IS NOT NULL "
+    "AND NOT (request_dispatched_at IS NULL "
+    "AND accounting_status IN ('released','rejected'))"
+)
 
 
 def _inspector() -> sa.Inspector:
@@ -160,6 +166,20 @@ def _ensure_indexes(table_name: str, indexes: dict[str, tuple[str, ...]]) -> Non
     for name, columns in indexes.items():
         if name not in existing:
             op.create_index(name, table_name, list(columns), unique=False)
+
+
+def _ensure_execution_step_claim_index() -> None:
+    if EXECUTION_STEP_CLAIM_INDEX in _index_names("llm_calls"):
+        return
+    predicate = sa.text(EXECUTION_STEP_CLAIM_PREDICATE)
+    op.create_index(
+        EXECUTION_STEP_CLAIM_INDEX,
+        "llm_calls",
+        ["execution_id", "execution_step_key"],
+        unique=True,
+        sqlite_where=predicate,
+        postgresql_where=predicate,
+    )
 
 
 def _backfill_llm_calls() -> None:
@@ -332,6 +352,7 @@ def upgrade() -> None:
         _backfill_llm_calls()
         _ensure_checks("llm_calls", LLM_CHECKS, llm_call=True)
         _ensure_indexes("llm_calls", LLM_INDEXES)
+        _ensure_execution_step_claim_index()
         _ensure_attempt_table()
 
     if _inspector().has_table("chapter_run_jobs"):
@@ -381,7 +402,7 @@ def downgrade() -> None:
         op.drop_table("llm_call_attempts")
 
     if _inspector().has_table("llm_calls"):
-        _drop_indexes("llm_calls", LLM_INDEXES)
+        _drop_indexes("llm_calls", (*LLM_INDEXES, EXECUTION_STEP_CLAIM_INDEX))
         _drop_columns_with_checks(
             "llm_calls",
             (column.name for column in LLM_COLUMNS),

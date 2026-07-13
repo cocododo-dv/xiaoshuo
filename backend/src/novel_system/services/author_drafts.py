@@ -27,8 +27,13 @@ from novel_system.db.models import (
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.llm_client import LLMRequest, LLMResponse
-from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.llm_task_runner import (
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+    current_llm_execution_id,
+)
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.writer_review import (
@@ -78,6 +83,40 @@ class AuthorDraftService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.lifecycle = AuthorLifecycleService(session)
+
+    def _llm_context_for_target(
+        self,
+        runner: LLMNodeRunner,
+        target: dict[str, Any],
+        *,
+        node_id: str,
+        step: str,
+        execution_step_key: str,
+    ) -> LLMCallContext:
+        execution_id = current_llm_execution_id()
+        common = {
+            "scope_id": target["object_id"],
+            "project_id": target["project_id"],
+            "node_id": node_id,
+            "step": step,
+            "execution_id": execution_id,
+            "execution_step_key": execution_step_key if execution_id is not None else None,
+            "provider_execution_mode": runner.provider_execution_mode,
+        }
+        if target["object_type"] == "scene":
+            return LLMCallContext(
+                scope_type="scene",
+                scene_id=target["scene_id"],
+                chapter_id=target["chapter_id"],
+                **common,
+            )
+        if target["object_type"] == "chapter":
+            return LLMCallContext(
+                scope_type="chapter",
+                chapter_id=target["chapter_id"],
+                **common,
+            )
+        return LLMCallContext(scope_type="project", **common)
 
     def current(self, object_type: str, object_id: str) -> dict[str, Any]:
         self._require_target(object_type, object_id)
@@ -643,6 +682,14 @@ class AuthorDraftService:
         prompt = PromptBuilder().build(snapshot, "author_proposal_generate")
         bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
         runner = LLMNodeRunner(self.session)
+        execution_step_key = f"author_proposal_generate:{draft.draft_id}:{proposal_type}"
+        context = self._llm_context_for_target(
+            runner,
+            target,
+            node_id="author_proposal_generate",
+            step="author_proposal_generate",
+            execution_step_key=execution_step_key,
+        )
         try:
             node_result = runner.run(
                 scene_id=target.get("scene_id") or target.get("project_id") or draft.object_id,
@@ -661,6 +708,8 @@ class AuthorDraftService:
                 ),
                 source_draft_row_id=draft.draft_id,
                 source_draft_content=draft.content,
+                execution_step_key=execution_step_key,
+                context=context,
             )
         except LLMNodeExecutionError as exc:
             raise DomainError(
@@ -909,6 +958,14 @@ class AuthorDraftService:
         prompt = PromptBuilder().build(snapshot, "author_structure_extract")
         bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
         runner = LLMNodeRunner(self.session)
+        execution_step_key = f"author_structure_extract:{draft.draft_id}"
+        context = self._llm_context_for_target(
+            runner,
+            target,
+            node_id="author_structure_extract",
+            step="author_structure_extract",
+            execution_step_key=execution_step_key,
+        )
         try:
             node_result = runner.run(
                 scene_id=target["scene_id"] or draft.object_id,
@@ -922,6 +979,8 @@ class AuthorDraftService:
                 offline_client_factory=lambda: OfflineAuthorStructureExtractClient(draft=draft, target=target),
                 source_draft_row_id=draft.draft_id,
                 source_draft_content=draft.content,
+                execution_step_key=execution_step_key,
+                context=context,
             )
         except LLMNodeExecutionError as exc:
             raise DomainError(
@@ -1384,7 +1443,7 @@ class AuthorDraftService:
             return {
                 "object_type": "scene",
                 "object_id": scene.scene_id,
-                "project_id": chapter.project_id,
+                "project_id": scene.project_id or chapter.project_id,
                 "chapter_id": scene.chapter_id,
                 "scene_id": scene.scene_id,
                 "chapter_goal": chapter.chapter_goal or "",

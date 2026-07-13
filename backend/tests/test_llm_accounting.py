@@ -74,6 +74,87 @@ def test_request_estimate_includes_message_overhead_output_and_utf8_reservation(
     )
 
 
+@pytest.mark.parametrize(
+    "ownership",
+    [
+        {"execution_id": "exec-only"},
+        {"execution_step_key": "step-only"},
+        {"execution_id": "exec", "execution_step_key": "   "},
+        {"execution_id": "", "execution_step_key": ""},
+        {"execution_id": "   ", "execution_step_key": "step"},
+        {"run_job_id": "job-without-execution"},
+        {"run_job_id": "job-without-step", "execution_id": "exec"},
+        {"run_job_id": "", "execution_id": "exec", "execution_step_key": "step"},
+    ],
+)
+def test_direct_execute_rejects_partial_execution_ownership_before_parent_or_provider(
+    session,
+    ownership: dict[str, str],
+) -> None:
+    accounting = _accounting_module()
+
+    class NeverCalledClient(accounting.OnlineAccountedExecution):
+        calls = 0
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            self.calls += 1
+            raise AssertionError("provider boundary must not be reached")
+
+    client = NeverCalledClient()
+    with pytest.raises(ValueError, match="LLMCallContext"):
+        context = accounting.LLMCallContext(
+            scope_type="project",
+            scope_id="project-1",
+            node_id="neutral_draft",
+            step="draft",
+            project_id="project-1",
+            **ownership,
+        )
+        accounting.execute_accounted_call(session, client, _request(), context)
+
+    assert client.calls == 0
+    assert session.query(LlmCall).count() == 0
+    assert session.query(LlmCallAttempt).count() == 0
+
+
+@pytest.mark.parametrize(
+    "ownership",
+    [
+        {"execution_id": "exec-only"},
+        {"execution_step_key": "step-only"},
+        {"execution_id": "", "execution_step_key": ""},
+        {"run_job_id": "job-only"},
+        {"run_job_id": "job-without-step", "execution_id": "exec"},
+        {"run_job_id": "", "execution_id": "exec", "execution_step_key": "step"},
+    ],
+)
+def test_record_rejected_call_rejects_partial_ownership_before_parent(
+    session,
+    ownership: dict[str, str],
+) -> None:
+    accounting = _accounting_module()
+    rejection = accounting.LLMAccountingRejected("LOCAL_REJECTION", "local rejection")
+
+    with pytest.raises(ValueError, match="LLMCallContext"):
+        context = accounting.LLMCallContext(
+            scope_type="project",
+            scope_id="project-1",
+            node_id="neutral_draft",
+            step="draft",
+            project_id="project-1",
+            **ownership,
+        )
+        accounting.record_rejected_call(
+            session,
+            _request(),
+            context,
+            rejection,
+        )
+
+    assert session.query(LlmCall).count() == 0
+    assert session.query(LlmCallAttempt).count() == 0
+
+
 def test_request_estimate_includes_wire_response_schema_in_first_reservation() -> None:
     accounting = _accounting_module()
     schema = {
@@ -97,6 +178,36 @@ def test_request_estimate_includes_wire_response_schema_in_first_reservation() -
         + accounting.MESSAGE_TOKEN_OVERHEAD * len(request.messages)
         + request.max_output_tokens
     )
+
+
+def test_public_local_rejection_records_zero_child_parent_without_budget_charge(session) -> None:
+    accounting = _accounting_module()
+    rejection = accounting.LLMAccountingRejected(
+        "CONTINUITY_BUDGET_EXCEEDED",
+        "prompt requires a scene split",
+        details={"requires_scene_split": True},
+    )
+
+    call_id = accounting.record_rejected_call(
+        session,
+        _request(),
+        _context(accounting),
+        rejection,
+        llm_call_id="local-rejection-call",
+        request_payload_summary={"continuity_warning": {"requires_scene_split": True}},
+        response_payload_summary={"attempt_count": 0, "retryable": False},
+    )
+
+    parent = session.get(LlmCall, call_id)
+    assert parent.accounting_status == "rejected"
+    assert parent.error_code == "CONTINUITY_BUDGET_EXCEEDED"
+    assert parent.request_dispatched_at is None
+    assert parent.latency_ms == 0
+    assert (parent.estimated_tokens, parent.reserved_tokens, parent.budget_charged_tokens) == (0, 0, 0)
+    assert (parent.prompt_tokens, parent.completion_tokens, parent.total_tokens) == (0, 0, 0)
+    assert parent.request_payload_summary["continuity_warning"]["requires_scene_split"] is True
+    assert parent.response_payload_summary == {"attempt_count": 0, "retryable": False}
+    assert session.query(LlmCallAttempt).count() == 0
 
 
 def test_real_client_missing_raw_usage_is_estimated_and_never_charged_as_zero(session) -> None:
@@ -227,6 +338,183 @@ def test_online_wrapper_forwards_attempt_hook_and_is_fully_accounted(session) ->
     assert session.query(LlmCall).one().accounting_status == "settled"
 
 
+def test_scene_online_call_initializes_missing_budget_before_parent_and_dispatch(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-budget-auto-init"
+
+    class AccountedClient(accounting.OnlineAccountedExecution):
+        post_count = 0
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            self.post_count += 1
+            response = LLMResponse(
+                request_id="auto-budget-1",
+                provider="fake-provider",
+                model=request.model,
+                text='{"scene_text":"ok"}',
+                structured_output={"scene_text": "ok"},
+                response_format=request.response_format,
+                raw_response={"id": "auto-budget-1"},
+                usage={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                raw_usage={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                usage_present=True,
+                usage_complete=True,
+            )
+            accounting_hook.after_response(
+                handle,
+                request=request,
+                response=response,
+                latency_ms=1,
+            )
+            return response
+
+    client = AccountedClient()
+    response = accounting.execute_accounted_call(
+        session,
+        client,
+        _request(),
+        _scene_context(accounting, scene_id),
+    )
+
+    state = session.get(SceneRunState, scene_id)
+    assert response.request_id == "auto-budget-1"
+    assert client.post_count == 1
+    assert state is not None
+    assert state.scene_token_budget and state.scene_token_budget > 0
+    assert state.scene_budget_basis_json["scene_token_budget"] == state.scene_token_budget
+    assert state.provider_attempts_used == 1
+    assert state.scene_tokens_used == 14
+    assert session.query(LlmCall).count() == 1
+    assert session.query(LlmCallAttempt).count() == 1
+
+
+def test_duplicate_identical_after_response_callback_is_idempotent(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-duplicate-response-callback"
+    session.add(SceneRunState(scene_id=scene_id, scene_token_budget=10_000, provider_attempt_budget=5))
+    session.commit()
+
+    class DuplicateResponseClient(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            response = LLMResponse(
+                request_id="duplicate-response",
+                provider="fake-provider",
+                model=request.model,
+                text='{"scene_text":"ok"}',
+                structured_output={"scene_text": "ok"},
+                response_format=request.response_format,
+                raw_response={"id": "duplicate-response"},
+                usage={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                raw_usage={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                usage_present=True,
+                usage_complete=True,
+            )
+            for _ in range(2):
+                accounting_hook.after_response(
+                    handle,
+                    request=request,
+                    response=response,
+                    latency_ms=3,
+                )
+            return response
+
+    accounting.execute_accounted_call(
+        session,
+        DuplicateResponseClient(),
+        _request(),
+        _scene_context(accounting, scene_id),
+    )
+    session.expire_all()
+    assert session.get(SceneRunState, scene_id).scene_tokens_used == 14
+    assert session.query(LlmCallAttempt).one().total_tokens == 14
+
+
+def test_conflicting_duplicate_provider_callback_fails_stably_without_double_charge(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-conflicting-response-callback"
+    session.add(SceneRunState(scene_id=scene_id, scene_token_budget=10_000, provider_attempt_budget=5))
+    session.commit()
+
+    class ConflictingResponseClient(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            first = LLMResponse(
+                request_id="first-callback",
+                provider="fake-provider",
+                model=request.model,
+                text='{"scene_text":"ok"}',
+                structured_output={"scene_text": "ok"},
+                response_format=request.response_format,
+                raw_response={"id": "first-callback"},
+                usage={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                raw_usage={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                usage_present=True,
+                usage_complete=True,
+            )
+            accounting_hook.after_response(handle, request=request, response=first, latency_ms=3)
+            conflicting = replace(
+                first,
+                request_id="conflicting-callback",
+                usage={"input_tokens": 11, "output_tokens": 4, "total_tokens": 15},
+                raw_usage={"input_tokens": 11, "output_tokens": 4, "total_tokens": 15},
+            )
+            accounting_hook.after_response(
+                handle,
+                request=request,
+                response=conflicting,
+                latency_ms=3,
+            )
+            return first
+
+    with pytest.raises(Exception) as conflict:
+        accounting.execute_accounted_call(
+            session,
+            ConflictingResponseClient(),
+            _request(),
+            _scene_context(accounting, scene_id),
+        )
+    assert getattr(conflict.value, "code", None) == "LLM_ACCOUNTING_ATTEMPT_CALLBACK_CONFLICT"
+    session.expire_all()
+    assert session.get(SceneRunState, scene_id).scene_tokens_used == 14
+
+
+def test_duplicate_identical_after_error_callback_is_idempotent(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-duplicate-error-callback"
+    session.add(SceneRunState(scene_id=scene_id, scene_token_budget=10_000, provider_attempt_budget=5))
+    session.commit()
+
+    class DuplicateErrorClient(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            error = RuntimeError("provider failed")
+            for _ in range(2):
+                accounting_hook.after_error(
+                    handle,
+                    request=request,
+                    error=error,
+                    raw_response={
+                        "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}
+                    },
+                    provider_request_id="duplicate-error",
+                    latency_ms=5,
+                )
+            raise error
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        accounting.execute_accounted_call(
+            session,
+            DuplicateErrorClient(),
+            _request(),
+            _scene_context(accounting, scene_id),
+        )
+    session.expire_all()
+    assert session.get(SceneRunState, scene_id).scene_tokens_used == 14
+    assert session.query(LlmCallAttempt).one().accounting_status == "failed"
+
+
 def test_online_client_without_hook_contract_is_rejected_before_generate(session) -> None:
     accounting = _accounting_module()
 
@@ -324,6 +612,12 @@ def test_online_wrapper_that_drops_hook_never_leaves_a_live_parent(session) -> N
     assert run_state.scene_tokens_used == 14
     assert run_state.scene_tokens_reserved == 0
     assert run_state.run_execution_status == "accounting_integrity_blocked"
+
+    # Even if the conservatively reconstructed usage crosses the total budget,
+    # the durable blocked status + dispatched error tombstone must win over a
+    # generic corruption ValueError on every later provider attempt.
+    run_state.scene_tokens_used = run_state.scene_token_budget + 1
+    session.commit()
 
     with pytest.raises(Exception) as blocked_error:
         accounting.execute_accounted_call(
@@ -1045,6 +1339,133 @@ def test_token_budget_rejection_before_dispatch_has_no_post_attempt_or_charge(se
     assert parent.budget_charged_tokens == 0
 
 
+def test_business_attempt_budget_rejection_is_distinct_and_has_zero_provider_io(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-business-attempt-budget"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=10_000,
+            total_attempt_count=4,
+            attempt_budget=4,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(500)
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            _scene_context(accounting, scene_id),
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED"
+    state = session.get(SceneRunState, scene_id)
+    parent = session.query(LlmCall).one()
+    assert post_count == 0
+    assert state.total_attempt_count == 4
+    assert state.provider_attempts_used == 0
+    assert state.scene_tokens_reserved == 0
+    assert session.query(LlmCallAttempt).count() == 0
+    assert parent.accounting_status == "rejected"
+
+
+def test_business_attempt_budget_race_after_reservation_releases_fence_before_provider_io(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-business-attempt-race"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=10_000,
+            total_attempt_count=0,
+            attempt_budget=1,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+    reservation_barrier = threading.Barrier(2)
+    mutation_barrier = threading.Barrier(2)
+    worker_errors: list[BaseException] = []
+
+    def exhaust_business_budget() -> None:
+        worker = SessionLocal()
+        try:
+            reservation_barrier.wait(timeout=10)
+            state = worker.get(SceneRunState, scene_id)
+            assert state is not None
+            state.total_attempt_count = state.attempt_budget
+            worker.commit()
+            mutation_barrier.wait(timeout=10)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            worker_errors.append(exc)
+        finally:
+            worker.close()
+
+    worker_thread = threading.Thread(target=exhaust_business_budget)
+    worker_thread.start()
+
+    def lifecycle_observer(stage: str, _attempt_id: str) -> None:
+        if stage == "reservation_committed":
+            reservation_barrier.wait(timeout=10)
+            mutation_barrier.wait(timeout=10)
+
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(500)
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            _scene_context(accounting, scene_id),
+            _lifecycle_observer=lifecycle_observer,
+        )
+    worker_thread.join(timeout=10)
+
+    assert not worker_thread.is_alive()
+    assert worker_errors == []
+    assert getattr(exc_info.value, "code", None) == "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED"
+    session.expire_all()
+    state = session.get(SceneRunState, scene_id)
+    assert post_count == 0
+    assert state.total_attempt_count == 1
+    assert state.provider_attempts_used == 0
+    assert state.scene_tokens_reserved == 0
+    attempt = session.query(LlmCallAttempt).one()
+    assert attempt.accounting_status == "rejected"
+    assert attempt.request_dispatched_at is None
+
+
 def test_scene_accounting_refreshes_cached_run_state_after_settlement(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-cached-settlement"
@@ -1303,6 +1724,7 @@ def test_recovery_releases_reserved_but_undispatched_attempt_and_allows_retry(se
     assert session.query(LlmCallAttempt).one().accounting_status == "released"
     assert session.get(SceneRunState, scene_id).scene_tokens_reserved == 0
     assert session.get(SceneRunState, scene_id).provider_attempts_used == 0
+    accounting._release_scene_reservation(session, scene_id, attempt.reserved_tokens)
 
     accounting.execute_accounted_call(
         session,
@@ -1384,6 +1806,13 @@ def test_recovery_charges_dispatched_unknown_attempt_and_same_call_is_not_resent
     assert attempt.accounting_status == "failed"
     assert attempt.budget_charged_tokens == attempt.estimated_tokens > 0
     assert parent.budget_charged_tokens == attempt.budget_charged_tokens
+    used_after_recovery = run_state.scene_tokens_used
+    with pytest.raises(Exception) as repeated_recovery:
+        accounting.recover_incomplete_call(session, "dispatch-crash-call")
+    assert getattr(repeated_recovery.value, "code", None) == "LLM_ACCOUNTING_CALL_NOT_RECOVERABLE"
+    session.expire_all()
+    assert session.get(SceneRunState, scene_id).scene_tokens_used == used_after_recovery
+    run_state = session.get(SceneRunState, scene_id)
     assert run_state.scene_tokens_reserved == 0
     assert run_state.scene_tokens_used == attempt.budget_charged_tokens
 
@@ -1397,6 +1826,26 @@ def test_recovery_charges_dispatched_unknown_attempt_and_same_call_is_not_resent
         )
     assert getattr(exc_info.value, "code", None) == "RUN_CHECKPOINT_OUTPUT_MISSING"
     assert post_count == 0
+
+
+def test_release_idempotence_does_not_hide_a_different_nonzero_fence(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-release-fence-conflict"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=10_000,
+            scene_tokens_reserved=321,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+
+    with pytest.raises(Exception) as conflict:
+        accounting._release_scene_reservation(session, scene_id, 123)
+    assert getattr(conflict.value, "code", None) == "LLM_ACCOUNTING_SCENE_RESERVATION_CORRUPT"
+    session.rollback()
+    assert session.get(SceneRunState, scene_id).scene_tokens_reserved == 321
 
 
 def test_non_object_provider_response_conservatively_settles_child_without_reservation_leak(session) -> None:
@@ -1482,7 +1931,7 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
     session.add(
         SceneRunState(
             scene_id=scene_id,
-            scene_token_budget=1_000,
+            scene_token_budget=50_000,
             provider_attempt_budget=5,
         )
     )
@@ -1526,8 +1975,10 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
     parent = session.get(LlmCall, "overage-call")
     attempt = session.query(LlmCallAttempt).one()
     run_state = session.get(SceneRunState, scene_id)
+    request_reservation = accounting.estimate_request_usage(_request()).reserved_tokens
     assert parent.accounting_status == "usage_exceeds_reservation"
     assert attempt.accounting_status == "usage_exceeds_reservation"
+    assert attempt.reserved_tokens == request_reservation
     assert attempt.total_tokens == 20_000
     assert attempt.budget_charged_tokens == attempt.reserved_tokens < attempt.total_tokens
     assert parent.response_payload_summary["usage_overage_tokens"] == (
@@ -1574,6 +2025,78 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
         )
     assert getattr(exc_info.value, "code", None) == "LLM_USAGE_EXCEEDS_RESERVATION"
     assert post_count == 1
+
+
+def test_known_usage_overage_past_budget_still_blocks_later_dispatch_with_stable_code(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-known-overage-past-budget"
+    request = _request()
+    reservation = accounting.estimate_request_usage(request).reserved_tokens
+    budget = 50_000
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=budget,
+            scene_tokens_used=budget - reservation,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(
+            200,
+            json={
+                "id": "known-overage-past-budget",
+                "model": "test-model",
+                "output_text": '{"scene_text":"ok"}',
+                "usage": {"input_tokens": 10_000, "output_tokens": 10_000, "total_tokens": 20_000},
+            },
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    first_context = _scene_context(accounting, scene_id)
+    with pytest.raises(Exception) as first_error:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            request,
+            first_context,
+            llm_call_id="known-overage-past-budget-first",
+        )
+    assert getattr(first_error.value, "code", None) == "LLM_USAGE_EXCEEDS_RESERVATION"
+    session.expire_all()
+    assert session.get(SceneRunState, scene_id).scene_tokens_used > budget
+
+    with pytest.raises(Exception) as blocked:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            request,
+            replace(first_context, execution_id="known-overage-second-execution"),
+            llm_call_id="known-overage-past-budget-second",
+        )
+    assert getattr(blocked.value, "code", None) == "LLM_USAGE_EXCEEDS_RESERVATION"
+    assert post_count == 1
+
+    # A tombstone must never mask a still-live/different reservation fence.
+    from novel_system.services.scene_budget import ensure_scene_budget_initialized
+
+    run_state = session.get(SceneRunState, scene_id)
+    run_state.scene_tokens_reserved = 1
+    session.commit()
+    with pytest.raises(ValueError, match="scene budget state is corrupt"):
+        ensure_scene_budget_initialized(session, scene_id)
 
 
 def test_success_overage_details_identify_offending_attempt_after_retry(session) -> None:
@@ -1638,21 +2161,22 @@ def test_success_overage_details_identify_offending_attempt_after_retry(session)
         "failed",
         "usage_exceeds_reservation",
     ]
-    assert (parent.total_tokens, parent.reserved_tokens) == (1_005, 1_990)
+    assert parent.total_tokens == 1_005
+    assert parent.reserved_tokens == sum(attempt.reserved_tokens for attempt in attempts)
     assert getattr(exc_info.value, "code", None) == "LLM_USAGE_EXCEEDS_RESERVATION"
     assert exc_info.value.details == {
         "llm_call_id": "retry-success-overage",
         "execution_id": context.execution_id,
         "execution_step_key": context.execution_step_key,
         "actual_tokens": 995,
-        "reserved_tokens": 990,
+        "reserved_tokens": offending_attempt.reserved_tokens,
         "attempt_id": offending_attempt.attempt_id,
         "provider_attempt_no": 1,
         "attempt_actual_tokens": 995,
-        "attempt_reserved_tokens": 990,
-        "usage_overage_tokens": 5,
+        "attempt_reserved_tokens": offending_attempt.reserved_tokens,
+        "usage_overage_tokens": offending_attempt.total_tokens - offending_attempt.reserved_tokens,
         "parent_actual_tokens": 1_005,
-        "parent_reserved_tokens": 1_990,
+        "parent_reserved_tokens": parent.reserved_tokens,
     }
 
 
@@ -1760,6 +2284,7 @@ def test_scene_budget_fence_allows_one_inflight_post_and_loser_retries_after_set
         _scene_context(accounting, scene_id),
         execution_id="fence-loser-execution",
     )
+    request_reservation = accounting.estimate_request_usage(_request()).reserved_tokens
 
     def winner_worker() -> None:
         with SessionLocal() as worker_session:
@@ -1780,7 +2305,7 @@ def test_scene_budget_fence_allows_one_inflight_post_and_loser_retries_after_set
 
     with SessionLocal() as verifier:
         inflight_state = verifier.get(SceneRunState, scene_id)
-        assert inflight_state.scene_tokens_reserved == 900
+        assert inflight_state.scene_tokens_reserved == request_reservation
 
     with SessionLocal() as loser_session:
         with pytest.raises(Exception) as exc_info:
@@ -1819,10 +2344,14 @@ def test_scene_budget_fence_allows_one_inflight_post_and_loser_retries_after_set
     assert run_state.scene_tokens_used == 128
     attempts = session.query(LlmCallAttempt).all()
     assert len(attempts) == 2
-    assert sorted(attempt.reserved_tokens for attempt in attempts) == [886, 900]
+    assert [attempt.reserved_tokens for attempt in attempts] == [
+        request_reservation,
+        request_reservation,
+    ]
+    assert all(attempt.total_tokens <= attempt.reserved_tokens for attempt in attempts)
 
 
-def test_null_scene_token_budget_fails_closed_before_online_attempt(session) -> None:
+def test_null_scene_token_budget_is_initialized_before_online_attempt(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-null-budget-compat"
     session.add(
@@ -1860,16 +2389,18 @@ def test_null_scene_token_budget_fails_closed_before_online_attempt(session) -> 
 
     session.expire_all()
     run_state = session.get(SceneRunState, scene_id)
-    assert getattr(exc_info.value, "code", None) == "LLM_SCENE_TOKEN_BUDGET_UNINITIALIZED"
-    assert post_count == 0
+    assert getattr(exc_info.value, "code", None) == "LLM_HTTP_RETRYABLE_FAILURE"
+    assert post_count == 1
+    assert run_state.scene_token_budget is not None
+    assert run_state.scene_budget_basis_json is not None
     assert run_state.scene_tokens_reserved == 0
-    assert run_state.scene_tokens_used == 0
-    assert run_state.provider_attempts_used == 0
-    assert session.query(LlmCallAttempt).count() == 0
-    assert session.query(LlmCall).one().accounting_status == "rejected"
+    assert run_state.scene_tokens_used > 0
+    assert run_state.provider_attempts_used == 1
+    assert session.query(LlmCallAttempt).count() == 1
+    assert session.query(LlmCall).one().accounting_status == "failed"
 
 
-def test_missing_scene_run_state_fails_closed_before_online_attempt(session) -> None:
+def test_missing_scene_run_state_is_initialized_before_online_attempt(session) -> None:
     accounting = _accounting_module()
     post_count = 0
 
@@ -1895,10 +2426,14 @@ def test_missing_scene_run_state_fails_closed_before_online_attempt(session) -> 
             _scene_context(accounting, "missing-scene-state"),
         )
 
-    assert getattr(exc_info.value, "code", None) == "LLM_SCENE_TOKEN_BUDGET_UNINITIALIZED"
-    assert post_count == 0
-    assert session.query(LlmCallAttempt).count() == 0
-    assert session.query(LlmCall).one().accounting_status == "rejected"
+    assert getattr(exc_info.value, "code", None) == "LLM_HTTP_RETRYABLE_FAILURE"
+    assert post_count == 1
+    state = session.get(SceneRunState, "missing-scene-state")
+    assert state.scene_token_budget is not None
+    assert state.scene_budget_basis_json is not None
+    assert state.provider_attempts_used == 1
+    assert session.query(LlmCallAttempt).count() == 1
+    assert session.query(LlmCall).one().accounting_status == "failed"
 
 
 def test_concurrent_same_execution_step_has_one_parent_and_never_double_posts(session) -> None:

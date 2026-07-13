@@ -13,6 +13,8 @@ These tests cover the now-real wiring:
 
 from __future__ import annotations
 
+import pytest
+
 
 class _FakeResponse:
     def __init__(self, text: str) -> None:
@@ -20,26 +22,39 @@ class _FakeResponse:
         self.structured_output = None
 
 
-def test_run_task_assembles_request_and_uses_client(session) -> None:
-    from novel_system.services.llm_task_runner import LLMNodeRunner
+def _llm_context():
+    from novel_system.services.llm_accounting import LLMCallContext
 
+    return LLMCallContext(
+        scope_type="system",
+        scope_id="auto-critique-test",
+        node_id="soft_qc",
+        step="soft_qc:auto_critique:0",
+    )
+
+
+def test_auto_critique_passes_explicit_context_to_run_task() -> None:
+    from novel_system.services.auto_critique import llm_auto_critique
     captured: dict = {}
 
-    class _Client:
-        def generate(self, request):
-            captured["request"] = request
+    class _Runner:
+        def run_task(self, *, task_name, prompt_text, system_prompt, context):
+            captured.update(
+                task_name=task_name,
+                prompt_text=prompt_text,
+                system_prompt=system_prompt,
+                context=context,
+            )
             return _FakeResponse('{"should_rewrite": false, "issues": []}')
 
-    runner = LLMNodeRunner(session, llm_client=_Client())
-    resp = runner.run_task(
-        task_name="auto_critique_llm",
-        prompt_text="SCENE TEXT",
-        system_prompt="CRITIC SYSTEM",
+    context = _llm_context()
+    llm_auto_critique(
+        "SCENE TEXT",
+        llm_runner=_Runner(),
+        llm_context=context,
     )
-    assert resp.text  # the injected client's response is returned verbatim
-    req = captured["request"]
-    assert req.messages[0]["content"] == "CRITIC SYSTEM"
-    assert req.messages[1]["content"] == "SCENE TEXT"
+    assert captured["task_name"] == "auto_critique_llm"
+    assert captured["context"] is context
 
 
 def test_auto_critique_llm_aliases_to_existing_route(session) -> None:
@@ -62,11 +77,28 @@ def test_llm_critique_degrades_to_rule_only_without_runner() -> None:
     assert hybrid.should_rewrite == rule.should_rewrite
 
 
+def test_llm_critique_with_runner_but_no_context_fails_before_runner_io() -> None:
+    from novel_system.services.auto_critique import llm_auto_critique
+    from novel_system.services.llm_accounting import LLMAccountingRejected
+
+    calls: list[str] = []
+
+    class _Runner:
+        def run_task(self, **_kwargs):
+            calls.append("provider")
+
+    with pytest.raises(LLMAccountingRejected) as rejected:
+        llm_auto_critique("prose", llm_runner=_Runner())
+
+    assert rejected.value.code == "LLM_ACCOUNTING_CONTEXT_REQUIRED"
+    assert calls == []
+
+
 def test_llm_critique_merges_editor_issues() -> None:
     from novel_system.services.auto_critique import llm_auto_critique
 
     class _Runner:
-        def run_task(self, *, task_name, prompt_text, system_prompt):
+        def run_task(self, *, task_name, prompt_text, system_prompt, context):
             return _FakeResponse(
                 '{"should_rewrite": true, "issues": ['
                 '{"dimension": "conflict_credibility", '
@@ -74,7 +106,11 @@ def test_llm_critique_merges_editor_issues() -> None:
                 '"evidence": "they simply hugged and moved on"}]}'
             )
 
-    result = llm_auto_critique("Some otherwise clean prose.", llm_runner=_Runner())
+    result = llm_auto_critique(
+        "Some otherwise clean prose.",
+        llm_runner=_Runner(),
+        llm_context=_llm_context(),
+    )
     assert result.should_rewrite is True
     assert any("conflict_credibility" in directive for directive in result.directives)
 
@@ -84,11 +120,11 @@ def test_llm_critique_runner_error_degrades_gracefully() -> None:
     from novel_system.services.auto_critique import auto_critique, llm_auto_critique
 
     class _BrokenRunner:
-        def run_task(self, *, task_name, prompt_text, system_prompt):
+        def run_task(self, *, task_name, prompt_text, system_prompt, context):
             raise RuntimeError("LLM down")
 
     text = "她觉得很难过，她意识到自己错了。"
-    hybrid = llm_auto_critique(text, llm_runner=_BrokenRunner())
+    hybrid = llm_auto_critique(text, llm_runner=_BrokenRunner(), llm_context=_llm_context())
     assert hybrid.directives == auto_critique(text).directives
 
 
@@ -118,7 +154,7 @@ def test_auto_critique_gate_suppressed_when_flag_disabled(session, monkeypatch) 
     calls: list = []
 
     class _Runner:
-        def run_task(self, *, task_name, prompt_text, system_prompt):
+        def run_task(self, *, task_name, prompt_text, system_prompt, context):
             calls.append(task_name)
             return _FakeResponse('{"should_rewrite": false, "issues": []}')
 

@@ -23,7 +23,13 @@ from novel_system.db.models import (
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_client import LLMRequest, LLMResponse
-from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_task_runner import (
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+    current_llm_execution_id,
+    current_llm_run_job_id,
+)
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.settings import get_settings
 from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
@@ -567,11 +573,30 @@ class NearFinalAcceptanceService:
             "should_rewrite": self._should_rewrite(payload),
         }
 
-    def evaluate_chapter(self, chapter_id: str, actor_ref: str = "operator") -> dict[str, Any]:
+    def evaluate_chapter(
+        self,
+        chapter_id: str,
+        actor_ref: str = "operator",
+        *,
+        execution_step_key: str = "chapter_near_final_review:0",
+    ) -> dict[str, Any]:
         chapter = self._require_chapter(chapter_id)
         source = self._chapter_source(chapter)
         bundle = self._chapter_bundle(chapter, source)
         prompt = self.prompt_builder.build(bundle["snapshot"], "chapter_near_final_review")
+        execution_id = current_llm_execution_id()
+        context = LLMCallContext(
+            scope_type="chapter",
+            scope_id=chapter.chapter_id,
+            project_id=chapter.project_id,
+            chapter_id=chapter.chapter_id,
+            node_id="chapter_near_final_review",
+            step="chapter_near_final_review",
+            execution_id=execution_id,
+            execution_step_key=execution_step_key if execution_id is not None else None,
+            run_job_id=current_llm_run_job_id(),
+            provider_execution_mode=self._llm_runner.provider_execution_mode,
+        )
         try:
             node_result = self._llm_runner.run(
                 scene_id=f"chapter_{chapter.chapter_id}",
@@ -585,6 +610,8 @@ class NearFinalAcceptanceService:
                 offline_client_factory=OfflineNearFinalAcceptanceClient,
                 source_draft_row_id=source["source_text_ref"],
                 source_draft_content=source["content"],
+                execution_step_key=execution_step_key,
+                context=context,
             )
             payload = _normalize_acceptance_payload(node_result.response.structured_output)
             llm_call_id = node_result.llm_call_id

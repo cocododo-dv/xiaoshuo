@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateIndex
 
 from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db.models import ChapterRunJob, FinalScene, LlmCall, QcReport, SceneDraft
@@ -153,6 +155,20 @@ EXPECTED_LLM_CALL_COLUMNS = {
     "request_dispatched_at",
     "settled_at",
 }
+
+
+def test_llm_execution_step_claim_has_postgresql_partial_unique_ddl() -> None:
+    claim_index = next(
+        index
+        for index in LlmCall.__table__.indexes
+        if index.name == "uq_llm_calls_execution_step_claim"
+    )
+    ddl = str(CreateIndex(claim_index).compile(dialect=postgresql.dialect()))
+    assert "CREATE UNIQUE INDEX uq_llm_calls_execution_step_claim" in ddl
+    assert "execution_id IS NOT NULL" in ddl
+    assert "execution_step_key IS NOT NULL" in ddl
+    assert "request_dispatched_at IS NULL" in ddl
+    assert "accounting_status IN ('released','rejected')" in ddl
 
 EXPECTED_LLM_CALL_ATTEMPT_COLUMNS = {
     "attempt_id",
@@ -707,6 +723,42 @@ def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path:
             connection.execute(
                 "UPDATE llm_calls SET accounting_status = 'unknown' WHERE llm_call_id = 'call-scene'"
             )
+        connection.execute(
+            """
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, created_at, scope_type, scope_id,
+                execution_id, execution_step_key, accounting_status,
+                request_dispatched_at
+            ) VALUES (
+                'claim-released', 'claim', '2026-07-13T02:00:00+00:00',
+                'system', 'claim', 'claim-execution', 'claim-step',
+                'released', NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, created_at, scope_type, scope_id,
+                execution_id, execution_step_key, accounting_status
+            ) VALUES (
+                'claim-retry', 'claim', '2026-07-13T02:00:01+00:00',
+                'system', 'claim', 'claim-execution', 'claim-step', 'reserved'
+            )
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO llm_calls (
+                    llm_call_id, node_id, created_at, scope_type, scope_id,
+                    execution_id, execution_step_key, accounting_status
+                ) VALUES (
+                    'claim-duplicate', 'claim', '2026-07-13T02:00:02+00:00',
+                    'system', 'claim', 'claim-execution', 'claim-step', 'reserved'
+                )
+                """
+            )
 
     assert version == ("20260713_0065",)
     assert "llm_call_attempts" in tables
@@ -760,6 +812,7 @@ def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path:
         "ix_llm_calls_scope_created",
         "ix_llm_calls_run_job",
         "ix_llm_calls_execution_step",
+        "uq_llm_calls_execution_step_claim",
         "ix_llm_calls_accounting_status",
         "ix_llm_call_attempts_call_status",
         "ix_chapter_run_jobs_scene_created",

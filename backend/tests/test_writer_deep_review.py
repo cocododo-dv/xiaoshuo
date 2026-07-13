@@ -13,10 +13,11 @@ from novel_system.db.models import (
     ReviewItem,
     SceneCard,
     SceneRunState,
+    StoryProject,
     WriterEvaluation,
 )
 from novel_system.services.author_drafts import AuthorDraftService
-from novel_system.services.llm_client import LLMResponse
+from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
 from novel_system.services.writer_deep_review import LITERARY_REVISION_RUBRIC_ID
 from novel_system.services.writer_deep_review import WriterDeepReviewService
 from novel_system.services.writer_deep_review import _infer_scene_form
@@ -26,6 +27,7 @@ from novel_system.services.writer_deep_review import _normalize_deep_review_outp
 CHAPTER_ID = "DEEP_CH01"
 SCENE_ID = "DEEP_CH01_SC01"
 FINAL_ROW_ID = "final_DEEP_CH01_SC01"
+PROJECT_ID = "PROJECT_DEEP_CH01"
 
 
 def test_scene_form_inference_recognizes_chinese_atmosphere_markers() -> None:
@@ -85,9 +87,11 @@ def test_normalize_deep_review_output_rebuilds_lenses_when_model_omits_grouping(
 
 
 def _seed_finished_scene(session) -> None:
+    session.add(StoryProject(project_id=PROJECT_ID, title="Deep review project", outline_text=""))
     session.add(
         ChapterGoal(
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             planned_scene_count=1,
             chapter_goal="林岑必须决定是否公开导师留下的失踪案证据。",
             main_plot_push="把旧档案线推进到公开真相的选择。",
@@ -191,8 +195,18 @@ def test_scene_deep_review_uses_llm_when_live(client: TestClient, session, monke
         def __init__(self, db_session, **kwargs) -> None:
             self.session = db_session
 
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
         def run(self, **kwargs):
             assert kwargs["node_id"] == "writer_deep_review"
+            context = kwargs["context"]
+            assert context.scope_type == "scene"
+            assert context.scope_id == SCENE_ID
+            assert context.project_id == PROJECT_ID
+            assert context.chapter_id == CHAPTER_ID
+            assert context.scene_id == SCENE_ID
             return SimpleNamespace(
                 llm_call_id="llm_call_writer_deep_review_test",
                 response=SimpleNamespace(
@@ -404,7 +418,7 @@ def test_author_preference_review_approval_publishes_runtime_profile(client: Tes
     assert profile["summary"]["preferred_revision_moves"][0] in llm_client.requests[0].messages[1]["content"]
 
 
-class ScriptedPassagePatchClient:
+class ScriptedPassagePatchClient(OnlineAccountedExecution):
     def __init__(self) -> None:
         self.requests = []
 
@@ -444,6 +458,12 @@ class ScriptedPassagePatchClient:
             finish_reason="stop",
         )
 
+    def generate_accounted(self, request, *, accounting_hook):
+        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+        response = self.generate(request)
+        accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
+
 
 def test_passage_patch_candidate_uses_writer_passage_patch_llm_and_records_provenance(session) -> None:
     _seed_finished_scene(session)
@@ -477,6 +497,10 @@ def test_passage_patch_candidate_uses_writer_passage_patch_llm_and_records_prove
     assert row.source_draft_id == draft["draft_id"]
     assert row.generation_llm_call_id == candidate["generation_llm_call_id"]
     assert session.get(LlmCall, candidate["generation_llm_call_id"]).node_id == "writer_passage_patch"
+    patch_call = session.get(LlmCall, candidate["generation_llm_call_id"])
+    assert patch_call.scope_type == "scene"
+    assert patch_call.scope_id == SCENE_ID
+    assert patch_call.project_id == PROJECT_ID
 
 
 def test_passage_patch_candidate_records_category_range_strategy_and_preference_tags(session) -> None:

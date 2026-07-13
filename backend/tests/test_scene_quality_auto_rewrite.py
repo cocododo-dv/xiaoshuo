@@ -12,6 +12,7 @@ from novel_system.db.models import (
     LlmCall,
     QcReport,
     SceneCard,
+    SceneDraft,
     SceneQualityContract,
     SceneRunState,
 )
@@ -155,6 +156,9 @@ def test_auto_rewrite_full_scene_can_promote_and_rollback_without_overwriting_au
     assert run["status"] == "candidate_ready"
     assert run["gate_results"]["promotable"] is True
     assert run["candidate_draft_row_id"]
+    assert run["llm_call_id"] is None
+    assert session.query(LlmCall).count() == 0
+    assert session.get(SceneDraft, run["candidate_draft_row_id"]).generation_llm_call_id is None
 
     promote = client.post(f"/api/v1/auto-rewrite-runs/{run['run_id']}/promote", headers=_headers("promote-full"))
 

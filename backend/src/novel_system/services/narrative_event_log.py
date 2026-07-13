@@ -29,6 +29,7 @@ from novel_system.db.models import (
     NarrativeEvent,
     SceneCard,
 )
+from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
 
 
 EVENT_TYPES = (
@@ -459,6 +460,7 @@ class NarrativeEventLog:
         *,
         character_ids: list[str] | None = None,
         llm_runner: Any | None = None,
+        llm_context: LLMCallContext | None = None,
     ) -> ConsistencyReport:
         """§15 honest-boundary hybrid check: keyword pass + ONE advisory LLM flag pass.
 
@@ -480,6 +482,11 @@ class NarrativeEventLog:
         )
         if llm_runner is None:
             return base
+        if llm_context is None:
+            raise LLMAccountingRejected(
+                "LLM_ACCOUNTING_CONTEXT_REQUIRED",
+                "narrative consistency LLM execution requires explicit accounting context",
+            )
 
         scene_seq = self._scene_seq(scene_id)
         chars = character_ids or self._characters_in_project(project_id)
@@ -501,6 +508,7 @@ class NarrativeEventLog:
                 task_name="consistency_extract",
                 prompt_text=task_prompt,
                 system_prompt=_LLM_CONSISTENCY_SYSTEM_PROMPT,
+                context=llm_context,
             )
         except Exception:
             return base  # LLM failure must never break the conservative path

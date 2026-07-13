@@ -94,6 +94,12 @@ def test_style_profile_extract_api_uses_llm_when_live(client: TestClient, monkey
 
         def run(self, **kwargs):
             assert kwargs["node_id"] == "style_profile_extract"
+            context = kwargs["context"]
+            assert context.scope_type == "system"
+            assert context.scope_id == "style_profile_extract"
+            assert context.project_id is None
+            assert context.chapter_id is None
+            assert context.scene_id is None
             return SimpleNamespace(
                 llm_call_id="llm_call_style_profile_extract_test",
                 response=SimpleNamespace(

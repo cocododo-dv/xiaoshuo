@@ -91,14 +91,20 @@ class ChapterRunnerService:
             try:
                 call_parameters = inspect.signature(orchestrator.run_scene).parameters
                 if "execution_id" in call_parameters:
-                    result = orchestrator.run_scene(
-                        next_scene_id,
-                        execution_id=chapter_scene_execution_id(job.job_id, next_scene_id),
-                        lease_renewer=_renew_all,
-                    )
+                    call_kwargs = {
+                        "execution_id": chapter_scene_execution_id(job.job_id, next_scene_id),
+                        "lease_renewer": _renew_all,
+                    }
+                    if "run_job_id" in call_parameters or any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in call_parameters.values()
+                    ):
+                        call_kwargs["run_job_id"] = job.job_id
+                    result = orchestrator.run_scene(next_scene_id, **call_kwargs)
                 else:  # compatibility for focused test doubles
                     result = orchestrator.run_scene(next_scene_id)
             except Exception as exc:  # pragma: no cover - safety net for runtime failures
+                self._release_scene_job_ownership(next_scene_id, job.job_id)
                 self._mark_failed(
                     job,
                     current_scene_id=next_scene_id,
@@ -107,6 +113,7 @@ class ChapterRunnerService:
                 )
                 self.session.flush()
                 return self._serialize_job(job)
+            self._release_scene_job_ownership(next_scene_id, job.job_id)
 
             if self._scene_requires_human_review(result):
                 self._mark_blocked(
@@ -431,6 +438,28 @@ class ChapterRunnerService:
         payload["blocked_scene_id"] = None
         job.payload_json = payload
         self._update_summary(job, current_scene_id=scene_id, blocked_scene_id=None, latest_error=None)
+        state = self.session.get(SceneRunState, scene_id)
+        if state is None:
+            raise DomainError("SCENE_NOT_FOUND", "scene run state not found", status_code=404)
+        if state.active_run_job_id not in {None, job.job_id}:
+            raise DomainError(
+                "RUN_JOB_IN_PROGRESS",
+                "scene is owned by another active run job",
+                status_code=409,
+            )
+        state.active_run_job_id = job.job_id
+
+    def _release_scene_job_ownership(self, scene_id: str, job_id: str) -> None:
+        self.session.execute(
+            update(SceneRunState)
+            .where(
+                SceneRunState.scene_id == scene_id,
+                SceneRunState.active_run_job_id == job_id,
+            )
+            .values(active_run_job_id=None)
+            .execution_options(synchronize_session=False)
+        )
+        self.session.flush()
 
     def _mark_scene_completed(self, job: ChapterRunJob, scene_id: str) -> None:
         self._fence_active_owner(job)

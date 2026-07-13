@@ -203,11 +203,13 @@ def test_scene_run_job_worker_uses_job_id_as_execution_id(client, monkeypatch) -
             run_policy="reliable",
             *,
             execution_id=None,
+            run_job_id=None,
             lease_renewer=None,
         ) -> dict:
             captured.update(
                 scene_id=scene_id,
                 execution_id=execution_id,
+                run_job_id=run_job_id,
                 has_lease_renewer=callable(lease_renewer),
             )
             return {"scene_status": "archived"}
@@ -218,6 +220,7 @@ def test_scene_run_job_worker_uses_job_id_as_execution_id(client, monkeypatch) -
     assert captured == {
         "scene_id": "CHJOB_SC01",
         "execution_id": job_id,
+        "run_job_id": job_id,
         "has_lease_renewer": True,
     }
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import LlmCall, LlmCallAttempt, SceneRunState, utcnow
@@ -66,6 +67,37 @@ class LLMCallContext:
         missing = [name for name, value in required.items() if not str(value).strip()]
         if missing:
             raise ValueError(f"LLMCallContext requires explicit {', '.join(missing)}")
+        optional_ownership = {
+            "project_id": self.project_id,
+            "scene_id": self.scene_id,
+            "chapter_id": self.chapter_id,
+            "run_job_id": self.run_job_id,
+            "execution_id": self.execution_id,
+            "execution_step_key": self.execution_step_key,
+        }
+        invalid_optional = [
+            name
+            for name, value in optional_ownership.items()
+            if value is not None
+            and (type(value) is not str or not value.strip())
+        ]
+        if invalid_optional:
+            raise ValueError(
+                "LLMCallContext optional ownership fields must be None or non-empty strings: "
+                + ", ".join(invalid_optional)
+            )
+        has_execution_id = bool(str(self.execution_id or "").strip())
+        has_execution_step = bool(str(self.execution_step_key or "").strip())
+        if has_execution_id != has_execution_step:
+            raise ValueError(
+                "LLMCallContext execution_id and execution_step_key must be provided together"
+            )
+        if str(self.run_job_id or "").strip() and not (
+            has_execution_id and has_execution_step
+        ):
+            raise ValueError(
+                "LLMCallContext run_job_id requires execution_id and execution_step_key"
+            )
         if self.provider_execution_mode not in {"online", "offline_deterministic"}:
             raise ValueError(
                 "LLMCallContext.provider_execution_mode must be online or offline_deterministic"
@@ -207,6 +239,7 @@ def _reserve_scene_capacity(
             SceneRunState.scene_id == scene_id,
             SceneRunState.scene_token_budget.is_not(None),
             SceneRunState.scene_tokens_reserved == 0,
+            SceneRunState.total_attempt_count < SceneRunState.attempt_budget,
             SceneRunState.provider_attempts_used < SceneRunState.provider_attempt_budget,
             SceneRunState.scene_tokens_used + reserved_tokens
             <= SceneRunState.scene_token_budget,
@@ -217,26 +250,17 @@ def _reserve_scene_capacity(
                 ),
             ),
         )
-        .values(
-            scene_tokens_reserved=(
-                SceneRunState.scene_token_budget - SceneRunState.scene_tokens_used
-            )
-        )
+        .values(scene_tokens_reserved=reserved_tokens)
         .execution_options(synchronize_session=False)
     )
     if result.rowcount == 1:
-        fence_tokens = session.scalar(
-            select(SceneRunState.scene_tokens_reserved).where(
-                SceneRunState.scene_id == scene_id
-            )
-        )
-        if fence_tokens is None or fence_tokens <= 0:
+        if reserved_tokens <= 0:
             session.rollback()
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_SCENE_RESERVATION_CORRUPT",
                 "scene token fence was not durably reserved",
             )
-        return int(fence_tokens)
+        return int(reserved_tokens)
     session.rollback()
     error = _scene_gate_error(session, scene_id, reserved_tokens=reserved_tokens)
     session.rollback()
@@ -254,6 +278,8 @@ def _scene_gate_error(
         select(
             SceneRunState.provider_attempts_used,
             SceneRunState.provider_attempt_budget,
+            SceneRunState.total_attempt_count,
+            SceneRunState.attempt_budget,
             SceneRunState.scene_token_budget,
             SceneRunState.scene_tokens_used,
             SceneRunState.scene_tokens_reserved,
@@ -279,6 +305,11 @@ def _scene_gate_error(
         return LLMAccountingRejected(
             "LLM_SCENE_CALL_IN_FLIGHT",
             "another provider call already holds the scene token fence",
+        )
+    if state.total_attempt_count >= state.attempt_budget:
+        return LLMAccountingRejected(
+            "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED",
+            "scene business attempt budget exhausted before provider dispatch",
         )
     if state.provider_attempts_used >= state.provider_attempt_budget:
         return LLMAccountingRejected(
@@ -306,6 +337,7 @@ def _consume_scene_provider_attempt(session: Session, scene_id: str | None) -> b
         update(SceneRunState)
         .where(
             SceneRunState.scene_id == scene_id,
+            SceneRunState.total_attempt_count < SceneRunState.attempt_budget,
             SceneRunState.provider_attempts_used < SceneRunState.provider_attempt_budget,
             or_(
                 SceneRunState.run_execution_status.is_(None),
@@ -333,13 +365,17 @@ def _release_scene_reservation(session: Session, scene_id: str | None, reserved_
         .values(scene_tokens_reserved=0)
         .execution_options(synchronize_session=False)
     )
-    if result.rowcount == 0 and session.scalar(
-        select(SceneRunState.scene_id).where(SceneRunState.scene_id == scene_id)
-    ) is not None:
-        raise LLMAccountingError(
-            "LLM_ACCOUNTING_SCENE_RESERVATION_CORRUPT",
-            "scene reservation does not match the token fence being released",
+    if result.rowcount == 0:
+        current_fence = session.scalar(
+            select(SceneRunState.scene_tokens_reserved).where(
+                SceneRunState.scene_id == scene_id
+            )
         )
+        if current_fence is not None and current_fence != 0:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_SCENE_RESERVATION_CORRUPT",
+                "scene reservation does not match the token fence being released",
+            )
     if result.rowcount not in {0, 1}:
         raise LLMAccountingError(
             "LLM_ACCOUNTING_SCENE_RESERVATION_CORRUPT",
@@ -571,6 +607,100 @@ def _mark_scene_integrity_blocked(session: Session, scene_id: str | None) -> Non
     _expire_cached_scene_accounting_state(session, scene_id)
 
 
+def _assert_execution_step_available(session: Session, context: LLMCallContext) -> None:
+    if not (context.execution_id and context.execution_step_key):
+        return
+    existing_step_calls = list(
+        session.scalars(
+            select(LlmCall)
+            .where(
+                LlmCall.execution_id == context.execution_id,
+                LlmCall.execution_step_key == context.execution_step_key,
+            )
+            .order_by(LlmCall.created_at)
+        )
+    )
+    for existing_call in existing_step_calls:
+        if (
+            existing_call.accounting_status in {"released", "rejected"}
+            and existing_call.request_dispatched_at is None
+        ):
+            continue
+        session.rollback()
+        raise _execution_step_conflict(existing_call)
+
+
+def record_rejected_call(
+    session: Session,
+    request: LLMRequest | None,
+    context: LLMCallContext,
+    rejection: LLMAccountingRejected,
+    *,
+    llm_call_id: str | None = None,
+    prompt_hash: str | None = None,
+    request_payload_summary: dict[str, Any] | None = None,
+    response_payload_summary: dict[str, Any] | None = None,
+) -> str:
+    """Persist a local, provably pre-dispatch rejection with zero child attempts."""
+    if not isinstance(rejection, LLMAccountingRejected):
+        raise TypeError("record_rejected_call requires LLMAccountingRejected")
+    session.commit()
+    call_id = llm_call_id or f"llmcall_{uuid.uuid4().hex}"
+    _begin_claim_transaction(session)
+    _assert_execution_step_available(session, context)
+    if session.get(LlmCall, call_id) is not None:
+        session.rollback()
+        raise LLMAccountingError(
+            "LLM_ACCOUNTING_CALL_EXISTS",
+            f"llm call {call_id} already exists",
+        )
+    request_summary = _request_summary(request) if request is not None else {}
+    if request_payload_summary:
+        request_summary.update(request_payload_summary)
+    response_summary = response_payload_summary or {
+        "message": str(rejection),
+        "details": dict(rejection.details or {}),
+        "retryable": False,
+    }
+    session.add(
+        LlmCall(
+            llm_call_id=call_id,
+            provider=request.provider if request is not None else None,
+            provider_id=request.provider_id if request is not None else None,
+            account_id=request.account_id if request is not None else None,
+            model=request.model if request is not None else None,
+            node_id=context.node_id,
+            reasoning_level=request.reasoning_level if request is not None else None,
+            credential_mode=request.credential_mode if request is not None else None,
+            prompt_hash=_prompt_hash(request) if request is not None else prompt_hash,
+            step=context.step,
+            project_id=context.project_id,
+            scene_id=context.scene_id,
+            chapter_id=context.chapter_id,
+            request_payload_summary=request_summary,
+            response_payload_summary=response_summary,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            latency_ms=0,
+            error_code=rejection.code,
+            scope_type=context.scope_type,
+            scope_id=context.scope_id,
+            run_job_id=context.run_job_id,
+            execution_id=context.execution_id,
+            execution_step_key=context.execution_step_key,
+            estimated_tokens=0,
+            reserved_tokens=0,
+            budget_charged_tokens=0,
+            usage_is_estimate=True,
+            accounting_status="rejected",
+            settled_at=utcnow(),
+        )
+    )
+    session.commit()
+    return call_id
+
+
 def execute_accounted_call(
     session: Session,
     client: object,
@@ -587,26 +717,15 @@ def execute_accounted_call(
     session.commit()
     call_id = llm_call_id or f"llmcall_{uuid.uuid4().hex}"
     request_estimate = estimate_request_usage(request)
-    _begin_claim_transaction(session)
-    if context.execution_id and context.execution_step_key:
-        existing_step_calls = list(
-            session.scalars(
-                select(LlmCall)
-                .where(
-                    LlmCall.execution_id == context.execution_id,
-                    LlmCall.execution_step_key == context.execution_step_key,
-                )
-                .order_by(LlmCall.created_at)
-            )
+    if context.provider_execution_mode == "online" and context.scope_type == "scene":
+        from novel_system.services import scene_budget
+
+        scene_budget.ensure_scene_budget_initialized(
+            session,
+            context.scene_id or context.scope_id,
         )
-        for existing_call in existing_step_calls:
-            if (
-                existing_call.accounting_status in {"released", "rejected"}
-                and existing_call.request_dispatched_at is None
-            ):
-                continue
-            session.rollback()
-            raise _execution_step_conflict(existing_call)
+    _begin_claim_transaction(session)
+    _assert_execution_step_available(session, context)
     if session.get(LlmCall, call_id) is not None:
         session.rollback()
         raise LLMAccountingError(
@@ -640,7 +759,26 @@ def execute_accounted_call(
         accounting_status="reserved",
     )
     session.add(parent)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        if context.execution_id and context.execution_step_key:
+            _assert_execution_step_available(session, context)
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_EXECUTION_STEP_EXISTS",
+                "this execution step lost a concurrent durable claim",
+                details={
+                    "execution_id": context.execution_id,
+                    "execution_step_key": context.execution_step_key,
+                },
+            ) from exc
+        if session.get(LlmCall, call_id) is not None:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_CALL_EXISTS",
+                f"llm call {call_id} already exists",
+            ) from exc
+        raise
 
     hook = _LedgerAttemptHook(
         session,
@@ -921,15 +1059,40 @@ class _LedgerAttemptHook:
         assert attempt is not None
         charged = min(usage.total_tokens, attempt.reserved_tokens)
         exceeds = usage.total_tokens > attempt.reserved_tokens
+        target_status = (
+            "usage_exceeds_reservation" if exceeds else ("settled" if succeeded else "failed")
+        )
+        if attempt.accounting_status != "reserved":
+            identical_callback = (
+                attempt.accounting_status == target_status
+                and attempt.provider_request_id == provider_request_id
+                and attempt.prompt_tokens == usage.prompt_tokens
+                and attempt.completion_tokens == usage.completion_tokens
+                and attempt.total_tokens == usage.total_tokens
+                and attempt.budget_charged_tokens == charged
+                and attempt.usage_is_estimate == usage.usage_is_estimate
+                and attempt.latency_ms == max(0, latency_ms)
+                and attempt.error_code == error_code
+                and attempt.error_text == error_text
+            )
+            if identical_callback:
+                return
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_ATTEMPT_CALLBACK_CONFLICT",
+                "provider callback conflicts with the durable terminal attempt",
+                details={
+                    "attempt_id": attempt_id,
+                    "existing_status": attempt.accounting_status,
+                    "callback_status": target_status,
+                },
+            )
         attempt.provider_request_id = provider_request_id
         attempt.prompt_tokens = usage.prompt_tokens
         attempt.completion_tokens = usage.completion_tokens
         attempt.total_tokens = usage.total_tokens
         attempt.budget_charged_tokens = charged
         attempt.usage_is_estimate = usage.usage_is_estimate
-        attempt.accounting_status = (
-            "usage_exceeds_reservation" if exceeds else ("settled" if succeeded else "failed")
-        )
+        attempt.accounting_status = target_status
         attempt.settled_at = utcnow()
         attempt.latency_ms = max(0, latency_ms)
         attempt.error_code = error_code

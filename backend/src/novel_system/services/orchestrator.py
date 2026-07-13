@@ -32,6 +32,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.bundle_builder import BundleBuilder
@@ -76,6 +77,7 @@ class Orchestrator:
         self.planning_service = planning_service or NearFinalPlanningService(session, llm_runner=llm_runner)
         self.near_final_service = near_final_service or NearFinalAcceptanceService(session, llm_runner=llm_runner)
         self._execution_id: str | None = None
+        self._run_job_id: str | None = None
         self._checkpoint_service: SceneRunCheckpointService | None = None
         self._lease_renewer = None
 
@@ -86,6 +88,7 @@ class Orchestrator:
         run_policy: str = "reliable",
         *,
         execution_id: str | None = None,
+        run_job_id: str | None = None,
         lease_renewer=None,
     ) -> dict:
         scene = self.session.get(SceneCard, scene_id)
@@ -126,10 +129,12 @@ class Orchestrator:
         self.session.commit()
 
         self._execution_id = effective_execution_id
+        self._run_job_id = run_job_id
         self._checkpoint_service = checkpoints
         self._lease_renewer = lease_renewer
         execution_token = begin_llm_execution(
             effective_execution_id,
+            run_job_id=run_job_id,
             lease_renewer=lease_renewer,
         )
         try:
@@ -156,6 +161,7 @@ class Orchestrator:
         finally:
             end_llm_execution(execution_token)
             self._execution_id = None
+            self._run_job_id = None
             self._checkpoint_service = None
             self._lease_renewer = None
 
@@ -212,15 +218,9 @@ class Orchestrator:
 
         # Wave 3（§4.6/§5.5）：确立场景 token 预算 = 5 × 单发基线（已设不覆盖）
         from novel_system.services import scene_budget
-        from novel_system.services.llm_client import load_model_routing_config
 
         if not self._checkpoint_reached("budget_ready"):
-            routing_config = load_model_routing_config()
-            scene_budget.ensure_budget(
-                state,
-                scene_budget.estimate_baseline_tokens(self.session, {}),
-                provider_attempt_budget=routing_config.retry_budget["provider_attempt_budget"],
-            )
+            state = scene_budget.ensure_scene_budget_initialized(self.session, scene_id)
             self._save_run_checkpoint(
                 "budget_ready",
                 artifact_refs={"scene_token_budget": state.scene_token_budget},
@@ -1162,6 +1162,19 @@ class Orchestrator:
             self._lease_renewer()
 
     def _validate_budget_checkpoint(self, state: SceneRunState) -> None:
+        from novel_system.services.scene_budget import (
+            audited_scene_budget_prefixes,
+            ensure_scene_budget_initialized,
+        )
+
+        try:
+            state = ensure_scene_budget_initialized(self.session, state.scene_id)
+        except ValueError as exc:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "budget state cannot be reconstructed from its immutable basis and topup audit",
+                status_code=409,
+            ) from exc
         expected_budget = self._checkpoint_artifact(
             "scene_token_budget",
             expected_node_at_least="budget_ready",
@@ -1177,8 +1190,9 @@ class Orchestrator:
         }
         if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values.values()):
             raise DomainError("RUN_CHECKPOINT_CORRUPT", "budget checkpoint counters are invalid", status_code=409)
+        budget_prefixes = audited_scene_budget_prefixes(self.session, state)
         if (
-            state.scene_token_budget != expected_budget
+            expected_budget not in budget_prefixes
             or state.scene_tokens_used + state.scene_tokens_reserved > state.scene_token_budget
             or state.total_attempt_count > state.attempt_budget
             or state.provider_attempts_used > state.provider_attempt_budget
@@ -3415,11 +3429,26 @@ class Orchestrator:
                 from novel_system.services.auto_critique import llm_auto_critique
 
                 critique_runner = self._resolve_auto_critique_runner() if optional_spend_allowed() else None
+                chapter = self.session.get(ChapterGoal, scene.chapter_id)
+                critique_step_key = "soft_qc:auto_critique:0"
+                critique_context = LLMCallContext(
+                    scope_type="scene",
+                    scope_id=scene.scene_id,
+                    project_id=scene.project_id or (chapter.project_id if chapter is not None else None),
+                    chapter_id=scene.chapter_id,
+                    scene_id=scene.scene_id,
+                    node_id="soft_qc",
+                    step=critique_step_key,
+                    execution_id=self._execution_id,
+                    execution_step_key=critique_step_key if self._execution_id is not None else None,
+                    run_job_id=self._run_job_id,
+                )
                 critique = llm_auto_critique(
                     style_generation.content,
                     scene_context=self._scene_critique_context(scene, contract),
                     session=self.session,
                     llm_runner=critique_runner,
+                    llm_context=critique_context,
                     skip_critique=bool(getattr(criticality, "skip_critique", False)),
                 )
                 critique_summary = {
@@ -4462,7 +4491,24 @@ class Orchestrator:
             return
         try:
             from novel_system.services.prose_event_extractor import extract_events_from_prose
-            for ev in extract_events_from_prose(content, llm_runner=self.llm_runner):
+            extract_step_key = "archive:prose_event_extract:0"
+            extract_context = LLMCallContext(
+                scope_type="scene",
+                scope_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")),
+                project_id=str(base.get("project_id") or getattr(scene, "project_id", "")) or None,
+                chapter_id=str(base.get("chapter_id") or getattr(scene, "chapter_id", "")) or None,
+                scene_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")) or None,
+                node_id="extraction",
+                step=extract_step_key,
+                execution_id=self._execution_id,
+                execution_step_key=extract_step_key if self._execution_id is not None else None,
+                run_job_id=self._run_job_id,
+            )
+            for ev in extract_events_from_prose(
+                content,
+                llm_runner=self.llm_runner,
+                llm_context=extract_context,
+            ):
                 log.log_event(
                     **base,
                     event_type=ev.event_type,
@@ -4784,6 +4830,7 @@ class Orchestrator:
         scene_id: str,
         *,
         execution_id: str | None = None,
+        run_job_id: str | None = None,
         lease_renewer=None,
     ) -> dict:
         state = self.session.get(SceneRunState, scene_id)
@@ -4800,9 +4847,14 @@ class Orchestrator:
         checkpoints.acquire_selection_resume(scene_id, effective_execution_id)
 
         self._execution_id = effective_execution_id
+        self._run_job_id = run_job_id
         self._checkpoint_service = checkpoints
         self._lease_renewer = lease_renewer
-        execution_token = begin_llm_execution(effective_execution_id, lease_renewer=lease_renewer)
+        execution_token = begin_llm_execution(
+            effective_execution_id,
+            run_job_id=run_job_id,
+            lease_renewer=lease_renewer,
+        )
         try:
             # This endpoint always owns the post-selection continuation. A failed
             # retry may already be at soft/near-final sub-checkpoints; routing it
@@ -4824,6 +4876,7 @@ class Orchestrator:
         finally:
             end_llm_execution(execution_token)
             self._execution_id = None
+            self._run_job_id = None
             self._checkpoint_service = None
             self._lease_renewer = None
 

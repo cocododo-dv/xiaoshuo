@@ -7,10 +7,20 @@ from novel_system.db.models import FinalScene, RelationProfile, SceneBundle, Sce
 
 
 def seed_story(client, session: Session | None = None) -> None:
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "orchestrator flow",
+            "outline_text": "A reunion opens an old-letter mystery.",
+        },
+        headers={"X-Idempotency-Key": "orchestrator-project-seed"},
+    )
+    project_id = project_response.json()["data"]["project"]["project_id"]
     client.post(
         "/api/v1/chapters",
         json={
             "chapter_id": "CH001",
+            "project_id": project_id,
             "planned_scene_count": 3,
             "chapter_goal": "重逢与试探成立",
             "main_plot_push": "旧信线索被正式打开",
@@ -24,6 +34,7 @@ def seed_story(client, session: Session | None = None) -> None:
         json={
             "scene_id": "CH001_SC01",
             "chapter_id": "CH001",
+            "project_id": project_id,
             "scene_seq": 1,
             "pov_character_id": "CHAR_A",
             "onstage_chars_json": ["CHAR_A", "CHAR_B"],

@@ -15,6 +15,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+
 logger = logging.getLogger(__name__)
 
 from novel_system.services.literary_quality import (
@@ -284,6 +286,7 @@ def llm_auto_critique(
     *,
     session: Any | None = None,
     llm_runner: Any | None = None,
+    llm_context: LLMCallContext | None = None,
     skip_critique: bool = False,
 ) -> CritiqueResult:
     """Run the hybrid rule-based + LLM critique pipeline.
@@ -296,6 +299,11 @@ def llm_auto_critique(
 
     if skip_critique or llm_runner is None:
         return rule_result
+    if llm_context is None:
+        raise LLMAccountingRejected(
+            "LLM_ACCOUNTING_CONTEXT_REQUIRED",
+            "LLM critic execution requires explicit accounting context",
+        )
 
     context_block = _format_scene_context(scene_context)
     task_prompt = CRITIC_TASK_PROMPT_TEMPLATE.format(
@@ -308,6 +316,7 @@ def llm_auto_critique(
             task_name="auto_critique_llm",
             prompt_text=task_prompt,
             system_prompt=CRITIC_SYSTEM_PROMPT,
+            context=llm_context,
         )
     except Exception:
         logger.warning("LLM critic call failed; returning rule-only result", exc_info=True)

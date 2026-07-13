@@ -7,6 +7,8 @@ source="prose") so a hallucinating extractor can never hard-block consistency (�
 
 from __future__ import annotations
 
+import pytest
+
 
 class _Resp:
     def __init__(self, text: str) -> None:
@@ -19,9 +21,20 @@ class _Runner:
         self._text = text
         self.calls: list[dict] = []
 
-    def run_task(self, *, task_name, prompt_text, system_prompt):
-        self.calls.append({"task_name": task_name, "prompt_text": prompt_text})
+    def run_task(self, *, task_name, prompt_text, system_prompt, context):
+        self.calls.append({"task_name": task_name, "prompt_text": prompt_text, "context": context})
         return _Resp(self._text)
+
+
+def _llm_context():
+    from novel_system.services.llm_accounting import LLMCallContext
+
+    return LLMCallContext(
+        scope_type="system",
+        scope_id="prose-extraction-test",
+        node_id="extraction",
+        step="archive:prose_event_extract:0",
+    )
 
 
 def test_extract_without_runner_returns_empty() -> None:
@@ -30,6 +43,18 @@ def test_extract_without_runner_returns_empty() -> None:
     assert extract_events_from_prose("some prose", llm_runner=None) == []
     # also empty content with a runner
     assert extract_events_from_prose("", llm_runner=_Runner("{}")) == []
+
+
+def test_extract_with_runner_but_no_context_fails_before_runner_io() -> None:
+    from novel_system.services.llm_accounting import LLMAccountingRejected
+    from novel_system.services.prose_event_extractor import extract_events_from_prose
+
+    runner = _Runner("{}")
+    with pytest.raises(LLMAccountingRejected) as rejected:
+        extract_events_from_prose("prose", llm_runner=runner)
+
+    assert rejected.value.code == "LLM_ACCOUNTING_CONTEXT_REQUIRED"
+    assert runner.calls == []
 
 
 def test_extract_parses_and_filters_invalid() -> None:
@@ -45,7 +70,9 @@ def test_extract_parses_and_filters_invalid() -> None:
         '{"event_type":"location_change","entity_id":"","fact_key":"loc","fact_value":"城外"}'
         ']}'
     )
-    events = extract_events_from_prose("林远的右臂被斩断了。", llm_runner=runner)
+    events = extract_events_from_prose(
+        "林远的右臂被斩断了。", llm_runner=runner, llm_context=_llm_context()
+    )
 
     assert len(events) == 1  # invalid type + empty entity filtered out
     assert events[0].entity_id == "林远"
@@ -61,13 +88,17 @@ def test_extract_runner_error_returns_empty() -> None:
         def run_task(self, **_kw):
             raise RuntimeError("LLM down")
 
-    assert extract_events_from_prose("prose", llm_runner=_Broken()) == []
+    assert extract_events_from_prose(
+        "prose", llm_runner=_Broken(), llm_context=_llm_context()
+    ) == []
 
 
 def test_extract_malformed_json_returns_empty() -> None:
     from novel_system.services.prose_event_extractor import extract_events_from_prose
 
-    assert extract_events_from_prose("prose", llm_runner=_Runner("not json at all")) == []
+    assert extract_events_from_prose(
+        "prose", llm_runner=_Runner("not json at all"), llm_context=_llm_context()
+    ) == []
 
 
 def test_narrative_event_extract_aliases_to_existing_route(session) -> None:
@@ -88,7 +119,9 @@ def test_extracted_events_logged_as_advisory(session) -> None:
         '{"events": [{"event_type":"character_state","entity_id":"林远",'
         '"fact_key":"injury","fact_value":"右臂截断","evidence":"右臂已断"}]}'
     )
-    events = extract_events_from_prose("林远的右臂被斩断。", llm_runner=runner)
+    events = extract_events_from_prose(
+        "林远的右臂被斩断。", llm_runner=runner, llm_context=_llm_context()
+    )
     assert len(events) == 1
 
     log = NarrativeEventLog(session)

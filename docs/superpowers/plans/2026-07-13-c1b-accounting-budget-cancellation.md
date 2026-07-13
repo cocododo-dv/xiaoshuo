@@ -227,17 +227,37 @@ git commit -m "feat(scene-run): resume durable node checkpoints"
 
 **Files**
 
+- Modify: `backend/alembic/versions/20260713_0065_llm_accounting_budget_cancel.py`
+- Modify: `backend/src/novel_system/db/models.py`
 - Modify: `backend/src/novel_system/services/scene_budget.py`
+- Modify: `backend/src/novel_system/services/llm_accounting.py`
+- Modify: `backend/src/novel_system/services/llm_client.py`
 - Modify: `backend/src/novel_system/services/llm_task_runner.py`
 - Modify: `backend/src/novel_system/services/auto_critique.py`
 - Modify: `backend/src/novel_system/services/prose_event_extractor.py`
 - Modify: `backend/src/novel_system/services/narrative_event_log.py`
 - Modify: `backend/src/novel_system/services/reverse_causal_skeleton.py`
+- Modify: `backend/src/novel_system/services/author_drafts.py`
 - Modify: `backend/src/novel_system/services/near_final.py`
+- Modify: `backend/src/novel_system/services/projects.py`
+- Modify: `backend/src/novel_system/services/qc_engine.py`
+- Modify: `backend/src/novel_system/services/scene_blueprint.py`
+- Modify: `backend/src/novel_system/services/scene_generation.py`
+- Modify: `backend/src/novel_system/services/scene_quality.py`
+- Modify: `backend/src/novel_system/services/style_profile.py`
+- Modify: `backend/src/novel_system/services/writer_review.py`
+- Modify: `backend/src/novel_system/services/writer_deep_review.py`
 - Modify: `backend/src/novel_system/services/archiver.py`
 - Modify: `backend/src/novel_system/services/aggregator.py`
 - Modify: `backend/src/novel_system/services/orchestrator.py`
+- Modify: `backend/src/novel_system/services/scene_run_checkpoint.py`
+- Modify: `backend/src/novel_system/services/scene_run_jobs.py`
+- Modify: `backend/src/novel_system/services/chapter_runner.py`
+- Modify: `backend/src/novel_system/api/routes/scenes.py`
 - Create: `backend/tests/test_scene_budget_reservations.py`
+- Modify: `backend/tests/test_generation_persistence.py`
+- Modify: `backend/tests/test_llm_accounting.py`
+- Modify: `backend/tests/test_llm_task_runner.py`
 - Modify: `backend/tests/test_scene_token_budget.py`
 - Modify: `backend/tests/test_llm_critique_integration.py`
 - Modify: `backend/tests/test_prose_event_extraction.py`
@@ -245,8 +265,22 @@ git commit -m "feat(scene-run): resume durable node checkpoints"
 - Modify: `backend/tests/test_blueprint_v2_modules.py`
 - Modify: `backend/tests/test_scene_blueprint.py`
 - Modify: `backend/tests/test_scene_quality_auto_rewrite.py`
+- Modify: `backend/tests/test_scene_adopt_archive.py`
 - Modify: `backend/tests/test_scene_run_checkpoint_resume.py`
 - Modify: `backend/tests/test_near_final_engine.py`
+- Modify: `backend/tests/test_scene_run_jobs.py`
+- Modify: `backend/tests/test_chapter_runner.py`
+- Modify: `backend/tests/test_orchestrator_flow.py`
+- Modify: `backend/tests/test_author_drafts.py`
+- Modify: `backend/tests/test_projects.py`
+- Modify: `backend/tests/test_style_profile.py`
+- Modify: `backend/tests/test_writer_review.py`
+- Modify: `backend/tests/test_writer_review_lenses.py`
+- Modify: `backend/tests/test_writer_deep_review.py`
+
+执行拆分固定为四段，逐段先红并独立复审：4A 预算初始化、真实 request reservation 与三重发送前硬门；4B `run/run_task`、offline capability 与全部生产 caller 统一；4C auto critique/prose extraction 产品 envelope 和 checkpoint 血缘；4D 共享单调 archive subcursor。21 个 `run` 与 4 个 `run_task` 是静态清单基线；章末评价必须使用真实 chapter scope，任何 synthetic `scene_id` 都不得冒充 scene。归档全局入口若不能在本任务统一，完成声明必须降级为 scene-run archive，不得冒充全局归档闭环。
+
+阶段验收记录（4A/4B）：公共 canonical budget 初始化、审计式 topup 重放、request reservation、token/业务/physical attempt 三重门禁、SQLite/PostgreSQL execution-step 唯一 claim、`run/run_task` 统一父子账本、21+4 caller typed context、scene/chapter job ownership、offline/no-call 语义和重复 callback/release 幂等均已实现。受影响范围回归 338 passed，补充 context/topup 边界回归 140 passed；独立规格与质量复审最终均为 `APPROVED`。本记录不勾选 Task 4 总体验收项；4C 产品 envelope、4D archive subcursor 及 Task 3D/3F 的 legacy 兼容移除仍未完成。
 
 - [ ] 测试 `reserve -> settle`、`reserve -> release`、重复 settle/release 幂等、reserved 永不为负。
 - [ ] 用两个独立 Session 和 barrier 测试并发预留：单 in-flight fence 只允许一个成功，失败线程不调用 provider；前者结算释放后后者可重新预留。
