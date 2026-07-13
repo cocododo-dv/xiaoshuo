@@ -20,6 +20,7 @@ class EvidenceProvenanceError(ValueError):
 class EvidenceCommand(BaseModel):
     command: str
     exit_code: int
+    expected_exit_codes: list[int] = Field(default_factory=lambda: [0])
     started_at: str | None = None
     ended_at: str | None = None
 
@@ -88,6 +89,65 @@ def require_provenance(
         raise EvidenceProvenanceError(
             f"provenance {manifest.provenance!r} is not allowed"
         )
+
+
+def validate_manifest_evidence(
+    manifest: OutcomeEvidenceManifest,
+    artifact_root: str | Path,
+) -> list[str]:
+    errors: list[str] = []
+
+    if not manifest.commands:
+        errors.append("commands: at least one command is required")
+    for index, command in enumerate(manifest.commands):
+        identifier = f"command[{index}] {command.command!r}"
+        if not command.command.strip():
+            errors.append(f"{identifier}: command string is empty")
+        if not command.started_at:
+            errors.append(f"{identifier}: started_at is required")
+        if not command.ended_at:
+            errors.append(f"{identifier}: ended_at is required")
+        if not command.expected_exit_codes:
+            errors.append(f"{identifier}: expected_exit_codes is empty")
+        elif command.exit_code not in command.expected_exit_codes:
+            errors.append(
+                f"{identifier}: exit_code {command.exit_code} is not in "
+                f"expected_exit_codes {command.expected_exit_codes}"
+            )
+
+    if not manifest.gates:
+        errors.append("gates: at least one gate is required")
+    for gate in manifest.gates:
+        if not gate.passed:
+            errors.append(f"gate {gate.code!r}: failed")
+
+    root = Path(artifact_root)
+    for artifact in manifest.artifacts:
+        configured_path = Path(artifact.path)
+        artifact_path = (
+            configured_path
+            if configured_path.is_absolute()
+            else root / configured_path
+        )
+        identifier = f"artifact {artifact.path!r}"
+        if not artifact_path.exists():
+            errors.append(f"{identifier}: file does not exist")
+            continue
+        if not artifact_path.is_file():
+            errors.append(f"{identifier}: path is not a file")
+            continue
+        try:
+            actual_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        except OSError as exc:
+            errors.append(f"{identifier}: could not read file: {exc}")
+            continue
+        if actual_sha256 != artifact.sha256:
+            errors.append(
+                f"{identifier}: sha256 mismatch "
+                f"(expected {artifact.sha256}, got {actual_sha256})"
+            )
+
+    return errors
 
 
 def write_manifest(manifest: OutcomeEvidenceManifest, path: str | Path) -> None:

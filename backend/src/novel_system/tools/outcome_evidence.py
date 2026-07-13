@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from novel_system.services.outcome_evidence import (
     EvidenceProvenance,
     read_manifest,
     require_provenance,
+    validate_manifest_evidence,
 )
 
 
@@ -18,6 +20,7 @@ def _main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(required=True)
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("manifest")
+    validate_parser.add_argument("--artifact-root")
     validate_parser.add_argument(
         "--require-provenance",
         action="append",
@@ -28,6 +31,14 @@ def _main(argv: list[str] | None = None) -> int:
 
     try:
         manifest = read_manifest(args.manifest)
+        artifact_root = (
+            Path(args.artifact_root)
+            if args.artifact_root is not None
+            else Path(args.manifest).parent
+        )
+        evidence_errors = validate_manifest_evidence(manifest, artifact_root)
+        if evidence_errors:
+            raise ValueError("; ".join(evidence_errors))
         required: set[EvidenceProvenance] = set(args.require_provenance)
         if required:
             require_provenance(manifest, required)

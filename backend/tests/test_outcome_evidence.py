@@ -25,6 +25,7 @@ from novel_system.tools.outcome_evidence import _main
 def _manifest(
     *,
     artifact: EvidenceArtifact | None = None,
+    commands: list[EvidenceCommand] | None = None,
     gates: list[EvidenceGate] | None = None,
     model_routes: dict[str, object] | None = None,
 ) -> OutcomeEvidenceManifest:
@@ -34,14 +35,49 @@ def _manifest(
         database_revision="20260712_0064",
         model_routes=model_routes or {},
         provenance="offline",
-        commands=[EvidenceCommand(command="pytest", exit_code=0)],
+        commands=(
+            commands
+            if commands is not None
+            else [
+                EvidenceCommand(
+                    command="pytest",
+                    exit_code=0,
+                    expected_exit_codes=[0],
+                    started_at="2026-07-13T00:00:00Z",
+                    ended_at="2026-07-13T00:00:01Z",
+                )
+            ]
+        ),
         artifacts=[
             artifact
             or EvidenceArtifact(path="report.json", sha256="0" * 64)
         ],
-        gates=gates
-        or [EvidenceGate(code="DATABASE_HEAD_MATCH", passed=True)],
+        gates=(
+            gates
+            if gates is not None
+            else [EvidenceGate(code="DATABASE_HEAD_MATCH", passed=True)]
+        ),
     )
+
+
+def _write_cli_manifest(
+    tmp_path: Path,
+    *,
+    commands: list[EvidenceCommand] | None = None,
+    gates: list[EvidenceGate] | None = None,
+) -> tuple[Path, Path]:
+    report_path = tmp_path / "report.json"
+    report_path.write_text('{"ok":true}', encoding="utf-8")
+    manifest_path = tmp_path / "outcome-evidence.json"
+    write_manifest(
+        _manifest(
+            artifact=artifact_from_path(report_path, root=tmp_path),
+            commands=commands,
+            gates=gates,
+        ),
+        manifest_path,
+    )
+    return manifest_path, report_path
 
 
 def test_manifest_round_trip_hashes_artifact(tmp_path: Path) -> None:
@@ -59,6 +95,7 @@ def test_manifest_round_trip_hashes_artifact(tmp_path: Path) -> None:
     assert restored.artifacts[0].path == "report.json"
     assert len(restored.artifacts[0].sha256) == 64
     assert raw_manifest["schema"] == "outcome-evidence-v1"
+    assert raw_manifest["commands"][0]["expected_exit_codes"] == [0]
     assert "schema_version" not in raw_manifest
 
 
@@ -104,12 +141,101 @@ def test_offline_manifest_cannot_satisfy_human_gate() -> None:
 def test_validate_command_rejects_missing_required_provenance(
     tmp_path: Path,
 ) -> None:
-    manifest_path = tmp_path / "outcome-evidence.json"
-    write_manifest(_manifest(), manifest_path)
+    manifest_path, _ = _write_cli_manifest(tmp_path)
 
     assert _main(
         ["validate", str(manifest_path), "--require-provenance", "human"]
     ) == 1
+
+
+def test_validate_command_accepts_complete_offline_manifest(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path, _ = _write_cli_manifest(tmp_path)
+
+    result = _main(
+        ["validate", str(manifest_path), "--require-provenance", "offline"]
+    )
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert json.loads(captured.out) == {"valid": True, "run_id": "c0-test"}
+    assert captured.err == ""
+
+
+def test_validate_command_rejects_tampered_artifact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path, report_path = _write_cli_manifest(tmp_path)
+    report_path.write_text('{"ok":false}', encoding="utf-8")
+
+    result = _main(["validate", str(manifest_path)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "sha256" in captured.err.lower()
+
+
+def test_validate_command_rejects_unexpected_command_exit_code(
+    tmp_path: Path,
+) -> None:
+    manifest_path, _ = _write_cli_manifest(
+        tmp_path,
+        commands=[
+            EvidenceCommand(
+                command="pytest",
+                exit_code=1,
+                expected_exit_codes=[0],
+                started_at="2026-07-13T00:00:00Z",
+                ended_at="2026-07-13T00:00:01Z",
+            )
+        ],
+    )
+
+    assert _main(["validate", str(manifest_path)]) == 1
+
+
+def test_validate_command_rejects_failed_gate(tmp_path: Path) -> None:
+    manifest_path, _ = _write_cli_manifest(
+        tmp_path,
+        gates=[EvidenceGate(code="DATABASE_HEAD_MATCH", passed=False)],
+    )
+
+    assert _main(["validate", str(manifest_path)]) == 1
+
+
+def test_validate_command_rejects_missing_command_timestamps(
+    tmp_path: Path,
+) -> None:
+    manifest_path, _ = _write_cli_manifest(
+        tmp_path,
+        commands=[
+            EvidenceCommand(
+                command="pytest",
+                exit_code=0,
+                expected_exit_codes=[0],
+            )
+        ],
+    )
+
+    assert _main(["validate", str(manifest_path)]) == 1
+
+
+def test_validate_command_reports_damaged_json_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path = tmp_path / "outcome-evidence.json"
+    manifest_path.write_text("{not-json", encoding="utf-8")
+
+    result = _main(["validate", str(manifest_path)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert json.loads(captured.err)["valid"] is False
+    assert "traceback" not in captured.err.lower()
 
 
 def test_outcome_evidence_module_imports_without_warnings() -> None:
