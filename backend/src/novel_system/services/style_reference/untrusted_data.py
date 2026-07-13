@@ -39,8 +39,21 @@ _ESCAPED_BOUNDARY_MARK = "⟦UNTRUSTED_BOUNDARY_ESCAPED⟧"
 _INSTRUCTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"ignore\s+(?:all\s+|the\s+)*(?:previous|prior|above|preceding)\s+(?:instructions?|context|prompts?)", re.I),
     re.compile(r"disregard\s+(?:all\s+|the\s+)*(?:previous|prior|above|system|instructions?)\w*", re.I),
-    re.compile(r"(?:^|\n)\s*(?:system|assistant|developer)\s*:", re.I),
-    re.compile(r"</?(?:tool_call|function_call|tool|system)\b[^>]*>", re.I),
+    re.compile(
+        r"(?:^|\n)\s*(?:system|assistant|developer|user|tool|"
+        r"系统|助手|开发者|用户|工具调用|工具)\s*[:：]",
+        re.I,
+    ),
+    re.compile(
+        r"(?:^|\n)\s*role\s*[:=：]\s*"
+        r"(?:system|assistant|developer|user|tool|系统|助手|开发者|用户|工具)\b",
+        re.I,
+    ),
+    re.compile(
+        r"[<＜][/／]?(?:tool_call|function_call|tool|system|assistant|developer|"
+        r"user|role|工具调用|工具|系统|助手|开发者|用户)\b[^>＞]*[>＞]",
+        re.I,
+    ),
     re.compile(r"you\s+are\s+now\b", re.I),
     re.compile(r"\bnew\s+instructions?\b", re.I),
     re.compile(r"override\s+(?:the\s+)?(?:previous|above|system)", re.I),
