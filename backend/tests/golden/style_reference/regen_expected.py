@@ -45,6 +45,10 @@ def main() -> None:
                     title=f"golden_{name}",
                     author_label=name,
                     cloud_policy="segments_only",
+                    rights_declaration={
+                        "analysis_rights": True,
+                        "send_rights": True,
+                    },
                 )
                 session.commit()
                 stats = result.book.stats_json

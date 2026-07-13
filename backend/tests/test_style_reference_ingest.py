@@ -103,6 +103,7 @@ def test_ingest_path_happy_path(ingest_service: IngestService, tmp_path: Path) -
         title="路径样本",
         author_label="作者B",
         cloud_policy="segments_only",
+        rights_declaration={"analysis_rights": True, "send_rights": True},
     )
     assert result.book.source_kind == "path"
     assert result.book.source_path == str(p)

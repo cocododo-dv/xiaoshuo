@@ -59,14 +59,28 @@ def _normalize_rights_declaration(
 ) -> dict[str, Any]:
     """归一并校验导入权属声明（§5.9 / §11 规则 9）。
 
-    未声明 → 记 ``{declared: False}``（向后兼容，不改既有 cloud_policy 行为）。
+    local_only 未声明 → 记 ``{declared: False}``；非本地策略未显式声明 → 拒绝。
     声明 ``send_rights=False`` 却选了会送云端的策略（非 local_only）→ 矛盾拒绝：
     不得默认拥有云端发送权。
     """
     import datetime
 
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if not declaration:
+    if declaration:
+        for field in ("declared", "analysis_rights", "send_rights"):
+            if field in declaration and not isinstance(declaration[field], bool):
+                raise DomainError(
+                    "STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID",
+                    f"权属声明字段 {field} 必须是布尔值。",
+                    status_code=400,
+                )
+    if not declaration or declaration.get("declared") is False:
+        if policy != CloudPolicy.LOCAL_ONLY:
+            raise DomainError(
+                "STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED",
+                "云端策略需要用户显式声明发送权；请确认声明或改用 local_only。",
+                status_code=400,
+            )
         return {
             "declared": False,
             "analysis_rights": None,
@@ -74,8 +88,8 @@ def _normalize_rights_declaration(
             "declared_by": None,
             "declared_at": now,
         }
-    analysis = bool(declaration.get("analysis_rights", False))
-    send = bool(declaration.get("send_rights", False))
+    analysis = declaration.get("analysis_rights", False)
+    send = declaration.get("send_rights", False)
     if policy != CloudPolicy.LOCAL_ONLY and not send:
         raise DomainError(
             "STYLE_REFERENCE_SEND_RIGHTS_REQUIRED",

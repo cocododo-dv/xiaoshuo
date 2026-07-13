@@ -38,7 +38,11 @@ def _clear_corpus_cache():
 def _ingest(path: Path, title: str) -> tuple[str, dict, int]:
     with SessionLocal() as session:
         result = IngestService(session, llm_enabled=False).ingest_path(
-            path, title=title, author_label=None, cloud_policy="segments_only"
+            path,
+            title=title,
+            author_label=None,
+            cloud_policy="segments_only",
+            rights_declaration={"analysis_rights": True, "send_rights": True},
         )
         session.commit()
         return result.book.book_id, dict(result.book.stats_json), result.paragraphs_count

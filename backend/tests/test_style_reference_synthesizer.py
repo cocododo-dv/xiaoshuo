@@ -41,6 +41,7 @@ def _ingest_with_finding(book_seed: str) -> tuple[str, str]:
             title="测试书",
             author_label="作者",
             cloud_policy="segments_only",
+            rights_declaration={"analysis_rights": True, "send_rights": True},
         )
         book_id = result.book.book_id
         repo = StyleReferenceRepository(session)

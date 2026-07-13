@@ -50,6 +50,11 @@ def _ingest(seed: str, *, cloud_policy: str = "segments_only") -> str:
             title=f"评审修复{seed}",
             author_label=None,
             cloud_policy=cloud_policy,
+            rights_declaration=(
+                {"analysis_rights": True, "send_rights": True}
+                if cloud_policy != "local_only"
+                else None
+            ),
         )
         session.commit()
         return result.book.book_id
@@ -541,7 +546,11 @@ def test_import_path_accepts_txt(tmp_path) -> None:
     p.write_text(SAMPLE_TEXT, encoding="utf-8")
     with SessionLocal() as session:
         result = IngestService(session, llm_enabled=False).ingest_path(
-            str(p), title="路径导入", author_label=None, cloud_policy="segments_only"
+            str(p),
+            title="路径导入",
+            author_label=None,
+            cloud_policy="segments_only",
+            rights_declaration={"analysis_rights": True, "send_rights": True},
         )
         session.commit()
     assert result.paragraphs_count >= 2

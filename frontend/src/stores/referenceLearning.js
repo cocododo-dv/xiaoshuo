@@ -78,6 +78,11 @@ function defaultPathDraft() {
     title: "",
     author_label: "",
     cloud_policy: "local_only",
+    rights_declaration: {
+      analysis_rights: true,
+      send_rights: false,
+      declared_by: "",
+    },
   };
 }
 
@@ -87,6 +92,11 @@ function defaultUploadDraft() {
     title: "",
     author_label: "",
     cloud_policy: "local_only",
+    rights_declaration: {
+      analysis_rights: true,
+      send_rights: false,
+      declared_by: "",
+    },
   };
 }
 
@@ -203,6 +213,14 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     },
     hasReadyProfile(state) {
       return state.profiles.some((p) => p.status === "active" || p.status === "draft");
+    },
+    pathImportRightsReady(state) {
+      return state.pathDraft.cloud_policy === "local_only"
+        || state.pathDraft.rights_declaration.send_rights === true;
+    },
+    uploadImportRightsReady(state) {
+      return state.uploadDraft.cloud_policy === "local_only"
+        || state.uploadDraft.rights_declaration.send_rights === true;
     },
   },
 
@@ -325,7 +343,12 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     async importPath() {
       this._setActionStart("import_path");
       try {
-        const payload = { ...this.pathDraft };
+        const payload = {
+          ...this.pathDraft,
+          rights_declaration: this.pathDraft.cloud_policy === "local_only"
+            ? null
+            : { ...this.pathDraft.rights_declaration },
+        };
         const result = await importStyleReferenceBookPath(payload);
         await this.loadBooks();
         if (result?.book?.book_id) {
@@ -350,6 +373,9 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
           title: this.uploadDraft.title,
           authorLabel: this.uploadDraft.author_label,
           cloudPolicy: this.uploadDraft.cloud_policy,
+          rightsDeclaration: this.uploadDraft.cloud_policy === "local_only"
+            ? null
+            : { ...this.uploadDraft.rights_declaration },
         });
         await this.loadBooks();
         if (result?.book?.book_id) {

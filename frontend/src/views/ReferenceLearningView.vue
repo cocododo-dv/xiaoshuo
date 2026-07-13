@@ -313,10 +313,19 @@ function describeSubDim(dimPath) {
                 <option value="allow_full_cloud">allow_full_cloud(全文上云)</option>
               </select>
             </label>
+            <label v-if="store.pathDraft.cloud_policy !== 'local_only'" class="rights-confirmation">
+              <input
+                v-model="store.pathDraft.rights_declaration.send_rights"
+                type="checkbox"
+                data-testid="reference-import-rights"
+              />
+              <span>我确认拥有将该文本发送至云端进行分析的权利。</span>
+            </label>
             <BaseButton
               variant="primary"
               block
               :loading="store.loading"
+              :disabled="!store.pathImportRightsReady"
               data-testid="reference-import-submit"
               @click="submitImport"
             >
@@ -345,7 +354,22 @@ function describeSubDim(dimPath) {
                 <option value="allow_full_cloud">allow_full_cloud</option>
               </select>
             </label>
-            <BaseButton variant="primary" block :loading="store.loading" @click="submitImport">
+            <label v-if="store.uploadDraft.cloud_policy !== 'local_only'" class="rights-confirmation">
+              <input
+                v-model="store.uploadDraft.rights_declaration.send_rights"
+                type="checkbox"
+                data-testid="reference-import-rights"
+              />
+              <span>我确认拥有将该文本发送至云端进行分析的权利。</span>
+            </label>
+            <BaseButton
+              variant="primary"
+              block
+              :loading="store.loading"
+              :disabled="!store.uploadImportRightsReady"
+              data-testid="reference-import-submit"
+              @click="submitImport"
+            >
               开始上传
             </BaseButton>
           </div>
@@ -644,6 +668,15 @@ function describeSubDim(dimPath) {
 .form { display: grid; gap: 0.6rem; }
 .field { display: grid; gap: 0.25rem; font-size: 0.85rem; }
 .field-label { color: var(--text-muted, rgba(33, 26, 21, 0.68)); font-weight: 600; }
+.rights-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--text-muted, rgba(33, 26, 21, 0.68));
+}
+.rights-confirmation input { margin-top: 0.16rem; }
 .field input,
 .field select {
   padding: 0.45rem 0.6rem;

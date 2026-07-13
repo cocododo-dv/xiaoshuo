@@ -52,6 +52,7 @@ vi.mock("../src/router", () => ({
 }));
 
 import ReferenceLearningView from "../src/views/ReferenceLearningView.vue";
+import * as styleReferenceApi from "../src/lib/api/styleReference";
 import { useReferenceLearningStore } from "../src/stores/referenceLearning";
 
 let activeApp = null;
@@ -106,6 +107,110 @@ describe("ReferenceLearningView", () => {
     // upload 表单含 file input
     const fileInput = el.querySelector('input[type="file"]');
     expect(fileInput).not.toBeNull();
+  });
+
+  it.each(["path", "upload"])(
+    "%s 非本地导入必须明确确认发送权",
+    async (mode) => {
+      const el = mount();
+      await nextTick();
+      await nextTick();
+      if (mode === "upload") {
+        el.querySelector('[data-testid="reference-import-toggle-upload"]').click();
+        await nextTick();
+      }
+
+      const form = el.querySelector(".import-card .form");
+      const policy = form.querySelector("select");
+      const submit = form.querySelector(".base-btn");
+      expect(form.querySelector('[data-testid="reference-import-rights"]')).toBeNull();
+      expect(submit.disabled).toBe(false);
+
+      policy.value = "segments_only";
+      policy.dispatchEvent(new Event("change", { bubbles: true }));
+      await nextTick();
+
+      const rights = form.querySelector('[data-testid="reference-import-rights"]');
+      expect(rights).not.toBeNull();
+      expect(rights.checked).toBe(false);
+      expect(submit.disabled).toBe(true);
+
+      rights.click();
+      await nextTick();
+      expect(submit.disabled).toBe(false);
+
+      policy.value = "local_only";
+      policy.dispatchEvent(new Event("change", { bubbles: true }));
+      await nextTick();
+      expect(form.querySelector('[data-testid="reference-import-rights"]')).toBeNull();
+    },
+  );
+
+  it("非布尔发送权不能使非本地导入就绪", () => {
+    const store = useReferenceLearningStore();
+    store.pathDraft.cloud_policy = "segments_only";
+    store.pathDraft.rights_declaration.send_rights = "false";
+    store.uploadDraft.cloud_policy = "allow_full_cloud";
+    store.uploadDraft.rights_declaration.send_rights = 1;
+
+    expect(store.pathImportRightsReady).toBe(false);
+    expect(store.uploadImportRightsReady).toBe(false);
+  });
+
+  it("store 对 path/upload 透传相同声明，本地策略传 null", async () => {
+    vi.clearAllMocks();
+    const store = useReferenceLearningStore();
+    const rightsDeclaration = {
+      analysis_rights: true,
+      send_rights: true,
+      declared_by: "测试用户",
+    };
+
+    store.pathDraft = {
+      file_path: "cloud-path.txt",
+      title: "path",
+      author_label: "author",
+      cloud_policy: "segments_only",
+      rights_declaration: { ...rightsDeclaration },
+    };
+    await store.importPath();
+    expect(styleReferenceApi.importStyleReferenceBookPath).toHaveBeenLastCalledWith({
+      file_path: "cloud-path.txt",
+      title: "path",
+      author_label: "author",
+      cloud_policy: "segments_only",
+      rights_declaration: rightsDeclaration,
+    });
+
+    const cloudFile = new File(["cloud"], "cloud.txt", { type: "text/plain" });
+    store.uploadDraft = {
+      file: cloudFile,
+      title: "upload",
+      author_label: "author",
+      cloud_policy: "allow_full_cloud",
+      rights_declaration: { ...rightsDeclaration },
+    };
+    await store.importUpload();
+    expect(styleReferenceApi.importStyleReferenceBookUpload).toHaveBeenLastCalledWith({
+      file: cloudFile,
+      title: "upload",
+      authorLabel: "author",
+      cloudPolicy: "allow_full_cloud",
+      rightsDeclaration,
+    });
+
+    store.pathDraft.file_path = "local-path.txt";
+    await store.importPath();
+    expect(styleReferenceApi.importStyleReferenceBookPath).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cloud_policy: "local_only", rights_declaration: null }),
+    );
+
+    const localFile = new File(["local"], "local.txt", { type: "text/plain" });
+    store.uploadDraft.file = localFile;
+    await store.importUpload();
+    expect(styleReferenceApi.importStyleReferenceBookUpload).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cloudPolicy: "local_only", rightsDeclaration: null }),
+    );
   });
 
   it("当 store 有 currentBook 时,主区渲染 stats / 启动 run 按钮", async () => {
