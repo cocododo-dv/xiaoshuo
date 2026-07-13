@@ -36,6 +36,7 @@ def test_create_all_only_builds_main_schema(tmp_path, monkeypatch) -> None:
 
     assert "style_reference_books" in tables
     assert "style_reference_profiles" in tables
+    assert "llm_call_attempts" in tables
     assert "reference_books" not in tables
     assert "reference_profiles" not in tables
 

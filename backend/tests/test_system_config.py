@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -13,6 +15,14 @@ from novel_system.settings import get_settings
 
 
 ADMIN_HEADERS = {"X-Admin-Token": "admin-token", "X-Operator-Ref": "ops.config"}
+
+
+def test_repo_model_config_declares_independent_provider_attempt_budget() -> None:
+    config_path = Path(__file__).resolve().parents[2] / "config" / "models.yaml"
+
+    routing_config = load_model_routing_config(config_path)
+
+    assert routing_config.retry_budget["provider_attempt_budget"] == 32
 
 
 def test_system_config_read_includes_repo_defaults_without_admin_token(client) -> None:
@@ -157,6 +167,8 @@ def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
     session.add(
         LlmCall(
             llm_call_id="llm_call_offline_scene_auto_rewrite_test",
+            scope_type="scene",
+            scope_id="SC_AUDIT",
             provider="offline_deterministic",
             model="scene-auto-rewrite-policy",
             node_id="scene_auto_rewrite",
@@ -174,6 +186,8 @@ def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
     session.add(
         LlmCall(
             llm_call_id="llm_call_live_project_outline_test",
+            scope_type="system",
+            scope_id="project_outline_plan",
             provider="fake",
             model="fake-model",
             node_id="project_outline_plan",

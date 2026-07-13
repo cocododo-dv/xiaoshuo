@@ -3,20 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
 
 
-REQUIRED_TABLES = (
+LEGACY_REQUIRED_TABLES = (
     "evaluation_experiments",
     "evaluation_pairs",
     "evaluation_votes",
     "scene_run_states",
 )
 
-REQUIRED_COLUMNS = {
+LEGACY_REQUIRED_COLUMNS = {
     "scene_run_states": (
         "latest_valid_draft_row_id",
         "run_policy",
@@ -24,6 +25,71 @@ REQUIRED_COLUMNS = {
         "scene_tokens_used",
     ),
 }
+
+C1B_REVISION = "20260713_0065"
+C1B_REQUIRED_TABLES = LEGACY_REQUIRED_TABLES + (
+    "llm_calls",
+    "llm_call_attempts",
+    "chapter_run_jobs",
+)
+C1B_REQUIRED_COLUMNS = {
+    **LEGACY_REQUIRED_COLUMNS,
+    "scene_run_states": LEGACY_REQUIRED_COLUMNS["scene_run_states"]
+    + (
+        "scene_tokens_reserved",
+        "scene_budget_basis_json",
+        "provider_attempts_used",
+        "provider_attempt_budget",
+        "active_execution_id",
+        "run_execution_status",
+        "run_checkpoint",
+        "run_checkpoint_json",
+        "active_run_job_id",
+    ),
+    "llm_calls": (
+        "scope_type",
+        "scope_id",
+        "run_job_id",
+        "execution_id",
+        "execution_step_key",
+        "estimated_tokens",
+        "reserved_tokens",
+        "budget_charged_tokens",
+        "usage_is_estimate",
+        "accounting_status",
+        "request_dispatched_at",
+        "settled_at",
+    ),
+    "llm_call_attempts": (
+        "attempt_id",
+        "llm_call_id",
+        "provider_attempt_no",
+        "dispatch_kind",
+        "request_max_output_tokens",
+        "provider_request_id",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "estimated_tokens",
+        "reserved_tokens",
+        "budget_charged_tokens",
+        "usage_is_estimate",
+        "accounting_status",
+        "request_dispatched_at",
+        "settled_at",
+        "latency_ms",
+        "error_code",
+        "error_text",
+        "created_at",
+    ),
+    "chapter_run_jobs": ("scene_id", "created_at"),
+}
+
+
+def _schema_profile(expected_revision: str) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    if expected_revision in {C1B_REVISION, "0065"}:
+        return C1B_REQUIRED_TABLES, C1B_REQUIRED_COLUMNS
+    return LEGACY_REQUIRED_TABLES, LEGACY_REQUIRED_COLUMNS
 
 
 def inspect_database(
@@ -41,6 +107,7 @@ def inspect_database(
         "missing_tables": [],
         "missing_columns": {},
     }
+    required_tables, required_columns = _schema_profile(expected_revision)
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
@@ -63,20 +130,40 @@ def inspect_database(
             else:
                 result["error"] = f"alembic_version_row_count={len(revision_rows)}"
 
-        missing_tables = sorted(set(REQUIRED_TABLES) - tables)
+        missing_tables = sorted(set(required_tables) - tables)
         result["missing_tables"] = missing_tables
         missing_columns: dict[str, list[str]] = {}
-        for table, required_columns in REQUIRED_COLUMNS.items():
+        for table, table_required_columns in required_columns.items():
             if table not in tables:
                 continue
             columns = {
                 str(row[1])
                 for row in connection.execute(f'PRAGMA table_info("{table}")')
             }
-            missing = sorted(set(required_columns) - columns)
+            missing = sorted(set(table_required_columns) - columns)
             if missing:
                 missing_columns[table] = missing
         result["missing_columns"] = missing_columns
+
+        attempt_orphan_count: int | None = None
+        if expected_revision in {C1B_REVISION, "0065"} and {
+            "llm_calls",
+            "llm_call_attempts",
+        } <= tables:
+            attempt_orphan_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM llm_call_attempts AS attempt
+                    LEFT JOIN llm_calls AS call
+                      ON call.llm_call_id = attempt.llm_call_id
+                    WHERE call.llm_call_id IS NULL
+                    """
+                ).fetchone()[0]
+            )
+            result["llm_call_attempt_orphan_count"] = attempt_orphan_count
+            if attempt_orphan_count and "error" not in result:
+                result["error"] = f"llm_call_attempt_orphans={attempt_orphan_count}"
 
         foreign_keys_row = connection.execute("PRAGMA foreign_keys").fetchone()
         foreign_keys = int(foreign_keys_row[0]) if foreign_keys_row else 0
@@ -86,6 +173,7 @@ def inspect_database(
             and result["revision"] == expected_revision
             and not missing_tables
             and not missing_columns
+            and attempt_orphan_count in {None, 0}
             and "error" not in result
         )
     except sqlite3.Error as exc:
@@ -96,16 +184,37 @@ def inspect_database(
     return result
 
 
+def _write_json_atomic(path: str | os.PathLike[str], payload: str) -> None:
+    output_path = Path(path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.parent / (
+        f".{output_path.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+    )
+    try:
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="检查 SQLite 数据库是否已可供运行")
     parser.add_argument("path")
     parser.add_argument("--expected-revision", required=True)
+    parser.add_argument("--output")
     args = parser.parse_args(argv)
 
     result = inspect_database(args.path, args.expected_revision)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    payload = json.dumps(result, ensure_ascii=False, indent=2)
+    print(payload)
+    if args.output:
+        _write_json_atomic(args.output, payload)
     return 0 if result["ready"] else 1
 
 
