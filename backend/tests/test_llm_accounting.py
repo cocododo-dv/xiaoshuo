@@ -170,7 +170,10 @@ def test_explicit_offline_zero_usage_settles_parent_without_physical_attempt(ses
         session,
         OfflineClient(),
         _request(),
-        _scene_context(accounting, scene_id),
+        replace(
+            _scene_context(accounting, scene_id),
+            provider_execution_mode="offline_deterministic",
+        ),
     )
 
     session.expire_all()
@@ -185,6 +188,155 @@ def test_explicit_offline_zero_usage_settles_parent_without_physical_attempt(ses
     assert run_state.provider_attempts_used == 0
     assert run_state.scene_tokens_reserved == 0
     assert run_state.scene_tokens_used == 0
+
+
+def test_online_wrapper_forwards_attempt_hook_and_is_fully_accounted(session) -> None:
+    accounting = _accounting_module()
+    inner = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={
+                    "id": "wrapped-online",
+                    "model": "test-model",
+                    "output_text": '{"scene_text":"ok"}',
+                    "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                },
+            )
+        ),
+    )
+
+    class HookForwardingWrapper:
+        def generate(self, request: LLMRequest, *, accounting_hook=None) -> LLMResponse:
+            return inner.generate(request, accounting_hook=accounting_hook)
+
+    response = accounting.execute_accounted_call(
+        session,
+        HookForwardingWrapper(),
+        _request(),
+        _context(accounting),
+    )
+
+    assert response.request_id == "wrapped-online"
+    assert session.query(LlmCallAttempt).count() == 1
+    assert session.query(LlmCall).one().accounting_status == "settled"
+
+
+def test_online_client_without_hook_contract_is_rejected_before_generate(session) -> None:
+    accounting = _accounting_module()
+
+    class HooklessOnlineClient:
+        called = 0
+
+        def generate(self, request: LLMRequest) -> LLMResponse:
+            self.called += 1
+            return LLMResponse(
+                request_id="must-not-run",
+                provider="openai_compatible",
+                model=request.model,
+                text="ok",
+                structured_output=None,
+                response_format=request.response_format,
+                raw_response={},
+                usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+    client = HooklessOnlineClient()
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            _context(accounting),
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_ACCOUNTING_HOOK_UNSUPPORTED"
+    assert client.called == 0
+    assert session.query(LlmCallAttempt).count() == 0
+    assert session.query(LlmCall).one().accounting_status == "rejected"
+
+
+def test_online_wrapper_that_drops_hook_never_leaves_a_live_parent(session) -> None:
+    accounting = _accounting_module()
+
+    class HookDroppingWrapper:
+        def generate(self, request: LLMRequest, *, accounting_hook=None) -> LLMResponse:
+            return LLMResponse(
+                request_id="unaccounted-online",
+                provider="openai_compatible",
+                model=request.model,
+                text="must not be returned",
+                structured_output=None,
+                response_format=request.response_format,
+                raw_response={},
+                usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            HookDroppingWrapper(),
+            _request(),
+            _context(accounting),
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_ACCOUNTING_HOOK_NOT_INVOKED"
+    assert session.query(LlmCallAttempt).count() == 0
+    assert session.query(LlmCall).one().accounting_status == "failed"
+
+
+@pytest.mark.parametrize(
+    ("provider", "usage"),
+    [
+        (
+            "openai_compatible",
+            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        ),
+        (
+            "offline_deterministic",
+            {"input_tokens": 1, "output_tokens": 0, "total_tokens": 1},
+        ),
+    ],
+)
+def test_offline_mode_rejects_non_offline_or_nonzero_response(
+    session,
+    provider: str,
+    usage: dict[str, int],
+) -> None:
+    accounting = _accounting_module()
+
+    class InvalidOfflineClient:
+        def generate(self, request: LLMRequest) -> LLMResponse:
+            return LLMResponse(
+                request_id="invalid-offline",
+                provider=provider,
+                model=request.model,
+                text="not offline",
+                structured_output=None,
+                response_format=request.response_format,
+                raw_response={},
+                usage=usage,
+            )
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            InvalidOfflineClient(),
+            _request(),
+            replace(
+                _context(accounting),
+                provider_execution_mode="offline_deterministic",
+            ),
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_OFFLINE_RESPONSE_INVALID"
+    assert session.query(LlmCallAttempt).count() == 0
+    assert session.query(LlmCall).one().accounting_status == "rejected"
 
 
 def _response_with_raw_usage(raw_usage, *, complete: bool) -> LLMResponse:
@@ -908,7 +1060,7 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
     session.add(
         SceneRunState(
             scene_id=scene_id,
-            scene_token_budget=None,
+            scene_token_budget=1_000,
             provider_attempt_budget=5,
         )
     )
@@ -938,7 +1090,15 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
     )
     first_context = _scene_context(accounting, scene_id)
 
-    accounting.execute_accounted_call(session, client, _request(), first_context, llm_call_id="overage-call")
+    with pytest.raises(Exception) as overage_error:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            first_context,
+            llm_call_id="overage-call",
+        )
+    assert getattr(overage_error.value, "code", None) == "LLM_USAGE_EXCEEDS_RESERVATION"
 
     session.expire_all()
     parent = session.get(LlmCall, "overage-call")
@@ -951,6 +1111,20 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
     assert parent.response_payload_summary["usage_overage_tokens"] == (
         attempt.total_tokens - attempt.reserved_tokens
     )
+    assert overage_error.value.details == {
+        "llm_call_id": "overage-call",
+        "execution_id": first_context.execution_id,
+        "execution_step_key": first_context.execution_step_key,
+        "actual_tokens": parent.total_tokens,
+        "reserved_tokens": parent.reserved_tokens,
+        "attempt_id": attempt.attempt_id,
+        "provider_attempt_no": attempt.provider_attempt_no,
+        "attempt_actual_tokens": attempt.total_tokens,
+        "attempt_reserved_tokens": attempt.reserved_tokens,
+        "usage_overage_tokens": attempt.total_tokens - attempt.reserved_tokens,
+        "parent_actual_tokens": parent.total_tokens,
+        "parent_reserved_tokens": parent.reserved_tokens,
+    }
     assert run_state.scene_tokens_used == 20_000
 
     accounting.mark_postprocess_failure(
@@ -980,13 +1154,93 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
     assert post_count == 1
 
 
+def test_success_overage_details_identify_offending_attempt_after_retry(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-retry-success-overage"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=1_000,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        if post_count == 1:
+            return httpx.Response(
+                500,
+                json={
+                    "id": "first-failed-attempt",
+                    "error": {"message": "retryable provider failure"},
+                    "usage": {"input_tokens": 6, "output_tokens": 4, "total_tokens": 10},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "second-overage-attempt",
+                "model": "test-model",
+                "output_text": '{"scene_text":"ok"}',
+                "usage": {"input_tokens": 500, "output_tokens": 495, "total_tokens": 995},
+            },
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=1,
+        transport=httpx.MockTransport(handler),
+    )
+    context = _scene_context(accounting, scene_id)
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            context,
+            llm_call_id="retry-success-overage",
+        )
+
+    session.expire_all()
+    parent = session.get(LlmCall, "retry-success-overage")
+    attempts = session.query(LlmCallAttempt).order_by(LlmCallAttempt.provider_attempt_no).all()
+    offending_attempt = attempts[1]
+    assert [attempt.accounting_status for attempt in attempts] == [
+        "failed",
+        "usage_exceeds_reservation",
+    ]
+    assert (parent.total_tokens, parent.reserved_tokens) == (1_005, 1_990)
+    assert getattr(exc_info.value, "code", None) == "LLM_USAGE_EXCEEDS_RESERVATION"
+    assert exc_info.value.details == {
+        "llm_call_id": "retry-success-overage",
+        "execution_id": context.execution_id,
+        "execution_step_key": context.execution_step_key,
+        "actual_tokens": 995,
+        "reserved_tokens": 990,
+        "attempt_id": offending_attempt.attempt_id,
+        "provider_attempt_no": 1,
+        "attempt_actual_tokens": 995,
+        "attempt_reserved_tokens": 990,
+        "usage_overage_tokens": 5,
+        "parent_actual_tokens": 1_005,
+        "parent_reserved_tokens": 1_990,
+    }
+
+
 def test_failed_provider_response_with_overage_keeps_parent_child_audit_consistent(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-failed-overage"
     session.add(
         SceneRunState(
             scene_id=scene_id,
-            scene_token_budget=None,
+            scene_token_budget=1_000,
             provider_attempt_budget=5,
         )
     )
@@ -1034,28 +1288,30 @@ def test_failed_provider_response_with_overage_keeps_parent_child_audit_consiste
     assert run_state.run_execution_status == "usage_exceeds_reservation"
 
 
-def test_concurrent_scene_budget_gate_has_one_post_winner_and_no_lost_counts(session) -> None:
+def test_scene_budget_fence_allows_one_inflight_post_and_loser_retries_after_settlement(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-concurrent-budget"
     session.add(
         SceneRunState(
             scene_id=scene_id,
-            scene_token_budget=10_000,
-            provider_attempt_budget=1,
+            scene_token_budget=1_000,
+            scene_tokens_used=100,
+            provider_attempt_budget=5,
         )
     )
     session.commit()
 
-    start = threading.Barrier(3)
-    both_reserved = threading.Barrier(2)
-    post_lock = threading.Lock()
+    entered_provider = threading.Event()
+    release_provider = threading.Event()
     post_count = 0
-    outcomes: list[tuple[str, str | None]] = []
+    first_errors: list[BaseException] = []
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal post_count
-        with post_lock:
-            post_count += 1
+        post_count += 1
+        if post_count == 1:
+            entered_provider.set()
+            assert release_provider.wait(timeout=10)
         return httpx.Response(
             200,
             json={
@@ -1066,61 +1322,161 @@ def test_concurrent_scene_budget_gate_has_one_post_winner_and_no_lost_counts(ses
             },
         )
 
-    def worker(worker_no: int) -> None:
-        client = LLMClient(
-            provider="openai_compatible",
-            base_url="https://example.test/v1",
-            api_key="test-key",
-            timeout_seconds=5,
-            max_retries=0,
-            transport=httpx.MockTransport(handler),
-        )
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    winner_context = replace(
+        _scene_context(accounting, scene_id),
+        execution_id="fence-winner-execution",
+    )
+    loser_context = replace(
+        _scene_context(accounting, scene_id),
+        execution_id="fence-loser-execution",
+    )
+
+    def winner_worker() -> None:
         with SessionLocal() as worker_session:
-            context = replace(
-                _scene_context(accounting, scene_id),
-                execution_id=f"concurrent-execution-{worker_no}",
-            )
-            start.wait()
-
-            def hold_after_both_reservations(stage: str, _attempt_id: str) -> None:
-                if stage == "reservation_committed":
-                    both_reserved.wait(timeout=10)
-
             try:
                 accounting.execute_accounted_call(
                     worker_session,
                     client,
                     _request(),
-                    context,
-                    llm_call_id=f"concurrent-call-{worker_no}",
-                    _lifecycle_observer=hold_after_both_reservations,
+                    winner_context,
+                    llm_call_id="fence-winner-call",
                 )
-            except Exception as exc:  # noqa: BLE001 - assertion records normalized domain code
-                outcomes.append(("error", getattr(exc, "code", None)))
-            else:
-                outcomes.append(("success", None))
+            except BaseException as exc:  # noqa: BLE001 - forwarded to main assertion
+                first_errors.append(exc)
 
-    threads = [threading.Thread(target=worker, args=(worker_no,)) for worker_no in (1, 2)]
-    for thread in threads:
-        thread.start()
-    start.wait()
-    for thread in threads:
-        thread.join(timeout=10)
-        assert not thread.is_alive()
+    thread = threading.Thread(target=winner_worker)
+    thread.start()
+    assert entered_provider.wait(timeout=10)
+
+    with SessionLocal() as verifier:
+        inflight_state = verifier.get(SceneRunState, scene_id)
+        assert inflight_state.scene_tokens_reserved == 900
+
+    with SessionLocal() as loser_session:
+        with pytest.raises(Exception) as exc_info:
+            accounting.execute_accounted_call(
+                loser_session,
+                client,
+                _request(),
+                loser_context,
+                llm_call_id="fence-loser-rejected",
+            )
+    assert getattr(exc_info.value, "code", None) == "LLM_SCENE_CALL_IN_FLIGHT"
+    assert post_count == 1
+    with SessionLocal() as verifier:
+        assert verifier.query(LlmCallAttempt).count() == 1
+        assert verifier.get(LlmCall, "fence-loser-rejected").accounting_status == "rejected"
+
+    release_provider.set()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert first_errors == []
+
+    with SessionLocal() as retry_session:
+        accounting.execute_accounted_call(
+            retry_session,
+            client,
+            _request(),
+            loser_context,
+            llm_call_id="fence-loser-retry",
+        )
 
     session.expire_all()
     run_state = session.get(SceneRunState, scene_id)
-    assert sorted(outcomes) == [
-        ("error", "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED"),
-        ("success", None),
-    ]
-    assert post_count == 1
-    assert run_state.provider_attempts_used == 1
+    assert post_count == 2
+    assert run_state.provider_attempts_used == 2
     assert run_state.scene_tokens_reserved == 0
-    assert run_state.scene_tokens_used == 14
+    assert run_state.scene_tokens_used == 128
     attempts = session.query(LlmCallAttempt).all()
     assert len(attempts) == 2
-    assert sorted(attempt.accounting_status for attempt in attempts) == ["rejected", "settled"]
+    assert sorted(attempt.reserved_tokens for attempt in attempts) == [886, 900]
+
+
+def test_null_scene_token_budget_fails_closed_before_online_attempt(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-null-budget-compat"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=None,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(500)
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            _scene_context(accounting, scene_id),
+        )
+
+    session.expire_all()
+    run_state = session.get(SceneRunState, scene_id)
+    assert getattr(exc_info.value, "code", None) == "LLM_SCENE_TOKEN_BUDGET_UNINITIALIZED"
+    assert post_count == 0
+    assert run_state.scene_tokens_reserved == 0
+    assert run_state.scene_tokens_used == 0
+    assert run_state.provider_attempts_used == 0
+    assert session.query(LlmCallAttempt).count() == 0
+    assert session.query(LlmCall).one().accounting_status == "rejected"
+
+
+def test_missing_scene_run_state_fails_closed_before_online_attempt(session) -> None:
+    accounting = _accounting_module()
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(500)
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            _scene_context(accounting, "missing-scene-state"),
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_SCENE_TOKEN_BUDGET_UNINITIALIZED"
+    assert post_count == 0
+    assert session.query(LlmCallAttempt).count() == 0
+    assert session.query(LlmCall).one().accounting_status == "rejected"
 
 
 def test_concurrent_same_execution_step_has_one_parent_and_never_double_posts(session) -> None:

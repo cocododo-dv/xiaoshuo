@@ -9,6 +9,7 @@ network.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import time
 import uuid
@@ -22,7 +23,6 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import LlmCall, LlmCallAttempt, SceneRunState, utcnow
 from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.llm_client import (
-    LLMClient,
     LLMClientError,
     LLMRequest,
     LLMResponse,
@@ -47,6 +47,7 @@ class LLMCallContext:
     run_job_id: str | None = None
     execution_id: str | None = None
     execution_step_key: str | None = None
+    provider_execution_mode: Literal["online", "offline_deterministic"] = "online"
 
     def __post_init__(self) -> None:
         required = {
@@ -58,6 +59,10 @@ class LLMCallContext:
         missing = [name for name, value in required.items() if not str(value).strip()]
         if missing:
             raise ValueError(f"LLMCallContext requires explicit {', '.join(missing)}")
+        if self.provider_execution_mode not in {"online", "offline_deterministic"}:
+            raise ValueError(
+                "LLMCallContext.provider_execution_mode must be online or offline_deterministic"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,36 +177,50 @@ def _execution_step_conflict(existing_call: LlmCall) -> LLMAccountingError:
     )
 
 
-def _reserve_scene_capacity(session: Session, scene_id: str | None, reserved_tokens: int) -> bool:
+def _reserve_scene_capacity(
+    session: Session,
+    scene_id: str | None,
+    reserved_tokens: int,
+) -> int | None:
     if scene_id is None:
-        return False
+        return None
     result = session.execute(
         update(SceneRunState)
         .where(
             SceneRunState.scene_id == scene_id,
+            SceneRunState.scene_token_budget.is_not(None),
+            SceneRunState.scene_tokens_reserved == 0,
             SceneRunState.provider_attempts_used < SceneRunState.provider_attempt_budget,
-            or_(
-                SceneRunState.scene_token_budget.is_(None),
-                SceneRunState.scene_tokens_used
-                + SceneRunState.scene_tokens_reserved
-                + reserved_tokens
-                <= SceneRunState.scene_token_budget,
-            ),
+            SceneRunState.scene_tokens_used + reserved_tokens
+            <= SceneRunState.scene_token_budget,
             or_(
                 SceneRunState.run_execution_status.is_(None),
                 SceneRunState.run_execution_status != "usage_exceeds_reservation",
             ),
         )
-        .values(scene_tokens_reserved=SceneRunState.scene_tokens_reserved + reserved_tokens)
+        .values(
+            scene_tokens_reserved=(
+                SceneRunState.scene_token_budget - SceneRunState.scene_tokens_used
+            )
+        )
         .execution_options(synchronize_session=False)
     )
     if result.rowcount == 1:
-        return True
+        fence_tokens = session.scalar(
+            select(SceneRunState.scene_tokens_reserved).where(
+                SceneRunState.scene_id == scene_id
+            )
+        )
+        if fence_tokens is None or fence_tokens <= 0:
+            session.rollback()
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_SCENE_RESERVATION_CORRUPT",
+                "scene token fence was not durably reserved",
+            )
+        return int(fence_tokens)
     session.rollback()
     error = _scene_gate_error(session, scene_id, reserved_tokens=reserved_tokens)
     session.rollback()
-    if error is None:
-        return False
     raise error
 
 
@@ -210,7 +229,8 @@ def _scene_gate_error(
     scene_id: str,
     *,
     reserved_tokens: int,
-) -> LLMAccountingRejected | None:
+    allow_existing_fence: bool = False,
+) -> LLMAccountingRejected:
     state = session.execute(
         select(
             SceneRunState.provider_attempts_used,
@@ -221,12 +241,20 @@ def _scene_gate_error(
             SceneRunState.run_execution_status,
         ).where(SceneRunState.scene_id == scene_id)
     ).one_or_none()
-    if state is None:
-        return None
+    if state is None or state.scene_token_budget is None:
+        return LLMAccountingRejected(
+            "LLM_SCENE_TOKEN_BUDGET_UNINITIALIZED",
+            "online scene provider calls require an initialized finite scene token budget",
+        )
     if state.run_execution_status == "usage_exceeds_reservation":
         return LLMAccountingRejected(
             "LLM_USAGE_EXCEEDS_RESERVATION",
             "scene accounting is blocked after provider usage exceeded its reservation",
+        )
+    if state.scene_tokens_reserved > 0 and not allow_existing_fence:
+        return LLMAccountingRejected(
+            "LLM_SCENE_CALL_IN_FLIGHT",
+            "another provider call already holds the scene token fence",
         )
     if state.provider_attempts_used >= state.provider_attempt_budget:
         return LLMAccountingRejected(
@@ -235,8 +263,7 @@ def _scene_gate_error(
         )
     if (
         state.scene_token_budget is not None
-        and state.scene_tokens_used + state.scene_tokens_reserved + reserved_tokens
-        > state.scene_token_budget
+        and state.scene_tokens_used + reserved_tokens > state.scene_token_budget
     ):
         return LLMAccountingRejected(
             "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
@@ -274,9 +301,10 @@ def _release_scene_reservation(session: Session, scene_id: str | None, reserved_
         update(SceneRunState)
         .where(
             SceneRunState.scene_id == scene_id,
-            SceneRunState.scene_tokens_reserved >= reserved_tokens,
+            SceneRunState.scene_token_budget.is_not(None),
+            SceneRunState.scene_tokens_reserved == reserved_tokens,
         )
-        .values(scene_tokens_reserved=SceneRunState.scene_tokens_reserved - reserved_tokens)
+        .values(scene_tokens_reserved=0)
         .execution_options(synchronize_session=False)
     )
     if result.rowcount == 0 and session.scalar(
@@ -284,7 +312,7 @@ def _release_scene_reservation(session: Session, scene_id: str | None, reserved_
     ) is not None:
         raise LLMAccountingError(
             "LLM_ACCOUNTING_SCENE_RESERVATION_CORRUPT",
-            "scene reservation is smaller than the amount being released",
+            "scene reservation does not match the token fence being released",
         )
     if result.rowcount not in {0, 1}:
         raise LLMAccountingError(
@@ -304,7 +332,7 @@ def _settle_scene_usage(
     if scene_id is None:
         return
     values: dict[str, Any] = {
-        "scene_tokens_reserved": SceneRunState.scene_tokens_reserved - reserved_tokens,
+        "scene_tokens_reserved": 0,
         "scene_tokens_used": SceneRunState.scene_tokens_used + actual_tokens,
     }
     if usage_exceeds_reservation:
@@ -313,7 +341,8 @@ def _settle_scene_usage(
         update(SceneRunState)
         .where(
             SceneRunState.scene_id == scene_id,
-            SceneRunState.scene_tokens_reserved >= reserved_tokens,
+            SceneRunState.scene_token_budget.is_not(None),
+            SceneRunState.scene_tokens_reserved == reserved_tokens,
         )
         .values(**values)
         .execution_options(synchronize_session=False)
@@ -323,13 +352,41 @@ def _settle_scene_usage(
     ) is not None:
         raise LLMAccountingError(
             "LLM_ACCOUNTING_SCENE_SETTLEMENT_CORRUPT",
-            "scene reservation is smaller than the amount being settled",
+            "scene reservation does not match the token fence being settled",
         )
     if result.rowcount not in {0, 1}:
         raise LLMAccountingError(
             "LLM_ACCOUNTING_SCENE_SETTLEMENT_CORRUPT",
             "scene settlement affected an unexpected number of rows",
         )
+
+
+def _supports_accounting_hook(client: object) -> bool:
+    generate = getattr(client, "generate", None)
+    if not callable(generate):
+        return False
+    try:
+        parameters = inspect.signature(generate).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "accounting_hook"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _validate_offline_response(response: object) -> LLMResponse:
+    if (
+        not isinstance(response, LLMResponse)
+        or response.provider != "offline_deterministic"
+        or not _is_explicit_zero_usage(response.usage)
+    ):
+        raise LLMAccountingRejected(
+            "LLM_OFFLINE_RESPONSE_INVALID",
+            "offline deterministic execution requires an offline_deterministic response with complete zero usage",
+        )
+    return response
 
 
 def execute_accounted_call(
@@ -411,13 +468,23 @@ def execute_accounted_call(
     )
     started_at = time.perf_counter()
     try:
-        if isinstance(client, LLMClient):
-            response = client.generate(request, accounting_hook=hook)
+        if context.provider_execution_mode == "offline_deterministic":
+            response = _validate_offline_response(client.generate(request))  # type: ignore[attr-defined]
         else:
-            response = client.generate(request)  # type: ignore[attr-defined]
+            if not _supports_accounting_hook(client):
+                raise LLMAccountingRejected(
+                    "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
+                    "online provider clients must explicitly accept the accounting_hook contract",
+                )
+            response = client.generate(request, accounting_hook=hook)
+            if hook.attempt_count == 0:
+                raise LLMAccountingError(
+                    "LLM_ACCOUNTING_HOOK_NOT_INVOKED",
+                    "online provider client returned without forwarding the accounting hook",
+                )
         response = replace(response, llm_call_id=call_id)
 
-        if hook.attempt_count == 0:
+        if context.provider_execution_mode == "offline_deterministic":
             _settle_without_physical_attempt(
                 session,
                 call_id=call_id,
@@ -431,6 +498,40 @@ def execute_accounted_call(
             response=response,
             latency_ms=_elapsed_ms(started_at),
         )
+        parent = session.get(LlmCall, call_id)
+        assert parent is not None
+        if parent.accounting_status == "usage_exceeds_reservation":
+            offending_attempt = session.scalar(
+                select(LlmCallAttempt)
+                .where(
+                    LlmCallAttempt.llm_call_id == call_id,
+                    LlmCallAttempt.accounting_status == "usage_exceeds_reservation",
+                )
+                .order_by(LlmCallAttempt.provider_attempt_no.desc())
+                .limit(1)
+            )
+            assert offending_attempt is not None
+            usage_overage_tokens = (
+                offending_attempt.total_tokens - offending_attempt.reserved_tokens
+            )
+            raise LLMAccountingError(
+                "LLM_USAGE_EXCEEDS_RESERVATION",
+                "provider usage exceeded the durable reservation; response delivery is blocked",
+                details={
+                    "llm_call_id": call_id,
+                    "execution_id": parent.execution_id,
+                    "execution_step_key": parent.execution_step_key,
+                    "actual_tokens": offending_attempt.total_tokens,
+                    "reserved_tokens": offending_attempt.reserved_tokens,
+                    "attempt_id": offending_attempt.attempt_id,
+                    "provider_attempt_no": offending_attempt.provider_attempt_no,
+                    "attempt_actual_tokens": offending_attempt.total_tokens,
+                    "attempt_reserved_tokens": offending_attempt.reserved_tokens,
+                    "usage_overage_tokens": usage_overage_tokens,
+                    "parent_actual_tokens": parent.total_tokens,
+                    "parent_reserved_tokens": parent.reserved_tokens,
+                },
+            )
         return response
     except Exception as exc:
         _finalize_parent_failure(
@@ -462,11 +563,12 @@ class _LedgerAttemptHook:
         estimate = estimate_request_usage(request)
         ordinal = self.attempt_count
         attempt_id = f"llmattempt_{uuid.uuid4().hex}"
-        scene_tracked = _reserve_scene_capacity(
+        scene_fence_tokens = _reserve_scene_capacity(
             self._session,
             self._context.scene_id,
             estimate.reserved_tokens,
         )
+        attempt_reserved_tokens = scene_fence_tokens or estimate.reserved_tokens
 
         attempt = LlmCallAttempt(
             attempt_id=attempt_id,
@@ -475,7 +577,7 @@ class _LedgerAttemptHook:
             dispatch_kind=dispatch_kind,
             request_max_output_tokens=request.max_output_tokens,
             estimated_tokens=estimate.estimated_tokens,
-            reserved_tokens=estimate.reserved_tokens,
+            reserved_tokens=attempt_reserved_tokens,
             budget_charged_tokens=0,
             usage_is_estimate=True,
             accounting_status="reserved",
@@ -484,11 +586,11 @@ class _LedgerAttemptHook:
         parent = self._session.get(LlmCall, self._call_id)
         assert parent is not None
         parent.estimated_tokens += estimate.estimated_tokens
-        parent.reserved_tokens += estimate.reserved_tokens
+        parent.reserved_tokens += attempt_reserved_tokens
         self._session.commit()  # reservation transaction
         self._observe("reservation_committed", attempt_id)
 
-        if scene_tracked and not _consume_scene_provider_attempt(
+        if scene_fence_tokens is not None and not _consume_scene_provider_attempt(
             self._session,
             self._context.scene_id,
         ):
@@ -497,14 +599,12 @@ class _LedgerAttemptHook:
                 self._session,
                 str(self._context.scene_id),
                 reserved_tokens=0,
-            ) or LLMAccountingRejected(
-                "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED",
-                "provider attempt claim failed before dispatch",
+                allow_existing_fence=True,
             )
             _release_scene_reservation(
                 self._session,
                 self._context.scene_id,
-                estimate.reserved_tokens,
+                scene_fence_tokens,
             )
             attempt = self._session.get(LlmCallAttempt, attempt_id)
             assert attempt is not None
