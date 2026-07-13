@@ -348,7 +348,7 @@ git commit -m "fix(style-reference): block undeclared legacy cloud sources"
 - Modify: `backend/src/novel_system/services/style_reference/untrusted_data.py`
 - Modify: `backend/src/novel_system/services/style_reference/_llm_helper.py`
 
-- [ ] **Step 1: 写 payload 渲染和裸 dict 拒绝测试**
+- [x] **Step 1: 写 payload 渲染和裸 dict 拒绝测试**
 
 ```python
 def test_render_untrusted_payload_keeps_task_outside_data_boundary():
@@ -372,13 +372,13 @@ def test_call_llm_node_rejects_raw_payload(monkeypatch, _fake_template):
         call_llm_node(NODE, {"text": "raw"}, _CaptureClient())
 ```
 
-- [ ] **Step 2: 运行 typed payload 测试并确认 RED**
+- [x] **Step 2: 运行 typed payload 测试并确认 RED**
 
 Run: `cd backend && python -m pytest tests/test_reference_untrusted_data.py tests/test_style_reference_llm_routing.py -q`
 
 Expected: 新类型/渲染器不存在，测试失败。
 
-- [ ] **Step 3: 实现不可变 payload 和共享渲染器**
+- [x] **Step 3: 实现不可变 payload 和共享渲染器**
 
 在 `untrusted_data.py` 增加：
 
@@ -410,7 +410,7 @@ def render_untrusted_system_prompt(system_prompt: str) -> str:
 
 整个 JSON payload 位于单一显式数据边界内；template task、system role 和 `response_schema` 位于边界外。
 
-- [ ] **Step 4: 让共享出口拒绝裸 payload**
+- [x] **Step 4: 让共享出口拒绝裸 payload**
 
 ```python
 def call_llm_node(
@@ -433,17 +433,17 @@ def call_llm_node(
 
 `LLMRequest.messages` 使用新的 `system_prompt` 和 `user_prompt`，其余路由、超时、provider 和 schema 字段保持不变。
 
-- [ ] **Step 5: 更新共享出口单元测试调用**
+- [x] **Step 5: 更新共享出口单元测试调用**
 
 现有 routing 测试里的安全调用统一改为 `UntrustedPayload({...})`；另断言捕获请求中的 task 在边界前、恶意字符串已中和、response schema 未改变。
 
-- [ ] **Step 6: 运行 Task 3 测试**
+- [x] **Step 6: 运行 Task 3 测试**
 
 Run: `cd backend && python -m pytest tests/test_reference_untrusted_data.py tests/test_style_reference_llm_routing.py -q`
 
 Expected: 全部通过，且裸 `dict` 被 fail-closed 拒绝。
 
-- [ ] **Step 7: 提交公共边界**
+- [x] **Step 7: 提交公共边界**
 
 ```powershell
 git add backend/src/novel_system/services/style_reference/untrusted_data.py backend/src/novel_system/services/style_reference/_llm_helper.py backend/tests/test_reference_untrusted_data.py backend/tests/test_style_reference_llm_routing.py
@@ -462,7 +462,7 @@ git commit -m "feat(style-reference): type untrusted LLM payloads"
 - Modify: `backend/tests/test_llm_client_connectivity.py`
 - Modify: affected existing style-reference tests reported by the focused run
 
-- [ ] **Step 1: 写跨流程恶意文本捕获测试**
+- [x] **Step 1: 写跨流程恶意文本捕获测试**
 
 使用捕获 `LLMRequest` 的 fake client，分别驱动抽取/补证、画像合成、预览、semantic 和 forbidden semantic。每个 payload 注入 `ignore previous instructions` 与 `system:`，统一断言：
 
@@ -479,13 +479,13 @@ def assert_request_is_bounded(request, *, node_id: str) -> None:
 
 测试必须调用真实服务方法或其现有最小可测入口，不直接测试 fake serializer。
 
-- [ ] **Step 2: 运行跨流程测试并确认 RED**
+- [x] **Step 2: 运行跨流程测试并确认 RED**
 
 Run: `cd backend && python -m pytest tests/test_style_reference_untrusted_flows.py -q`
 
 Expected: 生产调用仍传裸 `dict`，由 Task 3 的共享出口拒绝，测试失败。
 
-- [ ] **Step 3: 显式标记所有共享调用 payload**
+- [x] **Step 3: 显式标记所有共享调用 payload**
 
 每个生产调用点只在进入公共 helper 时包装，不在业务层自行拼 prompt：
 
@@ -495,13 +495,13 @@ return call_llm_node(node_id, UntrustedPayload(payload), self.llm_client)
 
 同步修改 `profile_synthesizer.py`、`preview.py`、`semantic.py`、`forbidden_semantic.py`。`test_llm_client_connectivity.py` 的直接 helper 调用也改为 `UntrustedPayload({})`。
 
-- [ ] **Step 4: 静态盘点共享 helper 调用**
+- [x] **Step 4: 静态盘点共享 helper 调用**
 
 Run: `rg -n "call_llm_node\(" backend/src/novel_system/services/style_reference backend/tests`
 
 Expected: 定义之外的生产调用均能在同一表达式或紧邻变量定义处看到 `UntrustedPayload`；没有生产裸 `dict` 调用。
 
-- [ ] **Step 5: 运行共享流程与既有回归**
+- [x] **Step 5: 运行共享流程与既有回归**
 
 Run:
 
@@ -512,7 +512,7 @@ python -m pytest tests/test_style_reference_untrusted_flows.py tests/test_style_
 
 Expected: 全部通过，抽取重试和预览行为不回归。
 
-- [ ] **Step 6: 提交共享调用迁移**
+- [x] **Step 6: 提交共享调用迁移**
 
 ```powershell
 git add backend/src/novel_system/services/style_reference backend/tests/test_style_reference_untrusted_flows.py backend/tests/test_llm_client_connectivity.py backend/tests/test_style_reference_evidence_retry.py backend/tests/test_style_reference_preview.py
