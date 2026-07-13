@@ -12,6 +12,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 EvidenceProvenance = Literal["synthetic", "offline", "real_model", "human"]
 
+C0_REQUIRED_GATE_CODES = (
+    "RUNTIME_PROCESS_CLEAR",
+    "BACKUP_VERIFIED",
+    "DRILL_MIGRATION_HEAD_MATCH",
+    "ACTUAL_MIGRATION_HEAD_MATCH",
+    "SCHEMA_READY",
+    "ORPHANS_ZERO",
+    "FOCUSED_REGRESSION_PASS",
+    "C0_REGRESSION_PASS",
+)
+
 
 class EvidenceProvenanceError(ValueError):
     """Raised when a manifest's provenance is not allowed."""
@@ -268,6 +279,21 @@ def validate_manifest_evidence(
             )
 
     return errors
+
+
+def validate_c0_gate_profile(
+    manifest: OutcomeEvidenceManifest,
+) -> list[str]:
+    present_gate_codes = {gate.code for gate in manifest.gates}
+    missing_gate_codes = [
+        code for code in C0_REQUIRED_GATE_CODES if code not in present_gate_codes
+    ]
+    if not missing_gate_codes:
+        return []
+    return [
+        "profile 'c0': missing required gates: "
+        + ", ".join(missing_gate_codes)
+    ]
 
 
 def write_manifest(manifest: OutcomeEvidenceManifest, path: str | Path) -> None:

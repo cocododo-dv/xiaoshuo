@@ -9,6 +9,7 @@ from novel_system.services.outcome_evidence import (
     EvidenceProvenance,
     read_manifest,
     require_provenance,
+    validate_c0_gate_profile,
     validate_manifest_evidence,
 )
 
@@ -21,6 +22,11 @@ def _main(argv: list[str] | None = None) -> int:
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("manifest")
     validate_parser.add_argument("--artifact-root")
+    validate_parser.add_argument(
+        "--profile",
+        choices=("c0",),
+        help="require a complete validation profile",
+    )
     validate_parser.add_argument(
         "--require-provenance",
         action="append",
@@ -37,6 +43,8 @@ def _main(argv: list[str] | None = None) -> int:
             else Path(args.manifest).parent
         )
         evidence_errors = validate_manifest_evidence(manifest, artifact_root)
+        if args.profile == "c0":
+            evidence_errors.extend(validate_c0_gate_profile(manifest))
         if evidence_errors:
             raise ValueError("; ".join(evidence_errors))
         required: set[EvidenceProvenance] = set(args.require_provenance)
