@@ -567,13 +567,14 @@ Then verify the restored database integrity and record the C0 gate as failed; ne
 
 - [x] **Step 6: Build and validate the offline evidence manifest**
 
-Use `OutcomeEvidenceManifest` with provenance `offline`, exact command exit codes, backup and sidecar artifact hashes, and the eight C0 gates `RUNTIME_PROCESS_CLEAR`, `BACKUP_VERIFIED`, `DRILL_MIGRATION_HEAD_MATCH`, `ACTUAL_MIGRATION_HEAD_MATCH`, `SCHEMA_READY`, `ORPHANS_ZERO`, `FOCUSED_REGRESSION_PASS`, and `C0_REGRESSION_PASS`. Embed the backup/drill/actual reports in the corresponding gate `details`; scope the fresh process check as `verification_time_only` because no actual-migration-time process snapshot was persisted. Write the manifest atomically, then run the validator as an external acceptance command; do not write that command or a validation gate back into the manifest:
+Use `OutcomeEvidenceManifest` with provenance `offline`, exact command exit codes, backup and sidecar artifact hashes, and the eight C0 gates `RUNTIME_PROCESS_CLEAR`, `BACKUP_VERIFIED`, `DRILL_MIGRATION_HEAD_MATCH`, `ACTUAL_MIGRATION_HEAD_MATCH`, `SCHEMA_READY`, `ORPHANS_ZERO`, `FOCUSED_REGRESSION_PASS`, and `C0_REGRESSION_PASS`. Embed the backup/drill/actual reports in the corresponding gate `details`; scope the fresh process check as `verification_time_only` because no actual-migration-time process snapshot was persisted. Write the manifest atomically, then run both local and tracked copies through the validator as external acceptance commands. C0 acceptance must use `--profile c0`, which requires all eight gate codes; generic mode is retained for future manifest compatibility and is not a C0 acceptance result. Do not write either validation command or a validation gate back into the manifest:
 
 ```powershell
-python -m novel_system.tools.outcome_evidence validate E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0\manifest.json --require-provenance offline --artifact-root E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0
+python -m novel_system.tools.outcome_evidence validate E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0\manifest.json --profile c0 --require-provenance offline --artifact-root E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0
+python -m novel_system.tools.outcome_evidence validate E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\docs\superpowers\evidence\20260713-c0-manifest.json --profile c0 --require-provenance offline --artifact-root E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0
 ```
 
-Expected: exit 0 with `valid=true`.
+Expected: both commands exit 0 with `valid=true`; only the `c0` profile proves that all eight required C0 gates are present.
 
 - [x] **Step 7: Run C0 regression**
 
@@ -602,7 +603,7 @@ The ignored `.codex-run` artifacts remain outside Git. Their hashes, exact comma
 
 ### Task 5 quality-review closure (2026-07-13)
 
-- [x] Validator checks artifact presence/hash, non-empty commands/gates/artifacts, expected exits, failed gates, command timestamps and the 8 known C0 gate details（`8a602a4c`）。
+- [x] Validator checks artifact presence/hash, non-empty commands/gates/artifacts, expected exits, failed gates, command timestamps and the 8 known C0 gate details（`8a602a4c`）；C0 验收显式使用 `--profile c0` 强制八个 required gates，generic mode 不作为 C0 通过依据。
 - [x] Local manifest records backup、drill、focused regression、actual no-op/head/schema/orphan 和 C0 regression 的真实 UTC 区间；`RUNTIME_PROCESS_CLEAR` 仅记录复核时刻且 scope 为 `verification_time_only`，不冒充 actual 迁移前的持久证据。
 - [x] Tracked manifest index is an exact copy of the externally validated local manifest; backup binaries remain ignored. External validation is not written back as a command or gate，完成自引用移除（self-reference removal）。
 - [x] Completion assessment and progress ledger now state actual `0064` / `ready=true` / `integrity=ok` / orphan 0 and preserve `0059` only as pre-migration backup history.

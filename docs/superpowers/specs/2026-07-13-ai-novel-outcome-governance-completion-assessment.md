@@ -76,11 +76,11 @@
 - C0 迁移前的已验证备份仍保留 `20260618_0059` 历史状态，SHA-256 为 `804fc4e01237d77eacf83b7671f90ab50fdd5db985a2356ba74666240dec31b3`；副本演练与 actual 复核均到达 `0064`。
 - 当前默认库孤儿盘点为 0；`PRAGMA foreign_keys=0`，FK 是否启用仍待正式结论。
 
-说明：默认库版本落后的可运行态阻断已关闭。可审查索引见 `docs/superpowers/evidence/20260713-c0-manifest.json`；其中 provenance 为 `offline`，复核二进制 artifact 时必须以本机 `.codex-run/governance-c0/20260713-c0` 作为 `artifact_root`。该证据只关闭工程运行门，不推进真实模型门或发布门。
+说明：默认库版本落后的可运行态阻断已关闭。可审查索引见 `docs/superpowers/evidence/20260713-c0-manifest.json`；其中 provenance 为 `offline`，复核二进制 artifact 时必须以本机 `.codex-run/governance-c0/20260713-c0` 作为 `artifact_root`，并使用 `validate --profile c0`。只有 C0 profile 才强制八个 required gates 全部存在；generic validate 保留给未来 manifest 兼容，不能作为 C0 验收通过依据。该证据只关闭工程运行门，不推进真实模型门或发布门。
 
 **历史证据边界：** actual 迁移执行前的进程安全检查没有持久化进程快照，因此不能由当前 manifest 追溯证明迁移当时没有服务占用。`RUNTIME_PROCESS_CLEAR.details.report.scope="verification_time_only"` 只证明本轮证据复核时未发现命令行同时含 `uvicorn` 与 `novel_system` 的进程。C0 运行真值由可复核的三组事实构成：已验证的迁移前 `0059` 备份、当前 actual `0064` 且 `ready=true` / `integrity=ok`、actual 孤儿数 0。
 
-**Validator threat model：** validator 面向单用户本地工具的信任边界，验证 artifact 存在及 hash、本地 command 时间与 expected exit、以及 8 类已知 C0 gate details 的结构和值，用于发现误标、缺失或意外损坏。它不是加密签名或防篡改证明，不能阻止有意伪造 manifest、命令记录或配套 artifact；审查者仍须信任执行工作站、Git 历史及用于复核的本地 artifact 来源。CLI validate 是 manifest 之外的外部验收动作，不写回 commands 或 gates。
+**Validator threat model：** validator 面向单用户本地工具的信任边界，验证 artifact 存在及 hash、本地 command 时间与 expected exit、以及已出现的已知 C0 gate details 的结构和值，用于发现误标、缺失或意外损坏；只有启用 `--profile c0` 才进一步证明八个 required gates 完整。Generic mode 保留未来兼容，不能作为 C0 验收。Validator 不是加密签名或防篡改证明，不能阻止有意伪造 manifest、命令记录或配套 artifact；审查者仍须信任执行工作站、Git 历史及用于复核的本地 artifact 来源。CLI validate 是 manifest 之外的外部验收动作，不写回 commands 或 gates。
 
 ---
 
