@@ -91,6 +91,121 @@ def require_provenance(
         )
 
 
+def _gate_detail_group(gate: EvidenceGate, key: str) -> dict[str, object]:
+    value = gate.details.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _is_exact_int(value: object, expected: int) -> bool:
+    return type(value) is int and value == expected
+
+
+def _validate_known_gate_details(
+    gate: EvidenceGate,
+    database_revision: str,
+) -> list[str]:
+    errors: list[str] = []
+    prefix = f"gate {gate.code!r}"
+
+    if gate.code == "RUNTIME_PROCESS_CLEAR":
+        report = _gate_detail_group(gate, "report")
+        if not _is_exact_int(report.get("match_count"), 0):
+            errors.append(
+                f"{prefix}: details.report.match_count must be integer 0"
+            )
+
+    elif gate.code == "BACKUP_VERIFIED":
+        verify = _gate_detail_group(gate, "verify")
+        preflight = _gate_detail_group(
+            gate, "pre_migration_backup_preflight"
+        )
+        if verify.get("ok") is not True:
+            errors.append(f"{prefix}: details.verify.ok must be true")
+        if verify.get("integrity") != "ok":
+            errors.append(f"{prefix}: details.verify.integrity must be 'ok'")
+        if verify.get("checksum_ok") is not True:
+            errors.append(f"{prefix}: details.verify.checksum_ok must be true")
+        if preflight.get("integrity") != "ok":
+            errors.append(
+                f"{prefix}: details.pre_migration_backup_preflight.integrity "
+                "must be 'ok'"
+            )
+        revision = preflight.get("revision")
+        if not isinstance(revision, str) or not revision:
+            errors.append(
+                f"{prefix}: details.pre_migration_backup_preflight.revision "
+                "is required"
+            )
+
+    elif gate.code == "DRILL_MIGRATION_HEAD_MATCH":
+        preflight = _gate_detail_group(gate, "preflight")
+        if preflight.get("ready") is not True:
+            errors.append(f"{prefix}: details.preflight.ready must be true")
+        if preflight.get("revision") != database_revision:
+            errors.append(
+                f"{prefix}: details.preflight.revision must equal "
+                "manifest database_revision"
+            )
+        if preflight.get("integrity") != "ok":
+            errors.append(
+                f"{prefix}: details.preflight.integrity must be 'ok'"
+            )
+
+    elif gate.code == "ACTUAL_MIGRATION_HEAD_MATCH":
+        preflight = _gate_detail_group(gate, "actual_preflight")
+        if preflight.get("ready") is not True:
+            errors.append(
+                f"{prefix}: details.actual_preflight.ready must be true"
+            )
+        if preflight.get("revision") != database_revision:
+            errors.append(
+                f"{prefix}: details.actual_preflight.revision must equal "
+                "manifest database_revision"
+            )
+        if preflight.get("integrity") != "ok":
+            errors.append(
+                f"{prefix}: details.actual_preflight.integrity must be 'ok'"
+            )
+
+    elif gate.code == "SCHEMA_READY":
+        for key in ("drill_preflight", "actual_preflight"):
+            preflight = _gate_detail_group(gate, key)
+            if preflight.get("ready") is not True:
+                errors.append(f"{prefix}: details.{key}.ready must be true")
+            if preflight.get("missing_tables") != []:
+                errors.append(
+                    f"{prefix}: details.{key}.missing_tables must be []"
+                )
+            if preflight.get("missing_columns") != {}:
+                errors.append(
+                    f"{prefix}: details.{key}.missing_columns must be {{}}"
+                )
+
+    elif gate.code == "ORPHANS_ZERO":
+        for key in ("drill_report", "actual_report"):
+            report = _gate_detail_group(gate, key)
+            if report.get("clean") is not True:
+                errors.append(f"{prefix}: details.{key}.clean must be true")
+            if not _is_exact_int(report.get("total_orphans"), 0):
+                errors.append(
+                    f"{prefix}: details.{key}.total_orphans must be integer 0"
+                )
+
+    elif gate.code in ("FOCUSED_REGRESSION_PASS", "C0_REGRESSION_PASS"):
+        report = _gate_detail_group(gate, "report")
+        passed = report.get("passed")
+        if type(passed) is not int or passed <= 0:
+            errors.append(
+                f"{prefix}: details.report.passed must be a positive integer"
+            )
+        if not _is_exact_int(report.get("failed"), 0):
+            errors.append(
+                f"{prefix}: details.report.failed must be integer 0"
+            )
+
+    return errors
+
+
 def validate_manifest_evidence(
     manifest: OutcomeEvidenceManifest,
     artifact_root: str | Path,
@@ -120,6 +235,9 @@ def validate_manifest_evidence(
     for gate in manifest.gates:
         if not gate.passed:
             errors.append(f"gate {gate.code!r}: failed")
+        errors.extend(
+            _validate_known_gate_details(gate, manifest.database_revision)
+        )
 
     if not manifest.artifacts:
         errors.append("manifest has no artifacts")

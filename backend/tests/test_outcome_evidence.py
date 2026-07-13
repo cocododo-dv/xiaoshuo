@@ -17,6 +17,7 @@ from novel_system.services.outcome_evidence import (
     artifact_from_path,
     read_manifest,
     require_provenance,
+    validate_manifest_evidence,
     write_manifest,
 )
 from novel_system.tools.outcome_evidence import _main
@@ -78,6 +79,14 @@ def _write_cli_manifest(
         manifest_path,
     )
     return manifest_path, report_path
+
+
+def _validation_errors_for_gates(
+    tmp_path: Path,
+    gates: list[EvidenceGate],
+) -> list[str]:
+    manifest_path, _ = _write_cli_manifest(tmp_path, gates=gates)
+    return validate_manifest_evidence(read_manifest(manifest_path), tmp_path)
 
 
 def test_manifest_round_trip_hashes_artifact(tmp_path: Path) -> None:
@@ -220,6 +229,166 @@ def test_validate_command_rejects_failed_gate(tmp_path: Path) -> None:
     )
 
     assert _main(["validate", str(manifest_path)]) == 1
+
+
+def test_validate_manifest_rejects_focused_gate_with_invalid_counts(
+    tmp_path: Path,
+) -> None:
+    errors = _validation_errors_for_gates(
+        tmp_path,
+        [
+            EvidenceGate(
+                code="FOCUSED_REGRESSION_PASS",
+                passed=True,
+                details={"report": {"passed": 0, "failed": 999}},
+            )
+        ],
+    )
+
+    assert any("FOCUSED_REGRESSION_PASS" in error for error in errors)
+
+
+def test_validate_manifest_rejects_runtime_gate_with_process_matches(
+    tmp_path: Path,
+) -> None:
+    errors = _validation_errors_for_gates(
+        tmp_path,
+        [
+            EvidenceGate(
+                code="RUNTIME_PROCESS_CLEAR",
+                passed=True,
+                details={"report": {"match_count": 1}},
+            )
+        ],
+    )
+
+    assert any("RUNTIME_PROCESS_CLEAR" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "actual_preflight",
+    [
+        {
+            "ready": False,
+            "revision": "20260712_0064",
+            "integrity": "ok",
+        },
+        {"ready": True, "revision": "wrong", "integrity": "ok"},
+    ],
+    ids=["not-ready", "wrong-revision"],
+)
+def test_validate_manifest_rejects_inconsistent_actual_migration_gate(
+    tmp_path: Path,
+    actual_preflight: dict[str, object],
+) -> None:
+    errors = _validation_errors_for_gates(
+        tmp_path,
+        [
+            EvidenceGate(
+                code="ACTUAL_MIGRATION_HEAD_MATCH",
+                passed=True,
+                details={"actual_preflight": actual_preflight},
+            )
+        ],
+    )
+
+    assert any("ACTUAL_MIGRATION_HEAD_MATCH" in error for error in errors)
+
+
+def test_validate_manifest_accepts_complete_known_c0_gate_evidence(
+    tmp_path: Path,
+) -> None:
+    ready_preflight = {
+        "ready": True,
+        "revision": "20260712_0064",
+        "integrity": "ok",
+    }
+    schema_preflight = {
+        "ready": True,
+        "missing_tables": [],
+        "missing_columns": {},
+    }
+    clean_orphan_report = {"clean": True, "total_orphans": 0}
+    errors = _validation_errors_for_gates(
+        tmp_path,
+        [
+            EvidenceGate(
+                code="RUNTIME_PROCESS_CLEAR",
+                passed=True,
+                details={"report": {"match_count": 0}},
+            ),
+            EvidenceGate(
+                code="BACKUP_VERIFIED",
+                passed=True,
+                details={
+                    "verify": {
+                        "ok": True,
+                        "integrity": "ok",
+                        "checksum_ok": True,
+                    },
+                    "pre_migration_backup_preflight": {
+                        "integrity": "ok",
+                        "revision": "20260712_0064",
+                    },
+                },
+            ),
+            EvidenceGate(
+                code="DRILL_MIGRATION_HEAD_MATCH",
+                passed=True,
+                details={"preflight": ready_preflight},
+            ),
+            EvidenceGate(
+                code="ACTUAL_MIGRATION_HEAD_MATCH",
+                passed=True,
+                details={"actual_preflight": ready_preflight},
+            ),
+            EvidenceGate(
+                code="SCHEMA_READY",
+                passed=True,
+                details={
+                    "drill_preflight": schema_preflight,
+                    "actual_preflight": schema_preflight,
+                },
+            ),
+            EvidenceGate(
+                code="ORPHANS_ZERO",
+                passed=True,
+                details={
+                    "drill_report": clean_orphan_report,
+                    "actual_report": clean_orphan_report,
+                },
+            ),
+            EvidenceGate(
+                code="FOCUSED_REGRESSION_PASS",
+                passed=True,
+                details={"report": {"passed": 7, "failed": 0}},
+            ),
+            EvidenceGate(
+                code="C0_REGRESSION_PASS",
+                passed=True,
+                details={"report": {"passed": 14, "failed": 0}},
+            ),
+        ],
+    )
+
+    assert errors == []
+
+
+def test_validate_manifest_accepts_unknown_future_gate_evidence(
+    tmp_path: Path,
+) -> None:
+    errors = _validation_errors_for_gates(
+        tmp_path,
+        [
+            EvidenceGate(
+                code="C1_FUTURE_GATE",
+                passed=True,
+                details={"future": {"shape": "is-compatible"}},
+            )
+        ],
+    )
+
+    assert errors == []
 
 
 def test_validate_command_rejects_missing_command_timestamps(
