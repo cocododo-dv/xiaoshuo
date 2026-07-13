@@ -146,21 +146,21 @@ git commit -m "feat(accounting): add durable LLM budget fields"
 - Create: `backend/tests/test_llm_accounting.py`
 - Modify: `backend/tests/test_llm_client.py`
 
-- [ ] 测试本地输入/输出估算、UTF-8 预留上界、message overhead 和 `max_output_tokens`。
-- [ ] 测试 provider usage 完整时保存 actual 且 `usage_is_estimate=false`。
-- [ ] 测试显式 offline provider 的完整 0 usage 保持 0 且照常落父 LlmCall，不生成“真实 HTTP”子 attempt、不增加 provider_attempts_used，也不被 audit 误报为 legacy unreconstructable/missing usage。
-- [ ] 测试 usage 缺失、只有 input/output、total 不一致、非数字和负数；全部规范化且不能按 0 漏账。
-- [ ] `LLMResponse`/解析层保留 usage provenance/completeness（带安全默认值，兼容现有 fake）。不能只读已被 `_normalize_usage` 补成 0 的字典；用真实 `LLMClient` provider 解析路径构造“raw response 无 usage”集成红测，确认到账本后 `usage_is_estimate=true` 且非 0。
-- [ ] 测试 provider 失败：账本行持久化、`error_code` 保留、按保守估算结算、`accounting_status=failed`。
-- [ ] `LLMClient.generate` 接收内部 accounting attempt hook（对公共 caller 保持兼容）：每次 `_generate_once` POST、transport retry、parse retry、missing-text degrade 都调用 before-dispatch/after-response/after-error；外层逻辑调用返回稳定内部 `llm_call_id` 和可选 provider request id。
-- [ ] 红测首次 timeout 或 200 missing text、随后成功：父 LlmCall 下有 2 个 physical attempts，第一次按 unknown/actual 结算、第二次按 actual 结算，父 total/charged 为两者和；余额不足或 provider-attempt 只剩 1 时第二次 POST count=0。
-- [ ] 红测 degrade 把 max_output 扩大后的第二 attempt 使用新 request 上界重新预留，不能复用第一次较小 reservation。
-- [ ] 测试账本前置提交与外层业务失败：`LlmCall` 仍存在，已完成业务正文不被账本清理。
-- [ ] 用真实 file-backed SQLite 测 caller Session 已 flush 业务写的路径：账本入口用同 Session 提交前置状态后进入阻塞 provider，网络等待期间第二 Session 能提交状态写；provider 返回后结算成功，全程无 `database is locked`、无丢账。
-- [ ] dispatch 使用第二个短事务：reservation commit 后、真正调用 provider 前写 `request_dispatched_at` 并提交。crash 恢复遇 reserved+未 dispatched 可安全 release/retry；reserved+已 dispatched 或状态未知必须按保守估算 settle failed，并返回 `RUN_CHECKPOINT_OUTPUT_MISSING`，不得自动重发。
-- [ ] file-backed crash 红测分别中止在 reservation commit 后、dispatch commit 后：前者释放且同 step 可继续，后者记 estimate/failed、预算不免费、同 execution 不重发。
-- [ ] 实现唯一生产 provider 出口 `execute_accounted_call(...)`；接收 typed `LLMCallContext`，统一生成 call id、摘要、计时、成功/失败行。
-- [ ] 实现 `mark_postprocess_failure(...)`，供 provider 成功但结构化解析失败的 caller 更新同一账本行，不新增重复 call。
+- [x] 测试本地输入/输出估算、UTF-8 预留上界、message overhead 和 `max_output_tokens`。
+- [x] 测试 provider usage 完整时保存 actual 且 `usage_is_estimate=false`。
+- [x] 测试显式 offline provider 的完整 0 usage 保持 0 且照常落父 LlmCall，不生成“真实 HTTP”子 attempt、不增加 provider_attempts_used，也不被 audit 误报为 legacy unreconstructable/missing usage。
+- [x] 测试 usage 缺失、只有 input/output、total 不一致、非数字和负数；全部规范化且不能按 0 漏账。
+- [x] `LLMResponse`/解析层保留 usage provenance/completeness（带安全默认值，兼容现有 fake）。不能只读已被 `_normalize_usage` 补成 0 的字典；用真实 `LLMClient` provider 解析路径构造“raw response 无 usage”集成红测，确认到账本后 `usage_is_estimate=true` 且非 0。
+- [x] 测试 provider 失败：账本行持久化、`error_code` 保留、按保守估算结算、`accounting_status=failed`。
+- [x] `LLMClient.generate` 接收内部 accounting attempt hook（对公共 caller 保持兼容）：每次 `_generate_once` POST、transport retry、parse retry、missing-text degrade 都调用 before-dispatch/after-response/after-error；外层逻辑调用返回稳定内部 `llm_call_id` 和可选 provider request id。
+- [x] 红测首次 timeout 或 200 missing text、随后成功：父 LlmCall 下有 2 个 physical attempts，第一次按 unknown/actual 结算、第二次按 actual 结算，父 total/charged 为两者和；余额不足或 provider-attempt 只剩 1 时第二次 POST count=0。
+- [x] 红测 degrade 把 max_output 扩大后的第二 attempt 使用新 request 上界重新预留，不能复用第一次较小 reservation。
+- [x] 测试账本前置提交与外层业务失败：`LlmCall` 仍存在，已完成业务正文不被账本清理。
+- [x] 用真实 file-backed SQLite 测 caller Session 已 flush 业务写的路径：账本入口用同 Session 提交前置状态后进入阻塞 provider，网络等待期间第二 Session 能提交状态写；provider 返回后结算成功，全程无 `database is locked`、无丢账。
+- [x] dispatch 使用第二个短事务：reservation commit 后、真正调用 provider 前写 `request_dispatched_at` 并提交。crash 恢复遇 reserved+未 dispatched 可安全 release/retry；reserved+已 dispatched 或状态未知必须按保守估算 settle failed，并返回 `RUN_CHECKPOINT_OUTPUT_MISSING`，不得自动重发。
+- [x] file-backed crash 红测分别中止在 reservation commit 后、dispatch commit 后：前者释放且同 step 可继续，后者记 estimate/failed、预算不免费、同 execution 不重发。
+- [x] 实现唯一生产 provider 出口 `execute_accounted_call(...)`；接收 typed `LLMCallContext`，统一生成 call id、摘要、计时、成功/失败行。
+- [x] 实现 `mark_postprocess_failure(...)`，供 provider 成功但结构化解析失败的 caller 更新同一账本行，不新增重复 call。
 
 Run:
 
