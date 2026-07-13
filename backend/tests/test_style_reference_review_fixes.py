@@ -42,6 +42,22 @@ SAMPLE_TEXT = """这是一段比较长的叙述文字,用于让 ingest 能切出
 """
 
 
+def _decode_untrusted_payload(user_msg: str) -> dict:
+    """按共享 LLM helper 的显式边界协议解码测试请求。"""
+
+    opening_token = "[UNTRUSTED_REFERENCE_DATA:"
+    closing_token = "\n[/UNTRUSTED_REFERENCE_DATA]"
+    assert user_msg.count(opening_token) == 1, "请求必须且只能包含一个不可信数据起始边界"
+    assert user_msg.count(closing_token) == 1, "请求必须且只能包含一个不可信数据结束边界"
+
+    opening = user_msg.index(opening_token)
+    payload_start = user_msg.index("]\n", opening) + 2
+    payload_end = user_msg.index(closing_token, payload_start)
+    payload = json.loads(user_msg[payload_start:payload_end])
+    assert isinstance(payload, dict), "不可信数据边界内必须是 JSON object"
+    return payload
+
+
 def _ingest(seed: str, *, cloud_policy: str = "segments_only") -> str:
     with SessionLocal() as session:
         result = IngestService(session, llm_enabled=False).ingest_upload(
@@ -326,8 +342,7 @@ class _FabricatedEvidenceClient:
 
     def generate(self, request):  # noqa: ANN001
         user_msg = request.messages[-1]["content"]
-        marker_pos = user_msg.rfind("\n\n{")
-        payload = json.loads(user_msg[marker_pos + 2 :]) if marker_pos >= 0 else {}
+        payload = _decode_untrusted_payload(user_msg)
         paras = payload.get("paragraphs") or []
         first = paras[0] if paras else {"paragraph_id": None, "text": ""}
 
@@ -428,8 +443,7 @@ class _OverflowClient:
 
     def generate(self, request):  # noqa: ANN001
         user_msg = request.messages[-1]["content"]
-        marker_pos = user_msg.rfind("\n\n{")
-        payload = json.loads(user_msg[marker_pos + 2 :]) if marker_pos >= 0 else {}
+        payload = _decode_untrusted_payload(user_msg)
         paras = payload.get("paragraphs") or []
         first = paras[0] if paras else {"paragraph_id": None, "text": ""}
 
