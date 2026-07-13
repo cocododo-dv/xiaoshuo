@@ -106,7 +106,7 @@ function setImportMode(mode) {
 
 function handleFileChange(event) {
   const file = event.target.files?.[0] ?? null;
-  store.uploadDraft.file = file;
+  store.setUploadFile(file);
 }
 
 async function submitImport() {
@@ -292,9 +292,10 @@ function describeSubDim(dimPath) {
               <span class="field-label">文件路径(后端可读)</span>
               <input
                 type="text"
-                v-model="store.pathDraft.file_path"
+                :value="store.pathDraft.file_path"
                 placeholder="如 backend/tests/golden/style_reference/corpus/luxun_short_stories.txt"
                 data-testid="reference-import-path"
+                @input="store.setPathFilePath($event.target.value)"
               />
             </label>
             <label class="field">
@@ -307,7 +308,10 @@ function describeSubDim(dimPath) {
             </label>
             <label class="field">
               <span class="field-label">云策略</span>
-              <select v-model="store.pathDraft.cloud_policy">
+              <select
+                :value="store.pathDraft.cloud_policy"
+                @change="store.setPathCloudPolicy($event.target.value)"
+              >
                 <option value="local_only">local_only(完全本地)</option>
                 <option value="segments_only">segments_only(只云片段)</option>
                 <option value="allow_full_cloud">allow_full_cloud(全文上云)</option>
@@ -348,7 +352,10 @@ function describeSubDim(dimPath) {
             </label>
             <label class="field">
               <span class="field-label">云策略</span>
-              <select v-model="store.uploadDraft.cloud_policy">
+              <select
+                :value="store.uploadDraft.cloud_policy"
+                @change="store.setUploadCloudPolicy($event.target.value)"
+              >
                 <option value="local_only">local_only</option>
                 <option value="segments_only">segments_only</option>
                 <option value="allow_full_cloud">allow_full_cloud</option>

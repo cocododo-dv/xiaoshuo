@@ -70,6 +70,21 @@ function mount() {
   return el;
 }
 
+async function changeValue(element, value, eventName = "change") {
+  element.value = value;
+  element.dispatchEvent(new Event(eventName, { bubbles: true }));
+  await nextTick();
+}
+
+async function chooseFile(input, file) {
+  Object.defineProperty(input, "files", {
+    configurable: true,
+    value: [file],
+  });
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  await nextTick();
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
 });
@@ -146,6 +161,109 @@ describe("ReferenceLearningView", () => {
     },
   );
 
+  it("path 勾选后修改文件路径会撤销确认，重新勾选后恢复", async () => {
+    const el = mount();
+    await nextTick();
+    await nextTick();
+    const form = el.querySelector(".import-card .form");
+    const policy = form.querySelector("select");
+    const pathInput = form.querySelector('[data-testid="reference-import-path"]');
+    const submit = form.querySelector('[data-testid="reference-import-submit"]');
+
+    await changeValue(policy, "segments_only");
+    let rights = form.querySelector('[data-testid="reference-import-rights"]');
+    rights.click();
+    await nextTick();
+    expect(submit.disabled).toBe(false);
+
+    await changeValue(pathInput, "changed-book.txt", "input");
+    rights = form.querySelector('[data-testid="reference-import-rights"]');
+    expect(rights.checked).toBe(false);
+    expect(submit.disabled).toBe(true);
+
+    rights.click();
+    await nextTick();
+    expect(submit.disabled).toBe(false);
+  });
+
+  it("upload 勾选后更换文件会撤销确认，重新勾选后恢复", async () => {
+    const el = mount();
+    await nextTick();
+    await nextTick();
+    el.querySelector('[data-testid="reference-import-toggle-upload"]').click();
+    await nextTick();
+    const form = el.querySelector(".import-card .form");
+    const policy = form.querySelector("select");
+    const fileInput = form.querySelector('input[type="file"]');
+    const submit = form.querySelector('[data-testid="reference-import-submit"]');
+
+    await chooseFile(fileInput, new File(["first"], "first.txt", { type: "text/plain" }));
+    await changeValue(policy, "segments_only");
+    let rights = form.querySelector('[data-testid="reference-import-rights"]');
+    rights.click();
+    await nextTick();
+    expect(submit.disabled).toBe(false);
+
+    await chooseFile(fileInput, new File(["second"], "second.txt", { type: "text/plain" }));
+    rights = form.querySelector('[data-testid="reference-import-rights"]');
+    expect(rights.checked).toBe(false);
+    expect(submit.disabled).toBe(true);
+
+    rights.click();
+    await nextTick();
+    expect(submit.disabled).toBe(false);
+  });
+
+  it("从 segments_only 切换到 allow_full_cloud 会撤销确认", async () => {
+    const el = mount();
+    await nextTick();
+    await nextTick();
+    const form = el.querySelector(".import-card .form");
+    const policy = form.querySelector("select");
+    const submit = form.querySelector('[data-testid="reference-import-submit"]');
+
+    await changeValue(policy, "segments_only");
+    let rights = form.querySelector('[data-testid="reference-import-rights"]');
+    rights.click();
+    await nextTick();
+    expect(submit.disabled).toBe(false);
+
+    await changeValue(policy, "allow_full_cloud");
+    rights = form.querySelector('[data-testid="reference-import-rights"]');
+    expect(rights.checked).toBe(false);
+    expect(submit.disabled).toBe(true);
+
+    rights.click();
+    await nextTick();
+    expect(submit.disabled).toBe(false);
+  });
+
+  it("云策略切到 local_only 再切回云端会要求重新确认", async () => {
+    const el = mount();
+    await nextTick();
+    await nextTick();
+    const form = el.querySelector(".import-card .form");
+    const policy = form.querySelector("select");
+    const submit = form.querySelector('[data-testid="reference-import-submit"]');
+
+    await changeValue(policy, "segments_only");
+    let rights = form.querySelector('[data-testid="reference-import-rights"]');
+    rights.click();
+    await nextTick();
+    expect(submit.disabled).toBe(false);
+
+    await changeValue(policy, "local_only");
+    expect(form.querySelector('[data-testid="reference-import-rights"]')).toBeNull();
+    await changeValue(policy, "segments_only");
+    rights = form.querySelector('[data-testid="reference-import-rights"]');
+    expect(rights.checked).toBe(false);
+    expect(submit.disabled).toBe(true);
+
+    rights.click();
+    await nextTick();
+    expect(submit.disabled).toBe(false);
+  });
+
   it("非布尔发送权不能使非本地导入就绪", () => {
     const store = useReferenceLearningStore();
     store.pathDraft.cloud_policy = "segments_only";
@@ -211,6 +329,20 @@ describe("ReferenceLearningView", () => {
     expect(styleReferenceApi.importStyleReferenceBookUpload).toHaveBeenLastCalledWith(
       expect.objectContaining({ cloudPolicy: "local_only", rightsDeclaration: null }),
     );
+  });
+
+  it("store action 直接调用时也拒绝未确认的非本地导入", async () => {
+    vi.clearAllMocks();
+    const store = useReferenceLearningStore();
+    store.pathDraft.file_path = "cloud-path.txt";
+    store.pathDraft.cloud_policy = "segments_only";
+    await expect(store.importPath()).rejects.toThrow("请确认拥有将文本发送至云端的权利");
+    expect(styleReferenceApi.importStyleReferenceBookPath).not.toHaveBeenCalled();
+
+    store.uploadDraft.file = new File(["cloud"], "cloud.txt", { type: "text/plain" });
+    store.uploadDraft.cloud_policy = "allow_full_cloud";
+    await expect(store.importUpload()).rejects.toThrow("请确认拥有将文本发送至云端的权利");
+    expect(styleReferenceApi.importStyleReferenceBookUpload).not.toHaveBeenCalled();
   });
 
   it("当 store 有 currentBook 时,主区渲染 stats / 启动 run 按钮", async () => {
