@@ -585,7 +585,7 @@ git commit -m "fix(style-reference): secure segmentation LLM payloads"
 - Modify: `docs/superpowers/specs/2026-07-13-ai-novel-outcome-governance-completion-assessment.md`
 - Modify: `docs/superpowers/plans/2026-07-13-c1a-source-safety.md`
 
-- [ ] **Step 1: 对实际库做可校验备份**
+- [x] **Step 1: 对实际库做可校验备份**
 
 Run from `backend`:
 
@@ -598,7 +598,7 @@ python -m novel_system.tools.db_backup --verify "$run\database-before-rights-aud
 
 Expected: verify 输出 `ok=true`、`integrity=ok`、`checksum_ok=true`。如果失败，不运行 apply。
 
-- [ ] **Step 2: 先 dry-run 再显式降级存量违规项**
+- [x] **Step 2: 先 dry-run 再显式降级存量违规项**
 
 ```powershell
 $env:NOVEL_SYSTEM_DATABASE_URL='sqlite:///E:/codex/xiaoshuo/codex/backend/novel_system.db'
@@ -609,7 +609,7 @@ python -m novel_system.tools.source_rights_audit --json
 
 Expected: 第一条按是否存在违规返回 0 或 1；apply 返回 0；最后一条返回 0 且 `violation_count=0`。apply 只授权把检测到的违规非本地记录降级为 `local_only`，不删除正文、画像或引用。
 
-- [ ] **Step 3: 运行 C1A 聚焦回归**
+- [x] **Step 3: 运行 C1A 聚焦回归**
 
 ```powershell
 python -m pytest tests/test_reference_ingest_rights.py tests/test_style_reference_policy.py tests/test_source_rights_audit.py tests/test_reference_untrusted_data.py tests/test_reference_injection_untrusted.py tests/test_styleref_redline_pass3.py tests/test_style_reference_llm_routing.py tests/test_style_reference_untrusted_flows.py tests/test_style_reference_segmentation.py -q
@@ -617,13 +617,13 @@ python -m pytest tests/test_reference_ingest_rights.py tests/test_style_referenc
 
 Expected: 全部通过、0 warnings；恶意文本断言覆盖抽取、补证、合成、预览、语义校验和分类。
 
-- [ ] **Step 4: 运行 style-reference 全量回归**
+- [x] **Step 4: 运行 style-reference 全量回归**
 
 Run: `cd backend && python -m pytest tests -q -k "style_reference or styleref or reference_ingest_rights or reference_untrusted"`
 
 Expected: 0 failures。记录 passed/skipped/deselected 数量和耗时。
 
-- [ ] **Step 5: 生成 offline 证据摘要**
+- [x] **Step 5: 生成 offline 证据摘要**
 
 `docs/superpowers/evidence/20260713-c1a-source-safety.json` 必须使用固定值 `schema=c1a-source-safety-v1`、`provenance=offline`、`database_revision=20260712_0064`，并包含以下实际运行字段：
 
@@ -637,11 +637,11 @@ Expected: 0 failures。记录 passed/skipped/deselected 数量和耗时。
 
 使用 `apply_patch` 把已经执行得到的具体值写入文件，不写示例 hash 或虚构命令结果。证据摘要不声称 real-model 或 human provenance。
 
-- [ ] **Step 6: 更新完成度评估与计划勾选**
+- [x] **Step 6: 更新完成度评估与计划勾选**
 
 只把 P0-5/P0-6 的 engineering gate 更新为已关闭，并链接证据文件；real-model 与 human gate 保持未通过。记录运行时采用双层防线：导入拒绝 + 持久化声明复核。
 
-- [ ] **Step 7: 新鲜复核并提交证据**
+- [x] **Step 7: 新鲜复核并提交证据**
 
 Run:
 
@@ -657,6 +657,18 @@ Expected: JSON 有效、diff check 退出 0，只有计划、assessment 和 evid
 git add docs/superpowers/plans/2026-07-13-c1a-source-safety.md docs/superpowers/specs/2026-07-13-ai-novel-outcome-governance-completion-assessment.md docs/superpowers/evidence/20260713-c1a-source-safety.json
 git commit -m "docs(governance): close C1A source safety evidence"
 ```
+
+### Task 6 实际结果
+
+- 最终证据基线：`77d86b1ef09672c3db78d9508cc2ff3d393d1281`。第一次完整选择集暴露两个仍解析旧裸 JSON 协议的测试替身；按根因修复并独立审查后，重新生成全部最终测试产物，未把失败运行冒充绿色证据。
+- 实际库备份：`.codex-run/governance-c1a/20260713-c1a/database-before-rights-audit.db`，`5120000` bytes，SHA-256 `2f4a69f7557671c46813fd249c7fb72d62e366a29545012de267316d8f9bdced`；前后 verify 均为 `ok=true`、`integrity=ok`、`checksum_ok=true`。
+- actual preflight 前后均为 revision `20260712_0064`、`ready=true`、`integrity=ok`。
+- actual `style_reference_books` 前后均为 0 行；权属审计 before/apply/after 均为 `violation_count=0`、`downgraded_count=0`，因此本轮没有实际数据被降级或删除。
+- 最终聚焦回归：`130 passed, 0 failed, 0 skipped`，26.83 秒。
+- 最终 style-reference 选择集：`512 passed, 0 failed, 8 skipped, 1222 deselected`，133.99 秒。
+- 静态盘点：生产 `call_llm_node` caller typed `UntrustedPayload` 为 `7/7`，style-reference 实际 `generate` 出口统一边界为 `2/2`；handoff 生成器 `--check` 通过。
+- tracked manifest：`docs/superpowers/evidence/20260713-c1a-source-safety.json`；ignored artifact index：`.codex-run/governance-c1a/20260713-c1a/artifacts.json`，SHA-256 `8870640f87706365cd17035c9725846ad16bc5844453632e6969d164439ba867`。
+- 证据 provenance 为 `offline`：只关闭 P0-5/P0-6 engineering gate；真实模型、五章来源安全 lane 与发布门保持 pending。
 
 ## C1A 完成门
 

@@ -21,7 +21,7 @@
 3. **五章真实结果门没有通过。** 仓库中没有本轮 5 章 × 3 场、15/15 服务端归档、清缓存与重启恢复、Q0/Q1=0、来源泄漏=0 的新鲜可复算产物。
 4. **Wave 5 只完成实验基础设施，没有完成“30 组人类盲评”。** 进度账本引用的是合成 30 对、合成投票；它能证明统计代码工作，不能证明读者偏好，更不能证明 Best-of-N 值得默认 3–5 倍候选成本。
 5. **5× token 预算不是硬上限。** 当前只对部分可选调用做 `can_spend` 前置检查；辅助 `run_task` 不落 `LlmCall`，provider usage 缺失按 0 记，且没有真实预留/结算账户，因此存在漏记和实际调用后超限。
-6. **来源安全仍有两处直接违约。** 未声明发送权却选择云端策略仍被测试明确放行；不可信文本封装只接入最终 few-shot/RAG 注入，风格抽取、补证和预览仍把原文/引文直接 JSON 序列化进 LLM user prompt。
+6. **来源安全的两个 P0 工程缺口已关闭，真实门仍待验证。** 非本地策略现在要求显式声明与发送权；style-reference 的 7 个公共调用方和 2 个实际 `generate` 出口均使用统一不可信数据边界。C1A offline 证据只证明工程行为，不替代真实云模型和五章来源安全 lane。
 7. **Wave 7 不是完成态。** 真实 30 章运行、重启恢复、p95、FK 实际启用、大文件拆分和路由级懒加载均未闭环；现有耐久通过产物是合成数据。
 8. **证据链不可完整复算。** 进度账本引用的 `.codex-run/wave*` 产物被 `.gitignore` 排除，当前拉取后的工作区没有这些文件，审查者只能相信文字摘要，不能从仓库复算历史完成门。
 
@@ -75,6 +75,7 @@
 - Alembic：代码 head 为 `20260712_0064`；实际默认库已在 C0 闭环中从 `20260618_0059` 升级到 `20260712_0064`，新鲜 preflight 报告 `ready=true`、`integrity=ok`，必需新列和实验表均已存在。
 - C0 迁移前的已验证备份仍保留 `20260618_0059` 历史状态，SHA-256 为 `804fc4e01237d77eacf83b7671f90ab50fdd5db985a2356ba74666240dec31b3`；副本演练与 actual 复核均到达 `0064`。
 - 当前默认库孤儿盘点为 0；`PRAGMA foreign_keys=0`，FK 是否启用仍待正式结论。
+- C1A 来源安全新鲜验证：实际库在备份、`0064` preflight、before/apply/after 权属盘点后保持 `0` 行、`0` 违规、`0` 降级；聚焦回归 `130 passed`，style-reference 选择集 `512 passed, 8 skipped`。可审查索引见 `docs/superpowers/evidence/20260713-c1a-source-safety.json`，provenance 为 `offline`。
 
 说明：默认库版本落后的可运行态阻断已关闭。可审查索引见 `docs/superpowers/evidence/20260713-c0-manifest.json`；其中 provenance 为 `offline`，复核二进制 artifact 时必须以本机 `.codex-run/governance-c0/20260713-c0` 作为 `artifact_root`，并使用 `validate --profile c0`。只有 C0 profile 才强制八个 required gates 全部存在；generic validate 保留给未来 manifest 兼容，不能作为 C0 验收通过依据。该证据只关闭工程运行门，不推进真实模型门或发布门。
 
@@ -95,7 +96,7 @@
 | Wave 4 POV 投影 | 两个主要状态注入槽和 finding 回灌脱敏已有实现与 golden 测试 | L2 | 无真实悬疑 LLM 对照；收益依赖显式知识标注质量；写侧事件提取默认关闭 | **工程完成度较高，效果未证** |
 | Wave 5 质量实验室 | 实验表、路由、盲化、投票、统计报告和最小 UI 已实现 | L2（机制）/L0（真人结果） | 30 对和 21/30 产物是合成；真人 30 非平局未执行；没有把真实结论写回生产默认策略 | **基础设施完成，目标未完成** |
 | Wave 6 成本与独立性 | 价格配置、成本聚合、成本页、独立性信号已实现 | L1–L2 | 辅助调用漏账、价格全估算、计费口径近似实际、无真实取消、跨 provider 预算仍全局累计、指标体系缺失 | **部分完成** |
-| Wave 7 耐久/安全/收敛 | 备份工具、孤儿工具、部分不可信封装、耐久判定器、演示标记已实现 | L1–L2 | 30 章未跑；FK 未开；大文件未拆；路由懒加载未做；来源安全仍有直接缺口 | **进行中，不得标完成** |
+| Wave 7 耐久/安全/收敛 | 备份工具、孤儿工具、来源权属门、统一不可信边界、耐久判定器、演示标记已实现 | L2（来源安全工程） | 真实来源安全 lane、30 章、FK、大文件拆分和路由懒加载仍未完成 | **来源安全工程门已关，Wave 7 仍不得标完成** |
 
 ### 3.1 值得保留的成果
 
@@ -187,41 +188,57 @@
 - 基线调用与可选调用均受生命周期总预算约束，只有作者显式 topup 可扩容。
 - 加入“provider 无 usage”“实际高于估算”“并发候选”“重跑”四类不会越过预算的测试。
 
-### P0-5 未声明发送权时仍允许云端策略
+### P0-5 未声明发送权时仍允许云端策略（工程门已关闭）
 
-**证据**
+**当前状态**
+
+- `engineering_status=passed`：非本地策略必须同时满足严格布尔 `declared=true` 与 `send_rights=true`；路径、上传和策略变化会重置前端确认，服务端再次复核持久化声明。
+- 存量双层防线已落地：导入时拒绝，运行时在云调用前重新检查；审计工具支持 dry-run 与显式降级。
+- 实际库 before/apply/after 均为 `violation_count=0`、`downgraded_count=0`，且 `style_reference_books` 实际为 0 行，因此没有伪称执行过存量降级。
+- `real_gate_status=pending`、`release_gate_status=pending`：尚未用真实云 provider 和五章授权/公版 lane 验证。
+- 证据：`docs/superpowers/evidence/20260713-c1a-source-safety.json`。
+
+**原始缺口证据（修复前）**
 
 - `style_reference/ingest.py:62-75` 对未声明权属返回 `declared=False`，不拒绝云端策略。
 - `backend/tests/test_reference_ingest_rights.py:60-63` 明确测试“未声明 + allow_full_cloud 仍可导入”。
 
-**问题**
+**原始问题（修复前）**
 
-这与原设计 §11.9“不得对用户导入文本默认拥有云端发送权”直接冲突。选择 cloud policy 可以表示技术策略，不能自动替代版权/发送权声明。
+这曾与原设计 §11.9“不得对用户导入文本默认拥有云端发送权”直接冲突。选择 cloud policy 可以表示技术策略，不能自动替代版权/发送权声明。
 
-**完成条件**
+**完成条件核对**
 
-- `cloud_policy != local_only` 时，必须同时存在 `declared=true`、`send_rights=true`。
-- 未声明只能导入为 local-only，或阻止导入并要求用户确认；不得静默沿用云端策略。
-- 对存量 `declared=false + 非 local_only` 记录建立盘点和降级迁移。
+- [x] `cloud_policy != local_only` 时，必须同时存在 `declared=true`、`send_rights=true`。
+- [x] 未声明只能导入为 local-only，或阻止导入并要求用户确认；不得静默沿用云端策略。
+- [x] 对存量 `declared=false + 非 local_only` 记录建立盘点和显式降级工具；实际库本轮为 0 违规、0 降级。
 
-### P0-6 不可信文本封装没有覆盖全部 LLM 入口
+### P0-6 不可信文本封装没有覆盖全部 LLM 入口（工程门已关闭）
 
-**证据**
+**当前状态**
+
+- `engineering_status=passed`：公共 helper 只接受 typed `UntrustedPayload`，递归中和字符串叶子，并把 JSON 放入唯一 `UNTRUSTED_REFERENCE_DATA` 边界；system prompt 同时追加数据非指令约束。
+- 抽取、补证、画像合成、预览、语义校验、forbidden 校验、library derive、longform audit 和分段直连出口均已接线；静态盘点为 typed caller `7/7`、实际 style-reference `generate` 出口 `2/2`。
+- 恶意角色标记、工具标记、全角/空白/零宽/Markdown 变体和伪造边界已有回归；聚焦 `130 passed`，完整选择集 `512 passed, 8 skipped`。
+- `real_gate_status=pending`、`release_gate_status=pending`：尚未用真实模型证明模型行为不受恶意参考文本影响，也未完成五章来源安全 lane。
+- 证据：`docs/superpowers/evidence/20260713-c1a-source-safety.json`。
+
+**原始缺口证据（修复前）**
 
 - `secure_reference_block` 的生产调用点只在 `style_reference/injection.py:628-633`，覆盖最终 few-shot/RAG。
 - `style_reference/_llm_helper.py:56` 把任意 payload 直接 JSON 序列化到 user prompt。
 - `style_reference/extractors/base.py` 的抽取与补证 payload 含原始 `paragraphs[].text`。
 - `style_reference/preview.py:103-114` 把原始 `seed_quote` 直接送入预览模型。
 
-**影响**
+**原始影响（修复前）**
 
-恶意参考文本仍可在抽取、补证和预览阶段影响模型角色或输出；只保护最终写作注入不能称为完整来源安全闭环。
+恶意参考文本曾可在抽取、补证和预览阶段影响模型角色或输出；只保护最终写作注入不能称为完整来源安全闭环。
 
-**完成条件**
+**完成条件核对**
 
-- 在 style-reference LLM 公共出口建立 typed untrusted fields，统一中和并边界封装原文、quote 和 evidence。
-- system prompt 明确不可信区块只作为数据；结构化 schema 和任务指令位于区块外。
-- 抽取、补证、画像合成、预览、RAG rerank、few-shot/RAG 最终注入逐入口回归。
+- [x] 在 style-reference LLM 公共出口建立 typed untrusted fields，统一中和并边界封装原文、quote 和 evidence。
+- [x] system prompt 明确不可信区块只作为数据；结构化 schema 和任务指令位于区块外。
+- [x] 抽取、补证、画像合成、预览、语义/forbidden、分段、RAG/few-shot 最终注入逐入口回归。
 
 ---
 
@@ -325,8 +342,8 @@
 
 ### 收敛 1：先修 P0 安全与成本真值
 
-1. 未声明发送权的参考文本强制 local-only 或拒绝云端策略。
-2. 把不可信封装下沉到 style-reference 公共 LLM 出口，覆盖抽取、补证、合成、预览和最终注入。
+1. [x] 未声明发送权的参考文本强制 local-only 或拒绝云端策略；C1A offline 工程证据已归档。
+2. [x] 把不可信封装下沉到 style-reference 公共 LLM 出口，覆盖抽取、补证、合成、预览和最终注入；typed caller 与实际出口盘点均通过。
 3. 统一 `run`/`run_task` 成本记录，补本地 token 估算和原子预算预留/冲正。
 4. 加入真实取消 API 与审计事件。
 
