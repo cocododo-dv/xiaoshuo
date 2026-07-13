@@ -67,8 +67,18 @@ def call_llm_node(
             node_id=node_id,
         ) from exc
 
-    system_prompt = render_untrusted_system_prompt(template.system_prompt)
-    user_prompt = render_untrusted_user_prompt(template.task_prompt, payload, kind=node_id)
+    try:
+        system_prompt = render_untrusted_system_prompt(template.system_prompt)
+        user_prompt = render_untrusted_user_prompt(
+            template.task_prompt,
+            payload,
+            kind=node_id,
+        )
+    except Exception:  # pylint: disable=broad-except
+        raise LLMNodeError(
+            f"failed to render untrusted payload for node {node_id!r}",
+            node_id=node_id,
+        ) from None
     request = LLMRequest(
         model=task_config.model,
         messages=[

@@ -425,8 +425,10 @@ def render_architecture(models_cfg: dict[str, Any], template_source: str) -> lis
         "上下文预算超限抛连续性错误；",
         "2. `LLMNodeRunner.run_task(task_name=…)`——顾问路径：内联提示词、不落草稿、失败快速降级；"
         "别名表 `auto_critique_llm→soft_qc`、`narrative_event_extract→extraction`（借道路由，不占独立节点）；",
-        "3. `style_reference/_llm_helper.call_llm_node(node_id, payload)`——user_prompt = 模板 task_prompt + "
-        "`\\n\\n` + JSON payload；超时保底 120s；",
+        "3. `style_reference/_llm_helper.call_llm_node(node_id, UntrustedPayload, client)`——调用方只传 typed "
+        "payload；Mapping/list/tuple 内字符串叶值递归中和并转义伪边界，user_prompt 将 task 留在唯一显式 "
+        "UNTRUSTED_REFERENCE_DATA JSON 区块外；system 追加“数据非指令、禁止 role/tool/schema 变更”约束，"
+        "response_schema 仍是 request 独立字段；超时保底 120s；",
         "4. 直接 `LLMClient.generate`：雪花工作台（模板 + JSON payload）、段落分类器（`{paragraphs}` 占位符）、"
         "文学评测（内联提示词）。",
         "",

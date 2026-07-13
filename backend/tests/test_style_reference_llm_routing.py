@@ -8,7 +8,9 @@ call_llm_node 此前只读 task_routing——用户在系统设置「模型与�
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -44,6 +46,38 @@ class _CaptureClient:
     def generate(self, request):
         self.last_request = request
         return SimpleNamespace(structured_output={"ok": True})
+
+
+class _ExplodingItemsMapping(Mapping[str, Any]):
+    def __getitem__(self, key: str) -> Any:
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+    def items(self):
+        raise RuntimeError("SECRET_ITEMS_EXCEPTION")
+
+
+def _unserializable_object_payload() -> UntrustedPayload:
+    return UntrustedPayload(
+        {"secret": "SECRET_OBJECT_PAYLOAD", "value": object()}
+    )
+
+
+def _circular_list_payload() -> UntrustedPayload:
+    circular: list[Any] = []
+    circular.append(circular)
+    return UntrustedPayload(
+        {"secret": "SECRET_CIRCULAR_PAYLOAD", "value": circular}
+    )
+
+
+def _exploding_mapping_payload() -> UntrustedPayload:
+    return UntrustedPayload(_ExplodingItemsMapping())
 
 
 @pytest.fixture()
@@ -144,3 +178,48 @@ def test_raw_dict_is_rejected_before_routing_template_or_client(monkeypatch) -> 
 
     assert calls == {"routing": 0, "template": 0, "client": 0}
     assert secret not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("payload_factory", "sensitive_text"),
+    [
+        (_unserializable_object_payload, "SECRET_OBJECT_PAYLOAD"),
+        (_circular_list_payload, "SECRET_CIRCULAR_PAYLOAD"),
+        (_exploding_mapping_payload, "SECRET_ITEMS_EXCEPTION"),
+    ],
+    ids=("object", "circular-list", "exploding-items"),
+)
+def test_render_failure_is_safely_wrapped_before_client_call(
+    monkeypatch,
+    _fake_template,
+    payload_factory,
+    sensitive_text: str,
+) -> None:
+    routing_loads = 0
+    routing = SimpleNamespace(
+        task_routing={NODE: _cfg()},
+        node_routing={},
+    )
+
+    def _load_routing():
+        nonlocal routing_loads
+        routing_loads += 1
+        return routing
+
+    monkeypatch.setattr(_llm_helper, "load_model_routing_config", _load_routing)
+    client = _CaptureClient()
+
+    with pytest.raises(
+        LLMNodeError,
+        match="failed to render untrusted payload",
+    ) as exc_info:
+        call_llm_node(NODE, payload_factory(), client)
+
+    message = str(exc_info.value)
+    assert routing_loads == 1
+    assert client.last_request is None
+    assert sensitive_text not in message
+    assert "not JSON serializable" not in message
+    assert "Circular reference detected" not in message
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
