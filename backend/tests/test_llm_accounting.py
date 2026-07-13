@@ -152,8 +152,8 @@ def test_explicit_offline_zero_usage_settles_parent_without_physical_attempt(ses
     )
     session.commit()
 
-    class OfflineClient:
-        def generate(self, request: LLMRequest) -> LLMResponse:
+    class OfflineClient(accounting.OfflineDeterministicExecution):
+        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
             return LLMResponse(
                 request_id="offline-1",
                 provider="offline_deterministic",
@@ -211,9 +211,9 @@ def test_online_wrapper_forwards_attempt_hook_and_is_fully_accounted(session) ->
         ),
     )
 
-    class HookForwardingWrapper:
-        def generate(self, request: LLMRequest, *, accounting_hook=None) -> LLMResponse:
-            return inner.generate(request, accounting_hook=accounting_hook)
+    class HookForwardingWrapper(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            return inner.generate_accounted(request, accounting_hook=accounting_hook)
 
     response = accounting.execute_accounted_call(
         session,
@@ -233,7 +233,7 @@ def test_online_client_without_hook_contract_is_rejected_before_generate(session
     class HooklessOnlineClient:
         called = 0
 
-        def generate(self, request: LLMRequest) -> LLMResponse:
+        def generate(self, request: LLMRequest, *, accounting_hook=None) -> LLMResponse:
             self.called += 1
             return LLMResponse(
                 request_id="must-not-run",
@@ -263,31 +263,319 @@ def test_online_client_without_hook_contract_is_rejected_before_generate(session
 
 def test_online_wrapper_that_drops_hook_never_leaves_a_live_parent(session) -> None:
     accounting = _accounting_module()
+    scene_id = "scene-wrapper-drops-hook"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=1_000,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+    cached_state = session.get(SceneRunState, scene_id)
+    post_count = 0
 
-    class HookDroppingWrapper:
-        def generate(self, request: LLMRequest, *, accounting_hook=None) -> LLMResponse:
-            return LLMResponse(
-                request_id="unaccounted-online",
-                provider="openai_compatible",
-                model=request.model,
-                text="must not be returned",
-                structured_output=None,
-                response_format=request.response_format,
-                raw_response={},
-                usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-            )
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(
+            200,
+            json={
+                "id": "unaccounted-online",
+                "model": "test-model",
+                "output_text": '{"scene_text":"must not be returned"}',
+                "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+            },
+        )
+
+    inner = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    class HookDroppingWrapper(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            return inner.generate(request)
 
     with pytest.raises(Exception) as exc_info:
         accounting.execute_accounted_call(
             session,
             HookDroppingWrapper(),
             _request(),
-            _context(accounting),
+            _scene_context(accounting, scene_id),
+            llm_call_id="wrapper-drops-hook",
         )
 
     assert getattr(exc_info.value, "code", None) == "LLM_ACCOUNTING_HOOK_NOT_INVOKED"
-    assert session.query(LlmCallAttempt).count() == 0
-    assert session.query(LlmCall).one().accounting_status == "failed"
+    assert post_count == 1
+    attempt = session.query(LlmCallAttempt).one()
+    parent = session.get(LlmCall, "wrapper-drops-hook")
+    run_state = session.get(SceneRunState, scene_id)
+    assert attempt.provider_attempt_no == 0
+    assert attempt.request_dispatched_at is not None
+    assert attempt.accounting_status == "failed"
+    assert attempt.total_tokens == 14
+    assert parent.accounting_status == "failed"
+    assert run_state.provider_attempts_used == 1
+    assert run_state.scene_tokens_used == 14
+    assert run_state.scene_tokens_reserved == 0
+    assert run_state.run_execution_status == "accounting_integrity_blocked"
+
+    with pytest.raises(Exception) as blocked_error:
+        accounting.execute_accounted_call(
+            session,
+            HookDroppingWrapper(),
+            _request(),
+            replace(
+                _scene_context(accounting, scene_id),
+                execution_id="blocked-after-hook-drop",
+            ),
+            llm_call_id="blocked-after-hook-drop",
+        )
+    assert getattr(blocked_error.value, "code", None) == "LLM_ACCOUNTING_INTEGRITY_BLOCKED"
+    assert post_count == 1
+    assert session.query(LlmCallAttempt).count() == 1
+
+
+def test_online_capability_exception_without_attempt_is_conservatively_audited(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-capability-exception"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=1_000,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+
+    class ExplodingCapability(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            raise RuntimeError("wrapper failed after accepting online execution")
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            ExplodingCapability(),
+            _request(),
+            _scene_context(accounting, scene_id),
+            llm_call_id="capability-exception",
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_ACCOUNTING_UNKNOWN_DISPATCH"
+    attempt = session.query(LlmCallAttempt).one()
+    parent = session.get(LlmCall, "capability-exception")
+    run_state = session.get(SceneRunState, scene_id)
+    assert attempt.request_dispatched_at is not None
+    assert attempt.total_tokens == attempt.estimated_tokens > 0
+    assert attempt.accounting_status == "failed"
+    assert attempt.error_code == "LLM_ACCOUNTING_UNKNOWN_DISPATCH"
+    assert parent.accounting_status == "failed"
+    assert run_state.provider_attempts_used == 1
+    assert run_state.scene_tokens_used == attempt.total_tokens
+    assert run_state.run_execution_status == "accounting_integrity_blocked"
+
+
+def test_online_capability_return_with_dispatched_but_unsettled_attempt_is_blocked(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-missing-after-response"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=1_000,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(
+            200,
+            json={
+                "id": "missing-after-response",
+                "model": "test-model",
+                "output_text": '{"scene_text":"must not return"}',
+                "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+            },
+        )
+
+    inner = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    class MissingAfterResponse(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            return inner.generate(request)
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            MissingAfterResponse(),
+            _request(),
+            _scene_context(accounting, scene_id),
+            llm_call_id="missing-after-response",
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_ACCOUNTING_LIFECYCLE_INCOMPLETE"
+    parent = session.get(LlmCall, "missing-after-response")
+    attempt = session.query(LlmCallAttempt).one()
+    run_state = session.get(SceneRunState, scene_id)
+    assert post_count == 1
+    assert parent.accounting_status == "failed"
+    assert attempt.accounting_status == "failed"
+    assert attempt.total_tokens == 14
+    assert attempt.error_code == "LLM_ACCOUNTING_LIFECYCLE_INCOMPLETE"
+    assert run_state.provider_attempts_used == 1
+    assert run_state.scene_tokens_used == 14
+    assert run_state.scene_tokens_reserved == 0
+    assert run_state.run_execution_status == "accounting_integrity_blocked"
+
+    with pytest.raises(Exception) as blocked_error:
+        accounting.execute_accounted_call(
+            session,
+            MissingAfterResponse(),
+            _request(),
+            replace(
+                _scene_context(accounting, scene_id),
+                execution_id="blocked-missing-after-response",
+            ),
+            llm_call_id="blocked-missing-after-response",
+        )
+    assert getattr(blocked_error.value, "code", None) == "LLM_ACCOUNTING_INTEGRITY_BLOCKED"
+    assert post_count == 1
+    assert session.query(LlmCallAttempt).count() == 1
+
+
+def test_online_capability_exception_with_dispatched_but_unsettled_attempt_is_blocked(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-missing-after-error"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=1_000,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+
+    class MissingAfterError(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            raise RuntimeError("wrapper lost after_error callback")
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            MissingAfterError(),
+            _request(),
+            _scene_context(accounting, scene_id),
+            llm_call_id="missing-after-error",
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_ACCOUNTING_LIFECYCLE_INCOMPLETE"
+    parent = session.get(LlmCall, "missing-after-error")
+    attempt = session.query(LlmCallAttempt).one()
+    run_state = session.get(SceneRunState, scene_id)
+    assert parent.accounting_status == "failed"
+    assert attempt.accounting_status == "failed"
+    assert attempt.total_tokens == attempt.estimated_tokens > 0
+    assert attempt.error_code == "LLM_ACCOUNTING_LIFECYCLE_INCOMPLETE"
+    assert run_state.provider_attempts_used == 1
+    assert run_state.scene_tokens_used == attempt.total_tokens
+    assert run_state.scene_tokens_reserved == 0
+    assert run_state.run_execution_status == "accounting_integrity_blocked"
+
+
+@pytest.mark.parametrize("state_kind", ["missing", "null_budget"])
+def test_untracked_dispatch_keeps_child_audit_when_scene_budget_is_uninitialized(
+    session,
+    state_kind: str,
+) -> None:
+    accounting = _accounting_module()
+    scene_id = f"scene-untracked-{state_kind}"
+    if state_kind == "null_budget":
+        session.add(
+            SceneRunState(
+                scene_id=scene_id,
+                scene_token_budget=None,
+                provider_attempt_budget=5,
+            )
+        )
+        session.commit()
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        return httpx.Response(
+            200,
+            json={
+                "id": f"untracked-{state_kind}",
+                "model": "test-model",
+                "output_text": '{"scene_text":"untracked"}',
+                "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+            },
+        )
+
+    inner = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    class HookDroppingWrapper(accounting.OnlineAccountedExecution):
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            return inner.generate(request)
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            HookDroppingWrapper(),
+            _request(),
+            _scene_context(accounting, scene_id),
+            llm_call_id=f"untracked-{state_kind}",
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_ACCOUNTING_HOOK_NOT_INVOKED"
+    attempt = session.query(LlmCallAttempt).one()
+    assert post_count == 1
+    assert attempt.total_tokens == 14
+    assert attempt.request_dispatched_at is not None
+    if state_kind == "null_budget":
+        run_state = session.get(SceneRunState, scene_id)
+        assert run_state.provider_attempts_used == 1
+        assert run_state.scene_tokens_used == 14
+        assert run_state.run_execution_status == "accounting_integrity_blocked"
+
+    with pytest.raises(Exception):
+        accounting.execute_accounted_call(
+            session,
+            HookDroppingWrapper(),
+            _request(),
+            replace(
+                _scene_context(accounting, scene_id),
+                execution_id=f"blocked-{state_kind}",
+            ),
+            llm_call_id=f"blocked-{state_kind}",
+        )
+    assert post_count == 1
+    assert session.query(LlmCallAttempt).count() == 1
 
 
 @pytest.mark.parametrize(
@@ -310,8 +598,8 @@ def test_offline_mode_rejects_non_offline_or_nonzero_response(
 ) -> None:
     accounting = _accounting_module()
 
-    class InvalidOfflineClient:
-        def generate(self, request: LLMRequest) -> LLMResponse:
+    class InvalidOfflineClient(accounting.OfflineDeterministicExecution):
+        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
             return LLMResponse(
                 request_id="invalid-offline",
                 provider=provider,
@@ -335,6 +623,34 @@ def test_offline_mode_rejects_non_offline_or_nonzero_response(
         )
 
     assert getattr(exc_info.value, "code", None) == "LLM_OFFLINE_RESPONSE_INVALID"
+    assert session.query(LlmCallAttempt).count() == 0
+    assert session.query(LlmCall).one().accounting_status == "rejected"
+
+
+def test_offline_method_name_without_explicit_capability_is_rejected_before_call(session) -> None:
+    accounting = _accounting_module()
+
+    class MethodNameOnlyOfflineClient:
+        called = 0
+
+        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
+            self.called += 1
+            raise AssertionError("method-name-only client must not execute")
+
+    client = MethodNameOnlyOfflineClient()
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            replace(
+                _context(accounting),
+                provider_execution_mode="offline_deterministic",
+            ),
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_OFFLINE_CAPABILITY_UNSUPPORTED"
+    assert client.called == 0
     assert session.query(LlmCallAttempt).count() == 0
     assert session.query(LlmCall).one().accounting_status == "rejected"
 
@@ -446,6 +762,53 @@ def test_provider_failure_persists_failed_attempt_and_parent_with_conservative_c
     assert parent.error_code == "LLM_REQUEST_TIMEOUT"
     assert parent.total_tokens == attempt.total_tokens
     assert parent.budget_charged_tokens == attempt.budget_charged_tokens
+
+
+def test_unexpected_post_exception_settles_accounting_without_reservation_leak(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-post-runtime-error"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=1_000,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+    cached_state = session.get(SceneRunState, scene_id)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("transport implementation exploded")
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        accounting.execute_accounted_call(
+            session,
+            client,
+            _request(),
+            _scene_context(accounting, scene_id),
+            llm_call_id="post-runtime-error",
+        )
+
+    assert getattr(exc_info.value, "code", None) == "LLM_HTTP_CLIENT_EXCEPTION"
+    parent = session.get(LlmCall, "post-runtime-error")
+    attempt = session.query(LlmCallAttempt).one()
+    assert parent.accounting_status == "failed"
+    assert parent.error_code == "LLM_HTTP_CLIENT_EXCEPTION"
+    assert attempt.accounting_status == "failed"
+    assert attempt.error_code == "LLM_HTTP_CLIENT_EXCEPTION"
+    assert attempt.request_dispatched_at is not None
+    assert cached_state.scene_tokens_reserved == 0
+    assert cached_state.provider_attempts_used == 1
+    assert cached_state.scene_tokens_used == attempt.total_tokens > 0
 
 
 def test_transport_retry_aggregates_each_physical_attempt_exactly_once(session) -> None:
@@ -682,6 +1045,49 @@ def test_token_budget_rejection_before_dispatch_has_no_post_attempt_or_charge(se
     assert parent.budget_charged_tokens == 0
 
 
+def test_scene_accounting_refreshes_cached_run_state_after_settlement(session) -> None:
+    accounting = _accounting_module()
+    scene_id = "scene-cached-settlement"
+    session.add(
+        SceneRunState(
+            scene_id=scene_id,
+            scene_token_budget=1_000,
+            provider_attempt_budget=5,
+        )
+    )
+    session.commit()
+    cached_state = session.get(SceneRunState, scene_id)
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={
+                    "id": "cached-settlement",
+                    "model": "test-model",
+                    "output_text": '{"scene_text":"ok"}',
+                    "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                },
+            )
+        ),
+    )
+
+    accounting.execute_accounted_call(
+        session,
+        client,
+        _request(),
+        _scene_context(accounting, scene_id),
+    )
+
+    assert cached_state.scene_tokens_used == 14
+    assert cached_state.scene_tokens_reserved == 0
+    assert cached_state.provider_attempts_used == 1
+
+
 def test_pending_business_write_is_precommitted_and_survives_provider_failure(session) -> None:
     accounting = _accounting_module()
     session.add(
@@ -834,6 +1240,7 @@ def test_recovery_releases_reserved_but_undispatched_attempt_and_allows_retry(se
         )
     )
     session.commit()
+    cached_state = session.get(SceneRunState, scene_id)
     post_count = 0
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -872,15 +1279,22 @@ def test_recovery_releases_reserved_but_undispatched_attempt_and_allows_retry(se
             _lifecycle_observer=crash_after_reservation,
         )
 
+    assert cached_state.scene_tokens_reserved > 0
+    assert cached_state.provider_attempts_used == 0
+    assert cached_state.scene_tokens_used == 0
     session.expire_all()
     attempt = session.query(LlmCallAttempt).one()
     assert post_count == 0
     assert attempt.accounting_status == "reserved"
     assert attempt.request_dispatched_at is None
     assert session.get(SceneRunState, scene_id).scene_tokens_reserved == attempt.reserved_tokens
+    cached_state = session.get(SceneRunState, scene_id)
 
     result = accounting.recover_incomplete_call(session, "reservation-crash-call")
 
+    assert cached_state.scene_tokens_reserved == 0
+    assert cached_state.provider_attempts_used == 0
+    assert cached_state.scene_tokens_used == 0
     session.expire_all()
     assert result.status == "released"
     assert result.error_code is None
@@ -911,6 +1325,7 @@ def test_recovery_charges_dispatched_unknown_attempt_and_same_call_is_not_resent
         )
     )
     session.commit()
+    cached_state = session.get(SceneRunState, scene_id)
     post_count = 0
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -941,15 +1356,22 @@ def test_recovery_charges_dispatched_unknown_attempt_and_same_call_is_not_resent
             _lifecycle_observer=crash_after_dispatch,
         )
 
+    assert cached_state.scene_tokens_reserved > 0
+    assert cached_state.provider_attempts_used == 1
+    assert cached_state.scene_tokens_used == 0
     session.expire_all()
     attempt = session.query(LlmCallAttempt).one()
     assert post_count == 0
     assert attempt.accounting_status == "reserved"
     assert attempt.request_dispatched_at is not None
     assert session.get(SceneRunState, scene_id).provider_attempts_used == 1
+    cached_state = session.get(SceneRunState, scene_id)
 
     result = accounting.recover_incomplete_call(session, "dispatch-crash-call")
 
+    assert cached_state.scene_tokens_reserved == 0
+    assert cached_state.provider_attempts_used == 1
+    assert cached_state.scene_tokens_used > 0
     session.expire_all()
     parent = session.get(LlmCall, "dispatch-crash-call")
     attempt = session.query(LlmCallAttempt).one()

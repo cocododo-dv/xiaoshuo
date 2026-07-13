@@ -9,7 +9,6 @@ network.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import time
 import uuid
@@ -26,11 +25,19 @@ from novel_system.services.llm_client import (
     LLMClientError,
     LLMRequest,
     LLMResponse,
+    OfflineDeterministicExecution,
+    OnlineAccountedExecution,
 )
 from novel_system.services.llm_providers.base import LLMDispatchKind
 
 
 MESSAGE_TOKEN_OVERHEAD = 4
+ACCOUNTING_INTEGRITY_BLOCKED_STATUS = "accounting_integrity_blocked"
+ACCOUNTING_INTEGRITY_ERROR_CODES = {
+    "LLM_ACCOUNTING_HOOK_NOT_INVOKED",
+    "LLM_ACCOUNTING_UNKNOWN_DISPATCH",
+    "LLM_ACCOUNTING_LIFECYCLE_INCOMPLETE",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +202,9 @@ def _reserve_scene_capacity(
             <= SceneRunState.scene_token_budget,
             or_(
                 SceneRunState.run_execution_status.is_(None),
-                SceneRunState.run_execution_status != "usage_exceeds_reservation",
+                SceneRunState.run_execution_status.not_in(
+                    {"usage_exceeds_reservation", ACCOUNTING_INTEGRITY_BLOCKED_STATUS}
+                ),
             ),
         )
         .values(
@@ -251,6 +260,11 @@ def _scene_gate_error(
             "LLM_USAGE_EXCEEDS_RESERVATION",
             "scene accounting is blocked after provider usage exceeded its reservation",
         )
+    if state.run_execution_status == ACCOUNTING_INTEGRITY_BLOCKED_STATUS:
+        return LLMAccountingRejected(
+            "LLM_ACCOUNTING_INTEGRITY_BLOCKED",
+            "scene provider execution is blocked after an untracked dispatch",
+        )
     if state.scene_tokens_reserved > 0 and not allow_existing_fence:
         return LLMAccountingRejected(
             "LLM_SCENE_CALL_IN_FLIGHT",
@@ -285,7 +299,9 @@ def _consume_scene_provider_attempt(session: Session, scene_id: str | None) -> b
             SceneRunState.provider_attempts_used < SceneRunState.provider_attempt_budget,
             or_(
                 SceneRunState.run_execution_status.is_(None),
-                SceneRunState.run_execution_status != "usage_exceeds_reservation",
+                SceneRunState.run_execution_status.not_in(
+                    {"usage_exceeds_reservation", ACCOUNTING_INTEGRITY_BLOCKED_STATUS}
+                ),
             ),
         )
         .values(provider_attempts_used=SceneRunState.provider_attempts_used + 1)
@@ -361,21 +377,6 @@ def _settle_scene_usage(
         )
 
 
-def _supports_accounting_hook(client: object) -> bool:
-    generate = getattr(client, "generate", None)
-    if not callable(generate):
-        return False
-    try:
-        parameters = inspect.signature(generate).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        parameter.name == "accounting_hook"
-        or parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters
-    )
-
-
 def _validate_offline_response(response: object) -> LLMResponse:
     if (
         not isinstance(response, LLMResponse)
@@ -387,6 +388,177 @@ def _validate_offline_response(response: object) -> LLMResponse:
             "offline deterministic execution requires an offline_deterministic response with complete zero usage",
         )
     return response
+
+
+def _reject_integrity_blocked_scene(session: Session, scene_id: str | None) -> None:
+    if scene_id is None:
+        return
+    run_status = session.scalar(
+        select(SceneRunState.run_execution_status).where(
+            SceneRunState.scene_id == scene_id
+        )
+    )
+    integrity_tombstone = session.scalar(
+        select(LlmCall.llm_call_id)
+        .where(
+            LlmCall.scene_id == scene_id,
+            LlmCall.request_dispatched_at.is_not(None),
+            LlmCall.error_code.in_(ACCOUNTING_INTEGRITY_ERROR_CODES),
+        )
+        .limit(1)
+    )
+    session.rollback()
+    if (
+        run_status == ACCOUNTING_INTEGRITY_BLOCKED_STATUS
+        or integrity_tombstone is not None
+    ):
+        raise LLMAccountingRejected(
+            "LLM_ACCOUNTING_INTEGRITY_BLOCKED",
+            "scene provider execution is blocked after an untracked dispatch",
+        )
+
+
+def _expire_cached_scene_accounting_state(session: Session, scene_id: str | None) -> None:
+    if scene_id is None:
+        return
+    identity_key = session.identity_key(SceneRunState, scene_id)
+    state = session.identity_map.get(identity_key)
+    if state is None:
+        return
+    session.expire(
+        state,
+        attribute_names=[
+            "scene_token_budget",
+            "scene_tokens_used",
+            "scene_tokens_reserved",
+            "provider_attempts_used",
+            "provider_attempt_budget",
+            "run_execution_status",
+        ],
+    )
+
+
+def _record_unknown_dispatch(
+    session: Session,
+    *,
+    call_id: str,
+    context: LLMCallContext,
+    request: LLMRequest,
+    request_estimate: RequestUsageEstimate,
+    response: object | None,
+    error: BaseException,
+    latency_ms: int,
+) -> LLMAccountingError:
+    if (
+        isinstance(error, LLMAccountingError)
+        and error.code == "LLM_ACCOUNTING_HOOK_NOT_INVOKED"
+    ):
+        audit_error = error
+    else:
+        audit_error = LLMAccountingError(
+            "LLM_ACCOUNTING_UNKNOWN_DISPATCH",
+            "accounted online execution failed without reporting a physical attempt",
+            details={
+                "original_error_type": error.__class__.__name__,
+                "original_error_code": getattr(error, "code", None),
+                "original_error_message": str(error),
+            },
+        )
+
+    if isinstance(response, LLMResponse):
+        usage = normalize_response_usage(response, request)
+        provider_request_id = response.request_id
+    else:
+        usage = NormalizedUsage(
+            prompt_tokens=request_estimate.estimated_input_tokens,
+            completion_tokens=request_estimate.estimated_output_tokens,
+            total_tokens=request_estimate.estimated_tokens,
+            usage_is_estimate=True,
+        )
+        provider_request_id = None
+    now = utcnow()
+    exceeds = usage.total_tokens > request_estimate.reserved_tokens
+    attempt = LlmCallAttempt(
+        attempt_id=f"llmattempt_{uuid.uuid4().hex}",
+        llm_call_id=call_id,
+        provider_attempt_no=0,
+        dispatch_kind="initial",
+        request_max_output_tokens=request.max_output_tokens,
+        provider_request_id=provider_request_id,
+        estimated_tokens=request_estimate.estimated_tokens,
+        reserved_tokens=request_estimate.reserved_tokens,
+        budget_charged_tokens=min(usage.total_tokens, request_estimate.reserved_tokens),
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        total_tokens=usage.total_tokens,
+        usage_is_estimate=usage.usage_is_estimate,
+        accounting_status="usage_exceeds_reservation" if exceeds else "failed",
+        request_dispatched_at=now,
+        settled_at=now,
+        latency_ms=max(0, latency_ms),
+        error_code=audit_error.code,
+        error_text=str(audit_error),
+    )
+    session.add(attempt)
+    parent = session.get(LlmCall, call_id)
+    assert parent is not None
+    parent.request_dispatched_at = now
+    if context.scene_id is not None:
+        session.execute(
+            update(SceneRunState)
+            .where(SceneRunState.scene_id == context.scene_id)
+            .values(
+                provider_attempts_used=SceneRunState.provider_attempts_used + 1,
+                scene_tokens_used=SceneRunState.scene_tokens_used + usage.total_tokens,
+                run_execution_status=ACCOUNTING_INTEGRITY_BLOCKED_STATUS,
+            )
+            .execution_options(synchronize_session=False)
+        )
+    session.flush()
+    _aggregate_parent(session, call_id)
+    session.commit()
+    _expire_cached_scene_accounting_state(session, context.scene_id)
+    return audit_error
+
+
+def _has_open_attempt(session: Session, call_id: str) -> bool:
+    return session.scalar(
+        select(LlmCallAttempt.attempt_id)
+        .where(
+            LlmCallAttempt.llm_call_id == call_id,
+            LlmCallAttempt.accounting_status == "reserved",
+        )
+        .limit(1)
+    ) is not None
+
+
+def _lifecycle_incomplete_error(
+    *,
+    call_id: str,
+    hook: _LedgerAttemptHook,
+) -> LLMAccountingError:
+    return LLMAccountingError(
+        "LLM_ACCOUNTING_LIFECYCLE_INCOMPLETE",
+        "accounted online execution returned or failed with an unsettled physical attempt",
+        details={
+            "llm_call_id": call_id,
+            "before_dispatch_count": hook.before_dispatch_count,
+            "dispatched_attempt_count": hook.attempt_count,
+        },
+    )
+
+
+def _mark_scene_integrity_blocked(session: Session, scene_id: str | None) -> None:
+    if scene_id is None:
+        return
+    session.execute(
+        update(SceneRunState)
+        .where(SceneRunState.scene_id == scene_id)
+        .values(run_execution_status=ACCOUNTING_INTEGRITY_BLOCKED_STATUS)
+        .execution_options(synchronize_session=False)
+    )
+    session.commit()
+    _expire_cached_scene_accounting_state(session, scene_id)
 
 
 def execute_accounted_call(
@@ -467,21 +639,34 @@ def execute_accounted_call(
         lifecycle_observer=_lifecycle_observer,
     )
     started_at = time.perf_counter()
+    online_capability_invoked = False
+    response: object | None = None
     try:
         if context.provider_execution_mode == "offline_deterministic":
-            response = _validate_offline_response(client.generate(request))  # type: ignore[attr-defined]
+            if not isinstance(client, OfflineDeterministicExecution):
+                raise LLMAccountingRejected(
+                    "LLM_OFFLINE_CAPABILITY_UNSUPPORTED",
+                    "offline deterministic mode requires the explicit offline execution capability",
+                )
+            response = _validate_offline_response(
+                client.generate_offline_deterministic(request)
+            )
         else:
-            if not _supports_accounting_hook(client):
+            if not isinstance(client, OnlineAccountedExecution):
                 raise LLMAccountingRejected(
                     "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
-                    "online provider clients must explicitly accept the accounting_hook contract",
+                    "online provider clients must implement the explicit accounted execution capability",
                 )
-            response = client.generate(request, accounting_hook=hook)
+            _reject_integrity_blocked_scene(session, context.scene_id)
+            online_capability_invoked = True
+            response = client.generate_accounted(request, accounting_hook=hook)
             if hook.attempt_count == 0:
                 raise LLMAccountingError(
                     "LLM_ACCOUNTING_HOOK_NOT_INVOKED",
                     "online provider client returned without forwarding the accounting hook",
                 )
+            if _has_open_attempt(session, call_id):
+                raise _lifecycle_incomplete_error(call_id=call_id, hook=hook)
         response = replace(response, llm_call_id=call_id)
 
         if context.provider_execution_mode == "offline_deterministic":
@@ -534,13 +719,47 @@ def execute_accounted_call(
             )
         return response
     except Exception as exc:
+        error = exc
+        lifecycle_incomplete = (
+            context.provider_execution_mode == "online"
+            and online_capability_invoked
+            and hook.before_dispatch_count > 0
+            and _has_open_attempt(session, call_id)
+        )
+        if lifecycle_incomplete:
+            if not (
+                isinstance(exc, LLMAccountingError)
+                and exc.code == "LLM_ACCOUNTING_LIFECYCLE_INCOMPLETE"
+            ):
+                error = _lifecycle_incomplete_error(call_id=call_id, hook=hook)
+        elif (
+            context.provider_execution_mode == "online"
+            and online_capability_invoked
+            and hook.before_dispatch_count == 0
+        ):
+            error = _record_unknown_dispatch(
+                session,
+                call_id=call_id,
+                context=context,
+                request=request,
+                request_estimate=request_estimate,
+                response=response,
+                error=exc,
+                latency_ms=_elapsed_ms(started_at),
+            )
         _finalize_parent_failure(
             session,
             call_id=call_id,
             request_estimate=request_estimate,
-            error=exc,
+            error=error,
             latency_ms=_elapsed_ms(started_at),
+            response=response if lifecycle_incomplete and isinstance(response, LLMResponse) else None,
+            request=request if lifecycle_incomplete else None,
         )
+        if lifecycle_incomplete:
+            _mark_scene_integrity_blocked(session, context.scene_id)
+        if error is not exc:
+            raise error from exc
         raise
 
 
@@ -557,9 +776,11 @@ class _LedgerAttemptHook:
         self._call_id = call_id
         self._context = context
         self._lifecycle_observer = lifecycle_observer
+        self.before_dispatch_count = 0
         self.attempt_count = 0
 
     def before_dispatch(self, *, request: LLMRequest, dispatch_kind: LLMDispatchKind) -> object:
+        self.before_dispatch_count += 1
         estimate = estimate_request_usage(request)
         ordinal = self.attempt_count
         attempt_id = f"llmattempt_{uuid.uuid4().hex}"
@@ -588,6 +809,7 @@ class _LedgerAttemptHook:
         parent.estimated_tokens += estimate.estimated_tokens
         parent.reserved_tokens += attempt_reserved_tokens
         self._session.commit()  # reservation transaction
+        _expire_cached_scene_accounting_state(self._session, self._context.scene_id)
         self._observe("reservation_committed", attempt_id)
 
         if scene_fence_tokens is not None and not _consume_scene_provider_attempt(
@@ -614,6 +836,7 @@ class _LedgerAttemptHook:
             attempt.error_text = str(gate_error)
             _aggregate_parent(self._session, self._call_id)
             self._session.commit()
+            _expire_cached_scene_accounting_state(self._session, self._context.scene_id)
             raise gate_error
 
         dispatched_at = utcnow()
@@ -624,6 +847,7 @@ class _LedgerAttemptHook:
         assert parent is not None
         parent.request_dispatched_at = parent.request_dispatched_at or dispatched_at
         self._session.commit()  # dispatch transaction, immediately before POST
+        _expire_cached_scene_accounting_state(self._session, self._context.scene_id)
         self._observe("dispatch_committed", attempt_id)
         self.attempt_count += 1
         return attempt_id
@@ -709,6 +933,7 @@ class _LedgerAttemptHook:
         )
         _aggregate_parent(self._session, self._call_id)
         self._session.commit()
+        _expire_cached_scene_accounting_state(self._session, self._context.scene_id)
 
 
 def _settle_without_physical_attempt(
@@ -805,6 +1030,8 @@ def _finalize_parent_failure(
     request_estimate: RequestUsageEstimate,
     error: BaseException,
     latency_ms: int,
+    response: LLMResponse | None = None,
+    request: LLMRequest | None = None,
 ) -> None:
     session.rollback()
     parent = session.get(LlmCall, call_id)
@@ -814,6 +1041,8 @@ def _finalize_parent_failure(
         session,
         parent=parent,
         error=error,
+        response=response,
+        request=request,
     )
     attempts = list(session.scalars(select(LlmCallAttempt).where(LlmCallAttempt.llm_call_id == call_id)))
     rejected_before_dispatch = isinstance(error, LLMAccountingRejected) and not any(
@@ -852,6 +1081,7 @@ def _finalize_parent_failure(
     else:
         parent.accounting_status = "rejected" if rejected_before_dispatch else "failed"
     session.commit()
+    _expire_cached_scene_accounting_state(session, parent.scene_id)
 
 
 def _settle_open_attempts_for_failure(
@@ -859,6 +1089,8 @@ def _settle_open_attempts_for_failure(
     *,
     parent: LlmCall,
     error: BaseException,
+    response: LLMResponse | None,
+    request: LLMRequest | None,
 ) -> None:
     open_attempts = list(
         session.scalars(
@@ -868,19 +1100,42 @@ def _settle_open_attempts_for_failure(
             )
         )
     )
+    dispatched_attempts = [
+        attempt for attempt in open_attempts if attempt.request_dispatched_at is not None
+    ]
+    response_attempt_id = (
+        max(dispatched_attempts, key=lambda attempt: attempt.provider_attempt_no).attempt_id
+        if response is not None and request is not None and dispatched_attempts
+        else None
+    )
+    response_usage = (
+        normalize_response_usage(response, request)
+        if response is not None and request is not None and response_attempt_id is not None
+        else None
+    )
     for attempt in open_attempts:
         if attempt.request_dispatched_at is None:
             attempt.accounting_status = "released"
             attempt.settled_at = utcnow()
             _release_scene_reservation(session, parent.scene_id, attempt.reserved_tokens)
             continue
-        completion_tokens = min(attempt.request_max_output_tokens, attempt.estimated_tokens)
-        attempt.prompt_tokens = max(0, attempt.estimated_tokens - completion_tokens)
-        attempt.completion_tokens = completion_tokens
-        attempt.total_tokens = attempt.estimated_tokens
-        attempt.budget_charged_tokens = min(attempt.estimated_tokens, attempt.reserved_tokens)
-        attempt.usage_is_estimate = True
-        attempt.accounting_status = "failed"
+        if response_usage is not None and attempt.attempt_id == response_attempt_id:
+            usage = response_usage
+        else:
+            completion_tokens = min(attempt.request_max_output_tokens, attempt.estimated_tokens)
+            usage = NormalizedUsage(
+                prompt_tokens=max(0, attempt.estimated_tokens - completion_tokens),
+                completion_tokens=completion_tokens,
+                total_tokens=attempt.estimated_tokens,
+                usage_is_estimate=True,
+            )
+        exceeds = usage.total_tokens > attempt.reserved_tokens
+        attempt.prompt_tokens = usage.prompt_tokens
+        attempt.completion_tokens = usage.completion_tokens
+        attempt.total_tokens = usage.total_tokens
+        attempt.budget_charged_tokens = min(usage.total_tokens, attempt.reserved_tokens)
+        attempt.usage_is_estimate = usage.usage_is_estimate
+        attempt.accounting_status = "usage_exceeds_reservation" if exceeds else "failed"
         attempt.error_code = getattr(error, "code", error.__class__.__name__)
         attempt.error_text = str(error)
         attempt.settled_at = utcnow()
@@ -888,8 +1143,8 @@ def _settle_open_attempts_for_failure(
             session,
             parent.scene_id,
             reserved_tokens=attempt.reserved_tokens,
-            actual_tokens=attempt.estimated_tokens,
-            usage_exceeds_reservation=False,
+            actual_tokens=usage.total_tokens,
+            usage_exceeds_reservation=exceeds,
         )
 
 
@@ -959,6 +1214,7 @@ def recover_incomplete_call(session: Session, llm_call_id: str) -> AccountingRec
         parent.error_code = None
         parent.settled_at = utcnow()
         session.commit()
+        _expire_cached_scene_accounting_state(session, parent.scene_id)
         return AccountingRecoveryResult(status="released", error_code=None, may_retry=True)
 
     for attempt in attempts:
@@ -994,6 +1250,7 @@ def recover_incomplete_call(session: Session, llm_call_id: str) -> AccountingRec
     parent.error_code = "RUN_CHECKPOINT_OUTPUT_MISSING"
     parent.settled_at = utcnow()
     session.commit()
+    _expire_cached_scene_accounting_state(session, parent.scene_id)
     return AccountingRecoveryResult(
         status="failed",
         error_code="RUN_CHECKPOINT_OUTPUT_MISSING",

@@ -1344,3 +1344,36 @@ def test_llm_client_unexpected_adapter_parser_error_still_terminates_attempt_onc
     assert hook.before == [("attempt-1", "initial", 8)]
     assert hook.errors == [("attempt-1", "LLM_RESPONSE_INVALID")]
     assert hook.responses == []
+
+
+def test_llm_client_unexpected_post_error_terminates_attempt_once() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("transport implementation exploded")
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    hook = _RecordingAttemptHook()
+
+    with pytest.raises(LLMHTTPError) as exc_info:
+        client.generate(
+            LLMRequest(
+                model="test",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0,
+                max_output_tokens=8,
+                response_format="text",
+            ),
+            accounting_hook=hook,
+        )
+
+    assert exc_info.value.code == "LLM_HTTP_CLIENT_EXCEPTION"
+    assert exc_info.value.details["original_error_type"] == "RuntimeError"
+    assert hook.before == [("attempt-1", "initial", 8)]
+    assert hook.errors == [("attempt-1", "LLM_HTTP_CLIENT_EXCEPTION")]
+    assert hook.responses == []

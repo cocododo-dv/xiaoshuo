@@ -161,6 +161,27 @@ class LLMAttemptHook(Protocol):
         """Settle a transport, HTTP, or response-parse failure."""
 
 
+class OnlineAccountedExecution(ABC):
+    """Explicit capability for online execution with physical-attempt accounting."""
+
+    @abstractmethod
+    def generate_accounted(
+        self,
+        request: LLMRequest,
+        *,
+        accounting_hook: LLMAttemptHook,
+    ) -> LLMResponse:
+        """Execute online generation while forwarding the required attempt hook."""
+
+
+class OfflineDeterministicExecution(ABC):
+    """Explicit capability for deterministic execution that performs no provider I/O."""
+
+    @abstractmethod
+    def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
+        """Return a deterministic offline response with complete zero usage."""
+
+
 @dataclass(slots=True, frozen=True)
 class AdapterHTTPRequest:
     """A fully built provider HTTP call for one generate() attempt."""

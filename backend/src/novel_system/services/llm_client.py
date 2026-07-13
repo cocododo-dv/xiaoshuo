@@ -29,6 +29,8 @@ from novel_system.services.llm_providers.base import (
     LLMResponse,
     LLMResponseError,
     LLMTimeoutError,
+    OnlineAccountedExecution,
+    OfflineDeterministicExecution,
     ProviderRuntimeConfig,
     SUPPORTED_API_MODES,
     SUPPORTED_CREDENTIAL_MODES,
@@ -51,6 +53,8 @@ __all__ = [
     "LLMResponse",
     "LLMResponseError",
     "LLMTimeoutError",
+    "OnlineAccountedExecution",
+    "OfflineDeterministicExecution",
     "ModelRoutingConfig",
     "ProviderRuntimeConfig",
     "RETRYABLE_RESPONSE_ERROR_CODES",
@@ -306,7 +310,7 @@ class ModelRoutingConfig:
     job_runtime: dict[str, Any] = field(default_factory=dict)
 
 
-class LLMClient:
+class LLMClient(OnlineAccountedExecution):
     def __init__(
         self,
         *,
@@ -344,6 +348,14 @@ class LLMClient:
         delay = min(delay, MAX_RETRY_BACKOFF_SECONDS)
         delay *= 0.8 + 0.4 * random.random()
         time.sleep(delay)
+
+    def generate_accounted(
+        self,
+        request: LLMRequest,
+        *,
+        accounting_hook: LLMAttemptHook,
+    ) -> LLMResponse:
+        return self.generate(request, accounting_hook=accounting_hook)
 
     def generate(
         self,
@@ -466,6 +478,27 @@ class LLMClient:
                         self._sleep_before_retry(attempt)
                         dispatch_kind = "transport_retry"
                         continue
+                    raise error from exc
+                except Exception as exc:
+                    error = LLMHTTPError(
+                        "LLM_HTTP_CLIENT_EXCEPTION",
+                        "llm HTTP client raised an unexpected exception",
+                        details=_with_attempt_metadata(
+                            {
+                                "original_error_type": exc.__class__.__name__,
+                                "original_error_message": str(exc),
+                            },
+                            attempt=attempt,
+                            max_retries=self._max_retries,
+                        ),
+                    )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        started_at=started_at,
+                    )
                     raise error from exc
 
                 if response.status_code == 429:
