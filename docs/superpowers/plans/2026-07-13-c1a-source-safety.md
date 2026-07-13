@@ -44,7 +44,7 @@
 - Modify: `frontend/src/stores/referenceLearning.js`
 - Modify: `frontend/src/views/ReferenceLearningView.vue`
 
-- [ ] **Step 1: 写未声明云策略的失败测试**
+- [x] **Step 1: 写未声明云策略的失败测试**
 
 把原先允许未声明云导入的测试替换为稳定错误码断言，并补 `segments_only` 参数化：
 
@@ -69,13 +69,13 @@ def test_undeclared_cloud_policy_is_rejected(
     assert exc.value.status_code == 400
 ```
 
-- [ ] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试并确认 RED**
 
 Run: `cd backend && python -m pytest tests/test_reference_ingest_rights.py -q`
 
 Expected: 新参数化测试失败，因为当前未声明的非本地策略仍被接受。
 
-- [ ] **Step 3: 最小化修改声明归一化**
+- [x] **Step 3: 最小化修改声明归一化**
 
 在 `_normalize_rights_declaration()` 中先拒绝未声明的非本地策略，再保留 local-only 的 `{declared: false}`：
 
@@ -98,13 +98,13 @@ if not declaration or declaration.get("declared") is False:
 
 已有声明但 `send_rights=false` 继续使用 `STYLE_REFERENCE_SEND_RIGHTS_REQUIRED`；显式 `declared=false` 视为未声明，不根据 `cloud_policy` 自动补声明。
 
-- [ ] **Step 4: 运行权属测试**
+- [x] **Step 4: 运行权属测试**
 
 Run: `cd backend && python -m pytest tests/test_reference_ingest_rights.py -q`
 
 Expected: 全部通过；local-only 未声明仍可导入，两个非本地策略未声明均被拒绝。
 
-- [ ] **Step 5: 固定 API 错误契约并更新非本地成功 fixture**
+- [x] **Step 5: 固定 API 错误契约并更新非本地成功 fixture**
 
 先在 `backend/tests/test_style_reference_routes.py` 增加上传接口错误码测试，并把所有使用非本地策略的成功 fixture 补上显式 JSON 声明：
 
@@ -128,7 +128,7 @@ Expected: 服务与 API 层权属矩阵全部通过。
 
 随后执行 `rg -n "cloud_policy=.*(segments_only|allow_full_cloud)|\"cloud_policy\": \"(segments_only|allow_full_cloud)\"" backend/tests`，逐项区分成功 fixture 和拒绝 fixture：成功 fixture 必须显式补 `rights_declaration={"analysis_rights": True, "send_rights": True}`；拒绝 fixture 保持未声明。不得把非本地成功 fixture 改成 local-only 来绕过新门禁。
 
-- [ ] **Step 6: 写前端声明传递和提交禁用 RED 测试**
+- [x] **Step 6: 写前端声明传递和提交禁用 RED 测试**
 
 API 测试要求 upload form 使用 JSON 字符串，path body 保留对象：
 
@@ -152,7 +152,7 @@ Run: `cd frontend && npx vitest run tests/styleReferenceApi.spec.js tests/styleR
 
 Expected: 权属字段和禁用行为尚未实现，测试失败。
 
-- [ ] **Step 7: 实现前端显式声明**
+- [x] **Step 7: 实现前端显式声明**
 
 两个 draft 增加同形字段：
 
@@ -185,7 +185,7 @@ formData.set("rights_declaration", JSON.stringify(rightsDeclaration));
 
 视图在两个 cloud policy 选择器后各放一个 `v-if="draft.cloud_policy !== 'local_only'"` 的确认区，checkbox 绑定 `rights_declaration.send_rights`，文案明确“我确认有权把该文本发送给云端模型”；提交按钮的 `:disabled` 绑定对应 getter。
 
-- [ ] **Step 8: 运行前后端导入回归**
+- [x] **Step 8: 运行前后端导入回归**
 
 ```powershell
 cd backend
@@ -197,7 +197,7 @@ npx vitest run tests/styleReferenceApi.spec.js tests/styleReferenceView.spec.js
 
 Expected: 后端 style-reference 相关测试和前端测试均 0 failures；local-only 路径保持无需声明。
 
-- [ ] **Step 9: 提交导入门修复**
+- [x] **Step 9: 提交导入门修复**
 
 ```powershell
 git add backend/src/novel_system/services/style_reference/ingest.py backend/tests frontend/src/lib/api/styleReference.js frontend/src/stores/referenceLearning.js frontend/src/views/ReferenceLearningView.vue frontend/tests/styleReferenceApi.spec.js frontend/tests/styleReferenceView.spec.js
