@@ -139,7 +139,9 @@ def test_resolve_bind_style_profile_forwards_injection_config(client, session):
     repo.create_book(
         book_id="sr_book_rc", title="鲁迅", source_kind="upload",
         cloud_policy="segments_only", text_checksum="chk_rc", total_chars=50000,
-        status="ready", stats_json={},
+        status="ready", stats_json={"rights_declaration": {
+            "declared": True, "analysis_rights": True, "send_rights": True,
+        }},
     )
     repo.create_run(run_id="sr_run_rc", book_id="sr_book_rc", status="done", phase="done")
     repo.create_profile(

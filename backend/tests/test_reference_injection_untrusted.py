@@ -26,7 +26,14 @@ def _seed_with_fewshot_quote(seed: str, quote_text: str, *, cloud_policy="allow_
         repo = StyleReferenceRepository(session)
         repo.create_book(
             book_id=book_id, title="t", source_kind="upload", cloud_policy=cloud_policy,
-            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready",
+            stats_json=(
+                {"rights_declaration": {
+                    "declared": True, "analysis_rights": True, "send_rights": True,
+                }}
+                if cloud_policy != "local_only"
+                else {}
+            ),
         )
         repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
         repo.create_quote(

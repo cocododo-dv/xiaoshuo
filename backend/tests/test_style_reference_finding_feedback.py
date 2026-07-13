@@ -25,7 +25,10 @@ def _seed_finding(session, *, seed="f1", confidence="medium", finding_kind="obse
     fid = f"finding_{seed}"
     repo.create_book(
         book_id=book, title="t", source_kind="upload", cloud_policy="allow_full_cloud",
-        text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+        text_checksum=f"chk_{seed}", total_chars=10, status="ready",
+        stats_json={"rights_declaration": {
+            "declared": True, "analysis_rights": True, "send_rights": True,
+        }},
     )
     repo.create_run(run_id=run, book_id=book, status="done", phase="done")
     repo.create_extraction(

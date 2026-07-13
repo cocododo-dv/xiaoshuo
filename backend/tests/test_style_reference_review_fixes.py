@@ -238,7 +238,10 @@ def _seed_binding(seed: str, *, profile_status: str, project_id: str) -> None:
         repo.create_book(
             book_id=f"sr_book_{seed}", title="t", source_kind="upload",
             cloud_policy="segments_only", text_checksum=f"chk_{seed}",
-            total_chars=10, status="ready", stats_json={},
+            total_chars=10, status="ready",
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         repo.create_run(
             run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done"

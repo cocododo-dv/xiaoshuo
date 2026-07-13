@@ -29,7 +29,10 @@ def _seed_style_binding(
         repo = StyleReferenceRepository(session)
         repo.create_book(
             book_id=book_id, title="t", source_kind="upload", cloud_policy="segments_only",
-            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready",
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
         repo.create_profile(
@@ -126,7 +129,10 @@ def _seed_character_binding_with_term(*, seed: str, character_id: str, term: str
         repo = StyleReferenceRepository(session)
         repo.create_book(
             book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="segments_only",
-            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready",
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         repo.create_run(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done")
         repo.create_profile(
@@ -162,7 +168,10 @@ def _seed_scene_binding_with_term(*, seed: str, scene_id: str, term: str) -> Non
         repo = StyleReferenceRepository(session)
         repo.create_book(
             book_id=f"sr_book_{seed}", title="t", source_kind="upload", cloud_policy="segments_only",
-            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready",
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         repo.create_run(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done")
         repo.create_profile(

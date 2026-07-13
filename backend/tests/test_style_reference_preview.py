@@ -32,7 +32,9 @@ def _seed_profile(seed: str, scene_samples_text: str = "他低头看着路") -> 
             text_checksum=f"chk_{seed}",
             total_chars=10,
             status="ready",
-            stats_json={},
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
         quote_id = f"sr_q_{seed}_dlg"

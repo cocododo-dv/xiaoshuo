@@ -29,7 +29,9 @@ def _seed_profile(seed: str) -> str:
             text_checksum=f"chk_il_{seed}",
             total_chars=1000,
             status="ready",
-            stats_json={},
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         run_id = f"sr_run_il_{seed}"
         profile_id = f"sr_profile_il_{seed}"

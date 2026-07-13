@@ -36,7 +36,14 @@ def _seed_fewshot_binding(*, seed: str, cloud_policy: str, project_id: str) -> N
         repo = StyleReferenceRepository(session)
         repo.create_book(
             book_id=book_id, title="t", source_kind="upload", cloud_policy=cloud_policy,
-            text_checksum=f"chk_{seed}", total_chars=10, status="ready", stats_json={},
+            text_checksum=f"chk_{seed}", total_chars=10, status="ready",
+            stats_json=(
+                {"rights_declaration": {
+                    "declared": True, "analysis_rights": True, "send_rights": True,
+                }}
+                if cloud_policy != "local_only"
+                else {}
+            ),
         )
         repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
         repo.create_quote(
@@ -98,7 +105,10 @@ def test_purge_derived_data_removes_promoted_style_rows():
         repo = StyleReferenceRepository(session)
         repo.create_book(
             book_id=book_id, title="t", source_kind="upload", cloud_policy="segments_only",
-            text_checksum="chk_g3", total_chars=10, status="ready", stats_json={},
+            text_checksum="chk_g3", total_chars=10, status="ready",
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
         repo.create_profile(
