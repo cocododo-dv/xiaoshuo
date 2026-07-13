@@ -1039,3 +1039,308 @@ def test_provider_adapters_normalize_successful_json_responses(
     assert response.structured_output
     assert response.usage["total_tokens"] > 0
     assert response.finish_reason
+
+
+class _RecordingAttemptHook:
+    def __init__(self, *, reject_on: int | None = None) -> None:
+        self.reject_on = reject_on
+        self.before: list[tuple[object, str, int]] = []
+        self.responses: list[tuple[object, str | None]] = []
+        self.errors: list[tuple[object, str | None]] = []
+
+    def before_dispatch(self, *, request: LLMRequest, dispatch_kind: str) -> object:
+        ordinal = len(self.before) + 1
+        if self.reject_on == ordinal:
+            raise RuntimeError("attempt rejected")
+        handle = f"attempt-{ordinal}"
+        self.before.append((handle, dispatch_kind, request.max_output_tokens))
+        return handle
+
+    def after_response(self, handle, *, request, response, latency_ms) -> None:
+        self.responses.append((handle, response.request_id))
+
+    def after_error(
+        self,
+        handle,
+        *,
+        request,
+        error,
+        raw_response,
+        provider_request_id,
+        latency_ms,
+    ) -> None:
+        self.errors.append((handle, getattr(error, "code", None)))
+
+
+def test_llm_client_preserves_missing_usage_provenance() -> None:
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=0,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={"id": "no-usage", "model": "test", "output_text": "ok"},
+            )
+        ),
+    )
+
+    response = client.generate(
+        LLMRequest(
+            model="test",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0,
+            max_output_tokens=8,
+            response_format="text",
+        )
+    )
+
+    assert response.usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    assert response.raw_usage is None
+    assert response.usage_present is False
+    assert response.usage_complete is False
+
+
+def test_llm_client_attempt_hook_wraps_transport_retry_and_can_reject_next_post() -> None:
+    post_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        raise httpx.ReadTimeout("timeout", request=request)
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=1,
+        transport=httpx.MockTransport(handler),
+    )
+    hook = _RecordingAttemptHook(reject_on=2)
+
+    with pytest.raises(RuntimeError, match="attempt rejected"):
+        client.generate(
+            LLMRequest(
+                model="test",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0,
+                max_output_tokens=8,
+                response_format="text",
+            ),
+            accounting_hook=hook,
+        )
+
+    assert post_count == 1
+    assert hook.before == [("attempt-1", "initial", 8)]
+    assert hook.errors == [("attempt-1", "LLM_REQUEST_TIMEOUT")]
+
+
+def test_llm_client_missing_text_degrade_recomputes_attempt_request() -> None:
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        if post_count == 1:
+            return httpx.Response(200, json={"id": "empty", "model": "test"})
+        return httpx.Response(
+            200,
+            json={"id": "ok", "model": "test", "output_text": "done"},
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    hook = _RecordingAttemptHook()
+
+    response = client.generate(
+        LLMRequest(
+            model="test",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0,
+            max_output_tokens=8,
+            response_format="text",
+            reasoning_level="medium",
+        ),
+        accounting_hook=hook,
+    )
+
+    assert response.text == "done"
+    assert hook.before == [
+        ("attempt-1", "initial", 8),
+        ("attempt-2", "missing_text_degrade", 16),
+    ]
+    assert hook.errors == [("attempt-1", "LLM_RESPONSE_MISSING_TEXT")]
+    assert hook.responses == [("attempt-2", "ok")]
+
+
+def test_llm_client_attempt_hook_wraps_response_parse_retry() -> None:
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        if post_count == 1:
+            return httpx.Response(
+                200,
+                json={"id": "bad-json", "model": "test", "output_text": "not json"},
+            )
+        return httpx.Response(
+            200,
+            json={"id": "parse-ok", "model": "test", "output_text": '{"ok":true}'},
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=1,
+        transport=httpx.MockTransport(handler),
+    )
+    hook = _RecordingAttemptHook()
+
+    response = client.generate(
+        LLMRequest(
+            model="test",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0,
+            max_output_tokens=8,
+            response_format="json_object",
+        ),
+        accounting_hook=hook,
+    )
+
+    assert response.structured_output == {"ok": True}
+    assert hook.before == [
+        ("attempt-1", "initial", 8),
+        ("attempt-2", "response_parse_retry", 8),
+    ]
+    assert hook.errors == [("attempt-1", "LLM_RESPONSE_INVALID_JSON")]
+    assert hook.responses == [("attempt-2", "parse-ok")]
+
+
+def test_llm_client_attempt_hook_wraps_structured_output_degrade() -> None:
+    post_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        post_count += 1
+        if post_count == 1:
+            return httpx.Response(500, text="guided_grammar compile error")
+        return httpx.Response(
+            200,
+            json={"id": "degrade-ok", "model": "test", "output_text": '{"ok":true}'},
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    hook = _RecordingAttemptHook()
+
+    response = client.generate(
+        LLMRequest(
+            model="test",
+            messages=[{"role": "user", "content": "hello"}],
+            temperature=0,
+            max_output_tokens=8,
+            response_format="json_object",
+            response_schema={"name": "payload", "schema": {"type": "object"}},
+        ),
+        accounting_hook=hook,
+    )
+
+    assert response.structured_output == {"ok": True}
+    assert hook.before == [
+        ("attempt-1", "initial", 8),
+        ("attempt-2", "transport_retry", 8),
+    ]
+    assert hook.errors == [("attempt-1", "LLM_HTTP_STRUCTURED_OUTPUT_REJECTED")]
+    assert hook.responses == [("attempt-2", "degrade-ok")]
+
+
+def test_llm_client_non_object_json_response_still_terminates_physical_attempt_once() -> None:
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=0,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=["not", "an", "object"])),
+    )
+    hook = _RecordingAttemptHook()
+
+    with pytest.raises(LLMResponseError) as exc_info:
+        client.generate(
+            LLMRequest(
+                model="test",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0,
+                max_output_tokens=8,
+                response_format="text",
+            ),
+            accounting_hook=hook,
+        )
+
+    assert exc_info.value.code == "LLM_RESPONSE_INVALID"
+    assert hook.before == [("attempt-1", "initial", 8)]
+    assert hook.errors == [("attempt-1", "LLM_RESPONSE_INVALID")]
+    assert hook.responses == []
+
+
+def test_llm_client_unexpected_adapter_parser_error_still_terminates_attempt_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_get_adapter = llm_client.get_adapter
+    delegate = original_get_adapter("openai_compatible")
+
+    class ExplodingParserAdapter:
+        def __getattr__(self, name: str):
+            return getattr(delegate, name)
+
+        def extract_output_text(self, body, *, request):
+            raise AttributeError("provider parser defect")
+
+    monkeypatch.setattr(llm_client, "get_adapter", lambda _provider: ExplodingParserAdapter())
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=12,
+        max_retries=0,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"id": "parser-defect", "output_text": "ok"})
+        ),
+    )
+    hook = _RecordingAttemptHook()
+
+    with pytest.raises(LLMResponseError) as exc_info:
+        client.generate(
+            LLMRequest(
+                model="test",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0,
+                max_output_tokens=8,
+                response_format="text",
+            ),
+            accounting_hook=hook,
+        )
+
+    assert exc_info.value.code == "LLM_RESPONSE_INVALID"
+    assert exc_info.value.details["parser_error_type"] == "AttributeError"
+    assert hook.before == [("attempt-1", "initial", 8)]
+    assert hook.errors == [("attempt-1", "LLM_RESPONSE_INVALID")]
+    assert hook.responses == []
