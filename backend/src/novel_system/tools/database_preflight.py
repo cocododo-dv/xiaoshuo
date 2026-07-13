@@ -100,6 +100,7 @@ C1B_COLUMN_CONTRACTS = {
         "provider_attempt_budget": {"not_null": True, "default": "32"},
     },
     "llm_calls": {
+        "llm_call_id": {"not_null": True, "default": None},
         "scope_type": {"not_null": True, "default": None},
         "scope_id": {"not_null": True, "default": None},
         "estimated_tokens": {"not_null": True, "default": "0"},
@@ -109,6 +110,7 @@ C1B_COLUMN_CONTRACTS = {
         "accounting_status": {"not_null": True, "default": "reserved"},
     },
     "llm_call_attempts": {
+        "attempt_id": {"not_null": True, "default": None},
         "llm_call_id": {"not_null": True, "default": None},
         "provider_attempt_no": {"not_null": True, "default": None},
         "dispatch_kind": {"not_null": True, "default": None},
@@ -126,33 +128,57 @@ C1B_COLUMN_CONTRACTS = {
     },
 }
 
+C1B_PRIMARY_KEY_CONTRACTS = {
+    "llm_calls": ("llm_call_id",),
+    "llm_call_attempts": ("attempt_id",),
+}
+
 C1B_CHECK_CONTRACTS = {
-    "scene_run_states": (
-        "scene_tokens_reserved >= 0",
-        "provider_attempts_used >= 0",
-        "provider_attempt_budget >= 0",
-    ),
-    "llm_calls": (
-        "estimated_tokens >= 0",
-        "reserved_tokens >= 0",
-        "budget_charged_tokens >= 0",
-        "budget_charged_tokens <= reserved_tokens",
-        "accounting_status IN ('reserved','settled','failed','released','rejected','usage_exceeds_reservation')",
-    ),
-    "llm_call_attempts": (
-        "provider_attempt_no >= 0",
-        "request_max_output_tokens >= 0",
-        "prompt_tokens >= 0",
-        "completion_tokens >= 0",
-        "total_tokens >= 0",
-        "estimated_tokens >= 0",
-        "reserved_tokens >= 0",
-        "budget_charged_tokens >= 0",
-        "budget_charged_tokens <= reserved_tokens",
-        "latency_ms >= 0",
-        "accounting_status IN ('reserved','settled','failed','released','rejected','usage_exceeds_reservation')",
-        "dispatch_kind IN ('initial','transport_retry','response_parse_retry','missing_text_degrade','system_probe')",
-    ),
+    "scene_run_states": {
+        "ck_scene_run_states_tokens_reserved_nonnegative": "scene_tokens_reserved >= 0",
+        "ck_scene_run_states_provider_attempts_used_nonnegative": "provider_attempts_used >= 0",
+        "ck_scene_run_states_provider_attempt_budget_nonnegative": "provider_attempt_budget >= 0",
+    },
+    "llm_calls": {
+        "ck_llm_calls_estimated_tokens_nonnegative": "estimated_tokens >= 0",
+        "ck_llm_calls_reserved_tokens_nonnegative": "reserved_tokens >= 0",
+        "ck_llm_calls_budget_charged_tokens_nonnegative": "budget_charged_tokens >= 0",
+        "ck_llm_calls_budget_charged_within_reservation": (
+            "budget_charged_tokens <= reserved_tokens"
+        ),
+        "ck_llm_calls_accounting_status": (
+            "accounting_status IN "
+            "('reserved','settled','failed','released','rejected','usage_exceeds_reservation')"
+        ),
+    },
+    "llm_call_attempts": {
+        "ck_llm_call_attempts_provider_attempt_no_nonnegative": (
+            "provider_attempt_no >= 0"
+        ),
+        "ck_llm_call_attempts_request_max_output_tokens_nonnegative": (
+            "request_max_output_tokens >= 0"
+        ),
+        "ck_llm_call_attempts_prompt_tokens_nonnegative": "prompt_tokens >= 0",
+        "ck_llm_call_attempts_completion_tokens_nonnegative": "completion_tokens >= 0",
+        "ck_llm_call_attempts_total_tokens_nonnegative": "total_tokens >= 0",
+        "ck_llm_call_attempts_estimated_tokens_nonnegative": "estimated_tokens >= 0",
+        "ck_llm_call_attempts_reserved_tokens_nonnegative": "reserved_tokens >= 0",
+        "ck_llm_call_attempts_budget_charged_tokens_nonnegative": (
+            "budget_charged_tokens >= 0"
+        ),
+        "ck_llm_call_attempts_budget_charged_within_reservation": (
+            "budget_charged_tokens <= reserved_tokens"
+        ),
+        "ck_llm_call_attempts_latency_ms_nonnegative": "latency_ms >= 0",
+        "ck_llm_call_attempts_accounting_status": (
+            "accounting_status IN "
+            "('reserved','settled','failed','released','rejected','usage_exceeds_reservation')"
+        ),
+        "ck_llm_call_attempts_dispatch_kind": (
+            "dispatch_kind IN "
+            "('initial','transport_retry','response_parse_retry','missing_text_degrade','system_probe')"
+        ),
+    },
 }
 
 C1B_INDEX_CONTRACTS = {
@@ -196,18 +222,70 @@ def _table_sql(connection: sqlite3.Connection, table_name: str) -> str:
     return str(row[0] or "") if row else ""
 
 
+def _parenthesized_expression(sql: str, opening_index: int) -> str | None:
+    depth = 0
+    quote_end: str | None = None
+    index = opening_index
+    while index < len(sql):
+        character = sql[index]
+        if quote_end is not None:
+            if character == quote_end:
+                if (
+                    quote_end != "]"
+                    and index + 1 < len(sql)
+                    and sql[index + 1] == quote_end
+                ):
+                    index += 2
+                    continue
+                quote_end = None
+        elif character in {"'", '"', "`"}:
+            quote_end = character
+        elif character == "[":
+            quote_end = "]"
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[opening_index + 1 : index].strip()
+        index += 1
+    return None
+
+
+def _named_check_expressions(sql: str, constraint_name: str) -> list[str]:
+    escaped_name = re.escape(constraint_name)
+    identifier = (
+        rf'(?:{escaped_name}|"{escaped_name}"|`{escaped_name}`|\[{escaped_name}\])'
+    )
+    pattern = re.compile(
+        rf"\bCONSTRAINT\s+{identifier}\s+CHECK\s*\(",
+        re.IGNORECASE,
+    )
+    expressions: list[str] = []
+    for match in pattern.finditer(sql):
+        expression = _parenthesized_expression(sql, match.end() - 1)
+        if expression is not None:
+            expressions.append(expression)
+    return expressions
+
+
 def _index_columns(
     connection: sqlite3.Connection,
     table_name: str,
-) -> dict[str, tuple[bool, list[str]]]:
-    indexes: dict[str, tuple[bool, list[str]]] = {}
+) -> dict[str, dict[str, Any]]:
+    indexes: dict[str, dict[str, Any]] = {}
     for row in connection.execute(f"PRAGMA index_list({_quote_identifier(table_name)})"):
         name = str(row[1])
         columns = [
-            str(column[2])
+            None if column[2] is None else str(column[2])
             for column in connection.execute(f"PRAGMA index_info({_quote_identifier(name)})")
         ]
-        indexes[name] = (bool(row[2]), columns)
+        indexes[name] = {
+            "columns": columns,
+            "unique": bool(row[2]),
+            "origin": str(row[3]),
+            "partial": bool(row[4]),
+        }
     return indexes
 
 
@@ -241,18 +319,54 @@ def _inspect_c1b_schema(
                     }
                 )
 
-    for table_name, expressions in C1B_CHECK_CONTRACTS.items():
+    for table_name, expected_columns in C1B_PRIMARY_KEY_CONTRACTS.items():
         if table_name not in tables:
             continue
-        normalized_table_sql = _normalized_sql(_table_sql(connection, table_name))
-        for expression in expressions:
-            if "check" + _normalized_sql(expression) not in normalized_table_sql:
+        primary_key_columns = sorted(
+            (
+                (int(row[5]), str(row[1]))
+                for row in connection.execute(
+                    f"PRAGMA table_info({_quote_identifier(table_name)})"
+                )
+                if int(row[5]) > 0
+            ),
+            key=lambda item: item[0],
+        )
+        actual = [column_name for _, column_name in primary_key_columns]
+        if actual != list(expected_columns):
+            errors.append(
+                {
+                    "kind": "primary_key",
+                    "table": table_name,
+                    "expected": list(expected_columns),
+                    "actual": actual,
+                }
+            )
+
+    for table_name, constraints in C1B_CHECK_CONTRACTS.items():
+        if table_name not in tables:
+            continue
+        table_sql = _table_sql(connection, table_name)
+        for constraint_name, expected in constraints.items():
+            actual_expressions = _named_check_expressions(table_sql, constraint_name)
+            matches = (
+                len(actual_expressions) == 1
+                and _normalized_sql(actual_expressions[0]) == _normalized_sql(expected)
+            )
+            if not matches:
+                actual: str | list[str]
+                actual = (
+                    actual_expressions[0]
+                    if len(actual_expressions) == 1
+                    else actual_expressions
+                )
                 errors.append(
                     {
                         "kind": "check_constraint",
                         "table": table_name,
-                        "expected": expression,
-                        "actual": "missing",
+                        "name": constraint_name,
+                        "expected": expected,
+                        "actual": actual,
                     }
                 )
 
@@ -285,21 +399,28 @@ def _inspect_c1b_schema(
             )
 
         attempt_indexes = _index_columns(connection, "llm_call_attempts")
-        expected_unique = ["llm_call_id", "provider_attempt_no"]
-        actual_unique = [
-            columns for unique, columns in attempt_indexes.values() if unique
+        expected_unique = {
+            "columns": ["llm_call_id", "provider_attempt_no"],
+            "unique": True,
+            "origin": "u",
+            "partial": False,
+        }
+        ordinal_candidates = [
+            metadata
+            for _, metadata in sorted(attempt_indexes.items())
+            if metadata["columns"] == expected_unique["columns"]
         ]
-        if expected_unique not in actual_unique:
+        if expected_unique not in ordinal_candidates:
             errors.append(
                 {
                     "kind": "unique_constraint",
                     "table": "llm_call_attempts",
                     "expected": expected_unique,
-                    "actual": actual_unique,
+                    "actual": ordinal_candidates,
                 }
             )
 
-    index_cache: dict[str, dict[str, tuple[bool, list[str]]]] = {}
+    index_cache: dict[str, dict[str, dict[str, Any]]] = {}
     for name, (table_name, expected_columns) in C1B_INDEX_CONTRACTS.items():
         if table_name not in tables:
             continue
@@ -307,15 +428,20 @@ def _inspect_c1b_schema(
             index_cache[table_name] = _index_columns(connection, table_name)
         indexes = index_cache[table_name]
         actual = indexes.get(name)
-        actual_columns = None if actual is None else actual[1]
-        if actual_columns != list(expected_columns):
+        expected = {
+            "columns": list(expected_columns),
+            "unique": False,
+            "origin": "c",
+            "partial": False,
+        }
+        if actual != expected:
             errors.append(
                 {
                     "kind": "index",
                     "table": table_name,
                     "name": name,
-                    "expected": list(expected_columns),
-                    "actual": actual_columns,
+                    "expected": expected,
+                    "actual": actual,
                 }
             )
     return errors

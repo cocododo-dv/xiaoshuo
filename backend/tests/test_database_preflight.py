@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from novel_system.tools import database_preflight
 from novel_system.tools.database_preflight import inspect_database
 
@@ -17,6 +19,10 @@ def _make_ready_database(
     revision: str = HEAD_REVISION,
     c1b: bool = True,
     structural_contract: bool = True,
+    primary_key_contract: bool = True,
+    ordinal_unique_contract: bool = True,
+    scope_index_variant: str = "plain",
+    weaken_llm_check: bool = False,
 ) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE alembic_version (version_num TEXT NOT NULL)")
@@ -116,10 +122,35 @@ def _make_ready_database(
                     """
                 )
                 return
+            id_nullability = "NOT NULL" if primary_key_contract else ""
+            llm_call_primary_key = (
+                "CONSTRAINT pk_llm_calls PRIMARY KEY (llm_call_id)"
+                if primary_key_contract
+                else "CONSTRAINT pk_llm_calls_wrong PRIMARY KEY (scope_id)"
+            )
+            attempt_primary_key = (
+                "CONSTRAINT pk_llm_call_attempts PRIMARY KEY (attempt_id)"
+                if primary_key_contract
+                else (
+                    "CONSTRAINT pk_llm_call_attempts_wrong "
+                    "PRIMARY KEY (llm_call_id, provider_attempt_no)"
+                )
+            )
+            ordinal_unique_clause = (
+                ", CONSTRAINT uq_llm_call_attempts_call_ordinal "
+                "UNIQUE (llm_call_id, provider_attempt_no)"
+                if ordinal_unique_contract
+                else ""
+            )
+            estimated_tokens_check = (
+                "estimated_tokens >= 0 OR 1 = 1"
+                if weaken_llm_check
+                else "estimated_tokens >= 0"
+            )
             connection.execute(
-                """
+                f"""
                 CREATE TABLE llm_calls (
-                    llm_call_id TEXT NOT NULL PRIMARY KEY,
+                    llm_call_id TEXT {id_nullability},
                     scope_type TEXT NOT NULL,
                     scope_id TEXT NOT NULL,
                     run_job_id TEXT,
@@ -134,7 +165,7 @@ def _make_ready_database(
                     settled_at TEXT,
                     created_at TEXT NOT NULL,
                     CONSTRAINT ck_llm_calls_estimated_tokens_nonnegative
-                        CHECK (estimated_tokens >= 0),
+                        CHECK ({estimated_tokens_check}),
                     CONSTRAINT ck_llm_calls_reserved_tokens_nonnegative
                         CHECK (reserved_tokens >= 0),
                     CONSTRAINT ck_llm_calls_budget_charged_tokens_nonnegative
@@ -145,14 +176,15 @@ def _make_ready_database(
                         CHECK (accounting_status IN (
                             'reserved','settled','failed','released','rejected',
                             'usage_exceeds_reservation'
-                        ))
+                        )),
+                    {llm_call_primary_key}
                 )
                 """
             )
             connection.execute(
-                """
+                f"""
                 CREATE TABLE llm_call_attempts (
-                    attempt_id TEXT NOT NULL PRIMARY KEY,
+                    attempt_id TEXT {id_nullability},
                     llm_call_id TEXT NOT NULL,
                     provider_attempt_no INTEGER NOT NULL,
                     dispatch_kind TEXT NOT NULL,
@@ -204,12 +236,20 @@ def _make_ready_database(
                         )),
                     CONSTRAINT fk_llm_call_attempts_call
                         FOREIGN KEY (llm_call_id) REFERENCES llm_calls(llm_call_id)
-                        ON UPDATE NO ACTION ON DELETE NO ACTION,
-                    CONSTRAINT uq_llm_call_attempts_call_ordinal
-                        UNIQUE (llm_call_id, provider_attempt_no)
+                        ON UPDATE NO ACTION ON DELETE NO ACTION
+                    {ordinal_unique_clause},
+                    {attempt_primary_key}
                 )
                 """
             )
+            if not ordinal_unique_contract:
+                connection.execute(
+                    """
+                    CREATE UNIQUE INDEX uq_llm_call_attempts_call_ordinal_partial
+                    ON llm_call_attempts (llm_call_id, provider_attempt_no)
+                    WHERE accounting_status = 'settled'
+                    """
+                )
             connection.execute(
                 """
                 CREATE TABLE chapter_run_jobs (
@@ -219,10 +259,20 @@ def _make_ready_database(
                 )
                 """
             )
+            scope_index_prefix = (
+                "CREATE UNIQUE INDEX"
+                if scope_index_variant == "unique"
+                else "CREATE INDEX"
+            )
+            scope_index_where = (
+                " WHERE scope_type IS NOT NULL"
+                if scope_index_variant == "partial"
+                else ""
+            )
             connection.executescript(
-                """
-                CREATE INDEX ix_llm_calls_scope_created
-                    ON llm_calls (scope_type, scope_id, created_at);
+                f"""
+                {scope_index_prefix} ix_llm_calls_scope_created
+                    ON llm_calls (scope_type, scope_id, created_at){scope_index_where};
                 CREATE INDEX ix_llm_calls_run_job ON llm_calls (run_job_id);
                 CREATE INDEX ix_llm_calls_execution_step
                     ON llm_calls (execution_id, execution_step_key);
@@ -297,8 +347,118 @@ def test_c1b_preflight_rejects_same_index_name_with_wrong_column_order(tmp_path)
         "kind": "index",
         "table": "llm_calls",
         "name": "ix_llm_calls_scope_created",
-        "expected": ["scope_type", "scope_id", "created_at"],
-        "actual": ["scope_id", "scope_type", "created_at"],
+        "expected": {
+            "columns": ["scope_type", "scope_id", "created_at"],
+            "unique": False,
+            "origin": "c",
+            "partial": False,
+        },
+        "actual": {
+            "columns": ["scope_id", "scope_type", "created_at"],
+            "unique": False,
+            "origin": "c",
+            "partial": False,
+        },
+    } in result["schema_errors"]
+
+
+def test_c1b_preflight_rejects_missing_or_incorrect_primary_keys(tmp_path):
+    database_path = tmp_path / "wrong-primary-keys.db"
+    _make_ready_database(database_path, primary_key_contract=False)
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert {
+        "kind": "primary_key",
+        "table": "llm_calls",
+        "expected": ["llm_call_id"],
+        "actual": ["scope_id"],
+    } in result["schema_errors"]
+    assert {
+        "kind": "primary_key",
+        "table": "llm_call_attempts",
+        "expected": ["attempt_id"],
+        "actual": ["llm_call_id", "provider_attempt_no"],
+    } in result["schema_errors"]
+    assert {
+        (error.get("table"), error.get("column"))
+        for error in result["schema_errors"]
+        if error["kind"] == "column_contract"
+    } >= {
+        ("llm_calls", "llm_call_id"),
+        ("llm_call_attempts", "attempt_id"),
+    }
+
+
+def test_c1b_preflight_rejects_partial_unique_index_as_attempt_ordinal_constraint(tmp_path):
+    database_path = tmp_path / "partial-ordinal-unique.db"
+    _make_ready_database(database_path, ordinal_unique_contract=False)
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert any(
+        error["kind"] == "unique_constraint"
+        and error["table"] == "llm_call_attempts"
+        and error["expected"] == {
+            "columns": ["llm_call_id", "provider_attempt_no"],
+            "unique": True,
+            "origin": "u",
+            "partial": False,
+        }
+        for error in result["schema_errors"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("variant", "actual_unique", "actual_partial"),
+    [("unique", True, False), ("partial", False, True)],
+)
+def test_c1b_preflight_rejects_required_index_with_wrong_semantics(
+    tmp_path,
+    variant,
+    actual_unique,
+    actual_partial,
+):
+    database_path = tmp_path / f"scope-index-{variant}.db"
+    _make_ready_database(database_path, scope_index_variant=variant)
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert {
+        "kind": "index",
+        "table": "llm_calls",
+        "name": "ix_llm_calls_scope_created",
+        "expected": {
+            "columns": ["scope_type", "scope_id", "created_at"],
+            "unique": False,
+            "origin": "c",
+            "partial": False,
+        },
+        "actual": {
+            "columns": ["scope_type", "scope_id", "created_at"],
+            "unique": actual_unique,
+            "origin": "c",
+            "partial": actual_partial,
+        },
+    } in result["schema_errors"]
+
+
+def test_c1b_preflight_rejects_named_check_with_weakened_expression(tmp_path):
+    database_path = tmp_path / "weakened-check.db"
+    _make_ready_database(database_path, weaken_llm_check=True)
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert {
+        "kind": "check_constraint",
+        "table": "llm_calls",
+        "name": "ck_llm_calls_estimated_tokens_nonnegative",
+        "expected": "estimated_tokens >= 0",
+        "actual": "estimated_tokens >= 0 OR 1 = 1",
     } in result["schema_errors"]
 
 
