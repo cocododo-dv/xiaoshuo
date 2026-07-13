@@ -21,6 +21,11 @@ from typing import TYPE_CHECKING, Any
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.text_utils import compact_ws
+from novel_system.services.style_reference.untrusted_data import (
+    UntrustedPayload,
+    render_untrusted_system_prompt,
+    render_untrusted_user_prompt,
+)
 
 if TYPE_CHECKING:
     from novel_system.services.style_reference.segmentation import (
@@ -177,11 +182,25 @@ def _classify_via_node(
                 for i, (_s, _e, body) in enumerate(batch)
             ]
         }
-        user_prompt = _format_user_prompt(template.task_prompt, batch_payload)
+        try:
+            task_prompt = template.task_prompt.replace(
+                "{paragraphs}", "See the bounded payload below."
+            )
+            user_prompt = render_untrusted_user_prompt(
+                task_prompt,
+                UntrustedPayload(batch_payload),
+                kind=node_id,
+            )
+            system_prompt = render_untrusted_system_prompt(template.system_prompt)
+        except Exception:  # pylint: disable=broad-except
+            raise SegmentationLLMError(
+                "STYLE_REF_LLM_PROMPT_RENDER_FAILED",
+                f"failed to render segmentation prompt for node {node_id!r}",
+            ) from None
         request = LLMRequest(
             model=task_config.model,
             messages=[
-                {"role": "system", "content": template.system_prompt},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=task_config.temperature,
@@ -217,16 +236,6 @@ def _classify_via_node(
             parsed = parsed[: len(batch)]
         results.extend(parsed)
     return results
-
-
-def _format_user_prompt(task_prompt: str, payload: dict[str, Any]) -> str:
-    """简单模板填充。如果 task_prompt 含 `{paragraphs}` 占位符则替换;否则追加。"""
-    import json
-
-    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
-    if "{paragraphs}" in task_prompt:
-        return task_prompt.replace("{paragraphs}", payload_json)
-    return f"{task_prompt}\n\n{payload_json}"
 
 
 def _parse_response(response: Any) -> list[tuple[str, float]]:

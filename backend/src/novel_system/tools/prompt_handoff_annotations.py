@@ -62,7 +62,8 @@ BATCHES: list[dict[str, str]] = [
             "参考书风格引擎：段落分类 → 四层十六维抽取 → 证据补抽 → Profile 聚合 → 预览/验证。"
             "共享节点全部经 `style_reference/_llm_helper.call_llm_node`，采用 typed `UntrustedPayload`、"
             "字符串叶值递归中和、system 数据约束与唯一显式 JSON 数据边界（超时保底 120s）；"
-            "分段分类器仍为直连。已知痛点：中档中转模型上「抽取产出薄」"
+            "分段分类器仍直连 `LLMClient.generate`，但复用同一 typed payload、递归中和、system 约束与唯一 boundary。"
+            "已知痛点：中档中转模型上「抽取产出薄」"
             "（同 payload 可能返回 0 findings）——本批优化以提高产出饱满度与结构化输出稳定性为先。"
         ),
     },
@@ -964,7 +965,7 @@ UNITS: list[dict[str, Any]] = [
         "purpose": "参考书段落 8 类分型的锚定集标注：抽样段落用强模型分类，与快模型比对一致率（≥0.85 才放行快模型批量，否则全书强模型）。",
         "trigger": "参考书导入/重分类（IngestService → classify_paragraphs → classify_with_llm）。",
         "call_chain": [(f"{SVC}/style_reference/segmentation/llm.py", "response = llm_client.generate(request)", 1, "_classify_via_node（NODE_ANCHOR/NODE_BULK 共用）")],
-        "inputs": "task_prompt 的 {paragraphs} 占位符替换为 JSON（paragraph_index + 每段截 600 字），无占位符则追加；按 BATCH_SIZE 分批。",
+        "inputs": "可信 task 先将 {paragraphs} 替换为 `See the bounded payload below.`（无占位符模板保持原文）；paragraph_index + 每段截 600 字组成 typed `UntrustedPayload`，字符串叶值递归中和后作为 JSON 放入唯一显式 boundary，system 同时追加数据非指令及禁止 role/tool/schema 变更约束；按 BATCH_SIZE 分批。",
         "output_contract": "classifications[{paragraph_type, confidence(high/medium/low)}]；数量与批不符时补 narration/截断；confidence 映射 0.9/0.6/0.3。",
         "parser_refs": [(f"{SVC}/style_reference/segmentation/llm.py", "def _parse_response", 1)],
         "failure": "SegmentationLLMError → 整体回退启发式分类（记录 fallback_reason）。",
@@ -983,7 +984,7 @@ UNITS: list[dict[str, Any]] = [
         "purpose": "锚定集校准通过后，余下段落的快模型批量分类。",
         "trigger": "同上（校准通过分支）。",
         "call_chain": [(f"{SVC}/style_reference/segmentation/llm.py", "response = llm_client.generate(request)", 1, "同一出口，node=NODE_BULK")],
-        "inputs": "同 anchor（{paragraphs} JSON 批量）。",
+        "inputs": "同 anchor：可信 task 保持在唯一 boundary 外，typed `UntrustedPayload` 的 paragraphs JSON 在 boundary 内递归中和；system 追加数据非指令及禁止 role/tool/schema 变更约束。",
         "output_contract": "同 anchor。",
         "parser_refs": [(f"{SVC}/style_reference/segmentation/llm.py", "def _parse_response", 1)],
         "failure": "同 anchor（回退启发式）。",

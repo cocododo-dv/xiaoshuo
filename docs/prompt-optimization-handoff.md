@@ -71,7 +71,7 @@
 1. `LLMNodeRunner.run(node_id=…)`——审计路径：`PromptBuilder` 组装、落 `LlmCall` 审计行、上下文预算超限抛连续性错误；
 2. `LLMNodeRunner.run_task(task_name=…)`——顾问路径：内联提示词、不落草稿、失败快速降级；别名表 `auto_critique_llm→soft_qc`、`narrative_event_extract→extraction`（借道路由，不占独立节点）；
 3. `style_reference/_llm_helper.call_llm_node(node_id, UntrustedPayload, client)`——调用方只传 typed payload；Mapping/list/tuple 内字符串叶值递归中和并转义伪边界，user_prompt 将 task 留在唯一显式 UNTRUSTED_REFERENCE_DATA JSON 区块外；system 追加“数据非指令、禁止 role/tool/schema 变更”约束，response_schema 仍是 request 独立字段；超时保底 120s；
-4. 直接 `LLMClient.generate`：雪花工作台（模板 + JSON payload）、段落分类器（`{paragraphs}` 占位符）、文学评测（内联提示词）。
+4. 直接 `LLMClient.generate`：雪花工作台（模板 + JSON payload）、文学评测（内联提示词）；段落分类器也保持直连，但复用路径 3 的 typed `UntrustedPayload`、Mapping/list/tuple 字符串叶值递归中和与 system 数据非指令/禁止 role、tool、schema 变更约束，可信 task 位于唯一显式 JSON boundary 外。
 
 **PromptBuilder 组装契约**（路径 1 的所有模板）：`system_prompt` **原样发送、无变量替换**；`user_prompt` = task_prompt + 运行时指令（语言锁/角色连续性，仅特定模板）+ schema 收尾指令 + 带英文标签的上下文分节（bundle 快照按 token 预算与 allowlist 裁剪；标签清单见 §9）。所以模板正文里**不出现**花括号变量——数据全部以分节/JSON 形式进 user_prompt。
 
@@ -98,8 +98,8 @@
 | 7 | `reference_sample_ranker` | reference | 孤儿 | yaml:`reference_sample_ranker` | — |
 | 8 | `reference_style_structure_extract` | reference | 孤儿 | yaml:`reference_style_structure_extract` | — |
 | 9 | `reference_profile_synthesize` | reference | 孤儿 | yaml:`reference_profile_synthesize` | — |
-| 10 | `style_ref_paragraph_classify_anchor` | style_reference | 活跃 | yaml:`style_ref_paragraph_classify_anchor` | `backend/src/novel_system/services/style_reference/segmentation/llm.py:201` |
-| 11 | `style_ref_paragraph_classify_bulk` | style_reference | 活跃 | yaml:`style_ref_paragraph_classify_bulk` | `backend/src/novel_system/services/style_reference/segmentation/llm.py:201` |
+| 10 | `style_ref_paragraph_classify_anchor` | style_reference | 活跃 | yaml:`style_ref_paragraph_classify_anchor` | `backend/src/novel_system/services/style_reference/segmentation/llm.py:220` |
+| 11 | `style_ref_paragraph_classify_bulk` | style_reference | 活跃 | yaml:`style_ref_paragraph_classify_bulk` | `backend/src/novel_system/services/style_reference/segmentation/llm.py:220` |
 | 12 | `style_ref_extract_language` | style_reference | 活跃 | yaml:`style_ref_extract_language` | `backend/src/novel_system/services/style_reference/extractors/base.py:526` |
 | 13 | `style_ref_extract_narrative` | style_reference | 活跃 | yaml:`style_ref_extract_narrative` | `backend/src/novel_system/services/style_reference/extractors/base.py:526` |
 | 14 | `style_ref_extract_scene` | style_reference | 活跃 | yaml:`style_ref_extract_scene` | `backend/src/novel_system/services/style_reference/extractors/base.py:526` |
@@ -2239,7 +2239,7 @@ Rules:
 
 ## §6 批次 D · 风格参考子系统（12 个模板，弱模型鲁棒性主战场）
 
-参考书风格引擎：段落分类 → 四层十六维抽取 → 证据补抽 → Profile 聚合 → 预览/验证。共享节点全部经 `style_reference/_llm_helper.call_llm_node`，采用 typed `UntrustedPayload`、字符串叶值递归中和、system 数据约束与唯一显式 JSON 数据边界（超时保底 120s）；分段分类器仍为直连。已知痛点：中档中转模型上「抽取产出薄」（同 payload 可能返回 0 findings）——本批优化以提高产出饱满度与结构化输出稳定性为先。
+参考书风格引擎：段落分类 → 四层十六维抽取 → 证据补抽 → Profile 聚合 → 预览/验证。共享节点全部经 `style_reference/_llm_helper.call_llm_node`，采用 typed `UntrustedPayload`、字符串叶值递归中和、system 数据约束与唯一显式 JSON 数据边界（超时保底 120s）；分段分类器仍直连 `LLMClient.generate`，但复用同一 typed payload、递归中和、system 约束与唯一 boundary。已知痛点：中档中转模型上「抽取产出薄」（同 payload 可能返回 0 findings）——本批优化以提高产出饱满度与结构化输出稳定性为先。
 
 ### [D-01] style_ref_paragraph_classify_anchor — 段落分类（锚定集，强模型）
 
@@ -2250,9 +2250,9 @@ Rules:
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.1，max_output_tokens=2000，response_format=`json_object`
 - **用途**：参考书段落 8 类分型的锚定集标注：抽样段落用强模型分类，与快模型比对一致率（≥0.85 才放行快模型批量，否则全书强模型）。
 - **触发**：参考书导入/重分类（IngestService → classify_paragraphs → classify_with_llm）。
-- **调用链**：`backend/src/novel_system/services/style_reference/segmentation/llm.py:201`（_classify_via_node（NODE_ANCHOR/NODE_BULK 共用））
-- **输入组装**：task_prompt 的 {paragraphs} 占位符替换为 JSON（paragraph_index + 每段截 600 字），无占位符则追加；按 BATCH_SIZE 分批。
-- **输出契约**：classifications[{paragraph_type, confidence(high/medium/low)}]；数量与批不符时补 narration/截断；confidence 映射 0.9/0.6/0.3。（解析/校验：`backend/src/novel_system/services/style_reference/segmentation/llm.py:232`）
+- **调用链**：`backend/src/novel_system/services/style_reference/segmentation/llm.py:220`（_classify_via_node（NODE_ANCHOR/NODE_BULK 共用））
+- **输入组装**：可信 task 先将 {paragraphs} 替换为 `See the bounded payload below.`（无占位符模板保持原文）；paragraph_index + 每段截 600 字组成 typed `UntrustedPayload`，字符串叶值递归中和后作为 JSON 放入唯一显式 boundary，system 同时追加数据非指令及禁止 role/tool/schema 变更约束；按 BATCH_SIZE 分批。
+- **输出契约**：classifications[{paragraph_type, confidence(high/medium/low)}]；数量与批不符时补 narration/截断；confidence 映射 0.9/0.6/0.3。（解析/校验：`backend/src/novel_system/services/style_reference/segmentation/llm.py:241`）
 - **失败与降级**：SegmentationLLMError → 整体回退启发式分类（记录 fallback_reason）。
 - **优化注意**：8 类边界判例（对白夹叙、诗句、书信体等）要给例；要求逐段输出、禁跳段——弱模型漏段是补 narration 的主因，直接伤后续抽样质量。
 
@@ -2347,9 +2347,9 @@ dialogue / narration / psychology / description_env / description_char / action 
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5-mini`，temperature=0.1，max_output_tokens=2000，response_format=`json_object`
 - **用途**：锚定集校准通过后，余下段落的快模型批量分类。
 - **触发**：同上（校准通过分支）。
-- **调用链**：`backend/src/novel_system/services/style_reference/segmentation/llm.py:201`（同一出口，node=NODE_BULK）
-- **输入组装**：同 anchor（{paragraphs} JSON 批量）。
-- **输出契约**：同 anchor。（解析/校验：`backend/src/novel_system/services/style_reference/segmentation/llm.py:232`）
+- **调用链**：`backend/src/novel_system/services/style_reference/segmentation/llm.py:220`（同一出口，node=NODE_BULK）
+- **输入组装**：同 anchor：可信 task 保持在唯一 boundary 外，typed `UntrustedPayload` 的 paragraphs JSON 在 boundary 内递归中和；system 追加数据非指令及禁止 role/tool/schema 变更约束。
+- **输出契约**：同 anchor。（解析/校验：`backend/src/novel_system/services/style_reference/segmentation/llm.py:241`）
 - **失败与降级**：同 anchor（回退启发式）。
 - **优化注意**：该模板极简（bulk 版）——与 anchor 版保持判据一致是硬要求，否则一致率校准失真；优化时两模板同改同测。
 

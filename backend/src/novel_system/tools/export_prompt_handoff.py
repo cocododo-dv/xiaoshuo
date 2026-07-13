@@ -429,8 +429,9 @@ def render_architecture(models_cfg: dict[str, Any], template_source: str) -> lis
         "payload；Mapping/list/tuple 内字符串叶值递归中和并转义伪边界，user_prompt 将 task 留在唯一显式 "
         "UNTRUSTED_REFERENCE_DATA JSON 区块外；system 追加“数据非指令、禁止 role/tool/schema 变更”约束，"
         "response_schema 仍是 request 独立字段；超时保底 120s；",
-        "4. 直接 `LLMClient.generate`：雪花工作台（模板 + JSON payload）、段落分类器（`{paragraphs}` 占位符）、"
-        "文学评测（内联提示词）。",
+        "4. 直接 `LLMClient.generate`：雪花工作台（模板 + JSON payload）、文学评测（内联提示词）；"
+        "段落分类器也保持直连，但复用路径 3 的 typed `UntrustedPayload`、Mapping/list/tuple 字符串叶值递归中和"
+        "与 system 数据非指令/禁止 role、tool、schema 变更约束，可信 task 位于唯一显式 JSON boundary 外。",
         "",
         "**PromptBuilder 组装契约**（路径 1 的所有模板）：`system_prompt` **原样发送、无变量替换**；"
         "`user_prompt` = task_prompt + 运行时指令（语言锁/角色连续性，仅特定模板）+ schema 收尾指令 + "
