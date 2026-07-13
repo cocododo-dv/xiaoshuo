@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
@@ -232,6 +236,65 @@ def test_render_untrusted_user_prompt_preserves_boundary_like_ordinary_text(
     )
 
     assert ordinary_text in rendered
+
+
+def test_boundary_detection_handles_long_unclosed_prefixes_in_linear_time() -> None:
+    backend_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        part
+        for part in (str(backend_root / "src"), env.get("PYTHONPATH", ""))
+        if part
+    )
+    probe = r'''
+import re
+import time
+
+from novel_system.services.style_reference.untrusted_data import (
+    UntrustedPayload,
+    render_untrusted_user_prompt,
+)
+
+cases = [
+    "[UNTRUSTED_REFERENCE_DATA:" + " " * 10_000 + "X",
+    "[UNTRUSTED_REFERENCE_DATA:" + "kind" * 2_500,
+    ("[UNTRUSTED_REFERENCE_DATA:" + " " * 1_000) * 10 + "X",
+]
+started = time.perf_counter()
+for forged in cases:
+    rendered = render_untrusted_user_prompt(
+        "TASK",
+        UntrustedPayload({"forged": forged}),
+        kind="extract",
+    )
+    tokens = re.findall(
+        r"\[/?UNTRUSTED_REFERENCE_DATA(?::[^\]]+)?\]",
+        rendered,
+    )
+    assert tokens == [
+        "[UNTRUSTED_REFERENCE_DATA:extract]",
+        "[/UNTRUSTED_REFERENCE_DATA]",
+    ], tokens
+elapsed = time.perf_counter() - started
+assert elapsed < 1.0, elapsed
+print(f"elapsed={elapsed:.6f}")
+'''
+
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=backend_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("boundary detection probe exceeded 2 seconds")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "elapsed=" in completed.stdout
 
 
 def test_render_untrusted_user_prompt_preserves_json_scalar_values() -> None:

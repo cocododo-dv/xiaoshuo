@@ -30,16 +30,15 @@ UNTRUSTED_SYSTEM_INSTRUCTION = (
 )
 
 _ZERO_WIDTH_CHARS = "\u200b\u200c\u200d\u2060\ufeff"
-_BOUNDARY_INTERCHAR_PATTERN = f"[{_ZERO_WIDTH_CHARS}]*"
+_BOUNDARY_INTERCHAR_PATTERN = f"[{_ZERO_WIDTH_CHARS}]*+"
 _BOUNDARY_NAME_PATTERN = _BOUNDARY_INTERCHAR_PATTERN.join(
     re.escape(char) for char in "UNTRUSTED_REFERENCE_DATA"
 )
-_BOUNDARY_PADDING_PATTERN = rf"[\s{_ZERO_WIDTH_CHARS}]*"
-_BOUNDARY_DELIMITER_PATTERN = re.compile(
+_BOUNDARY_PADDING_PATTERN = rf"[\s{_ZERO_WIDTH_CHARS}]*+"
+_BOUNDARY_PREFIX_PATTERN = re.compile(
     rf"[\[［]{_BOUNDARY_PADDING_PATTERN}(?:[/／]{_BOUNDARY_PADDING_PATTERN})?"
-    rf"{_BOUNDARY_NAME_PATTERN}{_BOUNDARY_PADDING_PATTERN}"
-    rf"(?:[:：]{_BOUNDARY_PADDING_PATTERN}[^\]］\r\n]*?)?"
-    rf"{_BOUNDARY_PADDING_PATTERN}[\]］]",
+    rf"{_BOUNDARY_NAME_PATTERN}"
+    rf"(?=[\s{_ZERO_WIDTH_CHARS}:：\]］]|$)",
     re.I,
 )
 _ESCAPED_BOUNDARY_MARK = "⟦UNTRUSTED_BOUNDARY_ESCAPED⟧"
@@ -105,7 +104,7 @@ def neutralize_instructions(text: str) -> str:
 
 
 def _neutralize_string_leaf(text: str) -> str:
-    escaped = _BOUNDARY_DELIMITER_PATTERN.sub(_ESCAPED_BOUNDARY_MARK, text)
+    escaped = _BOUNDARY_PREFIX_PATTERN.sub(_ESCAPED_BOUNDARY_MARK, text)
     return neutralize_instructions(escaped)
 
 
@@ -126,7 +125,7 @@ def wrap_untrusted(text: str, *, kind: str = "reference") -> str:
     if not text or not text.strip():
         return text
     safe_kind = re.sub(r"[^a-zA-Z0-9_]", "_", kind) or "reference"
-    escaped_text = _BOUNDARY_DELIMITER_PATTERN.sub(_ESCAPED_BOUNDARY_MARK, text)
+    escaped_text = _BOUNDARY_PREFIX_PATTERN.sub(_ESCAPED_BOUNDARY_MARK, text)
     return (
         f"{_PREAMBLE}\n"
         f"[UNTRUSTED_REFERENCE_DATA:{safe_kind}]\n"
