@@ -465,6 +465,8 @@ def test_soft_qc_engine_persists_style_score_summary_and_api_serializers(session
     session.add(
         LlmCall(
             llm_call_id="llm_call_style_CH100_SC01",
+            scope_type="scene",
+            scope_id="CH100_SC01",
             provider="fake-provider",
             model="fake-style-model",
             prompt_hash="prompt_hash_style",

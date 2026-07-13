@@ -134,6 +134,8 @@ def _seed_preserved_state(session) -> None:
     session.add(
         LlmCall(
             llm_call_id="llm_call_reference_profile",
+            scope_type="system",
+            scope_id="reference_profile_synthesize",
             provider="mock",
             model="gpt-reference",
             node_id="reference_profile_synthesize",
@@ -398,6 +400,8 @@ def _seed_author_state(session) -> None:
             ),
             LlmCall(
                 llm_call_id="llm_call_author_scene",
+                scope_type="scene",
+                scope_id="SC_RESET_SNOW_01",
                 provider="mock",
                 model="gpt-author",
                 node_id="scene_execution",

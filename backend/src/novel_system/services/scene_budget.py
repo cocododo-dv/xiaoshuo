@@ -21,6 +21,10 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from novel_system.accounting_contract import (
+    DEFAULT_PROVIDER_ATTEMPT_BUDGET,
+    PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
+)
 from novel_system.db.models import SceneRunState
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,10 +61,28 @@ def estimate_baseline_tokens(session: Session, snapshot: dict[str, Any]) -> int:
     return input_tokens + output_tokens
 
 
-def ensure_budget(state: SceneRunState, baseline_tokens: int) -> None:
+def ensure_budget(
+    state: SceneRunState,
+    baseline_tokens: int,
+    *,
+    provider_attempt_budget: int = DEFAULT_PROVIDER_ATTEMPT_BUDGET,
+) -> None:
     """预算为空时确立为 5×基线；已设不覆盖、从不收缩（作者 topup 是唯一扩容口）。"""
     if state.scene_token_budget is None and baseline_tokens > 0:
-        state.scene_token_budget = BUDGET_MULTIPLIER * int(baseline_tokens)
+        baseline = int(baseline_tokens)
+        effective_provider_budget = max(1, int(provider_attempt_budget))
+        scene_budget = BUDGET_MULTIPLIER * baseline
+        state.scene_token_budget = scene_budget
+        state.provider_attempt_budget = effective_provider_budget
+        state.scene_budget_basis_json = {
+            "baseline_tokens": baseline,
+            "budget_multiplier": BUDGET_MULTIPLIER,
+            "scene_token_budget": scene_budget,
+            "provider_attempt_budget": {
+                "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
+                "value": effective_provider_budget,
+            },
+        }
 
 
 def budget_unit(state: SceneRunState) -> int:

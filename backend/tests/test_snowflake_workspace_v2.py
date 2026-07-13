@@ -989,6 +989,8 @@ def test_workspace_v2_resync_previews_and_updates_materialized_scene_cards_witho
     session.add(
         LlmCall(
             llm_call_id="llm_call_resync_keep",
+            scope_type="scene",
+            scope_id=scene.scene_id,
             project_id=project["project_id"],
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
@@ -1083,6 +1085,10 @@ def test_workspace_v2_step_generation_uses_llm_and_persists_project_scoped_call(
     stored_call = session.get(LlmCall, step["last_llm_call_id"])
     assert stored_call is not None
     assert stored_call.project_id == project["project_id"]
+    assert (stored_call.scope_type, stored_call.scope_id) == (
+        "project",
+        project["project_id"],
+    )
     assert stored_call.request_payload_summary["step_key"] == "book_brief"
     assert stored_call.request_payload_summary["step_label"] == "读者定位"
     assert stored_call.request_payload_summary["step_english_label"] == "Target Audience"
@@ -1289,6 +1295,10 @@ def test_workspace_v2_assistant_uses_draft_override_and_returns_candidate_patch(
     stored_call = session.get(LlmCall, payload["llm_call_id"])
     assert stored_call is not None
     assert stored_call.project_id == project["project_id"]
+    assert (stored_call.scope_type, stored_call.scope_id) == (
+        "project",
+        project["project_id"],
+    )
     assert stored_call.request_payload_summary["draft"]["target_reader"] == override_reader
     assert stored_call.request_payload_summary["pressure_rubric"]["dimensions"]
     assert stored_call.request_payload_summary["current_pressure_diagnosis"]["pressure_flags"]
@@ -1357,6 +1367,10 @@ def test_workspace_v2_scene_triage_suggest_returns_non_persistent_suggestions(cl
     session.expire_all()
     stored_call = session.get(LlmCall, payload["llm_call_id"])
     assert stored_call is not None
+    assert (stored_call.scope_type, stored_call.scope_id) == (
+        "project",
+        project["project_id"],
+    )
     assert stored_call.request_payload_summary["pressure_rubric"]["scene_rules"]["proactive"] == [
         "goal",
         "conflict",

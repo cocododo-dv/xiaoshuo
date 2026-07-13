@@ -54,6 +54,7 @@ class SceneRunJobService:
         job = ChapterRunJob(
             job_id=f"scene_run_{scene_id}_{uuid4().hex[:10]}",
             chapter_id=scene.chapter_id,
+            scene_id=scene_id,
             status=status,
             job_type=JOB_TYPE_SCENE_FULL,
             payload_json={
@@ -97,7 +98,7 @@ class SceneRunJobService:
     def serialize_job(self, job: ChapterRunJob) -> dict[str, Any]:
         payload = dict(job.payload_json or {})
         summary = dict(job.result_summary_json or {})
-        scene_id = payload.get("scene_id") or summary.get("scene_id")
+        scene_id = job.scene_id or payload.get("scene_id") or summary.get("scene_id")
         latest_qc = summary.get("latest_qc") or self._latest_qc_summary(str(scene_id or ""))
         error_details = dict(summary.get("error_details") or {})
         return {
@@ -150,7 +151,9 @@ class SceneRunJobService:
             current_final_scene_row_id=result.get("current_final_scene_row_id"),
             current_human_review_event_id=result.get("current_human_review_event_id"),
             needs_human_review=bool(result.get("current_human_review_event_id") or result.get("scene_status") == "human_review_required"),
-            latest_qc=self._latest_qc_summary(str((job.payload_json or {}).get("scene_id") or "")),
+            latest_qc=self._latest_qc_summary(
+                str(job.scene_id or (job.payload_json or {}).get("scene_id") or "")
+            ),
         )
         self.session.flush()
 
@@ -251,7 +254,7 @@ def _run_scene_job_worker(job_id: str) -> None:
     try:
         service = SceneRunJobService(session)
         job = service.get_job(job_id)
-        scene_id = str((job.payload_json or {}).get("scene_id") or "")
+        scene_id = str(job.scene_id or (job.payload_json or {}).get("scene_id") or "")
         service.mark_running(job, current_step="neutral_running")
         session.commit()
         result = Orchestrator(session).run_scene(

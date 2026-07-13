@@ -598,6 +598,8 @@ def test_workbench_generation_summary_stays_empty_when_current_run_has_no_genera
     session.add(
         LlmCall(
             llm_call_id="llm_call_stale_CH917_SC01",
+            scope_type="scene",
+            scope_id="CH917_SC01",
             provider="offline_deterministic",
             model="gpt-4.1-mini",
             prompt_hash="prompt_hash_stale_CH917_SC01",

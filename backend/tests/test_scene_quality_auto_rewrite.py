@@ -187,6 +187,8 @@ def test_auto_rewrite_uses_llm_candidate_when_live(client, session, monkeypatch)
             self.session.add(
                 LlmCall(
                     llm_call_id="llm_call_scene_auto_rewrite_test",
+                    scope_type="scene",
+                    scope_id=kwargs["scene_id"],
                     provider="fake",
                     model="fake-model",
                     node_id="scene_auto_rewrite",

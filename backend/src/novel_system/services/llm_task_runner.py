@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import LlmCall
+from novel_system.db.models import ChapterGoal, LlmCall, SceneCard, StoryProject
 from novel_system.services.context_budget import finalize_request_budget
 from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse, load_model_routing_config
 from novel_system.services.llm_node_registry import llm_node_route_fallbacks
@@ -451,9 +451,16 @@ class LLMNodeRunner:
         error_code: str | None,
         response: LLMResponse | None = None,
     ) -> None:
+        scope_type, scope_id = self._resolve_scope(
+            scene_id=scene_id,
+            chapter_id=chapter_id,
+            node_id=getattr(request, "node_id", None) if request is not None else step,
+        )
         self.session.add(
             LlmCall(
                 llm_call_id=llm_call_id,
+                scope_type=scope_type,
+                scope_id=scope_id,
                 provider=response.provider if response is not None else getattr(task_config, "provider", None),
                 provider_id=getattr(request, "provider_id", None) if request is not None else getattr(task_config, "provider_id", None),
                 account_id=getattr(request, "account_id", None) if request is not None else getattr(task_config, "account_id", None),
@@ -489,6 +496,27 @@ class LLMNodeRunner:
         except Exception:
             _LOGGER.warning("scene token accounting degraded for %s", scene_id, exc_info=True)
         self.session.flush()
+
+    def _resolve_scope(
+        self,
+        *,
+        scene_id: str,
+        chapter_id: str,
+        node_id: str,
+    ) -> tuple[str, str]:
+        if scene_id and self.session.get(SceneCard, scene_id) is not None:
+            return "scene", scene_id
+        if chapter_id and self.session.get(ChapterGoal, chapter_id) is not None:
+            return "chapter", chapter_id
+        project_candidates = [chapter_id]
+        if scene_id.startswith("project_"):
+            project_candidates.append(scene_id.removeprefix("project_"))
+        else:
+            project_candidates.append(scene_id)
+        for project_id in project_candidates:
+            if project_id and self.session.get(StoryProject, project_id) is not None:
+                return "project", project_id
+        return "system", node_id or "legacy"
 
 
 def _truncate_audit_text(value: Any) -> Any:

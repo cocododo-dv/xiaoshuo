@@ -11,6 +11,7 @@ from typing import Any, Literal
 import httpx
 import yaml
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.services.llm_providers import (
     default_provider_base_urls,
     get_adapter,
@@ -651,7 +652,15 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
     raw_node_routing = _require_mapping(raw_payload, "node_routing")
     raw_task_routing = _require_mapping(raw_payload, "task_routing")
     raw_model_profiles = _require_mapping(raw_payload, "model_profiles")
-    retry_budget = _require_mapping(raw_payload, "retry_budget")
+    retry_budget = dict(_require_mapping(raw_payload, "retry_budget"))
+    provider_attempt_budget = retry_budget.get("provider_attempt_budget")
+    if (
+        not isinstance(provider_attempt_budget, int)
+        or isinstance(provider_attempt_budget, bool)
+        or provider_attempt_budget <= 0
+    ):
+        provider_attempt_budget = DEFAULT_PROVIDER_ATTEMPT_BUDGET
+    retry_budget["provider_attempt_budget"] = provider_attempt_budget
     job_runtime = _require_mapping(raw_payload, "job_runtime")
 
     node_routing = {
@@ -678,7 +687,7 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
         node_routing=node_routing,
         task_routing=task_routing,
         model_profiles=_normalize_model_profiles(raw_model_profiles),
-        retry_budget=dict(retry_budget),
+        retry_budget=retry_budget,
         job_runtime=dict(job_runtime),
     )
 

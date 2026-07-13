@@ -1159,6 +1159,8 @@ class SceneGenerationService:
         self.session.add(
             LlmCall(
                 llm_call_id=llm_call_id,
+                scope_type="scene",
+                scope_id=scene.scene_id,
                 provider=getattr(task_config, "provider", None),
                 provider_id=getattr(task_config, "provider_id", None),
                 account_id=getattr(task_config, "account_id", None),

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from novel_system.db.models import QcReport, SceneCard, SceneRunState
+from novel_system.db.models import ChapterRunJob, QcReport, SceneCard, SceneRunState
+from novel_system.services.scene_run_jobs import SceneRunJobService
 
 
 def _create_chapter_and_scene(client) -> None:
@@ -39,7 +40,7 @@ def _create_chapter_and_scene(client) -> None:
     assert scene_response.status_code == 200
 
 
-def test_scene_run_job_api_creates_pollable_nonblocking_job(client) -> None:
+def test_scene_run_job_api_creates_pollable_nonblocking_job(client, session) -> None:
     _create_chapter_and_scene(client)
 
     response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
@@ -70,6 +71,26 @@ def test_scene_run_job_api_creates_pollable_nonblocking_job(client) -> None:
     assert poll.status_code == 200
     assert poll.json()["data"]["job_id"] == job["job_id"]
     assert poll.json()["data"]["scene_id"] == "CHJOB_SC01"
+    session.expire_all()
+    assert session.get(ChapterRunJob, job["job_id"]).scene_id == "CHJOB_SC01"
+
+
+def test_scene_run_job_serialization_prefers_authoritative_scene_column(session) -> None:
+    job = ChapterRunJob(
+        job_id="scene_run_authoritative_scope",
+        chapter_id="CHJOB",
+        scene_id="SCENE_COLUMN",
+        status="queued",
+        job_type="scene_run_full",
+        payload_json={"scene_id": "STALE_PAYLOAD", "current_step": "queued"},
+        result_summary_json={"scene_id": "STALE_SUMMARY"},
+    )
+    session.add(job)
+    session.commit()
+
+    serialized = SceneRunJobService(session).serialize_job(job)
+
+    assert serialized["scene_id"] == "SCENE_COLUMN"
 
 
 def test_scene_run_job_returns_preflight_blocker_before_starting_worker(client) -> None:

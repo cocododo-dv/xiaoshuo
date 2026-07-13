@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, UniqueConstraint
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db import models  # noqa: F401 - register every mapped table
 from novel_system.db.base import Base
 
@@ -43,7 +47,7 @@ def test_scene_run_state_has_durable_budget_and_checkpoint_columns() -> None:
         "scene_tokens_reserved": (False, "0"),
         "scene_budget_basis_json": (True, None),
         "provider_attempts_used": (False, "0"),
-        "provider_attempt_budget": (False, "32"),
+        "provider_attempt_budget": (False, str(DEFAULT_PROVIDER_ATTEMPT_BUDGET)),
         "active_execution_id": (True, None),
         "run_execution_status": (True, None),
         "run_checkpoint": (True, None),
@@ -56,7 +60,7 @@ def test_scene_run_state_has_durable_budget_and_checkpoint_columns() -> None:
         actual_default = None if column.server_default is None else str(column.server_default.arg)
         assert actual_default == server_default
 
-    assert table.c.provider_attempt_budget.default.arg == 32
+    assert table.c.provider_attempt_budget.default.arg == DEFAULT_PROVIDER_ATTEMPT_BUDGET
     checks = _check_sql("scene_run_states")
     assert checks["ck_scene_run_states_tokens_reserved_nonnegative"] == "scene_tokens_reserved >= 0"
     assert checks["ck_scene_run_states_provider_attempts_used_nonnegative"] == "provider_attempts_used >= 0"
@@ -78,6 +82,10 @@ def test_llm_call_has_durable_scope_budget_and_accounting_columns() -> None:
     checks = _check_sql("llm_calls")
     for name in ("estimated_tokens", "reserved_tokens", "budget_charged_tokens"):
         assert checks[f"ck_llm_calls_{name}_nonnegative"] == f"{name} >= 0"
+    assert (
+        checks["ck_llm_calls_budget_charged_within_reservation"]
+        == "budget_charged_tokens <= reserved_tokens"
+    )
     for status in ACCOUNTING_STATUSES:
         assert repr(status) in checks["ck_llm_calls_accounting_status"]
 
@@ -156,6 +164,10 @@ def test_llm_call_attempt_is_an_independent_non_cascading_audit_row() -> None:
         "latency_ms",
     ):
         assert checks[f"ck_llm_call_attempts_{name}_nonnegative"] == f"{name} >= 0"
+    assert (
+        checks["ck_llm_call_attempts_budget_charged_within_reservation"]
+        == "budget_charged_tokens <= reserved_tokens"
+    )
     for status in ACCOUNTING_STATUSES:
         assert repr(status) in checks["ck_llm_call_attempts_accounting_status"]
     for dispatch_kind in DISPATCH_KINDS:
@@ -177,3 +189,29 @@ def test_chapter_run_job_has_authoritative_scene_history_index() -> None:
         "scene_id",
         "created_at",
     )
+
+
+def test_all_production_llm_call_constructors_declare_queryable_scope() -> None:
+    source_root = Path(__file__).resolve().parents[1] / "src" / "novel_system"
+    missing: list[str] = []
+    for path in source_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else ""
+            )
+            if function_name != "LlmCall":
+                continue
+            keywords = {keyword.arg for keyword in node.keywords if keyword.arg}
+            absent = {"scope_type", "scope_id"} - keywords
+            if absent:
+                relative = path.relative_to(source_root.parent.parent)
+                missing.append(f"{relative}:{node.lineno}:{','.join(sorted(absent))}")
+
+    assert missing == []

@@ -107,7 +107,14 @@ class Orchestrator:
 
         # Wave 3（§4.6/§5.5）：确立场景 token 预算 = 5 × 单发基线（已设不覆盖）
         from novel_system.services import scene_budget
-        scene_budget.ensure_budget(state, scene_budget.estimate_baseline_tokens(self.session, bundle["snapshot"]))
+        from novel_system.services.llm_client import load_model_routing_config
+
+        routing_config = load_model_routing_config()
+        scene_budget.ensure_budget(
+            state,
+            scene_budget.estimate_baseline_tokens(self.session, bundle["snapshot"]),
+            provider_attempt_budget=routing_config.retry_budget["provider_attempt_budget"],
+        )
 
         from novel_system.services.scene_criticality import classify_scene
         chapter = self.session.get(ChapterGoal, scene.chapter_id)

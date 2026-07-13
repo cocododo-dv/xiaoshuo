@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db.models import ChapterRunJob, FinalScene, LlmCall, QcReport, SceneDraft
 
 
@@ -642,6 +643,11 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
 
 def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path: Path) -> None:
     backend_dir = Path(__file__).resolve().parents[1]
+    migration_source = (
+        backend_dir / "alembic" / "versions" / "20260713_0065_llm_accounting_budget_cancel.py"
+    ).read_text(encoding="utf-8")
+    assert "from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET" in migration_source
+    assert "server_default=str(DEFAULT_PROVIDER_ATTEMPT_BUDGET)" in migration_source
     db_path = tmp_path / "c1b-legacy-0064.sqlite"
     _build_c1b_legacy_0064_database(db_path)
 
@@ -662,6 +668,9 @@ def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path:
             LEFT JOIN llm_calls AS call ON call.llm_call_id = attempt.llm_call_id
             WHERE call.llm_call_id IS NULL
             """
+        ).fetchone()[0]
+        charged_over_reservation = connection.execute(
+            "SELECT COUNT(*) FROM llm_calls WHERE budget_charged_tokens > reserved_tokens"
         ).fetchone()[0]
         foreign_keys = connection.execute("PRAGMA foreign_key_list(llm_call_attempts)").fetchall()
         llm_rows = connection.execute(
@@ -691,6 +700,10 @@ def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path:
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
+                "UPDATE llm_calls SET budget_charged_tokens = 1 WHERE llm_call_id = 'call-scene'"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
                 "UPDATE llm_calls SET accounting_status = 'unknown' WHERE llm_call_id = 'call-scene'"
             )
 
@@ -707,6 +720,10 @@ def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path:
         "run_checkpoint_json",
         "active_run_job_id",
     } <= scene_columns.keys()
+    assert (
+        int(str(scene_columns["provider_attempt_budget"][4]).strip("'\""))
+        == DEFAULT_PROVIDER_ATTEMPT_BUDGET
+    )
     assert {
         "scope_type",
         "scope_id",
@@ -727,11 +744,12 @@ def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path:
     assert orphans == 0
     assert foreign_keys[0][2:7] == ("llm_calls", "llm_call_id", "llm_call_id", "NO ACTION", "NO ACTION")
     assert llm_rows == [
-        ("call-chapter", "chapter", "CH001", 99, 0, 99, 1, "failed"),
-        ("call-project", "project", "PRJ001", 30, 0, 30, 1, "settled"),
-        ("call-scene", "scene", "SC001", 42, 0, 42, 1, "settled"),
+        ("call-chapter", "chapter", "CH001", 99, 0, 0, 1, "failed"),
+        ("call-project", "project", "PRJ001", 30, 0, 0, 1, "settled"),
+        ("call-scene", "scene", "SC001", 42, 0, 0, 1, "settled"),
         ("call-system", "system", "legacy_failure", 0, 0, 0, 1, "failed"),
     ]
+    assert charged_over_reservation == 0
     assert job_rows == [
         ("job-empty", None),
         ("job-payload", "SC_PAYLOAD"),

@@ -19,6 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db.base import Base
 
 
@@ -591,8 +592,8 @@ class SceneRunState(Base):
     )
     provider_attempt_budget: Mapped[int] = mapped_column(
         Integer,
-        default=32,
-        server_default="32",
+        default=DEFAULT_PROVIDER_ATTEMPT_BUDGET,
+        server_default=str(DEFAULT_PROVIDER_ATTEMPT_BUDGET),
     )
     active_execution_id: Mapped[str | None] = mapped_column(String, nullable=True)
     run_execution_status: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -760,6 +761,10 @@ class LlmCall(Base):
             name="ck_llm_calls_budget_charged_tokens_nonnegative",
         ),
         CheckConstraint(
+            "budget_charged_tokens <= reserved_tokens",
+            name="ck_llm_calls_budget_charged_within_reservation",
+        ),
+        CheckConstraint(
             "accounting_status IN ('reserved','settled','failed','released','rejected','usage_exceeds_reservation')",
             name="ck_llm_calls_accounting_status",
         ),
@@ -854,6 +859,10 @@ class LlmCallAttempt(Base):
         CheckConstraint(
             "budget_charged_tokens >= 0",
             name="ck_llm_call_attempts_budget_charged_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "budget_charged_tokens <= reserved_tokens",
+            name="ck_llm_call_attempts_budget_charged_within_reservation",
         ),
         CheckConstraint(
             "latency_ms >= 0",

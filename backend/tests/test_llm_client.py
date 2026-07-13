@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from novel_system.settings import get_settings
+from novel_system.services import llm_client
 from novel_system.services.llm_client import (
     LLMClient,
     LLMConfigurationError,
@@ -643,6 +644,31 @@ def test_load_model_routing_config_rejects_malformed_top_level_shapes(
 
     with pytest.raises(LLMConfigurationError, match=expected_message):
         load_model_routing_config(config_path)
+
+
+def test_provider_attempt_budget_defaults_old_snapshots_and_preserves_explicit_value() -> None:
+    empty_snapshot = parse_model_routing_config(
+        {
+            "node_routing": {},
+            "task_routing": {},
+            "model_profiles": {},
+            "retry_budget": {},
+            "job_runtime": {},
+        }
+    )
+    explicit_snapshot = parse_model_routing_config(
+        {
+            "node_routing": {},
+            "task_routing": {},
+            "model_profiles": {},
+            "retry_budget": {"provider_attempt_budget": 17},
+            "job_runtime": {},
+        }
+    )
+
+    assert getattr(llm_client, "DEFAULT_PROVIDER_ATTEMPT_BUDGET", None) == 32
+    assert empty_snapshot.retry_budget["provider_attempt_budget"] == 32
+    assert explicit_snapshot.retry_budget["provider_attempt_budget"] == 17
 
 
 @pytest.mark.parametrize(

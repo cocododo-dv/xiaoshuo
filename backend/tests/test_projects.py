@@ -107,6 +107,8 @@ def test_outline_plan_generation_uses_project_outline_llm_when_live(client, sess
             self.session.add(
                 LlmCall(
                     llm_call_id="llm_call_project_outline_test",
+                    scope_type="project",
+                    scope_id=kwargs["chapter_id"],
                     provider="fake",
                     model="fake-model",
                     node_id="project_outline_plan",

@@ -43,6 +43,7 @@ def test_over_budget_cost_still_explainable(session):
     session.add(
         LlmCall(
             llm_call_id="cxc1", provider="openai_compatible", model="gpt-5",
+            scope_type="scene", scope_id="CX2",
             node_id="style_draft", step="style_draft", scene_id="CX2", chapter_id="CCH",
             project_id="CP", prompt_tokens=800, completion_tokens=400, total_tokens=1200,
         )
@@ -61,6 +62,7 @@ def test_failed_call_does_not_roll_back_draft_and_is_attributed(session):
     session.add(
         LlmCall(
             llm_call_id="cxc_fail", provider="openai_compatible", model="gpt-5",
+            scope_type="scene", scope_id="CX3",
             node_id="style_patch", step="style_patch", scene_id="CX3", chapter_id="CCH",
             project_id="CP", prompt_tokens=100, completion_tokens=0, total_tokens=100,
             error_code="LLM_TIMEOUT",

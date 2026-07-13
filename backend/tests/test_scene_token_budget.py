@@ -10,12 +10,14 @@
 from __future__ import annotations
 
 import json
+import inspect
 
 from sqlalchemy import select
 
 from novel_system.db.models import (
     ChapterGoal,
     ChapterState,
+    LlmCall,
     OperationLog,
     RelationProfile,
     SceneCard,
@@ -152,11 +154,19 @@ def test_run_establishes_budget_and_accumulates_usage(session) -> None:
     assert state.scene_token_budget and state.scene_token_budget > 0
     # 5× 单发基线（§4.6）：预算是基线的整 5 倍
     assert state.scene_token_budget % 5 == 0
+    assert state.provider_attempt_budget == 32
+    assert state.scene_budget_basis_json["provider_attempt_budget"] == {
+        "config_key": "retry_budget.provider_attempt_budget",
+        "value": 32,
+    }
     # 场景内每次 LLM 调用（生成 + QC + near-final）都计入
     assert state.scene_tokens_used > 0
     assert state.scene_tokens_used % CALL_TOKENS == 0
     # 完成门：总消耗不超过 5× 基线
     assert state.scene_tokens_used <= state.scene_token_budget
+    calls = session.execute(select(LlmCall)).scalars().all()
+    assert calls
+    assert {(call.scope_type, call.scope_id) for call in calls} == {("scene", SCENE_ID)}
 
 
 def test_rerun_accumulates_and_never_resets(session) -> None:
@@ -195,10 +205,24 @@ def test_can_spend_and_ensure_budget_semantics(session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
 
-    ensure_budget(state, 100)
+    assert "provider_attempt_budget" in inspect.signature(ensure_budget).parameters
+    ensure_budget(state, 100, provider_attempt_budget=23)
     assert state.scene_token_budget == 500
-    ensure_budget(state, 999)  # 已设不覆盖
+    assert state.provider_attempt_budget == 23
+    assert state.scene_budget_basis_json == {
+        "baseline_tokens": 100,
+        "budget_multiplier": 5,
+        "scene_token_budget": 500,
+        "provider_attempt_budget": {
+            "config_key": "retry_budget.provider_attempt_budget",
+            "value": 23,
+        },
+    }
+    first_basis = dict(state.scene_budget_basis_json)
+    ensure_budget(state, 999, provider_attempt_budget=99)  # 已设不覆盖
     assert state.scene_token_budget == 500
+    assert state.provider_attempt_budget == 23
+    assert state.scene_budget_basis_json == first_basis
 
     state.scene_tokens_used = 0
     assert can_spend(state, 500) is True

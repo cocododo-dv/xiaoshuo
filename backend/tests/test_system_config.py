@@ -6,6 +6,7 @@ import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.api.app import create_app
 from novel_system.db.models import LlmCall, SystemSecret
 from novel_system.services.settings_helpers import llm_generation_mode
@@ -22,7 +23,7 @@ def test_repo_model_config_declares_independent_provider_attempt_budget() -> Non
 
     routing_config = load_model_routing_config(config_path)
 
-    assert routing_config.retry_budget["provider_attempt_budget"] == 32
+    assert routing_config.retry_budget["provider_attempt_budget"] == DEFAULT_PROVIDER_ATTEMPT_BUDGET
 
 
 def test_system_config_read_includes_repo_defaults_without_admin_token(client) -> None:

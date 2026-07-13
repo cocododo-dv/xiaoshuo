@@ -26,7 +26,14 @@ LEGACY_REQUIRED_COLUMNS = {
     ),
 }
 
+LEGACY_REVISION = "20260712_0064"
 C1B_REVISION = "20260713_0065"
+REVISION_ALIASES = {
+    "0064": LEGACY_REVISION,
+    LEGACY_REVISION: LEGACY_REVISION,
+    "0065": C1B_REVISION,
+    C1B_REVISION: C1B_REVISION,
+}
 C1B_REQUIRED_TABLES = LEGACY_REQUIRED_TABLES + (
     "llm_calls",
     "llm_call_attempts",
@@ -86,8 +93,8 @@ C1B_REQUIRED_COLUMNS = {
 }
 
 
-def _schema_profile(expected_revision: str) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
-    if expected_revision in {C1B_REVISION, "0065"}:
+def _schema_profile(canonical_revision: str | None) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    if canonical_revision == C1B_REVISION:
         return C1B_REQUIRED_TABLES, C1B_REQUIRED_COLUMNS
     return LEGACY_REQUIRED_TABLES, LEGACY_REQUIRED_COLUMNS
 
@@ -97,17 +104,21 @@ def inspect_database(
     expected_revision: str,
 ) -> dict[str, Any]:
     database_path = Path(path).expanduser().resolve()
+    canonical_revision = REVISION_ALIASES.get(expected_revision)
     result: dict[str, Any] = {
         "path": str(database_path),
         "ready": False,
         "integrity": None,
         "revision": None,
         "expected_revision": expected_revision,
+        "expected_revision_canonical": canonical_revision,
         "foreign_keys": None,
         "missing_tables": [],
         "missing_columns": {},
     }
-    required_tables, required_columns = _schema_profile(expected_revision)
+    if canonical_revision is None:
+        result["error"] = f"unsupported_expected_revision={expected_revision}"
+    required_tables, required_columns = _schema_profile(canonical_revision)
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
@@ -127,7 +138,7 @@ def inspect_database(
             ).fetchall()
             if len(revision_rows) == 1:
                 result["revision"] = str(revision_rows[0][0])
-            else:
+            elif "error" not in result:
                 result["error"] = f"alembic_version_row_count={len(revision_rows)}"
 
         missing_tables = sorted(set(required_tables) - tables)
@@ -146,7 +157,7 @@ def inspect_database(
         result["missing_columns"] = missing_columns
 
         attempt_orphan_count: int | None = None
-        if expected_revision in {C1B_REVISION, "0065"} and {
+        if canonical_revision == C1B_REVISION and {
             "llm_calls",
             "llm_call_attempts",
         } <= tables:
@@ -170,7 +181,8 @@ def inspect_database(
         result["foreign_keys"] = foreign_keys
         result["ready"] = (
             integrity == "ok"
-            and result["revision"] == expected_revision
+            and canonical_revision is not None
+            and result["revision"] == canonical_revision
             and not missing_tables
             and not missing_columns
             and attempt_orphan_count in {None, 0}

@@ -492,6 +492,8 @@ class SceneAutoRewriteService:
         self.session.add(
             LlmCall(
                 llm_call_id=llm_call_id,
+                scope_type="scene",
+                scope_id=scene.scene_id,
                 provider="offline_deterministic",
                 model="scene-auto-rewrite-policy",
                 node_id="scene_auto_rewrite",

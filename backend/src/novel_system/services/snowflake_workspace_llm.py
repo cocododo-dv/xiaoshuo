@@ -621,6 +621,8 @@ class SnowflakeWorkspaceLLMService:
         self.session.add(
             LlmCall(
                 llm_call_id=llm_call_id,
+                scope_type="project",
+                scope_id=project_id,
                 provider=response.provider,
                 provider_id=request.provider_id,
                 account_id=request.account_id,
@@ -669,6 +671,8 @@ class SnowflakeWorkspaceLLMService:
         self.session.add(
             LlmCall(
                 llm_call_id=llm_call_id,
+                scope_type="project",
+                scope_id=project_id,
                 provider=response.provider if response is not None else getattr(task_config, "provider", None),
                 provider_id=getattr(request, "provider_id", None) if request is not None else getattr(task_config, "provider_id", None),
                 account_id=getattr(request, "account_id", None) if request is not None else getattr(task_config, "account_id", None),

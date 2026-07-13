@@ -18,6 +18,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import text
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
+
 
 revision = "20260713_0065"
 down_revision = "20260712_0064"
@@ -38,7 +40,12 @@ SCENE_COLUMNS = (
     sa.Column("scene_tokens_reserved", sa.Integer(), nullable=False, server_default="0"),
     sa.Column("scene_budget_basis_json", sa.JSON(), nullable=True),
     sa.Column("provider_attempts_used", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("provider_attempt_budget", sa.Integer(), nullable=False, server_default="32"),
+    sa.Column(
+        "provider_attempt_budget",
+        sa.Integer(),
+        nullable=False,
+        server_default=str(DEFAULT_PROVIDER_ATTEMPT_BUDGET),
+    ),
     sa.Column("active_execution_id", sa.String(), nullable=True),
     sa.Column("run_execution_status", sa.String(), nullable=True),
     sa.Column("run_checkpoint", sa.String(), nullable=True),
@@ -69,6 +76,9 @@ LLM_CHECKS = {
     "ck_llm_calls_estimated_tokens_nonnegative": "estimated_tokens >= 0",
     "ck_llm_calls_reserved_tokens_nonnegative": "reserved_tokens >= 0",
     "ck_llm_calls_budget_charged_tokens_nonnegative": "budget_charged_tokens >= 0",
+    "ck_llm_calls_budget_charged_within_reservation": (
+        "budget_charged_tokens <= reserved_tokens"
+    ),
     "ck_llm_calls_accounting_status": ACCOUNTING_STATUS_SQL,
 }
 
@@ -198,7 +208,7 @@ def _backfill_llm_calls() -> None:
                 scope_id = {id_sql},
                 estimated_tokens = {total_sql},
                 reserved_tokens = 0,
-                budget_charged_tokens = {total_sql},
+                budget_charged_tokens = 0,
                 usage_is_estimate = 1,
                 accounting_status = {status_sql}
             """
@@ -260,6 +270,10 @@ def _ensure_attempt_table() -> None:
         sa.CheckConstraint(
             "budget_charged_tokens >= 0",
             name="ck_llm_call_attempts_budget_charged_tokens_nonnegative",
+        ),
+        sa.CheckConstraint(
+            "budget_charged_tokens <= reserved_tokens",
+            name="ck_llm_call_attempts_budget_charged_within_reservation",
         ),
         sa.CheckConstraint("latency_ms >= 0", name="ck_llm_call_attempts_latency_ms_nonnegative"),
         sa.CheckConstraint(ACCOUNTING_STATUS_SQL, name="ck_llm_call_attempts_accounting_status"),

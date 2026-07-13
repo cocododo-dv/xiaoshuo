@@ -53,6 +53,8 @@ def _call(
     session.add(
         LlmCall(
             llm_call_id=f"llm_{idx:04d}",
+            scope_type="scene" if scene_id else "project" if project_id else "system",
+            scope_id=scene_id or project_id or node_id,
             provider=provider,
             model=model,
             node_id=node_id,

@@ -126,6 +126,40 @@ def test_previous_revision_uses_legacy_schema_profile(tmp_path):
     assert "llm_call_attempt_orphan_count" not in result
 
 
+def test_revision_aliases_select_the_canonical_schema_profiles(tmp_path):
+    legacy_path = tmp_path / "alias-0064.db"
+    c1b_path = tmp_path / "alias-0065.db"
+    _make_ready_database(
+        legacy_path,
+        revision=PREVIOUS_REVISION,
+        c1b=False,
+    )
+    _make_ready_database(c1b_path)
+
+    legacy = inspect_database(legacy_path, "0064")
+    c1b = inspect_database(c1b_path, "0065")
+
+    assert legacy["ready"] is True
+    assert legacy["expected_revision_canonical"] == PREVIOUS_REVISION
+    assert c1b["ready"] is True
+    assert c1b["expected_revision_canonical"] == HEAD_REVISION
+    assert c1b["llm_call_attempt_orphan_count"] == 0
+
+
+def test_unknown_expected_revision_fails_closed_even_when_database_stamp_matches(tmp_path):
+    database_path = tmp_path / "unknown-revision.db"
+    _make_ready_database(
+        database_path,
+        revision="20990101_9999",
+        c1b=False,
+    )
+
+    result = inspect_database(database_path, "20990101_9999")
+
+    assert result["ready"] is False
+    assert result["error"] == "unsupported_expected_revision=20990101_9999"
+
+
 def test_c1b_revision_rejects_legacy_schema_profile(tmp_path):
     database_path = tmp_path / "0065-with-legacy-schema.db"
     _make_ready_database(database_path, c1b=False)
