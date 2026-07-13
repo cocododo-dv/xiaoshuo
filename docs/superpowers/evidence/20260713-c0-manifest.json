@@ -10,7 +10,7 @@
   },
   "model_routes": {},
   "provenance": "offline",
-  "created_at": "2026-07-13T03:52:42.763219Z",
+  "created_at": "2026-07-13T04:18:01.686062Z",
   "commands": [
     {
       "command": "powershell -NoProfile -Command '$a=(''uvi''+''corn''); $b=(''novel''+''_system''); $hits=@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($a,[System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and $_.CommandLine.IndexOf($b,[System.StringComparison]::OrdinalIgnoreCase) -ge 0 } | Select-Object ProcessId,Name,CommandLine); [pscustomobject]@{match_count=$hits.Count;matches=$hits} | ConvertTo-Json -Depth 5; if ($hits.Count -eq 0) { exit 0 } else { exit 1 }'",
@@ -99,8 +99,8 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-07-13T03:50:36.5243634Z",
-      "ended_at": "2026-07-13T03:50:46.6477953Z"
+      "started_at": "2026-07-13T04:17:31.8677950Z",
+      "ended_at": "2026-07-13T04:17:43.1253467Z"
     }
   ],
   "artifacts": [
@@ -290,9 +290,10 @@
       "passed": true,
       "details": {
         "report": {
-          "passed": 35,
+          "passed": 41,
           "failed": 0,
-          "duration_seconds": 8.02,
+          "duration_seconds": 9.1,
+          "summary": "41 passed in 9.10s",
           "tests": [
             "tests/test_outcome_evidence.py",
             "tests/test_database_preflight.py",
