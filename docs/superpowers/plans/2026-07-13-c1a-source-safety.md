@@ -212,7 +212,7 @@ git commit -m "fix(style-reference): require explicit cloud send rights"
 - Modify: `backend/src/novel_system/services/style_reference/policy.py`
 - Create: `backend/src/novel_system/tools/source_rights_audit.py`
 
-- [ ] **Step 1: 写历史脏数据运行时阻断测试**
+- [x] **Step 1: 写历史脏数据运行时阻断测试**
 
 ```python
 @pytest.mark.parametrize(
@@ -240,13 +240,13 @@ def test_cloud_llm_allows_declared_send_rights():
     assert cloud_llm_allowed(book) is True
 ```
 
-- [ ] **Step 2: 运行 policy 测试并确认 RED**
+- [x] **Step 2: 运行 policy 测试并确认 RED**
 
 Run: `cd backend && python -m pytest tests/test_style_reference_policy.py -q`
 
 Expected: 历史非本地脏记录仍返回允许，测试失败。
 
-- [ ] **Step 3: 把权属加入运行时单点判定**
+- [x] **Step 3: 把权属加入运行时单点判定**
 
 ```python
 def cloud_llm_allowed(book: Any) -> bool:
@@ -258,7 +258,7 @@ def cloud_llm_allowed(book: Any) -> bool:
     return rights.get("declared") is True and rights.get("send_rights") is True
 ```
 
-- [ ] **Step 4: 写审计工具 RED 测试**
+- [x] **Step 4: 写审计工具 RED 测试**
 
 测试建立三本书：合规云策略、未声明云策略、local-only。要求 dry-run 只报告一本违规且不修改；apply 后只把违规项降级，保留审计信息；第二次 apply 为幂等：
 
@@ -281,13 +281,13 @@ session.commit()
 assert audit_source_rights(session, apply=True)["downgraded_count"] == 0
 ```
 
-- [ ] **Step 5: 运行审计测试并确认 RED**
+- [x] **Step 5: 运行审计测试并确认 RED**
 
 Run: `cd backend && python -m pytest tests/test_source_rights_audit.py -q`
 
 Expected: import 或函数缺失导致失败。
 
-- [ ] **Step 6: 实现审计函数与 CLI**
+- [x] **Step 6: 实现审计函数与 CLI**
 
 核心函数只扫描 `cloud_policy != local_only` 的书，并使用与 policy 相同的声明条件：
 
@@ -327,13 +327,13 @@ def audit_source_rights(
 
 CLI 参数为 `--apply` 和 `--json`；dry-run 有违规时 exit 1，apply 成功完成降级后 exit 0，数据库异常回滚并 exit 2。
 
-- [ ] **Step 7: 运行 Task 2 测试**
+- [x] **Step 7: 运行 Task 2 测试**
 
 Run: `cd backend && python -m pytest tests/test_style_reference_policy.py tests/test_source_rights_audit.py -q`
 
 Expected: 全部通过；dry-run 无副作用、apply 幂等。
 
-- [ ] **Step 8: 提交运行时门和审计工具**
+- [x] **Step 8: 提交运行时门和审计工具**
 
 ```powershell
 git add backend/src/novel_system/services/style_reference/policy.py backend/src/novel_system/tools/source_rights_audit.py backend/tests/test_style_reference_policy.py backend/tests/test_source_rights_audit.py
