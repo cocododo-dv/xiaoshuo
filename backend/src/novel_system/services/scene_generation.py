@@ -36,6 +36,16 @@ from novel_system.services.style_reference.injection import (
 _LOGGER = logging.getLogger(__name__)
 
 
+class SceneGenerationPostprocessError(ValueError):
+    """Stable typed failure emitted after a provider call settled successfully."""
+
+    def __init__(self, *, llm_call_id: str | None, message: str) -> None:
+        super().__init__(message)
+        self.llm_call_id = llm_call_id
+        self.code = "SCENE_GENERATION_RESPONSE_INVALID"
+        self.error_code = self.code
+
+
 @dataclass(slots=True)
 class NeutralGenerationResult:
     row_id: str
@@ -1856,7 +1866,10 @@ def _extract_scene_text(response: LLMResponse) -> str:
     if isinstance(scene_text, str) and scene_text.strip():
         return scene_text.strip()
     # 中性/风格/补丁/续写各路径共用此提取器，消息不指认具体 stage（审计 P-17）
-    raise ValueError("llm generation response missing scene_text")
+    raise SceneGenerationPostprocessError(
+        llm_call_id=getattr(response, "llm_call_id", None),
+        message="llm generation response missing scene_text",
+    )
 
 
 def _anti_template_quality_gate(text: str, *, scene_id: str, chapter_id: str) -> dict[str, Any]:

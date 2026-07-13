@@ -11,11 +11,21 @@ semantic critic LLM pass for deeper, context-aware feedback.
 from __future__ import annotations
 
 import json
+import hashlib
+from copy import deepcopy
 import logging
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, replace
+from typing import Any, Literal
 
-from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+from sqlalchemy.orm import Session
+
+from novel_system.services.llm_accounting import (
+    LLMAccountingError,
+    LLMAccountingRejected,
+    LLMCallContext,
+    classify_advisory_failure,
+    validate_product_call,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +134,57 @@ class CritiqueResult:
     directives: list[str] = field(default_factory=list)
     dimension_scores: dict[str, float] = field(default_factory=dict)
     flagged_dimensions: list[str] = field(default_factory=list)
+    outcome: Literal[
+        "not_invoked",
+        "completed",
+        "rejected_before_dispatch",
+        "provider_failed",
+        "parse_failed",
+    ] = "not_invoked"
+    rule_should_rewrite: bool = False
+    rule_directives: list[str] = field(default_factory=list)
+    rule_dimension_scores: dict[str, float] = field(default_factory=dict)
+    rule_flagged_dimensions: list[str] = field(default_factory=list)
+    llm_contribution: dict[str, Any] | None = None
+    llm_call_id: str | None = None
+    execution_id: str | None = None
+    execution_step_key: str | None = None
+    run_job_id: str | None = None
+    reason: str | None = None
+    error_code: str | None = None
+
+    def product_snapshot(self) -> dict[str, Any]:
+        """Stable JSON product persisted by the soft-QC sub-checkpoint."""
+
+        return {
+            "schema_version": 1,
+            "outcome": self.outcome,
+            "should_rewrite": bool(self.should_rewrite),
+            "directives": list(self.directives),
+            "dimension_scores": dict(self.dimension_scores),
+            "flagged_dimensions": list(self.flagged_dimensions),
+            "rule_should_rewrite": bool(self.rule_should_rewrite),
+            "rule_directives": list(self.rule_directives),
+            "rule_dimension_scores": dict(self.rule_dimension_scores),
+            "rule_flagged_dimensions": list(self.rule_flagged_dimensions),
+            "llm_contribution": deepcopy(self.llm_contribution),
+            "llm_call_id": self.llm_call_id,
+            "execution_id": self.execution_id,
+            "execution_step_key": self.execution_step_key,
+            "run_job_id": self.run_job_id,
+            "reason": self.reason,
+            "error_code": self.error_code,
+        }
+
+
+def critique_llm_contribution_hash(contribution: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        contribution,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def auto_critique(
@@ -151,7 +212,10 @@ def auto_critique(
         separate ``self_repetition`` module wired through ``external_signals``).
     """
     if skip_critique or not text or not text.strip():
-        return CritiqueResult(should_rewrite=False)
+        return CritiqueResult(
+            should_rewrite=False,
+            reason="skip_critique" if skip_critique else "empty_text",
+        )
 
     signals, _ = analyze_literary_quality(text)
 
@@ -180,6 +244,11 @@ def auto_critique(
         directives=directives,
         dimension_scores=dimension_scores,
         flagged_dimensions=flagged,
+        rule_should_rewrite=len(directives) > 0,
+        rule_directives=list(directives),
+        rule_dimension_scores=dict(dimension_scores),
+        rule_flagged_dimensions=list(flagged),
+        reason="rule_only",
     )
 
 
@@ -278,32 +347,77 @@ _LLM_CRITIC_DIMENSIONS = frozenset({
     "character_consistency", "earned_emotion", "conflict_credibility",
     "information_dumping", "show_vs_tell", "pacing",
 })
+_LLM_CONTRIBUTION_DIMENSIONS = _LLM_CRITIC_DIMENSIONS | {"llm_general"}
 
 
 def llm_auto_critique(
     text: str,
     scene_context: SceneContext | None = None,
     *,
-    session: Any | None = None,
+    session: Session | None = None,
     llm_runner: Any | None = None,
     llm_context: LLMCallContext | None = None,
     skip_critique: bool = False,
+    not_invoked_reason: str | None = None,
 ) -> CritiqueResult:
     """Run the hybrid rule-based + LLM critique pipeline.
 
     Always runs the rule-based pass.  When *llm_runner* is provided and
     *skip_critique* is ``False``, also calls an LLM critic and merges
-    the results (deduplicated by dimension).
+    the results (deduplicated by dimension). The returned envelope distinguishes
+    no-call, success, parse failure, pre-dispatch rejection, and provider failure.
+    Accounting and control-plane integrity failures propagate to the caller.
     """
     rule_result = auto_critique(text, skip_critique=skip_critique)
 
+    ownership = {
+        "execution_id": llm_context.execution_id if llm_context is not None else None,
+        "execution_step_key": (
+            llm_context.execution_step_key if llm_context is not None else None
+        ),
+        "run_job_id": llm_context.run_job_id if llm_context is not None else None,
+    }
     if skip_critique or llm_runner is None:
-        return rule_result
+        return replace(
+            rule_result,
+            outcome="not_invoked",
+            reason=(
+                "skip_critique"
+                if skip_critique
+                else not_invoked_reason or "runner_disabled"
+            ),
+            llm_call_id=None,
+            error_code=None,
+            **ownership,
+        )
+    if getattr(llm_runner, "provider_execution_mode", "online") == "offline_deterministic":
+        return replace(
+            rule_result,
+            outcome="not_invoked",
+            reason="offline_unsupported",
+            llm_call_id=None,
+            error_code=None,
+            **ownership,
+        )
     if llm_context is None:
         raise LLMAccountingRejected(
             "LLM_ACCOUNTING_CONTEXT_REQUIRED",
             "LLM critic execution requires explicit accounting context",
         )
+    if session is None:
+        raise LLMAccountingRejected(
+            "LLM_ACCOUNTING_SESSION_REQUIRED",
+            "LLM critic execution requires a durable accounting session",
+        )
+    # A called advisory critic is always an online provider product.  Offline
+    # runners return the explicit no-call envelope above, so accepting an
+    # offline mode on a called context would let coordinated ledger rewrites
+    # masquerade as a zero-attempt deterministic success.
+    called_context = (
+        llm_context
+        if llm_context.provider_execution_mode == "online"
+        else replace(llm_context, provider_execution_mode="online")
+    )
 
     context_block = _format_scene_context(scene_context)
     task_prompt = CRITIC_TASK_PROMPT_TEMPLATE.format(
@@ -316,19 +430,88 @@ def llm_auto_critique(
             task_name="auto_critique_llm",
             prompt_text=task_prompt,
             system_prompt=CRITIC_SYSTEM_PROMPT,
-            context=llm_context,
+            context=called_context,
         )
-    except Exception:
-        logger.warning("LLM critic call failed; returning rule-only result", exc_info=True)
-        return rule_result
+    except Exception as exc:
+        outcome, call_id, error_code = classify_advisory_failure(
+            session,
+            exc,
+            called_context,
+        )
+        logger.warning("LLM critic call failed with durable degraded outcome", exc_info=True)
+        return replace(
+            rule_result,
+            outcome=outcome,
+            llm_call_id=call_id,
+            reason=(
+                "pre_dispatch_rejection"
+                if outcome == "rejected_before_dispatch"
+                else "provider_call_failed"
+            ),
+            error_code=error_code,
+            **ownership,
+        )
 
+    llm_call_id = getattr(response, "llm_call_id", None)
+    if not isinstance(llm_call_id, str) or not llm_call_id:
+        raise LLMAccountingError(
+            "LLM_ACCOUNTING_PARENT_ID_MISSING",
+            "LLM critique response is missing its durable parent call id",
+        )
     llm_parsed = _parse_llm_response(response)
-    llm_issues = llm_parsed.get("issues") or []
+    if llm_parsed is None:
+        if session is not None:
+            validate_product_call(
+                session,
+                llm_call_id,
+                called_context,
+                expected_outcome="parse_failed",
+            )
+        return replace(
+            rule_result,
+            outcome="parse_failed",
+            llm_call_id=llm_call_id,
+            reason="invalid_llm_response",
+            error_code="LLM_CRITIQUE_RESPONSE_INVALID",
+            **ownership,
+        )
+    parent = validate_product_call(
+        session,
+        llm_call_id,
+        called_context,
+        expected_outcome="completed",
+    )
+    llm_issues = []
+    for raw_issue in llm_parsed.get("issues") or []:
+        if not isinstance(raw_issue, dict):
+            continue
+        dimension = str(raw_issue.get("dimension") or "llm_general")
+        if dimension not in _LLM_CRITIC_DIMENSIONS:
+            dimension = "llm_general"
+        llm_issues.append(
+            {
+                "dimension": dimension,
+                "directive": str(raw_issue.get("directive") or ""),
+                "evidence": str(raw_issue.get("evidence") or "")[:120],
+            }
+        )
     llm_should_rewrite = bool(llm_parsed.get("should_rewrite", False))
+    llm_contribution = {
+        "should_rewrite": llm_should_rewrite,
+        "issues": llm_issues,
+    }
+    parent.response_payload_summary = {
+        **dict(parent.response_payload_summary or {}),
+        "auto_critique_parsed_llm_hash": critique_llm_contribution_hash(
+            llm_contribution
+        ),
+    }
+    session.commit()
 
     # Merge: rule-based first, then LLM (deduplicated by dimension)
     merged_directives = list(rule_result.directives)
-    seen_dims = {d for d in rule_result.flagged_dimensions}
+    merged_flagged_dimensions = list(rule_result.flagged_dimensions)
+    seen_dims = set(merged_flagged_dimensions)
     for issue in llm_issues:
         dim = issue.get("dimension", "llm_general")
         if dim not in _LLM_CRITIC_DIMENSIONS:
@@ -342,12 +525,23 @@ def llm_auto_critique(
                     entry += f" (evidence: {evidence[:120]})"
                 merged_directives.append(entry)
                 seen_dims.add(dim)
+                merged_flagged_dimensions.append(dim)
 
     return CritiqueResult(
         should_rewrite=rule_result.should_rewrite or llm_should_rewrite,
         directives=merged_directives,
         dimension_scores=rule_result.dimension_scores,
-        flagged_dimensions=list(seen_dims),
+        flagged_dimensions=merged_flagged_dimensions,
+        outcome="completed",
+        rule_should_rewrite=rule_result.rule_should_rewrite,
+        rule_directives=list(rule_result.rule_directives),
+        rule_dimension_scores=dict(rule_result.rule_dimension_scores),
+        rule_flagged_dimensions=list(rule_result.rule_flagged_dimensions),
+        llm_contribution=llm_contribution,
+        llm_call_id=llm_call_id,
+        execution_id=llm_context.execution_id,
+        execution_step_key=llm_context.execution_step_key,
+        run_job_id=llm_context.run_job_id,
     )
 
 
@@ -373,19 +567,36 @@ def _format_scene_context(ctx: SceneContext | None) -> str:
     return "\n".join(parts) if parts else "(No scene context provided.)"
 
 
-def _parse_llm_response(response: Any) -> dict[str, Any]:
+def _parse_llm_response(response: Any) -> dict[str, Any] | None:
     """Extract JSON from an LLM response object."""
     try:
         if hasattr(response, "structured_output") and response.structured_output:
-            return response.structured_output
-        raw = getattr(response, "text", "") or ""
-        # Strip markdown code fences if present
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1]
-            if raw.endswith("```"):
-                raw = raw[:-3]
-        return json.loads(raw.strip())
+            parsed = response.structured_output
+        else:
+            raw = getattr(response, "text", "") or ""
+            # Strip markdown code fences if present
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1]
+                if raw.endswith("```"):
+                    raw = raw[:-3]
+            parsed = json.loads(raw.strip())
+        if (
+            not isinstance(parsed, dict)
+            or type(parsed.get("should_rewrite")) is not bool
+            or not isinstance(parsed.get("issues"), list)
+            or parsed["should_rewrite"] != bool(parsed["issues"])
+            or any(
+                not isinstance(issue, dict)
+                or issue.get("dimension") not in _LLM_CONTRIBUTION_DIMENSIONS
+                or not isinstance(issue.get("directive"), str)
+                or not issue["directive"].strip()
+                or not isinstance(issue.get("evidence", ""), str)
+                for issue in parsed["issues"]
+            )
+        ):
+            return None
+        return parsed
     except (json.JSONDecodeError, TypeError, AttributeError):
         logger.warning("Failed to parse LLM critic response", exc_info=True)
-        return {}
+        return None

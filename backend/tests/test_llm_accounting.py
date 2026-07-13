@@ -293,6 +293,7 @@ def test_explicit_offline_zero_usage_settles_parent_without_physical_attempt(ses
     assert call.accounting_status == "settled"
     assert call.total_tokens == 0
     assert call.budget_charged_tokens == 0
+    assert call.latency_ms == 0
     assert call.usage_is_estimate is False
     assert session.query(LlmCallAttempt).count() == 0
     run_state = session.get(SceneRunState, scene_id)
@@ -515,8 +516,11 @@ def test_duplicate_identical_after_error_callback_is_idempotent(session) -> None
     assert session.query(LlmCallAttempt).one().accounting_status == "failed"
 
 
-def test_online_client_without_hook_contract_is_rejected_before_generate(session) -> None:
+def test_online_client_without_hook_contract_is_rejected_before_generate(
+    session, monkeypatch
+) -> None:
     accounting = _accounting_module()
+    monkeypatch.setattr(accounting, "_elapsed_ms", lambda _started: 17)
 
     class HooklessOnlineClient:
         called = 0
@@ -546,7 +550,9 @@ def test_online_client_without_hook_contract_is_rejected_before_generate(session
     assert getattr(exc_info.value, "code", None) == "LLM_ACCOUNTING_HOOK_UNSUPPORTED"
     assert client.called == 0
     assert session.query(LlmCallAttempt).count() == 0
-    assert session.query(LlmCall).one().accounting_status == "rejected"
+    parent = session.query(LlmCall).one()
+    assert parent.accounting_status == "rejected"
+    assert parent.latency_ms == 0
 
 
 def test_online_wrapper_that_drops_hook_never_leaves_a_live_parent(session) -> None:

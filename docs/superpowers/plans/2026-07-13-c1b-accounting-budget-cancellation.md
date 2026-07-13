@@ -282,6 +282,8 @@ git commit -m "feat(scene-run): resume durable node checkpoints"
 
 阶段验收记录（4A/4B）：公共 canonical budget 初始化、审计式 topup 重放、request reservation、token/业务/physical attempt 三重门禁、SQLite/PostgreSQL execution-step 唯一 claim、`run/run_task` 统一父子账本、21+4 caller typed context、scene/chapter job ownership、offline/no-call 语义和重复 callback/release 幂等均已实现。受影响范围回归 338 passed，补充 context/topup 边界回归 140 passed；独立规格与质量复审最终均为 `APPROVED`。本记录不勾选 Task 4 总体验收项；4C 产品 envelope、4D archive subcursor 及 Task 3D/3F 的 legacy 兼容移除仍未完成。
 
+阶段验收记录（4C）：auto critique 与 prose extraction 已统一显式产品 envelope；called `run_task` 固定 online，offline 保存 `not_invoked/offline_unsupported`；成功、解析失败、provider 失败、发送前拒绝及规则/no-call 均绑定 typed owner、父调用、严格 physical-attempt 账本和稳定产品语义。`soft_qc_ready/sub_index=0` 同事务保存 critique/patch-failure 产品、产品 hash、独立 parsed-LLM anchor、generation provider-mode 历史快照及父账本锚点；创建期和恢复期使用同一 schema/owner/ledger/semantic 校验，released/rejected 崩溃窗口、配置 online/offline 切换、产品/owner/attempt/mode/hash 篡改均有定向阻断测试，已完成分支不重发且不重复扣账。最终验证包括 checkpoint 全量 135 passed、accounting/critique/prose/runner 166 passed、额外受影响模块 127 passed；最后一个 released-online→current-offline 组合修复后相关聚焦 66 passed。独立规格与质量复审最终均为 `APPROVED`，`compileall` 与 `git diff --check` 通过，实际数据库仍保持 revision `20260712_0064` 与原 SHA-256。本记录仍不勾选 Task 4 总体验收项；4D archive subcursor 尚未完成。
+
 - [ ] 测试 `reserve -> settle`、`reserve -> release`、重复 settle/release 幂等、reserved 永不为负。
 - [ ] 用两个独立 Session 和 barrier 测试并发预留：单 in-flight fence 只允许一个成功，失败线程不调用 provider；前者结算释放后后者可重新预留。
 - [ ] 测试 provider usage 缺失、失败、actual 高于本地 estimate 但低于 reserved；`used + reserved <= budget` 始终成立。

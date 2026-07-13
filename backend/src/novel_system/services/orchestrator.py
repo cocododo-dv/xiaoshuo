@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from copy import deepcopy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sqlalchemy import select, update
@@ -32,7 +32,14 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
-from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_accounting import (
+    ACCOUNTING_EXECUTION_MODE_KEY,
+    LLMAccountingError,
+    LLMCallContext,
+    is_llm_control_plane_failure,
+    validate_product_call,
+    validate_product_call_ledger,
+)
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.bundle_builder import BundleBuilder
@@ -43,12 +50,16 @@ from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import (
     NeutralGenerationResult,
+    SceneGenerationPostprocessError,
     SceneGenerationService,
     StyleGenerationResult,
     versioned_scene_artifact_id,
 )
 from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER, SceneRunCheckpointService
 from novel_system.services.version_manager import VersionManager
+
+if TYPE_CHECKING:
+    from novel_system.services.prose_event_extractor import ProseExtractionResult
 
 
 class Orchestrator:
@@ -1112,6 +1123,9 @@ class Orchestrator:
             allow_local_rejected_output=allow_local_rejected_output,
         )
         call = self.session.get(LlmCall, llm_call_id)
+        valid_offline_settlement = (
+            call is not None and self._is_valid_offline_settled_call(call)
+        )
         if (
             call is None
             or call.scene_id != scene_id
@@ -1124,6 +1138,7 @@ class Orchestrator:
                     allow_local_rejected_output
                     and call.accounting_status == "rejected"
                 )
+                and not valid_offline_settlement
             )
         ):
             raise DomainError(
@@ -1137,6 +1152,37 @@ class Orchestrator:
                 },
             )
         return call
+
+    def _is_valid_offline_settled_call(self, call: LlmCall) -> bool:
+        zero_token_fields = (
+            call.prompt_tokens,
+            call.completion_tokens,
+            call.total_tokens,
+            call.estimated_tokens,
+            call.reserved_tokens,
+            call.budget_charged_tokens,
+            call.latency_ms,
+        )
+        if (
+            call.provider != "offline_deterministic"
+            or not isinstance(call.request_payload_summary, dict)
+            or call.request_payload_summary.get(ACCOUNTING_EXECUTION_MODE_KEY)
+            != "offline_deterministic"
+            or call.accounting_status != "settled"
+            or call.request_dispatched_at is not None
+            or not isinstance(call.settled_at, str)
+            or not call.settled_at
+            or call.error_code is not None
+            or call.usage_is_estimate is not False
+            or any(type(value) is not int or value != 0 for value in zero_token_fields)
+        ):
+            return False
+        physical_attempt_id = self.session.scalar(
+            select(LlmCallAttempt.attempt_id)
+            .where(LlmCallAttempt.llm_call_id == call.llm_call_id)
+            .limit(1)
+        )
+        return physical_attempt_id is None
 
     def _validate_artifact_execution_owner(self, owner_execution_id: Any) -> str:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
@@ -1380,7 +1426,7 @@ class Orchestrator:
             llm_call_id=row.llm_call_id,
         )
         assert owner_execution_id is not None
-        self._validate_checkpoint_llm_output(
+        generation_parent = self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=row.llm_call_id,
             execution_step_key="scene_blueprint",
@@ -1551,7 +1597,10 @@ class Orchestrator:
         assert call is not None
         if (
             call.scene_id != scene_id
-            or call.request_dispatched_at is None
+            or (
+                call.request_dispatched_at is None
+                and not self._is_valid_offline_settled_call(call)
+            )
             or call.accounting_status != "settled"
             or (call.execution_id == self._execution_id and call.execution_step_key != expected_step_key)
         ):
@@ -2187,7 +2236,7 @@ class Orchestrator:
         llm_call_id = refs.get(f"{prefix}_llm_call_id")
         step_key = refs.get(f"{prefix}_execution_step_key")
         owner = self._validate_artifact_execution_owner(refs.get(f"{prefix}_artifact_execution_id"))
-        self._validate_checkpoint_llm_output(
+        generation_parent = self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=llm_call_id,
             execution_step_key=step_key,
@@ -2755,12 +2804,21 @@ class Orchestrator:
                 expected_node_at_least=expected_node_at_least,
             )
         artifact_execution_id = self._validate_artifact_execution_owner(artifact_execution_id)
-        self._validate_checkpoint_llm_output(
+        generation_parent = self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=llm_call_id,
             execution_step_key=execution_step_key,
             execution_id=artifact_execution_id,
         )
+        try:
+            self._validate_settled_parent_ledger(generation_parent)
+        except LLMAccountingError as exc:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                f"{prefix} checkpoint generation attempt ledger is invalid",
+                status_code=409,
+                details={"llm_call_id": llm_call_id, "error_code": exc.code},
+            ) from exc
         if (
             row.scene_id != scene_id
             or row.stage != expected_stage
@@ -3415,66 +3473,94 @@ class Orchestrator:
         scene_id = scene.scene_id
         style_generation = selected_style_generation
         if progress < 0:
-            critique_summary: dict[str, Any] = {
-                "status": "completed",
-                "should_rewrite": False,
-                "directives": [],
-                "dimension_scores": {},
-                "flagged_dimensions": [],
-            }
             critique_outcome = "unchanged"
             critique_skip_reason: str | None = None
-            critique = None
-            try:
-                from novel_system.services.auto_critique import llm_auto_critique
+            patch_failure_product: dict[str, Any] | None = None
+            from novel_system.services.auto_critique import llm_auto_critique
 
-                critique_runner = self._resolve_auto_critique_runner() if optional_spend_allowed() else None
-                chapter = self.session.get(ChapterGoal, scene.chapter_id)
-                critique_step_key = "soft_qc:auto_critique:0"
-                critique_context = LLMCallContext(
-                    scope_type="scene",
-                    scope_id=scene.scene_id,
-                    project_id=scene.project_id or (chapter.project_id if chapter is not None else None),
-                    chapter_id=scene.chapter_id,
-                    scene_id=scene.scene_id,
-                    node_id="soft_qc",
-                    step=critique_step_key,
-                    execution_id=self._execution_id,
-                    execution_step_key=critique_step_key if self._execution_id is not None else None,
-                    run_job_id=self._run_job_id,
-                )
+            critique_spend_allowed = optional_spend_allowed()
+            critique_runner = (
+                self._resolve_auto_critique_runner() if critique_spend_allowed else None
+            )
+            chapter = self.session.get(ChapterGoal, scene.chapter_id)
+            critique_step_key = "soft_qc:auto_critique:0"
+            critique_context = LLMCallContext(
+                scope_type="scene",
+                scope_id=scene.scene_id,
+                project_id=scene.project_id or (chapter.project_id if chapter is not None else None),
+                chapter_id=scene.chapter_id,
+                scene_id=scene.scene_id,
+                node_id="soft_qc",
+                step=critique_step_key,
+                execution_id=self._execution_id,
+                execution_step_key=critique_step_key if self._execution_id is not None else None,
+                run_job_id=self._run_job_id,
+                provider_execution_mode=(
+                    "online"
+                ),
+            )
+            self._reconcile_execution_step(critique_step_key)
+            skip_critique = bool(getattr(criticality, "skip_critique", False))
+            from novel_system.services.auto_critique import auto_critique
+
+            critique = self._recover_auto_critique_rejected_product(
+                critique_context,
+                auto_critique(
+                    style_generation.content,
+                    # A durable rejected parent proves this pass reached its call path;
+                    # its recovered deterministic product therefore is not a skip result.
+                    skip_critique=False,
+                ),
+                allow_retry=(
+                    critique_runner is not None
+                    and not skip_critique
+                    and getattr(
+                        critique_runner,
+                        "provider_execution_mode",
+                        "online",
+                    )
+                    == "online"
+                ),
+            )
+            if critique is None:
                 critique = llm_auto_critique(
                     style_generation.content,
                     scene_context=self._scene_critique_context(scene, contract),
                     session=self.session,
                     llm_runner=critique_runner,
                     llm_context=critique_context,
-                    skip_critique=bool(getattr(criticality, "skip_critique", False)),
+                    skip_critique=skip_critique,
+                    not_invoked_reason=(
+                        "budget_or_candidate_cap"
+                        if not critique_spend_allowed
+                        else "feature_disabled"
+                    ),
                 )
-                critique_summary = {
-                    "status": "completed",
-                    "should_rewrite": bool(critique.should_rewrite),
-                    "directives": list(critique.directives),
-                    "dimension_scores": dict(critique.dimension_scores),
-                    "flagged_dimensions": list(critique.flagged_dimensions),
-                }
-            except Exception as exc:
-                critique_summary = {
-                    **critique_summary,
-                    "status": "degraded",
-                    "error_type": exc.__class__.__name__,
-                }
-                critique_outcome = "degraded"
-                critique_skip_reason = "auto_critique_failed"
-                _LOGGER.warning("auto-critique degraded for scene %s", scene_id, exc_info=True)
+            critique_summary = critique.product_snapshot()
 
-            if critique is not None and critique.should_rewrite:
-                if not optional_spend_allowed():
+            self._reconcile_execution_step("soft_patch:auto_critique:0")
+            patch_spend_allowed = bool(
+                critique.should_rewrite and optional_spend_allowed()
+            )
+            recovered_patch_failure = self._recover_auto_critique_patch_rejected_product(
+                scene_id,
+                allow_retry=patch_spend_allowed,
+            )
+            if recovered_patch_failure is not None:
+                if not critique.should_rewrite:
+                    raise LLMAccountingError(
+                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                        "auto-critique patch rejection conflicts with a non-rewrite decision",
+                    )
+                patch_failure_product = recovered_patch_failure
+                critique_outcome = "patch_failed"
+                critique_skip_reason = "patch_failed:rejected_before_dispatch"
+            elif critique.should_rewrite:
+                if not patch_spend_allowed:
                     critique_outcome = "patch_skipped"
                     critique_skip_reason = "budget_or_candidate_cap"
                     _LOGGER.warning("critique patch skipped for scene %s (budget/candidate cap)", scene_id)
                 else:
-                    self._reconcile_execution_step("soft_patch:auto_critique:0")
                     try:
                         from novel_system.services.auto_critique import format_critique_brief
 
@@ -3494,6 +3580,12 @@ class Orchestrator:
                         )
                         critique_outcome = "patched"
                     except Exception as exc:
+                        if is_llm_control_plane_failure(exc):
+                            raise
+                        patch_failure_product = self._build_auto_critique_patch_failure_product(
+                            scene_id,
+                            exc,
+                        )
                         critique_outcome = "patch_failed"
                         critique_skip_reason = f"patch_failed:{exc.__class__.__name__}"
                         _LOGGER.warning(
@@ -3502,29 +3594,105 @@ class Orchestrator:
                             exc_info=True,
                         )
 
-            critique_summary = {
-                **critique_summary,
-                "outcome": critique_outcome,
-                "skip_reason": critique_skip_reason,
+            reused_selected_generation = (
+                style_generation.llm_call_id == selected_style_generation.llm_call_id
+            )
+            reused_parent = (
+                self.session.get(LlmCall, style_generation.llm_call_id)
+                if reused_selected_generation
+                else None
+            )
+            generation_parent = self._validate_generation_before_checkpoint(
+                scene_id,
+                style_generation,
+                expected_provider_execution_mode=(
+                    self._parent_execution_mode(reused_parent)
+                    if reused_parent is not None
+                    else getattr(
+                        self.scene_generation_service._llm_runner,
+                        "provider_execution_mode",
+                        "online",
+                    )
+                ),
+            )
+            generation_provider_execution_mode = self._parent_execution_mode(
+                generation_parent
+            )
+            self._validate_auto_critique_product_semantics(
+                critique_summary,
+                source_content=selected_style_generation.content,
+                patch_outcome=critique_outcome,
+            )
+            critique_product_hash = self._json_hash(critique_summary)
+            if critique.llm_call_id is not None:
+                critique_parent = self.session.get(LlmCall, critique.llm_call_id)
+                if critique_parent is None:
+                    raise LLMAccountingError(
+                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                        "auto-critique product parent disappeared before checkpoint commit",
+                    )
+                critique_parent.response_payload_summary = {
+                    **dict(critique_parent.response_payload_summary or {}),
+                    "auto_critique_product_hash": critique_product_hash,
+                }
+            # 该摘要只绑定本次事务所见的产品与父账本；不宣称抵抗可同步改写
+            # checkpoint、parent summary 与 ledger 的全库特权篡改。
+            self._validate_auto_critique_checkpoint(
+                scene_id,
+                critique_summary,
+                source_content=selected_style_generation.content,
+            )
+            patch_failure_hash = (
+                self._json_hash(patch_failure_product)
+                if patch_failure_product is not None
+                else None
+            )
+            if patch_failure_product is not None:
+                patch_parent = self.session.get(
+                    LlmCall,
+                    patch_failure_product["llm_call_id"],
+                )
+                if patch_parent is None:
+                    raise LLMAccountingError(
+                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                        "auto-critique patch failure parent disappeared before checkpoint commit",
+                    )
+                patch_parent.response_payload_summary = {
+                    **dict(patch_parent.response_payload_summary or {}),
+                    "auto_critique_patch_failure_hash": patch_failure_hash,
+                }
+                self._validate_auto_critique_patch_failure_checkpoint(
+                    scene_id,
+                    patch_failure_product,
+                    validate_checkpoint_hash=False,
+                )
+            checkpoint_refs = {
+                **self._soft_draft_refs(
+                    prefix="soft_input",
+                    generation=style_generation,
+                    source_draft_row_id=selected_style_generation.row_id,
+                    bundle=bundle,
+                    provider_execution_mode=generation_provider_execution_mode,
+                ),
+                "soft_auto_critique_decision": critique_summary,
+                "soft_auto_critique_outcome": critique_outcome,
+                "soft_auto_critique_skip_reason": critique_skip_reason,
             }
+            checkpoint_hashes = {
+                "soft_input_draft": self._text_hash(style_generation.content),
+                "soft_input_provider_execution_mode": self._text_hash(
+                    generation_provider_execution_mode
+                ),
+                "soft_auto_critique_decision": critique_product_hash,
+            }
+            if patch_failure_product is not None:
+                checkpoint_refs["soft_auto_critique_patch_failure"] = patch_failure_product
+                checkpoint_hashes["soft_auto_critique_patch_failure"] = patch_failure_hash
             self._save_run_checkpoint(
                 "soft_qc_ready",
                 sub_index=0,
-                artifact_refs={
-                    **self._soft_draft_refs(
-                        prefix="soft_input",
-                        generation=style_generation,
-                        source_draft_row_id=selected_style_generation.row_id,
-                        bundle=bundle,
-                    ),
-                    "soft_auto_critique_decision": critique_summary,
-                    "soft_auto_critique_outcome": critique_outcome,
-                    "soft_auto_critique_skip_reason": critique_skip_reason,
-                },
-                artifact_hashes={
-                    "soft_input_draft": self._text_hash(style_generation.content),
-                    "soft_auto_critique_decision": self._json_hash(critique_summary),
-                },
+                artifact_refs=checkpoint_refs,
+                artifact_hashes=checkpoint_hashes,
                 branch=critique_outcome,
             )
             progress = 0
@@ -3656,6 +3824,7 @@ class Orchestrator:
         source_draft_row_id: str,
         bundle: dict[str, Any],
         source_qc_report_id: str | None = None,
+        provider_execution_mode: str | None = None,
     ) -> dict[str, Any]:
         refs = {
             f"{prefix}_draft_row_id": generation.row_id,
@@ -3668,6 +3837,8 @@ class Orchestrator:
         }
         if source_qc_report_id is not None:
             refs[f"{prefix}_source_qc_report_id"] = source_qc_report_id
+        if provider_execution_mode is not None:
+            refs[f"{prefix}_provider_execution_mode"] = provider_execution_mode
         return refs
 
     def _load_soft_draft_checkpoint(
@@ -3695,12 +3866,23 @@ class Orchestrator:
         artifact_execution_id = self._validate_artifact_execution_owner(
             refs.get(f"{prefix}_artifact_execution_id")
         )
-        self._validate_checkpoint_llm_output(
+        generation_parent = self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=llm_call_id,
             execution_step_key=execution_step_key,
             execution_id=artifact_execution_id,
         )
+        historical_execution_mode = refs.get(f"{prefix}_provider_execution_mode")
+        if prefix == "soft_input" and (
+            historical_execution_mode not in {"online", "offline_deterministic"}
+            or self._text_hash(historical_execution_mode)
+            != self._checkpoint_hash(f"{prefix}_provider_execution_mode")
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                f"{prefix} checkpoint provider execution mode snapshot is invalid",
+                status_code=409,
+            )
         if (
             draft.scene_id != scene_id
             or draft.stage not in expected_stages
@@ -3725,20 +3907,63 @@ class Orchestrator:
                 f"{prefix} checkpoint QC source mismatch",
                 status_code=409,
             )
+        try:
+            self._validate_generation_parent_identity(
+                scene_id=scene_id,
+                parent=generation_parent,
+                draft_stage=draft.stage,
+                execution_step_key=execution_step_key,
+                execution_id=artifact_execution_id,
+                expected_provider_execution_mode=(
+                    historical_execution_mode if prefix == "soft_input" else None
+                ),
+            )
+            self._validate_settled_parent_ledger(generation_parent)
+        except LLMAccountingError as exc:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                f"{prefix} generation parent/physical-attempt ledger is invalid",
+                status_code=409,
+                details={"llm_call_id": llm_call_id, "error_code": exc.code},
+            ) from exc
         if prefix == "soft_input":
             critique = refs.get("soft_auto_critique_decision")
             outcome = refs.get("soft_auto_critique_outcome")
+            skip_reason = refs.get("soft_auto_critique_skip_reason")
             if (
                 not isinstance(critique, dict)
                 or self._json_hash(critique) != self._checkpoint_hash("soft_auto_critique_decision")
-                or critique.get("outcome") != outcome
-                or critique.get("skip_reason") != refs.get("soft_auto_critique_skip_reason")
+                or outcome not in {"unchanged", "patched", "patch_skipped", "patch_failed"}
+                or (outcome in {"unchanged", "patched"} and skip_reason is not None)
+                or (outcome in {"patch_skipped", "patch_failed"} and not isinstance(skip_reason, str))
                 or (outcome == "patched" and (draft.stage != "style_patch" or draft.row_id == source_row_id))
                 or (outcome != "patched" and draft.row_id != source_row_id)
             ):
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
                     "soft input auto-critique decision is inconsistent",
+                    status_code=409,
+                )
+            self._validate_auto_critique_product_semantics(
+                critique,
+                source_content=source.content,
+                patch_outcome=outcome,
+            )
+            self._validate_auto_critique_checkpoint(
+                scene_id,
+                critique,
+                source_content=source.content,
+            )
+            patch_failure_product = refs.get("soft_auto_critique_patch_failure")
+            if outcome == "patch_failed":
+                self._validate_auto_critique_patch_failure_checkpoint(
+                    scene_id,
+                    patch_failure_product,
+                )
+            elif patch_failure_product is not None:
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "non-failed auto-critique patch has a failure product",
                     status_code=409,
                 )
         return StyleGenerationResult(
@@ -3750,6 +3975,872 @@ class Orchestrator:
             execution_step_key=execution_step_key,
             artifact_execution_id=artifact_execution_id,
         )
+
+    def _validate_settled_parent_ledger(self, parent: LlmCall) -> None:
+        """Validate a provider-success parent without conflating later product parsing."""
+
+        if parent.accounting_status != "settled":
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "provider-success product parent is not settled",
+                details={"llm_call_id": parent.llm_call_id},
+            )
+        if parent.provider == "offline_deterministic":
+            if not self._is_valid_offline_settled_call(parent):
+                raise LLMAccountingError(
+                    "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                    "offline provider-success parent violates zero-attempt settlement",
+                    details={"llm_call_id": parent.llm_call_id},
+                )
+            return
+        validate_product_call_ledger(
+            self.session,
+            parent,
+            expected_outcome="completed",
+        )
+
+    def _validate_generation_before_checkpoint(
+        self,
+        scene_id: str,
+        generation: StyleGenerationResult,
+        *,
+        expected_provider_execution_mode: str | None = None,
+    ) -> LlmCall:
+        parent = self.session.get(LlmCall, generation.llm_call_id)
+        owner = generation.artifact_execution_id or self._execution_id
+        draft = self.session.get(SceneDraft, generation.row_id)
+        if (
+            parent is None
+            or draft is None
+            or draft.scene_id != scene_id
+            or draft.generation_llm_call_id != generation.llm_call_id
+            or parent.scene_id != scene_id
+            or parent.execution_id != owner
+            or parent.execution_step_key != generation.execution_step_key
+        ):
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "generation product is detached from its durable parent",
+                details={"llm_call_id": generation.llm_call_id},
+            )
+        self._validate_generation_parent_identity(
+            scene_id=scene_id,
+            parent=parent,
+            draft_stage=draft.stage,
+            execution_step_key=generation.execution_step_key,
+            execution_id=owner,
+            expected_provider_execution_mode=expected_provider_execution_mode,
+        )
+        self._validate_settled_parent_ledger(parent)
+        return parent
+
+    def _validate_generation_parent_identity(
+        self,
+        *,
+        scene_id: str,
+        parent: LlmCall,
+        draft_stage: str,
+        execution_step_key: str | None,
+        execution_id: str | None,
+        expected_provider_execution_mode: str | None = None,
+    ) -> None:
+        scene = self.session.get(SceneCard, scene_id)
+        chapter = self.session.get(ChapterGoal, scene.chapter_id) if scene is not None else None
+        stage_owner = {
+            "style_draft": ("style_draft", "style_draft"),
+            "style_patch": ("style_patch", "soft_patch"),
+            "de_template": ("style_patch", "de_template"),
+        }.get(draft_stage)
+        if scene is None or stage_owner is None:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "generation product stage/scene owner is invalid",
+                details={"llm_call_id": parent.llm_call_id, "draft_stage": draft_stage},
+            )
+        node_id, step = stage_owner
+        actual_execution_mode = (
+            parent.request_payload_summary.get(ACCOUNTING_EXECUTION_MODE_KEY)
+            if isinstance(parent.request_payload_summary, dict)
+            else None
+        )
+        # Without an explicit trusted snapshot this is a historical product:
+        # its strictly validated durable mode/attempt shape is authoritative,
+        # because the process configuration may legitimately have changed.
+        expected_execution_mode = (
+            expected_provider_execution_mode
+            if expected_provider_execution_mode is not None
+            else actual_execution_mode
+        )
+        if expected_execution_mode not in {"online", "offline_deterministic"}:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "generation product execution mode snapshot is invalid",
+                details={"llm_call_id": parent.llm_call_id},
+            )
+        expected_project_id = scene.project_id or (
+            chapter.project_id if chapter is not None else None
+        )
+        if (
+            parent.scope_type != "scene"
+            or parent.scope_id != scene_id
+            or parent.project_id != expected_project_id
+            or parent.chapter_id != scene.chapter_id
+            or parent.scene_id != scene_id
+            or parent.run_job_id != self._run_job_id
+            or parent.execution_id != execution_id
+            or parent.execution_step_key != execution_step_key
+            or parent.node_id != node_id
+            or parent.step != step
+            or actual_execution_mode != expected_execution_mode
+        ):
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "generation product is detached from its exact durable owner",
+                details={"llm_call_id": parent.llm_call_id, "draft_stage": draft_stage},
+            )
+
+    @staticmethod
+    def _parent_execution_mode(parent: LlmCall) -> str:
+        mode = (
+            parent.request_payload_summary.get(ACCOUNTING_EXECUTION_MODE_KEY)
+            if isinstance(parent.request_payload_summary, dict)
+            else None
+        )
+        if mode not in {"online", "offline_deterministic"}:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "durable parent has no valid provider execution mode marker",
+                details={"llm_call_id": parent.llm_call_id},
+            )
+        return mode
+
+    def _auto_critique_patch_context(
+        self,
+        scene_id: str,
+        *,
+        provider_execution_mode: str | None = None,
+    ) -> LLMCallContext:
+        scene = self.session.get(SceneCard, scene_id)
+        chapter = self.session.get(ChapterGoal, scene.chapter_id) if scene is not None else None
+        if scene is None:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "auto-critique patch scene owner is missing",
+            )
+        return LLMCallContext(
+            scope_type="scene",
+            scope_id=scene_id,
+            project_id=scene.project_id or (chapter.project_id if chapter is not None else None),
+            chapter_id=scene.chapter_id,
+            scene_id=scene_id,
+            node_id="style_patch",
+            step="soft_patch",
+            execution_id=self._execution_id,
+            execution_step_key="soft_patch:auto_critique:0",
+            run_job_id=self._run_job_id,
+            provider_execution_mode=(
+                provider_execution_mode
+                or getattr(
+                    self.scene_generation_service._llm_runner,
+                    "provider_execution_mode",
+                    "online",
+                )
+            ),
+        )
+
+    def _build_auto_critique_patch_failure_product(
+        self,
+        scene_id: str,
+        error: BaseException,
+    ) -> dict[str, Any]:
+        context = self._auto_critique_patch_context(scene_id)
+        rows = self.session.execute(
+            select(LlmCall).where(
+                LlmCall.scene_id == scene_id,
+                LlmCall.execution_id == self._execution_id,
+                LlmCall.execution_step_key == context.execution_step_key,
+                LlmCall.accounting_status.in_(("settled", "failed", "rejected")),
+            )
+        ).scalars().all()
+        if not rows:
+            raise error
+        if len(rows) != 1:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "auto-critique patch failure does not resolve to one durable parent",
+                details={"llm_call_ids": [row.llm_call_id for row in rows]},
+            ) from error
+        parent = rows[0]
+        if parent.accounting_status == "rejected":
+            outcome = "rejected_before_dispatch"
+            reason = "pre_dispatch_rejection"
+            error_code = parent.error_code
+            validate_product_call(
+                self.session,
+                parent.llm_call_id,
+                context,
+                expected_outcome=outcome,
+                expected_error_code=error_code,
+            )
+        elif parent.accounting_status == "failed":
+            outcome = "provider_failed"
+            reason = "provider_call_failed"
+            error_code = parent.error_code
+            validate_product_call(
+                self.session,
+                parent.llm_call_id,
+                context,
+                expected_outcome=outcome,
+                expected_error_code=error_code,
+            )
+        else:
+            if (
+                not isinstance(error, SceneGenerationPostprocessError)
+                or error.llm_call_id != parent.llm_call_id
+                or error.error_code != "SCENE_GENERATION_RESPONSE_INVALID"
+            ):
+                raise error
+            outcome = "parse_failed"
+            reason = "invalid_scene_generation_response"
+            error_code = "SCENE_GENERATION_RESPONSE_INVALID"
+            validate_product_call(
+                self.session,
+                parent.llm_call_id,
+                context,
+                expected_outcome="parse_failed",
+            )
+        if not isinstance(error_code, str) or not error_code:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "auto-critique patch failure parent has no stable error code",
+                details={"llm_call_id": parent.llm_call_id},
+            ) from error
+        return {
+            "schema_version": 1,
+            "outcome": outcome,
+            "llm_call_id": parent.llm_call_id,
+            "execution_id": context.execution_id,
+            "execution_step_key": context.execution_step_key,
+            "run_job_id": context.run_job_id,
+            "provider_execution_mode": context.provider_execution_mode,
+            "reason": reason,
+            "error_code": error_code,
+        }
+
+    def _validate_auto_critique_product_semantics(
+        self,
+        product: dict[str, Any],
+        *,
+        source_content: str,
+        patch_outcome: str,
+    ) -> None:
+        from novel_system.services.auto_critique import auto_critique
+
+        expected_rule = auto_critique(
+            source_content,
+            skip_critique=(
+                product.get("outcome") == "not_invoked"
+                and product.get("reason") == "skip_critique"
+            ),
+        )
+        rule_fields = {
+            "rule_should_rewrite": expected_rule.rule_should_rewrite,
+            "rule_directives": expected_rule.rule_directives,
+            "rule_dimension_scores": expected_rule.rule_dimension_scores,
+            "rule_flagged_dimensions": expected_rule.rule_flagged_dimensions,
+        }
+        if any(product.get(key) != value for key, value in rule_fields.items()):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "auto-critique rule product differs from deterministic source analysis",
+                status_code=409,
+            )
+        if product.get("outcome") != "completed":
+            merged_rule_fields = {
+                "should_rewrite": expected_rule.should_rewrite,
+                "directives": expected_rule.directives,
+                "dimension_scores": expected_rule.dimension_scores,
+                "flagged_dimensions": expected_rule.flagged_dimensions,
+            }
+            if any(product.get(key) != value for key, value in merged_rule_fields.items()):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "auto-critique degraded/no-call product is not the deterministic rule result",
+                    status_code=409,
+                )
+            if product.get("llm_contribution") is not None:
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "auto-critique non-completed product contains an LLM contribution",
+                    status_code=409,
+                )
+        else:
+            contribution = product.get("llm_contribution")
+            issues = contribution.get("issues") if isinstance(contribution, dict) else None
+            allowed_dimensions = {
+                "character_consistency",
+                "earned_emotion",
+                "conflict_credibility",
+                "information_dumping",
+                "show_vs_tell",
+                "pacing",
+                "llm_general",
+            }
+            if (
+                not isinstance(contribution, dict)
+                or set(contribution) != {"should_rewrite", "issues"}
+                or type(contribution.get("should_rewrite")) is not bool
+                or not isinstance(issues, list)
+                or any(
+                    not isinstance(issue, dict)
+                    or set(issue) != {"dimension", "directive", "evidence"}
+                    or any(not isinstance(issue.get(key), str) for key in issue)
+                    or issue.get("dimension") not in allowed_dimensions
+                    or not issue.get("directive", "").strip()
+                    or len(issue.get("evidence", "")) > 120
+                    for issue in issues
+                )
+                or contribution.get("should_rewrite") != bool(issues)
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "auto-critique completed LLM contribution schema is invalid",
+                    status_code=409,
+                )
+            expected_directives = list(expected_rule.directives)
+            expected_flagged = list(expected_rule.flagged_dimensions)
+            seen_dimensions = set(expected_flagged)
+            for issue in issues:
+                dimension = issue["dimension"]
+                directive = issue["directive"]
+                evidence = issue["evidence"]
+                if dimension not in seen_dimensions and directive:
+                    entry = f"[LLM路{dimension}] {directive}"
+                    if evidence:
+                        entry += f" (evidence: {evidence[:120]})"
+                    expected_directives.append(entry)
+                    expected_flagged.append(dimension)
+                    seen_dimensions.add(dimension)
+            completed_invariants_hold = (
+                product.get("directives") == expected_directives
+                and product.get("flagged_dimensions") == expected_flagged
+                and product.get("dimension_scores")
+                == product.get("rule_dimension_scores")
+                and product.get("should_rewrite")
+                == (
+                    expected_rule.should_rewrite
+                    or contribution["should_rewrite"]
+                )
+            )
+            if not completed_invariants_hold:
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "auto-critique completed product violates deterministic merge invariants",
+                    status_code=409,
+                )
+        should_rewrite = product.get("should_rewrite") is True
+        if (
+            (not should_rewrite and patch_outcome != "unchanged")
+            or (
+                should_rewrite
+                and patch_outcome not in {"patched", "patch_skipped", "patch_failed"}
+            )
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "auto-critique decision and patch outcome are semantically inconsistent",
+                status_code=409,
+            )
+
+    def _auto_critique_llm_contribution_hash(self, product: dict[str, Any]) -> str:
+        from novel_system.services.auto_critique import critique_llm_contribution_hash
+
+        contribution = product.get("llm_contribution")
+        if not isinstance(contribution, dict):
+            return ""
+        return critique_llm_contribution_hash(contribution)
+
+    def _validate_auto_critique_patch_failure_checkpoint(
+        self,
+        scene_id: str,
+        product: Any,
+        *,
+        validate_checkpoint_hash: bool = True,
+    ) -> None:
+        expected_fields = {
+            "schema_version",
+            "outcome",
+            "llm_call_id",
+            "execution_id",
+            "execution_step_key",
+            "run_job_id",
+            "provider_execution_mode",
+            "reason",
+            "error_code",
+        }
+        if (
+            not isinstance(product, dict)
+            or set(product) != expected_fields
+            or product.get("schema_version") != 1
+            or product.get("outcome")
+            not in {"provider_failed", "rejected_before_dispatch", "parse_failed"}
+            or not isinstance(product.get("llm_call_id"), str)
+            or product.get("execution_id") != self._execution_id
+            or product.get("execution_step_key") != "soft_patch:auto_critique:0"
+            or product.get("run_job_id") != self._run_job_id
+            or product.get("provider_execution_mode")
+            not in {"online", "offline_deterministic"}
+            or not isinstance(product.get("reason"), str)
+            or not isinstance(product.get("error_code"), str)
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "auto-critique patch failure product schema/owner is invalid",
+                status_code=409,
+            )
+        if validate_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash(
+            "soft_auto_critique_patch_failure"
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "auto-critique patch failure product hash mismatch",
+                status_code=409,
+            )
+        context = self._auto_critique_patch_context(
+            scene_id,
+            provider_execution_mode=product["provider_execution_mode"],
+        )
+        call_id = product["llm_call_id"]
+        outcome = product["outcome"]
+        expected_status = {
+            "provider_failed": "failed",
+            "rejected_before_dispatch": "rejected",
+            "parse_failed": "settled",
+        }[outcome]
+        parent = self._validate_checkpoint_llm_output(
+            scene_id=scene_id,
+            llm_call_id=call_id,
+            execution_step_key=context.execution_step_key,
+            allowed_accounting_statuses=(expected_status,),
+            allow_local_rejected_output=outcome == "rejected_before_dispatch",
+        )
+        if (
+            not isinstance(parent.response_payload_summary, dict)
+            or parent.response_payload_summary.get("auto_critique_patch_failure_hash")
+            != self._json_hash(product)
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "auto-critique patch failure product is detached from its parent",
+                status_code=409,
+            )
+        try:
+            if outcome == "parse_failed":
+                if (
+                    product.get("reason") != "invalid_scene_generation_response"
+                    or product.get("error_code") != "SCENE_GENERATION_RESPONSE_INVALID"
+                ):
+                    raise LLMAccountingError(
+                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                        "auto-critique patch parse failure code is invalid",
+                    )
+                validate_product_call(
+                    self.session,
+                    call_id,
+                    context,
+                    expected_outcome="parse_failed",
+                )
+            else:
+                validate_product_call(
+                    self.session,
+                    call_id,
+                    context,
+                    expected_outcome=outcome,
+                    expected_error_code=product["error_code"],
+                )
+        except LLMAccountingError as exc:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "auto-critique patch failure parent/attempt ledger is invalid",
+                status_code=409,
+                details={"llm_call_id": call_id, "error_code": exc.code},
+            ) from exc
+
+    def _recover_auto_critique_patch_rejected_product(
+        self,
+        scene_id: str,
+        *,
+        allow_retry: bool,
+    ) -> dict[str, Any] | None:
+        """Recover a rejected patch tombstone before gate changes can hide it."""
+
+        query_context = self._auto_critique_patch_context(scene_id)
+        rows = self.session.execute(
+            select(LlmCall).where(
+                LlmCall.scene_id == scene_id,
+                LlmCall.execution_id == self._execution_id,
+                LlmCall.execution_step_key == query_context.execution_step_key,
+            )
+        ).scalars().all()
+        rejected = [row for row in rows if row.accounting_status == "rejected"]
+        if not rejected:
+            released = [row for row in rows if row.accounting_status == "released"]
+            if released and len(released) == len(rows):
+                if allow_retry:
+                    return None
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "auto-critique patch no-call gate cannot replace a released tombstone",
+                    status_code=409,
+                    details={"llm_call_ids": [row.llm_call_id for row in rows]},
+                )
+            return None
+        if len(rows) != 1:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "auto-critique patch rejection does not resolve to one durable parent",
+                details={"llm_call_ids": [row.llm_call_id for row in rows]},
+            )
+        parent = rejected[0]
+        historical_execution_mode = self._parent_execution_mode(parent)
+        context = self._auto_critique_patch_context(
+            scene_id,
+            provider_execution_mode=historical_execution_mode,
+        )
+        if not isinstance(parent.error_code, str) or not parent.error_code:
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "auto-critique patch rejected tombstone has no terminal error code",
+                details={"llm_call_id": parent.llm_call_id},
+            )
+        validate_product_call(
+            self.session,
+            parent.llm_call_id,
+            context,
+            expected_outcome="rejected_before_dispatch",
+            expected_error_code=parent.error_code,
+        )
+        return {
+            "schema_version": 1,
+            "outcome": "rejected_before_dispatch",
+            "llm_call_id": parent.llm_call_id,
+            "execution_id": context.execution_id,
+            "execution_step_key": context.execution_step_key,
+            "run_job_id": context.run_job_id,
+            "provider_execution_mode": historical_execution_mode,
+            "reason": "pre_dispatch_rejection",
+            "error_code": parent.error_code,
+        }
+
+    def _recover_auto_critique_rejected_product(
+        self,
+        context: LLMCallContext,
+        rule_result: Any,
+        *,
+        allow_retry: bool,
+    ) -> Any | None:
+        """Rebuild a lost no-dispatch product before a flipped gate emits no-call."""
+
+        from dataclasses import replace
+
+        rows = self.session.execute(
+            select(LlmCall)
+            .where(
+                LlmCall.scene_id == context.scene_id,
+                LlmCall.execution_id == context.execution_id,
+                LlmCall.execution_step_key == context.execution_step_key,
+            )
+            .order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())
+        ).scalars().all()
+        if not rows:
+            return None
+
+        rejected: list[LlmCall] = []
+        for row in rows:
+            if row.accounting_status == "rejected":
+                if not isinstance(row.error_code, str) or not row.error_code:
+                    raise LLMAccountingError(
+                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                        "auto-critique rejected tombstone has no terminal error code",
+                        details={"llm_call_id": row.llm_call_id},
+                    )
+                validate_product_call(
+                    self.session,
+                    row.llm_call_id,
+                    context,
+                    expected_outcome="rejected_before_dispatch",
+                    expected_error_code=row.error_code,
+                )
+                rejected.append(row)
+                continue
+            if row.accounting_status == "released":
+                attempts = self.session.execute(
+                    select(LlmCallAttempt).where(
+                        LlmCallAttempt.llm_call_id == row.llm_call_id
+                    )
+                ).scalars().all()
+                if (
+                    row.request_dispatched_at is not None
+                    or row.budget_charged_tokens != 0
+                    or row.total_tokens != 0
+                    or row.scope_type != context.scope_type
+                    or row.scope_id != context.scope_id
+                    or row.node_id != context.node_id
+                    or row.step != context.step
+                    or row.project_id != context.project_id
+                    or row.chapter_id != context.chapter_id
+                    or row.run_job_id != context.run_job_id
+                    or any(
+                        attempt.request_dispatched_at is not None
+                        or attempt.budget_charged_tokens != 0
+                        or attempt.total_tokens != 0
+                        or attempt.accounting_status != "released"
+                        for attempt in attempts
+                    )
+                ):
+                    raise LLMAccountingError(
+                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                        "auto-critique released tombstone is not a zero-dispatch ledger",
+                        details={"llm_call_id": row.llm_call_id},
+                    )
+                continue
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "auto-critique no-call gate conflicts with a non-retryable ledger row",
+                details={
+                    "llm_call_id": row.llm_call_id,
+                    "accounting_status": row.accounting_status,
+                },
+            )
+
+        if not rejected:
+            if allow_retry:
+                return None
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "auto-critique no-call gate cannot replace a released accounting tombstone",
+                status_code=409,
+                details={"execution_step_key": context.execution_step_key},
+            )
+        parent = rejected[-1]
+        return replace(
+            rule_result,
+            outcome="rejected_before_dispatch",
+            llm_call_id=parent.llm_call_id,
+            execution_id=context.execution_id,
+            execution_step_key=context.execution_step_key,
+            run_job_id=context.run_job_id,
+            reason="pre_dispatch_rejection",
+            error_code=parent.error_code,
+        )
+
+    def _validate_auto_critique_checkpoint(
+        self,
+        scene_id: str,
+        product: dict[str, Any],
+        *,
+        source_content: str,
+    ) -> None:
+        expected_fields = {
+            "schema_version",
+            "outcome",
+            "should_rewrite",
+            "directives",
+            "dimension_scores",
+            "flagged_dimensions",
+            "rule_should_rewrite",
+            "rule_directives",
+            "rule_dimension_scores",
+            "rule_flagged_dimensions",
+            "llm_contribution",
+            "llm_call_id",
+            "execution_id",
+            "execution_step_key",
+            "run_job_id",
+            "reason",
+            "error_code",
+        }
+
+        def corrupt(message: str) -> None:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                message,
+                status_code=409,
+            )
+
+        if set(product) != expected_fields or product.get("schema_version") != 1:
+            corrupt("auto-critique checkpoint product schema is invalid")
+        outcome = product.get("outcome")
+        if outcome not in {
+            "not_invoked",
+            "completed",
+            "rejected_before_dispatch",
+            "provider_failed",
+            "parse_failed",
+        }:
+            corrupt("auto-critique checkpoint outcome is invalid")
+        if (
+            type(product.get("should_rewrite")) is not bool
+            or type(product.get("rule_should_rewrite")) is not bool
+            or any(
+                not isinstance(product.get(field_name), list)
+                or any(not isinstance(item, str) for item in product[field_name])
+                for field_name in (
+                    "directives",
+                    "flagged_dimensions",
+                    "rule_directives",
+                    "rule_flagged_dimensions",
+                )
+            )
+            or any(
+                not isinstance(product.get(field_name), dict)
+                or any(
+                    not isinstance(key, str)
+                    or type(value) not in {int, float}
+                    or not 0 <= value <= 1
+                    for key, value in product[field_name].items()
+                )
+                for field_name in ("dimension_scores", "rule_dimension_scores")
+            )
+        ):
+            corrupt("auto-critique checkpoint product fields are invalid")
+        if outcome != "completed" and product.get("llm_contribution") is not None:
+            corrupt("auto-critique non-completed contribution field is invalid")
+        expected_step = "soft_qc:auto_critique:0"
+        if (
+            product.get("execution_id") != self._execution_id
+            or product.get("execution_step_key") != expected_step
+            or product.get("run_job_id") != self._run_job_id
+        ):
+            corrupt("auto-critique checkpoint execution ownership is invalid")
+
+        call_id = product.get("llm_call_id")
+        reason = product.get("reason")
+        error_code = product.get("error_code")
+        if outcome == "not_invoked":
+            if (
+                call_id is not None
+                or reason not in {
+                    "skip_critique",
+                    "budget_or_candidate_cap",
+                    "feature_disabled",
+                    "runner_unavailable",
+                    "offline_unsupported",
+                }
+                or error_code is not None
+            ):
+                corrupt("auto-critique no-call outcome field matrix is invalid")
+            ledger_rows = self.session.execute(
+                select(LlmCall).where(
+                    LlmCall.execution_id == self._execution_id,
+                    LlmCall.execution_step_key == expected_step,
+                )
+            ).scalars().all()
+            if ledger_rows:
+                corrupt("auto-critique no-call product unexpectedly has an execution ledger")
+            from novel_system.services.auto_critique import auto_critique
+
+            expected_rule = auto_critique(
+                source_content,
+                skip_critique=reason == "skip_critique",
+            )
+            if any(
+                product.get(product_key) != expected_value
+                for product_key, expected_value in {
+                    "should_rewrite": expected_rule.should_rewrite,
+                    "directives": expected_rule.directives,
+                    "dimension_scores": expected_rule.dimension_scores,
+                    "flagged_dimensions": expected_rule.flagged_dimensions,
+                    "rule_should_rewrite": expected_rule.rule_should_rewrite,
+                    "rule_directives": expected_rule.rule_directives,
+                    "rule_dimension_scores": expected_rule.rule_dimension_scores,
+                    "rule_flagged_dimensions": expected_rule.rule_flagged_dimensions,
+                }.items()
+            ):
+                corrupt("auto-critique no-call product differs from its deterministic rule result")
+            return
+        if not isinstance(call_id, str) or not call_id:
+            corrupt("auto-critique called outcome is missing its parent id")
+        if outcome == "completed":
+            if reason is not None or error_code is not None:
+                corrupt("auto-critique completed outcome field matrix is invalid")
+        elif (
+            not isinstance(reason, str)
+            or not reason
+            or not isinstance(error_code, str)
+            or not error_code
+        ):
+            corrupt("auto-critique degraded outcome field matrix is invalid")
+        if outcome == "parse_failed" and (
+            reason != "invalid_llm_response"
+            or error_code != "LLM_CRITIQUE_RESPONSE_INVALID"
+        ):
+            corrupt("auto-critique parse-failed outcome code is invalid")
+
+        scene = self.session.get(SceneCard, scene_id)
+        chapter = self.session.get(ChapterGoal, scene.chapter_id) if scene is not None else None
+        if scene is None:
+            corrupt("auto-critique checkpoint scene owner is missing")
+        product_parent = self.session.get(LlmCall, call_id)
+        context = LLMCallContext(
+            scope_type="scene",
+            scope_id=scene_id,
+            project_id=scene.project_id or (chapter.project_id if chapter is not None else None),
+            chapter_id=scene.chapter_id,
+            scene_id=scene_id,
+            node_id="soft_qc",
+            step=expected_step,
+            execution_id=self._execution_id,
+            execution_step_key=expected_step,
+            run_job_id=self._run_job_id,
+            provider_execution_mode="online",
+        )
+        expected_status = {
+            "completed": "settled",
+            "parse_failed": "settled",
+            "rejected_before_dispatch": "rejected",
+            "provider_failed": "failed",
+        }[outcome]
+        self._validate_checkpoint_llm_output(
+            scene_id=scene_id,
+            llm_call_id=call_id,
+            execution_step_key=expected_step,
+            execution_id=self._execution_id,
+            allowed_accounting_statuses=(expected_status,),
+            allow_local_rejected_output=outcome == "rejected_before_dispatch",
+        )
+        parent = product_parent
+        if (
+            parent is None
+            or not isinstance(parent.response_payload_summary, dict)
+            or parent.response_payload_summary.get("auto_critique_product_hash")
+            != self._json_hash(product)
+        ):
+            corrupt("auto-critique product hash is detached from its accounting parent")
+        if outcome == "completed" and (
+            parent.response_payload_summary.get("auto_critique_parsed_llm_hash")
+            != self._auto_critique_llm_contribution_hash(product)
+        ):
+            corrupt("auto-critique LLM merge payload is detached from its parsed-result hash")
+        try:
+            validate_product_call(
+                self.session,
+                call_id,
+                context,
+                expected_outcome=outcome,
+                expected_error_code=(
+                    error_code
+                    if outcome in {"rejected_before_dispatch", "provider_failed"}
+                    else None
+                ),
+            )
+        except LLMAccountingError as exc:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "auto-critique checkpoint parent/physical-attempt ledger is invalid",
+                status_code=409,
+                details={"llm_call_id": call_id, "error_code": exc.code},
+            ) from exc
 
     @staticmethod
     def _soft_decision_snapshot(
@@ -4463,7 +5554,9 @@ class Orchestrator:
             self._record_prose_events(log, scene, base, content)
 
             self.session.flush()
-        except Exception:
+        except Exception as exc:
+            if is_llm_control_plane_failure(exc) or isinstance(exc, LLMAccountingError):
+                raise
             _LOGGER.warning(
                 "narrative event recording degraded for scene %s", scene.scene_id, exc_info=True
             )
@@ -4478,52 +5571,77 @@ class Orchestrator:
         settings = get_settings()
         return self.llm_runner if (settings.llm_enabled and settings.llm_auto_critique_enabled) else None
 
-    def _record_prose_events(self, log, scene: SceneCard, base: dict, content: str) -> None:
+    def _record_prose_events(
+        self,
+        log,
+        scene: SceneCard,
+        base: dict,
+        content: str,
+    ) -> ProseExtractionResult:
         """§2 (opt-in): extract events from the ACTUAL generated prose so model drift away
         from the spec is captured. Tagged confidence="extracted" + source="prose" → advisory
-        only, never a hard consistency blocker (blueprint §15 honest-bounds). Degrades to a
-        no-op when disabled, no runner, or on any error."""
+        only, never a hard consistency blocker (blueprint §15 honest-bounds). Returns an
+        explicit no-call/degraded/completed product; accounting and control-plane integrity
+        failures propagate."""
+        from novel_system.services.prose_event_extractor import (
+            ProseExtractionResult,
+            extract_events_from_prose,
+        )
         from novel_system.settings import get_settings
         settings = get_settings()
+        extract_step_key = "archive:prose_event_extract:0"
         if not (settings.llm_enabled and getattr(settings, "llm_event_extraction_enabled", False)):
-            return
-        if not (content and content.strip()):
-            return
-        try:
-            from novel_system.services.prose_event_extractor import extract_events_from_prose
-            extract_step_key = "archive:prose_event_extract:0"
-            extract_context = LLMCallContext(
-                scope_type="scene",
-                scope_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")),
-                project_id=str(base.get("project_id") or getattr(scene, "project_id", "")) or None,
-                chapter_id=str(base.get("chapter_id") or getattr(scene, "chapter_id", "")) or None,
-                scene_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")) or None,
-                node_id="extraction",
-                step=extract_step_key,
+            return ProseExtractionResult(
+                outcome="not_invoked",
                 execution_id=self._execution_id,
-                execution_step_key=extract_step_key if self._execution_id is not None else None,
+                execution_step_key=(extract_step_key if self._execution_id is not None else None),
                 run_job_id=self._run_job_id,
+                reason="feature_disabled",
             )
-            for ev in extract_events_from_prose(
-                content,
-                llm_runner=self.llm_runner,
-                llm_context=extract_context,
-            ):
-                log.log_event(
-                    **base,
-                    event_type=ev.event_type,
-                    entity_type="relation" if ev.event_type == "relation_change" else "character",
-                    entity_id=ev.entity_id,
-                    fact_key=ev.fact_key,
-                    fact_value=ev.fact_value,
-                    confidence="extracted",
-                    source_text_excerpt=ev.evidence or content[:200],
-                    payload={"source": "prose"},
-                )
-        except Exception:
-            _LOGGER.warning(
-                "prose event extraction degraded for scene %s", scene.scene_id, exc_info=True
+        if not (content and content.strip()):
+            return ProseExtractionResult(
+                outcome="not_invoked",
+                execution_id=self._execution_id,
+                execution_step_key=(extract_step_key if self._execution_id is not None else None),
+                run_job_id=self._run_job_id,
+                reason="empty_content",
             )
+        extract_context = LLMCallContext(
+            scope_type="scene",
+            scope_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")),
+            project_id=str(base.get("project_id") or getattr(scene, "project_id", "")) or None,
+            chapter_id=str(base.get("chapter_id") or getattr(scene, "chapter_id", "")) or None,
+            scene_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")) or None,
+            node_id="extraction",
+            step=extract_step_key,
+            execution_id=self._execution_id,
+            execution_step_key=extract_step_key if self._execution_id is not None else None,
+            run_job_id=self._run_job_id,
+            provider_execution_mode=getattr(
+                self.llm_runner,
+                "provider_execution_mode",
+                "online",
+            ),
+        )
+        result = extract_events_from_prose(
+            content,
+            session=self.session,
+            llm_runner=self.llm_runner,
+            llm_context=extract_context,
+        )
+        for ev in result.events:
+            log.log_event(
+                **base,
+                event_type=ev.event_type,
+                entity_type="relation" if ev.event_type == "relation_change" else "character",
+                entity_id=ev.entity_id,
+                fact_key=ev.fact_key,
+                fact_value=ev.fact_value,
+                confidence="extracted",
+                source_text_excerpt=ev.evidence or content[:200],
+                payload={"source": "prose"},
+            )
+        return result
 
     def _record_relation_events(
         self, log, scene: SceneCard, base: dict, pov: str | None, all_chars: list[str],

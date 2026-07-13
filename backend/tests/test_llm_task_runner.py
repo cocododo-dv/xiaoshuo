@@ -203,6 +203,37 @@ class _AccountedRecordingClient(OnlineAccountedExecution):
         return response
 
 
+class _AdvisoryAccountedClient(OnlineAccountedExecution):
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.post_count = 0
+
+    def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:  # noqa: ANN001
+        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+        self.post_count += 1
+        response = LLMResponse(
+            request_id=f"advisory-{self.post_count}",
+            provider="fake-provider",
+            model="fake-model",
+            text=json.dumps(self.payload),
+            structured_output=self.payload,
+            response_format="json_object",
+            raw_response={"id": f"advisory-{self.post_count}"},
+            usage={"input_tokens": 8, "output_tokens": 4, "total_tokens": 12},
+            raw_usage={"input_tokens": 8, "output_tokens": 4, "total_tokens": 12},
+            usage_present=True,
+            usage_complete=True,
+            finish_reason="stop",
+        )
+        accounting_hook.after_response(
+            handle,
+            request=request,
+            response=response,
+            latency_ms=1,
+        )
+        return response
+
+
 class _UnsupportedDurableOnlineClient:
     def __init__(self) -> None:
         self.provider_io_count = 0
@@ -839,6 +870,206 @@ def test_online_run_task_uses_parent_and_physical_attempt_ledger(session) -> Non
     assert parent.accounting_status == "settled"
     assert attempt.llm_call_id == parent.llm_call_id
     assert attempt.accounting_status == "settled"
+
+
+@pytest.mark.parametrize(
+    ("kind", "node_id", "payload"),
+    [
+        (
+            "critique",
+            "soft_qc",
+            {
+                "should_rewrite": True,
+                "issues": [
+                    {
+                        "dimension": "pacing",
+                        "directive": "tighten the turn",
+                        "evidence": "the turn arrives late",
+                    }
+                ],
+            },
+        ),
+        (
+            "prose",
+            "extraction",
+            {
+                "events": [
+                    {
+                        "event_type": "character_state",
+                        "entity_id": "林远",
+                        "fact_key": "injury",
+                        "fact_value": "右臂截断",
+                        "evidence": "右臂被斩断",
+                    }
+                ]
+            },
+        ),
+    ],
+)
+def test_advisory_helper_real_online_boundary_persists_strict_product_ledger(
+    session,
+    kind: str,
+    node_id: str,
+    payload: dict,
+) -> None:
+    _seed_durable_runner_scene(session)
+    task_config = _routing_config().node_routing["neutral_draft"]
+    routing = ModelRoutingConfig(
+        node_routing={node_id: task_config},
+        task_routing={node_id: task_config},
+        retry_budget={},
+        job_runtime={},
+    )
+    client = _AdvisoryAccountedClient(payload)
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=routing,
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id=node_id,
+        step=f"advisory:{kind}",
+    )
+
+    if kind == "critique":
+        from novel_system.services.auto_critique import llm_auto_critique
+
+        product = llm_auto_critique(
+            "clean prose",
+            session=session,
+            llm_runner=runner,
+            llm_context=context,
+        )
+        assert product.outcome == "completed"
+    else:
+        from novel_system.services.prose_event_extractor import extract_events_from_prose
+
+        product = extract_events_from_prose(
+            "林远的右臂被斩断。",
+            session=session,
+            llm_runner=runner,
+            llm_context=context,
+        )
+        assert product.outcome == "completed_events"
+
+    parent = session.get(LlmCall, product.llm_call_id)
+    attempts = session.execute(
+        select(LlmCallAttempt).where(LlmCallAttempt.llm_call_id == product.llm_call_id)
+    ).scalars().all()
+    state = session.get(SceneRunState, "CH_RUNNER_SC01")
+    assert client.post_count == 1
+    assert parent.accounting_status == "settled"
+    assert parent.request_payload_summary["_accounting_provider_execution_mode"] == "online"
+    assert len(attempts) == 1
+    assert attempts[0].accounting_status == "settled"
+    assert state.scene_tokens_reserved == 0
+
+
+def test_auto_critique_real_transport_failure_returns_durable_failed_product(session) -> None:
+    from novel_system.services.auto_critique import llm_auto_critique
+
+    _seed_durable_runner_scene(session)
+    task_config = _routing_config().node_routing["neutral_draft"]
+    runner = LLMNodeRunner(
+        session,
+        llm_client=FailingClient(),
+        routing_config=ModelRoutingConfig(
+            node_routing={"soft_qc": task_config},
+            task_routing={"soft_qc": task_config},
+            retry_budget={},
+            job_runtime={},
+        ),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="soft_qc",
+        step="advisory:critique-failure",
+    )
+
+    product = llm_auto_critique(
+        "prose",
+        session=session,
+        llm_runner=runner,
+        llm_context=context,
+    )
+
+    parent = session.get(LlmCall, product.llm_call_id)
+    attempt = session.execute(
+        select(LlmCallAttempt).where(LlmCallAttempt.llm_call_id == product.llm_call_id)
+    ).scalar_one()
+    state = session.get(SceneRunState, "CH_RUNNER_SC01")
+    assert product.outcome == "provider_failed"
+    assert product.error_code == "LLM_HTTP_REQUEST_FAILED"
+    assert parent.accounting_status == "failed"
+    assert attempt.accounting_status == "failed"
+    assert attempt.request_dispatched_at is not None
+    assert state.scene_tokens_reserved == 0
+
+
+def test_prose_helper_real_physical_gate_rejection_has_zero_provider_io(
+    session, monkeypatch
+) -> None:
+    from novel_system.services.prose_event_extractor import extract_events_from_prose
+
+    _seed_durable_runner_scene(session)
+    state = session.get(SceneRunState, "CH_RUNNER_SC01")
+    monkeypatch.setattr(
+        "novel_system.services.llm_accounting._consume_scene_provider_attempt",
+        lambda *_args, **_kwargs: False,
+    )
+    task_config = _routing_config().node_routing["neutral_draft"]
+    client = _AdvisoryAccountedClient({"events": []})
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=ModelRoutingConfig(
+            node_routing={"extraction": task_config},
+            task_routing={"extraction": task_config},
+            retry_budget={},
+            job_runtime={},
+        ),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="extraction",
+        step="advisory:prose-gate",
+    )
+
+    product = extract_events_from_prose(
+        "prose",
+        session=session,
+        llm_runner=runner,
+        llm_context=context,
+    )
+
+    parent = session.get(LlmCall, product.llm_call_id)
+    attempt = session.execute(
+        select(LlmCallAttempt).where(LlmCallAttempt.llm_call_id == product.llm_call_id)
+    ).scalar_one()
+    session.refresh(state)
+    assert product.outcome == "rejected_before_dispatch"
+    assert product.error_code == "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED"
+    assert client.post_count == 0
+    assert parent.accounting_status == "rejected"
+    assert attempt.accounting_status == "rejected"
+    assert attempt.request_dispatched_at is None
+    assert state.scene_tokens_reserved == 0
 
 
 def test_run_task_rejects_offline_execution_explicitly(session) -> None:

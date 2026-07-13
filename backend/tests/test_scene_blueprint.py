@@ -1,17 +1,32 @@
 from __future__ import annotations
 
-from novel_system.db.models import ChapterGoal, SceneBlueprint, SceneCard, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    SceneBlueprint,
+    SceneCard,
+    SceneRunState,
+    StoryProject,
+)
 from novel_system.services.bundle_builder import BundleBuilder
 
 
 CHAPTER_ID = "BP100"
 SCENE_ID = "BP100_SC01"
+PROJECT_ID = "P_BP100"
 
 
 def _seed_scene(session) -> None:
     session.add(
+        StoryProject(
+            project_id=PROJECT_ID,
+            title="Blueprint Fixture",
+            outline_text="Blueprint fixture outline.",
+        )
+    )
+    session.add(
         ChapterGoal(
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             planned_scene_count=1,
             chapter_goal="A quiet reunion must turn into a choice.",
             main_plot_push="move from suspicion to action",
@@ -28,6 +43,7 @@ def _seed_scene(session) -> None:
         SceneCard(
             scene_id=SCENE_ID,
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             scene_seq=1,
             scene_goal="The protagonist asks for the missing name and must decide whether to trust an old friend.",
             beats_json=["ask for the name", "old friend deflects", "protagonist chooses to investigate"],
