@@ -525,7 +525,7 @@ git commit -m "fix(style-reference): bound all shared LLM inputs"
 - Modify: `backend/tests/test_style_reference_segmentation.py`
 - Modify: `backend/src/novel_system/services/style_reference/segmentation/llm.py`
 
-- [ ] **Step 1: 写分类 prompt 边界测试**
+- [x] **Step 1: 写分类 prompt 边界测试**
 
 在已有分类 fake client 测试中加入恶意段落，并断言 strong 与 bulk 两类请求都满足：
 
@@ -539,13 +539,13 @@ for request in client.requests:
     assert "paragraphs" in user
 ```
 
-- [ ] **Step 2: 运行分类测试并确认 RED**
+- [x] **Step 2: 运行分类测试并确认 RED**
 
 Run: `cd backend && python -m pytest tests/test_style_reference_segmentation.py -q`
 
 Expected: `_format_user_prompt()` 仍直接插入 JSON，边界断言失败。
 
-- [ ] **Step 3: 复用统一渲染器**
+- [x] **Step 3: 复用统一渲染器**
 
 删除本地 JSON 拼接，改为：
 
@@ -560,7 +560,7 @@ system_prompt = render_untrusted_system_prompt(template.system_prompt)
 
 `{paragraphs}` 占位符不再由不可信 JSON 替换；若模板含占位符，在加载后先把它替换为固定说明 `See the bounded payload below.`，再附加边界块，保证数据不会进入任务模板内部。
 
-- [ ] **Step 4: 运行分类及 ingest 回归**
+- [x] **Step 4: 运行分类及 ingest 回归**
 
 Run:
 
@@ -571,7 +571,7 @@ python -m pytest tests/test_style_reference_segmentation.py tests/test_style_ref
 
 Expected: 全部通过；分类数量、fallback 和 confidence 行为不变。
 
-- [ ] **Step 5: 提交直连出口修复**
+- [x] **Step 5: 提交直连出口修复**
 
 ```powershell
 git add backend/src/novel_system/services/style_reference/segmentation/llm.py backend/tests/test_style_reference_segmentation.py
