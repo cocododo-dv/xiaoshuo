@@ -567,10 +567,10 @@ Then verify the restored database integrity and record the C0 gate as failed; ne
 
 - [x] **Step 6: Build and validate the offline evidence manifest**
 
-Use `OutcomeEvidenceManifest` with provenance `offline`, exact command exit codes, backup and sidecar artifact hashes, and gates `BACKUP_VERIFIED`, `DRILL_MIGRATION_HEAD_MATCH`, `ACTUAL_MIGRATION_HEAD_MATCH`, `SCHEMA_READY`, `ORPHANS_ZERO`, and `FOCUSED_REGRESSION_PASS`. Embed the before/drill/actual preflight dictionaries in the corresponding gate `details`, write the manifest atomically, then run:
+Use `OutcomeEvidenceManifest` with provenance `offline`, exact command exit codes, backup and sidecar artifact hashes, and the eight C0 gates `RUNTIME_PROCESS_CLEAR`, `BACKUP_VERIFIED`, `DRILL_MIGRATION_HEAD_MATCH`, `ACTUAL_MIGRATION_HEAD_MATCH`, `SCHEMA_READY`, `ORPHANS_ZERO`, `FOCUSED_REGRESSION_PASS`, and `C0_REGRESSION_PASS`. Embed the backup/drill/actual reports in the corresponding gate `details`; scope the fresh process check as `verification_time_only` because no actual-migration-time process snapshot was persisted. Write the manifest atomically, then run the validator as an external acceptance command; do not write that command or a validation gate back into the manifest:
 
 ```powershell
-python -m novel_system.tools.outcome_evidence validate E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0\manifest.json --require-provenance offline
+python -m novel_system.tools.outcome_evidence validate E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0\manifest.json --require-provenance offline --artifact-root E:\codex\xiaoshuo\codex\.worktrees\outcome-governance-closure\.codex-run\governance-c0\20260713-c0
 ```
 
 Expected: exit 0 with `valid=true`.
@@ -595,15 +595,17 @@ C0 did not land as one commit containing every implementation file. The actual h
 - `b6cc9c7`: provenance validation CLI.
 - `2186543` / `8d676a9`: status separation and assessment alignment.
 - `641589c`: runtime migration/evidence closure and Task 5 completion.
-- `55938fb` / `2cbf24c`: quality-review validator hardening for artifact integrity and evidence completeness.
+- `55938fb` / `2cbf24c` / `8a602a4c`: quality-review validator hardening for artifact integrity, evidence completeness and known C0 gate details.
 - `docs(governance): publish C0 runtime evidence`: tracked manifest index and runtime-truth documentation follow-up.
 
 The ignored `.codex-run` artifacts remain outside Git. Their hashes, exact commands, UTC timestamps, expected/actual exits and gate reports are retained in `docs/superpowers/evidence/20260713-c0-manifest.json`; binary verification requires the local `.codex-run/governance-c0/20260713-c0` directory as `artifact_root`. Provenance remains `offline` and does not add real-model or human evidence.
 
 ### Task 5 quality-review closure (2026-07-13)
 
-- [x] Validator checks artifact presence/hash, non-empty commands/gates/artifacts, expected exits, failed gates and command timestamps.
-- [x] Local manifest records fresh process, backup, drill, focused regression, actual no-op/head/schema/orphan and C0 regression evidence with real UTC intervals.
-- [x] Tracked manifest index is an exact copy of the validator-approved local manifest; backup binaries remain ignored.
+- [x] Validator checks artifact presence/hash, non-empty commands/gates/artifacts, expected exits, failed gates, command timestamps and the 8 known C0 gate details（`8a602a4c`）。
+- [x] Local manifest records backup、drill、focused regression、actual no-op/head/schema/orphan 和 C0 regression 的真实 UTC 区间；`RUNTIME_PROCESS_CLEAR` 仅记录复核时刻且 scope 为 `verification_time_only`，不冒充 actual 迁移前的持久证据。
+- [x] Tracked manifest index is an exact copy of the externally validated local manifest; backup binaries remain ignored. External validation is not written back as a command or gate，完成自引用移除（self-reference removal）。
 - [x] Completion assessment and progress ledger now state actual `0064` / `ready=true` / `integrity=ok` / orphan 0 and preserve `0059` only as pre-migration backup history.
 - [x] Offline evidence closes only the C0 engineering runtime gate; UI, real-model, human and release gates remain pending.
+
+Validator 的 threat model 是单用户本地一致性检查：它可发现 artifact 缺失/hash 不符、command 时间或 expected exit 缺失、以及已知 C0 gate details 误标，但不是加密签名，不提供抗有意伪造能力。审查仍信任执行工作站、Git 历史和本地 artifact 来源。

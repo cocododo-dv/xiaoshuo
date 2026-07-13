@@ -1,7 +1,7 @@
 {
   "schema": "outcome-evidence-v1",
   "run_id": "20260713-c0",
-  "git_commit": "2cbf24cdd568ec59dbefb0ebe94f79de192ec703",
+  "git_commit": "8a602a4c6fd8a205467d56dd3bbcf0a42830138e",
   "database_revision": "20260712_0064",
   "config_hashes": {
     "models.yaml": "34d19db87f36c43323424ae91f417fd1b0ea2d2c0429802962c07cccb75eaedf",
@@ -101,15 +101,6 @@
       ],
       "started_at": "2026-07-13T03:50:36.5243634Z",
       "ended_at": "2026-07-13T03:50:46.6477953Z"
-    },
-    {
-      "command": "python -m novel_system.tools.outcome_evidence validate 'E:\\codex\\xiaoshuo\\codex\\.worktrees\\outcome-governance-closure\\.codex-run\\governance-c0\\20260713-c0\\manifest.json' --require-provenance offline --artifact-root 'E:\\codex\\xiaoshuo\\codex\\.worktrees\\outcome-governance-closure\\.codex-run\\governance-c0\\20260713-c0'",
-      "exit_code": 0,
-      "expected_exit_codes": [
-        0
-      ],
-      "started_at": "2026-07-13T03:52:49.7177068Z",
-      "ended_at": "2026-07-13T03:52:50.0422971Z"
     }
   ],
   "artifacts": [
@@ -129,7 +120,8 @@
       "details": {
         "report": {
           "match_count": 0,
-          "matches": []
+          "matches": [],
+          "scope": "verification_time_only"
         }
       }
     },
@@ -308,17 +300,6 @@
             "tests/test_orphan_inventory.py",
             "tests/test_metadata_isolation.py"
           ]
-        }
-      }
-    },
-    {
-      "code": "LOCAL_MANIFEST_VALIDATED",
-      "passed": true,
-      "details": {
-        "report": {
-          "valid": true,
-          "run_id": "20260713-c0",
-          "artifact_root": "E:\\codex\\xiaoshuo\\codex\\.worktrees\\outcome-governance-closure\\.codex-run\\governance-c0\\20260713-c0"
         }
       }
     }

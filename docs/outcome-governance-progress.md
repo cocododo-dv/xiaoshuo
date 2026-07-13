@@ -25,6 +25,8 @@
 - 迁移前 `0059` 校验备份仍保留在本地 ignored artifact 中，SHA-256 为 `804fc4e01237d77eacf83b7671f90ab50fdd5db985a2356ba74666240dec31b3`。
 - 可审查 manifest 索引为 `docs/superpowers/evidence/20260713-c0-manifest.json`；复核备份二进制及 sidecar 时，须使用本地 `.codex-run/governance-c0/20260713-c0` 作为 `artifact_root`。
 - manifest provenance 为 `offline`：只关闭数据库迁移、schema ready、孤儿盘点和聚焦回归对应的工程门，不推进 `real_gate_status` 或 `release_gate_status`，也不代表真实模型、UI E2E 或真人盲评完成。
+- actual 迁移前没有持久化进程快照；manifest 中 `RUNTIME_PROCESS_CLEAR` 的 `scope=verification_time_only` 仅证明证据复核时无匹配服务进程，不能追溯证明迁移当时的进程安全前提。运行真值仍以已验证 `0059` 备份、当前 actual `0064` 的 ready/integrity 和孤儿数 0 为准。
+- validator 只在单用户本地信任边界内检查 artifact 存在/hash、命令时间与 expected exit、已知 C0 gate details，以防误标和意外损坏；它不是加密签名，不防有意伪造。外部 CLI validate 结果不写回 manifest，避免证据自引用。
 
 ## Wave 0：建立真实结果门禁 —— 工程实现已完成，真实门待验（2026-07-10）
 
