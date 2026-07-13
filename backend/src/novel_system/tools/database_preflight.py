@@ -222,50 +222,114 @@ def _table_sql(connection: sqlite3.Connection, table_name: str) -> str:
     return str(row[0] or "") if row else ""
 
 
-def _parenthesized_expression(sql: str, opening_index: int) -> str | None:
-    depth = 0
-    quote_end: str | None = None
-    index = opening_index
+def _blank_sql_range(mask: list[str], start: int, end: int) -> None:
+    for index in range(start, end):
+        if mask[index] not in {"\r", "\n"}:
+            mask[index] = " "
+
+
+def _quoted_token_end(sql: str, start: int, closing: str) -> int:
+    index = start + 1
     while index < len(sql):
-        character = sql[index]
-        if quote_end is not None:
-            if character == quote_end:
-                if (
-                    quote_end != "]"
-                    and index + 1 < len(sql)
-                    and sql[index + 1] == quote_end
-                ):
-                    index += 2
-                    continue
-                quote_end = None
-        elif character in {"'", '"', "`"}:
-            quote_end = character
-        elif character == "[":
-            quote_end = "]"
-        elif character == "(":
-            depth += 1
-        elif character == ")":
-            depth -= 1
-            if depth == 0:
-                return sql[opening_index + 1 : index].strip()
+        if sql[index] == closing:
+            if index + 1 < len(sql) and sql[index + 1] == closing:
+                index += 2
+                continue
+            return index + 1
         index += 1
-    return None
+    return len(sql)
+
+
+def _sql_code_mask(sql: str) -> str:
+    mask = list(sql)
+    index = 0
+    while index < len(sql):
+        if sql.startswith("--", index):
+            end = sql.find("\n", index + 2)
+            end = len(sql) if end < 0 else end
+            _blank_sql_range(mask, index, end)
+            index = end
+            continue
+        if sql.startswith("/*", index):
+            closing = sql.find("*/", index + 2)
+            end = len(sql) if closing < 0 else closing + 2
+            _blank_sql_range(mask, index, end)
+            index = end
+            continue
+
+        character = sql[index]
+        if character == "'":
+            end = _quoted_token_end(sql, index, "'")
+            _blank_sql_range(mask, index, end)
+            index = end
+            continue
+        if character in {'"', "`", "["}:
+            closing = "]" if character == "[" else character
+            end = _quoted_token_end(sql, index, closing)
+            interior_end = end - 1 if end > index and sql[end - 1] == closing else end
+            _blank_sql_range(mask, index + 1, interior_end)
+            index = end
+            continue
+        index += 1
+    return "".join(mask)
+
+
+def _sql_tokens(sql: str) -> list[tuple[str, str, int, int]]:
+    mask = _sql_code_mask(sql)
+    tokens: list[tuple[str, str, int, int]] = []
+    index = 0
+    while index < len(mask):
+        character = mask[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character in {'"', "`", "["}:
+            closing = "]" if character == "[" else character
+            end = _quoted_token_end(sql, index, closing)
+            value_end = end - 1 if end > index and sql[end - 1] == closing else end
+            value = sql[index + 1 : value_end].replace(closing * 2, closing)
+            tokens.append(("quoted_identifier", value, index, end))
+            index = end
+            continue
+        if character.isalpha() or character == "_":
+            end = index + 1
+            while end < len(mask) and (mask[end].isalnum() or mask[end] in {"_", "$"}):
+                end += 1
+            tokens.append(("word", sql[index:end], index, end))
+            index = end
+            continue
+        tokens.append(("symbol", character, index, index + 1))
+        index += 1
+    return tokens
 
 
 def _named_check_expressions(sql: str, constraint_name: str) -> list[str]:
-    escaped_name = re.escape(constraint_name)
-    identifier = (
-        rf'(?:{escaped_name}|"{escaped_name}"|`{escaped_name}`|\[{escaped_name}\])'
-    )
-    pattern = re.compile(
-        rf"\bCONSTRAINT\s+{identifier}\s+CHECK\s*\(",
-        re.IGNORECASE,
-    )
+    tokens = _sql_tokens(sql)
     expressions: list[str] = []
-    for match in pattern.finditer(sql):
-        expression = _parenthesized_expression(sql, match.end() - 1)
-        if expression is not None:
-            expressions.append(expression)
+    for index in range(len(tokens) - 3):
+        keyword, name, check, opening = tokens[index : index + 4]
+        if keyword[0] != "word" or keyword[1].casefold() != "constraint":
+            continue
+        if name[0] not in {"word", "quoted_identifier"}:
+            continue
+        if name[1].casefold() != constraint_name.casefold():
+            continue
+        if check[0] != "word" or check[1].casefold() != "check":
+            continue
+        if opening[0] != "symbol" or opening[1] != "(":
+            continue
+
+        depth = 0
+        for token in tokens[index + 3 :]:
+            if token[0] != "symbol":
+                continue
+            if token[1] == "(":
+                depth += 1
+            elif token[1] == ")":
+                depth -= 1
+                if depth == 0:
+                    expressions.append(sql[opening[3] : token[2]].strip())
+                    break
     return expressions
 
 

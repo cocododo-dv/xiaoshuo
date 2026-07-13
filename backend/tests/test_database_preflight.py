@@ -23,6 +23,7 @@ def _make_ready_database(
     ordinal_unique_contract: bool = True,
     scope_index_variant: str = "plain",
     weaken_llm_check: bool = False,
+    check_decoy: str | None = None,
 ) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE alembic_version (version_num TEXT NOT NULL)")
@@ -147,6 +148,20 @@ def _make_ready_database(
                 if weaken_llm_check
                 else "estimated_tokens >= 0"
             )
+            estimated_tokens_contract = (
+                "CONSTRAINT ck_llm_calls_estimated_tokens_nonnegative "
+                f"CHECK ({estimated_tokens_check}),"
+            )
+            decoy = (
+                "CONSTRAINT ck_llm_calls_estimated_tokens_nonnegative "
+                "CHECK (estimated_tokens >= 0)"
+            )
+            if check_decoy == "string":
+                estimated_tokens_contract = f"decoy_text TEXT DEFAULT '{decoy}',"
+            elif check_decoy == "line_comment":
+                estimated_tokens_contract = f"-- {decoy}\n"
+            elif check_decoy == "block_comment":
+                estimated_tokens_contract = f"/* {decoy} */"
             connection.execute(
                 f"""
                 CREATE TABLE llm_calls (
@@ -164,8 +179,7 @@ def _make_ready_database(
                     request_dispatched_at TEXT,
                     settled_at TEXT,
                     created_at TEXT NOT NULL,
-                    CONSTRAINT ck_llm_calls_estimated_tokens_nonnegative
-                        CHECK ({estimated_tokens_check}),
+                    {estimated_tokens_contract}
                     CONSTRAINT ck_llm_calls_reserved_tokens_nonnegative
                         CHECK (reserved_tokens >= 0),
                     CONSTRAINT ck_llm_calls_budget_charged_tokens_nonnegative
@@ -460,6 +474,48 @@ def test_c1b_preflight_rejects_named_check_with_weakened_expression(tmp_path):
         "expected": "estimated_tokens >= 0",
         "actual": "estimated_tokens >= 0 OR 1 = 1",
     } in result["schema_errors"]
+
+
+@pytest.mark.parametrize("decoy_kind", ["string", "line_comment", "block_comment"])
+def test_c1b_preflight_ignores_named_check_decoys(tmp_path, decoy_kind):
+    database_path = tmp_path / f"check-decoy-{decoy_kind}.db"
+    _make_ready_database(database_path, check_decoy=decoy_kind)
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert {
+        "kind": "check_constraint",
+        "table": "llm_calls",
+        "name": "ck_llm_calls_estimated_tokens_nonnegative",
+        "expected": "estimated_tokens >= 0",
+        "actual": [],
+    } in result["schema_errors"]
+
+
+@pytest.mark.parametrize(
+    "quoted_name",
+    [
+        '"ck_llm_calls_estimated_tokens_nonnegative"',
+        "`ck_llm_calls_estimated_tokens_nonnegative`",
+        "[ck_llm_calls_estimated_tokens_nonnegative]",
+    ],
+)
+def test_named_check_scanner_supports_quoted_names_and_nested_expression(quoted_name):
+    constraint_name = "ck_llm_calls_estimated_tokens_nonnegative"
+    sql = (
+        "CREATE TABLE example (value INTEGER, note TEXT, CONSTRAINT "
+        f"{quoted_name} CHECK ((value >= 0) AND note != 'right ) parenthesis'))"
+    )
+
+    assert database_preflight._named_check_expressions(sql, constraint_name) == [
+        "(value >= 0) AND note != 'right ) parenthesis'"
+    ]
+    quoted_decoy = (
+        'CREATE TABLE example ("CONSTRAINT '
+        f'{constraint_name} CHECK (value >= 0)" TEXT)'
+    )
+    assert database_preflight._named_check_expressions(quoted_decoy, constraint_name) == []
 
 
 def test_previous_revision_uses_legacy_schema_profile(tmp_path):
