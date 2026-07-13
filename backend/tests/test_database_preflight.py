@@ -11,7 +11,13 @@ HEAD_REVISION = "20260713_0065"
 PREVIOUS_REVISION = "20260712_0064"
 
 
-def _make_ready_database(path, *, revision: str = HEAD_REVISION, c1b: bool = True) -> None:
+def _make_ready_database(
+    path,
+    *,
+    revision: str = HEAD_REVISION,
+    c1b: bool = True,
+    structural_contract: bool = True,
+) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE alembic_version (version_num TEXT NOT NULL)")
         connection.execute(
@@ -19,32 +25,101 @@ def _make_ready_database(path, *, revision: str = HEAD_REVISION, c1b: bool = Tru
             (revision,),
         )
         scene_columns = """
+            scene_id TEXT NOT NULL PRIMARY KEY,
             latest_valid_draft_row_id INTEGER,
             run_policy TEXT,
             scene_token_budget INTEGER,
-            scene_tokens_used INTEGER
+            scene_tokens_used INTEGER NOT NULL DEFAULT 0
         """
         if c1b:
-            scene_columns += """,
-                scene_tokens_reserved INTEGER NOT NULL DEFAULT 0,
-                scene_budget_basis_json JSON,
-                provider_attempts_used INTEGER NOT NULL DEFAULT 0,
-                provider_attempt_budget INTEGER NOT NULL DEFAULT 32,
-                active_execution_id TEXT,
-                run_execution_status TEXT,
-                run_checkpoint TEXT,
-                run_checkpoint_json JSON,
-                active_run_job_id TEXT
-            """
+            if structural_contract:
+                scene_columns += """,
+                    scene_tokens_reserved INTEGER NOT NULL DEFAULT 0,
+                    scene_budget_basis_json JSON,
+                    provider_attempts_used INTEGER NOT NULL DEFAULT 0,
+                    provider_attempt_budget INTEGER NOT NULL DEFAULT 32,
+                    active_execution_id TEXT,
+                    run_execution_status TEXT,
+                    run_checkpoint TEXT,
+                    run_checkpoint_json JSON,
+                    active_run_job_id TEXT,
+                    CONSTRAINT ck_scene_run_states_tokens_reserved_nonnegative
+                        CHECK (scene_tokens_reserved >= 0),
+                    CONSTRAINT ck_scene_run_states_provider_attempts_used_nonnegative
+                        CHECK (provider_attempts_used >= 0),
+                    CONSTRAINT ck_scene_run_states_provider_attempt_budget_nonnegative
+                        CHECK (provider_attempt_budget >= 0)
+                """
+            else:
+                scene_columns += """,
+                    scene_tokens_reserved INTEGER,
+                    scene_budget_basis_json JSON,
+                    provider_attempts_used INTEGER,
+                    provider_attempt_budget INTEGER,
+                    active_execution_id TEXT,
+                    run_execution_status TEXT,
+                    run_checkpoint TEXT,
+                    run_checkpoint_json JSON,
+                    active_run_job_id TEXT
+                """
         connection.execute(f"CREATE TABLE scene_run_states ({scene_columns})")
         connection.execute("CREATE TABLE evaluation_experiments (id INTEGER PRIMARY KEY)")
         connection.execute("CREATE TABLE evaluation_pairs (id INTEGER PRIMARY KEY)")
         connection.execute("CREATE TABLE evaluation_votes (id INTEGER PRIMARY KEY)")
         if c1b:
+            if not structural_contract:
+                connection.executescript(
+                    """
+                    CREATE TABLE llm_calls (
+                        llm_call_id TEXT NOT NULL PRIMARY KEY,
+                        scope_type TEXT,
+                        scope_id TEXT,
+                        run_job_id TEXT,
+                        execution_id TEXT,
+                        execution_step_key TEXT,
+                        estimated_tokens INTEGER,
+                        reserved_tokens INTEGER,
+                        budget_charged_tokens INTEGER,
+                        usage_is_estimate BOOLEAN,
+                        accounting_status TEXT,
+                        request_dispatched_at TEXT,
+                        settled_at TEXT,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE llm_call_attempts (
+                        attempt_id TEXT NOT NULL PRIMARY KEY,
+                        llm_call_id TEXT,
+                        provider_attempt_no INTEGER,
+                        dispatch_kind TEXT,
+                        request_max_output_tokens INTEGER,
+                        provider_request_id TEXT,
+                        prompt_tokens INTEGER,
+                        completion_tokens INTEGER,
+                        total_tokens INTEGER,
+                        estimated_tokens INTEGER,
+                        reserved_tokens INTEGER,
+                        budget_charged_tokens INTEGER,
+                        usage_is_estimate BOOLEAN,
+                        accounting_status TEXT,
+                        request_dispatched_at TEXT,
+                        settled_at TEXT,
+                        latency_ms INTEGER,
+                        error_code TEXT,
+                        error_text TEXT,
+                        created_at TEXT
+                    );
+                    CREATE TABLE chapter_run_jobs (
+                        job_id TEXT NOT NULL PRIMARY KEY,
+                        scene_id TEXT,
+                        created_at TEXT
+                    );
+                    """
+                )
+                return
             connection.execute(
                 """
                 CREATE TABLE llm_calls (
-                    llm_call_id TEXT PRIMARY KEY,
+                    llm_call_id TEXT NOT NULL PRIMARY KEY,
                     scope_type TEXT NOT NULL,
                     scope_id TEXT NOT NULL,
                     run_job_id TEXT,
@@ -54,17 +129,31 @@ def _make_ready_database(path, *, revision: str = HEAD_REVISION, c1b: bool = Tru
                     reserved_tokens INTEGER NOT NULL DEFAULT 0,
                     budget_charged_tokens INTEGER NOT NULL DEFAULT 0,
                     usage_is_estimate BOOLEAN NOT NULL DEFAULT 1,
-                    accounting_status TEXT NOT NULL,
+                    accounting_status TEXT NOT NULL DEFAULT 'reserved',
                     request_dispatched_at TEXT,
-                    settled_at TEXT
+                    settled_at TEXT,
+                    created_at TEXT NOT NULL,
+                    CONSTRAINT ck_llm_calls_estimated_tokens_nonnegative
+                        CHECK (estimated_tokens >= 0),
+                    CONSTRAINT ck_llm_calls_reserved_tokens_nonnegative
+                        CHECK (reserved_tokens >= 0),
+                    CONSTRAINT ck_llm_calls_budget_charged_tokens_nonnegative
+                        CHECK (budget_charged_tokens >= 0),
+                    CONSTRAINT ck_llm_calls_budget_charged_within_reservation
+                        CHECK (budget_charged_tokens <= reserved_tokens),
+                    CONSTRAINT ck_llm_calls_accounting_status
+                        CHECK (accounting_status IN (
+                            'reserved','settled','failed','released','rejected',
+                            'usage_exceeds_reservation'
+                        ))
                 )
                 """
             )
             connection.execute(
                 """
                 CREATE TABLE llm_call_attempts (
-                    attempt_id TEXT PRIMARY KEY,
-                    llm_call_id TEXT NOT NULL REFERENCES llm_calls(llm_call_id),
+                    attempt_id TEXT NOT NULL PRIMARY KEY,
+                    llm_call_id TEXT NOT NULL,
                     provider_attempt_no INTEGER NOT NULL,
                     dispatch_kind TEXT NOT NULL,
                     request_max_output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -82,17 +171,67 @@ def _make_ready_database(path, *, revision: str = HEAD_REVISION, c1b: bool = Tru
                     latency_ms INTEGER NOT NULL DEFAULT 0,
                     error_code TEXT,
                     error_text TEXT,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    CONSTRAINT ck_llm_call_attempts_provider_attempt_no_nonnegative
+                        CHECK (provider_attempt_no >= 0),
+                    CONSTRAINT ck_llm_call_attempts_request_max_output_tokens_nonnegative
+                        CHECK (request_max_output_tokens >= 0),
+                    CONSTRAINT ck_llm_call_attempts_prompt_tokens_nonnegative
+                        CHECK (prompt_tokens >= 0),
+                    CONSTRAINT ck_llm_call_attempts_completion_tokens_nonnegative
+                        CHECK (completion_tokens >= 0),
+                    CONSTRAINT ck_llm_call_attempts_total_tokens_nonnegative
+                        CHECK (total_tokens >= 0),
+                    CONSTRAINT ck_llm_call_attempts_estimated_tokens_nonnegative
+                        CHECK (estimated_tokens >= 0),
+                    CONSTRAINT ck_llm_call_attempts_reserved_tokens_nonnegative
+                        CHECK (reserved_tokens >= 0),
+                    CONSTRAINT ck_llm_call_attempts_budget_charged_tokens_nonnegative
+                        CHECK (budget_charged_tokens >= 0),
+                    CONSTRAINT ck_llm_call_attempts_budget_charged_within_reservation
+                        CHECK (budget_charged_tokens <= reserved_tokens),
+                    CONSTRAINT ck_llm_call_attempts_latency_ms_nonnegative
+                        CHECK (latency_ms >= 0),
+                    CONSTRAINT ck_llm_call_attempts_accounting_status
+                        CHECK (accounting_status IN (
+                            'reserved','settled','failed','released','rejected',
+                            'usage_exceeds_reservation'
+                        )),
+                    CONSTRAINT ck_llm_call_attempts_dispatch_kind
+                        CHECK (dispatch_kind IN (
+                            'initial','transport_retry','response_parse_retry',
+                            'missing_text_degrade','system_probe'
+                        )),
+                    CONSTRAINT fk_llm_call_attempts_call
+                        FOREIGN KEY (llm_call_id) REFERENCES llm_calls(llm_call_id)
+                        ON UPDATE NO ACTION ON DELETE NO ACTION,
+                    CONSTRAINT uq_llm_call_attempts_call_ordinal
+                        UNIQUE (llm_call_id, provider_attempt_no)
                 )
                 """
             )
             connection.execute(
                 """
                 CREATE TABLE chapter_run_jobs (
-                    job_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL PRIMARY KEY,
                     scene_id TEXT,
                     created_at TEXT NOT NULL
                 )
+                """
+            )
+            connection.executescript(
+                """
+                CREATE INDEX ix_llm_calls_scope_created
+                    ON llm_calls (scope_type, scope_id, created_at);
+                CREATE INDEX ix_llm_calls_run_job ON llm_calls (run_job_id);
+                CREATE INDEX ix_llm_calls_execution_step
+                    ON llm_calls (execution_id, execution_step_key);
+                CREATE INDEX ix_llm_calls_accounting_status
+                    ON llm_calls (accounting_status);
+                CREATE INDEX ix_llm_call_attempts_call_status
+                    ON llm_call_attempts (llm_call_id, accounting_status);
+                CREATE INDEX ix_chapter_run_jobs_scene_created
+                    ON chapter_run_jobs (scene_id, created_at);
                 """
             )
 
@@ -107,7 +246,60 @@ def test_ready_database_matches_required_schema_and_revision(tmp_path):
     assert result["integrity"] == "ok"
     assert result["missing_tables"] == []
     assert result["missing_columns"] == {}
+    assert result["schema_errors"] == []
     assert result["llm_call_attempt_orphan_count"] == 0
+
+
+def test_c1b_preflight_rejects_column_complete_schema_without_structural_contract(tmp_path):
+    database_path = tmp_path / "columns-only.db"
+    _make_ready_database(database_path, structural_contract=False)
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert result["schema_errors"] == inspect_database(
+        database_path, HEAD_REVISION
+    )["schema_errors"]
+    assert len(result["schema_errors"]) == len(
+        {json.dumps(error, sort_keys=True) for error in result["schema_errors"]}
+    )
+    error_kinds = {error["kind"] for error in result["schema_errors"]}
+    assert {
+        "column_contract",
+        "check_constraint",
+        "foreign_key",
+        "unique_constraint",
+        "index",
+    } <= error_kinds
+    assert any(
+        error["kind"] == "column_contract"
+        and error["expected"].get("default") is not None
+        for error in result["schema_errors"]
+    )
+
+
+def test_c1b_preflight_rejects_same_index_name_with_wrong_column_order(tmp_path):
+    database_path = tmp_path / "wrong-index-order.db"
+    _make_ready_database(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP INDEX ix_llm_calls_scope_created")
+        connection.execute(
+            """
+            CREATE INDEX ix_llm_calls_scope_created
+            ON llm_calls (scope_id, scope_type, created_at)
+            """
+        )
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert {
+        "kind": "index",
+        "table": "llm_calls",
+        "name": "ix_llm_calls_scope_created",
+        "expected": ["scope_type", "scope_id", "created_at"],
+        "actual": ["scope_id", "scope_type", "created_at"],
+    } in result["schema_errors"]
 
 
 def test_previous_revision_uses_legacy_schema_profile(tmp_path):
@@ -123,6 +315,7 @@ def test_previous_revision_uses_legacy_schema_profile(tmp_path):
     assert result["ready"] is True
     assert result["missing_tables"] == []
     assert result["missing_columns"] == {}
+    assert result["schema_errors"] == []
     assert "llm_call_attempt_orphan_count" not in result
 
 
@@ -202,6 +395,7 @@ def test_empty_database_reports_missing_governance_tables(tmp_path):
     assert result["revision"] is None
     assert "evaluation_experiments" in result["missing_tables"]
     assert "scene_run_states" in result["missing_tables"]
+    assert result["schema_errors"] == []
 
 
 def test_multiple_alembic_revisions_fail_closed(tmp_path):

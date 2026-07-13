@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import inspect
 
+import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
@@ -197,6 +198,86 @@ def test_existing_budget_is_not_overwritten(session) -> None:
     session.commit()
     session.refresh(state)
     assert state.scene_token_budget == 99999
+    assert state.provider_attempt_budget == 32
+    assert state.scene_budget_basis_json == {
+        "basis_type": "legacy_existing_scene_token_budget",
+        "scene_token_budget": 99999,
+        "token_budget_basis": {
+            "reconstructable": False,
+            "reason": "legacy_scene_token_budget_without_basis",
+        },
+        "provider_attempt_budget": {
+            "config_key": "retry_budget.provider_attempt_budget",
+            "value": 32,
+        },
+    }
+
+
+def test_legacy_budget_basis_is_completed_once_with_current_provider_config(session) -> None:
+    _seed_scene(session)
+    state = session.get(SceneRunState, SCENE_ID)
+    state.scene_token_budget = 12345
+    state.provider_attempt_budget = 7
+    state.scene_budget_basis_json = None
+
+    ensure_budget(state, 100, provider_attempt_budget=23)
+
+    assert state.scene_token_budget == 12345
+    assert state.provider_attempt_budget == 23
+    assert state.scene_budget_basis_json == {
+        "basis_type": "legacy_existing_scene_token_budget",
+        "scene_token_budget": 12345,
+        "token_budget_basis": {
+            "reconstructable": False,
+            "reason": "legacy_scene_token_budget_without_basis",
+        },
+        "provider_attempt_budget": {
+            "config_key": "retry_budget.provider_attempt_budget",
+            "value": 23,
+        },
+    }
+    completed_basis = dict(state.scene_budget_basis_json)
+
+    ensure_budget(state, 999, provider_attempt_budget=99)
+
+    assert state.scene_token_budget == 12345
+    assert state.provider_attempt_budget == 23
+    assert state.scene_budget_basis_json == completed_basis
+
+
+def test_nonempty_budget_basis_restores_missing_token_budget_without_other_mutation(session) -> None:
+    _seed_scene(session)
+    state = session.get(SceneRunState, SCENE_ID)
+    existing_basis = {
+        "basis_type": "externally_managed",
+        "scene_token_budget": 777,
+        "opaque": {"value": 1},
+    }
+    state.scene_token_budget = None
+    state.provider_attempt_budget = 7
+    state.scene_budget_basis_json = existing_basis
+
+    ensure_budget(state, 100, provider_attempt_budget=23)
+
+    assert state.scene_token_budget == 777
+    assert state.provider_attempt_budget == 7
+    assert state.scene_budget_basis_json == existing_basis
+
+
+def test_nonempty_budget_basis_without_recoverable_token_budget_fails_closed(session) -> None:
+    _seed_scene(session)
+    state = session.get(SceneRunState, SCENE_ID)
+    existing_basis = {"basis_type": "externally_managed", "opaque": {"value": 1}}
+    state.scene_token_budget = None
+    state.provider_attempt_budget = 7
+    state.scene_budget_basis_json = existing_basis
+
+    with pytest.raises(ValueError, match="immutable scene budget basis has no positive token budget"):
+        ensure_budget(state, 100, provider_attempt_budget=23)
+
+    assert state.scene_token_budget is None
+    assert state.provider_attempt_budget == 7
+    assert state.scene_budget_basis_json == existing_basis
 
 
 # ---------- can_spend / ensure_budget 纯函数 ----------
