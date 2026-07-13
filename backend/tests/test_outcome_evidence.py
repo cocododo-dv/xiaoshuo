@@ -164,6 +164,22 @@ def test_validate_command_accepts_complete_offline_manifest(
     assert captured.err == ""
 
 
+def test_validate_command_rejects_manifest_without_artifacts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest = _manifest()
+    manifest.artifacts.clear()
+    manifest_path = tmp_path / "outcome-evidence.json"
+    write_manifest(manifest, manifest_path)
+
+    result = _main(["validate", str(manifest_path)])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "artifact" in captured.err.lower()
+
+
 def test_validate_command_rejects_tampered_artifact(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

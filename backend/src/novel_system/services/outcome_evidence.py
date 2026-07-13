@@ -121,6 +121,8 @@ def validate_manifest_evidence(
         if not gate.passed:
             errors.append(f"gate {gate.code!r}: failed")
 
+    if not manifest.artifacts:
+        errors.append("manifest has no artifacts")
     root = Path(artifact_root)
     for artifact in manifest.artifacts:
         configured_path = Path(artifact.path)
