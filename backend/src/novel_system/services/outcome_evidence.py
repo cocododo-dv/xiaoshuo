@@ -5,9 +5,9 @@ import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 EvidenceProvenance = Literal["synthetic", "offline", "real_model", "human"]
@@ -40,12 +40,17 @@ def _utc_iso_z() -> str:
 
 
 class OutcomeEvidenceManifest(BaseModel):
-    schema: Literal["outcome-evidence-v1"] = "outcome-evidence-v1"
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: Literal["outcome-evidence-v1"] = Field(
+        default="outcome-evidence-v1",
+        alias="schema",
+    )
     run_id: str
     git_commit: str
     database_revision: str
     config_hashes: dict[str, str] = Field(default_factory=dict)
-    model_routes: dict[str, str] = Field(default_factory=dict)
+    model_routes: dict[str, Any] = Field(default_factory=dict)
     provenance: EvidenceProvenance
     created_at: str = Field(default_factory=_utc_iso_z)
     commands: list[EvidenceCommand] = Field(default_factory=list)
@@ -85,8 +90,9 @@ def require_provenance(
         )
 
 
-def write_manifest(path: str | Path, manifest: OutcomeEvidenceManifest) -> None:
+def write_manifest(manifest: OutcomeEvidenceManifest, path: str | Path) -> None:
     destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -99,7 +105,7 @@ def write_manifest(path: str | Path, manifest: OutcomeEvidenceManifest) -> None:
             delete=False,
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
-            temporary_file.write(manifest.model_dump_json(indent=2))
+            temporary_file.write(manifest.model_dump_json(indent=2, by_alias=True))
             temporary_file.write("\n")
         os.replace(temporary_path, destination)
         temporary_path = None
