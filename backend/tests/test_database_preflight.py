@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
+from novel_system.tools import database_preflight
 from novel_system.tools.database_preflight import inspect_database
 
 
@@ -52,3 +54,33 @@ def test_empty_database_reports_missing_governance_tables(tmp_path):
     assert result["revision"] is None
     assert "evaluation_experiments" in result["missing_tables"]
     assert "scene_run_states" in result["missing_tables"]
+
+
+def test_multiple_alembic_revisions_fail_closed(tmp_path):
+    database_path = tmp_path / "multiple-revisions.db"
+    _make_ready_database(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO alembic_version (version_num) VALUES (?)",
+            ("extra_revision",),
+        )
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert result["revision"] is None
+    assert result["error"] == "alembic_version_row_count=2"
+
+
+def test_cli_reports_missing_database_as_json_without_creating_it(tmp_path, capsys):
+    database_path = tmp_path / "missing.db"
+
+    exit_code = database_preflight._main(
+        [str(database_path), "--expected-revision", HEAD_REVISION]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert output["ready"] is False
+    assert output["error"]
+    assert database_path.exists() is False

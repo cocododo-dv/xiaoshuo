@@ -31,10 +31,22 @@ def inspect_database(
     expected_revision: str,
 ) -> dict[str, Any]:
     database_path = Path(path).expanduser().resolve()
-    connection = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
+    result: dict[str, Any] = {
+        "path": str(database_path),
+        "ready": False,
+        "integrity": None,
+        "revision": None,
+        "expected_revision": expected_revision,
+        "foreign_keys": None,
+        "missing_tables": [],
+        "missing_columns": {},
+    }
+    connection: sqlite3.Connection | None = None
     try:
+        connection = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
         integrity_row = connection.execute("PRAGMA integrity_check").fetchone()
         integrity = str(integrity_row[0]) if integrity_row else "unknown"
+        result["integrity"] = integrity
         tables = {
             str(row[0])
             for row in connection.execute(
@@ -42,15 +54,17 @@ def inspect_database(
             )
         }
 
-        revision = None
         if "alembic_version" in tables:
-            revision_row = connection.execute(
-                "SELECT version_num FROM alembic_version LIMIT 1"
-            ).fetchone()
-            if revision_row:
-                revision = str(revision_row[0])
+            revision_rows = connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchall()
+            if len(revision_rows) == 1:
+                result["revision"] = str(revision_rows[0][0])
+            else:
+                result["error"] = f"alembic_version_row_count={len(revision_rows)}"
 
         missing_tables = sorted(set(REQUIRED_TABLES) - tables)
+        result["missing_tables"] = missing_tables
         missing_columns: dict[str, list[str]] = {}
         for table, required_columns in REQUIRED_COLUMNS.items():
             if table not in tables:
@@ -62,28 +76,24 @@ def inspect_database(
             missing = sorted(set(required_columns) - columns)
             if missing:
                 missing_columns[table] = missing
+        result["missing_columns"] = missing_columns
 
         foreign_keys_row = connection.execute("PRAGMA foreign_keys").fetchone()
         foreign_keys = int(foreign_keys_row[0]) if foreign_keys_row else 0
+        result["foreign_keys"] = foreign_keys
+        result["ready"] = (
+            integrity == "ok"
+            and result["revision"] == expected_revision
+            and not missing_tables
+            and not missing_columns
+            and "error" not in result
+        )
+    except sqlite3.Error as exc:
+        result["error"] = str(exc)
     finally:
-        connection.close()
-
-    ready = (
-        integrity == "ok"
-        and revision == expected_revision
-        and not missing_tables
-        and not missing_columns
-    )
-    return {
-        "path": str(database_path),
-        "ready": ready,
-        "integrity": integrity,
-        "revision": revision,
-        "expected_revision": expected_revision,
-        "foreign_keys": foreign_keys,
-        "missing_tables": missing_tables,
-        "missing_columns": missing_columns,
-    }
+        if connection is not None:
+            connection.close()
+    return result
 
 
 def _main(argv: list[str] | None = None) -> int:
