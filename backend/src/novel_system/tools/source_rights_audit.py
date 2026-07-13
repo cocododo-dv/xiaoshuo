@@ -62,7 +62,11 @@ def audit_source_rights(session: Session, *, apply: bool = False) -> dict[str, A
             downgraded_at = _downgraded_at()
             for book, reason in violations_with_reasons:
                 previous_policy = book.cloud_policy
-                stats = dict(book.stats_json) if isinstance(book.stats_json, dict) else {}
+                stats = (
+                    dict(book.stats_json)
+                    if isinstance(book.stats_json, dict)
+                    else {"legacy_stats_json": book.stats_json}
+                )
                 stats["rights_policy_migration"] = {
                     "previous_cloud_policy": previous_policy,
                     "reason": reason,
@@ -111,11 +115,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="输出稳定 JSON 报告")
     args = parser.parse_args(argv)
 
-    session = SessionLocal()
+    session: Session | None = None
     try:
+        session = SessionLocal()
         report = audit_source_rights(session, apply=args.apply)
     except Exception as exc:  # noqa: BLE001 - CLI 顶层需稳定映射退出码
-        session.rollback()
+        if session is not None:
+            session.rollback()
         error = {"clean": False, "error": str(exc)}
         if args.json:
             print(
@@ -126,7 +132,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"source rights audit failed: {exc}", file=sys.stderr)
         return 2
     finally:
-        session.close()
+        if session is not None:
+            session.close()
 
     _print_report(report, as_json=args.json)
     if args.apply:

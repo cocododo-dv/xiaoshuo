@@ -310,6 +310,45 @@ def test_unknown_cloud_policies_are_reported_and_downgraded(session) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("book_id", "legacy_stats"),
+    [
+        (
+            "book-legacy-list",
+            ["first", {"nested": [1, 2, 3]}, 17, False],
+        ),
+        ("book-legacy-scalar", "legacy-stats-value"),
+        ("book-legacy-null", None),
+    ],
+)
+def test_apply_preserves_non_dict_stats_json(
+    session,
+    book_id: str,
+    legacy_stats: object,
+) -> None:
+    tool = _audit_tool()
+    session.add(
+        _book(
+            book_id,
+            cloud_policy="segments_only",
+            stats_json=legacy_stats,
+        )
+    )
+    session.flush()
+
+    report = tool.audit_source_rights(session, apply=True)
+
+    assert report["downgraded_count"] == 1
+    migrated = session.get(StyleReferenceBook, book_id).stats_json
+    assert migrated["legacy_stats_json"] == legacy_stats
+    assert set(migrated) == {"legacy_stats_json", "rights_policy_migration"}
+    assert migrated["rights_policy_migration"]["previous_cloud_policy"] == "segments_only"
+    assert (
+        migrated["rights_policy_migration"]["reason"]
+        == "missing_declared_send_rights"
+    )
+
+
 def test_cli_dry_run_violation_returns_one_with_stable_json(session, capsys) -> None:
     tool = _audit_tool()
     _seed_books(session)
@@ -365,6 +404,31 @@ def test_cli_apply_success_returns_zero_and_downgrades(session, capsys) -> None:
         session.get(StyleReferenceBook, books["declared_false"].book_id).cloud_policy
         == "local_only"
     )
+
+
+def test_cli_session_initialization_exception_returns_two_with_stable_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    tool = _audit_tool()
+
+    def fail_session_init():
+        raise RuntimeError("session init failed")
+
+    monkeypatch.setattr(tool, "SessionLocal", fail_session_init)
+
+    first_code = tool.main(["--json"])
+    first = capsys.readouterr()
+    second_code = tool.main(["--json"])
+    second = capsys.readouterr()
+
+    assert first_code == second_code == 2
+    assert first.out == second.out == ""
+    assert first.err == second.err
+    assert json.loads(first.err) == {
+        "clean": False,
+        "error": "session init failed",
+    }
 
 
 def test_cli_exception_rolls_back_and_returns_two(
