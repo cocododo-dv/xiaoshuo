@@ -19,6 +19,7 @@ from novel_system.services.outcome_evidence import (
     require_provenance,
     write_manifest,
 )
+from novel_system.tools.outcome_evidence import _main
 
 
 def _manifest(
@@ -98,6 +99,17 @@ def test_manifest_rejects_duplicate_gate_codes() -> None:
 def test_offline_manifest_cannot_satisfy_human_gate() -> None:
     with pytest.raises(EvidenceProvenanceError):
         require_provenance(_manifest(), {"human"})
+
+
+def test_validate_command_rejects_missing_required_provenance(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "outcome-evidence.json"
+    write_manifest(_manifest(), manifest_path)
+
+    assert _main(
+        ["validate", str(manifest_path), "--require-provenance", "human"]
+    ) == 1
 
 
 def test_outcome_evidence_module_imports_without_warnings() -> None:
