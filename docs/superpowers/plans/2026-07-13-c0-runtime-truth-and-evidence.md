@@ -586,11 +586,24 @@ python -m pytest tests/test_outcome_evidence.py tests/test_database_preflight.py
 
 Expected: all selected tests pass with zero failures.
 
-- [x] **Step 8: Commit C0 implementation and plan completion**
+- [x] **Step 8: Record the actual multi-commit C0 history**
 
-```bash
-git add backend/src/novel_system/services/outcome_evidence.py backend/src/novel_system/tools/outcome_evidence.py backend/src/novel_system/tools/database_preflight.py backend/tests/test_outcome_evidence.py backend/tests/test_database_preflight.py docs/outcome-governance-progress.md docs/superpowers/specs/2026-07-13-ai-novel-outcome-governance-completion-assessment.md docs/superpowers/plans/2026-07-13-c0-runtime-truth-and-evidence.md
-git commit -m "feat(governance): close runtime truth and evidence C0"
-```
+C0 did not land as one commit containing every implementation file. The actual history is intentionally split by concern:
 
-The ignored `.codex-run` artifacts remain outside Git; their hashes and command results are represented by the manifest. A later evidence retention change may publish a redacted manifest index, but C0 does not add real-model or human provenance.
+- `fe263d8` / `93cefdc`: evidence manifest model and writer hardening.
+- `c6fb984` / `c48d94e`: database preflight and fail-closed correction.
+- `b6cc9c7`: provenance validation CLI.
+- `2186543` / `8d676a9`: status separation and assessment alignment.
+- `641589c`: runtime migration/evidence closure and Task 5 completion.
+- `55938fb` / `2cbf24c`: quality-review validator hardening for artifact integrity and evidence completeness.
+- `docs(governance): publish C0 runtime evidence`: tracked manifest index and runtime-truth documentation follow-up.
+
+The ignored `.codex-run` artifacts remain outside Git. Their hashes, exact commands, UTC timestamps, expected/actual exits and gate reports are retained in `docs/superpowers/evidence/20260713-c0-manifest.json`; binary verification requires the local `.codex-run/governance-c0/20260713-c0` directory as `artifact_root`. Provenance remains `offline` and does not add real-model or human evidence.
+
+### Task 5 quality-review closure (2026-07-13)
+
+- [x] Validator checks artifact presence/hash, non-empty commands/gates/artifacts, expected exits, failed gates and command timestamps.
+- [x] Local manifest records fresh process, backup, drill, focused regression, actual no-op/head/schema/orphan and C0 regression evidence with real UTC intervals.
+- [x] Tracked manifest index is an exact copy of the validator-approved local manifest; backup binaries remain ignored.
+- [x] Completion assessment and progress ledger now state actual `0064` / `ready=true` / `integrity=ok` / orphan 0 and preserve `0059` only as pre-migration backup history.
+- [x] Offline evidence closes only the C0 engineering runtime gate; UI, real-model, human and release gates remain pending.

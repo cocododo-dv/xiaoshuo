@@ -19,6 +19,13 @@
 
 `completed` 只表示对应工程实现层已有证据；synthetic/offline 证据不得将 `real_gate_status` 或 `release_gate_status` 置为 `completed`。
 
+## C0 运行真值与证据——工程门已完成（offline）
+
+- 实际默认库 `backend/novel_system.db` 已于 C0 从 `20260618_0059` 升级到 `20260712_0064`；新鲜 preflight 为 `ready=true`、`integrity=ok`，孤儿盘点为 0。
+- 迁移前 `0059` 校验备份仍保留在本地 ignored artifact 中，SHA-256 为 `804fc4e01237d77eacf83b7671f90ab50fdd5db985a2356ba74666240dec31b3`。
+- 可审查 manifest 索引为 `docs/superpowers/evidence/20260713-c0-manifest.json`；复核备份二进制及 sidecar 时，须使用本地 `.codex-run/governance-c0/20260713-c0` 作为 `artifact_root`。
+- manifest provenance 为 `offline`：只关闭数据库迁移、schema ready、孤儿盘点和聚焦回归对应的工程门，不推进 `real_gate_status` 或 `release_gate_status`，也不代表真实模型、UI E2E 或真人盲评完成。
+
 ## Wave 0：建立真实结果门禁 —— 工程实现已完成，真实门待验（2026-07-10）
 
 实施计划：`docs/superpowers/specs/2026-07-10-wave0-implementation-plan.md`

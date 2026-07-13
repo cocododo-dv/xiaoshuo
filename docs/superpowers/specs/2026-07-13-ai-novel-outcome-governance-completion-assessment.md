@@ -72,11 +72,11 @@
 - 后端：`python -m pytest -q -m "not chroma_integration"` 新鲜通过，`1590 passed, 4 skipped, 17 deselected`，耗时 563.09 秒。
 - React：`npm test` 新鲜通过，`14` 个测试文件、`89` 项测试全部通过。
 - 构建：`npm run build` 新鲜通过；当前主 JS 为 1,237.29 kB，Vite 报告 gzip 385.35 kB。虽然已低于设计中“主 chunk <500KB gzip”的体积目标，但仍是单一主 chunk，Vite 同时给出 chunk 大于 500 kB 的拆分警告，路由级懒加载没有落地。
-- Alembic：代码 head 为 `20260712_0064`；当前 `backend/novel_system.db` 为 `20260618_0059`。
-- 当前默认库缺少 `scene_run_states.latest_valid_draft_row_id`、`run_policy`、`scene_token_budget`、`scene_tokens_used`，且不存在 `evaluation_experiments` 表。
-- 当前默认库孤儿盘点为 0，但 `PRAGMA foreign_keys=0`，FK 仍未启用。
+- Alembic：代码 head 为 `20260712_0064`；实际默认库已在 C0 闭环中从 `20260618_0059` 升级到 `20260712_0064`，新鲜 preflight 报告 `ready=true`、`integrity=ok`，必需新列和实验表均已存在。
+- C0 迁移前的已验证备份仍保留 `20260618_0059` 历史状态，SHA-256 为 `804fc4e01237d77eacf83b7671f90ab50fdd5db985a2356ba74666240dec31b3`；副本演练与 actual 复核均到达 `0064`。
+- 当前默认库孤儿盘点为 0；`PRAGMA foreign_keys=0`，FK 是否启用仍待正式结论。
 
-说明：默认库版本落后属于当前工作区的可运行态阻断，不等同于迁移脚本缺失；但在升级前，最新代码不能以该默认库作为有效验收环境。
+说明：默认库版本落后的可运行态阻断已关闭。可审查索引见 `docs/superpowers/evidence/20260713-c0-manifest.json`；其中 provenance 为 `offline`，复核二进制 artifact 时必须以本机 `.codex-run/governance-c0/20260713-c0` 作为 `artifact_root`。该证据只关闭工程运行门，不推进真实模型门或发布门。
 
 ---
 
@@ -85,7 +85,7 @@
 | Wave | 已做好 | 证据等级 | 没有闭环的关键点 | 本轮判定 |
 |---|---|---:|---|---|
 | Wave 0 结果门禁 | Outcome Gate 能识别空稿、缺场、假评分和非 UI lane | L2 | harness 没有随 Wave 1–3 反向接回真实 UI；候选终选仍写死 `missing` | **部分完成** |
-| Wave 1 正文真值与归档 | `FinalScene` 权威态、`author_state`、latest-valid、adopt、后端成稿聚合已实现 | L2 | 没有真实浏览器清缓存/重启恢复门；当前默认库也未迁移到新 schema | **工程主干完成，结果门未过** |
+| Wave 1 正文真值与归档 | `FinalScene` 权威态、`author_state`、latest-valid、adopt、后端成稿聚合已实现；默认库 schema 已到 `0064` | L2 | 没有真实浏览器清缓存/重启恢复门 | **工程主干完成，结果门未过** |
 | Wave 2 QC 分级 | Q0–Q3、确定性复核、软问题不丢稿、reliable/strict 语义已有测试 | L2 | 没有“当前真实模型旧三章复跑”证据；真实波动和坏稿归档率未知 | **工程主干完成，真实门未过** |
 | Wave 3 Best-of-N | 候选盲化、锁定、重开、resume、React CandidatePicker 和预算字段已存在 | L2 | harness 不走该 UI；预算非硬上限；真实多候选走查缺失；未有人评却已默认标准场 N=2、关键场 N=3 且关键场强制终选 | **部分完成，默认策略证据不足** |
 | Wave 4 POV 投影 | 两个主要状态注入槽和 finding 回灌脱敏已有实现与 golden 测试 | L2 | 无真实悬疑 LLM 对照；收益依赖显式知识标注质量；写侧事件提取默认关闭 | **工程完成度较高，效果未证** |
@@ -223,11 +223,11 @@
 
 ## 5. P1：发布前必须补齐的工程缺口
 
-### P1-1 默认运行库未迁移，FK 仍未启用
+### P1-1 FK 仍未启用
 
-- 当前 Alembic head 为 `0064`，默认库为 `0059`，最新代码对该库读取新列时会失败。
+- 当前 Alembic head 与默认库均为 `0064`，preflight 为 `ready=true`、`integrity=ok`；默认库版本落后阻断已关闭。
 - 默认库孤儿盘点为 0，但 FK pragma 仍为 0；Wave 7 的“盘点后再评估启用”尚未完成最后一步。
-- 先备份，再升级到 `0064`，复跑孤儿盘点、metadata drift、主要 API smoke，最后决定启用 FK；不得直接在未备份库上试错。
+- 依据 tracked manifest 和全量存量盘点、metadata drift、主要 API smoke 结果，形成是否启用 FK 的正式结论；启用前仍须保留校验备份与回滚路径。
 
 ### P1-2 成本数据仍不是真实账单
 
@@ -283,7 +283,7 @@
 3. **测试偏向结构和 happy path。** 需要补充真实浏览器全链、provider usage 缺失、未声明云发送权、恶意抽取文本、迁移落后启动和真实取消等失败路径。
 4. **演示隔离依赖人工盘点。** `ws-flowmap` 只做最小标记且无组件测试；至少应有导航级断言，保证真实项目不会显示 tide 演示叠加。
 5. **默认策略与实验结论脱钩。** 实验服务只返回建议，不具备受审计的“应用策略”动作；生产配置因此可能长期与证据不一致。
-6. **运行环境说明与实际库状态脱节。** README 要求手动升级，但 Windows 启动脚本不保证迁移；应在启动前做 schema preflight，明确失败而不是运行期 500。
+6. **启动路径仍缺 schema preflight。** 当前 actual 已迁移到 `0064`，但 README 仍要求手动升级，Windows 启动脚本也不保证未来迁移；应在启动前做 schema preflight，明确失败而不是运行期 500。
 
 ---
 
@@ -292,7 +292,7 @@
 | # | 原交付物 | 当前状态 | 结论 |
 |---:|---|---|---|
 | 1 | 可正确失败的五章结果验收脚本 | 判定器存在，但 harness 未跟上现有 UI | **部分完成** |
-| 2 | 服务端权威成稿和统一作者状态 | 主干已实现，默认库未迁移 | **工程基本完成** |
+| 2 | 服务端权威成稿和统一作者状态 | 主干已实现，默认库 schema 已到 `0064`；真实浏览器恢复门仍缺 | **工程基本完成** |
 | 3 | 软质量问题不丢稿的可靠模式 | 有分类器和测试，真实模型未复跑 | **工程基本完成** |
 | 4 | 关键场景匿名候选终选界面 | UI/API 存在，北极星不使用 | **工程完成、E2E 未验** |
 | 5 | POV 减法知识投影 | 代码/golden 存在，真实悬疑对照缺失 | **工程完成、效果未验** |
@@ -310,10 +310,10 @@
 
 ### 收敛 0：恢复可运行真值与证据纪律
 
-1. 对默认库执行校验备份并验证备份可恢复。
-2. 在副本上从 `0059` 升级到 `0064`，跑 metadata drift 和核心 API smoke。
-3. 为所有后续发布门建立固定 evidence manifest：commit、配置哈希、数据库版本、模型路由、命令、退出码、产物哈希、synthetic/human 标识。
-4. 把进度账本状态改为“工程实现”“真实门”“发布门”三列，不再使用单一“已完成”。
+1. [x] 已对默认库执行校验备份并验证备份可恢复；备份保留迁移前 `0059` 历史状态。
+2. [x] 已在副本上从 `0059` 升级到 `0064` 完成演练，并将 actual 升级到 `0064`；preflight `ready=true`、`integrity=ok`、孤儿数 0。
+3. [x] 已建立固定 evidence manifest：tracked 索引为 `docs/superpowers/evidence/20260713-c0-manifest.json`，本地二进制复核使用 `.codex-run/governance-c0/20260713-c0` 作为 `artifact_root`。
+4. [x] 已把进度账本状态改为“工程实现”“真实门”“发布门”三列，不再使用单一“已完成”。
 5. evidence manifest 使用 `outcome-evidence-v1` schema，并分别记录 `engineering_status`、`real_gate_status`、`release_gate_status`；工程实现、真实门与发布门只能由各自对应层的有效证据推进。
 6. synthetic/offline 证据只能支持 `engineering_status`；被忽略的 artifact 或缺失 artifact 不得推进真实门，`real_gate_status` 必须保持 `pending`（需要人类终验时保持 `pending_human`），也不得据此推进 `release_gate_status`。
 
@@ -369,7 +369,7 @@
 
 以下全部满足之前，本文状态保持“未闭环”：
 
-- [ ] Alembic current 与 head 均为 `20260712_0064` 或后续同一版本。
+- [x] Alembic current 与 head 均为 `20260712_0064`；证据见 `docs/superpowers/evidence/20260713-c0-manifest.json`，本地 artifact 复核须指定 `.codex-run/governance-c0/20260713-c0`。
 - [ ] 后端全量非 Chroma 测试、React 测试和生产构建新鲜通过。
 - [ ] 五章 harness 六阶段全部为 UI lane。
 - [ ] 原创 15/15 场有非空服务端归档正文，5/5 聚合一致。
