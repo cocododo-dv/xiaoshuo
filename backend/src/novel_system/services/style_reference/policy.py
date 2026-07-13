@@ -8,34 +8,70 @@
                         片段或派生 statement,天然满足该档,故放行。
 - ``allow_full_cloud``— 无限制。
 
-所有把书籍内容送往云端 LLM 的调用方(RunOrchestrator / IngestService.reclassify /
-ProfileSynthesizer / PreviewService / validation 语义路)在调用前必须执行
-``ensure_cloud_llm_allowed(book, operation=...)``。
+已知非本地策略还必须有严格的 ``declared=True`` 与 ``send_rights=True`` 持久化声明；
+未知/空策略一律 fail-closed。需要错误反馈的调用方执行
+``ensure_cloud_llm_allowed(book, operation=...)``，只需分支判定的调用方使用
+``cloud_llm_allowed(book)``。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from novel_system.services.style_reference.errors import CloudPolicyBlockedError
+from novel_system.services.style_reference.errors import (
+    CloudPolicyBlockedError,
+    CloudPolicyInvalidError,
+    CloudSendRightsBlockedError,
+)
 from novel_system.services.style_reference.schemas import CloudPolicy
 
 
+_CLOUD_POLICIES = {
+    CloudPolicy.SEGMENTS_ONLY.value,
+    CloudPolicy.ALLOW_FULL_CLOUD.value,
+}
+
+
 def cloud_llm_allowed(book: Any) -> bool:
-    """book 的 cloud_policy 是否允许云端 LLM 操作(local_only → False)。"""
-    policy = (getattr(book, "cloud_policy", None) or "").strip()
-    return policy != CloudPolicy.LOCAL_ONLY.value
+    """仅显式非本地策略和严格发送权声明允许云端 LLM 操作。"""
+    if book is None:
+        return True
+    policy = getattr(book, "cloud_policy", None) or ""
+    if policy == CloudPolicy.LOCAL_ONLY.value:
+        return False
+    if policy not in _CLOUD_POLICIES:
+        return False
+    stats = getattr(book, "stats_json", None)
+    rights = stats.get("rights_declaration") if isinstance(stats, dict) else None
+    return (
+        isinstance(rights, dict)
+        and rights.get("declared") is True
+        and rights.get("send_rights") is True
+    )
 
 
 def ensure_cloud_llm_allowed(book: Any, *, operation: str) -> None:
-    """local_only 的书禁止云端 LLM 操作;否则放行。
+    """按本地策略、未知策略、发送权缺失三类原因拒绝云端 LLM 操作。
 
     book 为 None 时放行(调用方各自负责 NOT_FOUND 校验,policy 层不重复)。
     """
     if book is None:
         return
-    if not cloud_llm_allowed(book):
+    policy = getattr(book, "cloud_policy", None) or ""
+    if policy == CloudPolicy.LOCAL_ONLY.value:
         raise CloudPolicyBlockedError(
             book_id=getattr(book, "book_id", "unknown"),
             operation=operation,
+        )
+    if policy not in _CLOUD_POLICIES:
+        raise CloudPolicyInvalidError(
+            book_id=getattr(book, "book_id", "unknown"),
+            operation=operation,
+            cloud_policy=policy,
+        )
+    if not cloud_llm_allowed(book):
+        raise CloudSendRightsBlockedError(
+            book_id=getattr(book, "book_id", "unknown"),
+            operation=operation,
+            cloud_policy=policy,
         )
