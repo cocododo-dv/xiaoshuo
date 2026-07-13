@@ -314,6 +314,8 @@
 2. 在副本上从 `0059` 升级到 `0064`，跑 metadata drift 和核心 API smoke。
 3. 为所有后续发布门建立固定 evidence manifest：commit、配置哈希、数据库版本、模型路由、命令、退出码、产物哈希、synthetic/human 标识。
 4. 把进度账本状态改为“工程实现”“真实门”“发布门”三列，不再使用单一“已完成”。
+5. evidence manifest 使用 `outcome-evidence-v1` schema，并分别记录 `engineering_status`、`real_gate_status`、`release_gate_status`；工程实现、真实门与发布门只能由各自对应层的有效证据推进。
+6. synthetic/offline 证据只能支持 `engineering_status`；被忽略的 artifact 或缺失 artifact 不得推进真实门，`real_gate_status` 必须保持 `pending`（需要人类终验时保持 `pending_human`），也不得据此推进 `release_gate_status`。
 
 **完成门：** 当前默认运行库与代码 head 一致；任一审查者能按 manifest 复算门禁结论。
 

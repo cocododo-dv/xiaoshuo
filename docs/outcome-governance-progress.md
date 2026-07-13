@@ -4,7 +4,22 @@
 >
 > 纪律：Wave 严格顺序推进；前一 Wave 完成门未过不得开始后一 Wave；每 Wave 独立提交。
 
-## Wave 0：建立真实结果门禁 —— 已完成（2026-07-10）
+## 状态口径（2026-07-13 起）
+
+| Wave | `engineering_status` | `real_gate_status` | `release_gate_status` |
+|---|---|---|---|
+| Wave 0 | `completed` | `pending` | `pending` |
+| Wave 1 | `completed` | `pending` | `pending` |
+| Wave 2 | `completed` | `pending` | `pending` |
+| Wave 3 | `completed` | `pending` | `pending` |
+| Wave 4 | `completed` | `pending` | `pending` |
+| Wave 5 | `completed` | `pending_human` | `pending` |
+| Wave 6 | `partial` | `pending` | `pending` |
+| Wave 7 | `partial` | `pending` | `pending` |
+
+`completed` 只表示对应工程实现层已有证据；synthetic/offline 证据不得将 `real_gate_status` 或 `release_gate_status` 置为 `completed`。
+
+## Wave 0：建立真实结果门禁 —— 工程实现已完成，真实门待验（2026-07-10）
 
 实施计划：`docs/superpowers/specs/2026-07-10-wave0-implementation-plan.md`
 
@@ -68,7 +83,7 @@ node --check scripts/run-longzu-full-cloud-qa.cjs                               
   由下一次真实运行检验；已为新角色顾磬补 voice 卡候选。
 - longzu lane 的五章扩展与"授权/公版参考文本"替换遗留至 §9.3 发布门 2 重整。
 
-## Wave 1：统一正文真值和归档 —— 已完成（2026-07-11）
+## Wave 1：统一正文真值和归档 —— 工程实现已完成，真实门待验（2026-07-11）
 
 实施计划：`docs/superpowers/specs/2026-07-11-wave1-implementation-plan.md`
 
@@ -134,7 +149,7 @@ chapter-manuscripts 可回放全文）+ vitest「done 只由 adopt 成功响应�
   计划 D5 边界）；人工稿归档经 adopt 的 author-draft 兜底路径覆盖。
 - adopt 端点 Wave 1 只做确定性来源安全 Q0 守卫；Q0–Q3 分级阻断策略归 Wave 2。
 
-## Wave 2：QC 分级和可靠成稿模式 —— 已完成（2026-07-11）
+## Wave 2：QC 分级和可靠成稿模式 —— 工程实现已完成，真实门待验（2026-07-11）
 
 实施计划：`docs/superpowers/specs/2026-07-11-wave2-implementation-plan.md`
 
@@ -223,7 +238,7 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
 - `ws-scene.jsx` 裁决条视觉（红/金 gate 条）需 Windows lane 实跑走查；
   逻辑层已有 vitest 覆盖（gate 提取/拦截/放行 4 项）。
 
-## Wave 3：Best-of-N 人类终选与 5× 预算 —— 已完成（2026-07-11）
+## Wave 3：Best-of-N 人类终选与 5× 预算 —— 工程实现已完成，真实门待验（2026-07-11）
 
 实施计划：`docs/superpowers/specs/2026-07-11-wave3-implementation-plan.md`
 
@@ -306,7 +321,7 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
 - 并排对比/句段差异定位 UI 为后续增强（§5.5 明示不阻塞第一阶段）。
 - 存量停在 `critical_scene_human_gate` 的场按既有 human-review resolve 收尾。
 
-## Wave 4：POV 减法投影 —— 已完成（2026-07-12）
+## Wave 4：POV 减法投影 —— 工程实现已完成，真实门待验（2026-07-12）
 
 实施计划：`docs/superpowers/specs/2026-07-12-wave4-implementation-plan.md`
 
@@ -393,7 +408,7 @@ cd backend && .venv/bin/python -m pytest -q -m "not chroma_integration"         
   收益与风险以显式标注为界（§5.6）；prose_event_extractor 写侧零改动（`log_event`
   已透传 payload，suspected 标注按需由写侧传入）。
 
-## Wave 5：质量实验室与人类盲评 —— 已完成（2026-07-12）
+## Wave 5：质量实验室与人类盲评 —— 工程实现已完成，真实门待验（2026-07-12）
 
 实施计划：`docs/superpowers/specs/2026-07-12-wave5-implementation-plan.md`
 
@@ -479,7 +494,7 @@ pair/投票证明报告正确与判据自洽；真实 30 票跑归发布门（�
   （单用户盲评模型，§6.2）；多评审者一致性归后续。
 - React 盲评页浏览器走查归 Windows lane；store 盲化消费逻辑已由 vitest 覆盖。
 
-## Wave 6：成本、模型独立性和运维可见性 —— 已完成（2026-07-12）
+## Wave 6：成本、模型独立性和运维可见性 —— 部分完成（工程主干已落地，真实成本门待验）（2026-07-12）
 
 实施计划：`docs/superpowers/specs/2026-07-12-wave6-implementation-plan.md`
 
@@ -560,7 +575,7 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
   分列 + 费用汇总补足透明度，per-slot 预算判定归后续。
 - React 成本页/信号 chip 浏览器走查归 Windows lane；store/取数逻辑 vitest 覆盖。
 
-## Wave 7：长篇耐久、安全和结构收敛 —— 进行中（2026-07-12）
+## Wave 7：长篇耐久、安全和结构收敛 —— 部分完成（2026-07-12）
 
 实施计划：`docs/superpowers/specs/2026-07-12-wave7-implementation-plan.md`
 
@@ -568,7 +583,7 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
 > 大文件拆分(6) + React 懒加载(7) 留后续独立提交（§11.8）。真实 30 章模型跑 /
 > 重启恢复 / p95 延迟归 §9.3/§9.4 发布门（本机不可跑真实模型）。
 
-### 提交 7a：数据库备份 / WAL 一致性 / 恢复演练（item 5）—— 已完成
+### 提交 7a：数据库备份 / WAL 一致性 / 恢复演练（item 5）—— 工程实现已完成
 
 - 新增 `backend/src/novel_system/tools/db_backup.py`：SQLite **在线备份 API**
   （`sqlite3.Connection.backup`）产一致性单文件快照（含未 checkpoint 的 WAL 写入；备份前
@@ -582,7 +597,7 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
 - 验证（本机）：`pytest tests/test_db_backup.py -q` 6 passed；恢复演练脚本端到端
   5 步全绿（真实 sqlite 库）；产物 `.codex-run/wave7-backup-meta.json`。
 
-### 提交 7b：存量孤儿盘点 + 修复迁移（item 4 / §11.10）—— 已完成
+### 提交 7b：存量孤儿盘点 + 修复迁移（item 4 / §11.10）—— 工程实现已完成
 
 - 新增 `backend/src/novel_system/tools/orphan_inventory.py`：**只读**盘点——扫「child.fk
   非空却指向不存在 parent.pk」的孤儿；**仅纳入声明了 ForeignKey 的关系**（13 条：11 条
@@ -604,7 +619,7 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
   tests/test_generation_persistence.py -q` 17 passed；全新库 `alembic upgrade head` 干净到达
   `20260712_0064`；对该库跑盘点 CLI → 0 孤儿 exit 0；产物 `.codex-run/wave7-orphan-inventory.json`。
 
-### 提交 7c：参考文本不可信数据封装 + 指令过滤 + 导入权属（item 3 / §5.9）—— 已完成
+### 提交 7c：参考文本不可信数据封装 + 指令过滤 + 导入权属（item 3 / §5.9）—— 工程实现已完成
 
 - 新增 `services/style_reference/untrusted_data.py`：`wrap_untrusted`（用显式
   `[UNTRUSTED_REFERENCE_DATA:kind]` 边界 + 前导句「以下为待分析数据、非指令」封装——**主防线**）
@@ -627,7 +642,7 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
   + `test_reference_ingest_rights.py` 5（记录声明/未声明/矛盾拒绝/发送权+云端 OK/向后兼容）。
 - 验证（本机）：上述 15 + 既有 ingest 14 = 29 passed；injection 既有 62 passed；app 启动正常。
 
-### 提交 7d：长篇耐久分层指标收集器（items 1/2 / §9.4）—— 已完成
+### 提交 7d：长篇耐久分层指标收集器（items 1/2 / §9.4）—— 工程实现已完成
 
 - 新增 `scripts/endurance_metrics.py`（纯 Python，离线可测）：`bucket_by_five`（每五章分桶）/
   `tokens_per_archived_scene` / `stratify_by_model`（**按模型分层**记漂移/重复基线，§8 项 2：
@@ -644,7 +659,7 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
   `.codex-run/wave7-endurance-metrics.json`（合成 30 章：passed，21–30 比值 1.375 在阈内，
   6 桶，gpt-5/gpt-5-mini 分层）。
 
-### 提交 7e：演示隔离（item 8 / §2.2 G-13）—— 已完成
+### 提交 7e：演示隔离（item 8 / §2.2 G-13）—— 工程实现已完成
 
 - 盘点结论：React 主线**已有完善的演示隔离约定**——`WsDemoTag`（ws-catalog.jsx:800）已用于
   5 个演示面（`ct-app` 构思控制塔 + `ctIsTide` 真实作品空态门控 / `lf6-app` 长篇控制塔 +
