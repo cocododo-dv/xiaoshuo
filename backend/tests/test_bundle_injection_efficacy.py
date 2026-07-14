@@ -135,10 +135,29 @@ def test_scene_vector_indexing_persists_via_factory(session, monkeypatch):
     from novel_system.services.vector_store import get_vector_store
 
     scene = _seed_catalog_style_scene(session, project_id="projp7")
-    Orchestrator._index_scene_to_vector_store(scene, "一段正文内容用于索引")
+    result = Orchestrator._index_scene_to_vector_store(scene, "一段正文内容用于索引")
 
     store = get_vector_store()
     collection = f"scenes_{scene.project_id}"
     assert store.collection_exists(collection), "索引后集合应在工厂单例中可见"
     ids = {doc["id"] for doc in store.load_collection(collection)}
     assert scene.scene_id in ids
+    assert result["outcome"] == "non_persistent"
+    assert result["write_status"] in {"indexed", "already_present"}
+    assert result["backend"] == "memory"
+    assert result["validation_scope"] == "process_local"
+
+
+def test_scene_vector_indexing_rejects_stale_same_id_without_overwrite(session):
+    from novel_system.services.vector_store import get_vector_store
+
+    scene = _seed_catalog_style_scene(session, project_id="projp7_stale")
+    store = get_vector_store()
+    collection = f"scenes_{scene.project_id}"
+    store.write_collection(collection, [{"id": scene.scene_id, "text": "stale"}])
+
+    result = Orchestrator._index_scene_to_vector_store(scene, "current")
+
+    assert result["outcome"] == "failed"
+    assert result["error_code"] == "VECTOR_INDEX_STALE_CONTENT"
+    assert store.load_collection(collection) == [{"id": scene.scene_id, "text": "stale"}]

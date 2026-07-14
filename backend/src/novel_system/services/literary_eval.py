@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+from sqlalchemy.orm import Session
 
+from novel_system.services.llm_accounting import (
+    LLMCallContext,
+    execute_accounted_call,
+    mark_postprocess_failure,
+)
 from novel_system.services.llm_client import LLMRequest
 
 
@@ -78,6 +85,7 @@ def load_literary_eval_suite(source: str | Path | Mapping[str, Any]) -> Literary
         raise ValueError("literary eval suite must define a non-empty cases list")
 
     cases = tuple(_load_case(item, suite_threshold=pass_threshold) for item in raw_cases)
+    _require_unique_case_ids(cases)
     return LiteraryEvalSuite(
         suite_id=suite_id,
         description=description,
@@ -119,9 +127,27 @@ class LiteraryEvalRunner:
         suite: LiteraryEvalSuite,
         *,
         generator: Callable[[LiteraryEvalCase], str | Mapping[str, Any]],
+        eval_run_id: str | None = None,
     ) -> None:
+        _require_unique_case_ids(suite.cases)
         self.suite = suite
         self.generator = generator
+        generator_run_id = getattr(generator, "eval_run_id", None)
+        if generator_run_id is not None:
+            generator_run_id = _require_identifier(
+                generator_run_id,
+                "generator eval_run_id",
+            )
+        if eval_run_id is None:
+            self.eval_run_id = generator_run_id or new_literary_eval_run_id()
+        else:
+            runner_run_id = _require_identifier(eval_run_id, "runner eval_run_id")
+            if generator_run_id is not None and generator_run_id != runner_run_id:
+                raise ValueError(
+                    "literary eval eval_run_id mismatch: "
+                    f"runner={runner_run_id!r}, generator={generator_run_id!r}"
+                )
+            self.eval_run_id = runner_run_id
 
     def run(self, *, output_path: str | Path | None = None) -> dict[str, Any]:
         case_results = []
@@ -149,6 +175,7 @@ class LiteraryEvalRunner:
             4,
         )
         result = {
+            "eval_run_id": self.eval_run_id,
             "suite_id": self.suite.suite_id,
             "description": self.suite.description,
             "summary": {
@@ -182,6 +209,8 @@ class LLMLiteraryCaseGenerator:
         self,
         llm_client: Any,
         *,
+        session: Session,
+        eval_run_id: str,
         model: str,
         provider: str = "openai_compatible",
         provider_id: str | None = None,
@@ -194,6 +223,8 @@ class LLMLiteraryCaseGenerator:
         max_output_tokens: int = 1200,
     ) -> None:
         self.llm_client = llm_client
+        self.session = session
+        self.eval_run_id = _require_identifier(eval_run_id, "eval_run_id")
         self.model = model
         self.provider = provider
         self.provider_id = provider_id
@@ -206,16 +237,36 @@ class LLMLiteraryCaseGenerator:
         self.max_output_tokens = max_output_tokens
 
     def __call__(self, case: LiteraryEvalCase) -> dict[str, Any]:
-        response = self.llm_client.generate(self._request(case))
+        request = self._request(case)
+        llm_call_id = _literary_eval_llm_call_id(self.eval_run_id, case.case_id)
+        response = execute_accounted_call(
+            self.session,
+            self.llm_client,
+            request,
+            LLMCallContext(
+                scope_type="literary_eval_case",
+                scope_id=f"{self.eval_run_id}:{case.case_id}",
+                node_id="literary_eval_live",
+                step=f"case:{case.case_id}",
+            ),
+            llm_call_id=llm_call_id,
+        )
         structured_output = response.structured_output or {}
         scene_text = structured_output.get("scene_text")
         if not isinstance(scene_text, str) or not scene_text.strip():
+            mark_postprocess_failure(
+                self.session,
+                llm_call_id,
+                error_code="LLM_RESPONSE_INVALID_SCHEMA",
+                error_text="literary eval llm response missing scene_text",
+            )
             raise ValueError("literary eval llm response missing scene_text")
         return {
             "generated_text": scene_text.strip(),
             "provider": response.provider,
             "model": response.model,
-            "request_id": response.request_id,
+            "llm_call_id": llm_call_id,
+            "provider_request_id": response.request_id,
             "usage": response.usage,
             "finish_reason": response.finish_reason,
         }
@@ -248,6 +299,30 @@ class LLMLiteraryCaseGenerator:
             credential_mode=self.credential_mode,  # type: ignore[arg-type]
             provider_options=self.provider_options,
         )
+
+
+def new_literary_eval_run_id() -> str:
+    return f"literary_eval_{uuid.uuid4().hex}"
+
+
+def _literary_eval_llm_call_id(eval_run_id: str, case_id: str) -> str:
+    seed = f"{_require_identifier(eval_run_id, 'eval_run_id')}:{_require_identifier(case_id, 'case_id')}"
+    return f"llm_eval_{uuid.uuid5(uuid.NAMESPACE_URL, seed).hex}"
+
+
+def _require_identifier(value: str, name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"literary eval {name} must be a non-empty string")
+    return normalized
+
+
+def _require_unique_case_ids(cases: Sequence[LiteraryEvalCase]) -> None:
+    seen: set[str] = set()
+    for case in cases:
+        if case.case_id in seen:
+            raise ValueError(f"literary eval suite duplicate case_id: {case.case_id}")
+        seen.add(case.case_id)
 
 
 def _load_payload(source: str | Path | Mapping[str, Any]) -> dict[str, Any]:

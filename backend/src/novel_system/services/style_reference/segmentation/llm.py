@@ -5,22 +5,32 @@
 - 余下走 `style_ref_paragraph_classify_bulk`(local_fast)
 - agreement >= 0.85 用 fast 路径;< 0.85 整本 fallback 到 strong
 
-LLM 调用直接走 `LLMClient.generate(LLMRequest)`,
-参照 `reference_learning.py:974-1027` _call_llm_node 的契约,但简化:
-- scene_id / chapter_id / bundle_id 这些 LLMRequest 不需要(它们是 LLMTaskRunner.run 入参)
-- 直接构造 LLMRequest 给 client.generate(...) 即可
+分类器直接构造 `LLMRequest`,再经 `execute_accounted_call` 统一落父调用和物理 attempt；
+调用方必须显式提供持久 session 与稳定的参考书 scope。
 """
 
 from __future__ import annotations
 
 import logging
-import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.orm import Session
+
+from novel_system.services.llm_accounting import (
+    LLMAccountingError,
+    LLMCallContext,
+    execute_accounted_call,
+    is_llm_control_plane_failure,
+)
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.text_utils import compact_ws
+from novel_system.services.style_reference.untrusted_data import (
+    UntrustedPayload,
+    render_untrusted_system_prompt,
+    render_untrusted_user_prompt,
+)
 
 if TYPE_CHECKING:
     from novel_system.services.style_reference.segmentation import (
@@ -52,6 +62,9 @@ class SegmentationLLMError(Exception):
 def classify_with_llm(
     paragraphs: list[tuple[int, int, str]],
     llm_client: Any,
+    *,
+    session: Session,
+    scope_id: str,
 ) -> SegmentationResult:
     """锚定集校准的 LLM 段落分类。"""
     from novel_system.services.style_reference.segmentation import (
@@ -64,10 +77,22 @@ def classify_with_llm(
     anchor_paras = paragraphs[:anchor_size]
 
     # Step 1: 锚定集走强模型
-    anchor_strong = _classify_via_node(anchor_paras, NODE_ANCHOR, llm_client)
+    anchor_strong = _classify_via_node(
+        anchor_paras,
+        NODE_ANCHOR,
+        llm_client,
+        session=session,
+        scope_id=scope_id,
+    )
 
     # Step 2: 锚定集再走快模型,校准一致性
-    anchor_fast = _classify_via_node(anchor_paras, NODE_BULK, llm_client)
+    anchor_fast = _classify_via_node(
+        anchor_paras,
+        NODE_BULK,
+        llm_client,
+        session=session,
+        scope_id=scope_id,
+    )
     agreement = _compute_agreement(anchor_strong, anchor_fast)
 
     fallback_to_strong = agreement < AGREEMENT_THRESHOLD
@@ -75,9 +100,29 @@ def classify_with_llm(
     # Step 3: 余下段落按选定路径
     rest = paragraphs[anchor_size:]
     if fallback_to_strong:
-        rest_classified = _classify_via_node(rest, NODE_ANCHOR, llm_client) if rest else []
+        rest_classified = (
+            _classify_via_node(
+                rest,
+                NODE_ANCHOR,
+                llm_client,
+                session=session,
+                scope_id=scope_id,
+            )
+            if rest
+            else []
+        )
     else:
-        rest_classified = _classify_via_node(rest, NODE_BULK, llm_client) if rest else []
+        rest_classified = (
+            _classify_via_node(
+                rest,
+                NODE_BULK,
+                llm_client,
+                session=session,
+                scope_id=scope_id,
+            )
+            if rest
+            else []
+        )
 
     # 合并(锚定段以 strong 结果为准)
     merged: list[ParagraphClassification] = []
@@ -132,6 +177,9 @@ def _classify_via_node(
     paragraphs: list[tuple[int, int, str]],
     node_id: str,
     llm_client: Any,
+    *,
+    session: Session,
+    scope_id: str,
 ) -> list[tuple[str, float]]:
     """对一批段落调指定 LLM 节点,返回 [(paragraph_type, confidence), ...]。
 
@@ -177,11 +225,25 @@ def _classify_via_node(
                 for i, (_s, _e, body) in enumerate(batch)
             ]
         }
-        user_prompt = _format_user_prompt(template.task_prompt, batch_payload)
+        try:
+            task_prompt = template.task_prompt.replace(
+                "{paragraphs}", "See the bounded payload below."
+            )
+            user_prompt = render_untrusted_user_prompt(
+                task_prompt,
+                UntrustedPayload(batch_payload),
+                kind=node_id,
+            )
+            system_prompt = render_untrusted_system_prompt(template.system_prompt)
+        except Exception:  # pylint: disable=broad-except
+            raise SegmentationLLMError(
+                "STYLE_REF_LLM_PROMPT_RENDER_FAILED",
+                f"failed to render segmentation prompt for node {node_id!r}",
+            ) from None
         request = LLMRequest(
             model=task_config.model,
             messages=[
-                {"role": "system", "content": template.system_prompt},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=task_config.temperature,
@@ -198,11 +260,24 @@ def _classify_via_node(
             response_schema=template.structured_schema,
         )
         try:
-            response = llm_client.generate(request)
+            response = execute_accounted_call(
+                session,
+                llm_client,
+                request,
+                LLMCallContext(
+                    scope_type="style_reference_book",
+                    scope_id=scope_id,
+                    node_id=node_id,
+                    step=f"paragraph_classification:{batch_start}",
+                ),
+                llm_call_id=f"llm_style_segment_{uuid.uuid4().hex}",
+            )
         except Exception as exc:  # pylint: disable=broad-except
+            if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+                raise
             raise SegmentationLLMError(
                 "STYLE_REF_LLM_GENERATE_FAILED",
-                f"LLMClient.generate failed for node {node_id!r}: {exc}",
+                f"accounted LLM execution failed for node {node_id!r}: {exc}",
             ) from exc
 
         parsed = _parse_response(response)
@@ -217,16 +292,6 @@ def _classify_via_node(
             parsed = parsed[: len(batch)]
         results.extend(parsed)
     return results
-
-
-def _format_user_prompt(task_prompt: str, payload: dict[str, Any]) -> str:
-    """简单模板填充。如果 task_prompt 含 `{paragraphs}` 占位符则替换;否则追加。"""
-    import json
-
-    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
-    if "{paragraphs}" in task_prompt:
-        return task_prompt.replace("{paragraphs}", payload_json)
-    return f"{task_prompt}\n\n{payload_json}"
 
 
 def _parse_response(response: Any) -> list[tuple[str, float]]:

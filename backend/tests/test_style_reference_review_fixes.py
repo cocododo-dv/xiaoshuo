@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 from sqlalchemy import select
 
 from novel_system.db.models import StyleReferenceQuote
@@ -42,6 +44,22 @@ SAMPLE_TEXT = """这是一段比较长的叙述文字,用于让 ingest 能切出
 """
 
 
+def _decode_untrusted_payload(user_msg: str) -> dict:
+    """按共享 LLM helper 的显式边界协议解码测试请求。"""
+
+    opening_token = "[UNTRUSTED_REFERENCE_DATA:"
+    closing_token = "\n[/UNTRUSTED_REFERENCE_DATA]"
+    assert user_msg.count(opening_token) == 1, "请求必须且只能包含一个不可信数据起始边界"
+    assert user_msg.count(closing_token) == 1, "请求必须且只能包含一个不可信数据结束边界"
+
+    opening = user_msg.index(opening_token)
+    payload_start = user_msg.index("]\n", opening) + 2
+    payload_end = user_msg.index(closing_token, payload_start)
+    payload = json.loads(user_msg[payload_start:payload_end])
+    assert isinstance(payload, dict), "不可信数据边界内必须是 JSON object"
+    return payload
+
+
 def _ingest(seed: str, *, cloud_policy: str = "segments_only") -> str:
     with SessionLocal() as session:
         result = IngestService(session, llm_enabled=False).ingest_upload(
@@ -50,6 +68,11 @@ def _ingest(seed: str, *, cloud_policy: str = "segments_only") -> str:
             title=f"评审修复{seed}",
             author_label=None,
             cloud_policy=cloud_policy,
+            rights_declaration=(
+                {"analysis_rights": True, "send_rights": True}
+                if cloud_policy != "local_only"
+                else None
+            ),
         )
         session.commit()
         return result.book.book_id
@@ -181,7 +204,7 @@ def test_missing_assessment_skips_gating(fake_extractor_llm) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _ExplodingClient:
+class _ExplodingClient(AccountedGenerateMixin):
     """被调用即失败:用于断言终态 run 不会再触发任何 LLM 抽取。"""
 
     def __init__(self) -> None:
@@ -233,7 +256,10 @@ def _seed_binding(seed: str, *, profile_status: str, project_id: str) -> None:
         repo.create_book(
             book_id=f"sr_book_{seed}", title="t", source_kind="upload",
             cloud_policy="segments_only", text_checksum=f"chk_{seed}",
-            total_chars=10, status="ready", stats_json={},
+            total_chars=10, status="ready",
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         repo.create_run(
             run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done", phase="done"
@@ -304,7 +330,7 @@ def test_qc_gate_returns_none_for_inactive_profile(session) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _FabricatedEvidenceClient:
+class _FabricatedEvidenceClient(AccountedGenerateMixin):
     """extract 返回 1 条 finding,其唯一原始 evidence 的 quote 为伪造文本
     (不在任何段落里);supplement 返回 2 条真实 evidence。
 
@@ -318,8 +344,7 @@ class _FabricatedEvidenceClient:
 
     def generate(self, request):  # noqa: ANN001
         user_msg = request.messages[-1]["content"]
-        marker_pos = user_msg.rfind("\n\n{")
-        payload = json.loads(user_msg[marker_pos + 2 :]) if marker_pos >= 0 else {}
+        payload = _decode_untrusted_payload(user_msg)
         paras = payload.get("paragraphs") or []
         first = paras[0] if paras else {"paragraph_id": None, "text": ""}
 
@@ -415,13 +440,12 @@ def test_promoted_finding_drops_fabricated_original_evidence() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _OverflowClient:
+class _OverflowClient(AccountedGenerateMixin):
     """extract 返回 10 obs + 5 fp(全部合法 2 evidence),超出 §6.5 上限。"""
 
     def generate(self, request):  # noqa: ANN001
         user_msg = request.messages[-1]["content"]
-        marker_pos = user_msg.rfind("\n\n{")
-        payload = json.loads(user_msg[marker_pos + 2 :]) if marker_pos >= 0 else {}
+        payload = _decode_untrusted_payload(user_msg)
         paras = payload.get("paragraphs") or []
         first = paras[0] if paras else {"paragraph_id": None, "text": ""}
 
@@ -541,7 +565,11 @@ def test_import_path_accepts_txt(tmp_path) -> None:
     p.write_text(SAMPLE_TEXT, encoding="utf-8")
     with SessionLocal() as session:
         result = IngestService(session, llm_enabled=False).ingest_path(
-            str(p), title="路径导入", author_label=None, cloud_policy="segments_only"
+            str(p),
+            title="路径导入",
+            author_label=None,
+            cloud_policy="segments_only",
+            rights_declaration={"analysis_rights": True, "send_rights": True},
         )
         session.commit()
     assert result.paragraphs_count >= 2
@@ -572,7 +600,7 @@ def _fake_synth_client():
         raw_response: dict = {}
         response_format = "json_object"
 
-    class _Client:
+    class _Client(AccountedGenerateMixin):
         def generate(self, request):  # noqa: ANN001
             return _Resp()
 

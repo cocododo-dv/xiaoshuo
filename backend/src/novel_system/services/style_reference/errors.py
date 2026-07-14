@@ -131,3 +131,68 @@ class CloudPolicyBlockedError(StyleReferenceError, DomainError):
         )
         self.book_id = book_id
         self.operation = operation
+
+
+class CloudSendRightsBlockedError(StyleReferenceError, DomainError):
+    """非本地策略缺少严格、显式的云端发送权声明。"""
+
+    def __init__(
+        self,
+        *,
+        book_id: str,
+        operation: str,
+        cloud_policy: str,
+    ) -> None:
+        DomainError.__init__(
+            self,
+            "STYLE_REFERENCE_SEND_RIGHTS_REQUIRED",
+            f"book {book_id!r} has cloud_policy={cloud_policy!r} but lacks an explicit "
+            "declared=true and send_rights=true declaration; "
+            f"operation {operation!r} would send book content to a cloud LLM and is blocked",
+            status_code=409,
+            details={
+                "book_id": book_id,
+                "operation": operation,
+                "cloud_policy": cloud_policy,
+                "author_action": {
+                    "action": "redeclare_send_rights",
+                    "view": "styleref",
+                    "label": "请重新声明参考书的云端发送权",
+                },
+            },
+        )
+        self.book_id = book_id
+        self.operation = operation
+        self.cloud_policy = cloud_policy
+
+
+class CloudPolicyInvalidError(StyleReferenceError, DomainError):
+    """持久化 cloud_policy 不属于受支持策略时拒绝云端发送。"""
+
+    def __init__(
+        self,
+        *,
+        book_id: str,
+        operation: str,
+        cloud_policy: str,
+    ) -> None:
+        DomainError.__init__(
+            self,
+            "STYLE_REFERENCE_CLOUD_POLICY_INVALID",
+            f"book {book_id!r} has unsupported cloud_policy={cloud_policy!r}; "
+            f"operation {operation!r} would send book content to a cloud LLM and is blocked",
+            status_code=409,
+            details={
+                "book_id": book_id,
+                "operation": operation,
+                "cloud_policy": cloud_policy,
+                "author_action": {
+                    "action": "review_cloud_policy",
+                    "view": "styleref",
+                    "label": "请检查并重新选择参考书的云端策略",
+                },
+            },
+        )
+        self.book_id = book_id
+        self.operation = operation
+        self.cloud_policy = cloud_policy

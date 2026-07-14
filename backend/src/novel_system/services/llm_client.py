@@ -11,6 +11,7 @@ from typing import Any, Literal
 import httpx
 import yaml
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.services.llm_providers import (
     default_provider_base_urls,
     get_adapter,
@@ -18,14 +19,18 @@ from novel_system.services.llm_providers import (
 )
 from novel_system.services.llm_providers.anthropic import CLAUDE_THINKING_BUDGETS
 from novel_system.services.llm_providers.base import (
+    LLMAttemptHook,
     LLMClientError,
     LLMConfigurationError,
+    LLMDispatchKind,
     LLMHTTPError,
     LLMRateLimitError,
     LLMRequest,
     LLMResponse,
     LLMResponseError,
     LLMTimeoutError,
+    OnlineAccountedExecution,
+    OfflineDeterministicExecution,
     ProviderRuntimeConfig,
     SUPPORTED_API_MODES,
     SUPPORTED_CREDENTIAL_MODES,
@@ -39,6 +44,7 @@ __all__ = [
     "DEFAULT_PROVIDER_BASE_URLS",
     "GEMINI_THINKING_BUDGETS",
     "LLMClient",
+    "LLMAttemptHook",
     "LLMClientError",
     "LLMConfigurationError",
     "LLMHTTPError",
@@ -47,6 +53,8 @@ __all__ = [
     "LLMResponse",
     "LLMResponseError",
     "LLMTimeoutError",
+    "OnlineAccountedExecution",
+    "OfflineDeterministicExecution",
     "ModelRoutingConfig",
     "ProviderRuntimeConfig",
     "RETRYABLE_RESPONSE_ERROR_CODES",
@@ -302,7 +310,7 @@ class ModelRoutingConfig:
     job_runtime: dict[str, Any] = field(default_factory=dict)
 
 
-class LLMClient:
+class LLMClient(OnlineAccountedExecution):
     def __init__(
         self,
         *,
@@ -341,7 +349,20 @@ class LLMClient:
         delay *= 0.8 + 0.4 * random.random()
         time.sleep(delay)
 
-    def generate(self, request: LLMRequest) -> LLMResponse:
+    def generate_accounted(
+        self,
+        request: LLMRequest,
+        *,
+        accounting_hook: LLMAttemptHook,
+    ) -> LLMResponse:
+        return self.generate(request, accounting_hook=accounting_hook)
+
+    def generate(
+        self,
+        request: LLMRequest,
+        *,
+        accounting_hook: LLMAttemptHook | None = None,
+    ) -> LLMResponse:
         """入口:api_mode 按 provider 声明归一化 + 连通性降级阶梯。
 
         降级阶梯(最多 MAX_DEGRADE_HOPS 跳,每跳记 warning):
@@ -362,9 +383,15 @@ class LLMClient:
         req = _apply_connectivity_caps(req, provider_config)
         entry_req = req
         hops = 0
+        dispatch_kind: LLMDispatchKind = "initial"
         while True:
             try:
-                response = self._generate_once(req, provider_config)
+                response = self._generate_once(
+                    req,
+                    provider_config,
+                    accounting_hook=accounting_hook,
+                    initial_dispatch_kind=dispatch_kind,
+                )
                 if hops:
                     _record_connectivity_caps(entry_req, req, provider_config)
                 return response
@@ -374,15 +401,32 @@ class LLMClient:
                 degraded = _degrade_request_after_failure(req, exc, provider_config)
                 if degraded is None:
                     raise
+                previous_req = req
                 req, reason = degraded
                 hops += 1
+                dispatch_kind = (
+                    "missing_text_degrade"
+                    if isinstance(exc, LLMResponseError) and exc.code == "LLM_RESPONSE_MISSING_TEXT"
+                    else (
+                        "api_mode_degrade"
+                        if previous_req.api_mode != req.api_mode
+                        else "structured_output_degrade"
+                    )
+                )
                 logger.warning(
                     "llm connectivity degrade [%d/%d] node=%s provider=%s status=%s: %s",
                     hops, MAX_DEGRADE_HOPS, req.node_id, provider_config.provider_id,
                     getattr(exc, "status_code", None), reason,
                 )
 
-    def _generate_once(self, request: LLMRequest, provider_config: ProviderRuntimeConfig) -> LLMResponse:
+    def _generate_once(
+        self,
+        request: LLMRequest,
+        provider_config: ProviderRuntimeConfig,
+        *,
+        accounting_hook: LLMAttemptHook | None,
+        initial_dispatch_kind: LLMDispatchKind,
+    ) -> LLMResponse:
         endpoint, payload, headers, native_reasoning = self._build_http_request(request, provider_config)
         timeout_seconds = request.timeout_seconds or self._timeout_seconds
 
@@ -391,35 +435,79 @@ class LLMClient:
             timeout=timeout_seconds,
             transport=self._transport,
         ) as client:
+            dispatch_kind = initial_dispatch_kind
             for attempt in range(self._max_retries + 1):
+                hook_handle: object | None = None
+                if accounting_hook is not None:
+                    hook_handle = accounting_hook.before_dispatch(
+                        request=request,
+                        dispatch_kind=dispatch_kind,
+                    )
+                started_at = time.perf_counter()
                 try:
                     response = client.post(endpoint, json=payload, headers=headers)
                 except httpx.TimeoutException as exc:
-                    if attempt < self._max_retries:
-                        self._sleep_before_retry(attempt)
-                        continue
-                    raise LLMTimeoutError(
+                    error = LLMTimeoutError(
                         "LLM_REQUEST_TIMEOUT",
                         f"llm request timed out after {timeout_seconds} seconds",
                         retryable=True,
                         details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
-                    ) from exc
-                except httpx.RequestError as exc:
+                    )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        started_at=started_at,
+                    )
                     if attempt < self._max_retries:
                         self._sleep_before_retry(attempt)
+                        dispatch_kind = "transport_retry"
                         continue
-                    raise LLMHTTPError(
+                    raise error from exc
+                except httpx.RequestError as exc:
+                    error = LLMHTTPError(
                         "LLM_HTTP_REQUEST_FAILED",
                         f"llm request failed: {exc}",
                         retryable=True,
                         details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
-                    ) from exc
+                    )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        started_at=started_at,
+                    )
+                    if attempt < self._max_retries:
+                        self._sleep_before_retry(attempt)
+                        dispatch_kind = "transport_retry"
+                        continue
+                    raise error from exc
+                except Exception as exc:
+                    error = LLMHTTPError(
+                        "LLM_HTTP_CLIENT_EXCEPTION",
+                        "llm HTTP client raised an unexpected exception",
+                        details=_with_attempt_metadata(
+                            {
+                                "original_error_type": exc.__class__.__name__,
+                                "original_error_message": str(exc),
+                            },
+                            attempt=attempt,
+                            max_retries=self._max_retries,
+                        ),
+                    )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        started_at=started_at,
+                    )
+                    raise error from exc
 
                 if response.status_code == 429:
-                    if attempt < self._max_retries:
-                        self._sleep_before_retry(attempt, response=response)
-                        continue
-                    raise LLMRateLimitError(
+                    error = LLMRateLimitError(
                         "LLM_RATE_LIMITED",
                         _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
                         status_code=429,
@@ -433,12 +521,25 @@ class LLMClient:
                             max_retries=self._max_retries,
                         ),
                     )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        response=response,
+                        started_at=started_at,
+                    )
+                    if attempt < self._max_retries:
+                        self._sleep_before_retry(attempt, response=response)
+                        dispatch_kind = "transport_retry"
+                        continue
+                    raise error
 
                 if response.status_code in RETRYABLE_STATUS_CODES:
                     # 引擎级结构化输出错误(guided_grammar 等)重试不会自愈——立刻
                     # 抛给 generate 的降级阶梯,不浪费重试预算三连击同一错误
                     if _structured_output_rejection_signature(response.text):
-                        raise LLMHTTPError(
+                        error = LLMHTTPError(
                             "LLM_HTTP_STRUCTURED_OUTPUT_REJECTED",
                             _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
                             status_code=response.status_code,
@@ -451,10 +552,16 @@ class LLMClient:
                                 max_retries=self._max_retries,
                             ),
                         )
-                    if attempt < self._max_retries:
-                        self._sleep_before_retry(attempt, response=response)
-                        continue
-                    raise LLMHTTPError(
+                        _notify_attempt_error(
+                            accounting_hook,
+                            hook_handle,
+                            request=request,
+                            error=error,
+                            response=response,
+                            started_at=started_at,
+                        )
+                        raise error
+                    error = LLMHTTPError(
                         "LLM_HTTP_RETRYABLE_FAILURE",
                         _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
                         status_code=response.status_code,
@@ -468,9 +575,22 @@ class LLMClient:
                             max_retries=self._max_retries,
                         ),
                     )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        response=response,
+                        started_at=started_at,
+                    )
+                    if attempt < self._max_retries:
+                        self._sleep_before_retry(attempt, response=response)
+                        dispatch_kind = "transport_retry"
+                        continue
+                    raise error
 
                 if response.is_error:
-                    raise LLMHTTPError(
+                    error = LLMHTTPError(
                         "LLM_HTTP_FAILURE",
                         _error_message_for_status(response, request=request, provider_config=provider_config, endpoint=endpoint),
                         status_code=response.status_code,
@@ -483,18 +603,50 @@ class LLMClient:
                             max_retries=self._max_retries,
                         ),
                     )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        response=response,
+                        started_at=started_at,
+                    )
+                    raise error
 
                 try:
                     body = response.json()
                 except ValueError as exc:
-                    raise LLMResponseError(
+                    error = LLMResponseError(
                         "LLM_RESPONSE_INVALID",
                         "llm provider returned invalid JSON",
                         details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
-                    ) from exc
+                    )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        response=response,
+                        started_at=started_at,
+                    )
+                    raise error from exc
+                if not isinstance(body, dict):
+                    error = LLMResponseError(
+                        "LLM_RESPONSE_INVALID",
+                        "llm provider returned a non-object JSON response",
+                        details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
+                    )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        started_at=started_at,
+                    )
+                    raise error
 
                 try:
-                    return self._parse_response(
+                    parsed_response = self._parse_response(
                         body,
                         request,
                         provider_config,
@@ -503,6 +655,21 @@ class LLMClient:
                         max_retries=self._max_retries,
                     )
                 except LLMResponseError as exc:
+                    exc.details = _with_attempt_metadata(
+                        exc.details,
+                        attempt=attempt,
+                        max_retries=self._max_retries,
+                    )
+                    exc.retryable = exc.code in RETRYABLE_RESPONSE_ERROR_CODES
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=exc,
+                        raw_response=body,
+                        provider_request_id=_extract_request_id(body),
+                        started_at=started_at,
+                    )
                     # 空正文(MISSING_TEXT)不是瞬时故障(同 prompt 重发大概率同样为空,
                     # 每次白等一整个生成时长)——立即交给降级阶梯(关 reasoning/扩预算)
                     if (
@@ -511,14 +678,37 @@ class LLMClient:
                         and attempt < self._max_retries
                     ):
                         self._sleep_before_retry(attempt)
+                        dispatch_kind = "response_parse_retry"
                         continue
-                    exc.details = _with_attempt_metadata(
-                        exc.details,
-                        attempt=attempt,
-                        max_retries=self._max_retries,
-                    )
-                    exc.retryable = exc.code in RETRYABLE_RESPONSE_ERROR_CODES
                     raise
+                except Exception as exc:
+                    error = LLMResponseError(
+                        "LLM_RESPONSE_INVALID",
+                        "llm provider response could not be parsed",
+                        details=_with_attempt_metadata(
+                            {"parser_error_type": exc.__class__.__name__},
+                            attempt=attempt,
+                            max_retries=self._max_retries,
+                        ),
+                    )
+                    _notify_attempt_error(
+                        accounting_hook,
+                        hook_handle,
+                        request=request,
+                        error=error,
+                        raw_response=body,
+                        provider_request_id=_extract_request_id(body),
+                        started_at=started_at,
+                    )
+                    raise error from exc
+                if accounting_hook is not None:
+                    accounting_hook.after_response(
+                        hook_handle,
+                        request=request,
+                        response=parsed_response,
+                        latency_ms=_elapsed_ms(started_at),
+                    )
+                return parsed_response
 
         raise LLMHTTPError(
             "LLM_HTTP_FAILURE",
@@ -568,6 +758,7 @@ class LLMClient:
         max_retries: int,
     ) -> LLMResponse:
         adapter = get_adapter(provider_config.provider_type)
+        raw_usage = _extract_raw_usage(body)
         text = adapter.extract_output_text(body, request=request)
         structured_output: dict[str, Any] | None = None
         if request.response_format == "json_object":
@@ -584,6 +775,11 @@ class LLMClient:
                     "llm provider returned a non-object JSON payload for json_object mode",
                 )
 
+        try:
+            normalized_usage = adapter.normalize_usage(body)
+        except (TypeError, ValueError, OverflowError):
+            normalized_usage = None
+
         return LLMResponse(
             request_id=_extract_request_id(body),
             provider=provider_config.provider_type,
@@ -592,12 +788,15 @@ class LLMClient:
             structured_output=structured_output,
             response_format=request.response_format,
             raw_response=body,
-            usage=adapter.normalize_usage(body) or _normalize_usage(body.get("usage") or body.get("usageMetadata")),
+            usage=normalized_usage or _normalize_usage(raw_usage),
             finish_reason=adapter.extract_finish_reason(body, api_mode=request.api_mode),
             native_reasoning=native_reasoning,
             attempt_count=attempt_count,
             max_retries=max_retries,
             retryable=False,
+            raw_usage=raw_usage,
+            usage_present=raw_usage is not None,
+            usage_complete=_raw_usage_is_complete(raw_usage),
         )
 
     def _validate_provider(self, provider: str) -> None:
@@ -651,7 +850,15 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
     raw_node_routing = _require_mapping(raw_payload, "node_routing")
     raw_task_routing = _require_mapping(raw_payload, "task_routing")
     raw_model_profiles = _require_mapping(raw_payload, "model_profiles")
-    retry_budget = _require_mapping(raw_payload, "retry_budget")
+    retry_budget = dict(_require_mapping(raw_payload, "retry_budget"))
+    provider_attempt_budget = retry_budget.get("provider_attempt_budget")
+    if (
+        not isinstance(provider_attempt_budget, int)
+        or isinstance(provider_attempt_budget, bool)
+        or provider_attempt_budget <= 0
+    ):
+        provider_attempt_budget = DEFAULT_PROVIDER_ATTEMPT_BUDGET
+    retry_budget["provider_attempt_budget"] = provider_attempt_budget
     job_runtime = _require_mapping(raw_payload, "job_runtime")
 
     node_routing = {
@@ -678,7 +885,7 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
         node_routing=node_routing,
         task_routing=task_routing,
         model_profiles=_normalize_model_profiles(raw_model_profiles),
-        retry_budget=dict(retry_budget),
+        retry_budget=retry_budget,
         job_runtime=dict(job_runtime),
     )
 
@@ -898,6 +1105,89 @@ def _iter_json_object_candidates(text: str) -> list[str]:
     return candidates
 
 
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((time.perf_counter() - started_at) * 1000))
+
+
+def _notify_attempt_error(
+    hook: LLMAttemptHook | None,
+    handle: object | None,
+    *,
+    request: LLMRequest,
+    error: BaseException,
+    started_at: float,
+    response: httpx.Response | None = None,
+    raw_response: dict[str, Any] | None = None,
+    provider_request_id: str | None = None,
+) -> None:
+    if hook is None:
+        return
+    if raw_response is None and response is not None:
+        try:
+            parsed = response.json()
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            raw_response = parsed
+    if provider_request_id is None and raw_response is not None:
+        provider_request_id = _extract_request_id(raw_response)
+    hook.after_error(
+        handle,
+        request=request,
+        error=error,
+        raw_response=raw_response,
+        provider_request_id=provider_request_id,
+        latency_ms=_elapsed_ms(started_at),
+    )
+
+
+def _extract_raw_usage(body: dict[str, Any]) -> dict[str, Any] | None:
+    for key in ("usage", "usageMetadata"):
+        value = body.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    ollama_keys = ("prompt_eval_count", "eval_count")
+    if any(key in body for key in ollama_keys):
+        return {key: body.get(key) for key in ollama_keys if key in body}
+    return None
+
+
+def _usage_number(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0 or int(value) != value:
+        return None
+    return int(value)
+
+
+def _raw_usage_is_complete(usage: dict[str, Any] | None) -> bool:
+    if usage is None:
+        return False
+    key_sets = (
+        ("input_tokens", "output_tokens", "total_tokens"),
+        ("prompt_tokens", "completion_tokens", "total_tokens"),
+        ("promptTokenCount", "candidatesTokenCount", "totalTokenCount"),
+        ("prompt_eval_count", "eval_count", None),
+    )
+    for input_key, output_key, total_key in key_sets:
+        if input_key not in usage and output_key not in usage:
+            continue
+        input_tokens = _usage_number(usage.get(input_key))
+        output_tokens = _usage_number(usage.get(output_key))
+        if input_tokens is None or output_tokens is None:
+            return False
+        if total_key is None or total_key not in usage:
+            return True
+        total_tokens = _usage_number(usage.get(total_key))
+        return total_tokens is not None and total_tokens == input_tokens + output_tokens
+    return False
+
+
+def _safe_usage_int(value: Any) -> int:
+    parsed = _usage_number(value)
+    return parsed if parsed is not None else 0
+
+
 def _normalize_usage(usage: Any) -> dict[str, int]:
     if not isinstance(usage, dict):
         return {
@@ -907,27 +1197,36 @@ def _normalize_usage(usage: Any) -> dict[str, int]:
         }
 
     if "input_tokens" in usage or "output_tokens" in usage:
-        input_tokens = int(usage.get("input_tokens", 0) or 0)
-        output_tokens = int(usage.get("output_tokens", 0) or 0)
+        input_tokens = _safe_usage_int(usage.get("input_tokens", 0))
+        output_tokens = _safe_usage_int(usage.get("output_tokens", 0))
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
-            "total_tokens": int(usage.get("total_tokens", input_tokens + output_tokens) or 0),
+            "total_tokens": _safe_usage_int(usage.get("total_tokens", input_tokens + output_tokens)),
         }
 
     if "promptTokenCount" in usage or "candidatesTokenCount" in usage:
-        input_tokens = int(usage.get("promptTokenCount", 0) or 0)
-        output_tokens = int(usage.get("candidatesTokenCount", 0) or 0)
+        input_tokens = _safe_usage_int(usage.get("promptTokenCount", 0))
+        output_tokens = _safe_usage_int(usage.get("candidatesTokenCount", 0))
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
-            "total_tokens": int(usage.get("totalTokenCount", input_tokens + output_tokens) or 0),
+            "total_tokens": _safe_usage_int(usage.get("totalTokenCount", input_tokens + output_tokens)),
+        }
+
+    if "prompt_eval_count" in usage or "eval_count" in usage:
+        input_tokens = _safe_usage_int(usage.get("prompt_eval_count", 0))
+        output_tokens = _safe_usage_int(usage.get("eval_count", 0))
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
         }
 
     return {
-        "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
-        "output_tokens": int(usage.get("completion_tokens", 0) or 0),
-        "total_tokens": int(usage.get("total_tokens", 0) or 0),
+        "input_tokens": _safe_usage_int(usage.get("prompt_tokens", 0)),
+        "output_tokens": _safe_usage_int(usage.get("completion_tokens", 0)),
+        "total_tokens": _safe_usage_int(usage.get("total_tokens", 0)),
     }
 
 

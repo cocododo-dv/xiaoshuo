@@ -24,6 +24,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.catalog import chapter_title
 from novel_system.services.errors import DomainError
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.review_cards import ReviewCardService
 from novel_system.settings import get_settings
 
@@ -111,6 +112,7 @@ class LibraryDeriveService:
 
     def _extract(self, project_id: str, chapter_id: str, content: str) -> list[dict[str, Any]]:
         from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
+        from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
         client = self._llm_client or self._build_client()
         payload = {
@@ -118,7 +120,20 @@ class LibraryDeriveService:
             "known_names": sorted(self._known_names(project_id)),
         }
         try:
-            structured = call_llm_node(DERIVE_NODE_ID, payload, client)
+            structured = call_llm_node(
+                DERIVE_NODE_ID,
+                UntrustedPayload(payload),
+                client,
+                session=self.session,
+                context=LLMCallContext(
+                    scope_type="project",
+                    scope_id=project_id,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    node_id=DERIVE_NODE_ID,
+                    step=f"library_derive:{chapter_id}",
+                ),
+            )
         except LLMNodeError as exc:
             logger.warning("library derive llm call failed: %s", exc)
             return []

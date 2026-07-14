@@ -1,7 +1,7 @@
 """Wave 7（§5.9 / §11 规则 9）：导入时记录用户对文本的分析+发送权限声明。
 
-不得默认拥有云端发送权；声明 send_rights=False 却选云端策略 → 拒绝。未声明 → 记录
-`{declared: false}`（不改既有 cloud_policy 行为，向后兼容）。
+不得默认拥有云端发送权；非本地策略必须显式声明且 send_rights=True；local_only
+未声明仍记录 `{declared: false}`。
 """
 from __future__ import annotations
 
@@ -48,16 +48,52 @@ def test_no_send_rights_but_cloud_policy_rejected():
     with pytest.raises(DomainError) as exc:
         _ingest("r3", cloud_policy="allow_full_cloud",
                 rights={"analysis_rights": True, "send_rights": False})
-    assert "SEND" in str(exc.value.code).upper() or "RIGHTS" in str(exc.value.code).upper()
+    assert exc.value.code == "STYLE_REFERENCE_SEND_RIGHTS_REQUIRED"
+    assert exc.value.status_code == 400
 
 
-def test_send_rights_with_cloud_policy_ok():
-    book = _ingest("r4", cloud_policy="allow_full_cloud",
+@pytest.mark.parametrize("cloud_policy", ["segments_only", "allow_full_cloud"])
+def test_send_rights_with_cloud_policy_ok(cloud_policy):
+    book = _ingest(f"r4-{cloud_policy}", cloud_policy=cloud_policy,
                    rights={"analysis_rights": True, "send_rights": True})
     assert book.stats_json["rights_declaration"]["send_rights"] is True
 
 
-def test_backward_compat_cloud_without_declaration_still_ingests():
-    # 既有行为：未声明 + allow_cloud 仍可导入（cloud_policy 本就是用户显式选择）
-    book = _ingest("r5", cloud_policy="allow_full_cloud", rights=None)
-    assert book.stats_json["rights_declaration"]["declared"] is False
+@pytest.mark.parametrize("cloud_policy", ["segments_only", "allow_full_cloud"])
+@pytest.mark.parametrize(
+    "rights",
+    [
+        None,
+        {"declared": False, "analysis_rights": True, "send_rights": True},
+    ],
+    ids=["missing", "explicitly-undeclared"],
+)
+def test_cloud_policy_requires_explicit_send_rights_declaration(cloud_policy, rights):
+    with pytest.raises(DomainError) as exc:
+        _ingest(f"r5-{cloud_policy}-{rights is None}", cloud_policy=cloud_policy, rights=rights)
+    assert exc.value.code == "STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED"
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("send_rights", "false"),
+        ("send_rights", 1),
+        ("declared", "false"),
+        ("declared", 1),
+        ("analysis_rights", "false"),
+        ("analysis_rights", 1),
+    ],
+)
+def test_cloud_policy_rejects_non_boolean_rights_values(field, value):
+    rights = {
+        "declared": True,
+        "analysis_rights": True,
+        "send_rights": True,
+        field: value,
+    }
+    with pytest.raises(DomainError) as exc:
+        _ingest(f"r6-{field}-{value}", cloud_policy="segments_only", rights=rights)
+    assert exc.value.code == "STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID"
+    assert exc.value.status_code == 400

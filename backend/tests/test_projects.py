@@ -104,9 +104,17 @@ def test_outline_plan_generation_uses_project_outline_llm_when_live(client, sess
 
         def run(self, **kwargs):
             assert kwargs["node_id"] == "project_outline_plan"
+            context = kwargs["context"]
+            assert context.scope_type == "project"
+            assert context.scope_id == kwargs["chapter_id"]
+            assert context.project_id == kwargs["chapter_id"]
+            assert context.chapter_id is None
+            assert context.scene_id is None
             self.session.add(
                 LlmCall(
                     llm_call_id="llm_call_project_outline_test",
+                    scope_type="project",
+                    scope_id=kwargs["chapter_id"],
                     provider="fake",
                     model="fake-model",
                     node_id="project_outline_plan",

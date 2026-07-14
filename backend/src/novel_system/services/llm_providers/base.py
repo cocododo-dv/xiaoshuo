@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Protocol
 
 
 SUPPORTED_RESPONSE_FORMATS = {"json_object", "text"}
@@ -75,6 +75,14 @@ class LLMResponse:
     attempt_count: int = 1
     max_retries: int = 0
     retryable: bool = False
+    # ``usage`` is normalized for callers.  These fields preserve whether the
+    # provider actually supplied the source values, so accounting never treats
+    # normalizer-added zeroes as measured usage.  ``None`` is the safe legacy
+    # default for existing fake clients whose provenance is unknown.
+    raw_usage: dict[str, Any] | None = None
+    usage_present: bool | None = None
+    usage_complete: bool | None = None
+    llm_call_id: str | None = None
 
 
 class LLMClientError(Exception):
@@ -113,6 +121,67 @@ class LLMRateLimitError(LLMHTTPError):
 
 class LLMResponseError(LLMClientError):
     pass
+
+
+LLMDispatchKind = Literal[
+    "initial",
+    "transport_retry",
+    "response_parse_retry",
+    "api_mode_degrade",
+    "structured_output_degrade",
+    "missing_text_degrade",
+    "system_probe",
+]
+
+
+class LLMAttemptHook(Protocol):
+    """Internal lifecycle hook around every physical provider POST."""
+
+    def before_dispatch(self, *, request: LLMRequest, dispatch_kind: LLMDispatchKind) -> object:
+        """Reserve and mark one attempt dispatched; raising prevents the POST."""
+
+    def after_response(
+        self,
+        handle: object,
+        *,
+        request: LLMRequest,
+        response: LLMResponse,
+        latency_ms: int,
+    ) -> None:
+        """Settle a successfully parsed provider response."""
+
+    def after_error(
+        self,
+        handle: object,
+        *,
+        request: LLMRequest,
+        error: BaseException,
+        raw_response: dict[str, Any] | None,
+        provider_request_id: str | None,
+        latency_ms: int,
+    ) -> None:
+        """Settle a transport, HTTP, or response-parse failure."""
+
+
+class OnlineAccountedExecution(ABC):
+    """Explicit capability for online execution with physical-attempt accounting."""
+
+    @abstractmethod
+    def generate_accounted(
+        self,
+        request: LLMRequest,
+        *,
+        accounting_hook: LLMAttemptHook,
+    ) -> LLMResponse:
+        """Execute online generation while forwarding the required attempt hook."""
+
+
+class OfflineDeterministicExecution(ABC):
+    """Explicit capability for deterministic execution that performs no provider I/O."""
+
+    @abstractmethod
+    def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
+        """Return a deterministic offline response with complete zero usage."""
 
 
 @dataclass(slots=True, frozen=True)

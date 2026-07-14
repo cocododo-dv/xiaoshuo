@@ -10,7 +10,9 @@ from novel_system.services.literary_eval import (
     LLMLiteraryCaseGenerator,
     LiteraryEvalRunner,
     load_literary_eval_suite,
+    new_literary_eval_run_id,
 )
+from novel_system.db.session import SessionLocal
 from novel_system.services.llm_client import LLMClient, load_model_routing_config
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
@@ -42,13 +44,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     suite = load_literary_eval_suite(args.suite)
-    generator = _generator_for_mode(args.mode, model=args.model)
-    result = LiteraryEvalRunner(suite, generator=generator).run(output_path=args.output)
+    eval_run_id = new_literary_eval_run_id()
+    with SessionLocal() as session:
+        generator = _generator_for_mode(
+            args.mode,
+            model=args.model,
+            session=session,
+            eval_run_id=eval_run_id,
+        )
+        result = LiteraryEvalRunner(
+            suite,
+            generator=generator,
+            eval_run_id=eval_run_id,
+        ).run(output_path=args.output)
     print(json.dumps(result["summary"], ensure_ascii=False, indent=2))
     return 0
 
 
-def _generator_for_mode(mode: str, *, model: str | None):
+def _generator_for_mode(mode: str, *, model: str | None, session, eval_run_id: str):
     if mode == "baseline":
         return BaselineLiteraryCaseGenerator()
 
@@ -76,6 +89,8 @@ def _generator_for_mode(mode: str, *, model: str | None):
     )
     return LLMLiteraryCaseGenerator(
         client,
+        session=session,
+        eval_run_id=eval_run_id,
         model=model or task_config.model,
         provider=task_config.provider if task_config is not None else settings.llm_provider,
         provider_id=task_config.provider_id if task_config is not None else None,

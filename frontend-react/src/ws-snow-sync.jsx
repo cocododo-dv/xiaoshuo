@@ -1,7 +1,7 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { S2_BE_STEPS } from "./ws-snow.jsx";
+import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow.jsx";
 
 /* global window */
 /* ==========================================================
@@ -473,22 +473,110 @@ function schedulePush(cacheKey) {
   }, 700);
 }
 
-window.addEventListener("ws:snow-saved", (e) => {
+const previousGlobalHandlers = window.__snowSyncGlobalHandlers;
+if (previousGlobalHandlers) {
+  try { window.removeEventListener("ws:snow-saved", previousGlobalHandlers.saved); } catch (e) {}
+  try { window.removeEventListener("hashchange", previousGlobalHandlers.hashchange); } catch (e) {}
+  try { window.removeEventListener("ws:work-changed", previousGlobalHandlers.workChanged); } catch (e) {}
+  try { clearTimeout(previousGlobalHandlers.hydrateTimer); } catch (e) {}
+}
+
+const onSnowSaved = (e) => {
   const key = (e && e.detail) || (activeWork() ? snowCacheKey(activeWork()) : null);
   if (key) schedulePush(key);
-});
+};
 
 /* ---------- 触发面 ---------- */
-window.addEventListener("hashchange", () => {
+const onSnowHashChange = () => {
   const h = location.hash || "";
   if (h.indexOf("snowflake") >= 0 || h.indexOf("home") >= 0) snowHydrate(activeWork());
-});
-window.addEventListener("ws:work-changed", (e) => { if (e && e.detail) snowHydrate(e.detail); });
-setTimeout(() => snowHydrate(activeWork()), 600); // 启动水合（等 WsWorks 就绪）
+};
+const onSnowWorkChanged = (e) => { if (e && e.detail) snowHydrate(e.detail); };
+window.addEventListener("ws:snow-saved", onSnowSaved);
+window.addEventListener("hashchange", onSnowHashChange);
+window.addEventListener("ws:work-changed", onSnowWorkChanged);
+// 启动水合（等待 WsWorks 就绪）。句柄必须单独保存，便于 HMR/测试模块重载时撤销旧监听器。
+const snowHydrateTimer = setTimeout(() => snowHydrate(activeWork()), 600);
+window.__snowSyncGlobalHandlers = {
+  saved: onSnowSaved,
+  hashchange: onSnowHashChange,
+  workChanged: onSnowWorkChanged,
+  hydrateTimer: snowHydrateTimer,
+};
 
 const SnowSync = {
   refetch(workId) { return snowHydrate(workId || activeWork(), { force: true }); },
   readyToMaterialize(workId) { return !!snowReadyFlags[workId || activeWork()]; },
+  /* 结构化雪花计划导入：这是作者从既有策划稿/外部大纲迁入十步工作台的正常入口。
+     UI 一次提交后仍逐步走现有 PATCH + approve 契约，依赖闸门、历史版本、场景身份铸造
+     和审计日志均不绕过；任一步失败立即停止，不把半成品谎称为 10/10。 */
+  async importCanonicalPlan(workId, payload) {
+    const id = workId || activeWork();
+    if (!id || id === "__loading__") throw new Error("请先选择一个作品再导入雪花计划。");
+    const stepDrafts = payload && payload.steps && typeof payload.steps === "object" ? payload.steps : payload;
+    if (!stepDrafts || typeof stepDrafts !== "object" || Array.isArray(stepDrafts)) {
+      throw new Error("结构化计划必须是包含 steps 的 JSON 对象。");
+    }
+    const requiredKeys = SNOW_STEPS.map(([, beKey]) => beKey);
+    const missing = requiredKeys.filter((key) => !stepDrafts[key] || typeof stepDrafts[key] !== "object" || Array.isArray(stepDrafts[key]));
+    if (missing.length) throw new Error(`结构化计划缺少十步草稿：${missing.join("、")}`);
+
+    const approvedStepKeys = [];
+    const importedAt = Date.now();
+    const local = {
+      drafts: {}, scaffolds: {}, checks: {}, states: {}, revs: {}, confirmRevs: {},
+      history: [{
+        t: importedAt,
+        who: "我",
+        action: "导入结构化计划",
+        note: "十步依赖顺序保存并由后端批准",
+        key: "planning",
+        snap: null,
+      }],
+      _t: importedAt,
+    };
+    for (const [feKey, beKey] of SNOW_STEPS) {
+      const draft = stepDrafts[beKey];
+      const patched = await apiPatch(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}`, { draft, force: true });
+      const patchStep = patched && patched.step;
+      if (patchStep) {
+        (snowCanon[id] || (snowCanon[id] = {}))[feKey] = stripFe(patchStep.draft || draft);
+        (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(patchStep);
+      }
+      const approved = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}/approve`, {});
+      const approvedStep = approved && approved.step;
+      if (!approvedStep || approvedStep.status !== "approved") {
+        throw new Error(`「${beKey}」未得到后端批准，导入已停止。`);
+      }
+      (snowCanon[id] || (snowCanon[id] = {}))[feKey] = stripFe(approvedStep.draft || draft);
+      (snowHealth[id] || (snowHealth[id] = {}))[feKey] = shapeStepHealth(approvedStep);
+      const fe = feFromCanon(feKey, approvedStep.draft || draft);
+      if (fe && fe.text != null) local.drafts[feKey] = fe.text;
+      if (fe && fe.scaffold) local.scaffolds[feKey] = fe.scaffold;
+      local.states[feKey] = "done";
+      local.revs[feKey] = 0;
+      local.confirmRevs[feKey] = 0;
+      approvedStepKeys.push(beKey);
+    }
+
+    const workspace = await apiGet(`/api/v2/projects/${id}/snowflake-workspace`);
+    snowReadyFlags[id] = !!(workspace && workspace.ready_to_materialize);
+    captureResync(id, workspace || {});
+    const normalizedLocal = s2NormalizeState(local);
+    try { localStorage.setItem(snowCacheKey(id), JSON.stringify(normalizedLocal)); } catch (e) {}
+    // The import already wrote and approved every step. Seed the autosave
+    // dedupe ledger with that exact local snapshot, otherwise the history/local
+    // state update emitted immediately after the modal closes schedules a
+    // second ten-step PATCH wave which can race materialization back to 409.
+    const mine = lastPushed[id] || (lastPushed[id] = {});
+    for (const [feKey] of SNOW_STEPS) {
+      const fragment = buildStepFragment(feKey, normalizedLocal, id);
+      mine[feKey] = { sig: stepSig(fragment), state: fragment.fe_state };
+    }
+    try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
+    try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: id })); } catch (e) {}
+    return { approvedStepKeys, readyToMaterialize: snowReadyFlags[id], workspace };
+  },
   /* 物化后回流状态：pending = 构思 9/10 步领先于目录场景卡的场（后端 resync_status 真相）。
      随 ws:snow-resync 事件更新（hydrate 全量 / 9-10 步保存后的强制重拉 / resync 回包）。 */
   resyncStatus(workId) { return snowResync[workId || activeWork()] || { pendingCount: 0, pendingScenes: [] }; },

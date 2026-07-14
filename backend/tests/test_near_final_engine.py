@@ -15,10 +15,11 @@ from novel_system.db.models import (
     SceneCard,
     SceneDraft,
     SceneRunState,
+    StoryProject,
     VoiceProfile,
     WriterEvaluation,
 )
-from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
 from novel_system.services.near_final import (
     NEAR_FINAL_RUBRIC_ID,
     NearFinalAcceptanceService,
@@ -32,9 +33,10 @@ from novel_system.services.scene_generation import SceneGenerationService
 
 CHAPTER_ID = "CHNF01"
 SCENE_ID = "CHNF01_SC01"
+PROJECT_ID = "PROJECT_NF01"
 
 
-class SequencedClient:
+class SequencedClient(OnlineAccountedExecution):
     def __init__(self, payloads: list[dict], *, provider: str = "test-provider", model: str = "test-model") -> None:
         self.payloads = list(payloads)
         self.provider = provider
@@ -63,11 +65,19 @@ class SequencedClient:
             finish_reason="stop",
         )
 
+    def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+        response = self.generate(request)
+        accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
+
 
 def _seed_scene(session, *, is_chapter_last: int = 0) -> None:
+    session.add(StoryProject(project_id=PROJECT_ID, title="Near final test project", outline_text=""))
     session.add(
         ChapterGoal(
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             planned_scene_count=1,
             chapter_goal="林岑必须决定是否公开盐钟证据，同时保护幸存者。",
             main_plot_push="把盐钟线索推进到可验证的公开风险。",
@@ -460,3 +470,9 @@ def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
     assert result["failure_class"] == "chapter_payoff_gap"
     assert evaluation.rubric_id == NEAR_FINAL_RUBRIC_ID
     assert evaluation.findings_json[0]["dimension"] == "payoff_integrity"
+    llm_call = session.get(LlmCall, evaluation.evaluator_llm_call_id)
+    assert llm_call.scope_type == "chapter"
+    assert llm_call.scope_id == CHAPTER_ID
+    assert llm_call.project_id == PROJECT_ID
+    assert llm_call.chapter_id == CHAPTER_ID
+    assert llm_call.scene_id is None

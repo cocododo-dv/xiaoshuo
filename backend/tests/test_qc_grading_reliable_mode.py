@@ -22,6 +22,7 @@ from novel_system.db.models import (
     RelationProfile,
     SceneCard,
     SceneRunState,
+    StoryProject,
     VoiceProfile,
 )
 from novel_system.services.llm_client import LLMRequest, LLMResponse
@@ -29,7 +30,9 @@ from novel_system.services.near_final import NearFinalAcceptanceService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
+PROJECT_ID = "PROJECT200"
 SCENE_ID = "CH200_SC01"
 CHAPTER_ID = "CH200"
 
@@ -53,7 +56,7 @@ def _response(payload: dict, *, request_id: str, model: str) -> LLMResponse:
     )
 
 
-class FakeSceneClient:
+class FakeSceneClient(AccountedGenerateMixin):
     """草稿生成序列：neutral → style → 后续均为 patch/rewrite。"""
 
     def __init__(self) -> None:
@@ -71,7 +74,7 @@ class FakeSceneClient:
         return _response(payload, request_id=f"resp_scene_{index:03d}", model="fake-scene-model")
 
 
-class FakeQcClient:
+class FakeQcClient(AccountedGenerateMixin):
     def __init__(self, payload: dict) -> None:
         self.payload = payload
 
@@ -79,7 +82,7 @@ class FakeQcClient:
         return _response(self.payload, request_id="resp_qc_001", model="fake-qc-model")
 
 
-class FakeSequenceQcClient:
+class FakeSequenceQcClient(AccountedGenerateMixin):
     def __init__(self, payloads: list[dict]) -> None:
         self.payloads = list(payloads)
         self.requests: list[LLMRequest] = []
@@ -91,7 +94,7 @@ class FakeSequenceQcClient:
         return _response(self.payloads.pop(0), request_id=f"resp_qc_{len(self.requests):03d}", model="fake-qc-model")
 
 
-class FakeRuntimeFailureClient:
+class FakeRuntimeFailureClient(AccountedGenerateMixin):
     def generate(self, request: LLMRequest) -> LLMResponse:
         raise RuntimeError("qc transport timed out before a response was returned")
 
@@ -114,11 +117,13 @@ def _soft_pass() -> dict:
 
 
 def _seed_scene(session, *, must_include: str = "A red envelope changes hands.") -> None:
-    session.add(ChapterGoal(chapter_id=CHAPTER_ID, planned_scene_count=1, chapter_goal="A reunion turns dangerous."))
+    session.add(StoryProject(project_id=PROJECT_ID, title="QC grading", outline_text=""))
+    session.add(ChapterGoal(chapter_id=CHAPTER_ID, project_id=PROJECT_ID, planned_scene_count=1, chapter_goal="A reunion turns dangerous."))
     session.add(ChapterState(chapter_id=CHAPTER_ID, current_phase="drafting"))
     session.add(
         SceneCard(
             scene_id=SCENE_ID,
+            project_id=PROJECT_ID,
             chapter_id=CHAPTER_ID,
             scene_seq=1,
             pov_character_id="CHAR_A",

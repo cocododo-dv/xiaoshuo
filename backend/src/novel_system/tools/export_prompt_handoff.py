@@ -414,10 +414,11 @@ def render_architecture(models_cfg: dict[str, Any], template_source: str) -> lis
         "硬/软 QC → 近终稿评审）→ 归档/资料库派生。旁路子系统：风格参考（参考书 → 分类 → 四层抽取 → "
         "Profile → 注入/验证）、作家评审（四镜头诊断+修订+深评）、文学评测。",
         "",
-        "**LLM 物理出口只有两类**：",
-        f"1. `LLMClient.generate`（{loc('backend/src/novel_system/services/llm_client.py', 'def generate(')}）——"
-        "全部业务调用汇聚于此；",
-        f"2. 系统设置的连通性探针/模型列表（{loc('backend/src/novel_system/services/system_config.py', 'response = httpx.post(')} 等 3 处裸 httpx，无业务提示词）。",
+        "**LLM 补全出口只有两类，且都统一记账**：",
+        f"1. `execute_accounted_call`（{loc('backend/src/novel_system/services/llm_accounting.py', 'def execute_accounted_call(')}）——"
+        "全部业务补全先落父调用，再由 attempt hook 包围每次物理请求；",
+        f"2. 系统设置补全探针（{loc('backend/src/novel_system/services/llm_accounting.py', 'response = httpx.post(')}）——"
+        "同样落 `system/provider_probe` 父子账本。模型列表 GET 不产生 token，不建 LLM 调用。",
         "全仓无任何 openai/anthropic SDK 直连、无 embedding API（向量为本地确定性哈希）。",
         "",
         "**四条调用路径**（每个单元标注了自己走哪条）：",
@@ -425,10 +426,13 @@ def render_architecture(models_cfg: dict[str, Any], template_source: str) -> lis
         "上下文预算超限抛连续性错误；",
         "2. `LLMNodeRunner.run_task(task_name=…)`——顾问路径：内联提示词、不落草稿、失败快速降级；"
         "别名表 `auto_critique_llm→soft_qc`、`narrative_event_extract→extraction`（借道路由，不占独立节点）；",
-        "3. `style_reference/_llm_helper.call_llm_node(node_id, payload)`——user_prompt = 模板 task_prompt + "
-        "`\\n\\n` + JSON payload；超时保底 120s；",
-        "4. 直接 `LLMClient.generate`：雪花工作台（模板 + JSON payload）、段落分类器（`{paragraphs}` 占位符）、"
-        "文学评测（内联提示词）。",
+        "3. `style_reference/_llm_helper.call_llm_node(node_id, UntrustedPayload, client, session, context)`——调用方传 typed "
+        "payload；Mapping/list/tuple 内字符串叶值递归中和并转义伪边界，user_prompt 将 task 留在唯一显式 "
+        "UNTRUSTED_REFERENCE_DATA JSON 区块外；system 追加“数据非指令、禁止 role/tool/schema 变更”约束，"
+        "response_schema 仍是 request 独立字段；超时保底 120s；",
+        "4. 专用请求组装器：雪花工作台（模板 + JSON payload）、文学评测（内联提示词）和段落分类器；"
+        "三者都调用 `execute_accounted_call`，其中段落分类器还复用路径 3 的 typed `UntrustedPayload`、"
+        "递归中和与 system 数据约束，可信 task 位于唯一显式 JSON boundary 外。",
         "",
         "**PromptBuilder 组装契约**（路径 1 的所有模板）：`system_prompt` **原样发送、无变量替换**；"
         "`user_prompt` = task_prompt + 运行时指令（语言锁/角色连续性，仅特定模板）+ schema 收尾指令 + "
@@ -534,14 +538,14 @@ def render_inventory(
     )
     lines.append(
         f"| — | 连通性探针 / 模型列表 | — | 管理路径（无业务提示词） | 无 | "
-        f"{loc(f'{ann.SVC}/system_config.py', 'response = httpx.post(')}；"
+        f"{loc(f'{ann.SVC}/llm_accounting.py', 'response = httpx.post(')}；"
         f"{loc(f'{ann.SVC}/system_config.py', 'httpx.get(list_request.url, headers=list_request.headers')}；"
         f"{loc(f'{ann.SVC}/system_config.py', 'response = httpx.get(', 2)} |"
     )
     lines += [
         "",
         f"**调用点合计 {len(ann.CALL_SITES)} 处**：21× `LLMNodeRunner.run` + 4× `run_task`（2 休眠）+ "
-        "7× `call_llm_node` + 3× 直接 `generate` + 3× 管理裸 HTTP。",
+        "7× `call_llm_node` + 3× 专用 accounted 调用 + 1× accounted 探针 POST + 2× 无 token 的管理 GET。",
         "",
         "### 查证过不存在的调用形态（负面证据）",
         "",

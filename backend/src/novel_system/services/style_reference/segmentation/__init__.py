@@ -14,6 +14,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+from novel_system.services.llm_accounting import (
+    LLMAccountingError,
+    is_llm_control_plane_failure,
+)
 from novel_system.services.style_reference.segmentation.heuristic import classify_heuristic
 from novel_system.services.style_reference.segmentation.llm import (
     SegmentationLLMError,
@@ -50,6 +56,8 @@ def classify_paragraphs(
     *,
     llm_enabled: bool,
     llm_client: Any | None = None,
+    session: Session | None = None,
+    scope_id: str | None = None,
 ) -> SegmentationResult:
     """调度段落分类。`paragraphs` 元素是 `(start_offset, end_offset, body)`。"""
     if not paragraphs:
@@ -57,10 +65,22 @@ def classify_paragraphs(
 
     if not llm_enabled or llm_client is None:
         return classify_heuristic(paragraphs)
+    if session is None or not str(scope_id or "").strip():
+        raise SegmentationLLMError(
+            "STYLE_REF_ACCOUNTING_CONTEXT_REQUIRED",
+            "LLM segmentation requires a durable session and style-reference scope",
+        )
 
     try:
-        return classify_with_llm(paragraphs, llm_client)
+        return classify_with_llm(
+            paragraphs,
+            llm_client,
+            session=session,
+            scope_id=str(scope_id),
+        )
     except SegmentationLLMError as exc:
+        if is_llm_control_plane_failure(exc):
+            raise
         logger.warning(
             "segmentation LLM call failed; falling back to heuristic: %s", exc
         )
@@ -68,12 +88,9 @@ def classify_paragraphs(
         result.calibration["fallback_reason"] = f"llm_call_failed: {exc.code}"
         return result
     except Exception as exc:  # pylint: disable=broad-except
-        logger.warning(
-            "segmentation LLM unexpected error; falling back to heuristic: %s", exc
-        )
-        result = classify_heuristic(paragraphs)
-        result.calibration["fallback_reason"] = f"llm_unexpected: {type(exc).__name__}"
-        return result
+        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+            raise
+        raise
 
 
 __all__ = [

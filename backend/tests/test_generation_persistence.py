@@ -8,6 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateIndex
+
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db.models import ChapterRunJob, FinalScene, LlmCall, QcReport, SceneDraft
 
 
@@ -137,6 +142,55 @@ EXPECTED_LLM_CALL_COLUMNS = {
     "latency_ms",
     "finish_reason",
     "error_code",
+    "scope_type",
+    "scope_id",
+    "run_job_id",
+    "execution_id",
+    "execution_step_key",
+    "estimated_tokens",
+    "reserved_tokens",
+    "budget_charged_tokens",
+    "usage_is_estimate",
+    "accounting_status",
+    "request_dispatched_at",
+    "settled_at",
+}
+
+
+def test_llm_execution_step_claim_has_postgresql_partial_unique_ddl() -> None:
+    claim_index = next(
+        index
+        for index in LlmCall.__table__.indexes
+        if index.name == "uq_llm_calls_execution_step_claim"
+    )
+    ddl = str(CreateIndex(claim_index).compile(dialect=postgresql.dialect()))
+    assert "CREATE UNIQUE INDEX uq_llm_calls_execution_step_claim" in ddl
+    assert "execution_id IS NOT NULL" in ddl
+    assert "execution_step_key IS NOT NULL" in ddl
+    assert "request_dispatched_at IS NULL" in ddl
+    assert "accounting_status IN ('released','rejected')" in ddl
+
+EXPECTED_LLM_CALL_ATTEMPT_COLUMNS = {
+    "attempt_id",
+    "llm_call_id",
+    "provider_attempt_no",
+    "dispatch_kind",
+    "request_max_output_tokens",
+    "provider_request_id",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "estimated_tokens",
+    "reserved_tokens",
+    "budget_charged_tokens",
+    "usage_is_estimate",
+    "accounting_status",
+    "request_dispatched_at",
+    "settled_at",
+    "latency_ms",
+    "error_code",
+    "error_text",
+    "created_at",
 }
 
 
@@ -185,6 +239,7 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     try:
         table_names = _table_names(connection)
         llm_columns = _pragma_columns_by_name(connection, "llm_calls")
+        attempt_columns = _pragma_columns_by_name(connection, "llm_call_attempts")
         qc_columns = _pragma_columns_by_name(connection, "qc_reports")
         draft_columns = _pragma_columns_by_name(connection, "scene_drafts")
         final_columns = _pragma_columns_by_name(connection, "final_scenes")
@@ -203,6 +258,7 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
         connection.close()
 
     assert "llm_calls" in table_names
+    assert "llm_call_attempts" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
     assert "author_draft_proposals" in table_names
@@ -213,6 +269,7 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert "story_characters" in table_names
     assert "snowflake_assistant_turns" in table_names
     assert EXPECTED_LLM_CALL_COLUMNS <= llm_columns.keys()
+    assert EXPECTED_LLM_CALL_ATTEMPT_COLUMNS == attempt_columns.keys()
     assert {
         "qc_report_id",
         "scene_id",
@@ -250,6 +307,8 @@ def test_generation_persistence_orm_round_trip(session) -> None:
 
     llm_call = LlmCall(
         llm_call_id="llm_call_scene_CH001_SC01_style",
+        scope_type="scene",
+        scope_id="CH001_SC01",
         provider="demo-provider",
         model="demo-model",
         prompt_hash="hash_prompt_demo",
@@ -377,7 +436,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-        assert version_row == ("20260712_0064",)
+        assert version_row == ("20260713_0065",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -537,7 +596,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260712_0064",)
+    assert version_row == ("20260713_0065",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -598,6 +657,251 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     assert final_scene == ("final_existing", "llm_call_existing")
 
 
+def test_c1b_migration_upgrades_a_0064_copy_with_conservative_backfill(tmp_path: Path) -> None:
+    backend_dir = Path(__file__).resolve().parents[1]
+    migration_source = (
+        backend_dir / "alembic" / "versions" / "20260713_0065_llm_accounting_budget_cancel.py"
+    ).read_text(encoding="utf-8")
+    assert "novel_system" not in migration_source
+    assert "MIGRATION_PROVIDER_ATTEMPT_BUDGET = 32" in migration_source
+    assert "server_default=str(MIGRATION_PROVIDER_ATTEMPT_BUDGET)" in migration_source
+    db_path = tmp_path / "c1b-legacy-0064.sqlite"
+    _build_c1b_legacy_0064_database(db_path)
+
+    _run_alembic(backend_dir, db_path, "20260713_0065")
+
+    with sqlite3.connect(db_path) as connection:
+        version = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        tables = _table_names(connection)
+        scene_columns = _pragma_columns_by_name(connection, "scene_run_states")
+        llm_columns = _pragma_columns_by_name(connection, "llm_calls")
+        attempt_columns = _pragma_columns_by_name(connection, "llm_call_attempts")
+        job_columns = _pragma_columns_by_name(connection, "chapter_run_jobs")
+        attempts = connection.execute("SELECT COUNT(*) FROM llm_call_attempts").fetchone()[0]
+        orphans = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM llm_call_attempts AS attempt
+            LEFT JOIN llm_calls AS call ON call.llm_call_id = attempt.llm_call_id
+            WHERE call.llm_call_id IS NULL
+            """
+        ).fetchone()[0]
+        charged_over_reservation = connection.execute(
+            "SELECT COUNT(*) FROM llm_calls WHERE budget_charged_tokens > reserved_tokens"
+        ).fetchone()[0]
+        foreign_keys = connection.execute("PRAGMA foreign_key_list(llm_call_attempts)").fetchall()
+        llm_rows = connection.execute(
+            """
+            SELECT llm_call_id, scope_type, scope_id, estimated_tokens,
+                   reserved_tokens, budget_charged_tokens, usage_is_estimate,
+                   accounting_status
+            FROM llm_calls
+            ORDER BY llm_call_id
+            """
+        ).fetchall()
+        job_rows = connection.execute(
+            "SELECT job_id, scene_id FROM chapter_run_jobs ORDER BY job_id"
+        ).fetchall()
+        indexes = {
+            row[1]
+            for table in ("llm_calls", "llm_call_attempts", "chapter_run_jobs")
+            for row in connection.execute(f"PRAGMA index_list({table})").fetchall()
+        }
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE scene_run_states SET scene_tokens_reserved = -1 WHERE scene_id = 'SC001'"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE llm_calls SET budget_charged_tokens = -1 WHERE llm_call_id = 'call-scene'"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE llm_calls SET budget_charged_tokens = 1 WHERE llm_call_id = 'call-scene'"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE llm_calls SET accounting_status = 'unknown' WHERE llm_call_id = 'call-scene'"
+            )
+        connection.execute(
+            """
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, created_at, scope_type, scope_id,
+                execution_id, execution_step_key, accounting_status,
+                request_dispatched_at
+            ) VALUES (
+                'claim-released', 'claim', '2026-07-13T02:00:00+00:00',
+                'system', 'claim', 'claim-execution', 'claim-step',
+                'released', NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, created_at, scope_type, scope_id,
+                execution_id, execution_step_key, accounting_status
+            ) VALUES (
+                'claim-retry', 'claim', '2026-07-13T02:00:01+00:00',
+                'system', 'claim', 'claim-execution', 'claim-step', 'reserved'
+            )
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO llm_calls (
+                    llm_call_id, node_id, created_at, scope_type, scope_id,
+                    execution_id, execution_step_key, accounting_status
+                ) VALUES (
+                    'claim-duplicate', 'claim', '2026-07-13T02:00:02+00:00',
+                    'system', 'claim', 'claim-execution', 'claim-step', 'reserved'
+                )
+                """
+            )
+
+    assert version == ("20260713_0065",)
+    assert "llm_call_attempts" in tables
+    assert {
+        "scene_tokens_reserved",
+        "scene_budget_basis_json",
+        "provider_attempts_used",
+        "provider_attempt_budget",
+        "active_execution_id",
+        "run_execution_status",
+        "run_checkpoint",
+        "run_checkpoint_json",
+        "active_run_job_id",
+    } <= scene_columns.keys()
+    assert (
+        int(str(scene_columns["provider_attempt_budget"][4]).strip("'\""))
+        == DEFAULT_PROVIDER_ATTEMPT_BUDGET
+    )
+    assert {
+        "scope_type",
+        "scope_id",
+        "run_job_id",
+        "execution_id",
+        "execution_step_key",
+        "estimated_tokens",
+        "reserved_tokens",
+        "budget_charged_tokens",
+        "usage_is_estimate",
+        "accounting_status",
+        "request_dispatched_at",
+        "settled_at",
+    } <= llm_columns.keys()
+    assert EXPECTED_LLM_CALL_ATTEMPT_COLUMNS == attempt_columns.keys()
+    assert "scene_id" in job_columns
+    assert attempts == 0  # historical logical calls must not fabricate physical attempts
+    assert orphans == 0
+    assert foreign_keys[0][2:7] == ("llm_calls", "llm_call_id", "llm_call_id", "NO ACTION", "NO ACTION")
+    assert llm_rows == [
+        ("call-chapter", "chapter", "CH001", 99, 0, 0, 1, "failed"),
+        ("call-project", "project", "PRJ001", 30, 0, 0, 1, "settled"),
+        ("call-scene", "scene", "SC001", 42, 0, 0, 1, "settled"),
+        ("call-system", "system", "legacy_failure", 0, 0, 0, 1, "failed"),
+    ]
+    assert charged_over_reservation == 0
+    assert job_rows == [
+        ("job-empty", None),
+        ("job-payload", "SC_PAYLOAD"),
+        ("job-result", "SC_RESULT"),
+    ]
+    assert {
+        "ix_llm_calls_scope_created",
+        "ix_llm_calls_run_job",
+        "ix_llm_calls_execution_step",
+        "uq_llm_calls_execution_step_claim",
+        "ix_llm_calls_accounting_status",
+        "ix_llm_call_attempts_call_status",
+        "ix_chapter_run_jobs_scene_created",
+    } <= indexes
+
+    _run_alembic_downgrade(backend_dir, db_path, "20260712_0064")
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "20260712_0064",
+        )
+        assert "llm_call_attempts" not in _table_names(connection)
+        assert "scene_tokens_reserved" not in _pragma_columns_by_name(connection, "scene_run_states")
+        assert "scope_type" not in _pragma_columns_by_name(connection, "llm_calls")
+        assert "scene_id" not in _pragma_columns_by_name(connection, "chapter_run_jobs")
+
+
+def test_c1b_migration_partial_replay_preserves_new_accounting_rows(tmp_path: Path) -> None:
+    backend_dir = Path(__file__).resolve().parents[1]
+    db_path = tmp_path / "c1b-partial-replay.sqlite"
+    _build_c1b_legacy_0064_database(db_path)
+    _run_alembic(backend_dir, db_path, "20260713_0065")
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, project_id, total_tokens, created_at,
+                scope_type, scope_id, run_job_id, execution_id, execution_step_key,
+                estimated_tokens, reserved_tokens, budget_charged_tokens,
+                usage_is_estimate, accounting_status, request_dispatched_at, settled_at
+            ) VALUES (
+                'call-post-0065', 'new_accounting', 'PRJ_DENORMALIZED', 13,
+                '2026-07-13T01:02:03+00:00',
+                'project', 'PRJ_AUTHORITATIVE', 'job-new', 'execution-new', 'step-new',
+                77, 80, 70, 0, 'settled',
+                '2026-07-13T01:02:00+00:00', '2026-07-13T01:02:03+00:00'
+            )
+            """
+        )
+        new_row_before_replay = connection.execute(
+            "SELECT * FROM llm_calls WHERE llm_call_id = 'call-post-0065'"
+        ).fetchone()
+        connection.execute(
+            "UPDATE alembic_version SET version_num = '20260712_0064'"
+        )
+
+    _run_alembic(backend_dir, db_path, "20260713_0065")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "20260713_0065",
+        )
+        assert connection.execute(
+            "SELECT * FROM llm_calls WHERE llm_call_id = 'call-post-0065'"
+        ).fetchone() == new_row_before_replay
+        assert connection.execute(
+            """
+            SELECT llm_call_id, scope_type, scope_id, estimated_tokens,
+                   reserved_tokens, budget_charged_tokens, usage_is_estimate,
+                   accounting_status
+            FROM llm_calls
+            WHERE llm_call_id != 'call-post-0065'
+            ORDER BY llm_call_id
+            """
+        ).fetchall() == [
+            ("call-chapter", "chapter", "CH001", 99, 0, 0, 1, "failed"),
+            ("call-project", "project", "PRJ001", 30, 0, 0, 1, "settled"),
+            ("call-scene", "scene", "SC001", 42, 0, 0, 1, "settled"),
+            ("call-system", "system", "legacy_failure", 0, 0, 0, 1, "failed"),
+        ]
+        assert EXPECTED_LLM_CALL_ATTEMPT_COLUMNS == _pragma_columns_by_name(
+            connection, "llm_call_attempts"
+        ).keys()
+        attempt_table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'llm_call_attempts'"
+        ).fetchone()[0]
+        for constraint_name in (
+            "ck_llm_call_attempts_provider_attempt_no_nonnegative",
+            "ck_llm_call_attempts_budget_charged_within_reservation",
+            "ck_llm_call_attempts_accounting_status",
+            "ck_llm_call_attempts_dispatch_kind",
+            "uq_llm_call_attempts_call_ordinal",
+        ):
+            assert constraint_name in attempt_table_sql
+        assert "ix_llm_call_attempts_call_status" in {
+            row[1] for row in connection.execute("PRAGMA index_list(llm_call_attempts)")
+        }
+
+
 def _run_alembic(backend_dir: Path, db_path: Path, revision: str, *, backup_root: Path | None = None) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir / "src")
@@ -611,6 +915,104 @@ def _run_alembic(backend_dir: Path, db_path: Path, revision: str, *, backup_root
         env=env,
         check=True,
     )
+
+
+def _build_c1b_legacy_0064_database(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE alembic_version (
+                version_num VARCHAR(32) NOT NULL PRIMARY KEY
+            );
+            INSERT INTO alembic_version (version_num) VALUES ('20260712_0064');
+
+            CREATE TABLE scene_run_states (
+                scene_id VARCHAR NOT NULL PRIMARY KEY,
+                scene_token_budget INTEGER,
+                scene_tokens_used INTEGER NOT NULL DEFAULT 0,
+                updated_at VARCHAR NOT NULL
+            );
+            INSERT INTO scene_run_states (
+                scene_id, scene_token_budget, scene_tokens_used, updated_at
+            ) VALUES ('SC001', 500, 120, '2026-07-12T00:00:00+00:00');
+
+            CREATE TABLE llm_calls (
+                llm_call_id VARCHAR NOT NULL PRIMARY KEY,
+                provider VARCHAR,
+                model VARCHAR,
+                node_id VARCHAR,
+                prompt_hash VARCHAR,
+                step VARCHAR,
+                project_id VARCHAR,
+                scene_id VARCHAR,
+                chapter_id VARCHAR,
+                request_payload_summary JSON,
+                response_payload_summary JSON,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                total_tokens INTEGER,
+                latency_ms INTEGER,
+                finish_reason VARCHAR,
+                error_code VARCHAR,
+                created_at VARCHAR NOT NULL
+            );
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, scene_id, prompt_tokens, completion_tokens,
+                total_tokens, created_at
+            ) VALUES (
+                'call-scene', 'style_draft', 'SC001', 10, 32, 42,
+                '2026-07-12T00:00:00+00:00'
+            );
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, project_id, prompt_tokens, completion_tokens,
+                total_tokens, created_at
+            ) VALUES (
+                'call-project', 'outline', 'PRJ001', 10, 20, NULL,
+                '2026-07-12T00:00:01+00:00'
+            );
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, chapter_id, total_tokens, error_code, created_at
+            ) VALUES (
+                'call-chapter', 'chapter_qc', 'CH001', 99, 'PROVIDER_FAILED',
+                '2026-07-12T00:00:02+00:00'
+            );
+            INSERT INTO llm_calls (
+                llm_call_id, node_id, error_code, created_at
+            ) VALUES (
+                'call-system', 'legacy_failure', 'PROVIDER_FAILED',
+                '2026-07-12T00:00:03+00:00'
+            );
+
+            CREATE TABLE chapter_run_jobs (
+                job_id VARCHAR NOT NULL PRIMARY KEY,
+                chapter_id VARCHAR,
+                status VARCHAR NOT NULL,
+                job_type VARCHAR NOT NULL,
+                payload_json JSON,
+                result_summary_json JSON,
+                created_at VARCHAR NOT NULL,
+                updated_at VARCHAR NOT NULL
+            );
+            INSERT INTO chapter_run_jobs (
+                job_id, status, job_type, payload_json, created_at, updated_at
+            ) VALUES (
+                'job-payload', 'completed', 'scene_run', '{"scene_id":"SC_PAYLOAD"}',
+                '2026-07-12T00:00:00+00:00', '2026-07-12T00:00:00+00:00'
+            );
+            INSERT INTO chapter_run_jobs (
+                job_id, status, job_type, result_summary_json, created_at, updated_at
+            ) VALUES (
+                'job-result', 'completed', 'scene_run', '{"scene_id":"SC_RESULT"}',
+                '2026-07-12T00:00:01+00:00', '2026-07-12T00:00:01+00:00'
+            );
+            INSERT INTO chapter_run_jobs (
+                job_id, status, job_type, created_at, updated_at
+            ) VALUES (
+                'job-empty', 'completed', 'chapter_run',
+                '2026-07-12T00:00:02+00:00', '2026-07-12T00:00:02+00:00'
+            );
+            """
+        )
 
 
 def _run_alembic_downgrade(
@@ -746,6 +1148,8 @@ def _seed_dynamic_0006_materialized_generation_rows(db_path: Path) -> None:
             """
             INSERT INTO llm_calls (
                 llm_call_id,
+                scope_type,
+                scope_id,
                 provider,
                 model,
                 prompt_hash,
@@ -761,10 +1165,12 @@ def _seed_dynamic_0006_materialized_generation_rows(db_path: Path) -> None:
                 finish_reason,
                 error_code,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "llm_call_existing",
+                "scene",
+                "CH001_SC01",
                 "seed-provider",
                 "seed-model",
                 "prompt_hash_existing",

@@ -78,6 +78,11 @@ function defaultPathDraft() {
     title: "",
     author_label: "",
     cloud_policy: "local_only",
+    rights_declaration: {
+      analysis_rights: true,
+      send_rights: false,
+      declared_by: "",
+    },
   };
 }
 
@@ -87,6 +92,11 @@ function defaultUploadDraft() {
     title: "",
     author_label: "",
     cloud_policy: "local_only",
+    rights_declaration: {
+      analysis_rights: true,
+      send_rights: false,
+      declared_by: "",
+    },
   };
 }
 
@@ -204,6 +214,14 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     hasReadyProfile(state) {
       return state.profiles.some((p) => p.status === "active" || p.status === "draft");
     },
+    pathImportRightsReady(state) {
+      return state.pathDraft.cloud_policy === "local_only"
+        || state.pathDraft.rights_declaration.send_rights === true;
+    },
+    uploadImportRightsReady(state) {
+      return state.uploadDraft.cloud_policy === "local_only"
+        || state.uploadDraft.rights_declaration.send_rights === true;
+    },
   },
 
   actions: {
@@ -212,6 +230,30 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     },
     markFresh() {
       this.stale = false;
+    },
+
+    setPathFilePath(filePath) {
+      if (this.pathDraft.file_path === filePath) return;
+      this.pathDraft.file_path = filePath;
+      this.pathDraft.rights_declaration.send_rights = false;
+    },
+
+    setUploadFile(file) {
+      if (this.uploadDraft.file === file) return;
+      this.uploadDraft.file = file;
+      this.uploadDraft.rights_declaration.send_rights = false;
+    },
+
+    setPathCloudPolicy(cloudPolicy) {
+      if (this.pathDraft.cloud_policy === cloudPolicy) return;
+      this.pathDraft.cloud_policy = cloudPolicy;
+      this.pathDraft.rights_declaration.send_rights = false;
+    },
+
+    setUploadCloudPolicy(cloudPolicy) {
+      if (this.uploadDraft.cloud_policy === cloudPolicy) return;
+      this.uploadDraft.cloud_policy = cloudPolicy;
+      this.uploadDraft.rights_declaration.send_rights = false;
     },
 
     resetImportDrafts() {
@@ -325,7 +367,15 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
     async importPath() {
       this._setActionStart("import_path");
       try {
-        const payload = { ...this.pathDraft };
+        if (!this.pathImportRightsReady) {
+          throw new Error("请确认拥有将文本发送至云端的权利。");
+        }
+        const payload = {
+          ...this.pathDraft,
+          rights_declaration: this.pathDraft.cloud_policy === "local_only"
+            ? null
+            : { ...this.pathDraft.rights_declaration },
+        };
         const result = await importStyleReferenceBookPath(payload);
         await this.loadBooks();
         if (result?.book?.book_id) {
@@ -345,11 +395,17 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
         if (!this.uploadDraft.file) {
           throw new Error("请先选择要上传的文件。");
         }
+        if (!this.uploadImportRightsReady) {
+          throw new Error("请确认拥有将文本发送至云端的权利。");
+        }
         const result = await importStyleReferenceBookUpload({
           file: this.uploadDraft.file,
           title: this.uploadDraft.title,
           authorLabel: this.uploadDraft.author_label,
           cloudPolicy: this.uploadDraft.cloud_policy,
+          rightsDeclaration: this.uploadDraft.cloud_policy === "local_only"
+            ? null
+            : { ...this.uploadDraft.rights_declaration },
         });
         await this.loadBooks();
         if (result?.book?.book_id) {

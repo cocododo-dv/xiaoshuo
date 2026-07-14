@@ -6,7 +6,15 @@ token 不相加（分词器不同）、汇总以费用为准；三口径（估�
 """
 from __future__ import annotations
 
-from novel_system.db.models import FinalScene, LlmCall, SceneCard, SceneRunState
+import pytest
+
+from novel_system.db.models import (
+    FinalScene,
+    LlmCall,
+    LlmCallAttempt,
+    SceneCard,
+    SceneRunState,
+)
 from novel_system.services import cost_aggregation as ca
 
 
@@ -53,6 +61,8 @@ def _call(
     session.add(
         LlmCall(
             llm_call_id=f"llm_{idx:04d}",
+            scope_type="scene" if scene_id else "project" if project_id else "system",
+            scope_id=scene_id or project_id or node_id,
             provider=provider,
             model=model,
             node_id=node_id,
@@ -68,6 +78,71 @@ def _call(
         )
     )
     session.flush()
+
+
+def _accounted_retry_call(session, scene_id: str) -> str:
+    """Insert one logical parent with two physical attempts and exact aggregates."""
+    call_id = f"accounted_retry_{scene_id}"
+    session.add(
+        LlmCall(
+            llm_call_id=call_id,
+            scope_type="scene",
+            scope_id=scene_id,
+            provider="openai_compatible",
+            model="gpt-5",
+            node_id="style_draft",
+            step="style_draft",
+            scene_id=scene_id,
+            chapter_id="CH1",
+            project_id="proj1",
+            prompt_tokens=80,
+            completion_tokens=20,
+            total_tokens=100,
+            estimated_tokens=120,
+            reserved_tokens=150,
+            budget_charged_tokens=100,
+            usage_is_estimate=True,
+            accounting_status="settled",
+            request_dispatched_at="2026-07-12T00:00:01Z",
+        )
+    )
+    session.add_all(
+        [
+            LlmCallAttempt(
+                attempt_id=f"{call_id}:0",
+                llm_call_id=call_id,
+                provider_attempt_no=0,
+                dispatch_kind="initial",
+                prompt_tokens=30,
+                completion_tokens=10,
+                total_tokens=40,
+                estimated_tokens=40,
+                reserved_tokens=50,
+                budget_charged_tokens=40,
+                usage_is_estimate=True,
+                accounting_status="failed",
+                request_dispatched_at="2026-07-12T00:00:01Z",
+                error_code="LLM_TIMEOUT",
+            ),
+            LlmCallAttempt(
+                attempt_id=f"{call_id}:1",
+                llm_call_id=call_id,
+                provider_attempt_no=1,
+                dispatch_kind="missing_text_degrade",
+                prompt_tokens=50,
+                completion_tokens=10,
+                total_tokens=60,
+                estimated_tokens=80,
+                reserved_tokens=100,
+                budget_charged_tokens=60,
+                usage_is_estimate=False,
+                accounting_status="settled",
+                request_dispatched_at="2026-07-12T00:00:02Z",
+            ),
+        ]
+    )
+    session.flush()
+    return call_id
 
 
 def _archived(session, scene_id, chapter_id="CH1"):
@@ -148,9 +223,102 @@ def test_scene_cost_three_calibers(session):
     _call(session, "S4", node_id="style_draft", tokens=150)
     result = ca.scene_cost(session, "S4")
     cal = result["calibers"]
-    assert set(cal) >= {"estimate", "actual", "billed"}
-    assert cal["actual"]["tokens"] == 150  # provider usage
-    assert cal["billed"]["is_estimate"] is True  # prompt-cache 折扣未接入
+    assert set(cal) == {"estimate", "provider_actual", "budget_charged"}
+    assert cal["estimate"]["tokens"] == 150
+    assert cal["provider_actual"]["tokens"] == 0
+    assert cal["budget_charged"]["tokens"] == 0
+
+
+def test_scene_cost_uses_parent_once_and_attempts_only_for_calibers_and_observability(session):
+    _scene(session, "S4-accounted")
+    _runstate(session, "S4-accounted", budget=1_000, used=100)
+    _accounted_retry_call(session, "S4-accounted")
+
+    result = ca.scene_cost(session, "S4-accounted")
+
+    assert result["call_count"] == 1
+    assert result["is_estimate"] is True
+    assert result["total_tokens"] == 100
+    assert result["phase_breakdown"]["candidate_generation"]["tokens"] == 100
+    assert result["calibers"] == {
+        "estimate": {"tokens": 120, "source": "llm_calls.estimated_tokens"},
+        "provider_actual": {
+            "tokens": 60,
+            "source": "llm_call_attempts.total_tokens_with_provider_usage",
+        },
+        "budget_charged": {
+            "tokens": 100,
+            "source": "llm_calls.budget_charged_tokens",
+        },
+    }
+    assert result["attempt_observability"] == {
+        "attempt_row_count": 2,
+        "physical_attempt_count": 2,
+        "pre_dispatch_attempt_count": 0,
+        "usage_estimate_count": 1,
+        "exception_count": 1,
+        "retry_attempt_count": 1,
+        "transport_retry_attempt_count": 0,
+        "response_parse_retry_attempt_count": 0,
+        "degrade_attempt_count": 1,
+        "legacy_parent_without_attempt_count": 0,
+        "legacy_unreconstructable_tokens": 0,
+    }
+    assert result["extra_cost"]["failed_call_cost"] > 0
+
+
+@pytest.mark.parametrize(
+    ("dispatch_kind", "transport_count", "parse_count", "degrade_count"),
+    [
+        ("transport_retry", 1, 0, 0),
+        ("response_parse_retry", 0, 1, 0),
+        ("api_mode_degrade", 0, 0, 1),
+        ("structured_output_degrade", 0, 0, 1),
+    ],
+)
+def test_retry_and_degrade_subtypes_are_durably_distinguishable(
+    session,
+    dispatch_kind: str,
+    transport_count: int,
+    parse_count: int,
+    degrade_count: int,
+):
+    scene_id = f"S4-{dispatch_kind}"
+    _scene(session, scene_id)
+    _runstate(session, scene_id, budget=1_000, used=100)
+    call_id = _accounted_retry_call(session, scene_id)
+    retry = session.query(LlmCallAttempt).filter_by(
+        llm_call_id=call_id,
+        provider_attempt_no=1,
+    ).one()
+    retry.dispatch_kind = dispatch_kind
+    session.flush()
+
+    observed = ca.scene_cost(session, scene_id)["attempt_observability"]
+
+    assert observed["retry_attempt_count"] == 1
+    assert observed["transport_retry_attempt_count"] == transport_count
+    assert observed["response_parse_retry_attempt_count"] == parse_count
+    assert observed["degrade_attempt_count"] == degrade_count
+
+
+def test_undispatched_attempt_row_is_not_reported_as_a_physical_provider_attempt(session):
+    _scene(session, "S4-undispatched")
+    _runstate(session, "S4-undispatched", budget=1_000, used=100)
+    call_id = _accounted_retry_call(session, "S4-undispatched")
+    rejected = session.query(LlmCallAttempt).filter_by(
+        llm_call_id=call_id,
+        provider_attempt_no=0,
+    ).one()
+    rejected.request_dispatched_at = None
+    session.flush()
+
+    result = ca.scene_cost(session, "S4-undispatched")
+
+    assert result["attempt_observability"]["attempt_row_count"] == 2
+    assert result["attempt_observability"]["physical_attempt_count"] == 1
+    assert result["attempt_observability"]["pre_dispatch_attempt_count"] == 1
+    assert result["calibers"]["provider_actual"]["tokens"] == 60
 
 
 def test_scene_cost_extra_cost_attribution(session):
@@ -204,6 +372,9 @@ def test_chapter_cost_archived_metrics(session):
     result = ca.chapter_cost(session, "CHX")
     assert result["archived_scene_count"] == 2
     assert result["total_tokens"] == 300
+    assert result["calibers"]["estimate"]["tokens"] == 300
+    assert result["calibers"]["provider_actual"]["tokens"] == 0
+    assert result["calibers"]["budget_charged"]["tokens"] == 0
     assert result["tokens_per_archived_scene"] == 150
 
 
@@ -215,6 +386,9 @@ def test_project_cost_rollup(session):
     _archived(session, "P1S1", chapter_id="PCH1")
     result = ca.project_cost(session, "P1")
     assert result["total_cost"] > 0
+    assert result["calibers"]["estimate"]["tokens"] == 300
+    assert result["calibers"]["provider_actual"]["tokens"] == 0
+    assert result["calibers"]["budget_charged"]["tokens"] == 0
     assert result["chapter_count"] == 2
     assert "judge_independence" in result
     assert result["archived_scene_count"] == 1

@@ -1,22 +1,137 @@
 from __future__ import annotations
 
-import logging
-import time
+import math
 import uuid
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import LlmCall
+from novel_system.db.models import ChapterGoal, ChapterRunJob, LlmCall, SceneCard, SceneRunState, StoryProject
 from novel_system.services.context_budget import finalize_request_budget
-from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse, load_model_routing_config
+from novel_system.services.llm_accounting import (
+    LLMAccountingRejected,
+    LLMCallContext,
+    execute_accounted_call,
+    record_rejected_call,
+)
+from novel_system.services.llm_client import (
+    MAX_DEGRADE_HOPS,
+    MAX_RETRY_BACKOFF_SECONDS,
+    LLMClient,
+    LLMRequest,
+    LLMResponse,
+    OfflineDeterministicExecution,
+    OnlineAccountedExecution,
+    load_model_routing_config,
+)
 from novel_system.services.llm_node_registry import llm_node_route_fallbacks
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
 
 
-_LOGGER = logging.getLogger(__name__)
+@dataclass(frozen=True, slots=True)
+class _LLMExecutionRuntime:
+    execution_id: str
+    run_job_id: str | None
+    lease_renewer: Callable[..., Any] | None
+
+
+class _VerifiedLegacyOfflineExecution(OfflineDeterministicExecution):
+    """Internal bridge for the configured offline factory only.
+
+    The common accounting boundary still validates provider identity and complete
+    zero usage, so an arbitrary online client cannot opt into offline semantics.
+    """
+
+    def __init__(self, legacy_client: Any) -> None:
+        self._legacy_client = legacy_client
+
+    def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
+        return self._legacy_client.generate(request)
+
+
+_CURRENT_EXECUTION: ContextVar[_LLMExecutionRuntime | None] = ContextVar("llm_execution", default=None)
+
+
+def begin_llm_execution(
+    execution_id: str,
+    *,
+    run_job_id: str | None = None,
+    lease_renewer: Callable[..., Any] | None = None,
+) -> Token[_LLMExecutionRuntime | None]:
+    return _CURRENT_EXECUTION.set(
+        _LLMExecutionRuntime(
+            execution_id=execution_id,
+            run_job_id=run_job_id,
+            lease_renewer=lease_renewer,
+        )
+    )
+
+
+def end_llm_execution(token: Token[_LLMExecutionRuntime | None]) -> None:
+    _CURRENT_EXECUTION.reset(token)
+
+
+def current_llm_execution_id() -> str | None:
+    runtime = _CURRENT_EXECUTION.get()
+    return runtime.execution_id if runtime is not None else None
+
+
+def current_llm_run_job_id() -> str | None:
+    runtime = _CURRENT_EXECUTION.get()
+    return runtime.run_job_id if runtime is not None else None
+
+
+def _execution_owner_lease_seconds(
+    *,
+    request_timeout_seconds: float | None,
+    client: object | None = None,
+) -> int:
+    from novel_system.services.idempotency import owner_lease_grace_seconds, owner_lease_ttl_seconds
+
+    default_ttl = owner_lease_ttl_seconds()
+    if request_timeout_seconds is None:
+        return default_ttl
+    timeout_seconds = max(1, math.ceil(float(request_timeout_seconds)))
+    physical_attempts = 1
+    backoff_envelope = 0
+    if isinstance(client, LLMClient):
+        attempts_per_hop = max(1, int(client._max_retries) + 1)
+        degrade_hops = MAX_DEGRADE_HOPS + 1
+        physical_attempts = attempts_per_hop * degrade_hops
+        if client._retry_backoff_seconds > 0:
+            # Retry-After and jitter can dominate the configured exponential delay.
+            # Reserve the capped upper bound for every retry in every degrade hop.
+            backoff_envelope = math.ceil(
+                degrade_hops
+                * max(0, attempts_per_hop - 1)
+                * MAX_RETRY_BACKOFF_SECONDS
+                * 1.2
+            )
+    envelope = (
+        physical_attempts * timeout_seconds
+        + backoff_envelope
+        + owner_lease_grace_seconds()
+    )
+    return max(default_ttl, envelope)
+
+
+def _renew_execution_owner(
+    *,
+    request_timeout_seconds: float | None = None,
+    client: object | None = None,
+) -> bool:
+    runtime = _CURRENT_EXECUTION.get()
+    if runtime is None or runtime.lease_renewer is None:
+        return False
+    lease_seconds = _execution_owner_lease_seconds(
+        request_timeout_seconds=request_timeout_seconds,
+        client=client,
+    )
+    runtime.lease_renewer(lease_seconds=lease_seconds)
+    return True
 
 # 审计 P-15：llm_calls 审计载荷的单段文本上限。完整 prompt 由 prompt_hash 留痕、
 # 生成正文由 SceneDraft/FinalScene 行持有——审计行只需可读证据，不承担全文存储。
@@ -101,11 +216,12 @@ class LLMNodeRunner:
         self._llm_client = llm_client
         self._routing_config = routing_config
         self._provider_configs: dict[str, Any] | None = None
+        self._accounting_lifecycle_observer: Callable[[str, str], None] | None = None
 
     def run(
         self,
         *,
-        scene_id: str,
+        scene_id: str | None,
         chapter_id: str,
         bundle_id: str,
         bundle_hash: str,
@@ -117,14 +233,26 @@ class LLMNodeRunner:
         source_draft_row_id: str | None = None,
         source_draft_content: str | None = None,
         temperature_override: float | None = None,
+        execution_step_key: str | None = None,
+        context: LLMCallContext | None = None,
     ) -> LLMNodeResult:
-        llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
-        started_at = time.perf_counter()
+        call_scope_id = scene_id or (context.scope_id if context is not None else chapter_id)
+        llm_call_id = f"llm_call_{call_scope_id}_{uuid.uuid4().hex[:12]}"
         task_config: Any | None = None
         request: LLMRequest | None = None
         request_summary: dict[str, Any] = {}
 
         try:
+            execution_mode = self._provider_execution_mode()
+            accounted_context = self._resolve_run_context(
+                context=context,
+                execution_mode=execution_mode,
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                node_id=node_id,
+                step=step,
+                execution_step_key=execution_step_key or step,
+            )
             try:
                 task_config = self.task_config(node_id)
             except KeyError as exc:
@@ -147,18 +275,20 @@ class LLMNodeRunner:
                     "retryable": False,
                     "recommended_action": "Open System Config > LLM and sync missing active node routes.",
                 }
-                self._persist_call(
+                rejection = LLMAccountingRejected(
+                    "LLM_ROUTE_NOT_CONFIGURED",
+                    f"LLM node route is not configured: {node_id}",
+                    details={"node_id": node_id},
+                )
+                record_rejected_call(
+                    self.session,
+                    None,
+                    accounted_context,
+                    rejection,
                     llm_call_id=llm_call_id,
-                    scene_id=scene_id,
-                    chapter_id=chapter_id,
-                    step=step,
-                    request=None,
-                    task_config=None,
-                    prompt=prompt,
-                    request_summary=request_summary,
-                    response_summary=response_summary,
-                    started_at=started_at,
-                    error_code="LLM_ROUTE_NOT_CONFIGURED",
+                    prompt_hash=prompt.get("prompt_hash"),
+                    request_payload_summary=request_summary,
+                    response_payload_summary=response_summary,
                 )
                 raise LLMNodeExecutionError(
                     llm_call_id=llm_call_id,
@@ -196,18 +326,19 @@ class LLMNodeRunner:
                     "retryable": False,
                     "details": {"continuity_warning": continuity_warning},
                 }
-                self._persist_call(
+                rejection = LLMAccountingRejected(
+                    CONTINUITY_BUDGET_ERROR_CODE,
+                    CONTINUITY_BUDGET_MESSAGE,
+                    details={"continuity_warning": continuity_warning},
+                )
+                record_rejected_call(
+                    self.session,
+                    request,
+                    accounted_context,
+                    rejection,
                     llm_call_id=llm_call_id,
-                    scene_id=scene_id,
-                    chapter_id=chapter_id,
-                    step=step,
-                    request=request,
-                    task_config=task_config,
-                    prompt=prompt,
-                    request_summary=request_summary,
-                    response_summary=response_summary,
-                    started_at=started_at,
-                    error_code=CONTINUITY_BUDGET_ERROR_CODE,
+                    request_payload_summary=request_summary,
+                    response_payload_summary=response_summary,
                 )
                 raise LLMNodeContinuityError(
                     llm_call_id=llm_call_id,
@@ -216,25 +347,40 @@ class LLMNodeRunner:
                     continuity_warning=continuity_warning,
                 )
 
-            response = self._client(offline_client_factory=offline_client_factory).generate(request)
+            client = self._client(offline_client_factory=offline_client_factory)
+            _renew_execution_owner(
+                request_timeout_seconds=request.timeout_seconds or self.settings.llm_timeout_seconds,
+                client=client,
+            )
+            # Provider I/O must never hold an open database transaction. The owner
+            # renewal above is fenced and committed before dispatch.
+            self.session.commit()
+            try:
+                response = execute_accounted_call(
+                    self.session,
+                    client,
+                    request,
+                    accounted_context,
+                    llm_call_id=llm_call_id,
+                    _lifecycle_observer=self._accounting_lifecycle_observer,
+                )
+            finally:
+                _renew_execution_owner()
+                self.session.commit()
         except LLMNodeExecutionError:
             raise
         except Exception as exc:
             error_code = getattr(exc, "code", exc.__class__.__name__)
             response_summary = _error_summary(exc)
-            self._persist_call(
-                llm_call_id=llm_call_id,
-                scene_id=scene_id,
-                chapter_id=chapter_id,
-                step=step,
-                request=request,
-                task_config=task_config,
-                prompt=prompt,
-                request_summary=request_summary,
-                response_summary=response_summary,
-                started_at=started_at,
-                error_code=error_code,
-            )
+            details = getattr(exc, "details", None)
+            if isinstance(details, dict) and details.get("llm_call_id"):
+                llm_call_id = str(details["llm_call_id"])
+            if self.session.get(LlmCall, llm_call_id) is not None:
+                self._supplement_accounted_audit(
+                    llm_call_id,
+                    request_summary=request_summary,
+                    response_summary=response_summary,
+                )
             raise LLMNodeExecutionError(
                 llm_call_id=llm_call_id,
                 error_code=error_code,
@@ -254,19 +400,11 @@ class LLMNodeRunner:
             "max_retries": response.max_retries,
             "retryable": response.retryable,
         }
-        self._persist_call(
-            llm_call_id=llm_call_id,
-            scene_id=scene_id,
-            chapter_id=chapter_id,
-            step=step,
-            request=request,
-            task_config=task_config,
-            prompt=prompt,
+        llm_call_id = response.llm_call_id or llm_call_id
+        self._supplement_accounted_audit(
+            llm_call_id,
             request_summary=request_summary,
             response_summary=response_summary,
-            started_at=started_at,
-            error_code=None,
-            response=response,
         )
         return LLMNodeResult(
             llm_call_id=llm_call_id,
@@ -281,6 +419,7 @@ class LLMNodeRunner:
         task_name: str,
         prompt_text: str,
         system_prompt: str,
+        context: LLMCallContext,
         temperature_override: float | None = None,
     ) -> LLMResponse:
         """Ad-hoc single-shot LLM call for auxiliary advisory passes (§8 LLM critic,
@@ -292,8 +431,37 @@ class LLMNodeRunner:
         unavailable — a misconfigured/disabled call fails fast into the caller's
         try/except rather than silently returning stub text.
         """
+        if self._provider_execution_mode() != "online" or context.provider_execution_mode != "online":
+            raise LLMAccountingRejected(
+                "LLM_RUN_TASK_OFFLINE_UNSUPPORTED",
+                "run_task currently requires explicit online provider execution",
+            )
         route_node = _AD_HOC_ROUTE_ALIASES.get(task_name, task_name)
-        task_config = self.task_config(route_node)
+        self._validate_task_context(context, expected_node_id=route_node)
+        try:
+            task_config = self.task_config(route_node)
+        except KeyError as exc:
+            rejection = LLMAccountingRejected(
+                "LLM_ROUTE_NOT_CONFIGURED",
+                f"LLM node route is not configured: {route_node}",
+                details={"node_id": route_node, "task_name": task_name},
+            )
+            llm_call_id = record_rejected_call(
+                self.session,
+                None,
+                context,
+                rejection,
+                request_payload_summary={"task_name": task_name, "route_node": route_node},
+            )
+            raise LLMNodeExecutionError(
+                llm_call_id=llm_call_id,
+                error_code=rejection.code,
+                message=str(rejection),
+                request_summary={"task_name": task_name, "route_node": route_node},
+                response_summary=_error_summary(rejection),
+                original_error=exc,
+                retryable=False,
+            ) from exc
         prompt = {"system_prompt": system_prompt, "token_budget": {}}
         request = self._build_request(
             prompt,
@@ -304,9 +472,44 @@ class LLMNodeRunner:
         )
 
         def _offline_unavailable() -> Any:
-            raise RuntimeError("run_task requires an enabled LLM client (advisory pass)")
+            raise LLMAccountingRejected(
+                "LLM_RUN_TASK_OFFLINE_UNSUPPORTED",
+                "run_task currently requires explicit online provider execution",
+            )
 
-        return self._client(offline_client_factory=_offline_unavailable).generate(request)
+        client = self._client(offline_client_factory=_offline_unavailable)
+        llm_call_id = f"llm_task_{uuid.uuid4().hex}"
+        _renew_execution_owner(
+            request_timeout_seconds=request.timeout_seconds or self.settings.llm_timeout_seconds,
+            client=client,
+        )
+        self.session.commit()
+        try:
+            try:
+                return execute_accounted_call(
+                    self.session,
+                    client,
+                    request,
+                    context,
+                    llm_call_id=llm_call_id,
+                    _lifecycle_observer=self._accounting_lifecycle_observer,
+                )
+            except Exception as exc:
+                details = getattr(exc, "details", None)
+                if isinstance(details, dict) and details.get("llm_call_id"):
+                    llm_call_id = str(details["llm_call_id"])
+                raise LLMNodeExecutionError(
+                    llm_call_id=llm_call_id,
+                    error_code=getattr(exc, "code", exc.__class__.__name__),
+                    message=str(exc),
+                    request_summary={"task_name": task_name, "route_node": route_node},
+                    response_summary=_error_summary(exc),
+                    original_error=exc,
+                    retryable=bool(getattr(exc, "retryable", False)),
+                ) from exc
+        finally:
+            _renew_execution_owner()
+            self.session.commit()
 
     def task_config(self, node_id: str) -> Any:
         routing = self._routing()
@@ -410,7 +613,10 @@ class LLMNodeRunner:
         if self._llm_client is not None:
             return self._llm_client
         if not self.settings.llm_enabled:
-            return offline_client_factory()
+            offline_client = offline_client_factory()
+            if isinstance(offline_client, OfflineDeterministicExecution):
+                return offline_client
+            return _VerifiedLegacyOfflineExecution(offline_client)
         return LLMClient(
             provider=self.settings.llm_provider,
             base_url=self.settings.llm_base_url,
@@ -419,6 +625,352 @@ class LLMNodeRunner:
             retry_backoff_seconds=self._retry_backoff_seconds(),
             provider_configs=self._runtime_provider_configs(),
         )
+
+    @property
+    def provider_execution_mode(self) -> str:
+        """Expose the selected execution kind so callers can construct typed ownership."""
+        return self._provider_execution_mode()
+
+    def _provider_execution_mode(self) -> str:
+        if isinstance(self._llm_client, OfflineDeterministicExecution):
+            return "offline_deterministic"
+        if self._llm_client is not None:
+            return "online"
+        return "online" if self.settings.llm_enabled else "offline_deterministic"
+
+    def _validate_task_context(
+        self,
+        context: LLMCallContext,
+        *,
+        expected_node_id: str,
+    ) -> None:
+        def reject(field: str, message: str) -> None:
+            raise LLMAccountingRejected(
+                "LLM_ACCOUNTING_CONTEXT_INVALID",
+                message,
+                details={"missing_or_invalid_field": field},
+            )
+
+        runtime = _CURRENT_EXECUTION.get()
+        if context.node_id != expected_node_id:
+            reject("node_id", "context node must match the resolved task route")
+        if runtime is None:
+            if (
+                context.execution_id is not None
+                or context.execution_step_key is not None
+                or context.run_job_id is not None
+            ):
+                reject("execution_id", "context without an active execution cannot invent execution ownership")
+        elif (
+            context.execution_id != runtime.execution_id
+            or context.run_job_id != runtime.run_job_id
+            or not str(context.execution_step_key or "").strip()
+        ):
+            reject("execution_id", "context must use the current execution owner and a stable step key")
+
+        if context.scope_type == "scene":
+            scene = self.session.get(SceneCard, context.scene_id)
+            chapter = self.session.get(ChapterGoal, context.chapter_id)
+            project_id = (
+                scene.project_id or (chapter.project_id if chapter is not None else None)
+                if scene is not None
+                else None
+            )
+            if (
+                scene is None
+                or context.scope_id != context.scene_id
+                or scene.chapter_id != context.chapter_id
+                or context.project_id != project_id
+                or not str(project_id or "").strip()
+            ):
+                reject("scene_id", "scene context does not match persisted scene ownership")
+            self._validate_scene_job_ownership(
+                scene=scene,
+                chapter_id=context.chapter_id,
+                run_job_id=context.run_job_id,
+                reject=reject,
+            )
+            return
+        if context.scene_id is not None:
+            reject("scene_id", "non-scene context cannot claim scene ownership")
+        if context.scope_type == "chapter":
+            chapter = self.session.get(ChapterGoal, context.chapter_id)
+            if (
+                chapter is None
+                or context.scope_id != context.chapter_id
+                or context.project_id != chapter.project_id
+                or not str(chapter.project_id or "").strip()
+            ):
+                reject("chapter_id", "chapter context does not match persisted chapter ownership")
+            self._validate_chapter_job_ownership(
+                chapter_id=context.chapter_id,
+                run_job_id=context.run_job_id,
+                reject=reject,
+            )
+            return
+        if context.scope_type == "project":
+            if context.run_job_id is not None:
+                reject("run_job_id", "project context cannot claim chapter run ownership")
+            if (
+                context.chapter_id is not None
+                or context.project_id != context.scope_id
+                or self.session.get(StoryProject, context.scope_id) is None
+            ):
+                reject("project_id", "project context does not match a persisted project")
+            return
+        if context.scope_type == "system":
+            if (
+                context.project_id is not None
+                or context.chapter_id is not None
+                or context.run_job_id is not None
+            ):
+                reject("scope_type", "system context cannot claim project or chapter ownership")
+            return
+        reject("scope_type", "unsupported LLM accounting scope type")
+
+    def _resolve_run_context(
+        self,
+        *,
+        context: LLMCallContext | None,
+        execution_mode: str,
+        scene_id: str | None,
+        chapter_id: str,
+        node_id: str,
+        step: str,
+        execution_step_key: str,
+    ) -> LLMCallContext:
+        runtime = _CURRENT_EXECUTION.get()
+        if context is None:
+            return self._scene_accounting_context(
+                runtime=runtime,
+                execution_mode=execution_mode,
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                node_id=node_id,
+                step=step,
+                execution_step_key=execution_step_key,
+            )
+
+        def reject(field: str, message: str) -> None:
+            raise LLMAccountingRejected(
+                "LLM_ACCOUNTING_CONTEXT_INVALID",
+                message,
+                details={"missing_or_invalid_field": field},
+            )
+
+        if context.provider_execution_mode != execution_mode:
+            reject("provider_execution_mode", "explicit context execution mode does not match the selected client")
+        if context.node_id != node_id or context.step != step:
+            reject("node_id", "explicit context node and step must match the runner call")
+        if context.scope_type == "scene":
+            if scene_id is None:
+                reject("scene_id", "scene context requires a scene id")
+            expected = self._scene_accounting_context(
+                runtime=runtime,
+                execution_mode=execution_mode,
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                node_id=node_id,
+                step=step,
+                execution_step_key=execution_step_key,
+            )
+            ownership_fields = (
+                "scope_id",
+                "project_id",
+                "scene_id",
+                "chapter_id",
+                "execution_id",
+                "execution_step_key",
+                "run_job_id",
+            )
+            if any(getattr(context, field) != getattr(expected, field) for field in ownership_fields):
+                reject("scene_id", "explicit scene context does not match persisted scene ownership")
+            return context
+        if context.scene_id is not None:
+            reject("scene_id", "non-scene context cannot claim a scene id")
+        if context.scope_type == "chapter":
+            chapter = self.session.get(ChapterGoal, context.chapter_id)
+            if (
+                context.scope_id != chapter_id
+                or context.chapter_id != chapter_id
+                or chapter is None
+                or not str(chapter.project_id or "").strip()
+                or context.project_id != chapter.project_id
+            ):
+                reject("chapter_id", "explicit chapter context does not match persisted chapter ownership")
+            self._validate_chapter_job_ownership(
+                chapter_id=context.chapter_id,
+                run_job_id=context.run_job_id,
+                reject=reject,
+            )
+        elif context.scope_type == "project":
+            if context.run_job_id is not None:
+                reject("run_job_id", "project context cannot claim chapter run ownership")
+            if (
+                context.chapter_id is not None
+                or context.project_id != context.scope_id
+                or self.session.get(StoryProject, context.scope_id) is None
+            ):
+                reject("project_id", "explicit project context does not match a persisted project")
+        elif context.scope_type == "system":
+            if (
+                context.project_id is not None
+                or context.chapter_id is not None
+                or context.run_job_id is not None
+            ):
+                reject("scope_type", "system context cannot claim project or chapter ownership")
+        else:
+            reject("scope_type", "unsupported LLM accounting scope type")
+        if runtime is None:
+            if context.execution_id is not None or context.execution_step_key is not None:
+                reject("execution_id", "context without an active execution cannot invent execution ownership")
+        elif (
+            context.execution_id != runtime.execution_id
+            or context.run_job_id != runtime.run_job_id
+            or context.execution_step_key != execution_step_key
+        ):
+            reject("execution_id", "explicit context must use the current execution owner and stable step key")
+        return context
+
+    def _scene_accounting_context(
+        self,
+        *,
+        runtime: _LLMExecutionRuntime | None,
+        execution_mode: str,
+        scene_id: str,
+        chapter_id: str,
+        node_id: str,
+        step: str,
+        execution_step_key: str,
+    ) -> LLMCallContext:
+        def reject(field: str, message: str) -> None:
+            raise LLMAccountingRejected(
+                "LLM_ACCOUNTING_CONTEXT_INVALID",
+                message,
+                details={"missing_or_invalid_field": field},
+            )
+
+        if runtime is not None and not str(runtime.execution_id).strip():
+            reject("execution_id", "durable online execution requires a stable execution id")
+        if not str(scene_id).strip():
+            reject("scene_id", "durable online execution requires a scene id")
+        if not str(step).strip():
+            reject("step", "scene execution requires a stable step")
+        if runtime is not None and not str(execution_step_key).strip():
+            reject("execution_step_key", "durable execution requires a stable step key")
+        scene = self.session.get(SceneCard, scene_id)
+        if scene is None:
+            reject("scene_id", "durable online execution scene does not exist")
+        resolved_chapter_id = scene.chapter_id
+        if not str(resolved_chapter_id).strip() or chapter_id != resolved_chapter_id:
+            reject("chapter_id", "durable online execution chapter does not match its scene")
+        chapter = self.session.get(ChapterGoal, resolved_chapter_id)
+        project_id = scene.project_id or (chapter.project_id if chapter is not None else None)
+        if not str(project_id or "").strip():
+            reject("project_id", "durable online execution requires a project-owned scene")
+        self._validate_scene_job_ownership(
+            scene=scene,
+            chapter_id=resolved_chapter_id,
+            run_job_id=runtime.run_job_id if runtime is not None else None,
+            reject=reject,
+        )
+        return LLMCallContext(
+            scope_type="scene",
+            scope_id=scene.scene_id,
+            project_id=project_id,
+            scene_id=scene.scene_id,
+            chapter_id=resolved_chapter_id,
+            node_id=node_id,
+            step=step,
+            execution_id=runtime.execution_id if runtime is not None else None,
+            execution_step_key=execution_step_key if runtime is not None else None,
+            run_job_id=runtime.run_job_id if runtime is not None else None,
+            provider_execution_mode=execution_mode,
+        )
+
+    def _validate_scene_job_ownership(
+        self,
+        *,
+        scene: SceneCard,
+        chapter_id: str,
+        run_job_id: str | None,
+        reject: Callable[[str, str], None],
+    ) -> None:
+        state = self.session.get(SceneRunState, scene.scene_id)
+        active_job_id = state.active_run_job_id if state is not None else None
+        if run_job_id is None:
+            if active_job_id is not None:
+                reject("run_job_id", "scene context omitted the authoritative active run job")
+            return
+        job = self.session.get(ChapterRunJob, run_job_id)
+        if job is None or job.status != "running" or job.chapter_id != chapter_id:
+            reject("run_job_id", "run job is missing, inactive, or owned by another chapter")
+        if job.job_type == "scene_run_full":
+            if active_job_id != run_job_id or job.scene_id != scene.scene_id:
+                reject("run_job_id", "scene run job is owned by another scene")
+            return
+        if job.job_type == "chapter_run_full":
+            payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+            scene_ids = payload.get("scene_ids")
+            if (
+                not isinstance(scene_ids, list)
+                or scene.scene_id not in scene_ids
+                or payload.get("current_scene_id") != scene.scene_id
+                or active_job_id not in {None, run_job_id}
+            ):
+                reject("run_job_id", "chapter run job is not currently executing this scene")
+            return
+        reject("run_job_id", "unsupported run job type for scene execution")
+
+    def _validate_chapter_job_ownership(
+        self,
+        *,
+        chapter_id: str | None,
+        run_job_id: str | None,
+        reject: Callable[[str, str], None],
+    ) -> None:
+        if run_job_id is None:
+            return
+        job = self.session.get(ChapterRunJob, run_job_id)
+        if job is None or job.status != "running" or job.chapter_id != chapter_id:
+            reject("run_job_id", "chapter context does not match an active chapter run job")
+        if job.job_type == "scene_run_full":
+            state = self.session.get(SceneRunState, job.scene_id)
+            if job.scene_id is None or state is None or state.active_run_job_id != run_job_id:
+                reject("run_job_id", "scene run job is not active for chapter evaluation")
+            return
+        if job.job_type == "chapter_run_full":
+            payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+            current_scene_id = payload.get("current_scene_id")
+            state = self.session.get(SceneRunState, current_scene_id)
+            if (
+                not isinstance(current_scene_id, str)
+                or state is None
+                or state.active_run_job_id != run_job_id
+            ):
+                reject("run_job_id", "chapter run job has no active current scene")
+            return
+        reject("run_job_id", "unsupported run job type for chapter execution")
+
+    def _supplement_accounted_audit(
+        self,
+        llm_call_id: str,
+        *,
+        request_summary: dict[str, Any],
+        response_summary: dict[str, Any],
+    ) -> None:
+        parent = self.session.get(LlmCall, llm_call_id)
+        if parent is None:
+            raise RuntimeError(f"accounted llm call {llm_call_id} disappeared after settlement")
+        parent.request_payload_summary = {
+            **dict(parent.request_payload_summary or {}),
+            **request_summary,
+        }
+        parent.response_payload_summary = {
+            **dict(parent.response_payload_summary or {}),
+            **response_summary,
+        }
+        self.session.commit()
 
     def _retry_backoff_seconds(self) -> float:
         """生产默认 1.5s 指数退避;models 配置 job_runtime.llm_retry_backoff_seconds 可调。"""
@@ -434,62 +986,6 @@ class LLMNodeRunner:
         if self._provider_configs is None:
             self._provider_configs = load_llm_provider_runtime_configs()
         return self._provider_configs
-
-    def _persist_call(
-        self,
-        *,
-        llm_call_id: str,
-        scene_id: str,
-        chapter_id: str,
-        step: str,
-        request: LLMRequest | None,
-        task_config: Any | None,
-        prompt: dict[str, Any],
-        request_summary: dict[str, Any],
-        response_summary: dict[str, Any],
-        started_at: float,
-        error_code: str | None,
-        response: LLMResponse | None = None,
-    ) -> None:
-        self.session.add(
-            LlmCall(
-                llm_call_id=llm_call_id,
-                provider=response.provider if response is not None else getattr(task_config, "provider", None),
-                provider_id=getattr(request, "provider_id", None) if request is not None else getattr(task_config, "provider_id", None),
-                account_id=getattr(request, "account_id", None) if request is not None else getattr(task_config, "account_id", None),
-                model=response.model if response is not None else getattr(task_config, "model", None),
-                node_id=getattr(request, "node_id", None) if request is not None else step,
-                reasoning_level=getattr(request, "reasoning_level", None) if request is not None else getattr(task_config, "reasoning_level", None),
-                native_reasoning_json=response.native_reasoning if response is not None else None,
-                credential_mode=getattr(request, "credential_mode", None) if request is not None else getattr(task_config, "credential_mode", None),
-                prompt_hash=prompt.get("prompt_hash") if isinstance(prompt, dict) else None,
-                step=step,
-                scene_id=scene_id,
-                chapter_id=chapter_id,
-                request_payload_summary=request_summary,
-                response_payload_summary=response_summary,
-                prompt_tokens=response.usage.get("input_tokens", 0) if response is not None else 0,
-                completion_tokens=response.usage.get("output_tokens", 0) if response is not None else 0,
-                total_tokens=response.usage.get("total_tokens", 0) if response is not None else 0,
-                latency_ms=int((time.perf_counter() - started_at) * 1000),
-                finish_reason=response.finish_reason if response is not None else None,
-                error_code=error_code,
-            )
-        )
-        # Wave 3（治理 §5.5/§5.8）：场景生命周期 token 结算——凡带 scene_id 且存在
-        # 运行态行的调用（成功/失败）都累计入 scene_tokens_used；usage 缺失记 0。
-        try:
-            from novel_system.services.scene_budget import record_usage
-
-            record_usage(
-                self.session,
-                scene_id,
-                response.usage.get("total_tokens", 0) if response is not None and response.usage else 0,
-            )
-        except Exception:
-            _LOGGER.warning("scene token accounting degraded for %s", scene_id, exc_info=True)
-        self.session.flush()
-
 
 def _truncate_audit_text(value: Any) -> Any:
     """审计 P-15：单段文本超上限则截断并加标记；非字符串原样返回。"""

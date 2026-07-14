@@ -662,19 +662,19 @@ class InjectionService:
         空串(C 优雅退化)。全程无 LLM(§11 风险 6:inject < 50ms,库内拼装)。
 
         反抄袭/隐私(附录 B):RAG 注入的是参考书**原文片段**(段/句/景),最终随用户
-        生成 prompt 送往云端 LLM。``cloud_policy=local_only`` 的书禁止把原文/派生内容
-        送云端,故此处直接跳过 RAG(positive/forbidden 抽象特征仍由其它 block 注入,
-        不受影响)。注:Strategy B(few-shot)注入 quote 原文存在同类张力,属既有行为,
-        本次不改其语义,留作独立跟进。
+        生成 prompt 送往云端 LLM。与 Strategy B(few-shot)共用 ``cloud_llm_allowed``
+        守卫：仅精确合法的云策略和严格发送权声明可检索/注入；其余情况直接跳过
+        RAG(positive/forbidden 抽象特征仍由其它 block 注入,不受影响)。
         """
         from novel_system.services.style_reference.rag import (
             RagRetriever,
             load_rag_config,
             render_rag_block,
         )
+        from novel_system.services.style_reference.policy import cloud_llm_allowed
 
         book = self.repo.get_book(getattr(profile, "book_id", None))
-        if book is not None and getattr(book, "cloud_policy", None) == "local_only":
+        if book is not None and not cloud_llm_allowed(book):
             return ""
 
         cfg = load_rag_config()

@@ -11,22 +11,26 @@ from novel_system.db.models import (
     RevisionCandidate,
     SceneCard,
     SceneRunState,
+    StoryProject,
     WriterEvaluation,
 )
 from novel_system.services.bundle_builder import BundleBuilder
-from novel_system.services.llm_client import LLMResponse
+from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
 from novel_system.services.writer_review import WRITER_REVIEW_LENSES, WriterReviewService
 
 
 CHAPTER_ID = "CH_WRITER_01"
 SCENE_ID = "CH_WRITER_01_SC01"
 FINAL_ROW_ID = "final_writer_01"
+PROJECT_ID = "PROJECT_WRITER_01"
 
 
 def _seed_scene_with_final(session) -> None:
+    session.add(StoryProject(project_id=PROJECT_ID, title="Writer review test project", outline_text=""))
     session.add(
         ChapterGoal(
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             planned_scene_count=1,
             chapter_goal="主角第一次意识到盟友隐瞒了关键事实。",
             main_plot_push="把线索从传闻推进到可验证证据。",
@@ -84,7 +88,7 @@ def _seed_scene_with_final(session) -> None:
     session.commit()
 
 
-class ScriptedWriterReviewClient:
+class ScriptedWriterReviewClient(OnlineAccountedExecution):
     def __init__(self, *, malformed_diagnosis: bool = False) -> None:
         self.malformed_diagnosis = malformed_diagnosis
         self.requests = []
@@ -131,6 +135,12 @@ class ScriptedWriterReviewClient:
             usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
             finish_reason="stop",
         )
+
+    def generate_accounted(self, request, *, accounting_hook):
+        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+        response = self.generate(request)
+        accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
 
     def _diagnosis_payload(self, node_id):
         if self.malformed_diagnosis:
@@ -335,6 +345,13 @@ def test_chapter_writer_review_prefers_final_aggregate_and_creates_revision_plan
     assert "【局部改写】" in candidate["proposed_text"]
     assert candidate["diff_summary"]["candidate_kind"] == "revision_plan"
     assert candidate["diff_summary"]["rewrite_strategy"] == "revision_plan"
+    calls = session.query(LlmCall).all()
+    assert calls
+    assert all(call.scope_type == "chapter" for call in calls)
+    assert all(call.scope_id == CHAPTER_ID for call in calls)
+    assert all(call.project_id == PROJECT_ID for call in calls)
+    assert all(call.chapter_id == CHAPTER_ID for call in calls)
+    assert all(call.scene_id is None for call in calls)
 
 
 def test_writer_review_malformed_llm_payload_blocks_without_fabricating_scores(session) -> None:

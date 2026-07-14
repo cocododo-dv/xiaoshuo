@@ -13,7 +13,6 @@ from novel_system.db.models import (
     ChapterGoal,
     FinalScene,
     GenerationPlanningArtifact,
-    LlmCall,
     QcReport,
     SceneBlueprint,
     SceneCard,
@@ -297,7 +296,9 @@ class SceneAutoRewriteService:
                     gate_results=gate_results,
                 )
             else:
-                llm_call_id = self._persist_offline_llm_call(scene, branch=branch, contract=contract)
+                # Deterministic local policy creates a candidate without pretending
+                # that provider execution occurred; there is intentionally no ledger row.
+                llm_call_id = None
             candidate_row_id = self._persist_candidate_draft(
                 scene=scene,
                 source_final=source_final,
@@ -487,34 +488,6 @@ class SceneAutoRewriteService:
             "recommended_branch": branch,
         }
 
-    def _persist_offline_llm_call(self, scene: SceneCard, *, branch: str, contract: SceneQualityContract) -> str:
-        llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
-        self.session.add(
-            LlmCall(
-                llm_call_id=llm_call_id,
-                provider="offline_deterministic",
-                model="scene-auto-rewrite-policy",
-                node_id="scene_auto_rewrite",
-                prompt_hash=contract.contract_hash,
-                step="scene_auto_rewrite",
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                request_payload_summary={
-                    "contract_id": contract.contract_id,
-                    "branch": branch,
-                    "model_profile": "quality_strong",
-                },
-                response_payload_summary={"finish_reason": "deterministic_candidate"},
-                prompt_tokens=0,
-                completion_tokens=0,
-                total_tokens=0,
-                latency_ms=0,
-                finish_reason="offline_fallback",
-            )
-        )
-        self.session.flush()
-        return llm_call_id
-
     def _generate_llm_candidate(
         self,
         *,
@@ -622,7 +595,7 @@ class SceneAutoRewriteService:
         source_final: FinalScene | None,
         contract: SceneQualityContract,
         branch: str,
-        llm_call_id: str,
+        llm_call_id: str | None,
         content_override: str | None = None,
     ) -> str:
         row_id = f"draft_auto_rewrite_{scene.scene_id}_{uuid.uuid4().hex[:10]}"

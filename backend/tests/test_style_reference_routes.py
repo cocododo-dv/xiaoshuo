@@ -51,7 +51,13 @@ def _import_book(client: TestClient) -> str:
     resp = client.post(
         f"{PREFIX}/books/import-upload",
         files=files,
-        data={"title": "测试", "cloud_policy": "segments_only"},
+        data={
+            "title": "测试",
+            "cloud_policy": "segments_only",
+            "rights_declaration": json.dumps(
+                {"analysis_rights": True, "send_rights": True}
+            ),
+        },
         headers={"X-Idempotency-Key": "imp_1"},
     )
     assert resp.status_code == 200, resp.text
@@ -148,6 +154,23 @@ def _seed_full_chain(book_id: str) -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 
+def test_import_upload_segments_only_requires_rights_declaration(
+    client: TestClient,
+) -> None:
+    files = {"file": ("undeclared.txt", io.BytesIO(SAMPLE_TXT), "text/plain")}
+    resp = client.post(
+        f"{PREFIX}/books/import-upload",
+        files=files,
+        data={"title": "未声明", "cloud_policy": "segments_only"},
+        headers={"X-Idempotency-Key": "imp_undeclared"},
+    )
+    assert resp.status_code == 400
+    assert (
+        resp.json()["error"]["code"]
+        == "STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED"
+    )
+
+
 def test_import_upload_happy(client: TestClient) -> None:
     book_id = _import_book(client)
     assert book_id.startswith("sr_book_")
@@ -156,7 +179,13 @@ def test_import_upload_happy(client: TestClient) -> None:
 def test_import_upload_idempotency_replay(client: TestClient) -> None:
     files = {"file": ("a.txt", io.BytesIO(SAMPLE_TXT), "text/plain")}
     headers = {"X-Idempotency-Key": "imp_dup"}
-    data = {"title": "x", "cloud_policy": "segments_only"}
+    data = {
+        "title": "x",
+        "cloud_policy": "segments_only",
+        "rights_declaration": json.dumps(
+            {"analysis_rights": True, "send_rights": True}
+        ),
+    }
     r1 = client.post(
         f"{PREFIX}/books/import-upload", files=files, data=data, headers=headers
     )

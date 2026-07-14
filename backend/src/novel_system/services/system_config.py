@@ -25,10 +25,15 @@ from novel_system.services.hash_engine import normalize
 from novel_system.services.llm_client import (
     DEFAULT_PROVIDER_BASE_URLS,
     LLMConfigurationError,
+    LLMRequest,
     ProviderRuntimeConfig,
     SUPPORTED_CREDENTIAL_MODES,
     SUPPORTED_PROVIDERS,
     parse_model_routing_config,
+)
+from novel_system.services.llm_accounting import (
+    LLMCallContext,
+    execute_accounted_completion_probe,
 )
 from novel_system.services.llm_providers import (
     adapter_registry,
@@ -358,6 +363,7 @@ class SystemConfigService:
             }
             if should_check_completion and requested_model:
                 completion_result = _probe_completion(
+                    session=self.session,
                     provider=provider,
                     base_url=base_url,
                     api_key=api_key,
@@ -415,6 +421,7 @@ class SystemConfigService:
         if not response.is_success:
             if should_check_completion and requested_model:
                 completion_result = _probe_completion(
+                    session=self.session,
                     provider=provider,
                     base_url=base_url,
                     api_key=api_key,
@@ -466,6 +473,7 @@ class SystemConfigService:
 
         if should_check_completion:
             completion_result = _probe_completion(
+                session=self.session,
                 provider=provider,
                 base_url=base_url,
                 api_key=api_key,
@@ -1821,6 +1829,7 @@ def _extract_model_ids(response: httpx.Response) -> list[str]:
 
 def _probe_completion(
     *,
+    session: Session,
     provider: str,
     base_url: str,
     api_key: str | None,
@@ -1849,29 +1858,63 @@ def _probe_completion(
             "endpoint": None,
             "message": f"completion check skipped for provider {provider}",
         }
-    try:
-        response = httpx.post(
-            probe.url,
-            headers=probe.headers,
-            json=probe.payload,
-            timeout=timeout_seconds,
-            trust_env=_httpx_trust_env_for_base_url(base_url),
-        )
-    except httpx.RequestError as exc:
+    request = LLMRequest(
+        model=model,
+        messages=[{"role": "user", "content": "ping"}],
+        temperature=0.0,
+        max_output_tokens=1,
+        response_format="text",
+        provider=provider,
+        timeout_seconds=timeout_seconds,
+        api_mode=probe.api_mode,
+        node_id="provider_probe",
+        provider_options=provider_options or {},
+    )
+    accounted = execute_accounted_completion_probe(
+        session,
+        request,
+        LLMCallContext(
+            scope_type="system",
+            scope_id="provider_probe",
+            node_id="provider_probe",
+            step="completion_probe",
+        ),
+        url=probe.url,
+        headers=probe.headers,
+        payload=probe.payload,
+        timeout_seconds=timeout_seconds,
+        trust_env=_httpx_trust_env_for_base_url(base_url),
+    )
+    response = accounted.response
+    if response is None:
         return {
             "ok": False,
             "status_code": None,
             "api_mode": probe.api_mode,
             "endpoint": probe.endpoint,
-            "message": str(exc),
+            "message": accounted.error_message or "completion probe failed",
+            "error_code": accounted.error_code,
+            "llm_call_id": accounted.llm_call_id,
         }
     result = {
-        "ok": response.is_success,
+        "ok": response.is_success and accounted.error_code is None,
         "status_code": response.status_code,
         "model": model,
         "api_mode": probe.api_mode,
         "endpoint": probe.endpoint,
-        "message": "minimal completion succeeded" if response.is_success else _completion_error_summary(response, api_mode=probe.api_mode, endpoint=probe.endpoint),
+        "message": (
+            "minimal completion succeeded"
+            if response.is_success and accounted.error_code is None
+            else accounted.error_message or "completion probe accounting failed"
+            if response.is_success
+            else _completion_error_summary(
+                response,
+                api_mode=probe.api_mode,
+                endpoint=probe.endpoint,
+            )
+        ),
+        "error_code": accounted.error_code,
+        "llm_call_id": accounted.llm_call_id,
     }
     if response.status_code == 404 and probe.api_mode == "responses":
         result["next_action"] = "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider"

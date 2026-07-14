@@ -19,13 +19,45 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.llm_client import LLMResponse
+from novel_system.services.author_drafts import AuthorDraftService
+
+
+def test_scene_target_uses_scene_project_when_legacy_chapter_has_no_project(session) -> None:
+    project_id = "PROJECT_SCENE_AUTHORITY"
+    session.add(StoryProject(project_id=project_id, title="Scene authority", outline_text=""))
+    session.add(ChapterGoal(chapter_id="CH_SCENE_AUTHORITY", chapter_goal="legacy", planned_scene_count=1))
+    session.add(
+        SceneCard(
+            scene_id="CH_SCENE_AUTHORITY_SC01",
+            chapter_id="CH_SCENE_AUTHORITY",
+            project_id=project_id,
+            scene_seq=1,
+            scene_goal="scene-owned project",
+        )
+    )
+    session.commit()
+
+    target = AuthorDraftService(session)._target_payload("scene", "CH_SCENE_AUTHORITY_SC01")
+
+    assert target["project_id"] == project_id
 
 
 def _create_chapter(client, chapter_id: str, *, planned_scene_count: int = 2) -> None:
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": f"Author draft project {chapter_id}",
+            "outline_text": "Writer-first author draft test.",
+        },
+        headers={"X-Idempotency-Key": f"author-draft-project-{chapter_id}"},
+    )
+    assert project_response.status_code == 200
+    project_id = project_response.json()["data"]["project"]["project_id"]
     response = client.post(
         "/api/v1/chapters",
         json={
             "chapter_id": chapter_id,
+            "project_id": project_id,
             "planned_scene_count": planned_scene_count,
             "chapter_goal": f"目标 {chapter_id}",
             "main_plot_push": "推进主线",
@@ -238,13 +270,13 @@ def test_generate_author_draft_proposal_uses_llm_call_and_preference_context(cli
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
     captured: dict[str, object] = {}
 
-    def fake_generate(self, request):  # noqa: ANN001
+    def fake_generate(self, request, *, accounting_hook=None):  # noqa: ANN001
         captured["messages"] = request.messages
         payload = {
             "content": "LLM proposal keeps the author's scene but raises the visible cost.",
             "rationale": "It follows the user's instruction and avoids the rejected pattern.",
         }
-        return LLMResponse(
+        response = LLMResponse(
             request_id="resp_author_proposal",
             provider="fake-provider",
             model=request.model,
@@ -255,6 +287,10 @@ def test_generate_author_draft_proposal_uses_llm_call_and_preference_context(cli
             usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
             finish_reason="stop",
         )
+        if accounting_hook is not None:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
 
     monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
     _create_chapter(client, "AD260", planned_scene_count=1)
@@ -296,6 +332,8 @@ def test_generate_author_draft_proposal_uses_llm_call_and_preference_context(cli
     stored_call = session.get(LlmCall, proposal["source_llm_call_id"])
     assert stored_call is not None
     assert stored_call.node_id == "author_proposal_generate"
+    assert stored_call.scope_type == "scene"
+    assert stored_call.scope_id == "AD260_SC01"
     assert stored_call.scene_id == "AD260_SC01"
 
 
@@ -417,13 +455,13 @@ def test_proposal_reject_prompt_injection_note_never_enters_prompt_raw(client, s
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
     captured: dict[str, object] = {}
 
-    def fake_generate(self, request):  # noqa: ANN001
+    def fake_generate(self, request, *, accounting_hook=None):  # noqa: ANN001
         captured["messages"] = request.messages
         payload = {
             "content": "Safe proposal",
             "rationale": "Used structured preference labels only.",
         }
-        return LLMResponse(
+        response = LLMResponse(
             request_id="resp_safe_pref",
             provider="fake-provider",
             model=request.model,
@@ -434,6 +472,10 @@ def test_proposal_reject_prompt_injection_note_never_enters_prompt_raw(client, s
             usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
             finish_reason="stop",
         )
+        if accounting_hook is not None:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
 
     monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
     _create_chapter(client, "AD277", planned_scene_count=1)
@@ -834,6 +876,12 @@ def test_structure_extract_creates_candidate_and_apply_updates_scene_brief_only(
     scene = session.get(SceneCard, "AD600_SC01")
     assert not scene.writer_brief_json or not scene.writer_brief_json.get("character_desire")
     assert session.get(LlmCall, candidate["extraction_llm_call_id"]).node_id == "author_structure_extract"
+    extraction_call = session.get(LlmCall, candidate["extraction_llm_call_id"])
+    assert extraction_call.scope_type == "scene"
+    assert extraction_call.scope_id == "AD600_SC01"
+    assert extraction_call.scene_id == "AD600_SC01"
+    assert extraction_call.chapter_id == "AD600"
+    assert extraction_call.project_id is not None
 
     apply_response = client.post(f"/api/v1/author-structure-candidates/{candidate['candidate_id']}/apply")
 

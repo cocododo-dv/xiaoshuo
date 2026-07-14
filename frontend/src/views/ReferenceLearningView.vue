@@ -106,7 +106,7 @@ function setImportMode(mode) {
 
 function handleFileChange(event) {
   const file = event.target.files?.[0] ?? null;
-  store.uploadDraft.file = file;
+  store.setUploadFile(file);
 }
 
 async function submitImport() {
@@ -292,9 +292,10 @@ function describeSubDim(dimPath) {
               <span class="field-label">文件路径(后端可读)</span>
               <input
                 type="text"
-                v-model="store.pathDraft.file_path"
+                :value="store.pathDraft.file_path"
                 placeholder="如 backend/tests/golden/style_reference/corpus/luxun_short_stories.txt"
                 data-testid="reference-import-path"
+                @input="store.setPathFilePath($event.target.value)"
               />
             </label>
             <label class="field">
@@ -307,16 +308,28 @@ function describeSubDim(dimPath) {
             </label>
             <label class="field">
               <span class="field-label">云策略</span>
-              <select v-model="store.pathDraft.cloud_policy">
+              <select
+                :value="store.pathDraft.cloud_policy"
+                @change="store.setPathCloudPolicy($event.target.value)"
+              >
                 <option value="local_only">local_only(完全本地)</option>
                 <option value="segments_only">segments_only(只云片段)</option>
                 <option value="allow_full_cloud">allow_full_cloud(全文上云)</option>
               </select>
             </label>
+            <label v-if="store.pathDraft.cloud_policy !== 'local_only'" class="rights-confirmation">
+              <input
+                v-model="store.pathDraft.rights_declaration.send_rights"
+                type="checkbox"
+                data-testid="reference-import-rights"
+              />
+              <span>我确认拥有将该文本发送至云端进行分析的权利。</span>
+            </label>
             <BaseButton
               variant="primary"
               block
               :loading="store.loading"
+              :disabled="!store.pathImportRightsReady"
               data-testid="reference-import-submit"
               @click="submitImport"
             >
@@ -339,13 +352,31 @@ function describeSubDim(dimPath) {
             </label>
             <label class="field">
               <span class="field-label">云策略</span>
-              <select v-model="store.uploadDraft.cloud_policy">
+              <select
+                :value="store.uploadDraft.cloud_policy"
+                @change="store.setUploadCloudPolicy($event.target.value)"
+              >
                 <option value="local_only">local_only</option>
                 <option value="segments_only">segments_only</option>
                 <option value="allow_full_cloud">allow_full_cloud</option>
               </select>
             </label>
-            <BaseButton variant="primary" block :loading="store.loading" @click="submitImport">
+            <label v-if="store.uploadDraft.cloud_policy !== 'local_only'" class="rights-confirmation">
+              <input
+                v-model="store.uploadDraft.rights_declaration.send_rights"
+                type="checkbox"
+                data-testid="reference-import-rights"
+              />
+              <span>我确认拥有将该文本发送至云端进行分析的权利。</span>
+            </label>
+            <BaseButton
+              variant="primary"
+              block
+              :loading="store.loading"
+              :disabled="!store.uploadImportRightsReady"
+              data-testid="reference-import-submit"
+              @click="submitImport"
+            >
               开始上传
             </BaseButton>
           </div>
@@ -644,6 +675,15 @@ function describeSubDim(dimPath) {
 .form { display: grid; gap: 0.6rem; }
 .field { display: grid; gap: 0.25rem; font-size: 0.85rem; }
 .field-label { color: var(--text-muted, rgba(33, 26, 21, 0.68)); font-weight: 600; }
+.rights-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--text-muted, rgba(33, 26, 21, 0.68));
+}
+.rights-confirmation input { margin-top: 0.16rem; }
 .field input,
 .field select {
   padding: 0.45rem 0.6rem;

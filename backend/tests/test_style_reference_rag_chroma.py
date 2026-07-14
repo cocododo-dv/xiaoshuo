@@ -42,7 +42,10 @@ def _seed(session):
     book, run, prof = "chroma_book", "chroma_run", "chroma_profile"
     repo.create_book(
         book_id=book, title="t", source_kind="upload", cloud_policy="allow_full_cloud",
-        text_checksum="chk_chroma", total_chars=600, status="ready", stats_json={},
+        text_checksum="chk_chroma", total_chars=600, status="ready",
+        stats_json={"rights_declaration": {
+            "declared": True, "analysis_rights": True, "send_rights": True,
+        }},
     )
     repo.create_run(run_id=run, book_id=book, status="done", phase="done")
     for i, (pid, ptype, text) in enumerate(_CORPUS):

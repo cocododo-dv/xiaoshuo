@@ -17,6 +17,7 @@ from novel_system.services.style_reference.profile_synthesizer import (
     SynthesizeError,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
 SAMPLE_TEXT = """这是一段叙述,介绍清晨场景。
@@ -41,6 +42,7 @@ def _ingest_with_finding(book_seed: str) -> tuple[str, str]:
             title="测试书",
             author_label="作者",
             cloud_policy="segments_only",
+            rights_declaration={"analysis_rights": True, "send_rights": True},
         )
         book_id = result.book.book_id
         repo = StyleReferenceRepository(session)
@@ -108,7 +110,7 @@ def _fake_llm_with_response(response_dict: dict):
         request_id = None
         raw_response = {}
 
-    class _Client:
+    class _Client(AccountedGenerateMixin):
         def generate(self, request):  # noqa: ANN001
             return _Resp()
 
@@ -238,7 +240,7 @@ def test_synthesize_excludes_rejected_findings() -> None:
         request_id = None
         raw_response = {}
 
-    class _CapturingClient:
+    class _CapturingClient(AccountedGenerateMixin):
         def generate(self, request):  # noqa: ANN001
             captured.append(request.messages[-1]["content"])
             return _Resp()

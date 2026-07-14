@@ -10,6 +10,12 @@ from novel_system.services.versioning.base import VersioningServiceBase
 
 class RuntimeRecoveryService(VersioningServiceBase):
     def recover_stuck_jobs(self) -> dict[str, Any]:
+        from novel_system.services.scene_run_jobs import recover_expired_cancel_requested_jobs
+
+        recovered_scene_cancellations = recover_expired_cancel_requested_jobs(
+            self.session,
+            worker_id="system/recovery_sweep",
+        )
         running_jobs = [
             *self.session.execute(select(ReindexJob).where(ReindexJob.status == "running")).scalars().all(),
             *self.session.execute(select(VerifyJob).where(VerifyJob.status == "running")).scalars().all(),
@@ -32,4 +38,6 @@ class RuntimeRecoveryService(VersioningServiceBase):
             "created_human_review_events": len(created_human_review_event_ids),
             "created_human_review_event_ids": created_human_review_event_ids,
             "created_human_review_event_targets": created_human_review_event_targets,
+            "recovered_scene_cancellations": len(recovered_scene_cancellations),
+            "recovered_scene_cancellation_summaries": recovered_scene_cancellations,
         }

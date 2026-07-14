@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
 from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState
+from novel_system.db.session import SessionLocal
 from novel_system.services.chapter_runner import ChapterRunnerService
+from novel_system.services.errors import DomainError
+from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
 
 def _create_chapter(client, chapter_id: str) -> None:
@@ -45,6 +52,7 @@ def _create_scene(client, chapter_id: str, scene_id: str, scene_seq: int, *, is_
 def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block_kind: str | None = None):
     shared = {
         "calls": [],
+        "execution_contexts": [],
         "gate": {
             "chapter_id": "CH900",
             "chapter_passed_scene_count": 0,
@@ -62,8 +70,17 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
         def __init__(self, session) -> None:
             self.session = session
 
-        def run_scene(self, scene_id: str) -> dict:
+        def run_scene(
+            self,
+            scene_id: str,
+            *,
+            execution_id: str | None = None,
+            lease_renewer=None,
+        ) -> dict:
             shared["calls"].append(scene_id)
+            shared["execution_contexts"].append(
+                {"execution_id": execution_id, "has_lease_renewer": callable(lease_renewer)}
+            )
             state = self.session.get(SceneRunState, scene_id)
             assert state is not None
             if blocked_scene == scene_id and block_kind == "human_review":
@@ -161,6 +178,262 @@ def test_chapter_run_full_executes_scenes_in_order_and_reports_completed_status(
     job = session.query(ChapterRunJob).filter_by(chapter_id="CH900").one()
     assert job.status == "completed"
     assert job.payload_json["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02", "CH900_SC03"]
+    assert shared["execution_contexts"] == [
+        {"execution_id": f"{job.job_id}:CH900_SC01", "has_lease_renewer": True},
+        {"execution_id": f"{job.job_id}:CH900_SC02", "has_lease_renewer": True},
+        {"execution_id": f"{job.job_id}:CH900_SC03", "has_lease_renewer": True},
+    ]
+
+
+def test_chapter_job_owner_cas_reclaim_renewal_and_terminal_fence(session) -> None:
+    expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    session.add(
+        ChapterRunJob(
+            job_id="chapter-owner-cas",
+            chapter_id="CH_OWNER",
+            status="running",
+            job_type="chapter_run_full",
+            payload_json={"scene_ids": [], "completed_scene_ids": []},
+            result_summary_json={"scene_ids": [], "completed_scene_ids": []},
+            worker_id="dead-worker",
+            attempt_no=1,
+            heartbeat_at=expired,
+            lease_expires_at=expired,
+        )
+    )
+    session.commit()
+
+    stale_session = SessionLocal()
+    winner_session = SessionLocal()
+    contender_session = SessionLocal()
+    try:
+        stale_service = ChapterRunnerService(stale_session)
+        stale_job = stale_session.get(ChapterRunJob, "chapter-owner-cas")
+        assert stale_job is not None
+        stale_owner = stale_service._claim_running(
+            stale_job,
+            worker_id="worker-a",
+            lease_seconds=1,
+        )
+        stale_service._active_owner = stale_owner
+        stale_session.commit()
+
+        before_renewal = stale_owner.lease_expires_at
+        renewed = stale_owner.renew(lease_seconds=30)
+        assert renewed > before_renewal
+        stale_session.commit()
+
+        # Simulate expiry, then prove exactly one later owner can reclaim.
+        stale_job.lease_expires_at = expired
+        stale_session.commit()
+        winner_service = ChapterRunnerService(winner_session)
+        winner_job = winner_session.get(ChapterRunJob, "chapter-owner-cas")
+        assert winner_job is not None
+        winner_owner = winner_service._claim_running(
+            winner_job,
+            worker_id="worker-b",
+            lease_seconds=30,
+        )
+        winner_service._active_owner = winner_owner
+        winner_session.commit()
+
+        contender_job = contender_session.get(ChapterRunJob, "chapter-owner-cas")
+        assert contender_job is not None
+        with pytest.raises(DomainError) as active_loser:
+            ChapterRunnerService(contender_session)._claim_running(
+                contender_job,
+                worker_id="worker-c",
+                lease_seconds=30,
+            )
+        assert active_loser.value.code == "RUN_JOB_IN_PROGRESS"
+
+        with pytest.raises(DomainError) as stale_renewal:
+            stale_owner.renew(lease_seconds=30)
+        assert stale_renewal.value.code == "RUN_OWNER_LEASE_LOST"
+
+        # A superseded owner cannot perform the terminal write.
+        with pytest.raises(DomainError) as stale_terminal:
+            stale_service._mark_completed(stale_job)
+        assert stale_terminal.value.code == "RUN_OWNER_LEASE_LOST"
+
+        winner_service._mark_completed(winner_job)
+        winner_session.commit()
+        contender_session.expire_all()
+        persisted = contender_session.get(ChapterRunJob, "chapter-owner-cas")
+        assert persisted is not None
+        assert persisted.status == "completed"
+        assert persisted.worker_id == "worker-b"
+        assert persisted.attempt_no == 3
+    finally:
+        stale_session.close()
+        winner_session.close()
+        contender_session.close()
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "blocked", "failed"])
+def test_terminal_chapter_job_claim_is_rejected_without_mutation(
+    session,
+    terminal_status: str,
+) -> None:
+    job = ChapterRunJob(
+        job_id=f"chapter-terminal-{terminal_status}",
+        chapter_id="CH_TERMINAL",
+        status=terminal_status,
+        job_type="chapter_run_full",
+        payload_json={"scene_ids": [], "completed_scene_ids": [], "current_step": terminal_status},
+        result_summary_json={"scene_ids": [], "completed_scene_ids": [], "current_step": terminal_status},
+        worker_id="terminal-worker",
+        attempt_no=3,
+        heartbeat_at="2026-07-10T01:02:03+00:00",
+        lease_expires_at="2026-07-10T01:03:03+00:00",
+        started_at="2026-07-10T01:00:00+00:00",
+        finished_at="2026-07-10T01:02:03+00:00",
+        error_code="TERMINAL_ERROR" if terminal_status != "completed" else None,
+        error_text="terminal" if terminal_status != "completed" else None,
+    )
+    session.add(job)
+    session.commit()
+    before = {
+        "status": job.status,
+        "worker_id": job.worker_id,
+        "attempt_no": job.attempt_no,
+        "heartbeat_at": job.heartbeat_at,
+        "lease_expires_at": job.lease_expires_at,
+        "finished_at": job.finished_at,
+        "error_code": job.error_code,
+        "error_text": job.error_text,
+        "payload_json": dict(job.payload_json or {}),
+        "result_summary_json": dict(job.result_summary_json or {}),
+    }
+
+    with pytest.raises(DomainError) as rejected:
+        ChapterRunnerService(session)._claim_running(
+            job,
+            worker_id="duplicate-worker",
+            lease_seconds=30,
+        )
+
+    assert rejected.value.code == "RUN_JOB_NOT_CLAIMABLE"
+    session.expire_all()
+    unchanged = session.get(ChapterRunJob, job.job_id)
+    assert unchanged is not None
+    assert {
+        "status": unchanged.status,
+        "worker_id": unchanged.worker_id,
+        "attempt_no": unchanged.attempt_no,
+        "heartbeat_at": unchanged.heartbeat_at,
+        "lease_expires_at": unchanged.lease_expires_at,
+        "finished_at": unchanged.finished_at,
+        "error_code": unchanged.error_code,
+        "error_text": unchanged.error_text,
+        "payload_json": dict(unchanged.payload_json or {}),
+        "result_summary_json": dict(unchanged.result_summary_json or {}),
+    } == before
+
+
+def test_running_chapter_job_without_lease_is_not_reclaimable(session) -> None:
+    job = ChapterRunJob(
+        job_id="chapter-running-no-lease",
+        chapter_id="CH_RUNNING",
+        status="running",
+        job_type="chapter_run_full",
+        payload_json={"scene_ids": [], "completed_scene_ids": []},
+        result_summary_json={"scene_ids": [], "completed_scene_ids": []},
+        worker_id="worker-with-missing-lease",
+        attempt_no=2,
+        heartbeat_at="2026-07-10T01:02:03+00:00",
+        lease_expires_at=None,
+    )
+    session.add(job)
+    session.commit()
+
+    with pytest.raises(DomainError) as rejected:
+        ChapterRunnerService(session)._claim_running(
+            job,
+            worker_id="reclaimer",
+            lease_seconds=30,
+        )
+
+    assert rejected.value.code == "RUN_JOB_IN_PROGRESS"
+    session.expire_all()
+    unchanged = session.get(ChapterRunJob, job.job_id)
+    assert unchanged is not None
+    assert unchanged.status == "running"
+    assert unchanged.worker_id == "worker-with-missing-lease"
+    assert unchanged.attempt_no == 2
+    assert unchanged.lease_expires_at is None
+
+
+def test_chapter_retry_reuses_scene_execution_checkpoint_without_recharging(
+    client,
+    session,
+    monkeypatch,
+) -> None:
+    _create_chapter(client, "CH900")
+    _create_scene(client, "CH900", "CH900_SC01", 1, is_chapter_last=1)
+    _install_fake_runner(monkeypatch)
+    observed_execution_ids: list[str] = []
+    provider_dispatches = 0
+
+    class _CheckpointingOrchestrator:
+        def __init__(self, worker_session) -> None:
+            self.session = worker_session
+
+        def run_scene(self, scene_id: str, *, execution_id=None, lease_renewer=None) -> dict:
+            nonlocal provider_dispatches
+            observed_execution_ids.append(execution_id)
+            checkpoints = SceneRunCheckpointService(self.session)
+            claim = checkpoints.acquire_execution(scene_id, execution_id)
+            state = self.session.get(SceneRunState, scene_id)
+            assert state is not None
+            if claim.last_node is None:
+                provider_dispatches += 1
+                state.scene_tokens_used = 21
+                state.scene_tokens_reserved = 3
+                state.provider_attempts_used = 1
+                self.session.flush()
+                checkpoints.save_checkpoint(
+                    scene_id=scene_id,
+                    execution_id=execution_id,
+                    node_key="budget_ready",
+                    artifact_refs={"provider_output": "durable"},
+                )
+                checkpoints.mark_failed(scene_id, execution_id)
+                self.session.commit()
+                raise RuntimeError("fail after durable chapter-scene checkpoint")
+            assert claim.last_node == "budget_ready"
+            state.scene_status = "archived"
+            state.current_final_scene_row_id = f"final_{scene_id}"
+            return {
+                "scene_status": "archived",
+                "current_final_scene_row_id": state.current_final_scene_row_id,
+            }
+
+    monkeypatch.setattr("novel_system.services.chapter_runner.Orchestrator", _CheckpointingOrchestrator)
+    failed = client.post(
+        "/api/v1/chapters/CH900/run/full",
+        headers={"X-Idempotency-Key": "chapter-checkpoint-fail"},
+    )
+    assert failed.status_code == 200
+    assert failed.json()["data"]["status"] == "failed"
+    job_id = failed.json()["data"]["job_id"]
+
+    resumed = client.post(
+        "/api/v1/chapters/CH900/run/full",
+        headers={"X-Idempotency-Key": "chapter-checkpoint-resume"},
+    )
+    assert resumed.status_code == 200
+    assert resumed.json()["data"]["status"] == "completed"
+    assert resumed.json()["data"]["job_id"] == job_id
+
+    session.expire_all()
+    state = session.get(SceneRunState, "CH900_SC01")
+    assert observed_execution_ids == [f"{job_id}:CH900_SC01", f"{job_id}:CH900_SC01"]
+    assert provider_dispatches == 1
+    assert state.run_checkpoint == "budget_ready"
+    assert state.scene_tokens_used == 21
+    assert state.scene_tokens_reserved == 3
+    assert state.provider_attempts_used == 1
 
 
 def test_chapter_run_full_blocks_on_human_review_and_resume_retries_blocked_scene(client, session, monkeypatch) -> None:

@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.hash_engine import normalize
-from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_task_runner import (
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+    current_llm_execution_id,
+)
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.settings import get_settings
 
@@ -187,6 +192,17 @@ class StyleProfileExtractionService:
         }
         prompt = self._prompt_builder.build(snapshot, "style_profile_extract")
         bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        execution_step_key = "style_profile_extract"
+        execution_id = current_llm_execution_id()
+        context = LLMCallContext(
+            scope_type="system",
+            scope_id="style_profile_extract",
+            node_id="style_profile_extract",
+            step="style_profile_extract",
+            execution_id=execution_id,
+            execution_step_key=execution_step_key if execution_id is not None else None,
+            provider_execution_mode="online",
+        )
         try:
             result = LLMNodeRunner(self.session).run(
                 scene_id="style_profile_extract",
@@ -198,6 +214,8 @@ class StyleProfileExtractionService:
                 prompt=prompt,
                 user_prompt=prompt["user_prompt"],
                 offline_client_factory=lambda: None,
+                execution_step_key=execution_step_key,
+                context=context,
             )
         except LLMNodeExecutionError as exc:
             raise DomainError(

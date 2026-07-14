@@ -44,6 +44,11 @@ def _ingest(book_seed: str = "s", *, cloud_policy: str = "segments_only") -> str
             title="t",
             author_label="t",
             cloud_policy=cloud_policy,
+            rights_declaration=(
+                {"analysis_rights": True, "send_rights": True}
+                if cloud_policy != "local_only"
+                else None
+            ),
         )
         session.commit()
         return result.book.book_id
@@ -168,6 +173,7 @@ def test_start_run_rejects_when_book_has_active_run() -> None:
             title="并发守卫",
             author_label=None,
             cloud_policy="segments_only",
+            rights_declaration={"analysis_rights": True, "send_rights": True},
         )
         book_id = result.book.book_id
         repo = StyleReferenceRepository(session)

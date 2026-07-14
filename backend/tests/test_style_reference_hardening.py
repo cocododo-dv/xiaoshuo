@@ -89,7 +89,13 @@ def _seed_book(
             text_checksum=f"chk_hd_{seed}",
             total_chars=len(SAMPLE_TEXT),
             status="ready",
-            stats_json={},
+            stats_json=(
+                {"rights_declaration": {
+                    "declared": True, "analysis_rights": True, "send_rights": True,
+                }}
+                if cloud_policy != "local_only"
+                else {}
+            ),
         )
         if with_paragraphs:
             paragraphs = [p.strip() for p in SAMPLE_TEXT.split("\n\n") if p.strip()]
@@ -557,6 +563,7 @@ def _seed_ingested_book(seed: str) -> str:
             title=f"硬化{seed}",
             author_label=None,
             cloud_policy="segments_only",
+            rights_declaration={"analysis_rights": True, "send_rights": True},
         )
         session.commit()
         return result.book.book_id

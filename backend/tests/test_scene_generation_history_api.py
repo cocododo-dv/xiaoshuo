@@ -52,6 +52,8 @@ def test_scene_generation_history_returns_attempt_timeline_with_resolved_referen
         [
             LlmCall(
                 llm_call_id="llm_call_neutral_CH920_SC01",
+                scope_type="scene",
+                scope_id="CH920_SC01",
                 provider="fake-provider",
                 model="fake-neutral-model",
                 prompt_hash="prompt_hash_neutral_CH920_SC01",
@@ -70,6 +72,8 @@ def test_scene_generation_history_returns_attempt_timeline_with_resolved_referen
             ),
             LlmCall(
                 llm_call_id="llm_call_style_patch_CH920_SC01",
+                scope_type="scene",
+                scope_id="CH920_SC01",
                 provider="fake-provider",
                 model="fake-patch-model",
                 prompt_hash="prompt_hash_patch_CH920_SC01",

@@ -31,7 +31,9 @@ def _seed_book_with_profile(seed: str, *, paragraphs: list[str] | None = None) -
             text_checksum=f"chk_bt_{seed}",
             total_chars=1000,
             status="ready",
-            stats_json={},
+            stats_json={"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }},
         )
         for idx, body in enumerate(paragraphs or []):
             repo.create_paragraph(

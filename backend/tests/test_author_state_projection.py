@@ -80,8 +80,9 @@ def _make_job(session, scene_id: str, chapter_id: str, status: str, *, error_cod
     job = ChapterRunJob(
         job_id=f"scene_run_{scene_id}_{suffix}",
         chapter_id=chapter_id,
+        scene_id=scene_id,
         status=status,
-        job_type="scene_full",
+        job_type="scene_run_full",
         payload_json={"scene_id": scene_id},
         error_code=error_code,
     )
@@ -119,6 +120,18 @@ def test_generating_with_active_job(session):
     _make_job(session, scene.scene_id, scene.chapter_id, "running")
     payload = compute_author_state(session, scene.scene_id)
     assert payload["author_state"] == "generating"
+    assert payload["can_archive"] is False
+
+
+def test_cancel_requested_job_remains_generating_until_durable_confirmation(session):
+    scene = _make_scene(session)
+    _make_state(session, scene.scene_id, scene_status="bundle_built")
+    _make_job(session, scene.scene_id, scene.chapter_id, "cancel_requested")
+
+    payload = compute_author_state(session, scene.scene_id)
+
+    assert payload["author_state"] == "generating"
+    assert payload["can_edit"] is False
     assert payload["can_archive"] is False
 
 

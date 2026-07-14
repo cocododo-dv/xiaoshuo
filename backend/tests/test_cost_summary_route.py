@@ -13,6 +13,7 @@ def _seed(session):
     session.add(
         LlmCall(
             llm_call_id="rc1", provider="openai_compatible", model="gpt-5",
+            scope_type="scene", scope_id="RS1",
             node_id="style_draft", step="style_draft", scene_id="RS1", chapter_id="RCH1",
             project_id="RP", prompt_tokens=200, completion_tokens=100, total_tokens=300,
         )

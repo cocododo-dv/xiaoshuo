@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.accounted_llm_fakes import AccountedGenerateMixin
+
 from novel_system.api.app import create_app
 from novel_system.db.base import Base
 from novel_system.db.session import SessionLocal, engine
@@ -76,7 +78,7 @@ def fake_paragraph_classifier():
             self.raw_response: dict = {}
             self.response_format = "json_object"
 
-    class FakeLLMClient:
+    class FakeLLMClient(AccountedGenerateMixin):
         def __init__(self, rule: str = "default") -> None:
             self.rule = rule
             self.call_count = 0
@@ -183,15 +185,15 @@ def fake_extractor_llm():
             self.response_format = "json_object"
 
     def _extract_payload(user_msg: str) -> dict:
-        # base.py 拼接约定:`task_prompt + "\n\n" + json.dumps(payload)`,payload
-        # JSON 一定在 user_msg 的尾部。找最后一段 "\n\n{" 即可定位外层 JSON 起点。
-        marker = "\n\n{"
-        marker_pos = user_msg.rfind(marker)
-        if marker_pos < 0:
+        # 共享 helper 约定:payload JSON 位于唯一显式不可信数据边界内。
+        opening = re.search(r"\[UNTRUSTED_REFERENCE_DATA:[^\]]+\]\n", user_msg)
+        if opening is None:
             return {}
-        start = marker_pos + len(marker) - 1  # 指向 '{'
+        closing = user_msg.find("\n[/UNTRUSTED_REFERENCE_DATA]", opening.end())
+        if closing < 0:
+            return {}
         try:
-            return json.loads(user_msg[start:])
+            return json.loads(user_msg[opening.end():closing])
         except json.JSONDecodeError:
             return {}
 
@@ -207,7 +209,7 @@ def fake_extractor_llm():
             for _ in range(n)
         ]
 
-    class FakeExtractorLLM:
+    class FakeExtractorLLM(AccountedGenerateMixin):
         def __init__(self, rule: str = "default") -> None:
             self.rule = rule
             self.call_count = 0
@@ -340,7 +342,7 @@ def fake_validation_llm():
             self.request_id = None
             self.raw_response: dict = {}
 
-    class FakeValidationLLM:
+    class FakeValidationLLM(AccountedGenerateMixin):
         def __init__(self, rule: str = "with_quote") -> None:
             self.rule = rule
             self.call_count = 0

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import inspect
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState, utcnow
@@ -12,6 +15,9 @@ from novel_system.services.author_actions import author_action
 from novel_system.services.project_backtracks import ProjectBacktrackService
 from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.errors import DomainError
+from novel_system.services.idempotency import owner_lease_ttl_seconds
+from novel_system.services.scene_run_checkpoint import chapter_scene_execution_id
 
 JOB_TYPE_CHAPTER_FULL = "chapter_run_full"
 JOB_STATUS_PENDING = "pending"
@@ -21,11 +27,25 @@ JOB_STATUS_COMPLETED = "completed"
 JOB_STATUS_FAILED = "failed"
 
 
+@dataclass
+class ChapterRunLease:
+    job_id: str
+    worker_id: str
+    attempt_no: int
+    lease_expires_at: str
+    _service: "ChapterRunnerService" = field(repr=False, compare=False)
+
+    def renew(self, *, lease_seconds: int) -> str:
+        self.lease_expires_at = self._service._renew_lease(self, lease_seconds=lease_seconds)
+        return self.lease_expires_at
+
+
 class ChapterRunnerService:
     def __init__(self, session: Session) -> None:
         self.session = session
+        self._active_owner: ChapterRunLease | None = None
 
-    def run_full(self, chapter_id: str, *, restart: bool = False) -> dict[str, Any]:
+    def run_full(self, chapter_id: str, *, restart: bool = False, request_lease=None) -> dict[str, Any]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
         scene_ids = self._scene_ids(chapter_id)
         job = None if restart else self._resumeable_job(chapter_id)
@@ -33,8 +53,25 @@ class ChapterRunnerService:
             job = self._create_job(chapter_id, scene_ids)
         else:
             self._reconcile_job(job, scene_ids)
+            self._transition_explicit_failed_retry(job)
+            if job.status in {JOB_STATUS_BLOCKED, JOB_STATUS_COMPLETED}:
+                self.session.flush()
+                return self._serialize_job(job)
+            self.session.flush()
 
-        self._mark_running(job)
+        owner = self._claim_running(
+            job,
+            worker_id=f"chapter-run:{uuid4().hex}",
+            lease_seconds=owner_lease_ttl_seconds(),
+        )
+        self._active_owner = owner
+        self.session.commit()
+
+        def _renew_all(*, lease_seconds: int) -> None:
+            owner.renew(lease_seconds=lease_seconds)
+            if request_lease is not None:
+                request_lease.renew(lease_seconds=lease_seconds)
+
         orchestrator = Orchestrator(self.session)
         while True:
             next_scene_id = self._next_scene_id(job, scene_ids)
@@ -52,8 +89,22 @@ class ChapterRunnerService:
             self._set_current_scene(job, next_scene_id)
 
             try:
-                result = orchestrator.run_scene(next_scene_id)
+                call_parameters = inspect.signature(orchestrator.run_scene).parameters
+                if "execution_id" in call_parameters:
+                    call_kwargs = {
+                        "execution_id": chapter_scene_execution_id(job.job_id, next_scene_id),
+                        "lease_renewer": _renew_all,
+                    }
+                    if "run_job_id" in call_parameters or any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in call_parameters.values()
+                    ):
+                        call_kwargs["run_job_id"] = job.job_id
+                    result = orchestrator.run_scene(next_scene_id, **call_kwargs)
+                else:  # compatibility for focused test doubles
+                    result = orchestrator.run_scene(next_scene_id)
             except Exception as exc:  # pragma: no cover - safety net for runtime failures
+                self._release_scene_job_ownership(next_scene_id, job.job_id)
                 self._mark_failed(
                     job,
                     current_scene_id=next_scene_id,
@@ -62,6 +113,7 @@ class ChapterRunnerService:
                 )
                 self.session.flush()
                 return self._serialize_job(job)
+            self._release_scene_job_ownership(next_scene_id, job.job_id)
 
             if self._scene_requires_human_review(result):
                 self._mark_blocked(
@@ -121,6 +173,7 @@ class ChapterRunnerService:
         else:
             previous_status = job.status
             self._reconcile_job(job, scene_ids)
+            self._transition_explicit_failed_retry(job)
             should_start_worker = job.status == JOB_STATUS_PENDING and previous_status != JOB_STATUS_RUNNING
             if job.status == JOB_STATUS_BLOCKED:
                 blocked_scene_id = self._blocked_scene_id(job, scene_ids)
@@ -142,6 +195,16 @@ class ChapterRunnerService:
             self._update_summary(job, offline_demo=True, source="fallback")
         self.session.flush()
         return self._serialize_job(job), should_start_worker
+
+    def _transition_explicit_failed_retry(self, job: ChapterRunJob) -> None:
+        if job.status != JOB_STATUS_FAILED:
+            return
+        job.status = JOB_STATUS_PENDING
+        job.finished_at = None
+        job.error_code = None
+        job.error_text = None
+        self._update_summary(job, latest_error=None)
+        self.session.flush()
 
     def _scene_ids(self, chapter_id: str) -> list[str]:
         scenes = self.session.execute(
@@ -204,7 +267,10 @@ class ChapterRunnerService:
         blocked_scene_id = payload.get("blocked_scene_id")
         if blocked_scene_id not in scene_ids:
             blocked_scene_id = None
-        if blocked_scene_id in completed and self._chapter_gate_error(job.chapter_id, scene_id=blocked_scene_id) is None:
+        if (
+            blocked_scene_id is not None
+            and self._chapter_gate_error(job.chapter_id, scene_id=blocked_scene_id) is None
+        ):
             blocked_scene_id = None
         if blocked_scene_id is not None:
             current_scene_id = blocked_scene_id
@@ -252,24 +318,151 @@ class ChapterRunnerService:
             if state.current_final_scene_row_id
         }
 
-    def _mark_running(self, job: ChapterRunJob) -> None:
-        now = utcnow()
-        job.status = JOB_STATUS_RUNNING
-        job.attempt_no = (job.attempt_no or 0) + 1
-        job.worker_id = "local-process"
-        job.started_at = job.started_at or now
-        job.heartbeat_at = now
-        job.lease_expires_at = now
+    def _claim_running(
+        self,
+        job: ChapterRunJob,
+        *,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> ChapterRunLease:
+        self.session.refresh(job)
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
+        running_with_expired_lease = (
+            job.status == JOB_STATUS_RUNNING
+            and job.lease_expires_at is not None
+            and job.lease_expires_at <= now_iso
+        )
+        if job.status == JOB_STATUS_RUNNING and not running_with_expired_lease:
+            raise DomainError(
+                "RUN_JOB_IN_PROGRESS",
+                "chapter run is already owned by an active worker",
+                status_code=409,
+                details={"job_id": job.job_id, "worker_id": job.worker_id},
+            )
+        if job.status != JOB_STATUS_PENDING and not running_with_expired_lease:
+            raise DomainError(
+                "RUN_JOB_NOT_CLAIMABLE",
+                "chapter run status cannot be claimed by a worker",
+                status_code=409,
+                details={"job_id": job.job_id, "status": job.status},
+            )
+        old_status = job.status
+        old_worker = job.worker_id
+        old_attempt = int(job.attempt_no or 0)
+        old_expiry = job.lease_expires_at
+        conditions = [
+            ChapterRunJob.job_id == job.job_id,
+            ChapterRunJob.job_type == JOB_TYPE_CHAPTER_FULL,
+            ChapterRunJob.status == old_status,
+            ChapterRunJob.attempt_no == old_attempt,
+            ChapterRunJob.worker_id.is_(None) if old_worker is None else ChapterRunJob.worker_id == old_worker,
+            ChapterRunJob.lease_expires_at.is_(None) if old_expiry is None else ChapterRunJob.lease_expires_at == old_expiry,
+        ]
+        claimed = self.session.execute(
+            update(ChapterRunJob)
+            .where(*conditions)
+            .values(
+                status=JOB_STATUS_RUNNING,
+                worker_id=worker_id,
+                attempt_no=old_attempt + 1,
+                started_at=job.started_at or now_iso,
+                heartbeat_at=now_iso,
+                lease_expires_at=expires,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            self.session.rollback()
+            raise DomainError("RUN_JOB_IN_PROGRESS", "another worker won the chapter run claim", status_code=409)
+        self.session.flush()
+        self.session.refresh(job)
         self._update_summary(job, latest_error=None)
+        self.session.flush()
+        return ChapterRunLease(
+            job_id=job.job_id,
+            worker_id=worker_id,
+            attempt_no=old_attempt + 1,
+            lease_expires_at=expires,
+            _service=self,
+        )
+
+    def _renew_lease(self, owner: ChapterRunLease, *, lease_seconds: int) -> str:
+        now = datetime.now(UTC)
+        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
+        renewed = self.session.execute(
+            update(ChapterRunJob)
+            .where(
+                ChapterRunJob.job_id == owner.job_id,
+                ChapterRunJob.job_type == JOB_TYPE_CHAPTER_FULL,
+                ChapterRunJob.status == JOB_STATUS_RUNNING,
+                ChapterRunJob.worker_id == owner.worker_id,
+                ChapterRunJob.attempt_no == owner.attempt_no,
+            )
+            .values(heartbeat_at=now.isoformat(), lease_expires_at=expires)
+            .execution_options(synchronize_session=False)
+        )
+        if renewed.rowcount != 1:
+            self.session.rollback()
+            raise DomainError("RUN_OWNER_LEASE_LOST", "chapter run owner lease was lost", status_code=409)
+        self.session.flush()
+        return expires
+
+    def _fence_active_owner(self, job: ChapterRunJob) -> None:
+        owner = self._active_owner
+        if owner is None:
+            return
+        self.session.flush()
+        fenced = self.session.execute(
+            update(ChapterRunJob)
+            .where(
+                ChapterRunJob.job_id == owner.job_id,
+                ChapterRunJob.status == JOB_STATUS_RUNNING,
+                ChapterRunJob.worker_id == owner.worker_id,
+                ChapterRunJob.attempt_no == owner.attempt_no,
+            )
+            .values(heartbeat_at=utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if fenced.rowcount != 1:
+            self.session.rollback()
+            raise DomainError("RUN_OWNER_LEASE_LOST", "chapter run owner was replaced", status_code=409)
+        self.session.flush()
+        self.session.refresh(job)
 
     def _set_current_scene(self, job: ChapterRunJob, scene_id: str) -> None:
+        self._fence_active_owner(job)
         payload = self._payload(job)
         payload["current_scene_id"] = scene_id
         payload["blocked_scene_id"] = None
         job.payload_json = payload
         self._update_summary(job, current_scene_id=scene_id, blocked_scene_id=None, latest_error=None)
+        state = self.session.get(SceneRunState, scene_id)
+        if state is None:
+            raise DomainError("SCENE_NOT_FOUND", "scene run state not found", status_code=404)
+        if state.active_run_job_id not in {None, job.job_id}:
+            raise DomainError(
+                "RUN_JOB_IN_PROGRESS",
+                "scene is owned by another active run job",
+                status_code=409,
+            )
+        state.active_run_job_id = job.job_id
+
+    def _release_scene_job_ownership(self, scene_id: str, job_id: str) -> None:
+        self.session.execute(
+            update(SceneRunState)
+            .where(
+                SceneRunState.scene_id == scene_id,
+                SceneRunState.active_run_job_id == job_id,
+            )
+            .values(active_run_job_id=None)
+            .execution_options(synchronize_session=False)
+        )
+        self.session.flush()
 
     def _mark_scene_completed(self, job: ChapterRunJob, scene_id: str) -> None:
+        self._fence_active_owner(job)
         payload = self._payload(job)
         completed_scene_ids = list(payload.get("completed_scene_ids", []))
         if scene_id not in completed_scene_ids:
@@ -287,6 +480,7 @@ class ChapterRunnerService:
         )
 
     def _mark_blocked(self, job: ChapterRunJob, *, blocked_scene_id: str | None, latest_error: dict[str, Any]) -> None:
+        self._fence_active_owner(job)
         job.status = JOB_STATUS_BLOCKED
         job.error_code = latest_error["code"]
         job.error_text = latest_error["message"]
@@ -304,6 +498,7 @@ class ChapterRunnerService:
         )
 
     def _mark_completed(self, job: ChapterRunJob) -> None:
+        self._fence_active_owner(job)
         payload = self._payload(job)
         completed_scene_ids = list(payload.get("completed_scene_ids", []))
         job.status = JOB_STATUS_COMPLETED
@@ -322,6 +517,7 @@ class ChapterRunnerService:
         )
 
     def _mark_failed(self, job: ChapterRunJob, *, current_scene_id: str | None, error_code: str, error_text: str) -> None:
+        self._fence_active_owner(job)
         job.status = JOB_STATUS_FAILED
         job.error_code = error_code
         job.error_text = error_text

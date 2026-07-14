@@ -16,6 +16,8 @@ def _seed_call(session, *, node_id, provider, model, scene_id):
     session.add(
         LlmCall(
             llm_call_id=f"llm_{uuid.uuid4().hex[:10]}",
+            scope_type="scene",
+            scope_id=scene_id,
             provider=provider,
             model=model,
             node_id=node_id,

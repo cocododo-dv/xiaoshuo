@@ -166,6 +166,8 @@ def test_longform_control_dashboard_aggregates_read_only_signals(client, session
     session.add(
         LlmCall(
             llm_call_id="llm_LFC100_error",
+            scope_type="scene",
+            scope_id="LFC100_SC01",
             node_id="writer_scene_diagnosis",
             chapter_id="LFC100",
             scene_id="LFC100_SC01",

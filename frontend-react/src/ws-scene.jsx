@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog, WsDemoTag } from "./ws-catalog.jsx";
-import { scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnRunSave, scnAdoptToDoc, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
+import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
 import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
@@ -294,12 +294,31 @@ function WsSceneDemo({ go, t, demo = true }) {
   const [runs, setRuns] = useSt8(initRef.current.runs0);
   const [picker, setPicker] = useSt8(false);
   const runSeq = useRef8({});
+  const runAbortControllers = useRef8({});
+  const runProgressTimers = useRef8({});
   const [pickedId, setPicked] = useSt8(() => (initRef.current.items[0] ? initRef.current.items[0].id : (demo ? "q1" : null)));
   const [outcomes, setOutcomes] = useSt8({});           // 演示项 id → "archived"
   const [activeBeat, setActiveBeat] = useSt8(null);     // highlighted beat in draft
   const [logOpen, setLogOpen] = useSt8(false);
   const [compare, setCompare] = useSt8(null);           // attempt object being compared
   const [dxDone, setDxDone] = useSt8(() => ({ ...(window.__sceneDxDone || {}) }));  // scene n → adopted-issue count (深改回传)
+
+  /* 场景切换或页面卸载只停止前端跟踪，不伪造后端取消；回到场景后由 latest 恢复。 */
+  useEf8(() => () => {
+    const ids = new Set([
+      ...Object.keys(runAbortControllers.current),
+      ...Object.keys(runProgressTimers.current),
+    ]);
+    ids.forEach((id) => {
+      const controller = runAbortControllers.current[id];
+      if (controller) controller.abort();
+      const timer = runProgressTimers.current[id];
+      if (timer) clearInterval(timer);
+      runSeq.current[id] = (runSeq.current[id] || 0) + 1;
+    });
+    runAbortControllers.current = {};
+    runProgressTimers.current = {};
+  }, [pickedId]);
 
   const enqueueSid = (sid) => {
     const it = scnFromCatalog(sid);
@@ -350,14 +369,17 @@ function WsSceneDemo({ go, t, demo = true }) {
       let sids = [];
       try { sids = await scnBackendQueueSids(); } catch (e) {}
       if (!alive || !sids.length) return;
+      const restored = sids.map(sid => scnFromCatalog(sid)).filter(Boolean);
       setExtras(prev => {
         const have = new Set(prev.map(i => i.sid));
-        const add = sids.filter(sid => !have.has(sid)).map(sid => scnFromCatalog(sid)).filter(Boolean);
+        const add = restored.filter(item => !have.has(item.sid));
         if (!add.length) return prev;
         const nx = [...prev, ...add];
         if (scnQueueSave) scnQueueSave(nx.map(i => i.sid));
         return nx;
       });
+      /* 空本地队列从后端恢复时必须选中首场，才能挂载 latest 控件。 */
+      if (restored.length) setPicked(current => current || restored[0].id);
       /* 新并入的场恢复运行态；已在初始队列里的由上面的水合 effect 负责 */
       const fresh = sids.filter(sid => !initRef.current.items.some(i => i.sid === sid));
       for (const sid of fresh) {
@@ -383,7 +405,7 @@ function WsSceneDemo({ go, t, demo = true }) {
   }, []);
 
   /* 队列：目录来的场叠加运行态；演示项只在《潮汐档案》呈现 */
-  const queue = useMemo8(() => {
+  const baseQueue = useMemo8(() => {
     const ext = extras.map(x => {
       const r = runs[x.id];
       return r ? { ...x, state: r.state || "queued", progress: r.state === "running" ? (r.progress || 0) : (r.state === "queued" ? 0 : 1) } : x;
@@ -391,13 +413,114 @@ function WsSceneDemo({ go, t, demo = true }) {
     return demo ? [...ext, ...SC_QUEUE] : ext;
   }, [extras, runs, demo]);
   const sceneOfX = (id) => { const ex = extras.find(x => x.id === id); return ex || sceneOf(id); };
+  const selectedCardScene = extras.find(x => x.id === pickedId) || null;
+  const [activeBackendScene, setActiveBackendScene] = useSt8(null);
+  const [observedRunJob, setObservedRunJob] = useSt8(null);
+  const [authoritativeRunJob, setAuthoritativeRunJob] = useSt8(null);
+
+  /* Task 8：scene 变更时重新解析后端 scene id；旧解析和旧 latest 响应都不得覆盖新场景。 */
+  useEf8(() => {
+    let alive = true;
+    setActiveBackendScene(null);
+    setObservedRunJob(null);
+    setAuthoritativeRunJob(null);
+    const sid = selectedCardScene && selectedCardScene.sid;
+    if (!sid || !WsCatalog || !WsCatalog.__backendSceneId) return () => { alive = false; };
+    Promise.resolve(WsCatalog.__backendSceneId(sid))
+      .then(sceneId => { if (alive) setActiveBackendScene(sceneId ? { sid, sceneId } : null); })
+      .catch(() => { if (alive) setActiveBackendScene(null); });
+    return () => { alive = false; };
+  }, [pickedId, selectedCardScene && selectedCardScene.sid]);
+  const activeBackendSceneId = (
+    activeBackendScene
+    && selectedCardScene
+    && activeBackendScene.sid === selectedCardScene.sid
+  ) ? activeBackendScene.sceneId : "";
 
   /* 质检阈值随 Tweaks 即时生效（引擎从 window.__scnQcTh 读） */
   window.__scnQcTh = { short: tw.scnShort || 55, repeat: tw.scnRepeat || 30, long: tw.scnLong || 64 };
 
+  const currentAuthoritativeJob = (
+    authoritativeRunJob
+    && activeBackendSceneId
+    && authoritativeRunJob.sceneId === activeBackendSceneId
+  ) ? authoritativeRunJob.job : null;
+  const authoritativeStatus = currentAuthoritativeJob && currentAuthoritativeJob.status;
+
+  /* latest 终态负责把切场景时遗留的本地 running 收敛回可继续状态。 */
+  useEf8(() => {
+    const terminal = ["cancelled", "completed", "failed", "blocked"].includes(authoritativeStatus);
+    if (!terminal || !selectedCardScene || !activeBackendSceneId || !currentAuthoritativeJob) return undefined;
+    const id = selectedCardScene.id;
+    const sid = selectedCardScene.sid;
+    const expectedSeq = runSeq.current[id] || 0;
+    const controller = new AbortController();
+    let alive = true;
+    const hasUsableLocalResult = (record) => (
+      ["ready", "archived"].includes(record && record.state)
+      && Array.isArray(record && record.draft)
+      && record.draft.length > 0
+    );
+    const commit = (produce) => {
+      if (!alive || controller.signal.aborted || (runSeq.current[id] || 0) !== expectedSeq) return;
+      setRuns(current => {
+        if (!alive || controller.signal.aborted || (runSeq.current[id] || 0) !== expectedSeq) return current;
+        const next = produce(current[id] || {});
+        if (scnRunSave) scnRunSave(sid, next);
+        return { ...current, [id]: next };
+      });
+    };
+
+    if (authoritativeStatus === "completed" || authoritativeStatus === "blocked") {
+      commit(previous => hasUsableLocalResult(previous) ? previous : ({
+          ...previous,
+          state: "queued",
+          progress: 0,
+          error: authoritativeStatus === "blocked" ? "任务已阻断，正在恢复可审阅产出…" : "任务已完成，正在恢复产出…",
+          needsCards: false,
+        }));
+      (async () => {
+        let hydrated = null;
+        try { hydrated = await scnHydrateFromBackend(sid, { signal: controller.signal, terminalJob: currentAuthoritativeJob }); } catch (e) {
+          if (e && e.code === "SCENE_RUN_UI_ABORTED") return;
+        }
+        if (hydrated) {
+          commit(previous => ({ ...previous, ...hydrated, error: null, needsCards: false }));
+          return;
+        }
+        const message = authoritativeStatus === "blocked"
+          ? "任务已阻断，尚未取得可审阅草稿，请检查阻断原因后重试"
+          : "任务已完成，但暂未取回草稿，请稍后重试";
+        commit(previous => hasUsableLocalResult(previous)
+          ? previous
+          : ({ ...previous, state: "queued", progress: 0, error: message, needsCards: false }));
+      })();
+    } else {
+      const message = authoritativeStatus === "cancelled"
+        ? "任务已取消，可重新起草"
+        : "任务运行失败，请检查任务详情后重试";
+      commit(previous => ({ ...previous, state: "queued", progress: 0, error: message, needsCards: false }));
+    }
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, [activeBackendSceneId, authoritativeStatus, currentAuthoritativeJob && currentAuthoritativeJob.job_id, selectedCardScene && selectedCardScene.id, selectedCardScene && selectedCardScene.sid]);
+
+  const authoritativeQueueState = authoritativeStatus === "queued"
+    ? "queued"
+    : (["running", "cancel_requested"].includes(authoritativeStatus) ? "running" : null);
+  const queue = useMemo8(() => baseQueue.map(item => (
+    item.id === pickedId && authoritativeQueueState
+      ? { ...item, state: authoritativeQueueState, progress: authoritativeQueueState === "queued" ? 0 : (item.progress || 0.06) }
+      : item
+  )), [baseQueue, pickedId, authoritativeQueueState]);
   const rawState = queue.find(q => q.id === pickedId)?.state;
   const isCard = !!(extras.find(x => x.id === pickedId));
   const effState = (!isCard && outcomes[pickedId] === "archived") ? "archived" : rawState;
+  const renderState = authoritativeStatus === "queued"
+    ? "queued"
+    : (["running", "cancel_requested"].includes(authoritativeStatus) ? "running" : effState);
   const scene = useMemo8(() => {
     const base = sceneOfX(pickedId);
     if (!base) return null;
@@ -431,38 +554,54 @@ function WsSceneDemo({ go, t, demo = true }) {
   }, [outcomes, queue, extras]);
 
   /* —— 真·运行：起草 / 退回重写（同一条路，带指令） —— */
-  const startRun = async (note) => {
+  const startRun = async (note, options = {}) => {
     const sc = sceneOfX(pickedId);
     if (!sc || !sc.fromCard) return;
     const id = sc.id;
+    if (runAbortControllers.current[id]) runAbortControllers.current[id].abort();
+    if (runProgressTimers.current[id]) clearInterval(runProgressTimers.current[id]);
+    const controller = new AbortController();
+    runAbortControllers.current[id] = controller;
     const token = (runSeq.current[id] || 0) + 1; runSeq.current[id] = token;
     const attempt = ((runs[id] && runs[id].attempt) || 0) + 1;
     const prevText = runs[id] && runs[id].draft ? runs[id].draft.map(p => p.parts.map(x => x.text).join("")).join("\n") : "";
     const t0 = new Date().toTimeString().slice(0, 8);
-    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, error: null, needsCards: false,
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, error: null, needsCards: false, budgetBlock: null,
       log: [{ t: t0, who: "system", text: `预检通过 · 第 ${attempt} 次尝试${note ? " · 改写指令已附" : ""}` }, { t: t0, who: "sonnet", text: "起草进行中……整稿返回后过质检" }] } }));
     const tick = setInterval(() => setRuns(m => {
       const cur = m[id];
       if (!cur || cur.state !== "running") { clearInterval(tick); return m; }
       return { ...m, [id]: { ...cur, progress: Math.min(0.92, (cur.progress || 0) + 0.045) } };
     }), 700);
-    try {
-      const res = await scnRun(sc, note, note ? prevText : "");
+    runProgressTimers.current[id] = tick;
+    const stopProgress = () => {
       clearInterval(tick);
+      if (runProgressTimers.current[id] === tick) delete runProgressTimers.current[id];
+    };
+    try {
+      const res = await scnRun(sc, note, note ? prevText : "", {
+        signal: controller.signal,
+        resumeBudget: options.resumeBudget === true,
+        onJobCreated: (job, sceneId) => setObservedRunJob({ job, sceneId }),
+      });
+      stopProgress();
       if (runSeq.current[id] !== token) return;
       setRuns(m => {
         const stamp = new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
         const prevAtt = ((m[id] && m[id].attempts) || []).map(a => a.time && a.time.startsWith("本次") ? { ...a, time: stamp, result: "退回重写", tone: "slate" } : a);
         const attempts = [{ n: attempt, time: "本次 · 待裁决", result: "待裁决", tone: "gold", note: note ? "按指令改写" : "初稿", cmp: note ? { verdict: "作者改写指令：" + note } : undefined }, ...prevAtt].slice(0, 8);
-        const nr = { ...(m[id] || {}), ...res, state: "ready", progress: 1, attempt, attempts, at: Date.now() };
+        const nr = { ...(m[id] || {}), ...res, state: res.state === "archived" ? "archived" : "ready", progress: 1, attempt, attempts, at: Date.now() };
         if (scnRunSave) scnRunSave(sc.sid, nr);
         return { ...m, [id]: nr };
       });
     } catch (e) {
-      clearInterval(tick);
+      stopProgress();
       if (runSeq.current[id] !== token) return;
+      if (e && e.code === "SCENE_RUN_UI_ABORTED") return;
       // Fix C：缺声线/关系卡的阻断带 canCreateCards 标记 → 起草台据此显示「补齐声线卡并重试」
-      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "起草失败，请重试", needsCards: !!(e && e.canCreateCards) } }));
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "起草失败，请重试", needsCards: !!(e && e.canCreateCards), budgetBlock: (e && e.budgetBlock) || null } }));
+    } finally {
+      if (runAbortControllers.current[id] === controller) delete runAbortControllers.current[id];
     }
   };
   // Fix C：一键补齐缺失的最小声线/关系卡(active)解阻预检，成功后自动续跑起草
@@ -482,13 +621,34 @@ function WsSceneDemo({ go, t, demo = true }) {
       setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "补齐声线卡失败，请重试", needsCards: false } }));
     }
   };
-  const abortRun = () => {
+  const topupBudget = async () => {
     const sc = sceneOfX(pickedId);
-    if (!sc || !sc.fromCard) return;
-    runSeq.current[sc.id] = (runSeq.current[sc.id] || 0) + 1;
-    setRuns(m => ({ ...m, [sc.id]: { ...(m[sc.id] || {}), state: "queued", progress: 0, error: "已中止 · 本次返回的结果将被丢弃" } }));
+    const current = sc && sc.fromCard ? runs[sc.id] : null;
+    if (!sc || !current || !current.budgetBlock) return;
+    const id = sc.id;
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.03, error: null } }));
+    try {
+      await scnTopupBudget(sc.sid, current.budgetBlock);
+      if (current.budgetBlock.resumeMode === "selection") {
+        const resumed = await scnResumeAfterSelection(sc.sid);
+        const block = resumed && resumed.lifecycle_budget_block;
+        const fresh = await scnHydrateFromBackend(sc.sid, block ? {
+          terminalJob: { error_code: block.code, error_text: block.message },
+        } : undefined);
+        if (!fresh) throw new Error("终选续跑后未取得可审阅正文。");
+        if (block && fresh.budgetBlock) fresh.budgetBlock = { ...fresh.budgetBlock, resumeMode: "selection" };
+        setRuns(m => {
+          const next = { ...(m[id] || {}), ...fresh, error: null };
+          if (scnRunSave) scnRunSave(sc.sid, next);
+          return { ...m, [id]: next };
+        });
+      } else {
+        await startRun("", { resumeBudget: true });
+      }
+    } catch (e) {
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: current.draft && current.draft.length ? "ready" : "queued", progress: 0, error: (e && e.message) || "追加预算失败，请重试", budgetBlock: current.budgetBlock } }));
+    }
   };
-
   const onArchive = async () => {
     const sc = sceneOfX(pickedId);
     if (sc && sc.fromCard) {
@@ -515,7 +675,7 @@ function WsSceneDemo({ go, t, demo = true }) {
             <I.Play size={26} style={{ color: "var(--ink-3)" }} />
             <div style={{ fontFamily: "var(--font-serif)", fontSize: 21, color: "var(--ink-1)" }}>运行队列还是空的</div>
             <p style={{ color: "var(--ink-3)", fontSize: 13.5, lineHeight: 1.9, margin: 0 }}>从章节目录挑一场入列，AI 会按场景卡（目标 / 阻碍 / 转折）和雪花构思起草，过质检后由你裁决。</p>
-            <button className="btn btn-accent" onClick={() => setPicker(true)}><I.Plus size={14} /> 加入场景</button>
+            <button className="btn btn-accent" data-testid="scene-add" onClick={() => setPicker(true)}><I.Plus size={14} /> 加入场景</button>
           </div>
         </div>
         {picker && <ScenePicker queued={extras.map(x => x.sid)} onPick={(sid) => { enqueueSid(sid); setPicker(false); }} onClose={() => setPicker(false)} />}
@@ -535,27 +695,38 @@ function WsSceneDemo({ go, t, demo = true }) {
       />
 
       <section className="scn2-stage" key={pickedId}>
-        <SceneHead scene={scene} state={effState} onAbort={scene.fromCard ? abortRun : null} onRerun={scene.fromCard ? () => startRun("") : null} />
-        <Pipeline scene={scene} state={effState} />
+        <SceneHead scene={scene} state={renderState} hideAbort={scene.fromCard} onRerun={scene.fromCard ? () => startRun("") : null} />
+        {scene.fromCard && activeBackendSceneId && (
+          <SceneRunJobControl
+            sceneId={activeBackendSceneId}
+            observedJob={observedRunJob && observedRunJob.sceneId === activeBackendSceneId ? observedRunJob.job : null}
+            onJobChange={(job) => setAuthoritativeRunJob({ sceneId: activeBackendSceneId, job })}
+          />
+        )}
+        <Pipeline scene={scene} state={renderState} />
         <div className="scn2-stage-body">
-          {effState === "queued"   && <Preflight scene={scene} />}
-          {effState === "running"  && <RunningStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} logOpen={logOpen} setLogOpen={setLogOpen} />}
-          {effState === "ready" && scene.fromCard && scene.gate && scene.gate.authorState === "awaiting_author_choice"
-            ? <CandidatePicker sid={scene.sid} onDone={async () => {
-                const fresh = await scnHydrateFromBackend(scene.sid);
+          {renderState === "queued"   && <Preflight scene={scene} />}
+          {renderState === "running"  && <RunningStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} logOpen={logOpen} setLogOpen={setLogOpen} />}
+          {renderState === "ready" && scene.fromCard && scene.gate && scene.gate.authorState === "awaiting_author_choice"
+            ? <CandidatePicker sid={scene.sid} onDone={async (resumed) => {
+                const block = resumed && resumed.lifecycle_budget_block;
+                const fresh = await scnHydrateFromBackend(scene.sid, block ? {
+                  terminalJob: { error_code: block.code, error_text: block.message },
+                } : undefined);
                 if (fresh) {
+                  if (block && fresh.budgetBlock) fresh.budgetBlock = { ...fresh.budgetBlock, resumeMode: "selection" };
                   setRuns(m => ({ ...m, [scene.id]: { ...(m[scene.id] || {}), ...fresh } }));
                   if (scnRunSave) scnRunSave(scene.sid, { ...(runs[scene.id] || {}), ...fresh });
                 }
               }} />
-            : effState === "ready" && <ReviewStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
-          {effState === "archived" && <ArchivedStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
+            : renderState === "ready" && <ReviewStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
+          {renderState === "archived" && <ArchivedStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
         </div>
-        <DecisionBar scene={scene} state={effState} go={go} onArchive={onArchive} onRun={startRun} onCreateCards={createCards} />
+        <DecisionBar scene={scene} state={renderState} runJobStatus={authoritativeStatus} go={go} onArchive={onArchive} onRun={startRun} onCreateCards={createCards} onBudgetTopup={topupBudget} />
         {compare && <AttemptCompare attempt={compare} scene={scene} onClose={() => setCompare(null)} />}
       </section>
 
-      <Evidence scene={scene} state={effState} activeBeat={activeBeat} setActiveBeat={setActiveBeat} onView={setCompare} />
+      <Evidence scene={scene} state={renderState} activeBeat={activeBeat} setActiveBeat={setActiveBeat} onView={setCompare} />
       {picker && <ScenePicker queued={extras.map(x => x.sid)} onPick={(sid) => { enqueueSid(sid); setPicker(false); }} onClose={() => setPicker(false)} />}
     </div>
   );
@@ -586,7 +757,7 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, outcomes, dx
           const active = pickedId === q.id;
           return (
             <li key={q.id}>
-              <button className={`scn2-qrow ${active ? "is-active" : ""} s-${st}`} onClick={() => setPicked(q.id)}>
+              <button className={`scn2-qrow ${active ? "is-active" : ""} s-${st}`} data-testid="scene-queue-item" data-scene-sid={s.sid || ""} onClick={() => setPicked(q.id)}>
                 <span className={`scn2-qrow-spine s-${st}`} />
                 <div className="scn2-qrow-main">
                   <div className="scn2-qrow-top">
@@ -607,7 +778,7 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, outcomes, dx
 
       <div className="scn2-queue-foot">
         {demo && <button className="btn btn-ghost btn-sm" style={{ flex: 1 }} title="演示按钮">暂停队列</button>}
-        <button className="btn btn-accent btn-sm" style={{ flex: 1 }} onClick={onAdd}><I.Plus size={13} /> 加入场景</button>
+        <button className="btn btn-accent btn-sm" data-testid="scene-add" style={{ flex: 1 }} onClick={onAdd}><I.Plus size={13} /> 加入场景</button>
       </div>
     </aside>
   );
@@ -624,7 +795,7 @@ function QStat({ n, label, tone }) {
 
 /* ============================ Head ============================ */
 
-function SceneHead({ scene, state, onAbort, onRerun }) {
+function SceneHead({ scene, state, onAbort, onRerun, hideAbort = false }) {
   return (
     <header className="scn2-head">
       <div className="scn2-head-l">
@@ -647,7 +818,7 @@ function SceneHead({ scene, state, onAbort, onRerun }) {
       </div>
       <div className="scn2-head-r">
         {!scene.fromCard && <button className="btn btn-quiet btn-sm"><I.FileText size={13} /> 戏剧卡</button>}
-        {state === "running" && (onAbort ? <button className="btn btn-ghost btn-sm" onClick={onAbort}>中止</button> : <button className="btn btn-ghost btn-sm">中止</button>)}
+        {state === "running" && !hideAbort && (onAbort ? <button className="btn btn-ghost btn-sm" onClick={onAbort}>中止</button> : <button className="btn btn-ghost btn-sm">中止</button>)}
         {(state === "running" || state === "ready") && (onRerun
           ? (state === "ready" && <button className="btn btn-ghost btn-sm" onClick={onRerun}><I.Refresh size={13} /> 重跑</button>)
           : <button className="btn btn-ghost btn-sm"><I.Refresh size={13} /> 重跑</button>)}
@@ -898,8 +1069,8 @@ function CandidatePicker({ sid, onDone }) {
     try {
       await scnSelectCandidate(sid, rowId, tie ? { no_clear_difference: true } : {});
       setSt(s => ({ ...s, resuming: true }));
-      await scnResumeAfterSelection(sid);
-      onDone && (await onDone());
+      const resumed = await scnResumeAfterSelection(sid);
+      onDone && (await onDone(resumed));
     } catch (e) {
       setSt(s => ({ ...s, picking: null, resuming: false, error: (e && e.message) || "终选失败，请重试" }));
     }
@@ -928,6 +1099,8 @@ function CandidatePicker({ sid, onDone }) {
             <span style={{ flex: 1 }} />
             <button
               className="btn btn-accent btn-sm"
+              data-testid="scene-candidate-select"
+              data-candidate-row-id={c.row_id}
               disabled={!!st.picking || st.resuming}
               onClick={() => choose(c.row_id, false)}
             >
@@ -939,7 +1112,7 @@ function CandidatePicker({ sid, onDone }) {
       ))}
       {!st.loading && st.candidates.length > 1 && (
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
-          <button className="btn btn-quiet btn-sm" disabled={!!st.picking || st.resuming}
+          <button className="btn btn-quiet btn-sm" data-testid="scene-candidate-tie" disabled={!!st.picking || st.resuming}
             title="记录「无明显差异」并采用候选 A（终选耗时与平局照实入档）"
             onClick={() => choose(st.candidates[0].row_id, true)}>
             两稿无明显差异 · 用候选 A
@@ -982,7 +1155,7 @@ function ArchivedStage({ scene, activeBeat, setActiveBeat }) {
 
 /* ============================ Decision bar ============================ */
 
-function DecisionBar({ scene, state, go, onArchive, onRun, onCreateCards }) {
+function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreateCards, onBudgetTopup }) {
   const [rework, setRework] = useSt8(false);
   const [note, setNote] = useSt8("");
   useEf8(() => { setRework(false); setNote(""); }, [scene.id]);
@@ -998,6 +1171,16 @@ function DecisionBar({ scene, state, go, onArchive, onRun, onCreateCards }) {
 
   if (state === "queued") {
     if (scene.fromCard) {
+      if (runJobStatus === "queued") {
+        return (
+          <div className="scn2-decide is-wait">
+            <div className="scn2-decide-sum"><I.Clock size={14} /> 任务已排队 · 等待 worker 接管</div>
+            <div className="scn2-decide-acts">
+              <button className="btn btn-ghost btn-sm" type="button" disabled>等待运行</button>
+            </div>
+          </div>
+        );
+      }
       return (
         <div className="scn2-decide">
           <div className="scn2-decide-sum">
@@ -1007,9 +1190,11 @@ function DecisionBar({ scene, state, go, onArchive, onRun, onCreateCards }) {
           </div>
           <div className="scn2-decide-acts">
             <button className="btn btn-quiet btn-sm" onClick={() => go("author")} title="场景卡在章节编排里维护">编辑场景卡</button>
-            {scene.needsCards && onCreateCards
-              ? <button className="btn btn-accent" onClick={() => onCreateCards()} title="确定性建出最小 active 声线/关系卡解阻，再自动续跑起草"><I.Refresh size={13} /> 补齐声线卡并重试</button>
-              : <button className="btn btn-accent" onClick={() => onRun && onRun("")}><I.Play size={13} /> 开始起草</button>}
+            {scene.budgetBlock && onBudgetTopup
+              ? <button className="btn btn-accent" data-testid="scene-budget-topup" onClick={() => onBudgetTopup()}><I.Plus size={13} /> 追加预算并继续</button>
+              : scene.needsCards && onCreateCards
+              ? <button className="btn btn-accent" data-testid="scene-create-cards" onClick={() => onCreateCards()} title="确定性建出最小 active 声线/关系卡解阻，再自动续跑起草"><I.Refresh size={13} /> 补齐声线卡并重试</button>
+              : <button className="btn btn-accent" data-testid="scene-start" onClick={() => onRun && onRun("")}><I.Play size={13} /> 开始起草</button>}
           </div>
         </div>
       );
@@ -1057,16 +1242,40 @@ function DecisionBar({ scene, state, go, onArchive, onRun, onCreateCards }) {
      hard_blocked = 已证实 Q0/Q1 → 归档禁用（正文保留可接管）；
      quality_warning = Q2/Q3 建议 → 照常可归档，建议随行。 */
   const gate = scene.gate || null;
-  const gateBlocked = !!(gate && gate.canArchive === false);
+  const budgetBlocked = !!scene.budgetBlock;
+  const gateBlocked = !!(gate && gate.canArchive === false && !budgetBlocked);
   const gateWarn = !!(gate && !gateBlocked && gate.authorState === "quality_warning");
   const gateKeys = (list) => (list || []).map(f => f.issue_key || f.kind).filter(Boolean).slice(0, 4).join("、");
   return (
     <div className="scn2-decide-wrap">
+      {budgetBlocked && (
+        <div className="scn2-decide is-wait" style={{ borderColor: "var(--gold)", marginBottom: 8 }}>
+          <div className="scn2-decide-sum">
+            <I.AlertTriangle size={14} style={{ color: "var(--gold)" }} />
+            {scene.budgetBlock.label} · 已有正文与持久化恢复点均保留
+          </div>
+          <div className="scn2-decide-acts">
+            <button className="btn btn-accent" data-testid="scene-budget-topup" onClick={() => onBudgetTopup && onBudgetTopup()}><I.Plus size={13} /> 追加预算并继续</button>
+          </div>
+        </div>
+      )}
       {gateBlocked && (
         <div className="scn2-decide is-wait" style={{ borderColor: "var(--crimson)", marginBottom: 8 }}>
           <div className="scn2-decide-sum">
             <I.AlertTriangle size={14} style={{ color: "var(--crimson)" }} />
             无法继续：已证实的硬问题（Q0/Q1）{gateKeys(gate.blocking) ? `：${gateKeys(gate.blocking)}` : ""} · 正文已保留，处理或重跑后再归档
+          </div>
+          <div className="scn2-decide-acts">
+            <button
+              className="btn btn-accent"
+              data-testid="scene-hard-rewrite"
+              disabled={!onRun}
+              onClick={() => onRun && onRun(
+                scene.rewriteBrief
+                || (gate.blocking || []).map(f => f.human_readable_reason || f.message || f.issue_key || f.kind).filter(Boolean).join("；")
+                || "按已证实的 Q0/Q1 硬问题修正正文，逐项满足场景卡约束后重新复检。"
+              )}
+            ><I.Refresh size={13} /> 按硬问题重写并复检</button>
           </div>
         </div>
       )}
@@ -1110,10 +1319,11 @@ function DecisionBar({ scene, state, go, onArchive, onRun, onCreateCards }) {
           <button className={`btn btn-quiet btn-sm ${rework ? "is-on" : ""}`} onClick={() => setRework(r => !r)}><I.Refresh size={13} /> 退回重写</button>
           <button
             className="btn btn-accent"
+            data-testid="scene-archive"
             onClick={onArchive}
-            disabled={gateBlocked}
-            title={gateBlocked ? "存在已证实的 Q0/Q1 硬问题，暂不能归档（正文已保留）" : undefined}
-          ><I.Check size={14} /> {gateBlocked ? "需处理硬问题" : "采纳并归档"}</button>
+            disabled={gateBlocked || budgetBlocked}
+            title={budgetBlocked ? "生命周期预算阻断尚未解除，需显式追加后续跑" : (gateBlocked ? "存在已证实的 Q0/Q1 硬问题，暂不能归档（正文已保留）" : undefined)}
+          ><I.Check size={14} /> {budgetBlocked ? "需续跑完成" : (gateBlocked ? "需处理硬问题" : "采纳并归档")}</button>
         </div>
       </div>
     </div>

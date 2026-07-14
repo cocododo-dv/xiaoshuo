@@ -32,7 +32,14 @@ def _seed_book_with_paragraphs(
     profile_id = f"sr_profile_{seed}"
     repo.create_book(
         book_id=book_id, title="t", source_kind="upload", cloud_policy=cloud_policy,
-        text_checksum=f"chk_{seed}", total_chars=200, status="ready", stats_json={},
+        text_checksum=f"chk_{seed}", total_chars=200, status="ready",
+        stats_json=(
+            {"rights_declaration": {
+                "declared": True, "analysis_rights": True, "send_rights": True,
+            }}
+            if cloud_policy != "local_only"
+            else {}
+        ),
     )
     repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
     for i, (pid, ptype, text) in enumerate(_PARAGRAPHS):
@@ -285,7 +292,10 @@ def test_anti_plagiarism_omitted_when_all_blocks_empty(session):
     repo.create_book(
         book_id="sr_book_empty", title="t", source_kind="upload",
         cloud_policy="allow_full_cloud", text_checksum="chk_empty",
-        total_chars=0, status="ready", stats_json={},
+        total_chars=0, status="ready",
+        stats_json={"rights_declaration": {
+            "declared": True, "analysis_rights": True, "send_rights": True,
+        }},
     )
     repo.create_run(run_id="sr_run_empty", book_id="sr_book_empty", status="done", phase="done")
     profile = repo.create_profile(

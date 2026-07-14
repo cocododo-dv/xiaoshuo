@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from novel_system.db.models import ChapterGoal, FinalScene, LlmCall, RevisionCandidate, SceneCard, SceneRunState, WriterEvaluation
-from novel_system.services.llm_client import LLMResponse
+from novel_system.db.models import ChapterGoal, FinalScene, LlmCall, RevisionCandidate, SceneCard, SceneRunState, StoryProject, WriterEvaluation
+from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
 from novel_system.services.writer_review import WRITER_REVIEW_LENSES, WriterReviewService
 
 
 CHAPTER_ID = "LENS100"
 SCENE_ID = "LENS100_SC01"
 FINAL_ROW_ID = "final_LENS100_SC01"
+PROJECT_ID = "PROJECT_LENS100"
 
 
 def _seed_scene(session) -> None:
+    session.add(StoryProject(project_id=PROJECT_ID, title="Lens review", outline_text=""))
     session.add(
         ChapterGoal(
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             planned_scene_count=1,
             chapter_goal="A friend hides a name.",
             writer_brief_json={"chapter_promise": "friendship will turn into suspicion"},
@@ -54,7 +57,7 @@ def _seed_scene(session) -> None:
     session.commit()
 
 
-class LensReviewClient:
+class LensReviewClient(OnlineAccountedExecution):
     def __init__(self, *, malformed_lens: bool = False) -> None:
         self.requests = []
         self.malformed_lens = malformed_lens
@@ -84,6 +87,12 @@ class LensReviewClient:
             usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
             finish_reason="stop",
         )
+
+    def generate_accounted(self, request, *, accounting_hook):
+        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+        response = self.generate(request)
+        accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
 
     def _diagnosis_payload(self, node_id: str) -> dict:
         if self.malformed_lens and node_id.endswith("reader_diagnosis"):

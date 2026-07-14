@@ -1,8 +1,18 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
 
-from novel_system.db.models import QcReport, SceneCard, SceneRunState
+import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session as SqlAlchemySession
+
+from novel_system.db.models import ChapterRunJob, QcReport, SceneCard, SceneRunState
+from novel_system.db.session import SessionLocal
+from novel_system.services.errors import DomainError
+from novel_system.services.scene_run_jobs import SceneRunJobService
+from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
 
 def _create_chapter_and_scene(client) -> None:
@@ -39,7 +49,7 @@ def _create_chapter_and_scene(client) -> None:
     assert scene_response.status_code == 200
 
 
-def test_scene_run_job_api_creates_pollable_nonblocking_job(client) -> None:
+def test_scene_run_job_api_creates_pollable_nonblocking_job(client, session) -> None:
     _create_chapter_and_scene(client)
 
     response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
@@ -70,6 +80,26 @@ def test_scene_run_job_api_creates_pollable_nonblocking_job(client) -> None:
     assert poll.status_code == 200
     assert poll.json()["data"]["job_id"] == job["job_id"]
     assert poll.json()["data"]["scene_id"] == "CHJOB_SC01"
+    session.expire_all()
+    assert session.get(ChapterRunJob, job["job_id"]).scene_id == "CHJOB_SC01"
+
+
+def test_scene_run_job_serialization_prefers_authoritative_scene_column(session) -> None:
+    job = ChapterRunJob(
+        job_id="scene_run_authoritative_scope",
+        chapter_id="CHJOB",
+        scene_id="SCENE_COLUMN",
+        status="queued",
+        job_type="scene_run_full",
+        payload_json={"scene_id": "STALE_PAYLOAD", "current_step": "queued"},
+        result_summary_json={"scene_id": "STALE_SUMMARY"},
+    )
+    session.add(job)
+    session.commit()
+
+    serialized = SceneRunJobService(session).serialize_job(job)
+
+    assert serialized["scene_id"] == "SCENE_COLUMN"
 
 
 def test_scene_run_job_returns_preflight_blocker_before_starting_worker(client) -> None:
@@ -151,6 +181,447 @@ def test_scene_run_job_not_found_uses_structured_error(client) -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "RUN_JOB_NOT_FOUND"
+
+
+def test_scene_run_job_worker_uses_job_id_as_execution_id(client, monkeypatch) -> None:
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
+    assert response.status_code == 200
+    job_id = response.json()["data"]["job_id"]
+    captured: dict[str, object] = {}
+
+    class _FakeOrchestrator:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(
+            self,
+            scene_id: str,
+            author_note=None,
+            run_policy="reliable",
+            *,
+            execution_id=None,
+            run_job_id=None,
+            lease_renewer=None,
+        ) -> dict:
+            captured.update(
+                scene_id=scene_id,
+                execution_id=execution_id,
+                run_job_id=run_job_id,
+                has_lease_renewer=callable(lease_renewer),
+            )
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _FakeOrchestrator)
+    job_module._run_scene_job_worker(job_id)
+
+    assert captured == {
+        "scene_id": "CHJOB_SC01",
+        "execution_id": job_id,
+        "run_job_id": job_id,
+        "has_lease_renewer": True,
+    }
+
+
+def test_author_budget_resume_job_reuses_the_server_owned_failed_execution(
+    client, session, monkeypatch
+) -> None:
+    from novel_system.services import scene_run_jobs as job_module
+    from novel_system.services.orchestrator import Orchestrator as RealOrchestrator
+
+    _create_chapter_and_scene(client)
+    first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]
+    first_job = session.get(ChapterRunJob, first["job_id"])
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    assert first_job is not None and state is not None
+    first_job.status = "blocked"
+    first_job.error_code = "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED"
+    first_job.error_text = "scene token budget exhausted before dispatch"
+    state.active_run_job_id = None
+    state.active_execution_id = first_job.job_id
+    state.run_execution_status = "failed"
+    state.run_checkpoint = "hard_qc_ready"
+    state.run_checkpoint_json = {
+        "execution_id": first_job.job_id,
+        "node_key": "hard_qc_ready",
+        "artifact_refs": {},
+        "artifact_hashes": {},
+        "superseded_execution_ids": [],
+    }
+    session.commit()
+
+    response = client.post(
+        "/api/v1/scenes/CHJOB_SC01/run/jobs?start=false",
+        json={"resume_budget": True},
+    )
+
+    assert response.status_code == 200
+    resumed_job_id = response.json()["data"]["job_id"]
+    resumed_job = session.get(ChapterRunJob, resumed_job_id)
+    assert resumed_job is not None
+    assert resumed_job.payload_json["budget_resume_parent_execution_id"] == first_job.job_id
+
+    captured: dict[str, object] = {}
+
+    class _FakeOrchestrator:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, scene_id: str, *, execution_id=None, run_job_id=None, **_kwargs) -> dict:
+            captured.update(
+                scene_id=scene_id,
+                execution_id=execution_id,
+                run_job_id=run_job_id,
+            )
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _FakeOrchestrator)
+    job_module._run_scene_job_worker(resumed_job_id)
+
+    assert captured == {
+        "scene_id": "CHJOB_SC01",
+        "execution_id": resumed_job_id,
+        "run_job_id": resumed_job_id,
+    }
+    session.expire_all()
+    resumed_state = session.get(SceneRunState, "CHJOB_SC01")
+    assert resumed_state.active_execution_id == resumed_job_id
+    assert resumed_state.run_checkpoint == "hard_qc_ready"
+    assert first_job.job_id in resumed_state.run_checkpoint_json["artifact_execution_lineage_ids"]
+    verifier = RealOrchestrator(session)
+    verifier._execution_id = resumed_job_id
+    verifier._run_job_id = resumed_job_id
+    assert verifier._checkpoint_execution_owner_matches(first_job.job_id, first_job.job_id)
+    assert not verifier._checkpoint_execution_owner_matches(first_job.job_id, "rogue-job")
+    historical_context = verifier._auto_critique_patch_context(
+        "CHJOB_SC01",
+        provider_execution_mode="online",
+        execution_id=first_job.job_id,
+        run_job_id=first_job.job_id,
+    )
+    assert historical_context.execution_id == first_job.job_id
+    assert historical_context.run_job_id == first_job.job_id
+
+
+def test_budget_resume_job_rejects_when_no_budget_blocked_execution_exists(client) -> None:
+    _create_chapter_and_scene(client)
+
+    response = client.post(
+        "/api/v1/scenes/CHJOB_SC01/run/jobs?start=false",
+        json={"resume_budget": True},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "RUN_BUDGET_RESUME_UNAVAILABLE"
+
+
+def test_scene_job_retry_reuses_execution_checkpoint_without_recharging(client, session, monkeypatch) -> None:
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
+    job_id = response.json()["data"]["job_id"]
+    observed_execution_ids: list[str] = []
+    provider_dispatches = 0
+
+    class _CheckpointingOrchestrator:
+        def __init__(self, worker_session) -> None:
+            self.session = worker_session
+
+        def run_scene(self, scene_id: str, *args, execution_id=None, **kwargs) -> dict:  # noqa: ANN002, ANN003
+            nonlocal provider_dispatches
+            observed_execution_ids.append(execution_id)
+            checkpoints = SceneRunCheckpointService(self.session)
+            claim = checkpoints.acquire_execution(scene_id, execution_id)
+            state = self.session.get(SceneRunState, scene_id)
+            assert state is not None
+            if claim.last_node is None:
+                provider_dispatches += 1
+                state.scene_tokens_used = 15
+                state.scene_tokens_reserved = 4
+                state.provider_attempts_used = 1
+                self.session.flush()
+                checkpoints.save_checkpoint(
+                    scene_id=scene_id,
+                    execution_id=execution_id,
+                    node_key="budget_ready",
+                    artifact_refs={"provider_output": "durable"},
+                )
+                checkpoints.mark_failed(scene_id, execution_id)
+                self.session.commit()
+                raise DomainError(
+                    "RUN_JOB_RETRYABLE_FAILURE",
+                    "fail after durable job checkpoint",
+                    details={"retryable": True},
+                )
+            assert claim.last_node == "budget_ready"
+            state.scene_status = "archived"
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _CheckpointingOrchestrator)
+    job_module._run_scene_job_worker(job_id)
+    job_module._run_scene_job_worker(job_id)
+
+    session.expire_all()
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    job = session.get(ChapterRunJob, job_id)
+    assert job is not None and job.status == "completed"
+    assert observed_execution_ids == [job_id, job_id]
+    assert provider_dispatches == 1
+    assert state.run_checkpoint == "budget_ready"
+    assert state.scene_tokens_used == 15
+    assert state.scene_tokens_reserved == 4
+    assert state.provider_attempts_used == 1
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "blocked"])
+def test_terminal_scene_job_claim_is_rejected_without_mutation(session, terminal_status: str) -> None:
+    job = ChapterRunJob(
+        job_id=f"job-terminal-{terminal_status}",
+        scene_id="SC01",
+        status=terminal_status,
+        job_type="scene_run_full",
+        worker_id="worker-finished",
+        attempt_no=2,
+        heartbeat_at="2026-07-10T01:02:03+00:00",
+        lease_expires_at="2026-07-10T01:03:03+00:00",
+        started_at="2026-07-10T01:00:00+00:00",
+        finished_at="2026-07-10T01:02:03+00:00",
+        payload_json={"current_step": terminal_status},
+        result_summary_json={"current_step": terminal_status},
+    )
+    session.add(job)
+    session.commit()
+    before = {
+        "status": job.status,
+        "worker_id": job.worker_id,
+        "attempt_no": job.attempt_no,
+        "heartbeat_at": job.heartbeat_at,
+        "lease_expires_at": job.lease_expires_at,
+        "finished_at": job.finished_at,
+        "payload_json": dict(job.payload_json or {}),
+        "result_summary_json": dict(job.result_summary_json or {}),
+    }
+
+    with pytest.raises(DomainError) as exc_info:
+        SceneRunJobService(session).claim_running(
+            job.job_id,
+            worker_id="duplicate-worker",
+            current_step="neutral_running",
+            lease_seconds=30,
+        )
+
+    assert exc_info.value.code == "RUN_JOB_NOT_CLAIMABLE"
+    session.expire_all()
+    unchanged = session.get(ChapterRunJob, job.job_id)
+    assert unchanged is not None
+    assert {
+        "status": unchanged.status,
+        "worker_id": unchanged.worker_id,
+        "attempt_no": unchanged.attempt_no,
+        "heartbeat_at": unchanged.heartbeat_at,
+        "lease_expires_at": unchanged.lease_expires_at,
+        "finished_at": unchanged.finished_at,
+        "payload_json": dict(unchanged.payload_json or {}),
+        "result_summary_json": dict(unchanged.result_summary_json or {}),
+    } == before
+
+
+@pytest.mark.parametrize(
+    ("scene_status", "terminal_status"),
+    [("archived", "completed"), ("human_review_required", "blocked")],
+)
+def test_duplicate_worker_does_not_reopen_terminal_job(
+    client,
+    session,
+    monkeypatch,
+    scene_status: str,
+    terminal_status: str,
+) -> None:
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
+    job_id = response.json()["data"]["job_id"]
+    provider_dispatches = 0
+
+    class _TerminalOrchestrator:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            nonlocal provider_dispatches
+            provider_dispatches += 1
+            return {"scene_status": scene_status}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _TerminalOrchestrator)
+    job_module._run_scene_job_worker(job_id)
+    job_module._run_scene_job_worker(job_id)
+
+    session.expire_all()
+    job = session.get(ChapterRunJob, job_id)
+    assert job is not None
+    assert job.status == terminal_status
+    assert job.attempt_no == 1
+    assert provider_dispatches == 1
+
+
+def test_active_scene_job_lease_rejects_another_worker(session) -> None:
+    now = datetime.now(UTC)
+    session.add(
+        ChapterRunJob(
+            job_id="job-active-lease",
+            scene_id="SC01",
+            status="running",
+            job_type="scene_run_full",
+            worker_id="worker-a",
+            attempt_no=1,
+            heartbeat_at=now.isoformat(),
+            lease_expires_at=(now + timedelta(seconds=60)).isoformat(),
+        )
+    )
+    session.commit()
+
+    with pytest.raises(DomainError) as exc_info:
+        SceneRunJobService(session).claim_running(
+            "job-active-lease",
+            worker_id="worker-b",
+            current_step="neutral_running",
+            lease_seconds=30,
+        )
+    assert exc_info.value.code == "RUN_JOB_IN_PROGRESS"
+
+
+def test_expired_scene_job_lease_has_one_cas_reclaim_winner(session) -> None:
+    expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    session.add(
+        ChapterRunJob(
+            job_id="job-expired-lease",
+            scene_id="SC01",
+            status="running",
+            job_type="scene_run_full",
+            worker_id="dead-worker",
+            attempt_no=1,
+            heartbeat_at=expired,
+            lease_expires_at=expired,
+        )
+    )
+    session.commit()
+
+    contender_a = SessionLocal()
+    contender_b = SessionLocal()
+    try:
+        winner = SceneRunJobService(contender_a).claim_running(
+            "job-expired-lease",
+            worker_id="worker-a",
+            current_step="neutral_running",
+            lease_seconds=30,
+        )
+        contender_a.commit()
+        with pytest.raises(DomainError) as loser:
+            SceneRunJobService(contender_b).claim_running(
+                "job-expired-lease",
+                worker_id="worker-b",
+                current_step="neutral_running",
+                lease_seconds=30,
+            )
+        assert loser.value.code == "RUN_JOB_IN_PROGRESS"
+        assert winner.attempt_no == 2
+    finally:
+        contender_a.close()
+        contender_b.close()
+
+
+def test_expired_scene_job_barrier_has_one_provider_budget_winner(session, monkeypatch) -> None:
+    expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    session.add(
+        ChapterRunJob(
+            job_id="job-expired-barrier",
+            scene_id="SC01",
+            status="running",
+            job_type="scene_run_full",
+            worker_id="dead-worker",
+            attempt_no=1,
+            heartbeat_at=expired,
+            lease_expires_at=expired,
+        )
+    )
+    session.commit()
+
+    barrier = Barrier(2)
+    refresh_lock = Lock()
+    synchronized_sessions: set[int] = set()
+    original_refresh = SqlAlchemySession.refresh
+
+    def synchronized_refresh(db, instance, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        original_refresh(db, instance, *args, **kwargs)
+        if not isinstance(instance, ChapterRunJob) or instance.job_id != "job-expired-barrier":
+            return
+        with refresh_lock:
+            first_refresh = id(db) not in synchronized_sessions
+            synchronized_sessions.add(id(db))
+        if first_refresh:
+            barrier.wait(timeout=10)
+
+    monkeypatch.setattr(SqlAlchemySession, "refresh", synchronized_refresh)
+    provider_budget_effects: list[tuple[str, int]] = []
+    effects_lock = Lock()
+
+    def contender(worker_id: str) -> tuple[str, str]:
+        db = SessionLocal()
+        try:
+            try:
+                owner = SceneRunJobService(db).claim_running(
+                    "job-expired-barrier",
+                    worker_id=worker_id,
+                    current_step="neutral_running",
+                    lease_seconds=30,
+                )
+                db.commit()
+            except DomainError as exc:
+                return "loser", exc.code
+            with effects_lock:
+                provider_budget_effects.append((worker_id, owner.attempt_no))
+            return "winner", worker_id
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(contender, ("worker-a", "worker-b")))
+
+    assert [kind for kind, _value in results].count("winner") == 1
+    assert ("loser", "RUN_JOB_IN_PROGRESS") in results
+    assert len(provider_budget_effects) == 1
+    assert provider_budget_effects[0][1] == 2
+
+
+def test_scene_job_lease_renewal_is_fenced_by_worker_and_attempt(session) -> None:
+    session.add(
+        ChapterRunJob(
+            job_id="job-renew-lease",
+            scene_id="SC01",
+            status="queued",
+            job_type="scene_run_full",
+            attempt_no=0,
+        )
+    )
+    session.commit()
+    owner = SceneRunJobService(session).claim_running(
+        "job-renew-lease",
+        worker_id="worker-a",
+        current_step="neutral_running",
+        lease_seconds=1,
+    )
+    before = owner.lease_expires_at
+
+    renewed = owner.renew(lease_seconds=120)
+    assert renewed > before
+    owner.attempt_no += 1
+    with pytest.raises(DomainError) as lost:
+        owner.renew(lease_seconds=120)
+    assert lost.value.code == "RUN_OWNER_LEASE_LOST"
 
 
 def test_scene_run_states_listing_backs_fe_queue_recovery(client, session) -> None:

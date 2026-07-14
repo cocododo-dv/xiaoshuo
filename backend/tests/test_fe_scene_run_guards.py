@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from novel_system.db.models import ChapterGoal, SceneCard, SceneDraft, SceneRunState, StoryProject
 
 
@@ -169,15 +171,26 @@ def test_run_full_forwards_author_note_to_orchestrator(client, session, monkeypa
     from novel_system.api.routes import scenes as scenes_routes
 
     captured = {}
+    run_context = {}
 
     class _StubOrchestrator:
         def __init__(self, _session):
             pass
 
-        def run_scene(self, scene_id, author_note=None, run_policy="reliable"):
+        def run_scene(
+            self,
+            scene_id,
+            author_note=None,
+            run_policy="reliable",
+            *,
+            execution_id=None,
+            lease_renewer=None,
+        ):
             captured["scene_id"] = scene_id
             captured["author_note"] = author_note
             captured["run_policy"] = run_policy
+            run_context["execution_id"] = execution_id
+            run_context["lease_renewer"] = lease_renewer
             return {"scene_status": "stubbed"}
 
     monkeypatch.setattr(scenes_routes, "Orchestrator", _StubOrchestrator)
@@ -189,7 +202,32 @@ def test_run_full_forwards_author_note_to_orchestrator(client, session, monkeypa
     )
     assert response.status_code == 200, response.text
     assert captured == {"scene_id": scene_id, "author_note": "雨景贯穿全场。", "run_policy": "reliable"}
+    assert run_context["execution_id"] == "idempotency:fe-run-note-full"
+    assert callable(run_context["lease_renewer"])
 
+
+@pytest.mark.parametrize("field,value", [("from_step", "style"), ("resume", True)])
+def test_manual_resume_controls_are_rejected_instead_of_skipping_checkpoint(
+    client,
+    session,
+    field,
+    value,
+) -> None:
+    scene_id = _seed_fe_scene(session)
+    for path, headers in (
+        (f"/api/v1/scenes/{scene_id}/run/full", {"X-Idempotency-Key": f"manual-{field}"}),
+        (f"/api/v1/scenes/{scene_id}/run/jobs?start=false", {}),
+    ):
+        response = client.post(path, json={field: value}, headers=headers)
+        assert response.status_code == 422
+        assert response.json()["error"] == {
+            "code": "RUN_CHECKPOINT_CONTROL_FORBIDDEN",
+            "message": "scene runs resume only from the server-owned durable checkpoint",
+            "details": {"unsupported_fields": [field]},
+        }
+    session.expire_all()
+    state = session.get(SceneRunState, scene_id)
+    assert state is None or state.active_execution_id is None
 
 
 def _seed_scene_with_pov(session) -> tuple[str, str]:

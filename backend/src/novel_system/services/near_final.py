@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,7 +23,13 @@ from novel_system.db.models import (
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_client import LLMRequest, LLMResponse
-from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_task_runner import (
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+    current_llm_execution_id,
+    current_llm_run_job_id,
+)
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.settings import get_settings
 from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
@@ -98,24 +104,67 @@ class NearFinalPlanningService:
         runner_client = llm_client if llm_client is not None else getattr(llm_runner, "_llm_client", None)
         self._skip_runner_when_offline = runner_client is None and not get_settings().llm_enabled
 
-    def ensure_scene_planning(self, scene_id: str, actor_ref: str = "operator") -> dict[str, Any]:
+    def ensure_scene_planning(
+        self,
+        scene_id: str,
+        actor_ref: str = "operator",
+        *,
+        step_reconciler: Callable[[str], None] | None = None,
+        artifact_committed: Callable[[str, dict[str, Any], bool], None] | None = None,
+        resume_artifacts: dict[str, GenerationPlanningArtifact] | None = None,
+    ) -> dict[str, Any]:
         scene = self._require_scene(scene_id)
         chapter = self._require_chapter(scene.chapter_id)
-        chapter_artifact = self._latest_artifact(
-            artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
-            object_type="chapter",
-            object_id=chapter.chapter_id,
-        )
+        resume_artifacts = resume_artifacts or {}
+        chapter_artifact = resume_artifacts.get("chapter_architecture")
         if chapter_artifact is None:
-            chapter_artifact = self._generate_chapter_architecture(scene=scene, chapter=chapter, actor_ref=actor_ref)
+            chapter_artifact = self._latest_artifact(
+                artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
+                object_type="chapter",
+                object_id=chapter.chapter_id,
+            )
+        chapter_reused = chapter_artifact is not None
+        if chapter_artifact is None:
+            chapter_step_key = "planning:chapter_architecture"
+            if step_reconciler is not None:
+                step_reconciler(chapter_step_key)
+            chapter_artifact = self._generate_chapter_architecture(
+                scene=scene,
+                chapter=chapter,
+                actor_ref=actor_ref,
+                execution_step_key=chapter_step_key,
+            )
+        if artifact_committed is not None:
+            artifact_committed(
+                "chapter_architecture",
+                self.serialize_artifact(chapter_artifact),
+                chapter_reused,
+            )
 
-        character_artifact = self._latest_artifact(
-            artifact_type=CHARACTER_PRESSURE_ARTIFACT,
-            object_type="scene",
-            object_id=scene.scene_id,
-        )
+        character_artifact = resume_artifacts.get("character_pressure")
         if character_artifact is None:
-            character_artifact = self._generate_character_pressure(scene=scene, chapter=chapter, actor_ref=actor_ref)
+            character_artifact = self._latest_artifact(
+                artifact_type=CHARACTER_PRESSURE_ARTIFACT,
+                object_type="scene",
+                object_id=scene.scene_id,
+            )
+        character_reused = character_artifact is not None
+        if character_artifact is None:
+            character_step_key = "planning:character_pressure"
+            if step_reconciler is not None:
+                step_reconciler(character_step_key)
+            character_artifact = self._generate_character_pressure(
+                scene=scene,
+                chapter=chapter,
+                actor_ref=actor_ref,
+                execution_step_key=character_step_key,
+            )
+        if artifact_committed is not None:
+            artifact_committed(
+                "character_pressure",
+                self.serialize_artifact(character_artifact),
+                character_reused,
+            )
 
         return {
             "chapter_architecture": self.serialize_artifact(chapter_artifact),
@@ -145,6 +194,7 @@ class NearFinalPlanningService:
         scene: SceneCard,
         chapter: ChapterGoal,
         actor_ref: str,
+        execution_step_key: str | None = None,
     ) -> GenerationPlanningArtifact:
         source = self._source_snapshot(scene=scene, chapter=chapter, include_chapter_architecture=False)
         if self._skip_runner_when_offline:
@@ -163,6 +213,7 @@ class NearFinalPlanningService:
                     prompt=prompt,
                     user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter),
                     offline_client_factory=OfflineNearFinalPlanningClient,
+                    execution_step_key=execution_step_key,
                 )
                 payload = _normalize_chapter_architecture_payload(node_result.response.structured_output)
                 llm_call_id = node_result.llm_call_id
@@ -202,6 +253,7 @@ class NearFinalPlanningService:
         scene: SceneCard,
         chapter: ChapterGoal,
         actor_ref: str,
+        execution_step_key: str | None = None,
     ) -> GenerationPlanningArtifact:
         source = self._source_snapshot(scene=scene, chapter=chapter, include_chapter_architecture=True)
         if self._skip_runner_when_offline:
@@ -220,6 +272,7 @@ class NearFinalPlanningService:
                     prompt=prompt,
                     user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter),
                     offline_client_factory=OfflineNearFinalPlanningClient,
+                    execution_step_key=execution_step_key,
                 )
                 payload = _normalize_character_pressure_payload(node_result.response.structured_output)
                 llm_call_id = node_result.llm_call_id
@@ -448,6 +501,7 @@ class NearFinalAcceptanceService:
         source_draft_row_id: str,
         source_content: str,
         actor_ref: str = "operator",
+        execution_step_key: str = "near_final_acceptance:0",
     ) -> dict[str, Any]:
         scene = self._require_scene(scene_id)
         prompt = self.prompt_builder.build(bundle["snapshot"], "near_final_acceptance_review")
@@ -464,6 +518,7 @@ class NearFinalAcceptanceService:
                 offline_client_factory=OfflineNearFinalAcceptanceClient,
                 source_draft_row_id=source_draft_row_id,
                 source_draft_content=source_content,
+                execution_step_key=execution_step_key,
             )
             payload = _normalize_acceptance_payload(node_result.response.structured_output)
             llm_call_id = node_result.llm_call_id
@@ -507,6 +562,7 @@ class NearFinalAcceptanceService:
                 "source_draft_row_id": source_draft_row_id,
                 "llm_call_id": llm_call_id,
                 "failure_class": payload.get("failure_class"),
+                "execution_step_key": execution_step_key,
             },
         )
         self.session.flush()
@@ -517,14 +573,33 @@ class NearFinalAcceptanceService:
             "should_rewrite": self._should_rewrite(payload),
         }
 
-    def evaluate_chapter(self, chapter_id: str, actor_ref: str = "operator") -> dict[str, Any]:
+    def evaluate_chapter(
+        self,
+        chapter_id: str,
+        actor_ref: str = "operator",
+        *,
+        execution_step_key: str = "chapter_near_final_review:0",
+    ) -> dict[str, Any]:
         chapter = self._require_chapter(chapter_id)
         source = self._chapter_source(chapter)
         bundle = self._chapter_bundle(chapter, source)
         prompt = self.prompt_builder.build(bundle["snapshot"], "chapter_near_final_review")
+        execution_id = current_llm_execution_id()
+        context = LLMCallContext(
+            scope_type="chapter",
+            scope_id=chapter.chapter_id,
+            project_id=chapter.project_id,
+            chapter_id=chapter.chapter_id,
+            node_id="chapter_near_final_review",
+            step="chapter_near_final_review",
+            execution_id=execution_id,
+            execution_step_key=execution_step_key if execution_id is not None else None,
+            run_job_id=current_llm_run_job_id(),
+            provider_execution_mode=self._llm_runner.provider_execution_mode,
+        )
         try:
             node_result = self._llm_runner.run(
-                scene_id=f"chapter_{chapter.chapter_id}",
+                scene_id=None,
                 chapter_id=chapter.chapter_id,
                 bundle_id=bundle["bundle_id"],
                 bundle_hash=bundle["bundle_snapshot_hash"],
@@ -535,6 +610,8 @@ class NearFinalAcceptanceService:
                 offline_client_factory=OfflineNearFinalAcceptanceClient,
                 source_draft_row_id=source["source_text_ref"],
                 source_draft_content=source["content"],
+                execution_step_key=execution_step_key,
+                context=context,
             )
             payload = _normalize_acceptance_payload(node_result.response.structured_output)
             llm_call_id = node_result.llm_call_id

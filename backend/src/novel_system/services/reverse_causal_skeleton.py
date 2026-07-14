@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+
 
 @dataclass(slots=True)
 class CausalLink:
@@ -152,6 +154,7 @@ def refine_skeleton_with_llm(
     skeleton: ReverseCausalSkeleton,
     *,
     llm_runner: Any | None = None,
+    llm_context: LLMCallContext | None = None,
 ) -> list[CausalGap]:
     """§4 逆向因果骨架 LLM 精炼: ask "for this step to be credible, what must precede it?".
 
@@ -162,6 +165,11 @@ def refine_skeleton_with_llm(
     """
     if llm_runner is None or not skeleton.chain:
         return []
+    if llm_context is None:
+        raise LLMAccountingRejected(
+            "LLM_ACCOUNTING_CONTEXT_REQUIRED",
+            "causal skeleton refinement requires explicit accounting context",
+        )
 
     chain_lines: list[str] = []
     for link in skeleton.chain:
@@ -180,6 +188,7 @@ def refine_skeleton_with_llm(
             task_name="causal_skeleton_refine",
             prompt_text=task_prompt,
             system_prompt=_REFINE_SYSTEM_PROMPT,
+            context=llm_context,
         )
     except Exception:
         return []

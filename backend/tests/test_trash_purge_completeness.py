@@ -82,8 +82,23 @@ def _seed_full_project(session) -> None:
         scene_id=SCENE_ID, chapter_id=CHAPTER_ID, rubric_id="r1",
     ))
     session.add(AttemptTracker(scene_id=SCENE_ID, chapter_id=CHAPTER_ID, step="archive", status="completed"))
-    session.add(LlmCall(llm_call_id="llm1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID))
-    session.add(LlmCall(llm_call_id="llm2", project_id=PROJECT_ID))
+    session.add(
+        LlmCall(
+            llm_call_id="llm1",
+            scope_type="scene",
+            scope_id=SCENE_ID,
+            scene_id=SCENE_ID,
+            chapter_id=CHAPTER_ID,
+        )
+    )
+    session.add(
+        LlmCall(
+            llm_call_id="llm2",
+            scope_type="project",
+            scope_id=PROJECT_ID,
+            project_id=PROJECT_ID,
+        )
+    )
     session.add(HumanReviewEvent(event_id="hre1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID))
     session.add(NarrativeEvent(
         event_id="ne1", project_id=PROJECT_ID, scene_id=SCENE_ID, chapter_id=CHAPTER_ID,

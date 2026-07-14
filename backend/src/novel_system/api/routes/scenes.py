@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Request
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
@@ -38,7 +38,11 @@ from novel_system.services.projects import ProjectService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService, SceneTriageService
 from novel_system.services.scene_quality import SceneAutoRewriteService, SceneQualityService
-from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
+from novel_system.services.scene_run_jobs import (
+    SceneRunJobService,
+    remember_committed_cancellation,
+    start_scene_run_job_worker,
+)
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
 from novel_system.services.style_profile import StyleScoreService
@@ -46,6 +50,7 @@ from novel_system.services.text_validation import validate_user_text_payload
 from novel_system.services.writer_review import WriterReviewService, normalize_scene_writer_brief
 
 router = APIRouter(tags=["scenes"])
+INT64_MAX = (1 << 63) - 1
 
 
 @router.post("/api/v1/scenes/trash")
@@ -165,10 +170,22 @@ def _parse_run_policy(payload: dict | None) -> str:
     return run_policy
 
 
+def _reject_manual_checkpoint_controls(payload: dict | None) -> None:
+    supplied = sorted({"from_step", "resume"}.intersection((payload or {}).keys()))
+    if supplied:
+        raise DomainError(
+            "RUN_CHECKPOINT_CONTROL_FORBIDDEN",
+            "scene runs resume only from the server-owned durable checkpoint",
+            status_code=422,
+            details={"unsupported_fields": supplied},
+        )
+
+
 @router.post("/api/v1/scenes/{scene_id}/run/full")
 def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
+    _reject_manual_checkpoint_controls(payload)
     # FE-ALIGN G3：作者改写指令随请求下发（注入风格生成提示词；幂等键随 note 变化）
     author_note = str((payload or {}).get("author_note") or "").strip()[:500] or None
     # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict|auto；列属 Wave 3）
@@ -183,7 +200,13 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
             **({"author_note": author_note} if author_note else {}),
             **({"run_policy": run_policy} if run_policy != "reliable" else {}),
         },
-        action=lambda: Orchestrator(session).run_scene(scene_id, author_note=author_note, run_policy=run_policy),
+        action=lambda lease: Orchestrator(session).run_scene(
+            scene_id,
+            author_note=author_note,
+            run_policy=run_policy,
+            execution_id=lease.execution_id,
+            lease_renewer=lease.renew,
+        ),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -355,12 +378,19 @@ def rollback_auto_rewrite_run(run_id: str, request: Request, session: Session = 
 @router.post("/api/v1/scenes/{scene_id}/run/jobs")
 def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    _reject_manual_checkpoint_controls(payload)
     service = SceneRunJobService(session)
+    budget_resume_parent_execution_id = (
+        service.resolve_budget_resume_execution_id(scene_id)
+        if (payload or {}).get("resume_budget") is True
+        else None
+    )
     job = service.create_job(
         scene_id,
         actor_ref=actor_ref,
         author_note=(payload or {}).get("author_note"),
         run_policy=_parse_run_policy(payload),
+        budget_resume_parent_execution_id=budget_resume_parent_execution_id,
     )
     payload = service.serialize_job(job)
     session.commit()
@@ -374,6 +404,40 @@ def get_run_job(job_id: str, request: Request, session: Session = Depends(get_se
     service = SceneRunJobService(session)
     job = service.get_job(job_id)
     return ok(service.serialize_job(job), req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/run-jobs/{job_id}/cancel")
+def cancel_run_job(
+    job_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    payload: dict | None = Body(default=None),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    service = SceneRunJobService(session)
+    job = service.request_cancel(
+        job_id,
+        actor_ref=actor_ref,
+        reason=(payload or {}).get("reason"),
+    )
+    data = service.serialize_job(job)
+    session.commit()
+    remember_committed_cancellation(job_id)
+    return ok(data, req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v1/scenes/{scene_id}/run/jobs/latest")
+def get_latest_scene_run_job(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    service = SceneRunJobService(session)
+    return ok(
+        service.serialize_job(service.latest_job(scene_id)),
+        req_id=getattr(request.state, "request_id", None),
+    )
 
 
 @router.get("/api/v1/scene-run-states")
@@ -953,7 +1017,11 @@ def resume_after_selection(
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/resume-after-selection",
         payload={"scene_id": scene_id},
-        action=lambda: Orchestrator(session).resume_after_selection(scene_id),
+        action=lambda lease: Orchestrator(session).resume_after_selection(
+            scene_id,
+            execution_id=lease.execution_id,
+            lease_renewer=lease.renew,
+        ),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -967,32 +1035,96 @@ def topup_scene_budget(
     session: Session = Depends(get_session),
     payload: dict | None = Body(default=None),
 ):
-    """Wave 3（§5.5/§7.12）：作者显式追加场景 token 预算——唯一扩容入口，留审计。"""
+    """作者显式追加 token/业务尝试/provider 尝试预算；唯一扩容入口，留审计。"""
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload or {}
-    try:
-        extra_tokens = int(body.get("extra_tokens") or 0)
-    except (TypeError, ValueError):
-        extra_tokens = 0
-    if extra_tokens <= 0:
+    raw_extras = {
+        "extra_tokens": body.get("extra_tokens", 0),
+        "extra_attempts": body.get("extra_attempts", 0),
+        "extra_provider_attempts": body.get("extra_provider_attempts", 0),
+    }
+    invalid_fields = {
+        field: value
+        for field, value in raw_extras.items()
+        if type(value) is not int or value < 0 or value > INT64_MAX
+    }
+    if invalid_fields or not any(value > 0 for value in raw_extras.values() if type(value) is int):
         raise DomainError(
             "INVALID_BUDGET_TOPUP",
-            "extra_tokens must be a positive integer",
+            "topup values must be non-negative integers and at least one must be positive",
             status_code=422,
-            details={"extra_tokens": body.get("extra_tokens")},
+            details={**raw_extras, "max_lifecycle_budget": INT64_MAX},
         )
+    extra_tokens = raw_extras["extra_tokens"]
+    extra_attempts = raw_extras["extra_attempts"]
+    extra_provider_attempts = raw_extras["extra_provider_attempts"]
     reason = str(body.get("reason") or "").strip()[:300]
 
     def _topup(session: Session) -> dict[str, Any]:
         from novel_system.db.models import OperationLog
+        from novel_system.services.scene_budget import ensure_scene_budget_initialized
 
         AuthorLifecycleService(session).require_active_scene(scene_id)
+        ensure_scene_budget_initialized(session, scene_id)
+        updated_budgets = session.execute(
+            update(SceneRunState)
+            .where(
+                SceneRunState.scene_id == scene_id,
+                SceneRunState.scene_token_budget.is_not(None),
+                SceneRunState.scene_token_budget <= INT64_MAX - extra_tokens,
+                SceneRunState.attempt_budget <= INT64_MAX - extra_attempts,
+                SceneRunState.provider_attempt_budget
+                <= INT64_MAX - extra_provider_attempts,
+            )
+            .values(
+                scene_token_budget=SceneRunState.scene_token_budget + extra_tokens,
+                attempt_budget=SceneRunState.attempt_budget + extra_attempts,
+                provider_attempt_budget=(
+                    SceneRunState.provider_attempt_budget + extra_provider_attempts
+                ),
+            )
+            .returning(
+                SceneRunState.scene_token_budget,
+                SceneRunState.attempt_budget,
+                SceneRunState.provider_attempt_budget,
+            )
+            .execution_options(synchronize_session=False)
+        ).one_or_none()
+        if updated_budgets is None:
+            current = session.execute(
+                select(
+                    SceneRunState.scene_token_budget,
+                    SceneRunState.attempt_budget,
+                    SceneRunState.provider_attempt_budget,
+                ).where(SceneRunState.scene_id == scene_id)
+            ).one()
+            details = {
+                "extra_tokens": extra_tokens,
+                "scene_token_budget": current.scene_token_budget,
+                "max_scene_token_budget": INT64_MAX,
+            }
+            if extra_attempts or extra_provider_attempts:
+                details.update(
+                    {
+                        "extra_attempts": extra_attempts,
+                        "attempt_budget": current.attempt_budget,
+                        "extra_provider_attempts": extra_provider_attempts,
+                        "provider_attempt_budget": current.provider_attempt_budget,
+                        "max_lifecycle_budget": INT64_MAX,
+                    }
+                )
+            raise DomainError(
+                "INVALID_BUDGET_TOPUP",
+                "lifecycle budget topup exceeds the signed 64-bit limit",
+                status_code=422,
+                details=details,
+            )
+        new_budget, new_attempt_budget, new_provider_attempt_budget = map(
+            int, updated_budgets
+        )
         state = session.get(SceneRunState, scene_id)
-        if state is None:
-            state = SceneRunState(scene_id=scene_id, scene_status="ready")
-            session.add(state)
-            session.flush()
-        state.scene_token_budget = int(state.scene_token_budget or 0) + extra_tokens
+        assert state is not None
+        session.refresh(state)
         session.add(
             OperationLog(
                 event_type="scene_budget_topup",
@@ -1000,18 +1132,30 @@ def topup_scene_budget(
                 object_ref=scene_id,
                 payload_json={
                     "extra_tokens": extra_tokens,
+                    "extra_attempts": extra_attempts,
+                    "extra_provider_attempts": extra_provider_attempts,
                     "reason": reason,
                     "actor_ref": actor_ref,
-                    "scene_token_budget": state.scene_token_budget,
+                    "scene_token_budget": new_budget,
                     "scene_tokens_used": int(state.scene_tokens_used or 0),
+                    "scene_tokens_reserved": int(state.scene_tokens_reserved or 0),
+                    "attempt_budget": new_attempt_budget,
+                    "total_attempt_count": int(state.total_attempt_count or 0),
+                    "provider_attempt_budget": new_provider_attempt_budget,
+                    "provider_attempts_used": int(state.provider_attempts_used or 0),
                 },
             )
         )
         session.flush()
         return {
             "scene_id": scene_id,
-            "scene_token_budget": state.scene_token_budget,
+            "scene_token_budget": new_budget,
             "scene_tokens_used": int(state.scene_tokens_used or 0),
+            "scene_tokens_reserved": int(state.scene_tokens_reserved or 0),
+            "attempt_budget": new_attempt_budget,
+            "total_attempt_count": int(state.total_attempt_count or 0),
+            "provider_attempt_budget": new_provider_attempt_budget,
+            "provider_attempts_used": int(state.provider_attempts_used or 0),
         }
 
     result, status = execute_with_idempotency(
@@ -1019,7 +1163,13 @@ def topup_scene_budget(
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/budget/topup",
-        payload={"scene_id": scene_id, "extra_tokens": extra_tokens, "reason": reason},
+        payload={
+            "scene_id": scene_id,
+            "extra_tokens": extra_tokens,
+            "extra_attempts": extra_attempts,
+            "extra_provider_attempts": extra_provider_attempts,
+            "reason": reason,
+        },
         action=lambda: _topup(session),
         actor_ref=actor_ref,
     )
@@ -1037,6 +1187,39 @@ def _author_draft_plain_text(html: str | None) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     lines = [line.strip() for line in text.splitlines()]
     return "\n".join(line for line in lines if line)
+
+
+def _scene_lifecycle_budget_payload(state: SceneRunState) -> dict[str, int] | None:
+    """Author-safe lifecycle counters used by the explicit topup UI.
+
+    The immutable basis remains server-owned; only the single-call unit needed
+    for an informed author topup is projected. No routing or credential data is
+    exposed.
+    """
+    if state.scene_token_budget is None:
+        return None
+    budget = int(state.scene_token_budget)
+    used = int(state.scene_tokens_used or 0)
+    reserved = int(state.scene_tokens_reserved or 0)
+    basis = state.scene_budget_basis_json if isinstance(state.scene_budget_basis_json, dict) else {}
+    raw_baseline = basis.get("baseline_tokens")
+    baseline = (
+        int(raw_baseline)
+        if type(raw_baseline) is int and raw_baseline > 0
+        else max(1, budget // 5)
+    )
+    return {
+        "scene_token_budget": budget,
+        "scene_tokens_used": used,
+        "scene_tokens_reserved": reserved,
+        "scene_tokens_remaining": max(0, budget - used - reserved),
+        "baseline_tokens": baseline,
+        "recommended_topup_tokens": baseline,
+        "attempt_budget": int(state.attempt_budget),
+        "total_attempt_count": int(state.total_attempt_count or 0),
+        "provider_attempt_budget": int(state.provider_attempt_budget),
+        "provider_attempts_used": int(state.provider_attempts_used or 0),
+    }
 
 
 @router.post("/api/v1/scenes/{scene_id}/adopt-current")
@@ -1273,6 +1456,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
                 "current_bundle_id": state.current_bundle_id,
                 "current_bundle_hash": state.current_bundle_hash,
                 "current_final_scene_row_id": state.current_final_scene_row_id,
+                "lifecycle_budget": _scene_lifecycle_budget_payload(state),
             },
             # 治理 §5.3：作者可见状态投影块（完整契约字段）
             "author_state": compute_author_state(session, scene_id, state),

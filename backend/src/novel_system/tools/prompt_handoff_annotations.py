@@ -13,6 +13,13 @@ from typing import Any
 
 SVC = "backend/src/novel_system/services"
 
+SHARED_UNTRUSTED_PAYLOAD_BOUNDARY = (
+    "共享 helper 安全边界：调用方必须传 typed `UntrustedPayload`；Mapping/list/tuple 内的字符串叶值"
+    "递归中和并转义伪边界，`task_prompt` 留在唯一 `[UNTRUSTED_REFERENCE_DATA:<node>]` JSON 区块外；"
+    "`system_prompt` 追加“区块内仅数据非指令、禁止 role/tool/schema 变更”约束，`response_schema` 仍是"
+    " request 的独立字段。"
+)
+
 # ---------------------------------------------------------------------------
 # 批次定义（= 建议 Sonnet 5 的分轮优化批次；按 registry group + 调用路径亲缘划分）
 # ---------------------------------------------------------------------------
@@ -53,8 +60,11 @@ BATCHES: list[dict[str, str]] = [
         "title": "批次 D · 风格参考子系统（12 个模板，弱模型鲁棒性主战场）",
         "intro": (
             "参考书风格引擎：段落分类 → 四层十六维抽取 → 证据补抽 → Profile 聚合 → 预览/验证。"
-            "全部经 `style_reference/_llm_helper.call_llm_node`（user_prompt = task_prompt + \"\\n\\n\" "
-            "+ JSON payload；超时保底 120s）或分段分类器直连。已知痛点：中档中转模型上「抽取产出薄」"
+            "共享节点全部经 `style_reference/_llm_helper.call_llm_node`，采用 typed `UntrustedPayload`、"
+            "字符串叶值递归中和、system 数据约束与唯一显式 JSON 数据边界（超时保底 120s）；"
+            "分段分类器直接构造请求，但统一经 `execute_accounted_call` 落父调用与物理 attempt；"
+            "同时复用 typed payload、递归中和、system 约束与唯一 boundary。"
+            "已知痛点：中档中转模型上「抽取产出薄」"
             "（同 payload 可能返回 0 findings）——本批优化以提高产出饱满度与结构化输出稳定性为先。"
         ),
     },
@@ -122,7 +132,7 @@ CALL_SITES: list[dict[str, Any]] = [
     _cs(f"{SVC}/scene_generation.py", 'node_id="style_patch"', ["style_patch"], "去模板化改写 pass（_run_de_template_pass）"),
     _cs(f"{SVC}/qc_engine.py", 'node_id="hard_qc"', ["hard_qc"], "硬 QC 闸门"),
     _cs(f"{SVC}/qc_engine.py", 'node_id="soft_qc"', ["soft_qc"], "软 QC 闸门"),
-    _cs(f"{SVC}/scene_quality.py", 'node_id="scene_auto_rewrite"', ["scene_auto_rewrite"], "场景自动改写候选（内联提示词）", occurrence=2),
+    _cs(f"{SVC}/scene_quality.py", 'node_id="scene_auto_rewrite"', ["scene_auto_rewrite"], "场景自动改写候选（内联提示词）"),
     _cs(
         f"{SVC}/writer_review.py",
         "node_id=node_id,",
@@ -153,34 +163,34 @@ CALL_SITES: list[dict[str, Any]] = [
     _cs(f"{SVC}/narrative_event_log.py", 'task_name="consistency_extract"', [], "连续性 LLM 校验（休眠：无路由无注册，仅测试可达）"),
     _cs(f"{SVC}/reverse_causal_skeleton.py", 'task_name="causal_skeleton_refine"', [], "逆向因果骨架精炼（休眠：无路由无注册，仅测试可达）"),
     # -- style_reference/_llm_helper.call_llm_node（7 处）--
-    _cs(f"{SVC}/library_derive.py", "call_llm_node(DERIVE_NODE_ID", ["library_derive"], "归档正文 → 候选实体/时间线"),
-    _cs(f"{SVC}/longform_tower.py", "call_llm_node(AUDIT_ADJUDICATE_NODE_ID", ["chapter_audit_adjudicate"], "章级违约裁定"),
-    _cs(f"{SVC}/style_reference/profile_synthesizer.py", "call_llm_node(node_id", ["style_ref_synthesize_profile"], "16 sub_dim → StyleProfile 聚合"),
-    _cs(f"{SVC}/style_reference/preview.py", "call_llm_node(PREVIEW_NODE_ID", ["style_ref_preview_generate"], "风格预览样本生成"),
+    _cs(f"{SVC}/library_derive.py", "structured = call_llm_node(", ["library_derive"], "归档正文 → 候选实体/时间线"),
+    _cs(f"{SVC}/longform_tower.py", "structured = call_llm_node(", ["chapter_audit_adjudicate"], "章级违约裁定"),
+    _cs(f"{SVC}/style_reference/profile_synthesizer.py", "return call_llm_node(", ["style_ref_synthesize_profile"], "16 sub_dim → StyleProfile 聚合"),
+    _cs(f"{SVC}/style_reference/preview.py", "return call_llm_node(", ["style_ref_preview_generate"], "风格预览样本生成"),
     _cs(
         f"{SVC}/style_reference/extractors/base.py",
-        "call_llm_node(node_id",
+        "return call_llm_node(",
         ["style_ref_extract_language", "style_ref_extract_narrative", "style_ref_extract_scene", "style_ref_extract_theme", "style_ref_supplement_evidence"],
         "四层风格抽取 + 单 observation 定向补证（动态节点）",
     ),
-    _cs(f"{SVC}/style_reference/validation/semantic.py", "call_llm_node(SEMANTIC_NODE_ID", ["style_ref_validate_semantic"], "语义评审校验"),
-    _cs(f"{SVC}/style_reference/validation/forbidden_semantic.py", "call_llm_node(FORBIDDEN_SEMANTIC_NODE_ID", ["style_ref_validate_forbidden"], "禁忌模式触发判定"),
-    # -- 直接 LLMClient.generate（3 处）--
+    _cs(f"{SVC}/style_reference/validation/semantic.py", "raw = call_llm_node(", ["style_ref_validate_semantic"], "语义评审校验"),
+    _cs(f"{SVC}/style_reference/validation/forbidden_semantic.py", "raw = call_llm_node(", ["style_ref_validate_forbidden"], "禁忌模式触发判定"),
+    # -- 专用请求组装器，经 execute_accounted_call 统一记账（3 处）--
     _cs(
         f"{SVC}/snowflake_workspace_llm.py",
-        "response = self._client().generate(request)",
+        "response = execute_accounted_call(",
         ["snowflake_step_generate", "snowflake_step_candidates", "snowflake_workspace_assistant", "snowflake_scene_triage"],
         "雪花工作台 4 任务共用出口（_run_structured_task）",
     ),
     _cs(
         f"{SVC}/style_reference/segmentation/llm.py",
-        "response = llm_client.generate(request)",
+        "response = execute_accounted_call(",
         ["style_ref_paragraph_classify_anchor", "style_ref_paragraph_classify_bulk"],
         "段落分类（锚定集 + 批量，分批循环调用）",
     ),
-    _cs(f"{SVC}/literary_eval.py", "self.llm_client.generate(self._request(case))", ["literary_eval_live"], "文学评测 live 场景生成（内联提示词）"),
-    # -- system_config 裸 HTTP（3 处，绕过 LLMClient 但走同一套 provider adapter）--
-    _cs(f"{SVC}/system_config.py", "response = httpx.post(", [], "连通性探针：最小补全请求（_probe_completion，无业务提示词）"),
+    _cs(f"{SVC}/literary_eval.py", "response = execute_accounted_call(", ["literary_eval_live"], "文学评测 live 场景生成（内联提示词）"),
+    # -- 管理 HTTP（completion POST 已纳入 system/provider_probe 记账；模型 GET 不计 token）--
+    _cs(f"{SVC}/llm_accounting.py", "response = httpx.post(", [], "连通性探针：最小补全请求（system/provider_probe 记账，无业务提示词）"),
     _cs(f"{SVC}/system_config.py", "httpx.get(list_request.url, headers=list_request.headers", [], "test_provider 模型列表拉取"),
     _cs(f"{SVC}/system_config.py", "response = httpx.get(", [], "list_llm_provider_models 模型列表拉取", occurrence=2),
 ]
@@ -518,7 +528,7 @@ def _snowflake_unit(step_key: str, label: str, opt: str) -> dict[str, Any]:
         ),
         "call_chain": [
             (f"{SVC}/snowflake_workspace_llm.py", 'template_name=f"snowflake_generate_{step_key}"', 1, "generate_step 动态选模板"),
-            (f"{SVC}/snowflake_workspace_llm.py", "response = self._client().generate(request)", 1, "_run_structured_task 出口"),
+            (f"{SVC}/snowflake_workspace_llm.py", "response = execute_accounted_call(", 1, "_run_structured_task 统一记账出口"),
         ],
         "inputs": (
             "user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、"
@@ -795,7 +805,7 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "质量契约兜底改写：按诊断/门禁结果对场景做 full_scene 或局部分支改写，产出候选走人工确认。",
         "trigger": "POST /api/v1/scenes/{id}/auto-rewrite（api/routes/scenes.py → SceneAutoRewriteService.run）。",
-        "call_chain": [(f"{SVC}/scene_quality.py", 'node_id="scene_auto_rewrite"', 2, "_generate_llm_candidate（occurrence 1 是离线审计行）")],
+        "call_chain": [(f"{SVC}/scene_quality.py", 'node_id="scene_auto_rewrite"', 1, "_generate_llm_candidate")],
         "inputs": "user_prompt = canonical_json 快照（contract/source_text/diagnosis/gate_results/constraints——含 preserve_required_terms/forbidden_text）。",
         "output_contract": "scene_text 必填（缺失 → SCENE_AUTO_REWRITE_EMPTY 502）；rewrite_notes 可选。",
         "parser_refs": [(f"{SVC}/scene_quality.py", 'structured.get("scene_text")', 1)],
@@ -914,10 +924,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P1",
         "purpose": "长篇塔：判定章草稿是否违反交接契约条款/锚点事实——只判违约，证据句必须逐字摘自 chapter_prose。",
         "trigger": "POST /api/v1/longform-tower/…/adjudicate（LongformTowerService.adjudicate_draft）。",
-        "call_chain": [(f"{SVC}/longform_tower.py", "call_llm_node(AUDIT_ADJUDICATE_NODE_ID", 1, "_adjudicate_violations")],
-        "inputs": "task_prompt + JSON payload（chapter_prose、编号契约条款、anchor_hits/anchor_misses）。",
+        "call_chain": [(f"{SVC}/longform_tower.py", "structured = call_llm_node(", 1, "_adjudicate_violations")],
+        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：chapter_prose、编号契约条款、anchor_hits/anchor_misses。",
         "output_contract": "violations 数组（clause_ref/kind/severity/text/evidence_sentence/at/suggested_fix；kind 枚举 drift/stall/deflation/causal_break/unplanted_reveal/unfair_clue/overdue/arc）。",
-        "parser_refs": [(f"{SVC}/longform_tower.py", "call_llm_node(AUDIT_ADJUDICATE_NODE_ID", 1)],
+        "parser_refs": [(f"{SVC}/longform_tower.py", "structured = call_llm_node(", 1)],
         "failure": "LLMNodeError → 服务降级处理。",
         "opt_notes": "「宁缺毋滥」已写在提示词里，弱模型上反而会漏报——可加「先对每条条款给 hit/miss 草表再产 violations」的中间步骤指令提高召回。",
     },
@@ -955,8 +965,8 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "参考书段落 8 类分型的锚定集标注：抽样段落用强模型分类，与快模型比对一致率（≥0.85 才放行快模型批量，否则全书强模型）。",
         "trigger": "参考书导入/重分类（IngestService → classify_paragraphs → classify_with_llm）。",
-        "call_chain": [(f"{SVC}/style_reference/segmentation/llm.py", "response = llm_client.generate(request)", 1, "_classify_via_node（NODE_ANCHOR/NODE_BULK 共用）")],
-        "inputs": "task_prompt 的 {paragraphs} 占位符替换为 JSON（paragraph_index + 每段截 600 字），无占位符则追加；按 BATCH_SIZE 分批。",
+        "call_chain": [(f"{SVC}/style_reference/segmentation/llm.py", "response = execute_accounted_call(", 1, "_classify_via_node（NODE_ANCHOR/NODE_BULK 共用记账出口）")],
+        "inputs": "可信 task 先将 {paragraphs} 替换为 `See the bounded payload below.`（无占位符模板保持原文）；paragraph_index + 每段截 600 字组成 typed `UntrustedPayload`，字符串叶值递归中和后作为 JSON 放入唯一显式 boundary，system 同时追加数据非指令及禁止 role/tool/schema 变更约束；按 BATCH_SIZE 分批。",
         "output_contract": "classifications[{paragraph_type, confidence(high/medium/low)}]；数量与批不符时补 narration/截断；confidence 映射 0.9/0.6/0.3。",
         "parser_refs": [(f"{SVC}/style_reference/segmentation/llm.py", "def _parse_response", 1)],
         "failure": "SegmentationLLMError → 整体回退启发式分类（记录 fallback_reason）。",
@@ -974,8 +984,8 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "锚定集校准通过后，余下段落的快模型批量分类。",
         "trigger": "同上（校准通过分支）。",
-        "call_chain": [(f"{SVC}/style_reference/segmentation/llm.py", "response = llm_client.generate(request)", 1, "同一出口，node=NODE_BULK")],
-        "inputs": "同 anchor（{paragraphs} JSON 批量）。",
+        "call_chain": [(f"{SVC}/style_reference/segmentation/llm.py", "response = execute_accounted_call(", 1, "同一记账出口，node=NODE_BULK")],
+        "inputs": "同 anchor：可信 task 保持在唯一 boundary 外，typed `UntrustedPayload` 的 paragraphs JSON 在 boundary 内递归中和；system 追加数据非指令及禁止 role/tool/schema 变更约束。",
         "output_contract": "同 anchor。",
         "parser_refs": [(f"{SVC}/style_reference/segmentation/llm.py", "def _parse_response", 1)],
         "failure": "同 anchor（回退启发式）。",
@@ -993,10 +1003,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "语言层（句法节奏/词汇质感/修辞/对白语言）的风格发现抽取：每条 finding 须 ≥2 证据 span、禁模糊形容词。",
         "trigger": "抽取 run（POST /api/v2/style-reference/…/extract → run_orchestrator 调度四层）。",
-        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1, "BaseExtractor._call_llm（extract_node_id=本节点）")],
-        "inputs": "task_prompt + JSON payload：sub_dim 定义 + 按段落类型定向抽样的原文段落（20 段级）+ 观察数/证据数指标（config/style_reference/extraction.yaml）。按 sub_dim 逐项调用、逐项 checkpoint 提交。",
+        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1, "BaseExtractor._call_llm（extract_node_id=本节点）")],
+        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：sub_dim 定义、按段落类型定向抽样的原文段落（20 段级）、观察数/证据数指标（config/style_reference/extraction.yaml）。按 sub_dim 逐项调用、逐项 checkpoint 提交。",
         "output_contract": "findings（observation 或 forbidden_pattern，finding_kind 区分）：statement 禁 banned_adjectives.yaml 词表、evidence ≥2 且 span 必须能在原文定位（Pydantic + span 校验）。",
-        "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1)],
+        "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1)],
         "failure": "两级重试：先 style_ref_supplement_evidence 定向补证，仍不达标整 sub_dim 重抽；完全空结果（0 findings，合法 schema 输出）同样触发一次整 sub_dim 重抽（受 max_full_retries 预算）；最终失败记 _ExtractLLMError、该 sub_dim 缺失。",
         "opt_notes": (
             "弱模型「产出薄」重灾区（deepseek-v4-flash 同 payload 可能 0 findings）。2026-07-04.v2 已落两手：模板给产出下限"
@@ -1015,10 +1025,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "叙事层（视点/时序/叙述距离/信息释放）抽取，机制同语言层。",
         "trigger": "同上。",
-        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1, "extract_node_id=本节点")],
+        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1, "extract_node_id=本节点")],
         "inputs": "同语言层（sub_dim 定义不同）。",
         "output_contract": "同语言层。",
-        "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1)],
+        "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1)],
         "failure": "同语言层。",
         "opt_notes": "叙事层最抽象、最易产「万金油」结论——要求每条 finding 绑定具体叙事决策点（何处切视点/何处压缩时间），并给反例。",
     },
@@ -1034,10 +1044,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "场景层（空间调度/感官布置/动作编排/氛围营造）抽取。",
         "trigger": "同上。",
-        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1, "extract_node_id=本节点")],
+        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1, "extract_node_id=本节点")],
         "inputs": "同语言层。",
         "output_contract": "同语言层。",
-        "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1)],
+        "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1)],
         "failure": "同语言层。",
         "opt_notes": "感官词证据与 sensory_lexicon.yaml 的量化基线互补——findings 应偏「布置策略」而非重复量化指标（那由 metrics.py 硬算）。",
     },
@@ -1053,10 +1063,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "主题层（母题/象征系统/价值张力/情感曲线）抽取。",
         "trigger": "同上。",
-        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1, "extract_node_id=本节点")],
+        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1, "extract_node_id=本节点")],
         "inputs": "同语言层。",
         "output_contract": "同语言层；注意主题层 forbidden_pattern（招牌意象）是反克隆关键。",
-        "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1)],
+        "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1)],
         "failure": "同语言层。",
         "opt_notes": "反抄袭敏感层：指令必须强化「抽象策略、不许摘招牌意象为可用素材」——招牌意象只能进 forbidden_pattern。",
     },
@@ -1072,8 +1082,8 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "两级重试第一级：对证据不足的单条 observation，从新采样段落里定向补 evidence span。",
         "trigger": "抽取 run 内部（_supplement_* 路径）。",
-        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "call_llm_node(node_id", 1, "supplement_node_id 固定为本节点")],
-        "inputs": "task_prompt + JSON：目标 observation + 候选段落。",
+        "call_chain": [(f"{SVC}/style_reference/extractors/base.py", "return call_llm_node(", 1, "supplement_node_id 固定为本节点")],
+        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：目标 observation、候选段落。",
         "output_contract": "SupplementEvidenceOutput.model_validate（Pydantic）；span 必须可定位。",
         "parser_refs": [(f"{SVC}/style_reference/extractors/base.py", "SupplementEvidenceOutput.model_validate", 1)],
         "failure": "失败升级为整 sub_dim 重抽。",
@@ -1091,8 +1101,8 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "把 16 个 sub_dim 的 findings 聚合为可注入的分层 StyleProfile（+量化指标基线合流），聚合完触发 RAG 索引构建。",
         "trigger": "POST /api/v2/style-reference/…/synthesize（ProfileSynthesizer.synthesize）。",
-        "call_chain": [(f"{SVC}/style_reference/profile_synthesizer.py", "call_llm_node(node_id", 1, "SYNTHESIZE_NODE_ID")],
-        "inputs": "task_prompt + JSON：全部 findings（含 forbidden_pattern）+ metrics 基线。",
+        "call_chain": [(f"{SVC}/style_reference/profile_synthesizer.py", "return call_llm_node(", 1, "SYNTHESIZE_NODE_ID")],
+        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：全部 findings（含 forbidden_pattern）、metrics 基线。",
         "output_contract": "SynthesizedProfile.model_validate（Pydantic，严格）；失败 SynthesizeError。style_features / narrative_patterns 必须非空（min_length=1，空画像是废品宁可硬失败）；calibration_guidance 已入 wire required（存在性压力），与 banned_replication_rules 一样允许为空数组。",
         "parser_refs": [(f"{SVC}/style_reference/profile_synthesizer.py", "SynthesizedProfile.model_validate", 1)],
         "failure": "LLM 未启用 → LLMRequiredError；style_features / narrative_patterns 为空 → SynthesizeError 硬失败；RAG 索引构建失败容错不阻塞。",
@@ -1110,10 +1120,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P1",
         "purpose": "Profile 效果预览：按 Profile 生成 3 段示例文本给作者判断风格拟合度。",
         "trigger": "预览端点（PreviewService，3 样本逐个调用）。",
-        "call_chain": [(f"{SVC}/style_reference/preview.py", "call_llm_node(PREVIEW_NODE_ID", 1, "逐样本调用")],
-        "inputs": "task_prompt + JSON：Profile 摘要 + 样本题面。",
+        "call_chain": [(f"{SVC}/style_reference/preview.py", "return call_llm_node(", 1, "逐样本调用")],
+        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：Profile 摘要、样本题面。",
         "output_contract": "PreviewGeneratedSample（Pydantic）。",
-        "parser_refs": [(f"{SVC}/style_reference/preview.py", "call_llm_node(PREVIEW_NODE_ID", 1)],
+        "parser_refs": [(f"{SVC}/style_reference/preview.py", "return call_llm_node(", 1)],
         "failure": "单样本失败标 error=\"llm_call_failed\"，不阻塞其余样本。",
         "opt_notes": "预览要「放大」风格特征让人眼可辨——可指示样本各侧重一层（语言/叙事/场景），并遵守 forbidden_pattern。",
     },
@@ -1129,10 +1139,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P1",
         "purpose": "验证三通道之一：批评家 LLM 判定生成文与 Profile 的语义符合度（逐维打分+引文）。",
         "trigger": "验证 async_full 通道（ValidationOrchestrator 派发；sync 快路径不走 LLM）。",
-        "call_chain": [(f"{SVC}/style_reference/validation/semantic.py", "call_llm_node(SEMANTIC_NODE_ID", 1, "check_semantic")],
-        "inputs": "task_prompt + JSON：待验文本 + Profile 要点。",
+        "call_chain": [(f"{SVC}/style_reference/validation/semantic.py", "raw = call_llm_node(", 1, "check_semantic")],
+        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：待验文本、Profile 要点。",
         "output_contract": "SemanticReportItem 列表；引用必须带「」直角引号，否则该项分数被压到 ≤4（代码强制）。",
-        "parser_refs": [(f"{SVC}/style_reference/validation/semantic.py", "call_llm_node(SEMANTIC_NODE_ID", 1)],
+        "parser_refs": [(f"{SVC}/style_reference/validation/semantic.py", "raw = call_llm_node(", 1)],
         "failure": "LLMNodeError → 该通道降级 semantic=[]（不阻塞验证报告）。",
         "opt_notes": "「」引号是解析契约——指令里已有也不可删。打分尺度要给锚例（3/6/9 分各长什么样），否则弱模型分数挤中间。",
     },
@@ -1148,10 +1158,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P1",
         "purpose": "对 Profile 的每条 forbidden_pattern 单独判定生成文是否触犯（语义级，补 forbidden_local 字面扫描的盲区）。",
         "trigger": "验证 async_full 通道。",
-        "call_chain": [(f"{SVC}/style_reference/validation/forbidden_semantic.py", "call_llm_node(FORBIDDEN_SEMANTIC_NODE_ID", 1, "每 pattern 一次调用")],
-        "inputs": "task_prompt + JSON：单条 forbidden_pattern + 待验文本。",
+        "call_chain": [(f"{SVC}/style_reference/validation/forbidden_semantic.py", "raw = call_llm_node(", 1, "每 pattern 一次调用")],
+        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：单条 forbidden_pattern、待验文本。",
         "output_contract": "ForbiddenHit（命中与证据）。",
-        "parser_refs": [(f"{SVC}/style_reference/validation/forbidden_semantic.py", "call_llm_node(FORBIDDEN_SEMANTIC_NODE_ID", 1)],
+        "parser_refs": [(f"{SVC}/style_reference/validation/forbidden_semantic.py", "raw = call_llm_node(", 1)],
         "failure": "单 pattern 失败 try/except 跳过。",
         "opt_notes": "二分类小任务：输出宜收窄为 {hit, evidence, reason}；「变体/转写也算命中」的语义扩展判据要写明。",
     },
@@ -1346,10 +1356,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P1",
         "purpose": "从归档章节正文提取新实体（地点/物品/势力/概念）与时间线事件候选，进待办确认（不直接入库）。",
         "trigger": "POST /api/v1/library/…/derive-from-chapter（LibraryDeriveService.derive_from_chapter）。",
-        "call_chain": [(f"{SVC}/library_derive.py", "call_llm_node(DERIVE_NODE_ID", 1, "_extract")],
-        "inputs": "task_prompt + JSON：chapter_text + known_names（已知名单，用于去重）。",
+        "call_chain": [(f"{SVC}/library_derive.py", "structured = call_llm_node(", 1, "_extract")],
+        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：chapter_text、known_names（已知名单，用于去重）。",
         "output_contract": "entities[{name,kind,summary,aliases}] + timeline_events[{label,time_label,note}]；kind 枚举 location/item/faction/concept；服务内手工解析。",
-        "parser_refs": [(f"{SVC}/library_derive.py", "call_llm_node(DERIVE_NODE_ID", 1)],
+        "parser_refs": [(f"{SVC}/library_derive.py", "structured = call_llm_node(", 1)],
         "failure": "LLMNodeError → 降级（空结果）。",
         "opt_notes": "查全 vs 保守的平衡。2026-07-05.v2 已落两手：system_prompt 改两遍扫描（先列全候选再按 known_names 过滤，含别名匹配），summary/time_label 加长度上限与「无标记不得编造」边界。",
     },
@@ -1498,7 +1508,7 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P1",
         "purpose": "文学质量评测的 live 通道：按评测用例（config/evals/literary_small.yaml）生成候选场景，交给规则引擎打分（LLM 不当评委）。",
         "trigger": "api/routes/literary_eval.py → LiteraryEvalRunner.run（live 模式）；报告写 NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH。",
-        "call_chain": [(f"{SVC}/literary_eval.py", "self.llm_client.generate(self._request(case))", 1, "LiveLiteraryEvalGenerator.__call__")],
+        "call_chain": [(f"{SVC}/literary_eval.py", "response = execute_accounted_call(", 1, "LLMLiteraryCaseGenerator.__call__ 统一记账")],
         "inputs": "内联 system_prompt + _case_user_prompt（用例 prompt + 各类 cues/banned terms + 长度带）。",
         "output_contract": "{scene_text}（缺失 → ValueError）。",
         "parser_refs": [(f"{SVC}/literary_eval.py", 'structured_output.get("scene_text")', 1)],
@@ -1569,7 +1579,8 @@ UNITS: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 NEGATIVE_EVIDENCE: list[str] = [
     "无任何 LLM SDK 直连：全仓 grep 无 `import openai` / `import anthropic` / google-genai——12 家 provider 全部是 "
-    "`services/llm_providers/` 手写 adapter 构造裸 HTTP payload，业务出口唯一收敛在 `LLMClient.generate`。",
+    "`services/llm_providers/` 手写 adapter 构造裸 HTTP payload；业务补全入口统一收敛在 `execute_accounted_call`，"
+    "物理 provider 请求由 `LLMClient.generate_accounted` 的 attempt hook 包围。",
     "无 embedding API 调用：ChromaDB 使用进程内确定性嵌入 `_DeterministicEmbeddingFunction`"
     "（vector_store.py，字符哈希 → 64 维 L2 归一向量），style_reference RAG 三粒度召回同样走它——全系统 0 次 /embeddings 网络调用。",
     "RAG 注入热路径无 LLM：`style_reference/injection.py` 与 `rag.py` 全确定性（inject <50ms 契约）；"

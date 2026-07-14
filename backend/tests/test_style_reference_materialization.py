@@ -42,6 +42,7 @@ def _seed_profile_with_findings(seed: str) -> str:
             title="t",
             author_label="a",
             cloud_policy="segments_only",
+            rights_declaration={"analysis_rights": True, "send_rights": True},
         )
         book_id = result.book.book_id
         repo = StyleReferenceRepository(session)

@@ -15,7 +15,13 @@ export function importStyleReferenceBookPath(payload) {
   return apiPost(`${PREFIX}/books/import-path`, payload);
 }
 
-export function importStyleReferenceBookUpload({ file, title, authorLabel = "", cloudPolicy }) {
+export function importStyleReferenceBookUpload({
+  file,
+  title,
+  authorLabel = "",
+  cloudPolicy,
+  rightsDeclaration = null,
+}) {
   const formData = new FormData();
   formData.set("file", file);
   formData.set("title", title);
@@ -23,6 +29,9 @@ export function importStyleReferenceBookUpload({ file, title, authorLabel = "", 
     formData.set("author_label", authorLabel);
   }
   formData.set("cloud_policy", cloudPolicy);
+  if (rightsDeclaration) {
+    formData.set("rights_declaration", JSON.stringify(rightsDeclaration));
+  }
   return apiPostForm(`${PREFIX}/books/import-upload`, formData);
 }
 

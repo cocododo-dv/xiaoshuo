@@ -36,10 +36,17 @@ afterEach(() => {
 
 describe("styleReference API client URL 拼装", () => {
   it("importBookPath POST /api/v2/style-reference/books/import-path", async () => {
-    await sr.importStyleReferenceBookPath({ file_path: "x.txt", title: "t", cloud_policy: "local_only" });
+    const rightsDeclaration = { analysis_rights: true, send_rights: true, declared_by: "测试用户" };
+    await sr.importStyleReferenceBookPath({
+      file_path: "x.txt",
+      title: "t",
+      cloud_policy: "segments_only",
+      rights_declaration: rightsDeclaration,
+    });
     expect(calls[0].url).toBe("http://127.0.0.1:8000/api/v2/style-reference/books/import-path");
     expect(calls[0].init.method).toBe("POST");
     expect(calls[0].init.headers["X-Idempotency-Key"]).toBeTruthy();
+    expect(JSON.parse(calls[0].init.body).rights_declaration).toEqual(rightsDeclaration);
   });
 
   it("listBooks GET 含 status query", async () => {
@@ -60,15 +67,18 @@ describe("styleReference API client URL 拼装", () => {
 
   it("importBookUpload 用 FormData(无 Content-Type 自动 boundary)", async () => {
     const file = new File(["text"], "a.txt", { type: "text/plain" });
+    const rightsDeclaration = { analysis_rights: true, send_rights: true, declared_by: "测试用户" };
     await sr.importStyleReferenceBookUpload({
       file,
       title: "t",
       authorLabel: "a",
-      cloudPolicy: "local_only",
+      cloudPolicy: "segments_only",
+      rightsDeclaration,
     });
     expect(calls[0].url).toContain("/import-upload");
     expect(calls[0].init.body).toBeInstanceOf(FormData);
     expect(calls[0].init.headers["Content-Type"]).toBeUndefined();
+    expect(calls[0].init.body.get("rights_declaration")).toBe(JSON.stringify(rightsDeclaration));
   });
 
   it("startRun POST with layers payload", async () => {

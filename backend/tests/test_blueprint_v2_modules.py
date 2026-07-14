@@ -432,6 +432,58 @@ class TestReverseCausalSkeleton:
         assert "Reverse Causal Skeleton" in text
         assert "test idea" in text
 
+    def test_llm_refine_requires_context_before_runner_io(self):
+        from novel_system.services.llm_accounting import LLMAccountingRejected
+        from novel_system.services.reverse_causal_skeleton import (
+            build_reverse_skeleton,
+            refine_skeleton_with_llm,
+        )
+
+        calls: list[str] = []
+
+        class _Runner:
+            def run_task(self, **_kwargs):
+                calls.append("provider")
+
+        with pytest.raises(LLMAccountingRejected) as rejected:
+            refine_skeleton_with_llm(
+                build_reverse_skeleton("idea", "ending"),
+                llm_runner=_Runner(),
+            )
+
+        assert rejected.value.code == "LLM_ACCOUNTING_CONTEXT_REQUIRED"
+        assert calls == []
+
+    def test_llm_refine_passes_explicit_project_context(self):
+        from novel_system.services.llm_accounting import LLMCallContext
+        from novel_system.services.reverse_causal_skeleton import (
+            build_reverse_skeleton,
+            refine_skeleton_with_llm,
+        )
+
+        calls: list[dict] = []
+
+        class _Runner:
+            def run_task(self, **kwargs):
+                calls.append(kwargs)
+                return '{"gaps": []}'
+
+        context = LLMCallContext(
+            scope_type="project",
+            scope_id="project-causal",
+            project_id="project-causal",
+            node_id="causal_skeleton_refine",
+            step="planning:causal_refine:0",
+        )
+        refine_skeleton_with_llm(
+            build_reverse_skeleton("idea", "ending"),
+            llm_runner=_Runner(),
+            llm_context=context,
+        )
+
+        assert calls[0]["task_name"] == "causal_skeleton_refine"
+        assert calls[0]["context"] is context
+
 
 # ===========================================================================
 # §10 information asymmetry

@@ -91,6 +91,19 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     expect(body.scenes[0].live).toBe(true);
   });
 
+  it("aggregate 由成稿中心触发 final aggregate，并在成功后刷新同章正文", async () => {
+    const { mod, client } = await loadStore();
+    client.apiPost.mockResolvedValue({ status: "created", chapter_id: "c1" });
+    client.apiGet.mockClear();
+
+    const result = await mod.WsManuStore.aggregate("c1");
+
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/chapters/c1/runtime/aggregate/final", {});
+    expect(client.apiGet).toHaveBeenCalledWith("/api/v1/chapter-manuscripts/c1");
+    expect(result.status).toBe("created");
+    expect(mod.WsManuStore.body("c1").completion).toBe("complete");
+  });
+
   it("完成门：清空 localStorage 后正文仍完整来自 API（缓存清除不丢稿）", async () => {
     const { mod } = await loadStore();
     await mod.WsManuStore.refresh("c1");
@@ -117,5 +130,20 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     const { mod } = await loadStore({});
     await mod.WsManuStore.refresh("c1");
     expect(mod.WsManuStore.body("c1")).toBeNull();
+  });
+
+  it("计划中章节一旦有归档场景，也必须进入成稿中心以提供首次聚合入口", async () => {
+    const { mod } = await loadStore();
+    expect(mod.manuscriptChapterEligible({
+      state: "planned",
+      words: { cur: 0 },
+      scenes: [{ state: "done" }],
+    })).toBe(true);
+    expect(mod.manuscriptChapterEligible({
+      state: "planned",
+      words: { cur: 0 },
+      scenes: [{ state: "planned" }],
+    })).toBe(false);
+    expect(mod.manuscriptDisplayState("planned")).toBe("plan");
   });
 });

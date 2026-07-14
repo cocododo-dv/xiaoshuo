@@ -353,7 +353,7 @@ def test_task_config_timeout_seconds_parses() -> None:
     assert cfg2.timeout_seconds is None
 
 
-def test_style_ref_helper_applies_timeout_floor(monkeypatch) -> None:
+def test_style_ref_helper_applies_timeout_floor(monkeypatch, session) -> None:
     """style_ref 节点路由未配置超时时按 120s 保底(30s 全局默认吃不下重抽取)。"""
     from types import SimpleNamespace
 
@@ -372,12 +372,28 @@ def test_style_ref_helper_applies_timeout_floor(monkeypatch) -> None:
 
     captured = {}
 
-    class _C:
+    from novel_system.services.llm_accounting import LLMCallContext
+    from tests.accounted_llm_fakes import AccountedGenerateMixin
+
+    class _C(AccountedGenerateMixin):
         def generate(self, request):
             captured["timeout"] = request.timeout_seconds
             return SimpleNamespace(structured_output={})
 
-    _llm_helper.call_llm_node("n1", {}, _C())
+    from novel_system.services.style_reference.untrusted_data import UntrustedPayload
+
+    _llm_helper.call_llm_node(
+        "n1",
+        UntrustedPayload({}),
+        _C(),
+        session=session,
+        context=LLMCallContext(
+            scope_type="system",
+            scope_id="style_reference_timeout_test",
+            node_id="n1",
+            step="timeout_floor",
+        ),
+    )
     assert captured["timeout"] == _llm_helper.DEFAULT_TIMEOUT_SECONDS
 
 

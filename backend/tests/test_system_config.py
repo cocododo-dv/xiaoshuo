@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.api.app import create_app
-from novel_system.db.models import LlmCall, SystemSecret
+from novel_system.db.models import LlmCall, LlmCallAttempt, SystemSecret
 from novel_system.services.settings_helpers import llm_generation_mode
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
@@ -13,6 +16,99 @@ from novel_system.settings import get_settings
 
 
 ADMIN_HEADERS = {"X-Admin-Token": "admin-token", "X-Operator-Ref": "ops.config"}
+
+
+def test_completion_probe_success_missing_usage_http_and_transport_are_accounted(
+    client, session, monkeypatch
+) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+
+    def fake_models(url: str, **_kwargs):
+        return httpx.Response(200, json={"data": [{"id": "probe-model"}]})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    outcomes = [
+        httpx.Response(
+            200,
+            headers={"x-request-id": "req-actual"},
+            json={
+                "choices": [{"message": {"content": "pong"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+            },
+        ),
+        httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]}),
+        httpx.Response(503, json={"error": {"message": "provider unavailable"}}),
+        httpx.ConnectError("probe transport failed"),
+    ]
+
+    for outcome in outcomes:
+        def fake_completion(*_args, _outcome=outcome, **_kwargs):
+            if isinstance(_outcome, Exception):
+                raise _outcome
+            return _outcome
+
+        monkeypatch.setattr(
+            "novel_system.services.llm_accounting.httpx.post",
+            fake_completion,
+        )
+        response = client.post(
+            "/api/v1/system-config/test-provider",
+            headers=ADMIN_HEADERS,
+            json={
+                "provider": "openai_compatible",
+                "base_url": "https://probe.test/v1",
+                "credential_mode": "none",
+                "model": "probe-model",
+                "api_mode": "chat",
+                "check_completion": True,
+            },
+        )
+        assert response.status_code == 200
+
+    session.expire_all()
+    calls = list(
+        session.scalars(
+            select(LlmCall)
+            .where(LlmCall.node_id == "provider_probe")
+            .order_by(LlmCall.created_at)
+        )
+    )
+    assert len(calls) == 4
+    assert [(call.scope_type, call.scope_id) for call in calls] == [
+        ("system", "provider_probe")
+    ] * 4
+    assert [call.accounting_status for call in calls] == [
+        "settled",
+        "settled",
+        "failed",
+        "failed",
+    ]
+    assert [call.usage_is_estimate for call in calls] == [False, True, True, True]
+    attempts = list(
+        session.scalars(
+            select(LlmCallAttempt).order_by(
+                LlmCallAttempt.created_at,
+                LlmCallAttempt.attempt_id,
+            )
+        )
+    )
+    assert len(attempts) == 4
+    assert all(attempt.dispatch_kind == "system_probe" for attempt in attempts)
+    assert [attempt.accounting_status for attempt in attempts] == [
+        "settled",
+        "settled",
+        "failed",
+        "failed",
+    ]
+    assert calls[0].response_payload_summary["request_id"] == "req-actual"
+
+
+def test_repo_model_config_declares_independent_provider_attempt_budget() -> None:
+    config_path = Path(__file__).resolve().parents[2] / "config" / "models.yaml"
+
+    routing_config = load_model_routing_config(config_path)
+
+    assert routing_config.retry_budget["provider_attempt_budget"] == DEFAULT_PROVIDER_ATTEMPT_BUDGET
 
 
 def test_system_config_read_includes_repo_defaults_without_admin_token(client) -> None:
@@ -157,6 +253,8 @@ def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
     session.add(
         LlmCall(
             llm_call_id="llm_call_offline_scene_auto_rewrite_test",
+            scope_type="scene",
+            scope_id="SC_AUDIT",
             provider="offline_deterministic",
             model="scene-auto-rewrite-policy",
             node_id="scene_auto_rewrite",
@@ -174,6 +272,8 @@ def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
     session.add(
         LlmCall(
             llm_call_id="llm_call_live_project_outline_test",
+            scope_type="system",
+            scope_id="project_outline_plan",
             provider="fake",
             model="fake-model",
             node_id="project_outline_plan",
@@ -767,7 +867,7 @@ def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(clien
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
 
     probe_response = client.post(
         "/api/v1/system-config/llm/providers/cli_proxy/probe",
@@ -929,7 +1029,7 @@ llm:
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
 
     response = client.post(
         "/api/v1/system-config/llm/providers/local_qwen/probe",
@@ -980,7 +1080,7 @@ def test_llm_provider_probe_verifies_local_model_listing_and_completion(client, 
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
 
     response = client.post(
         "/api/v1/system-config/llm/providers/local_qwen/probe",
@@ -1030,7 +1130,7 @@ def test_llm_provider_probe_uses_configured_responses_protocol(client, monkeypat
         return httpx.Response(404, json={"detail": "Not Found"})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
 
     probe_response = client.post(
         "/api/v1/system-config/llm/providers/gcli2api/probe",
@@ -1086,7 +1186,7 @@ def test_llm_provider_probe_accepts_completion_when_models_endpoint_is_unavailab
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
-    monkeypatch.setattr("novel_system.services.system_config.httpx.post", fake_completion)
+    monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
 
     probe_response = client.post(
         "/api/v1/system-config/llm/providers/cli_proxy/probe",

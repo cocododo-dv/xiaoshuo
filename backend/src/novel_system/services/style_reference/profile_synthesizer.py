@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.errors import LLMRequiredError, StyleReferenceError
@@ -33,6 +34,7 @@ from novel_system.services.style_reference.schemas import (
     ProfileStatus,
     SynthesizedProfile,
 )
+from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
 if TYPE_CHECKING:
     from novel_system.db.models import (
@@ -105,7 +107,12 @@ class ProfileSynthesizer:
             "sample_quotes": sample_quotes_payload,
         }
 
-        structured = self._call_llm(SYNTHESIZE_NODE_ID, payload)
+        structured = self._call_llm(
+            SYNTHESIZE_NODE_ID,
+            payload,
+            book_id=book_id,
+            run_id=run_id,
+        )
         try:
             synthesized = SynthesizedProfile.model_validate(structured)
         except ValidationError as exc:
@@ -166,10 +173,28 @@ class ProfileSynthesizer:
 
     # ------------------------------------------------------------------ LLM
 
-    def _call_llm(self, node_id: str, payload: dict) -> dict[str, Any]:
+    def _call_llm(
+        self,
+        node_id: str,
+        payload: dict,
+        *,
+        book_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
         # PR-8 §"_call_llm 统一" — 复用 _llm_helper.call_llm_node
         try:
-            return call_llm_node(node_id, payload, self._llm_client)
+            return call_llm_node(
+                node_id,
+                UntrustedPayload(payload),
+                self._llm_client,
+                session=self.session,
+                context=LLMCallContext(
+                    scope_type="style_reference_book",
+                    scope_id=book_id,
+                    node_id=node_id,
+                    step=f"synthesize:{run_id}",
+                ),
+            )
         except LLMNodeError as exc:
             raise SynthesizeError(str(exc)) from exc
 

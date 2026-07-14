@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     JSON,
     CheckConstraint,
     Computed,
@@ -15,9 +16,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db.base import Base
 
 
@@ -527,6 +530,20 @@ class RelationProfile(Base):
 
 class SceneRunState(Base):
     __tablename__ = "scene_run_states"
+    __table_args__ = (
+        CheckConstraint(
+            "scene_tokens_reserved >= 0",
+            name="ck_scene_run_states_tokens_reserved_nonnegative",
+        ),
+        CheckConstraint(
+            "provider_attempts_used >= 0",
+            name="ck_scene_run_states_provider_attempts_used_nonnegative",
+        ),
+        CheckConstraint(
+            "provider_attempt_budget >= 0",
+            name="ck_scene_run_states_provider_attempt_budget_nonnegative",
+        ),
+    )
 
     scene_id: Mapped[str] = mapped_column(ForeignKey("scene_cards.scene_id"), primary_key=True)
     scene_status: Mapped[str] = mapped_column(String, default="ready")
@@ -559,6 +576,31 @@ class SceneRunState(Base):
     run_policy: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     scene_token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     scene_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
+    scene_tokens_reserved: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+    )
+    scene_budget_basis_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+    )
+    provider_attempts_used: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+    )
+    provider_attempt_budget: Mapped[int] = mapped_column(
+        Integer,
+        default=DEFAULT_PROVIDER_ATTEMPT_BUDGET,
+        server_default=str(DEFAULT_PROVIDER_ATTEMPT_BUDGET),
+    )
+    active_execution_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    run_execution_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    run_checkpoint: Mapped[str | None] = mapped_column(String, nullable=True)
+    run_checkpoint_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    active_run_job_id: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
@@ -706,7 +748,49 @@ class GenerationPlanningArtifact(Base):
 
 class LlmCall(Base):
     __tablename__ = "llm_calls"
-    __table_args__ = (Index("ix_llm_calls_scene_created", "scene_id", "created_at"),)
+    __table_args__ = (
+        CheckConstraint(
+            "estimated_tokens >= 0",
+            name="ck_llm_calls_estimated_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "reserved_tokens >= 0",
+            name="ck_llm_calls_reserved_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "budget_charged_tokens >= 0",
+            name="ck_llm_calls_budget_charged_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "budget_charged_tokens <= reserved_tokens",
+            name="ck_llm_calls_budget_charged_within_reservation",
+        ),
+        CheckConstraint(
+            "accounting_status IN ('reserved','settled','failed','released','rejected','usage_exceeds_reservation')",
+            name="ck_llm_calls_accounting_status",
+        ),
+        Index("ix_llm_calls_scene_created", "scene_id", "created_at"),
+        Index("ix_llm_calls_scope_created", "scope_type", "scope_id", "created_at"),
+        Index("ix_llm_calls_run_job", "run_job_id"),
+        Index("ix_llm_calls_execution_step", "execution_id", "execution_step_key"),
+        Index(
+            "uq_llm_calls_execution_step_claim",
+            "execution_id",
+            "execution_step_key",
+            unique=True,
+            sqlite_where=text(
+                "execution_id IS NOT NULL AND execution_step_key IS NOT NULL "
+                "AND NOT (request_dispatched_at IS NULL "
+                "AND accounting_status IN ('released','rejected'))"
+            ),
+            postgresql_where=text(
+                "execution_id IS NOT NULL AND execution_step_key IS NOT NULL "
+                "AND NOT (request_dispatched_at IS NULL "
+                "AND accounting_status IN ('released','rejected'))"
+            ),
+        ),
+        Index("ix_llm_calls_accounting_status", "accounting_status"),
+    )
 
     llm_call_id: Mapped[str] = mapped_column(String, primary_key=True)
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -730,6 +814,115 @@ class LlmCall(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     finish_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    scope_type: Mapped[str] = mapped_column(String)
+    scope_id: Mapped[str] = mapped_column(String)
+    run_job_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    execution_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    execution_step_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    estimated_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reserved_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    budget_charged_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    usage_is_estimate: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="1",
+    )
+    accounting_status: Mapped[str] = mapped_column(
+        String,
+        default="reserved",
+        server_default="reserved",
+    )
+    request_dispatched_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    settled_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class LlmCallAttempt(Base):
+    __tablename__ = "llm_call_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "llm_call_id",
+            "provider_attempt_no",
+            name="uq_llm_call_attempts_call_ordinal",
+        ),
+        CheckConstraint(
+            "provider_attempt_no >= 0",
+            name="ck_llm_call_attempts_provider_attempt_no_nonnegative",
+        ),
+        CheckConstraint(
+            "request_max_output_tokens >= 0",
+            name="ck_llm_call_attempts_request_max_output_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "prompt_tokens >= 0",
+            name="ck_llm_call_attempts_prompt_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "completion_tokens >= 0",
+            name="ck_llm_call_attempts_completion_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "total_tokens >= 0",
+            name="ck_llm_call_attempts_total_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "estimated_tokens >= 0",
+            name="ck_llm_call_attempts_estimated_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "reserved_tokens >= 0",
+            name="ck_llm_call_attempts_reserved_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "budget_charged_tokens >= 0",
+            name="ck_llm_call_attempts_budget_charged_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "budget_charged_tokens <= reserved_tokens",
+            name="ck_llm_call_attempts_budget_charged_within_reservation",
+        ),
+        CheckConstraint(
+            "latency_ms >= 0",
+            name="ck_llm_call_attempts_latency_ms_nonnegative",
+        ),
+        CheckConstraint(
+            "accounting_status IN ('reserved','settled','failed','released','rejected','usage_exceeds_reservation')",
+            name="ck_llm_call_attempts_accounting_status",
+        ),
+        CheckConstraint(
+            "dispatch_kind IN ('initial','transport_retry','response_parse_retry','api_mode_degrade','structured_output_degrade','missing_text_degrade','system_probe')",
+            name="ck_llm_call_attempts_dispatch_kind",
+        ),
+        Index("ix_llm_call_attempts_call_status", "llm_call_id", "accounting_status"),
+    )
+
+    attempt_id: Mapped[str] = mapped_column(String, primary_key=True)
+    llm_call_id: Mapped[str] = mapped_column(ForeignKey("llm_calls.llm_call_id"))
+    provider_attempt_no: Mapped[int] = mapped_column(Integer)
+    dispatch_kind: Mapped[str] = mapped_column(String)
+    request_max_output_tokens: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+    )
+    provider_request_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    estimated_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reserved_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    budget_charged_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    usage_is_estimate: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="1",
+    )
+    accounting_status: Mapped[str] = mapped_column(String)
+    request_dispatched_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    settled_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
@@ -1269,9 +1462,11 @@ class AttemptTracker(Base):
 
 class ChapterRunJob(Base):
     __tablename__ = "chapter_run_jobs"
+    __table_args__ = (Index("ix_chapter_run_jobs_scene_created", "scene_id", "created_at"),)
 
     job_id: Mapped[str] = mapped_column(String, primary_key=True)
     chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String)
     job_type: Mapped[str] = mapped_column(String)
     payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from novel_system.db.models import FinalScene, LlmCall, SceneCard, SceneDraft, SceneRunState
 from novel_system.services import cost_aggregation as ca
-from novel_system.services.scene_budget import can_spend, record_usage
+from novel_system.services import scene_budget
+from novel_system.services.scene_budget import can_spend
 
 
 def _scene_with_valid_draft(session, scene_id, chapter_id="CCH", *, budget=1000, used=0):
@@ -38,21 +39,33 @@ def test_budget_exhaustion_blocks_new_calls_but_keeps_draft(session):
     assert session.get(SceneDraft, "draft_CX1") is not None
 
 
-def test_over_budget_cost_still_explainable(session):
+def test_legacy_0064_over_budget_cost_remains_readable_without_becoming_normal_semantics(session):
     _scene_with_valid_draft(session, "CX2", budget=1000, used=1500)
     session.add(
         LlmCall(
             llm_call_id="cxc1", provider="openai_compatible", model="gpt-5",
+            scope_type="scene", scope_id="CX2",
             node_id="style_draft", step="style_draft", scene_id="CX2", chapter_id="CCH",
             project_id="CP", prompt_tokens=800, completion_tokens=400, total_tokens=1200,
         )
     )
     session.flush()
     summary = ca.scene_cost(session, "CX2")
-    # 超预算仍可解释：over_budget=True、总成本 > 0、阶段占比存在
+    # 仅兼容读取 0064 历史脏数据；新在线调用由预留门禁阻止制造该状态。
     assert summary["budget"]["over_budget"] is True
     assert summary["total_cost"] > 0
     assert summary["phase_breakdown"]["candidate_generation"]["cost"] > 0
+    assert summary["calibers"]["estimate"]["tokens"] == 1_200
+    assert summary["calibers"]["provider_actual"]["tokens"] == 0
+    assert summary["calibers"]["budget_charged"]["tokens"] == 0
+    assert summary["attempt_observability"]["legacy_parent_without_attempt_count"] == 1
+    assert summary["attempt_observability"]["legacy_unreconstructable_tokens"] == 1_200
+    assert summary["calibers"]["estimate"]["source"].endswith(
+        "_with_legacy_total_tokens_fallback"
+    )
+    assert summary["calibers"]["budget_charged"]["source"] == (
+        "llm_calls.budget_charged_tokens"
+    )
 
 
 def test_failed_call_does_not_roll_back_draft_and_is_attributed(session):
@@ -61,6 +74,7 @@ def test_failed_call_does_not_roll_back_draft_and_is_attributed(session):
     session.add(
         LlmCall(
             llm_call_id="cxc_fail", provider="openai_compatible", model="gpt-5",
+            scope_type="scene", scope_id="CX3",
             node_id="style_patch", step="style_patch", scene_id="CX3", chapter_id="CCH",
             project_id="CP", prompt_tokens=100, completion_tokens=0, total_tokens=100,
             error_code="LLM_TIMEOUT",
@@ -89,9 +103,5 @@ def test_archived_final_survives_after_stop(session):
     assert fs is not None and fs.status == "archived" and fs.content == "已归档正文"
 
 
-def test_record_usage_accumulates_and_never_resets(session):
-    _scene_with_valid_draft(session, "CX5", budget=1000, used=200)
-    record_usage(session, "CX5", 150)
-    state = session.get(SceneRunState, "CX5")
-    # 累计而非重置（§7.12：自动流程不得重置预算账目）
-    assert state.scene_tokens_used == 350
+def test_legacy_record_usage_bypass_is_not_available():
+    assert not hasattr(scene_budget, "record_usage")

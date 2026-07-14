@@ -30,7 +30,12 @@ from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_task_runner import (
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+    current_llm_execution_id,
+)
 from novel_system.services.project_backtracks import ProjectBacktrackService
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.style_reference.materialization import MaterializationService
@@ -478,6 +483,18 @@ class OutlinePlannerService:
         }
         prompt = self._prompt_builder.build(snapshot, "project_outline_plan")
         bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        execution_step_key = "project_outline_plan"
+        execution_id = current_llm_execution_id()
+        context = LLMCallContext(
+            scope_type="project",
+            scope_id=project.project_id,
+            project_id=project.project_id,
+            node_id="project_outline_plan",
+            step="project_outline_plan",
+            execution_id=execution_id,
+            execution_step_key=execution_step_key if execution_id is not None else None,
+            provider_execution_mode="online",
+        )
         try:
             result = LLMNodeRunner(self.session).run(
                 scene_id=f"project_{project.project_id}",
@@ -489,6 +506,8 @@ class OutlinePlannerService:
                 prompt=prompt,
                 user_prompt=prompt["user_prompt"],
                 offline_client_factory=lambda: None,
+                execution_step_key=execution_step_key,
+                context=context,
             )
         except LLMNodeExecutionError as exc:
             raise DomainError(

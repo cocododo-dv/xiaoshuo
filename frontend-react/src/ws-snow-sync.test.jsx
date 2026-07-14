@@ -21,6 +21,29 @@ vi.mock("./ws-snow.jsx", () => ({
     ["characters", "character_sheets"], ["synopsis", "short_synopsis"], ["backstory", "character_synopses"],
     ["outline", "long_synopsis"], ["profile", "character_bibles"], ["scenes", "scene_list"], ["planning", "scene_details"],
   ],
+  s2NormalizeState: (saved) => {
+    const feKeys = ["audience", "logline", "paragraph", "characters", "synopsis", "backstory", "outline", "profile", "scenes", "planning"];
+    return {
+      ...saved,
+      drafts: { ...Object.fromEntries(feKeys.map(k => [k, ""])), ...(saved.drafts || {}) },
+      scaffolds: {
+        audience: { genre: "", reader: "", pleasure: "", source: "", exclude: "", emotion: "" },
+        paragraph: { premiseF: "", premiseT: "", setup: "", d1: "", d2: "", d3: "", resolution: "" },
+        characters: { sel: "c1", chars: { c1: { name: "", role: "主角", goal: "", ambition: "", values: "", conflict: "", epiphany: "" } } },
+        synopsis: { paras: { setup: "", d1: "", d2: "", d3: "", resolution: "" } },
+        backstory: { sel: "c1", chars: { c1: { name: "", role: "主角", belief: "", wound: "", desire: "", fear: "", relation: "" } } },
+        outline: { chapters: [] },
+        profile: { sel: "c1", chars: { c1: { name: "", role: "主角", physical: "", psych: "", environment: "", personality: "", contradiction: "", views: "" } } },
+        scenes: { lines: [], list: [] }, planning: { sel: "", plans: {} },
+        ...(saved.scaffolds || {}),
+      },
+      checks: { ...Object.fromEntries(feKeys.map(k => [k, []])), ...(saved.checks || {}) },
+      states: { ...Object.fromEntries(feKeys.map(k => [k, "todo"])), ...(saved.states || {}) },
+      revs: { ...Object.fromEntries(feKeys.map(k => [k, 0])), ...(saved.revs || {}) },
+      confirmRevs: { ...(saved.confirmRevs || {}) },
+      history: Array.isArray(saved.history) ? saved.history : [],
+    };
+  },
 }));
 
 const T = { timeout: 5000, interval: 25 };
@@ -79,6 +102,46 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     window.localStorage.clear();
   });
   afterEach(() => vi.restoreAllMocks());
+
+  it("importCanonicalPlan：由浏览器按十步依赖顺序保存并批准，最终返回物化就绪工作台", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, steps: [] } });
+    const order = [
+      "book_brief", "one_sentence_summary", "one_paragraph_summary", "character_sheets", "short_synopsis",
+      "character_synopses", "long_synopsis", "character_bibles", "scene_list", "scene_details",
+    ];
+    const stepDrafts = Object.fromEntries(order.map((key) => [key, { marker: key }]));
+    const calls = [];
+    client.apiPatch.mockImplementation(async (url, body) => {
+      const key = String(url).split("/steps/")[1];
+      calls.push(`patch:${key}`);
+      return { step: { step_key: key, status: "pending_review", draft: body.draft, health: {}, completeness: {} } };
+    });
+    client.apiPost.mockImplementation(async (url) => {
+      const key = String(url).split("/steps/")[1].split("/approve")[0];
+      calls.push(`approve:${key}`);
+      return { step: { step_key: key, status: "approved", draft: stepDrafts[key], health: {}, completeness: {} } };
+    });
+    client.apiGet.mockResolvedValue({ ready_to_materialize: true, steps: [] });
+
+    const result = await mod.SnowSync.importCanonicalPlan("tide", { steps: stepDrafts });
+
+    expect(calls).toEqual(order.flatMap((key) => [`patch:${key}`, `approve:${key}`]));
+    expect(client.apiPatch).toHaveBeenCalledTimes(10);
+    expect(client.apiPost).toHaveBeenCalledTimes(10);
+    expect(result.readyToMaterialize).toBe(true);
+    expect(result.approvedStepKeys).toEqual(order);
+
+    const importedCache = JSON.parse(window.localStorage.getItem(CACHE_KEY));
+    expect(importedCache.scaffolds.audience).toEqual(expect.objectContaining({ genre: "", reader: "" }));
+    expect(importedCache.history[0]).toEqual(expect.objectContaining({ action: "导入结构化计划", key: "planning" }));
+
+    client.apiPatch.mockClear();
+    client.apiPost.mockClear();
+    window.dispatchEvent(new CustomEvent("ws:snow-saved"));
+    await new Promise((resolve) => setTimeout(resolve, 850));
+    expect(client.apiPatch).not.toHaveBeenCalled();
+    expect(client.apiPost).not.toHaveBeenCalled();
+  });
 
   it("hydrate 后上行：脚手架字段作者说了算，脚手架表达不了的富字段（safety_rules）不被剪掉", async () => {
     const { mod, client } = await loadSync({ snowflakeWorkspace: WS_WITH_BOOK_BRIEF });

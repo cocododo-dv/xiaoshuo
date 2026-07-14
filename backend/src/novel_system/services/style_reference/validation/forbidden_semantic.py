@@ -16,9 +16,11 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.orm import Session
 
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import ForbiddenHit
+from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
 if TYPE_CHECKING:
     from novel_system.db.models import StyleReferenceProfile
@@ -33,6 +35,8 @@ def check_forbidden_semantic(
     profile: "StyleReferenceProfile",
     session: Session,
     llm_client: Any,
+    *,
+    report_id: str,
 ) -> list[ForbiddenHit]:
     """对 profile 关联的 forbidden_pattern findings 逐条调 LLM 检查触发。"""
     if not generated_text or llm_client is None:
@@ -59,7 +63,18 @@ def check_forbidden_semantic(
             "sub_dimension": f.sub_dimension,
         }
         try:
-            raw = call_llm_node(FORBIDDEN_SEMANTIC_NODE_ID, payload, llm_client)
+            raw = call_llm_node(
+                FORBIDDEN_SEMANTIC_NODE_ID,
+                UntrustedPayload(payload),
+                llm_client,
+                session=session,
+                context=LLMCallContext(
+                    scope_type="style_reference_validation",
+                    scope_id=report_id,
+                    node_id=FORBIDDEN_SEMANTIC_NODE_ID,
+                    step=f"forbidden:{f.finding_id}",
+                ),
+            )
         except LLMNodeError as exc:
             logger.warning(
                 "forbidden_semantic check for %s skipped: %s", f.finding_id, exc

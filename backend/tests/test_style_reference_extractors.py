@@ -193,13 +193,13 @@ def test_metrics_anchor_injected_into_prompt(fake_extractor_llm, monkeypatch) ->
     client = fake_extractor_llm("default")
     captured: list[str] = []
 
-    original_generate = client.generate
+    original_generate_accounted = client.generate_accounted
 
-    def _spy_generate(request):  # noqa: ANN001
+    def _spy_generate_accounted(request, *, accounting_hook):  # noqa: ANN001
         captured.append(request.messages[-1]["content"])
-        return original_generate(request)
+        return original_generate_accounted(request, accounting_hook=accounting_hook)
 
-    client.generate = _spy_generate  # type: ignore[method-assign]
+    monkeypatch.setattr(client, "generate_accounted", _spy_generate_accounted)
 
     with SessionLocal() as session:
         extractor = LanguageExtractor(
