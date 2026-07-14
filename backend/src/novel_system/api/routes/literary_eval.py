@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.orm import Session
 
+from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.services.errors import DomainError
 from novel_system.services.literary_eval import (
@@ -15,6 +17,7 @@ from novel_system.services.literary_eval import (
     LLMLiteraryCaseGenerator,
     LiteraryEvalRunner,
     load_literary_eval_suite,
+    new_literary_eval_run_id,
 )
 from novel_system.services.llm_client import LLMClient, load_model_routing_config
 from novel_system.services.system_config import load_llm_provider_runtime_configs
@@ -40,11 +43,25 @@ def latest_literary_eval_report(request: Request):
 
 
 @router.post("/api/v1/literary-eval/run")
-def run_literary_eval(payload: LiteraryEvalRunRequest, request: Request):
+def run_literary_eval(
+    payload: LiteraryEvalRunRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
     suite_path = Path(payload.suite_path) if payload.suite_path else _default_suite_path()
     suite = load_literary_eval_suite(suite_path)
-    generator = _generator_for_mode(payload.mode, model=payload.model)
-    report = LiteraryEvalRunner(suite, generator=generator).run(output_path=_latest_report_path())
+    eval_run_id = new_literary_eval_run_id()
+    generator = _generator_for_mode(
+        payload.mode,
+        model=payload.model,
+        session=session,
+        eval_run_id=eval_run_id,
+    )
+    report = LiteraryEvalRunner(
+        suite,
+        generator=generator,
+        eval_run_id=eval_run_id,
+    ).run(output_path=_latest_report_path())
     report["mode"] = payload.mode
     report["suite_path"] = str(suite_path)
     _latest_report_path().write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -60,7 +77,13 @@ def _default_suite_path() -> Path:
     return Path(__file__).resolve().parents[5] / "config" / "evals" / "literary_small.yaml"
 
 
-def _generator_for_mode(mode: str, *, model: str | None):
+def _generator_for_mode(
+    mode: str,
+    *,
+    model: str | None,
+    session: Session,
+    eval_run_id: str,
+):
     if mode == "baseline":
         return BaselineLiteraryCaseGenerator()
 
@@ -100,6 +123,8 @@ def _generator_for_mode(mode: str, *, model: str | None):
     )
     return LLMLiteraryCaseGenerator(
         client,
+        session=session,
+        eval_run_id=eval_run_id,
         model=model or task_config.model,
         provider=task_config.provider if task_config is not None else settings.llm_provider,
         provider_id=task_config.provider_id if task_config is not None else None,

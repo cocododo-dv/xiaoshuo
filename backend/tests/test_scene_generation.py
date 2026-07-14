@@ -16,6 +16,7 @@ from novel_system.db.models import (
     SceneCard,
     SceneDraft,
     SceneRunState,
+    StoryProject,
     VoiceProfile,
 )
 from novel_system.services.bundle_builder import BundleBuilder
@@ -25,9 +26,10 @@ from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.scene_generation import SceneGenerationService, StyleGenerationResult
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
-class FakeSceneClient:
+class FakeSceneClient(AccountedGenerateMixin):
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
 
@@ -75,12 +77,12 @@ class FakeSceneClient:
         )
 
 
-class FakeFailingClient:
+class FakeFailingClient(AccountedGenerateMixin):
     def generate(self, request: LLMRequest) -> LLMResponse:
         raise ValueError("malformed provider payload")
 
 
-class FakeDeTemplateClient:
+class FakeDeTemplateClient(AccountedGenerateMixin):
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
 
@@ -119,9 +121,11 @@ class FakeDeTemplateClient:
 
 
 def _seed_scene(session) -> None:
+    session.add(StoryProject(project_id="PROJECT100", title="Scene generation", outline_text=""))
     session.add(
         ChapterGoal(
             chapter_id="CH100",
+            project_id="PROJECT100",
             planned_scene_count=1,
             chapter_goal="A reunion turns dangerous.",
         )
@@ -130,6 +134,7 @@ def _seed_scene(session) -> None:
     session.add(
         SceneCard(
             scene_id="CH100_SC01",
+            project_id="PROJECT100",
             chapter_id="CH100",
             scene_seq=1,
             pov_character_id="CHAR_A",
@@ -440,7 +445,7 @@ def test_generate_style_draft_runs_one_de_template_pass_for_high_risk_anti_templ
     assert session.get(SceneRunState, "CH100_SC01").current_style_draft_row_id == drafts[1].row_id
 
 
-class _FakeBestOfNDeTemplateClient:
+class _FakeBestOfNDeTemplateClient(AccountedGenerateMixin):
     """每个候选的 style 稿都返回触发反模板闸的模板文本，去模板稿返回各异的清理文本。"""
 
     def __init__(self) -> None:

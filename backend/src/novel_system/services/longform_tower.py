@@ -23,6 +23,7 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.projects import ProjectService
 from novel_system.settings import get_settings
 
@@ -682,6 +683,15 @@ class LongformTowerService:
                 AUDIT_ADJUDICATE_NODE_ID,
                 UntrustedPayload(payload),
                 client,
+                session=self.session,
+                context=LLMCallContext(
+                    scope_type="chapter",
+                    scope_id=chapter_id,
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    node_id=AUDIT_ADJUDICATE_NODE_ID,
+                    step="chapter_audit_adjudicate",
+                ),
             )
         except LLMNodeError as exc:
             logger.warning("chapter audit adjudicate llm call failed: %s", exc)

@@ -253,7 +253,11 @@ class IngestService:
 
         spans = [(p.start_offset, p.end_offset, p.text) for p in paragraphs]
         seg_result = classify_paragraphs(
-            spans, llm_enabled=True, llm_client=self._llm_client
+            spans,
+            llm_enabled=True,
+            llm_client=self._llm_client,
+            session=self.session,
+            scope_id=book_id,
         )
         for paragraph, c in zip(paragraphs, seg_result.classifications):
             paragraph.paragraph_type = c.paragraph_type
@@ -312,6 +316,8 @@ class IngestService:
             paragraph_spans,
             llm_enabled=use_llm,
             llm_client=self._llm_client if use_llm else None,
+            session=self.session if use_llm else None,
+            scope_id=book_id if use_llm else None,
         )
 
         stats_json = {

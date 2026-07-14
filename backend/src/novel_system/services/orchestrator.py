@@ -910,7 +910,7 @@ class Orchestrator:
         run_policy: str,
     ) -> dict[str, Any]:
         scene_id = scene.scene_id
-        selected_style = self._load_style_checkpoint_candidates(scene_id)[0]
+        selected_style = self._load_selected_style_checkpoint(scene_id)
         soft_qc, soft_generation = self._load_soft_qc_checkpoint(
             scene_id,
             selected_style_generation=selected_style,
@@ -2133,7 +2133,13 @@ class Orchestrator:
             snapshot_status = call_data.get("accounting_status")
             snapshot_total = int(call_data.get("total_tokens") or 0)
             if existing is None:
-                self.session.add(LlmCall(**call_data))
+                self.session.add(
+                    LlmCall(
+                        scope_type=call_data.pop("scope_type", None),
+                        scope_id=call_data.pop("scope_id", None),
+                        **call_data,
+                    )
+                )
             else:
                 for column in LlmCall.__table__.columns:
                     if column.primary_key:
@@ -4374,7 +4380,7 @@ class Orchestrator:
         bundle = self._load_checkpoint_bundle(scene_id)
         if scene is None:
             raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        selected_style = self._load_style_checkpoint_candidates(scene_id)[0]
+        selected_style = self._load_selected_style_checkpoint(scene_id)
         _soft_qc, soft_generation = self._load_soft_qc_checkpoint(
             scene_id,
             selected_style_generation=selected_style,
@@ -5060,6 +5066,24 @@ class Orchestrator:
                 )
             )
         return results
+
+    def _load_selected_style_checkpoint(self, scene_id: str) -> StyleGenerationResult:
+        candidates = self._load_style_checkpoint_candidates(scene_id)
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
+            "artifact_refs",
+            {},
+        )
+        selected_row_id = refs.get("selected_row_id")
+        if selected_row_id is None:
+            return candidates[0]
+        selected = [candidate for candidate in candidates if candidate.row_id == selected_row_id]
+        if len(selected) != 1:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "selected style candidate is absent or ambiguous in the durable prefix",
+                status_code=409,
+            )
+        return selected[0]
 
     def _load_hard_qc_checkpoint(self, scene_id: str) -> HardQcDecision:
         qc_report_id = self._checkpoint_artifact("qc_report_id", expected_node_at_least="hard_qc_ready")

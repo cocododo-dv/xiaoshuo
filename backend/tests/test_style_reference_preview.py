@@ -15,6 +15,7 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
 def _seed_profile(seed: str, scene_samples_text: str = "他低头看着路") -> str:
@@ -79,7 +80,7 @@ def _fake_preview_client(sample_text: str = "这是一段生成的示例文本,�
             self.request_id = None
             self.raw_response = {}
 
-    class _Client:
+    class _Client(AccountedGenerateMixin):
         def __init__(self):
             self.calls = 0
 
@@ -149,7 +150,7 @@ def test_preview_llm_failure_per_sample_does_not_block_others() -> None:
 
     call_state = {"count": 0}
 
-    class _PartialClient:
+    class _PartialClient(AccountedGenerateMixin):
         def generate(self, request):  # noqa: ANN001
             call_state["count"] += 1
             # 第 2 次调用失败,其他成功

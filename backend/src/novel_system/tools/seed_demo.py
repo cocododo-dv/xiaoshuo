@@ -29,6 +29,7 @@ from novel_system.db.models import (
     SceneMemory,
     SceneRunState,
     StagedBackfill,
+    StoryProject,
     StyleObservation,
     StyleRule,
     VectorAliasRegistry,
@@ -40,8 +41,15 @@ from novel_system.db.models import (
 from novel_system.db.session import SessionLocal
 from novel_system.services.idempotency import canonical_request_hash
 
+DEMO_PROJECT = {
+    "project_id": "PRJ_DEMO_CH001",
+    "title": "Demo CH001",
+    "outline_text": "Traceable demo project for the CH001 runtime fixtures.",
+}
+
 DEMO_CHAPTER = {
     "chapter_id": "CH001",
+    "project_id": DEMO_PROJECT["project_id"],
     "planned_scene_count": 3,
     "chapter_goal": "重逢与试探成立",
     "main_plot_push": "旧信线索被正式打开",
@@ -52,6 +60,7 @@ DEMO_CHAPTER = {
 DEMO_SCENES = [
     {
         "scene_id": "CH001_SC01",
+        "project_id": DEMO_PROJECT["project_id"],
         "chapter_id": "CH001",
         "scene_seq": 1,
         "pov_character_id": "CHAR_A",
@@ -66,6 +75,7 @@ DEMO_SCENES = [
     },
     {
         "scene_id": "CH001_SC02",
+        "project_id": DEMO_PROJECT["project_id"],
         "chapter_id": "CH001",
         "scene_seq": 2,
         "pov_character_id": "CHAR_B",
@@ -80,6 +90,7 @@ DEMO_SCENES = [
     },
     {
         "scene_id": "CH001_SC03",
+        "project_id": DEMO_PROJECT["project_id"],
         "chapter_id": "CH001",
         "scene_seq": 3,
         "pov_character_id": "CHAR_A",
@@ -959,6 +970,7 @@ def _seed_demo(session: Session, *, fixture: str | None = None) -> dict[str, lis
 
     seed_fe_demo_works(session)
     _cleanup_demo_runtime(session)
+    _upsert(session, StoryProject, "project_id", DEMO_PROJECT)
     _upsert_chapter(session, DEMO_CHAPTER)
     for payload in DEMO_SCENES:
         _upsert_scene(session, payload)

@@ -611,8 +611,8 @@ class WriterDeepReviewService:
             execution_step_key=execution_step_key,
         )
         node_result = self._llm_runner.run(
-            scene_id=_optional_text(payload, "scene_id") or _required_text(payload, "object_id"),
-            chapter_id=_optional_text(payload, "chapter_id") or _required_text(payload, "object_id"),
+            scene_id=context.scene_id,
+            chapter_id=context.chapter_id,
             bundle_id=snapshot["source_version_refs"]["target_text_ref"] or "writer_passage_patch",
             bundle_hash=hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest(),
             node_id="writer_passage_patch",

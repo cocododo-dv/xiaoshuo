@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from novel_system.db.models import LlmCall, LlmCallAttempt
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference._llm_helper import LLMNodeError
 from novel_system.services.style_reference.repository import StyleReferenceRepository
@@ -14,6 +15,7 @@ from novel_system.services.style_reference.validation.forbidden_semantic import 
     check_forbidden_semantic,
 )
 from novel_system.services.style_reference.validation.semantic import check_semantic
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
 @dataclass
@@ -48,14 +50,14 @@ class _StubResp:
 
 
 def _fake_client_returning(structured):
-    class _Cli:
+    class _Cli(AccountedGenerateMixin):
         def generate(self, request):  # noqa: ANN001
             return _StubResp(structured)
     return _Cli()
 
 
 def _fake_client_failing():
-    class _Cli:
+    class _Cli(AccountedGenerateMixin):
         def generate(self, request):  # noqa: ANN001
             raise RuntimeError("network down")
     return _Cli()
@@ -66,7 +68,7 @@ def _fake_client_failing():
 # ---------------------------------------------------------------------------
 
 
-def test_semantic_with_quote_preserves_score() -> None:
+def test_semantic_with_quote_preserves_score(session) -> None:
     client = _fake_client_returning(
         {
             "dimension_scores": [
@@ -74,13 +76,22 @@ def test_semantic_with_quote_preserves_score() -> None:
             ]
         }
     )
-    reports = check_semantic("生成文本", _profile_simple(), client)
+    reports = check_semantic(
+        "生成文本", _profile_simple(), session, client, report_id="sr_report_quote"
+    )
     assert len(reports) == 1
     assert reports[0].quotes_found is True
     assert reports[0].score == 8.5
+    call = session.query(LlmCall).one()
+    attempt = session.query(LlmCallAttempt).one()
+    assert (call.scope_type, call.scope_id) == (
+        "style_reference_validation",
+        "sr_report_quote",
+    )
+    assert attempt.accounting_status == "settled"
 
 
-def test_semantic_no_quote_clips_score_to_4() -> None:
+def test_semantic_no_quote_clips_score_to_4(session) -> None:
     client = _fake_client_returning(
         {
             "dimension_scores": [
@@ -88,19 +99,23 @@ def test_semantic_no_quote_clips_score_to_4() -> None:
             ]
         }
     )
-    reports = check_semantic("生成文本", _profile_simple(), client)
+    reports = check_semantic(
+        "生成文本", _profile_simple(), session, client, report_id="sr_report_no_quote"
+    )
     assert reports[0].quotes_found is False
     assert reports[0].score == 4.0
 
 
-def test_semantic_llm_failure_raises() -> None:
+def test_semantic_llm_failure_raises(session) -> None:
     """LLM 失败应 raise LLMNodeError(caller runner.py 负责降级)。"""
     client = _fake_client_failing()
     with pytest.raises(LLMNodeError):
-        check_semantic("生成文本", _profile_simple(), client)
+        check_semantic(
+            "生成文本", _profile_simple(), session, client, report_id="sr_report_failure"
+        )
 
 
-def test_semantic_multi_dimension_aggregated() -> None:
+def test_semantic_multi_dimension_aggregated(session) -> None:
     client = _fake_client_returning(
         {
             "dimension_scores": [
@@ -110,15 +125,21 @@ def test_semantic_multi_dimension_aggregated() -> None:
             ]
         }
     )
-    reports = check_semantic("text", _profile_simple(), client)
+    reports = check_semantic(
+        "text", _profile_simple(), session, client, report_id="sr_report_multi"
+    )
     assert len(reports) == 3
     assert {r.dimension for r in reports} == {"rhythm", "tone", "motif"}
 
 
-def test_semantic_empty_inputs() -> None:
+def test_semantic_empty_inputs(session) -> None:
     client = _fake_client_returning({"dimension_scores": []})
-    assert check_semantic("", _profile_simple(), client) == []
-    assert check_semantic("text", _profile_simple(), None) == []
+    assert check_semantic(
+        "", _profile_simple(), session, client, report_id="sr_report_empty"
+    ) == []
+    assert check_semantic(
+        "text", _profile_simple(), session, None, report_id="sr_report_none"
+    ) == []
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +192,9 @@ def test_forbidden_semantic_always_triggered() -> None:
         {"triggered": True, "excerpt": "命中的句子", "reasoning": "match"}
     )
     with SessionLocal() as session:
-        hits = check_forbidden_semantic("文本", profile, session, client)
+        hits = check_forbidden_semantic(
+            "文本", profile, session, client, report_id="sr_report_always_trig"
+        )
     assert len(hits) == 2
     assert all(h.pattern_statement in {"禁堆华丽形容词", "禁中二独白"} for h in hits)
 
@@ -184,7 +207,9 @@ def test_forbidden_semantic_never_triggered() -> None:
         {"triggered": False, "excerpt": "", "reasoning": "no match"}
     )
     with SessionLocal() as session:
-        hits = check_forbidden_semantic("文本", profile, session, client)
+        hits = check_forbidden_semantic(
+            "文本", profile, session, client, report_id="sr_report_never_trig"
+        )
     assert hits == []
 
 
@@ -196,7 +221,7 @@ def test_forbidden_semantic_single_llm_failure_does_not_block_others() -> None:
 
     call_count = {"n": 0}
 
-    class _PartialClient:
+    class _PartialClient(AccountedGenerateMixin):
         def generate(self, request):  # noqa: ANN001
             call_count["n"] += 1
             if call_count["n"] == 2:
@@ -204,7 +229,13 @@ def test_forbidden_semantic_single_llm_failure_does_not_block_others() -> None:
             return _StubResp({"triggered": True, "excerpt": "hit", "reasoning": "x"})
 
     with SessionLocal() as session:
-        hits = check_forbidden_semantic("文本", profile, session, _PartialClient())
+        hits = check_forbidden_semantic(
+            "文本",
+            profile,
+            session,
+            _PartialClient(),
+            report_id="sr_report_partial",
+        )
     # 3 个 finding 中 1 个失败 → 剩 2 个返
     assert len(hits) == 2
 
@@ -216,4 +247,10 @@ def test_forbidden_semantic_empty_profile_returns_empty() -> None:
     )
     client = _fake_client_returning({"triggered": False})
     with SessionLocal() as session:
-        assert check_forbidden_semantic("文本", profile, session, client) == []
+        assert check_forbidden_semantic(
+            "文本",
+            profile,
+            session,
+            client,
+            report_id="sr_report_empty_forbidden",
+        ) == []

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from novel_system.db.models import HumanReviewEvent
+from novel_system.db.models import ChapterGoal, HumanReviewEvent, SceneCard, StoryProject
 
 
 def _seed_story(client) -> None:
@@ -381,8 +381,12 @@ def test_knowledge_directory_tracks_direct_vector_summary_and_foreshadow_objects
     assert detail_data["runtime_refs"]["alias_scope"] == "calibration_line:global:global"
 
 
-def test_bundle_builder_includes_new_knowledge_sources_in_snapshot(client) -> None:
+def test_bundle_builder_includes_new_knowledge_sources_in_snapshot(client, session) -> None:
     _seed_story(client)
+    session.add(StoryProject(project_id="PROJECT_KNOWLEDGE", title="Knowledge", outline_text=""))
+    session.get(ChapterGoal, "CH001").project_id = "PROJECT_KNOWLEDGE"
+    session.get(SceneCard, "CH001_SC01").project_id = "PROJECT_KNOWLEDGE"
+    session.commit()
 
     reviews = [
         _review_payload(
@@ -476,7 +480,7 @@ def test_bundle_builder_includes_new_knowledge_sources_in_snapshot(client) -> No
         "/api/v1/scenes/CH001_SC01/run/full",
         headers={"X-Idempotency-Key": "run-scene-knowledge-bundle"},
     )
-    assert scene_run.status_code == 200
+    assert scene_run.status_code == 200, scene_run.text
 
     bundle_id = scene_run.json()["data"]["current_bundle_id"]
     worksheet = client.get(f"/api/v1/interop/export/bundle-worksheet/{bundle_id}")

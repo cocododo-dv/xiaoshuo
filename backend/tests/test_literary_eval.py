@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from novel_system.db.models import LlmCall, LlmCallAttempt
 from novel_system.services.literary_eval import (
     BaselineLiteraryCaseGenerator,
     LLMLiteraryCaseGenerator,
@@ -14,6 +18,7 @@ from novel_system.services.literary_eval import (
 )
 from novel_system.services.llm_client import LLMResponse, ModelRoutingConfig, ProviderRuntimeConfig, TaskModelConfig
 from novel_system.tools.literary_eval import main as literary_eval_main
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
 def test_load_literary_eval_suite_requires_small_structured_cases(tmp_path: Path) -> None:
@@ -50,6 +55,54 @@ cases:
     assert suite.cases[0].banned_terms == ("woke up",)
     assert suite.cases[0].choice_pressure_cues == ("choose", "cannot both")
     assert suite.cases[0].model_voice_banned_terms == ("somehow meaningful",)
+
+
+def test_literary_eval_suite_rejects_duplicate_case_ids_during_load() -> None:
+    with pytest.raises(ValueError, match="duplicate case_id: duplicate_case"):
+        load_literary_eval_suite(
+            {
+                "suite_id": "duplicate-suite",
+                "cases": [
+                    {
+                        "case_id": "duplicate_case",
+                        "title": "First",
+                        "prompt": "First prompt",
+                    },
+                    {
+                        "case_id": "duplicate_case",
+                        "title": "Second",
+                        "prompt": "Second prompt",
+                    },
+                ],
+            }
+        )
+
+
+def test_literary_eval_runner_rejects_direct_duplicate_suite_before_generator() -> None:
+    suite = load_literary_eval_suite(
+        {
+            "suite_id": "direct-duplicate-suite",
+            "cases": [
+                {
+                    "case_id": "duplicate_case",
+                    "title": "First",
+                    "prompt": "First prompt",
+                }
+            ],
+        }
+    )
+    duplicate_suite = replace(suite, cases=(suite.cases[0], suite.cases[0]))
+    provider_calls = 0
+
+    def unexpected_generator(case):
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("generator must not run")
+
+    with pytest.raises(ValueError, match="duplicate case_id: duplicate_case"):
+        LiteraryEvalRunner(duplicate_suite, generator=unexpected_generator)
+
+    assert provider_calls == 0
 
 
 def test_score_literary_case_rewards_required_terms_style_cues_and_length() -> None:
@@ -223,7 +276,9 @@ def test_literary_eval_runner_uses_generator_and_returns_summary(tmp_path: Path)
     assert output_path.exists()
 
 
-def test_llm_literary_case_generator_builds_json_request_with_rubric_context() -> None:
+def test_llm_literary_case_generator_builds_json_request_with_rubric_context(
+    session,
+) -> None:
     suite = load_literary_eval_suite(
         {
             "suite_id": "inline",
@@ -242,7 +297,7 @@ def test_llm_literary_case_generator_builds_json_request_with_rubric_context() -
         }
     )
 
-    class FakeClient:
+    class FakeClient(AccountedGenerateMixin):
         def __init__(self) -> None:
             self.requests = []
 
@@ -258,20 +313,182 @@ def test_llm_literary_case_generator_builds_json_request_with_rubric_context() -
                 raw_response={},
                 usage={"input_tokens": 10, "output_tokens": 8, "total_tokens": 18},
                 finish_reason="stop",
+                raw_usage={"input_tokens": 10, "output_tokens": 8, "total_tokens": 18},
+                usage_present=True,
+                usage_complete=True,
             )
 
     client = FakeClient()
-    generated = LLMLiteraryCaseGenerator(client, model="gpt-5-mini")(suite.cases[0])
+    generated = LLMLiteraryCaseGenerator(
+        client,
+        session=session,
+        eval_run_id="literary_eval_test_run",
+        model="gpt-5-mini",
+    )(suite.cases[0])
 
     assert generated["generated_text"] == "The clocktower held the red envelope under pressure."
     assert generated["provider"] == "fake-provider"
     assert generated["model"] == "gpt-5-mini"
-    assert generated["request_id"] == "resp_eval_001"
+    assert generated["provider_request_id"] == "resp_eval_001"
+    assert generated["llm_call_id"].startswith("llm_eval_")
     assert client.requests[0].response_format == "json_object"
     assert client.requests[0].temperature == 0.75
     assert "required terms: red envelope; clocktower" in client.requests[0].messages[1]["content"]
     assert "style cues: short sentences; pressure" in client.requests[0].messages[1]["content"]
     assert "banned terms: woke up" in client.requests[0].messages[1]["content"]
+    call = session.query(LlmCall).one()
+    attempt = session.query(LlmCallAttempt).one()
+    assert call.llm_call_id == generated["llm_call_id"]
+    assert (call.scope_type, call.scope_id, call.step) == (
+        "literary_eval_case",
+        "literary_eval_test_run:reunion_pressure",
+        "case:reunion_pressure",
+    )
+    assert call.usage_is_estimate is False
+    assert attempt.accounting_status == "settled"
+
+
+def test_llm_literary_case_generator_accounts_missing_usage_provider_failure_and_schema_failure(
+    session,
+) -> None:
+    suite = load_literary_eval_suite(
+        {
+            "suite_id": "accounting",
+            "cases": [
+                {
+                    "case_id": "case_one",
+                    "title": "Case one",
+                    "prompt": "Write one scene.",
+                }
+            ],
+        }
+    )
+    case = suite.cases[0]
+
+    class MissingUsageClient(AccountedGenerateMixin):
+        def generate(self, request):
+            return LLMResponse(
+                request_id=None,
+                provider="fake-provider",
+                model=request.model,
+                text='{"scene_text": "A sufficiently clear scene."}',
+                structured_output={"scene_text": "A sufficiently clear scene."},
+                response_format=request.response_format,
+                raw_response={},
+                usage={},
+                raw_usage=None,
+                usage_present=False,
+                usage_complete=False,
+            )
+
+    missing = LLMLiteraryCaseGenerator(
+        MissingUsageClient(),
+        session=session,
+        eval_run_id="literary_eval_missing_usage",
+        model="fake-model",
+    )(case)
+    missing_call = session.get(LlmCall, missing["llm_call_id"])
+    assert missing_call is not None
+    assert missing_call.accounting_status == "settled"
+    assert missing_call.usage_is_estimate is True
+    assert missing_call.total_tokens > 0
+
+    class FailingClient(AccountedGenerateMixin):
+        def generate(self, _request):
+            raise RuntimeError("provider unavailable")
+
+    failing = LLMLiteraryCaseGenerator(
+        FailingClient(),
+        session=session,
+        eval_run_id="literary_eval_provider_failure",
+        model="fake-model",
+    )
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        failing(case)
+
+    class InvalidSchemaClient(AccountedGenerateMixin):
+        def generate(self, request):
+            return LLMResponse(
+                request_id="provider-schema-error",
+                provider="fake-provider",
+                model=request.model,
+                text="{}",
+                structured_output={},
+                response_format=request.response_format,
+                raw_response={},
+                usage={"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+                raw_usage={"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+                usage_present=True,
+                usage_complete=True,
+            )
+
+    invalid = LLMLiteraryCaseGenerator(
+        InvalidSchemaClient(),
+        session=session,
+        eval_run_id="literary_eval_schema_failure",
+        model="fake-model",
+    )
+    with pytest.raises(ValueError, match="missing scene_text"):
+        invalid(case)
+
+    calls = {call.scope_id: call for call in session.query(LlmCall).all()}
+    attempts = {
+        attempt.llm_call_id: attempt for attempt in session.query(LlmCallAttempt).all()
+    }
+    provider_failure = calls["literary_eval_provider_failure:case_one"]
+    schema_failure = calls["literary_eval_schema_failure:case_one"]
+    assert provider_failure.accounting_status == "failed"
+    assert attempts[provider_failure.llm_call_id].accounting_status == "failed"
+    assert schema_failure.accounting_status == "failed"
+    assert schema_failure.error_code == "LLM_RESPONSE_INVALID_SCHEMA"
+    assert attempts[schema_failure.llm_call_id].accounting_status == "settled"
+
+
+def test_literary_eval_runner_and_live_generator_share_one_eval_run_id_or_reject(
+    session,
+) -> None:
+    suite = load_literary_eval_suite(
+        {
+            "suite_id": "run-id-ownership",
+            "cases": [
+                {
+                    "case_id": "case_one",
+                    "title": "Case one",
+                    "prompt": "Write one scene.",
+                }
+            ],
+        }
+    )
+
+    class NeverCalledClient(AccountedGenerateMixin):
+        def __init__(self) -> None:
+            self.provider_calls = 0
+
+        def generate(self, request):
+            self.provider_calls += 1
+            raise AssertionError("provider must not run for eval_run_id mismatch")
+
+    client = NeverCalledClient()
+    generator = LLMLiteraryCaseGenerator(
+        client,
+        session=session,
+        eval_run_id="generator-run-id",
+        model="fake-model",
+    )
+
+    with pytest.raises(ValueError, match="eval_run_id mismatch"):
+        LiteraryEvalRunner(
+            suite,
+            generator=generator,
+            eval_run_id="runner-run-id",
+        )
+
+    assert client.provider_calls == 0
+    assert session.query(LlmCall).count() == 0
+    assert session.query(LlmCallAttempt).count() == 0
+
+    runner = LiteraryEvalRunner(suite, generator=generator)
+    assert runner.eval_run_id == "generator-run-id"
 
 
 def test_baseline_literary_case_generator_scores_suite_without_live_llm() -> None:
@@ -385,6 +602,114 @@ cases:
     assert '"suite_id": "cli_suite"' in output_path.read_text(encoding="utf-8")
 
 
+def test_literary_eval_tool_live_mode_accounts_each_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    session,
+) -> None:
+    from novel_system.tools import literary_eval as tool_module
+
+    suite_path = tmp_path / "live-suite.yaml"
+    suite_path.write_text(
+        """
+suite_id: cli_live_suite
+cases:
+  - case_id: live_case
+    title: Live case
+    prompt: Write a gate scene.
+    required_terms: ["gate"]
+""".strip(),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "live-report.json"
+    task_config = TaskModelConfig(
+        provider="openai_compatible",
+        provider_id="local_cli",
+        model="local-model",
+        temperature=0.2,
+        max_output_tokens=200,
+        response_format="json_object",
+        api_mode="chat",
+        credential_mode="none",
+    )
+    monkeypatch.setattr(
+        tool_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            llm_enabled=True,
+            llm_provider="openai_compatible",
+            llm_base_url="http://localhost:8080/v1",
+            llm_api_key=None,
+            llm_timeout_seconds=5,
+        ),
+    )
+    monkeypatch.setattr(
+        tool_module,
+        "load_model_routing_config",
+        lambda: ModelRoutingConfig(
+            node_routing={"literary_eval_live": task_config},
+            task_routing={},
+            retry_budget={},
+            job_runtime={},
+        ),
+    )
+    monkeypatch.setattr(
+        tool_module,
+        "load_llm_provider_runtime_configs",
+        lambda: {
+            "local_cli": ProviderRuntimeConfig(
+                provider_id="local_cli",
+                provider_type="openai_compatible",
+                base_url="http://localhost:8080/v1",
+                credential_mode="none",
+                enabled=True,
+                models=("local-model",),
+            )
+        },
+    )
+
+    class FakeLiveClient(AccountedGenerateMixin):
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def generate(self, request):
+            return LLMResponse(
+                request_id="provider_cli_live",
+                provider="openai_compatible",
+                model=request.model,
+                text='{"scene_text": "The gate held."}',
+                structured_output={"scene_text": "The gate held."},
+                response_format=request.response_format,
+                raw_response={},
+                usage={"input_tokens": 4, "output_tokens": 3, "total_tokens": 7},
+                raw_usage={"input_tokens": 4, "output_tokens": 3, "total_tokens": 7},
+                usage_present=True,
+                usage_complete=True,
+            )
+
+    monkeypatch.setattr(tool_module, "LLMClient", FakeLiveClient)
+
+    exit_code = tool_module.main(
+        [
+            "--suite",
+            str(suite_path),
+            "--output",
+            str(output_path),
+            "--mode",
+            "live",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    generation = report["cases"][0]["generation"]
+    assert generation["llm_call_id"].startswith("llm_eval_")
+    assert generation["provider_request_id"] == "provider_cli_live"
+    call = session.query(LlmCall).one()
+    assert call.scope_id == f"{report['eval_run_id']}:live_case"
+    assert call.step == "case:live_case"
+
+
 def test_literary_eval_latest_api_returns_empty_state(
     client: TestClient,
     tmp_path: Path,
@@ -425,6 +750,7 @@ def test_literary_eval_run_api_writes_latest_baseline_report(
 
 def test_literary_eval_run_api_allows_live_local_provider_without_api_key(
     client: TestClient,
+    session,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -472,21 +798,27 @@ def test_literary_eval_run_api_allows_live_local_provider_without_api_key(
         },
     )
 
-    class FakeLiveGenerator:
-        def __init__(self, *_args, model: str, provider_id: str | None, credential_mode: str | None, **_kwargs) -> None:
-            assert model == "Qwen3-14B-Q8_0.gguf"
-            assert provider_id == "local_qwen3"
-            assert credential_mode == "none"
+    class FakeLiveClient(AccountedGenerateMixin):
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
 
-        def __call__(self, case):
-            return {
-                "generated_text": "gate letter archive page dock urgency gesture tension suspicion visual hook",
-                "provider": "openai_compatible",
-                "model": "Qwen3-14B-Q8_0.gguf",
-                "request_id": f"fake_{case.case_id}",
-            }
+        def generate(self, request):
+            scene = "gate letter archive page dock urgency gesture tension suspicion visual hook"
+            return LLMResponse(
+                request_id=f"provider_{request.node_id}",
+                provider="openai_compatible",
+                model=request.model,
+                text='{"scene_text": "' + scene + '"}',
+                structured_output={"scene_text": scene},
+                response_format=request.response_format,
+                raw_response={},
+                usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+                raw_usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+                usage_present=True,
+                usage_complete=True,
+            )
 
-    monkeypatch.setattr(route_module, "LLMLiteraryCaseGenerator", FakeLiveGenerator)
+    monkeypatch.setattr(route_module, "LLMClient", FakeLiveClient)
 
     response = client.post("/api/v1/literary-eval/run", json={"mode": "live"})
 
@@ -494,6 +826,14 @@ def test_literary_eval_run_api_allows_live_local_provider_without_api_key(
     report = response.json()["data"]["report"]
     assert report["mode"] == "live"
     assert report["cases"][0]["generation"]["model"] == "Qwen3-14B-Q8_0.gguf"
+    assert report["cases"][0]["generation"]["llm_call_id"].startswith("llm_eval_")
+    assert report["cases"][0]["generation"]["provider_request_id"].startswith(
+        "provider_"
+    )
+    calls = session.query(LlmCall).all()
+    assert len(calls) == report["summary"]["case_count"]
+    assert {call.scope_type for call in calls} == {"literary_eval_case"}
+    assert all(call.scope_id.startswith(report["eval_run_id"] + ":") for call in calls)
     assert report_path.exists()
 
 

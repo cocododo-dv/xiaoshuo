@@ -18,6 +18,7 @@ from novel_system.db.models import (
     StoryProject,
     VolumeSummary,
 )
+from novel_system.services.llm_accounting import LLMCallContext
 
 
 # ---------------------------------------------------------------------------
@@ -37,8 +38,17 @@ class FakeTaskRunner:
         self.fail = fail
         self.calls: list[dict] = []
 
-    def run_task(self, *, task_name: str, prompt_text: str, system_prompt: str):
-        self.calls.append({"task_name": task_name, "prompt_text": prompt_text})
+    def run_task(
+        self,
+        *,
+        task_name: str,
+        prompt_text: str,
+        system_prompt: str,
+        context: LLMCallContext,
+    ):
+        self.calls.append(
+            {"task_name": task_name, "prompt_text": prompt_text, "context": context}
+        )
         if self.fail:
             raise RuntimeError("forced LLM failure")
         return _FakeResponse(self.response_text)
@@ -75,6 +85,27 @@ def _seed_chapter_memory(session, chapter_id, content, *, kind="mixed"):
         runtime_eligible=1,
     ))
     session.flush()
+
+
+def _consistency_context() -> LLMCallContext:
+    return LLMCallContext(
+        scope_type="scene",
+        scope_id="s3",
+        project_id="proj_w2",
+        scene_id="s3",
+        node_id="consistency_extract",
+        step="consistency_advisory",
+    )
+
+
+def _causal_context() -> LLMCallContext:
+    return LLMCallContext(
+        scope_type="project",
+        scope_id="proj_w2",
+        project_id="proj_w2",
+        node_id="causal_skeleton_refine",
+        step="reverse_causal_refinement",
+    )
 
 
 # ===========================================================================
@@ -285,6 +316,7 @@ class TestHybridConsistency:
         report = log.check_consistency_llm(
             "他利落地翻身上马，拉紧了两侧的缰绳。", "proj_w2", "s3",
             character_ids=["林远"], llm_runner=runner,
+            llm_context=_consistency_context(),
         )
         assert runner.calls and runner.calls[0]["task_name"] == "consistency_extract"
         keyword_hits = [v for v in report.violations if v.source == "keyword"]
@@ -301,6 +333,7 @@ class TestHybridConsistency:
         report = log.check_consistency_llm(
             "林远微笑着点头。", "proj_w2", "s3",
             character_ids=["林远"], llm_runner=runner,
+            llm_context=_consistency_context(),
         )
         # Should not raise; returns keyword-only result
         assert all(v.source == "keyword" for v in report.violations)
@@ -312,6 +345,7 @@ class TestHybridConsistency:
         report = log.check_consistency_llm(
             "林远右手握住剑柄。", "proj_w2", "s3",
             character_ids=["林远"], llm_runner=runner,
+            llm_context=_consistency_context(),
         )
         keyword_hits = [v for v in report.violations if v.source == "keyword"]
         assert len(keyword_hits) >= 1
@@ -347,7 +381,9 @@ class TestCausalSkeletonRefinement:
             '{"gaps": [{"after_step": 1, "missing_premise": "林远必须先经历一次失败", '
             '"why": "否则求助显得突兀"}]}'
         )
-        gaps = refine_skeleton_with_llm(self._skeleton(), llm_runner=runner)
+        gaps = refine_skeleton_with_llm(
+            self._skeleton(), llm_runner=runner, llm_context=_causal_context()
+        )
         assert len(gaps) == 1
         assert gaps[0].after_step == 1
         assert "失败" in gaps[0].missing_premise
@@ -361,14 +397,18 @@ class TestCausalSkeletonRefinement:
         runner = FakeTaskRunner(
             '{"gaps": [{"after_step": 0, "missing_premise": "X", "why": "Y"}]}'
         )
-        refine_skeleton_with_llm(skeleton, llm_runner=runner)
+        refine_skeleton_with_llm(
+            skeleton, llm_runner=runner, llm_context=_causal_context()
+        )
         # Advisory only — skeleton spine is never silently rewritten
         assert len(skeleton.chain) == original_len
 
     def test_refine_llm_failure_returns_empty(self):
         from novel_system.services.reverse_causal_skeleton import refine_skeleton_with_llm
         runner = FakeTaskRunner(fail=True)
-        gaps = refine_skeleton_with_llm(self._skeleton(), llm_runner=runner)
+        gaps = refine_skeleton_with_llm(
+            self._skeleton(), llm_runner=runner, llm_context=_causal_context()
+        )
         assert gaps == []
 
 

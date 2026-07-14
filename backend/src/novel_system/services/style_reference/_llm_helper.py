@@ -8,8 +8,19 @@ PR-3 BaseExtractor / PR-4 ProfileSynthesizer / PR-4 PreviewService 各自实现�
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+from novel_system.db.models import LlmCall
+from novel_system.services.llm_accounting import (
+    LLMAccountingError,
+    LLMAccountingRejected,
+    LLMCallContext,
+    execute_accounted_call,
+    is_llm_control_plane_failure,
+)
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.untrusted_data import (
@@ -29,24 +40,41 @@ class LLMNodeError(Exception):
     semantic_json=[],而非阻塞 sync_only 路径)。
     """
 
-    def __init__(self, message: str, *, node_id: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        node_id: str | None = None,
+        llm_call_id: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.node_id = node_id
+        self.llm_call_id = llm_call_id
+        self.error_code = error_code
 
 
 def call_llm_node(
     node_id: str,
     payload: UntrustedPayload,
     llm_client: Any,
+    *,
+    session: Session,
+    context: LLMCallContext,
 ) -> dict[str, Any]:
     """对指定 task_name 节点发起一次 LLM 调用,返回 structured_output 字典。
 
-    失败统一 raise LLMNodeError(caller 负责降级)。
+    provider / 业务失败 raise LLMNodeError；账本控制面失败保持原异常向上冒泡。
     """
     if not isinstance(payload, UntrustedPayload):
         raise LLMNodeError(
             f"node {node_id!r} requires UntrustedPayload",
             node_id=node_id,
+        )
+    if context.node_id != node_id:
+        raise LLMAccountingRejected(
+            "LLM_ACCOUNTING_CONTEXT_INVALID",
+            f"accounting context node {context.node_id!r} does not match {node_id!r}",
         )
 
     try:
@@ -101,11 +129,35 @@ def call_llm_node(
         provider_options=getattr(task_config, "provider_options", {}),
         response_schema=template.structured_schema,
     )
+    llm_call_id = f"llm_style_{uuid.uuid4().hex}"
     try:
-        response = llm_client.generate(request)
+        response = execute_accounted_call(
+            session,
+            llm_client,
+            request,
+            context,
+            llm_call_id=llm_call_id,
+        )
     except Exception as exc:  # pylint: disable=broad-except
+        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+            raise
         raise LLMNodeError(
-            f"LLMClient.generate failed for {node_id!r}: {exc}",
+            f"accounted LLM execution failed for {node_id!r}: {exc}",
             node_id=node_id,
+            llm_call_id=llm_call_id,
+            error_code=str(getattr(exc, "code", exc.__class__.__name__)),
         ) from exc
-    return getattr(response, "structured_output", None) or {}
+    structured = getattr(response, "structured_output", None) or {}
+    parent = session.get(LlmCall, response.llm_call_id or llm_call_id)
+    if parent is None:
+        raise LLMAccountingError(
+            "LLM_ACCOUNTING_PARENT_ID_MISSING",
+            f"accounted LLM parent disappeared for {node_id!r}",
+        )
+    parent.response_payload_summary = {
+        **dict(parent.response_payload_summary or {}),
+        "structured_output_present": bool(structured),
+        "structured_output_keys": sorted(str(key) for key in structured),
+    }
+    session.commit()
+    return structured

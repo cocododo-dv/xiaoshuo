@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -14,10 +13,13 @@ from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.llm_client import (
     LLMClient,
     LLMRequest,
-    LLMResponse,
-    LLMClientError,
     LLMConfigurationError,
     load_model_routing_config,
+)
+from novel_system.services.llm_accounting import (
+    LLMCallContext,
+    execute_accounted_call,
+    mark_postprocess_failure,
 )
 from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
 from novel_system.services.snowflake_steps import (
@@ -450,7 +452,6 @@ class SnowflakeWorkspaceLLMService:
         user_prompt = _render_user_prompt(template, prompt_payload)
         prompt_hash = _prompt_hash(template_name, template.version, template.system_prompt, user_prompt, template.structured_schema)
         llm_call_id = f"llm_call_project_{task_key}_{uuid.uuid4().hex[:12]}"
-        started_at = time.perf_counter()
         request = LLMRequest(
             model=task_config.model,
             messages=[
@@ -478,19 +479,24 @@ class SnowflakeWorkspaceLLMService:
             **normalize(prompt_payload),
         }
         try:
-            response = self._client().generate(request)
-        except Exception as exc:  # noqa: BLE001
-            self._persist_failed_call(
+            response = execute_accounted_call(
+                self.session,
+                self._client(),
+                request,
+                LLMCallContext(
+                    scope_type="project",
+                    scope_id=project_id,
+                    project_id=project_id,
+                    node_id=task_key,
+                    step=step_ref,
+                ),
                 llm_call_id=llm_call_id,
-                project_id=project_id,
-                step_ref=step_ref,
-                task_key=task_key,
-                task_config=task_config,
-                request=request,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._supplement_accounted_call(
+                llm_call_id=llm_call_id,
                 request_summary=request_summary,
                 prompt_hash=prompt_hash,
-                started_at=started_at,
-                error_code=getattr(exc, "code", exc.__class__.__name__),
                 response_summary=_error_summary(exc),
             )
             raise DomainError(
@@ -512,23 +518,21 @@ class SnowflakeWorkspaceLLMService:
                 raise ValueError("structured output must be an object")
             normalized_output = normalize_output(raw_output)
         except Exception as exc:  # noqa: BLE001
-            self._persist_failed_call(
+            mark_postprocess_failure(
+                self.session,
+                llm_call_id,
+                error_code="LLM_RESPONSE_INVALID_SCHEMA",
+                error_text=str(exc),
+            )
+            self._supplement_accounted_call(
                 llm_call_id=llm_call_id,
-                project_id=project_id,
-                step_ref=step_ref,
-                task_key=task_key,
-                task_config=task_config,
-                request=request,
                 request_summary=request_summary,
                 prompt_hash=prompt_hash,
-                started_at=started_at,
-                error_code="LLM_RESPONSE_INVALID_SCHEMA",
                 response_summary={
                     "message": str(exc),
                     "structured_output": response.structured_output,
                     "request_id": response.request_id,
                 },
-                response=response,
             )
             raise DomainError(
                 "SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA",
@@ -543,18 +547,21 @@ class SnowflakeWorkspaceLLMService:
                 },
             ) from exc
 
-        self._persist_successful_call(
+        self._supplement_accounted_call(
             llm_call_id=llm_call_id,
-            project_id=project_id,
-            step_ref=step_ref,
-            task_key=task_key,
-            request=request,
             request_summary=request_summary,
             prompt_hash=prompt_hash,
-            started_at=started_at,
-            response=response,
+            response_summary={
+                "request_id": response.request_id,
+                "response_format": response.response_format,
+                "structured_output": response.structured_output,
+            },
         )
-        return WorkspaceLLMResult(source="llm", llm_call_id=llm_call_id, payload=normalized_output)
+        return WorkspaceLLMResult(
+            source="llm",
+            llm_call_id=response.llm_call_id or llm_call_id,
+            payload=normalized_output,
+        )
 
     def llm_enabled(self) -> bool:
         """公开可用性探针：FE 的「采纳并结构化」用它决定报错而不是落 fallback 版本。"""
@@ -605,98 +612,27 @@ class SnowflakeWorkspaceLLMService:
             self._prompt_templates = load_prompt_templates()
         return self._prompt_templates[template_name]
 
-    def _persist_successful_call(
+    def _supplement_accounted_call(
         self,
         *,
         llm_call_id: str,
-        project_id: str,
-        step_ref: str,
-        task_key: str,
-        request: LLMRequest,
         request_summary: dict[str, Any],
         prompt_hash: str,
-        started_at: float,
-        response: LLMResponse,
-    ) -> None:
-        self.session.add(
-            LlmCall(
-                llm_call_id=llm_call_id,
-                scope_type="project",
-                scope_id=project_id,
-                provider=response.provider,
-                provider_id=request.provider_id,
-                account_id=request.account_id,
-                model=response.model,
-                node_id=task_key,
-                reasoning_level=request.reasoning_level,
-                native_reasoning_json=response.native_reasoning,
-                credential_mode=request.credential_mode,
-                prompt_hash=prompt_hash,
-                step=step_ref,
-                project_id=project_id or None,
-                scene_id=None,
-                chapter_id=None,
-                request_payload_summary=request_summary,
-                response_payload_summary={
-                    "request_id": response.request_id,
-                    "response_format": response.response_format,
-                    "structured_output": response.structured_output,
-                },
-                prompt_tokens=response.usage.get("input_tokens", 0),
-                completion_tokens=response.usage.get("output_tokens", 0),
-                total_tokens=response.usage.get("total_tokens", 0),
-                latency_ms=int((time.perf_counter() - started_at) * 1000),
-                finish_reason=response.finish_reason,
-                error_code=None,
-            )
-        )
-        self.session.flush()
-
-    def _persist_failed_call(
-        self,
-        *,
-        llm_call_id: str,
-        project_id: str,
-        step_ref: str,
-        task_key: str,
-        task_config: Any,
-        request: LLMRequest | None,
-        request_summary: dict[str, Any],
-        prompt_hash: str,
-        started_at: float,
-        error_code: str,
         response_summary: dict[str, Any],
-        response: LLMResponse | None = None,
     ) -> None:
-        self.session.add(
-            LlmCall(
-                llm_call_id=llm_call_id,
-                scope_type="project",
-                scope_id=project_id,
-                provider=response.provider if response is not None else getattr(task_config, "provider", None),
-                provider_id=getattr(request, "provider_id", None) if request is not None else getattr(task_config, "provider_id", None),
-                account_id=getattr(request, "account_id", None) if request is not None else getattr(task_config, "account_id", None),
-                model=response.model if response is not None else getattr(task_config, "model", None),
-                node_id=task_key,
-                reasoning_level=getattr(request, "reasoning_level", None) if request is not None else getattr(task_config, "reasoning_level", None),
-                native_reasoning_json=response.native_reasoning if response is not None else None,
-                credential_mode=getattr(request, "credential_mode", None) if request is not None else getattr(task_config, "credential_mode", None),
-                prompt_hash=prompt_hash,
-                step=step_ref,
-                project_id=project_id or None,
-                scene_id=None,
-                chapter_id=None,
-                request_payload_summary=request_summary,
-                response_payload_summary=response_summary,
-                prompt_tokens=response.usage.get("input_tokens", 0) if response is not None else 0,
-                completion_tokens=response.usage.get("output_tokens", 0) if response is not None else 0,
-                total_tokens=response.usage.get("total_tokens", 0) if response is not None else 0,
-                latency_ms=int((time.perf_counter() - started_at) * 1000),
-                finish_reason=response.finish_reason if response is not None else None,
-                error_code=error_code,
-            )
-        )
-        self.session.flush()
+        parent = self.session.get(LlmCall, llm_call_id)
+        if parent is None:
+            raise RuntimeError(f"accounted snowflake call {llm_call_id} is missing")
+        parent.prompt_hash = prompt_hash
+        parent.request_payload_summary = {
+            **dict(parent.request_payload_summary or {}),
+            **request_summary,
+        }
+        parent.response_payload_summary = {
+            **dict(parent.response_payload_summary or {}),
+            **response_summary,
+        }
+        self.session.commit()
 
 
 def _project_prompt_payload(project: StoryProject) -> dict[str, Any]:

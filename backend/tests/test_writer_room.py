@@ -9,14 +9,18 @@ from novel_system.db.models import (
     LongformDiagnosticCard,
     SceneCard,
     SceneRunState,
+    StoryProject,
     WriterEvaluation,
 )
+
+PROJECT_ID = "WR_PROJECT"
 
 
 def _create_chapter(session, chapter_id: str) -> None:
     session.add(
         ChapterGoal(
             chapter_id=chapter_id,
+            project_id=PROJECT_ID,
             planned_scene_count=1,
             chapter_goal="林岑必须决定是否公开录音。",
             main_plot_push="让证据浮出水面。",
@@ -31,6 +35,7 @@ def _create_scene(session, scene_id: str, chapter_id: str) -> None:
     session.add(
         SceneCard(
             scene_id=scene_id,
+            project_id=PROJECT_ID,
             chapter_id=chapter_id,
             scene_seq=1,
             pov_character_id="CHAR_LINCEN",
@@ -85,6 +90,7 @@ def _finalize_scene(session, scene_id: str, chapter_id: str, content: str) -> st
 def _ensure_scene_fixture(session) -> tuple[str, str]:
     chapter_id = "WR100"
     scene_id = "WR100_SC01"
+    session.add(StoryProject(project_id=PROJECT_ID, title="Writer room", outline_text=""))
     _create_chapter(session, chapter_id)
     _create_scene(session, scene_id, chapter_id)
     _finalize_scene(session, scene_id, chapter_id, "她解释了全部前史。门外无人说话。")
@@ -152,7 +158,7 @@ def test_writer_room_returns_text_first_payload_with_navigation_diagnosis_candid
 
     response = client.get(f"/api/v1/writer-room/scene/{scene_id}")
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["target"]["object_type"] == "scene"
     assert data["draft"]["draft_id"] == draft["draft_id"]
@@ -357,7 +363,7 @@ def test_author_draft_generate_set_accepts_mode_and_creates_three_separate_write
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     payload = response.json()["data"]
     proposals = payload["proposals"]
     assert payload["mode"] == "near_final"

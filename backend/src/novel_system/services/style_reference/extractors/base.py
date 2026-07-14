@@ -4,7 +4,7 @@
 EvidenceSpan)+ metrics_anchor 注入。
 
 子类只需声明 layer / sub_dimensions / extract_node_id;run_orchestrator 负责调度。
-LLM 调用直接走 LLMClient.generate(LLMRequest),不依赖 LLMTaskRunner。
+LLM 调用经共享 helper 进入 execute_accounted_call，不依赖 LLMTaskRunner。
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from novel_system.services.llm_client import LLMRequest, load_model_routing_config
-from novel_system.services.prompt_builder import load_prompt_templates
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.banned_adjective import assert_no_banned_adjective
 from novel_system.services.style_reference.config_loader import load_yaml_config
@@ -523,7 +522,18 @@ class BaseExtractor:
     def _call_llm(self, node_id: str, payload: dict) -> dict[str, Any]:
         # PR-8 §"_call_llm 统一" — 复用 _llm_helper.call_llm_node,统一 LLM 调用入口
         try:
-            return call_llm_node(node_id, UntrustedPayload(payload), self.llm_client)
+            return call_llm_node(
+                node_id,
+                UntrustedPayload(payload),
+                self.llm_client,
+                session=self.session,
+                context=LLMCallContext(
+                    scope_type="style_reference_book",
+                    scope_id=self.book_id,
+                    node_id=node_id,
+                    step=f"extraction:{self.run_id}",
+                ),
+            )
         except LLMNodeError as exc:
             raise _ExtractLLMError(str(exc)) from exc
 

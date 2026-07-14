@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 from sqlalchemy import select
 
 from novel_system.db.models import StyleReferenceQuote
@@ -202,7 +204,7 @@ def test_missing_assessment_skips_gating(fake_extractor_llm) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _ExplodingClient:
+class _ExplodingClient(AccountedGenerateMixin):
     """被调用即失败:用于断言终态 run 不会再触发任何 LLM 抽取。"""
 
     def __init__(self) -> None:
@@ -328,7 +330,7 @@ def test_qc_gate_returns_none_for_inactive_profile(session) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _FabricatedEvidenceClient:
+class _FabricatedEvidenceClient(AccountedGenerateMixin):
     """extract 返回 1 条 finding,其唯一原始 evidence 的 quote 为伪造文本
     (不在任何段落里);supplement 返回 2 条真实 evidence。
 
@@ -438,7 +440,7 @@ def test_promoted_finding_drops_fabricated_original_evidence() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _OverflowClient:
+class _OverflowClient(AccountedGenerateMixin):
     """extract 返回 10 obs + 5 fp(全部合法 2 evidence),超出 §6.5 上限。"""
 
     def generate(self, request):  # noqa: ANN001
@@ -598,7 +600,7 @@ def _fake_synth_client():
         raw_response: dict = {}
         response_format = "json_object"
 
-    class _Client:
+    class _Client(AccountedGenerateMixin):
         def generate(self, request):  # noqa: ANN001
             return _Resp()
 

@@ -10,6 +10,7 @@ from dataclasses import replace
 
 import pytest
 
+from novel_system.db.models import LlmCall, LlmCallAttempt
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.segmentation import (
@@ -182,6 +183,7 @@ def test_classify_paragraphs_llm_disabled_ignores_client(fake_paragraph_classifi
 )
 def test_classify_paragraphs_secures_every_llm_request_without_changing_results(
     fake_paragraph_classifier,
+    session,
     rule: str,
     expected_fallback: bool,
     expected_agreement: float,
@@ -202,7 +204,13 @@ def test_classify_paragraphs_secures_every_llm_request_without_changing_results(
         for paragraph_index in range(segmentation_llm.ANCHOR_SIZE + 1)
     ]
 
-    result = classify_paragraphs(paragraphs, llm_enabled=True, llm_client=client)
+    result = classify_paragraphs(
+        paragraphs,
+        llm_enabled=True,
+        llm_client=client,
+        session=session,
+        scope_id="sr_book_secure",
+    )
 
     assert len(result.classifications) == len(paragraphs)
     assert result.calibration["fallback_to_heuristic"] is False
@@ -221,11 +229,18 @@ def test_classify_paragraphs_secures_every_llm_request_without_changing_results(
     }
     for request in client.requests:
         _assert_secured_request(request)
+    calls = session.query(LlmCall).all()
+    attempts = session.query(LlmCallAttempt).all()
+    assert len(calls) == len(attempts) == 17
+    assert {call.scope_type for call in calls} == {"style_reference_book"}
+    assert {call.scope_id for call in calls} == {"sr_book_secure"}
+    assert {attempt.accounting_status for attempt in attempts} == {"settled"}
 
 
 def test_classify_paragraphs_moves_template_placeholder_before_bounded_payload(
     fake_paragraph_classifier,
     monkeypatch,
+    session,
 ) -> None:
     templates = load_prompt_templates()
     placeholder_task = (
@@ -259,6 +274,8 @@ def test_classify_paragraphs_moves_template_placeholder_before_bounded_payload(
         [(0, 1, _MALICIOUS_PARAGRAPH)],
         llm_enabled=True,
         llm_client=client,
+        session=session,
+        scope_id="sr_book_placeholder",
     )
 
     assert len(result.classifications) == 1
@@ -284,6 +301,7 @@ def test_classify_paragraphs_moves_template_placeholder_before_bounded_payload(
 def test_segmentation_renderer_failure_uses_stable_error_without_calling_client(
     renderer_name: str,
     monkeypatch,
+    session,
 ) -> None:
     leaked_payload = "TOP_SECRET_SEGMENTATION_PAYLOAD"
 
@@ -304,7 +322,11 @@ def test_segmentation_renderer_failure_uses_stable_error_without_calling_client(
     client = CountingClient()
     with pytest.raises(segmentation_llm.SegmentationLLMError) as exc_info:
         segmentation_llm._classify_via_node(
-            [(0, 1, leaked_payload)], segmentation_llm.NODE_ANCHOR, client
+            [(0, 1, leaked_payload)],
+            segmentation_llm.NODE_ANCHOR,
+            client,
+            session=session,
+            scope_id="sr_book_renderer",
         )
 
     assert exc_info.value.code == "STYLE_REF_LLM_PROMPT_RENDER_FAILED"
@@ -312,7 +334,9 @@ def test_segmentation_renderer_failure_uses_stable_error_without_calling_client(
     assert client.call_count == 0
 
 
-def test_classify_paragraphs_llm_agreement_high(fake_paragraph_classifier) -> None:
+def test_classify_paragraphs_llm_agreement_high(
+    fake_paragraph_classifier, session
+) -> None:
     """默认 fake classifier 在 anchor/bulk 上返回相同结果,agreement=1.0 → 用 fast 路径。"""
     client = fake_paragraph_classifier()
     paragraphs = [
@@ -320,7 +344,13 @@ def test_classify_paragraphs_llm_agreement_high(fake_paragraph_classifier) -> No
         (10, 30, "我心里想着昨天的事,觉得有些不安。"),
         (30, 60, "故事从一个平凡的午后开始,一切都和往常一样。"),
     ]
-    result = classify_paragraphs(paragraphs, llm_enabled=True, llm_client=client)
+    result = classify_paragraphs(
+        paragraphs,
+        llm_enabled=True,
+        llm_client=client,
+        session=session,
+        scope_id="sr_book_agreement_high",
+    )
     # anchor + bulk 都被调过
     assert client.call_count >= 2
     assert result.calibration["fallback_to_strong"] is False
@@ -329,6 +359,7 @@ def test_classify_paragraphs_llm_agreement_high(fake_paragraph_classifier) -> No
 
 def test_classify_paragraphs_llm_agreement_low_falls_back_to_strong(
     fake_paragraph_classifier,
+    session,
 ) -> None:
     """rule=disagree_after_anchor 使 bulk 返回全 transition,与 anchor 大量不一致 → fallback to strong。"""
     client = fake_paragraph_classifier(rule="disagree_after_anchor")
@@ -337,20 +368,34 @@ def test_classify_paragraphs_llm_agreement_low_falls_back_to_strong(
         (10, 30, "我心里想着昨天的事,觉得有些不安。"),
         (30, 60, "故事从一个平凡的午后开始,一切都和往常一样。"),
     ]
-    result = classify_paragraphs(paragraphs, llm_enabled=True, llm_client=client)
+    result = classify_paragraphs(
+        paragraphs,
+        llm_enabled=True,
+        llm_client=client,
+        session=session,
+        scope_id="sr_book_agreement_low",
+    )
     assert result.calibration["fallback_to_strong"] is True
     assert result.calibration["fast_model_agreement"] < 0.85
 
 
-def test_classify_paragraphs_llm_failure_falls_back_to_heuristic() -> None:
+def test_classify_paragraphs_llm_failure_falls_back_to_heuristic(session) -> None:
     """LLM 调用 raise 任意异常 → 降级到启发式,calibration 标 fallback_reason。"""
 
-    class FailingClient:
+    from tests.accounted_llm_fakes import AccountedGenerateMixin
+
+    class FailingClient(AccountedGenerateMixin):
         def generate(self, _request):
             raise RuntimeError("network down")
 
     paragraphs = [(0, 5, "几日后。"), (5, 30, "他心里想着,觉得不安。")]
-    result = classify_paragraphs(paragraphs, llm_enabled=True, llm_client=FailingClient())
+    result = classify_paragraphs(
+        paragraphs,
+        llm_enabled=True,
+        llm_client=FailingClient(),
+        session=session,
+        scope_id="sr_book_failure",
+    )
     assert result.calibration["fallback_to_heuristic"] is True
     assert "fallback_reason" in result.calibration
 

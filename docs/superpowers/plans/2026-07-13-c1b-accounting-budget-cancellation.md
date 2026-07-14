@@ -348,15 +348,17 @@ git commit -m "feat(budget): reserve scene tokens before every call"
 - Modify: `backend/tests/test_system_config.py`
 - Modify: affected service/route tests
 
-- [ ] AST 失败测试枚举生产 `.generate(...)` 调用表达式和 completion probe 的 `httpx.post`；除 `llm_accounting.py` 外不得存在真实 completion 出口。模型列表/健康检查 GET 不计 token，离线 fake 的 `def generate` 不算出口。
-- [ ] `SystemConfigService._probe_completion` 通过账本化 probe helper 发出最小生成请求，scope 为 `system/provider_probe`；成功、HTTP 错误和 transport failure 均落账，不能因为它不是 `LLMClient.generate` 就漏记。
-- [ ] snowflake 迁移到通用入口，保留 project/step scope、prompt hash、parse failure 更新和现有错误码。
-- [ ] style-reference 公共 helper 增 session/scope context，7 个 typed caller 全量传递；`ingest -> segmentation.__init__ -> segmentation.llm` 和 `validation.runner -> semantic/forbidden` 全链传递 session/scope，分段直连也走通用入口，不回退 C1A 不可信边界。
-- [ ] library derive、longform audit 落 project/chapter scope。
-- [ ] literary eval API 与 CLI 为每个 case 落 eval run/case scope；`execute_accounted_call` 返回并传播内部稳定 `llm_call_id`，报告直接保存该 id 对账，provider request id 只作为可空外部字段，不能充当主关联键。
-- [ ] 所有直接出口的成功、usage 缺失和失败测试至少各覆盖一条；禁止因“非场景调用无预算”而跳过账本。
-- [ ] 提供只读 JSON 工具：outlet inventory 输出 application-level completion 出口及是否统一；accounting audit 输出 schema、scope 空值、负 token、stuck reserved、LlmCallAttempt orphan、status/usage provenance 和 legacy unreconstructable counts，供 actual/drill 证据复算。
-- [ ] 更新 handoff 权威源并用生成器 `--check` 验证文档逐字一致。
+阶段验收记录（Task 5）：生产 completion 出口已统一为 8 个权威 identity，inventory 使用保守 AST 枚举所有 `.generate` 属性引用和 completion POST，覆盖 request factory、wrapper/bound callable、函数内及模块 alias、HTTPX `Client/AsyncClient` 等对抗形态；仅 9 个 path/qualname/receiver 精确安全身份可排除，未知或重复 identity 默认拒绝。SystemConfig probe、Snowflake、style-reference 全链、library/longform 与 literary eval API/CLI 均接入 `execute_accounted_call`，成功、usage 缺失、provider/transport/解析失败均有父子账；style 各层只允许明确 provider/business 错误降级，账本控制面原对象透传。outlet inventory 与 accounting audit 均为机器可读 JSON 门禁；audit 使用只读 URI、`query_only`、显式关闭连接、输出冲突预检，并对必需表、37 个必需列及 revision fail-closed。handoff 由权威注解经生成器重建并通过 `--check`。首次 backend 全量暴露的 96 个旧 fixture/契约失败已按 17 文件逐项归零，同时修复非首选 style 恢复错绑、passage scene/chapter context 错绑、demo project 权属缺失和 failure-audit scope 恢复四个真实问题。最终实现回归包括 466 次通过；独立规格复审 482 passed，独立质量复审 57 passed，最终均为 `APPROVED`。canonical actual 仍为 `20260712_0064`，因尚无 0065 的 `llm_call_attempts` 而被 audit 以 `AUDIT_REQUIRED_TABLE_MISSING`/exit 2 正确阻断；迁移属于 Task 9，当前数据库大小、mtime 与 SHA-256 均未改变。
+
+- [x] AST 失败测试枚举生产 `.generate(...)` 调用表达式和 completion probe 的 `httpx.post`；除 `llm_accounting.py` 外不得存在真实 completion 出口。模型列表/健康检查 GET 不计 token，离线 fake 的 `def generate` 不算出口。
+- [x] `SystemConfigService._probe_completion` 通过账本化 probe helper 发出最小生成请求，scope 为 `system/provider_probe`；成功、HTTP 错误和 transport failure 均落账，不能因为它不是 `LLMClient.generate` 就漏记。
+- [x] snowflake 迁移到通用入口，保留 project/step scope、prompt hash、parse failure 更新和现有错误码。
+- [x] style-reference 公共 helper 增 session/scope context，7 个 typed caller 全量传递；`ingest -> segmentation.__init__ -> segmentation.llm` 和 `validation.runner -> semantic/forbidden` 全链传递 session/scope，分段直连也走通用入口，不回退 C1A 不可信边界。
+- [x] library derive、longform audit 落 project/chapter scope。
+- [x] literary eval API 与 CLI 为每个 case 落 eval run/case scope；`execute_accounted_call` 返回并传播内部稳定 `llm_call_id`，报告直接保存该 id 对账，provider request id 只作为可空外部字段，不能充当主关联键。
+- [x] 所有直接出口的成功、usage 缺失和失败测试至少各覆盖一条；禁止因“非场景调用无预算”而跳过账本。
+- [x] 提供只读 JSON 工具：outlet inventory 输出 application-level completion 出口及是否统一；accounting audit 输出 schema、scope 空值、负 token、stuck reserved、LlmCallAttempt orphan、status/usage provenance 和 legacy unreconstructable counts，供 actual/drill 证据复算。
+- [x] 更新 handoff 权威源并用生成器 `--check` 验证文档逐字一致。
 
 Run:
 

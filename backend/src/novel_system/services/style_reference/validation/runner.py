@@ -15,7 +15,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.session import SessionLocal
+from novel_system.services.llm_accounting import (
+    LLMAccountingError,
+    is_llm_control_plane_failure,
+)
 from novel_system.services.errors import DomainError
+from novel_system.services.style_reference._llm_helper import LLMNodeError
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     ValidateRequest,
@@ -230,15 +235,33 @@ def _async_worker(
             semantic_degraded = False
             if llm_enabled and llm_client is not None and policy_allows_llm:
                 try:
-                    semantic = check_semantic(generated_text, profile, llm_client)
+                    semantic = check_semantic(
+                        generated_text,
+                        profile,
+                        bg_session,
+                        llm_client,
+                        report_id=report_id,
+                    )
                 except Exception as exc:  # pylint: disable=broad-except
+                    if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+                        raise
+                    if not isinstance(exc, LLMNodeError):
+                        raise
                     semantic_degraded = True
                     logger.warning("async_worker semantic failed: %s", exc)
                 try:
                     forbid_sem = check_forbidden_semantic(
-                        generated_text, profile, bg_session, llm_client
+                        generated_text,
+                        profile,
+                        bg_session,
+                        llm_client,
+                        report_id=report_id,
                     )
                 except Exception as exc:  # pylint: disable=broad-except
+                    if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+                        raise
+                    if not isinstance(exc, LLMNodeError):
+                        raise
                     semantic_degraded = True
                     logger.warning("async_worker forbidden_semantic failed: %s", exc)
 
@@ -263,6 +286,8 @@ def _async_worker(
             bg_session.flush()
             bg_session.commit()
     except Exception as exc:  # pylint: disable=broad-except
+        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+            raise
         logger.exception("async_worker fatal: %s", exc)
         try:
             with SessionLocal() as fb_session:

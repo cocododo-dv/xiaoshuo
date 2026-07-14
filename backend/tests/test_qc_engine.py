@@ -39,12 +39,13 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
 QC_REPORT_ID_RE = re.compile(r"^qc_report_CH100_SC01_\d{8}T\d{12}Z_[0-9a-f]{12}$")
 
 
-class FakeSceneClient:
+class FakeSceneClient(AccountedGenerateMixin):
     def __init__(self, *, satisfied_source: bool = False) -> None:
         self.requests: list[LLMRequest] = []
         self.satisfied_source = satisfied_source
@@ -97,7 +98,7 @@ class FakeSceneClient:
         )
 
 
-class FakeFixedSceneClient:
+class FakeFixedSceneClient(AccountedGenerateMixin):
     def __init__(self, payloads: list[dict]) -> None:
         self.payloads = list(payloads)
         self.requests: list[LLMRequest] = []
@@ -125,7 +126,7 @@ class FakeFixedSceneClient:
         )
 
 
-class FakeSoftQcClient:
+class FakeSoftQcClient(AccountedGenerateMixin):
     def __init__(self, payloads: list[dict]) -> None:
         self.payloads = list(payloads)
         self.requests: list[LLMRequest] = []
@@ -153,7 +154,7 @@ class FakeSoftQcClient:
         )
 
 
-class FakeQcClient:
+class FakeQcClient(AccountedGenerateMixin):
     def __init__(self, payload: dict) -> None:
         self.payload = payload
         self.requests: list[LLMRequest] = []
@@ -178,7 +179,7 @@ class FakeQcClient:
         )
 
 
-class FakeQcRuntimeFailureClient:
+class FakeQcRuntimeFailureClient(AccountedGenerateMixin):
     def generate(self, request: LLMRequest) -> LLMResponse:
         raise RuntimeError("qc transport timed out before a response was returned")
 
@@ -199,9 +200,11 @@ class FakeAccountedQcRuntimeFailureClient(OnlineAccountedExecution):
 
 
 def _seed_scene(session) -> None:
+    session.add(StoryProject(project_id="PROJECT_QC", title="QC", outline_text="QC"))
     session.add(
         ChapterGoal(
             chapter_id="CH100",
+            project_id="PROJECT_QC",
             planned_scene_count=1,
             chapter_goal="A reunion turns dangerous.",
         )
@@ -210,6 +213,7 @@ def _seed_scene(session) -> None:
     session.add(
         SceneCard(
             scene_id="CH100_SC01",
+            project_id="PROJECT_QC",
             chapter_id="CH100",
             scene_seq=1,
             pov_character_id="CHAR_A",
@@ -2339,16 +2343,13 @@ def test_qc_owner_lease_prerenewal_failure_rethrows_before_provider_and_side_eff
 
     assert raised.value.error_code == "RUN_OWNER_LEASE_LOST"
     assert client.requests == []
-    parent = session.execute(select(LlmCall)).scalar_one()
-    assert parent.accounting_status == "rejected"
-    assert parent.request_dispatched_at is None
+    assert session.execute(select(LlmCall)).scalars().all() == []
     assert session.execute(select(QcReport)).scalars().all() == []
     assert session.execute(select(AttemptTracker)).scalars().all() == []
 
 
 def test_hard_qc_engine_degrades_runtime_failure_to_continue_with_warning(session) -> None:
     _seed_scene(session)
-    session.add(StoryProject(project_id="PROJECT_QC", title="QC", outline_text="QC"))
     session.get(ChapterGoal, "CH100").project_id = "PROJECT_QC"
     session.add(
         SceneDraft(

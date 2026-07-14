@@ -13,6 +13,9 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.orm import Session
+
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.schemas import SemanticReportItem
 from novel_system.services.style_reference.untrusted_data import UntrustedPayload
@@ -29,7 +32,10 @@ QUOTE_PATTERN = re.compile(r"「[^」]+」")
 def check_semantic(
     generated_text: str,
     profile: "StyleReferenceProfile",
+    session: Session,
     llm_client: Any,
+    *,
+    report_id: str,
 ) -> list[SemanticReportItem]:
     """对 generated_text 调 critic LLM,返 list[SemanticReportItem]。
 
@@ -47,7 +53,18 @@ def check_semantic(
         "style_features": style_features,
         "narrative_summary": narrative_summary,
     }
-    raw = call_llm_node(SEMANTIC_NODE_ID, UntrustedPayload(payload), llm_client)
+    raw = call_llm_node(
+        SEMANTIC_NODE_ID,
+        UntrustedPayload(payload),
+        llm_client,
+        session=session,
+        context=LLMCallContext(
+            scope_type="style_reference_validation",
+            scope_id=report_id,
+            node_id=SEMANTIC_NODE_ID,
+            step=f"semantic:{profile.profile_id}",
+        ),
+    )
     dimension_scores = raw.get("dimension_scores") or []
 
     reports: list[SemanticReportItem] = []

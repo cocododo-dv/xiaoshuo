@@ -1,7 +1,8 @@
 """FE-ALIGN Phase 7: 控制塔桥（裁决同源 / onceTask dedupe / 归档写回）。"""
 from __future__ import annotations
 
-from novel_system.db.models import ChapterAuditFinding
+from novel_system.db.models import ChapterAuditFinding, LlmCall, LlmCallAttempt
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 _seq = 0
 
@@ -330,7 +331,7 @@ def test_adjudicate_draft_llm_violations_create_findings(client, session, monkey
         def __init__(self, data):
             self.structured_output = data
 
-    class _Client:
+    class _Client(AccountedGenerateMixin):
         def __init__(self, data):
             self._data = data
 
@@ -345,6 +346,28 @@ def test_adjudicate_draft_llm_violations_create_findings(client, session, monkey
     assert len(result["violations"]) == 1
     assert result["violations"][0]["kind"] == "drift"
     assert result["findings_created"] == 1
+
+    llm_parent = session.query(LlmCall).filter_by(
+        node_id="chapter_audit_adjudicate"
+    ).one()
+    assert (
+        llm_parent.scope_type,
+        llm_parent.scope_id,
+        llm_parent.project_id,
+        llm_parent.chapter_id,
+        llm_parent.step,
+    ) == (
+        "chapter",
+        cid,
+        pid,
+        cid,
+        "chapter_audit_adjudicate",
+    )
+    llm_child = session.query(LlmCallAttempt).filter_by(
+        llm_call_id=llm_parent.llm_call_id
+    ).one()
+    assert llm_child.provider_attempt_no == 0
+    assert llm_child.accounting_status == "settled"
 
     rows = (
         session.query(ChapterAuditFinding)
@@ -370,6 +393,22 @@ def test_adjudicate_draft_llm_violations_create_findings(client, session, monkey
         .all()
     )
     assert len(rows2) == 1
+    llm_parents = session.query(LlmCall).filter_by(
+        node_id="chapter_audit_adjudicate"
+    ).all()
+    assert len(llm_parents) == 2
+    assert all(
+        (parent.scope_type, parent.scope_id, parent.project_id, parent.chapter_id)
+        == ("chapter", cid, pid, cid)
+        for parent in llm_parents
+    )
+    assert all(
+        session.query(LlmCallAttempt).filter_by(
+            llm_call_id=parent.llm_call_id
+        ).count()
+        == 1
+        for parent in llm_parents
+    )
 
 
 def test_anchor_create_honors_idempotency_replay(client):

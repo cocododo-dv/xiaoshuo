@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from novel_system.db.models import AttemptTracker, ChapterGoal, HumanReviewEvent, LlmCall, QcReport, SceneCard, SceneDraft, SceneRunState
+from novel_system.db.models import AttemptTracker, ChapterGoal, HumanReviewEvent, LlmCall, QcReport, SceneCard, SceneDraft, SceneRunState, StoryProject
 from novel_system.services.context_budget import (
     CONTINUITY_DROP_ORDER,
     apply_context_budget,
@@ -13,6 +13,7 @@ from novel_system.services.llm_client import LLMRequest
 from novel_system.services.llm_task_runner import begin_llm_execution, end_llm_execution
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
 def _bundle_snapshot() -> dict:
@@ -47,9 +48,11 @@ def _bundle_snapshot() -> dict:
 
 
 def _seed_scene(session) -> None:
+    session.add(StoryProject(project_id="PROJECT100", title="Context budget", outline_text=""))
     session.add(
         ChapterGoal(
             chapter_id="CH100",
+            project_id="PROJECT100",
             planned_scene_count=1,
             chapter_goal="A reunion turns dangerous.",
         )
@@ -57,6 +60,7 @@ def _seed_scene(session) -> None:
     session.add(
         SceneCard(
             scene_id="CH100_SC01",
+            project_id="PROJECT100",
             chapter_id="CH100",
             scene_seq=1,
             scene_goal="Force both characters to reveal what they know.",
@@ -74,7 +78,7 @@ def _begin_qc_execution(session, execution_id: str):
     return begin_llm_execution(execution_id)
 
 
-class TrackingClient:
+class TrackingClient(AccountedGenerateMixin):
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
 

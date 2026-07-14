@@ -8,6 +8,7 @@ from novel_system.db.models import (
     AuthorDraft,
     FinalScene,
     LlmCall,
+    LlmCallAttempt,
     OperationLog,
     OutlinePlan,
     SceneCard,
@@ -20,6 +21,38 @@ from novel_system.db.models import (
 )
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+
+
+def _patch_accounted_generate(monkeypatch, generate):
+    def generate_accounted(self, request, *, accounting_hook):  # noqa: ANN001
+        handle = accounting_hook.before_dispatch(
+            request=request,
+            dispatch_kind="initial",
+        )
+        try:
+            response = generate(self, request)
+        except Exception as exc:
+            accounting_hook.after_error(
+                handle,
+                request=request,
+                error=exc,
+                raw_response=None,
+                provider_request_id=None,
+                latency_ms=1,
+            )
+            raise
+        accounting_hook.after_response(
+            handle,
+            request=request,
+            response=response,
+            latency_ms=1,
+        )
+        return response
+
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        generate_accounted,
+    )
 
 
 def _create_project(
@@ -1067,10 +1100,13 @@ def test_workspace_v2_step_generation_uses_llm_and_persists_project_scoped_call(
             response_format="json_object",
             raw_response={"id": "resp_snowflake_generate"},
             usage={"input_tokens": 111, "output_tokens": 222, "total_tokens": 333},
+            raw_usage={"input_tokens": 111, "output_tokens": 222, "total_tokens": 333},
+            usage_present=True,
+            usage_complete=True,
             finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    _patch_accounted_generate(monkeypatch, fake_generate)
     project = _create_project(client, key="llm-step")
 
     result = _generate_step(client, project["project_id"], "book_brief")
@@ -1098,6 +1134,15 @@ def test_workspace_v2_step_generation_uses_llm_and_persists_project_scoped_call(
     )
     assert "book_brief" in stored_call.request_payload_summary["current_pressure_diagnosis"]["step_key"]
     assert stored_call.response_payload_summary["structured_output"]["category"] == "Urban Mystery"
+    assert stored_call.accounting_status == "settled"
+    assert stored_call.usage_is_estimate is False
+    attempt = session.scalars(
+        select(LlmCallAttempt).where(
+            LlmCallAttempt.llm_call_id == stored_call.llm_call_id
+        )
+    ).one()
+    assert attempt.accounting_status == "settled"
+    assert attempt.total_tokens == 333
 
     step_run = session.get(SnowflakeStepRun, step["artifact"]["step_run_id"])
     assert step_run is not None
@@ -1140,7 +1185,7 @@ def test_workspace_v2_live_rejects_blank_character_sheet_llm_candidates(client, 
             finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    _patch_accounted_generate(monkeypatch, fake_generate)
 
     response = client.post(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/character_sheets/generate",
@@ -1165,6 +1210,20 @@ def test_workspace_v2_live_rejects_blank_character_sheet_llm_candidates(client, 
         .count()
         == 0
     )
+    failed_call = session.scalars(
+        select(LlmCall).where(
+            LlmCall.project_id == project["project_id"],
+            LlmCall.node_id == "snowflake_step_generate",
+        )
+    ).one()
+    assert failed_call.accounting_status == "failed"
+    assert failed_call.error_code == "LLM_RESPONSE_INVALID_SCHEMA"
+    failed_attempt = session.scalars(
+        select(LlmCallAttempt).where(
+            LlmCallAttempt.llm_call_id == failed_call.llm_call_id
+        )
+    ).one()
+    assert failed_attempt.accounting_status == "settled"
 
 
 def test_workspace_v2_live_missing_snowflake_route_explains_node_route_gap(client, monkeypatch) -> None:
@@ -1199,7 +1258,9 @@ def test_workspace_v2_live_missing_snowflake_route_explains_node_route_gap(clien
     assert error["details"]["next_action"] == "sync_missing_llm_node_routes"
 
 
-def test_workspace_v2_live_responses_404_explains_protocol_mismatch(client, monkeypatch) -> None:
+def test_workspace_v2_live_responses_404_explains_protocol_mismatch(
+    client, session, monkeypatch
+) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
 
     from novel_system.services.llm_client import LLMHTTPError
@@ -1219,7 +1280,7 @@ def test_workspace_v2_live_responses_404_explains_protocol_mismatch(client, monk
             },
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    _patch_accounted_generate(monkeypatch, fake_generate)
     project = _create_project(client, key="responses-404-hint")
     response = client.post(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief/generate",
@@ -1238,6 +1299,22 @@ def test_workspace_v2_live_responses_404_explains_protocol_mismatch(client, monk
         error["details"]["response_summary"]["details"]["next_action"]
         == "switch_provider_api_mode_to_chat_or_use_responses_compatible_provider"
     )
+    session.expire_all()
+    parent = session.scalars(
+        select(LlmCall).where(
+            LlmCall.project_id == project["project_id"],
+            LlmCall.node_id == "snowflake_step_generate",
+        )
+    ).one()
+    assert parent.accounting_status == "failed"
+    assert parent.error_code == "LLM_HTTP_FAILURE"
+    assert parent.step == "book_brief"
+    child = session.scalars(
+        select(LlmCallAttempt).where(
+            LlmCallAttempt.llm_call_id == parent.llm_call_id
+        )
+    ).one()
+    assert child.accounting_status == "failed"
 
 
 def test_workspace_v2_assistant_uses_draft_override_and_returns_candidate_patch(client, session, monkeypatch) -> None:
@@ -1268,7 +1345,7 @@ def test_workspace_v2_assistant_uses_draft_override_and_returns_candidate_patch(
             finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    _patch_accounted_generate(monkeypatch, fake_generate)
     project = _create_project(client, key="assistant-override")
 
     response = client.post(
@@ -1302,6 +1379,9 @@ def test_workspace_v2_assistant_uses_draft_override_and_returns_candidate_patch(
     assert stored_call.request_payload_summary["draft"]["target_reader"] == override_reader
     assert stored_call.request_payload_summary["pressure_rubric"]["dimensions"]
     assert stored_call.request_payload_summary["current_pressure_diagnosis"]["pressure_flags"]
+    assert stored_call.accounting_status == "settled"
+    assert stored_call.usage_is_estimate is True
+    assert stored_call.total_tokens > 0
 
 
 def test_workspace_v2_scene_triage_suggest_returns_non_persistent_suggestions(client, session, monkeypatch) -> None:
@@ -1346,7 +1426,7 @@ def test_workspace_v2_scene_triage_suggest_returns_non_persistent_suggestions(cl
             finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    _patch_accounted_generate(monkeypatch, fake_generate)
 
     response = client.post(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/scene-triage/suggest",

@@ -9,6 +9,7 @@ from novel_system.services.llm_client import LLMResponse
 from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace_llm import _collect_generation_gaps, _normalize_candidates_output
+from tests.accounted_llm_fakes import accounted_generate_method
 
 
 def _fake_generate_capturing(captured: list, payload: dict):
@@ -28,7 +29,7 @@ def _fake_generate_capturing(captured: list, payload: dict):
             finish_reason="stop",
         )
 
-    return fake_generate
+    return accounted_generate_method(fake_generate)
 
 
 def _create_project(client, key: str = "fe-cands-project", title: str = "候选之书") -> str:
@@ -119,7 +120,7 @@ def test_fe_candidates_prompt_grounded_in_backend_truth_not_fe_fold(client, monk
         ]
     }
     monkeypatch.setattr(
-        "novel_system.services.llm_client.LLMClient.generate",
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
         _fake_generate_capturing(captured, payload),
     )
 
@@ -162,7 +163,7 @@ def test_generate_step_carries_adopted_direction_into_prompt(client, monkeypatch
         "safety_rules": ["只借鉴抽象手法。", "不复制人物设定。"],
     }
     monkeypatch.setattr(
-        "novel_system.services.llm_client.LLMClient.generate",
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
         _fake_generate_capturing(captured, payload),
     )
 
@@ -327,7 +328,10 @@ def test_generate_step_repairs_empty_fields_with_one_targeted_retry(client, monk
             finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate),
+    )
 
     pid = _create_project(client)
     response = client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/book_brief/generate", json={})
@@ -360,7 +364,10 @@ def test_generate_step_repairs_empty_fields_with_one_targeted_retry(client, monk
             finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate_complete)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate_complete),
+    )
     pid3 = _create_project(client, key="repair-complete-once", title="候选之书二")
     response = client.post(f"/api/v2/projects/{pid3}/snowflake-workspace/steps/book_brief/generate", json={})
     assert response.status_code == 200, response.text
@@ -418,7 +425,10 @@ def test_generate_step_focus_scene_only_touches_target(client, monkeypatch) -> N
             usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}, finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate),
+    )
 
     # 1) 生成场景列表（服务端指派 scene_id）
     listed = client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_list/generate", json={})
@@ -480,7 +490,10 @@ def test_scene_triage_suggest_items_carry_row_uid(client, monkeypatch) -> None:
             usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}, finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate),
+    )
     listed = client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_list/generate", json={})
     assert listed.status_code == 200, listed.text
     scene_ids.extend(s["scene_id"] for s in listed.json()["data"]["step"]["draft"]["scenes"])
@@ -555,7 +568,10 @@ def test_save_scene_triage_reuses_triage_id_without_duplicating_rows(client, mon
             usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}, finish_reason="stop",
         )
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate),
+    )
     listed = client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_list/generate", json={})
     scene_ids.extend(s["scene_id"] for s in listed.json()["data"]["step"]["draft"]["scenes"])
     assert client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_details/generate", json={}).status_code == 200
@@ -642,7 +658,10 @@ def test_generate_step_full_regen_keeps_manual_members(client, monkeypatch) -> N
         captured.append(request)
         return _char_response(rounds[min(len(captured), len(rounds)) - 1], len(captured), request.model)
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate),
+    )
 
     first = client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/character_sheets/generate", json={})
     assert first.status_code == 200, first.text
@@ -697,7 +716,10 @@ def test_generate_step_focus_character_only_touches_target(client, monkeypatch) 
         payload = focus_payload if '"focus_characters"' in prompt else full_payload
         return _char_response(payload, len(captured), request.model)
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate),
+    )
 
     seeded = client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/character_sheets/generate", json={})
     assert seeded.status_code == 200, seeded.text
@@ -742,7 +764,10 @@ def test_generate_step_focus_character_resolves_from_roster(client, monkeypatch)
                                        "synopsis": "二十年前那场潮汐夜里，她亲手改写了记录，也把自己钉在原地。"}]}
         return _char_response(payload, len(captured), request.model)
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate),
+    )
 
     assert client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/character_sheets/generate", json={}).status_code == 200
 
@@ -770,7 +795,10 @@ def test_generate_step_draft_override_beats_stale_artifact(client, monkeypatch) 
         captured.append(request)
         return _char_response(payload, len(captured), request.model)
 
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        accounted_generate_method(fake_generate),
+    )
 
     assert client.post(f"/api/v2/projects/{pid}/snowflake-workspace/steps/character_sheets/generate", json={}).status_code == 200
 

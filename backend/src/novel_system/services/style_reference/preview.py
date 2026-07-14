@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.errors import (
@@ -109,6 +110,8 @@ class PreviewService:
 
             try:
                 generated = self._call_llm(
+                    profile_id,
+                    ptype,
                     {
                         "profile_summary": narrative_summary,
                         "paragraph_type": ptype,
@@ -159,13 +162,25 @@ class PreviewService:
 
     # ------------------------------------------------------------------ LLM
 
-    def _call_llm(self, payload: dict) -> dict[str, Any]:
+    def _call_llm(
+        self,
+        profile_id: str,
+        paragraph_type: str,
+        payload: dict,
+    ) -> dict[str, Any]:
         # PR-8 §"_call_llm 统一" — 复用 _llm_helper.call_llm_node
         try:
             return call_llm_node(
                 PREVIEW_NODE_ID,
                 UntrustedPayload(payload),
                 self._llm_client,
+                session=self.session,
+                context=LLMCallContext(
+                    scope_type="style_reference_profile",
+                    scope_id=profile_id,
+                    node_id=PREVIEW_NODE_ID,
+                    step=f"preview:{paragraph_type}",
+                ),
             )
         except LLMNodeError as exc:
             raise PreviewError(str(exc)) from exc
