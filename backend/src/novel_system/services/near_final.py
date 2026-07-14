@@ -599,7 +599,7 @@ class NearFinalAcceptanceService:
         )
         try:
             node_result = self._llm_runner.run(
-                scene_id=f"chapter_{chapter.chapter_id}",
+                scene_id=None,
                 chapter_id=chapter.chapter_id,
                 bundle_id=bundle["bundle_id"],
                 bundle_hash=bundle["bundle_snapshot_hash"],

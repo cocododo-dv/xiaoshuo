@@ -128,7 +128,9 @@ class Aggregator:
             }
 
         scene_memories = self.session.execute(
-            select(SceneMemory).where(SceneMemory.chapter_id == chapter_id, SceneMemory.active_flag == 1)
+            select(SceneMemory)
+            .where(SceneMemory.chapter_id == chapter_id, SceneMemory.active_flag == 1)
+            .order_by(SceneMemory.row_id.asc())
         ).scalars().all()
         if not scene_memories:
             return {

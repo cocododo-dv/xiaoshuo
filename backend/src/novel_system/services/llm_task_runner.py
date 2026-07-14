@@ -221,7 +221,7 @@ class LLMNodeRunner:
     def run(
         self,
         *,
-        scene_id: str,
+        scene_id: str | None,
         chapter_id: str,
         bundle_id: str,
         bundle_hash: str,
@@ -236,7 +236,8 @@ class LLMNodeRunner:
         execution_step_key: str | None = None,
         context: LLMCallContext | None = None,
     ) -> LLMNodeResult:
-        llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
+        call_scope_id = scene_id or (context.scope_id if context is not None else chapter_id)
+        llm_call_id = f"llm_call_{call_scope_id}_{uuid.uuid4().hex[:12]}"
         task_config: Any | None = None
         request: LLMRequest | None = None
         request_summary: dict[str, Any] = {}
@@ -732,7 +733,7 @@ class LLMNodeRunner:
         *,
         context: LLMCallContext | None,
         execution_mode: str,
-        scene_id: str,
+        scene_id: str | None,
         chapter_id: str,
         node_id: str,
         step: str,
@@ -762,6 +763,8 @@ class LLMNodeRunner:
         if context.node_id != node_id or context.step != step:
             reject("node_id", "explicit context node and step must match the runner call")
         if context.scope_type == "scene":
+            if scene_id is None:
+                reject("scene_id", "scene context requires a scene id")
             expected = self._scene_accounting_context(
                 runtime=runtime,
                 execution_mode=execution_mode,

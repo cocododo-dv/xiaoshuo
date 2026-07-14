@@ -14,11 +14,15 @@ _LOGGER = logging.getLogger(__name__)
 from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
+    ChapterMemory,
+    ChapterRollingNote,
     FinalScene,
     GenerationPlanningArtifact,
     HumanReviewEvent,
     LlmCall,
     LlmCallAttempt,
+    NarrativeEvent,
+    LongformStructureGuidance,
     QcReport,
     RevisionCandidate,
     SceneBlueprint,
@@ -27,6 +31,7 @@ from novel_system.db.models import (
     SceneDraft,
     SceneMemory,
     SceneRunState,
+    VolumeSummary,
     WriterEvaluation,
     utcnow,
 )
@@ -116,6 +121,7 @@ class Orchestrator:
         claim = checkpoints.acquire_execution(scene_id, effective_execution_id)
         if claim.last_node == "archived":
             self._execution_id = effective_execution_id
+            self._run_job_id = run_job_id
             self._checkpoint_service = checkpoints
             try:
                 final_scene = self._load_archived_checkpoint(scene_id)
@@ -134,6 +140,7 @@ class Orchestrator:
                 )
             finally:
                 self._execution_id = None
+                self._run_job_id = None
                 self._checkpoint_service = None
         self._prepare_state_for_run(state, new_execution=not claim.resumed)
         state.run_policy = run_policy
@@ -879,56 +886,16 @@ class Orchestrator:
             branch=str(near_final.get("near_final_status") or "near_final_ready"),
         )
 
-        archive_result = self.archiver.archive_final_scene(
-            scene_id,
-            final_row_id,
-            qc_report_id=soft_qc.qc_report_id,
-            carry_notes_json=carry_notes_json,
+        return self._archive_near_final_checkpoint(
+            scene=scene,
+            state=state,
+            contract=contract,
+            bundle=bundle,
+            hard_qc_payload=hard_qc_payload,
+            planning=planning,
+            candidate_summaries=candidate_summaries,
+            run_policy=run_policy,
         )
-        self._record_narrative_events(scene, contract, final_generation.content)
-        self._index_scene_to_vector_store(scene, final_generation.content)
-
-        chapter_near_final = None
-        if scene.is_chapter_last == 1:
-            self.aggregator.run_final_aggregate(scene.chapter_id)
-            # §2 summary tower: roll up a volume-level atmosphere summary at span boundaries
-            try:
-                self.aggregator.maybe_aggregate_volume(scene.chapter_id)
-            except Exception:
-                _LOGGER.warning(
-                    "volume aggregation degraded for chapter %s", scene.chapter_id, exc_info=True
-                )
-            chapter_near_final = self.near_final_service.evaluate_chapter(scene.chapter_id)
-            self._detect_and_store_style_drift(scene)
-
-        self._save_run_checkpoint(
-            "archived",
-            artifact_refs={
-                "final_scene_row_id": final_row_id,
-                "scene_memory_row_id": archive_result.get("scene_memory_row_id"),
-            },
-            artifact_hashes={"final_scene": self._text_hash(final_generation.content)},
-        )
-
-        result = self._with_author_projection(scene_id, state, {
-            "scene_status": archive_result["scene_status"],
-            "current_bundle_id": bundle["bundle_id"],
-            "current_bundle_hash": bundle["bundle_snapshot_hash"],
-            "current_final_scene_row_id": final_row_id,
-            "current_qc_report_id": state.current_qc_report_id,
-            "current_human_review_event_id": state.current_human_review_event_id,
-            "hard_qc": hard_qc_payload,
-            "soft_qc": self._soft_qc_result_payload(soft_qc),
-            "planning": planning,
-            "near_final": near_final_payload,
-            "chapter_near_final": chapter_near_final,
-            "style_candidates": candidate_summaries if candidate_summaries else None,
-            "run_policy": run_policy,
-        })
-        result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
-        if near_final_warnings and "author_review_optional_fix" not in (result.get("recommended_actions") or []):
-            result["recommended_actions"] = [*(result.get("recommended_actions") or []), "author_review_optional_fix"]
-        return result
 
     def _archive_near_final_checkpoint(
         self,
@@ -958,37 +925,370 @@ class Orchestrator:
         carry_notes = list(refs.get("carry_notes") or [])
         if self._json_hash(carry_notes) != self._checkpoint_hash("carry_notes"):
             raise DomainError("RUN_CHECKPOINT_CORRUPT", "near-final carry notes hash mismatch", status_code=409)
-        archive_result = self.archiver.archive_final_scene(
-            scene_id,
-            final_scene.row_id,
-            qc_report_id=soft_qc.qc_report_id,
-            carry_notes_json=carry_notes,
+        progress = self._near_final_checkpoint_progress()
+        if progress < 4:
+            archive_result = self.archiver.archive_final_scene(
+                scene_id,
+                final_scene.row_id,
+                qc_report_id=soft_qc.qc_report_id,
+                carry_notes_json=carry_notes,
+                execution_id=self._execution_id,
+                finalize_scene_status=False,
+            )
+            archive_core_product = self._archive_product(
+                scene=scene,
+                kind="core_archive",
+                outcome="completed",
+                step_key="archive:core:0",
+                input_hash=self._text_hash(final_scene.content),
+                final_scene_row_id=final_scene.row_id,
+                scene_memory_row_id=archive_result["scene_memory_row_id"],
+                chapter_rolling_note_row_id=archive_result[
+                    "chapter_rolling_note_row_id"
+                ],
+                archive_attempt_id=archive_result["archive_attempt_id"],
+                final_scene_snapshot=self._archive_final_scene_snapshot(final_scene),
+                scene_memory_snapshot=self._archive_scene_memory_snapshot(
+                    self.session.get(SceneMemory, archive_result["scene_memory_row_id"])
+                ),
+                rolling_note_snapshot=self._archive_rolling_note_snapshot(
+                    self.session.get(
+                        ChapterRollingNote,
+                        archive_result["chapter_rolling_note_row_id"],
+                    )
+                ),
+                archive_attempt_snapshot=self._archive_attempt_snapshot(
+                    self.session.get(
+                        AttemptTracker,
+                        archive_result["archive_attempt_id"],
+                    )
+                ),
+            )
+            self._validate_archive_core_checkpoint(
+                scene=scene,
+                final_scene=final_scene,
+                carry_notes=carry_notes,
+                product=archive_core_product,
+                require_checkpoint_hash=False,
+            )
+            self._save_run_checkpoint(
+                "near_final_ready",
+                sub_index=4,
+                artifact_refs={
+                    "scene_memory_row_id": archive_result["scene_memory_row_id"],
+                    "archive_core": archive_core_product,
+                    "archive_final_scene_snapshot": archive_core_product[
+                        "final_scene_snapshot"
+                    ],
+                    "archive_scene_memory_snapshot": archive_core_product[
+                        "scene_memory_snapshot"
+                    ],
+                    "archive_rolling_note_snapshot": archive_core_product[
+                        "rolling_note_snapshot"
+                    ],
+                    "archive_attempt_snapshot": archive_core_product[
+                        "archive_attempt_snapshot"
+                    ],
+                },
+                artifact_hashes={
+                    "archive_core": self._json_hash(archive_core_product),
+                    "archive_final_scene_snapshot": self._json_hash(
+                        archive_core_product["final_scene_snapshot"]
+                    ),
+                    "archive_scene_memory_snapshot": self._json_hash(
+                        archive_core_product["scene_memory_snapshot"]
+                    ),
+                    "archive_rolling_note_snapshot": self._json_hash(
+                        archive_core_product["rolling_note_snapshot"]
+                    ),
+                    "archive_attempt_snapshot": self._json_hash(
+                        archive_core_product["archive_attempt_snapshot"]
+                    ),
+                },
+            )
+            progress = 4
+        archive_result = self._validate_archive_core_checkpoint(
+            scene=scene,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
         )
-        self._record_narrative_events(scene, contract, final_scene.content)
-        self._index_scene_to_vector_store(scene, final_scene.content)
+        if progress < 5:
+            rule_event_ids = self._record_narrative_events(
+                scene,
+                contract,
+                final_scene.content,
+                include_prose=False,
+                degrade_errors=False,
+            ) or []
+            for ordinal, event_id in enumerate(rule_event_ids):
+                event = self.session.get(NarrativeEvent, event_id)
+                event.payload_json = {
+                    **dict(event.payload_json or {}),
+                    "archive_execution_id": self._execution_id,
+                    "archive_step_key": "archive:rule_events:0",
+                    "archive_ordinal": ordinal,
+                }
+            self.session.flush()
+            rule_events = self._narrative_event_snapshots(rule_event_ids)
+            rule_product = self._archive_product(
+                scene=scene,
+                kind="rule_events",
+                outcome="recorded",
+                step_key="archive:rule_events:0",
+                input_hash=self._text_hash(final_scene.content),
+                event_ids=rule_event_ids,
+                events=rule_events,
+            )
+            self._validate_archive_rule_events_checkpoint(
+                scene,
+                product=rule_product,
+                event_ids=rule_event_ids,
+                events=rule_events,
+                require_checkpoint_hash=False,
+            )
+            self._save_run_checkpoint(
+                "near_final_ready",
+                sub_index=5,
+                artifact_refs={
+                    "archive_rule_event_ids": rule_event_ids,
+                    "archive_rule_events": rule_events,
+                    "archive_rule_product": rule_product,
+                },
+                artifact_hashes={
+                    "archive_rule_events": self._json_hash(rule_events),
+                    "archive_rule_product": self._json_hash(rule_product),
+                },
+            )
+            progress = 5
+        self._validate_archive_rule_events_checkpoint(scene)
+        self._validate_archive_prefix(
+            scene=scene,
+            contract=contract,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            through=5,
+        )
+        if progress < 6:
+            from novel_system.services.narrative_event_log import NarrativeEventLog
+
+            self._reconcile_execution_step("archive:prose_event_extract:0")
+            recovered_prose = self._recover_archive_prose_rejection()
+            if recovered_prose is None:
+                prose_result, prose_event_ids = self._record_prose_events(
+                    NarrativeEventLog(self.session),
+                    scene,
+                    self._archive_event_base(scene, contract),
+                    final_scene.content,
+                    return_event_ids=True,
+                )
+            else:
+                prose_result, prose_event_ids = recovered_prose, []
+            self.session.flush()
+            prose_events = self._narrative_event_snapshots(prose_event_ids)
+            extraction_snapshot = prose_result.product_snapshot()
+            prose_product = self._archive_product(
+                scene=scene,
+                kind="prose_extraction",
+                outcome=extraction_snapshot["outcome"],
+                step_key="archive:prose_event_extract:0",
+                input_hash=self._text_hash(final_scene.content),
+                extraction=extraction_snapshot,
+                event_ids=prose_event_ids,
+                events=prose_events,
+            )
+            if prose_result.llm_call_id is not None:
+                prose_parent = self.session.get(LlmCall, prose_result.llm_call_id)
+                if prose_parent is None:
+                    raise LLMAccountingError(
+                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                        "prose extraction product parent disappeared before archive checkpoint",
+                    )
+                prose_parent.response_payload_summary = {
+                    **dict(prose_parent.response_payload_summary or {}),
+                    "archive_prose_product_hash": self._json_hash(prose_product),
+                }
+            self.session.flush()
+            self._validate_archive_prose_checkpoint(
+                scene,
+                contract,
+                product=prose_product,
+                event_ids=prose_event_ids,
+                events=prose_events,
+                require_checkpoint_hash=False,
+            )
+            self._save_run_checkpoint(
+                "near_final_ready",
+                sub_index=6,
+                artifact_refs={
+                    "archive_prose_product": prose_product,
+                    "archive_prose_event_ids": prose_event_ids,
+                    "archive_prose_events": prose_events,
+                },
+                artifact_hashes={
+                    "archive_prose_product": self._json_hash(prose_product),
+                    "archive_prose_events": self._json_hash(prose_events),
+                },
+            )
+            progress = 6
+        self._validate_archive_prose_checkpoint(scene, contract)
+        self._validate_archive_prefix(
+            scene=scene,
+            contract=contract,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            through=6,
+        )
+        if progress < 7:
+            vector_result = self._index_scene_to_vector_store(scene, final_scene.content)
+            vector_product = self._archive_product(
+                scene=scene,
+                kind="vector_index",
+                outcome=vector_result["outcome"],
+                step_key="archive:vector_index:0",
+                input_hash=self._text_hash(final_scene.content),
+                **{key: value for key, value in vector_result.items() if key != "outcome"},
+            )
+            self._validate_archive_vector_product(
+                scene,
+                final_scene,
+                vector_product,
+                require_checkpoint_hash=False,
+            )
+            self._save_run_checkpoint(
+                "near_final_ready",
+                sub_index=7,
+                artifact_refs={"archive_vector_product": vector_product},
+                artifact_hashes={"archive_vector_product": self._json_hash(vector_product)},
+            )
+            progress = 7
+        self._validate_archive_vector_product(scene, final_scene)
+        self._validate_archive_prefix(
+            scene=scene, contract=contract, final_scene=final_scene,
+            carry_notes=carry_notes, through=7,
+        )
+
+        if progress < 8:
+            chapter_product = self._run_archive_chapter_aggregate(scene, final_scene)
+            self._validate_archive_chapter_product(
+                scene,
+                chapter_product,
+                require_checkpoint_hash=False,
+            )
+            self._save_run_checkpoint(
+                "near_final_ready",
+                sub_index=8,
+                artifact_refs={"archive_chapter_product": chapter_product},
+                artifact_hashes={"archive_chapter_product": self._json_hash(chapter_product)},
+            )
+            progress = 8
+        self._validate_archive_chapter_product(scene)
+        self._validate_archive_prefix(
+            scene=scene, contract=contract, final_scene=final_scene,
+            carry_notes=carry_notes, through=8,
+        )
+
+        if progress < 9:
+            volume_product = self._run_archive_volume_aggregate(scene, final_scene)
+            self._validate_archive_volume_product(
+                scene,
+                volume_product,
+                require_checkpoint_hash=False,
+            )
+            self._save_run_checkpoint(
+                "near_final_ready",
+                sub_index=9,
+                artifact_refs={"archive_volume_product": volume_product},
+                artifact_hashes={"archive_volume_product": self._json_hash(volume_product)},
+            )
+            progress = 9
+        self._validate_archive_volume_product(scene)
+        self._validate_archive_prefix(
+            scene=scene, contract=contract, final_scene=final_scene,
+            carry_notes=carry_notes, through=9,
+        )
 
         chapter_near_final = None
-        if scene.is_chapter_last == 1:
-            self.aggregator.run_final_aggregate(scene.chapter_id)
-            try:
-                self.aggregator.maybe_aggregate_volume(scene.chapter_id)
-            except Exception:
-                _LOGGER.warning("volume aggregation degraded for chapter %s", scene.chapter_id, exc_info=True)
-            chapter_near_final = self.near_final_service.evaluate_chapter(scene.chapter_id)
-            self._detect_and_store_style_drift(scene)
+        if progress < 10:
+            chapter_evaluation_product = self._run_archive_chapter_evaluation(
+                scene,
+                final_scene,
+            )
+            self._validate_archive_chapter_evaluation_product(
+                scene,
+                chapter_evaluation_product,
+                require_checkpoint_hash=False,
+            )
+            self._save_run_checkpoint(
+                "near_final_ready",
+                sub_index=10,
+                artifact_refs={
+                    "archive_chapter_evaluation_product": chapter_evaluation_product,
+                },
+                artifact_hashes={
+                    "archive_chapter_evaluation_product": self._json_hash(
+                        chapter_evaluation_product
+                    ),
+                },
+            )
+            progress = 10
+        chapter_evaluation_product = self._validate_archive_chapter_evaluation_product(scene)
+        self._validate_archive_prefix(
+            scene=scene, contract=contract, final_scene=final_scene,
+            carry_notes=carry_notes, through=10,
+        )
+        if chapter_evaluation_product.get("outcome") == "evaluated":
+            chapter_near_final = chapter_evaluation_product.get("evaluation")
 
+        if progress < 11:
+            drift_result = (
+                self._detect_and_store_style_drift(scene)
+                if scene.is_chapter_last == 1
+                else {"outcome": "not_applicable", "reason": "not_chapter_last"}
+            )
+            drift_product = self._archive_product(
+                scene=scene,
+                kind="style_drift",
+                outcome=drift_result["outcome"],
+                step_key="archive:style_drift:0",
+                input_hash=self._text_hash(final_scene.content),
+                **{key: value for key, value in drift_result.items() if key != "outcome"},
+            )
+            self._validate_archive_drift_product(
+                scene,
+                drift_product,
+                require_checkpoint_hash=False,
+            )
+            self._save_run_checkpoint(
+                "near_final_ready",
+                sub_index=11,
+                artifact_refs={"archive_drift_product": drift_product},
+                artifact_hashes={"archive_drift_product": self._json_hash(drift_product)},
+            )
+            progress = 11
+        self._validate_archive_drift_product(scene)
+        self._validate_archive_prefix(
+            scene=scene, contract=contract, final_scene=final_scene,
+            carry_notes=carry_notes, through=11,
+        )
+
+        manifest = self._archive_manifest()
+        state.scene_status = "archived"
         self._save_run_checkpoint(
             "archived",
             artifact_refs={
                 "final_scene_row_id": final_scene.row_id,
                 "scene_memory_row_id": archive_result.get("scene_memory_row_id"),
+                "archive_manifest": manifest,
             },
-            artifact_hashes={"final_scene": self._text_hash(final_scene.content)},
+            artifact_hashes={
+                "final_scene": self._text_hash(final_scene.content),
+                "archive_manifest": self._json_hash(manifest),
+            },
         )
 
         near_final_warnings = self._near_final_warning_findings(near_final_payload)
         result = self._with_author_projection(scene_id, state, {
-            "scene_status": archive_result["scene_status"],
+            "scene_status": state.scene_status,
             "current_bundle_id": bundle["bundle_id"],
             "current_bundle_hash": bundle["bundle_snapshot_hash"],
             "current_final_scene_row_id": final_scene.row_id,
@@ -1080,7 +1380,12 @@ class Orchestrator:
         )
         self.session.commit()
 
-    def _reconcile_execution_step(self, execution_step_key: str) -> None:
+    def _reconcile_execution_step(
+        self,
+        execution_step_key: str,
+        *,
+        chapter_scope: bool = False,
+    ) -> None:
         if self._checkpoint_service is None or self._execution_id is None:
             return
         self._checkpoint_service.reconcile_step_output(
@@ -1088,6 +1393,8 @@ class Orchestrator:
             execution_id=self._execution_id,
             execution_step_key=execution_step_key,
             output_exists=False,
+            ledger_scene_id=None,
+            use_owner_scene_id=not chapter_scope,
         )
 
     def _validate_checkpoint_llm_output(
@@ -1888,10 +2195,14 @@ class Orchestrator:
         if current_index < near_index:
             return -1
         if current_index > near_index:
-            return 3
+            return 11
         payload = state.run_checkpoint_json or {}
         sub_index = payload.get("sub_index") if isinstance(payload, dict) else None
-        if isinstance(sub_index, int) and not isinstance(sub_index, bool) and sub_index in {0, 1, 2, 3}:
+        if (
+            isinstance(sub_index, int)
+            and not isinstance(sub_index, bool)
+            and sub_index in set(range(12))
+        ):
             return sub_index
         refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
         if sub_index is None and isinstance(refs, dict) and refs.get("final_scene_row_id"):
@@ -1901,6 +2212,1360 @@ class Orchestrator:
             "near-final checkpoint sub-index is invalid",
             status_code=409,
         )
+
+    def _archive_product(
+        self,
+        *,
+        scene: SceneCard,
+        kind: str,
+        outcome: str,
+        step_key: str,
+        input_hash: str,
+        **details: Any,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": kind,
+            "outcome": outcome,
+            "execution_id": self._execution_id,
+            "scene_id": scene.scene_id,
+            "chapter_id": scene.chapter_id,
+            "step_key": step_key,
+            "input_hash": input_hash,
+            **details,
+        }
+
+    @staticmethod
+    def _archive_final_scene_snapshot(row: FinalScene) -> dict[str, Any]:
+        return {
+            "row_id": row.row_id,
+            "scene_id": row.scene_id,
+            "chapter_id": row.chapter_id,
+            "content": row.content,
+            "status": row.status,
+            "source_bundle_id": row.source_bundle_id,
+            "source_bundle_hash": row.source_bundle_hash,
+            "generation_llm_call_id": row.generation_llm_call_id,
+            "created_at": row.created_at,
+        }
+
+    @staticmethod
+    def _archive_scene_memory_snapshot(row: SceneMemory) -> dict[str, Any]:
+        return {
+            "row_id": row.row_id,
+            "scene_id": row.scene_id,
+            "chapter_id": row.chapter_id,
+            "content": row.content,
+            "carry_notes_json": list(row.carry_notes_json or []),
+            "source_bundle_id": row.source_bundle_id,
+            "final_scene_row_id": row.final_scene_row_id,
+            "source_review_id": row.source_review_id,
+            "active_flag": row.active_flag,
+            "runtime_eligible": row.runtime_eligible,
+            "runtime_eligibility_basis": row.runtime_eligibility_basis,
+            "effective_at": row.effective_at,
+            "created_at": row.created_at,
+        }
+
+    @staticmethod
+    def _archive_rolling_note_snapshot(row: ChapterRollingNote) -> dict[str, Any]:
+        return {
+            "row_id": row.row_id,
+            "scene_id": row.scene_id,
+            "chapter_id": row.chapter_id,
+            "source_scene_memory_row_id": row.source_scene_memory_row_id,
+            "note_text": row.note_text,
+            "revision_no": row.revision_no,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _archive_attempt_snapshot(row: AttemptTracker) -> dict[str, Any]:
+        return {
+            "attempt_id": row.attempt_id,
+            "scene_id": row.scene_id,
+            "chapter_id": row.chapter_id,
+            "step": row.step,
+            "status": row.status,
+            "source_bundle_id": row.source_bundle_id,
+            "details_json": dict(row.details_json or {}),
+            "created_at": row.created_at,
+        }
+
+    def _validate_archive_core_checkpoint(
+        self,
+        *,
+        scene: SceneCard,
+        final_scene: FinalScene,
+        carry_notes: list[dict[str, Any]],
+        allow_terminal: bool = False,
+        product: dict[str, Any] | None = None,
+        require_checkpoint_hash: bool = True,
+    ) -> dict[str, Any]:
+        payload = self._active_checkpoint_state().run_checkpoint_json or {}
+        refs = payload.get("artifact_refs") or {}
+        product = product or refs.get("archive_core")
+        if (
+            not isinstance(product, dict)
+            or set(product)
+            != {
+                "schema_version",
+                "kind",
+                "outcome",
+                "execution_id",
+                "scene_id",
+                "chapter_id",
+                "step_key",
+                "input_hash",
+                "final_scene_row_id",
+                "scene_memory_row_id",
+                "chapter_rolling_note_row_id",
+                "archive_attempt_id",
+                "final_scene_snapshot",
+                "scene_memory_snapshot",
+                "rolling_note_snapshot",
+                "archive_attempt_snapshot",
+            }
+            or product.get("schema_version") != 1
+            or product.get("kind") != "core_archive"
+            or product.get("outcome") != "completed"
+            or product.get("execution_id") != self._execution_id
+            or product.get("scene_id") != scene.scene_id
+            or product.get("chapter_id") != scene.chapter_id
+            or product.get("step_key") != "archive:core:0"
+            or product.get("input_hash") != self._text_hash(final_scene.content)
+            or product.get("final_scene_row_id") != final_scene.row_id
+            or (
+                require_checkpoint_hash
+                and self._json_hash(product) != self._checkpoint_hash("archive_core")
+            )
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive core checkpoint product schema/owner/hash is invalid",
+                status_code=409,
+            )
+        memory = self.session.get(SceneMemory, product["scene_memory_row_id"])
+        rolling = self.session.get(
+            ChapterRollingNote,
+            product["chapter_rolling_note_row_id"],
+        )
+        attempt = self.session.get(AttemptTracker, product["archive_attempt_id"])
+        state = self._active_checkpoint_state()
+        snapshot_refs = {
+            "final_scene_snapshot": refs.get("archive_final_scene_snapshot"),
+            "scene_memory_snapshot": refs.get("archive_scene_memory_snapshot"),
+            "rolling_note_snapshot": refs.get("archive_rolling_note_snapshot"),
+            "archive_attempt_snapshot": refs.get("archive_attempt_snapshot"),
+        }
+        if require_checkpoint_hash and any(
+            snapshot_refs[key] != product.get(key)
+            or self._json_hash(snapshot_refs[key])
+            != self._checkpoint_hash(
+                {
+                    "final_scene_snapshot": "archive_final_scene_snapshot",
+                    "scene_memory_snapshot": "archive_scene_memory_snapshot",
+                    "rolling_note_snapshot": "archive_rolling_note_snapshot",
+                    "archive_attempt_snapshot": "archive_attempt_snapshot",
+                }[key]
+            )
+            for key in snapshot_refs
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive core independent snapshot hashes are invalid",
+                status_code=409,
+            )
+        if memory is None or rolling is None or attempt is None:
+            self._raise_checkpoint_output_missing(
+                row_id=(
+                    product["scene_memory_row_id"]
+                    if memory is None
+                    else product["chapter_rolling_note_row_id"]
+                    if rolling is None
+                    else str(product["archive_attempt_id"])
+                )
+            )
+        if (
+            product.get("final_scene_snapshot")
+            != self._archive_final_scene_snapshot(final_scene)
+            or product.get("scene_memory_snapshot")
+            != self._archive_scene_memory_snapshot(memory)
+            or product.get("rolling_note_snapshot")
+            != self._archive_rolling_note_snapshot(rolling)
+            or product.get("archive_attempt_snapshot")
+            != self._archive_attempt_snapshot(attempt)
+            or
+            final_scene.status != "archived"
+            or (
+                state.scene_status != "archived"
+                if allow_terminal
+                else state.scene_status == "archived"
+            )
+            or state.current_final_scene_row_id != final_scene.row_id
+            or memory.scene_id != scene.scene_id
+            or memory.chapter_id != scene.chapter_id
+            or memory.final_scene_row_id != final_scene.row_id
+            or memory.source_bundle_id != final_scene.source_bundle_id
+            or memory.content != final_scene.content
+            or memory.carry_notes_json != carry_notes
+            or memory.active_flag != 1
+            or memory.runtime_eligible != 1
+            or rolling.scene_id != scene.scene_id
+            or rolling.chapter_id != scene.chapter_id
+            or rolling.source_scene_memory_row_id != memory.row_id
+            or rolling.note_text != final_scene.content
+            or attempt.scene_id != scene.scene_id
+            or attempt.chapter_id != scene.chapter_id
+            or attempt.step != "archive"
+            or attempt.status != "completed"
+            or attempt.source_bundle_id != final_scene.source_bundle_id
+            or (attempt.details_json or {}).get("final_scene_row_id")
+            != final_scene.row_id
+            or (attempt.details_json or {}).get("execution_id") != self._execution_id
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive core checkpoint product graph is inconsistent",
+                status_code=409,
+            )
+        return {
+            "scene_memory_row_id": memory.row_id,
+            "chapter_rolling_note_row_id": rolling.row_id,
+            "archive_attempt_id": attempt.attempt_id,
+            "scene_status": state.scene_status,
+        }
+
+    @staticmethod
+    def _narrative_event_snapshot(event: NarrativeEvent) -> dict[str, Any]:
+        return {
+            "event_id": event.event_id,
+            "project_id": event.project_id,
+            "scene_id": event.scene_id,
+            "chapter_id": event.chapter_id,
+            "scene_seq": event.scene_seq,
+            "event_type": event.event_type,
+            "entity_type": event.entity_type,
+            "entity_id": event.entity_id,
+            "fact_key": event.fact_key,
+            "fact_value": event.fact_value,
+            "confidence": event.confidence,
+            "causal_predecessor_id": event.causal_predecessor_id,
+            "theme_tags": list(event.theme_tags or []),
+            "obligation_ids": list(event.obligation_ids or []),
+            "source_text_excerpt": event.source_text_excerpt,
+            "payload_json": dict(event.payload_json or {}),
+            "created_at": event.created_at,
+        }
+
+    def _narrative_event_snapshots(self, event_ids: list[str]) -> list[dict[str, Any]]:
+        snapshots: list[dict[str, Any]] = []
+        for event_id in event_ids:
+            event = self.session.get(NarrativeEvent, event_id)
+            if event is None:
+                self._raise_checkpoint_output_missing(row_id=event_id)
+            snapshots.append(self._narrative_event_snapshot(event))
+        return snapshots
+
+    def _validate_archive_rule_events_checkpoint(
+        self,
+        scene: SceneCard,
+        *,
+        product: dict[str, Any] | None = None,
+        event_ids: list[str] | None = None,
+        events: list[dict[str, Any]] | None = None,
+        require_checkpoint_hash: bool = True,
+    ) -> None:
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
+            "artifact_refs",
+            {},
+        )
+        event_ids = event_ids if event_ids is not None else refs.get("archive_rule_event_ids")
+        events = events if events is not None else refs.get("archive_rule_events")
+        product = product if product is not None else refs.get("archive_rule_product")
+        final_scene = self.session.get(FinalScene, refs.get("final_scene_row_id"))
+        expected_product = (
+            self._archive_product(
+                scene=scene,
+                kind="rule_events",
+                outcome="recorded",
+                step_key="archive:rule_events:0",
+                input_hash=self._text_hash(final_scene.content),
+                event_ids=event_ids,
+                events=events,
+            )
+            if final_scene is not None
+            else None
+        )
+        if (
+            not isinstance(event_ids, list)
+            or any(not isinstance(event_id, str) or not event_id for event_id in event_ids)
+            or len(event_ids) != len(set(event_ids))
+            or not isinstance(events, list)
+            or not isinstance(product, dict)
+            or product != expected_product
+            or (
+                require_checkpoint_hash
+                and self._json_hash(events) != self._checkpoint_hash("archive_rule_events")
+            )
+            or (
+                require_checkpoint_hash
+                and self._json_hash(product) != self._checkpoint_hash("archive_rule_product")
+            )
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive rule-event checkpoint schema/owner/hash is invalid",
+                status_code=409,
+            )
+        actual = self._narrative_event_snapshots(event_ids)
+        if actual != events or any(
+            event.get("scene_id") != scene.scene_id
+            or event.get("chapter_id") != scene.chapter_id
+            or event.get("confidence") != "high"
+            or (event.get("payload_json") or {}).get("source") == "prose"
+            or (event.get("payload_json") or {}).get("archive_execution_id")
+            != self._execution_id
+            or (event.get("payload_json") or {}).get("archive_step_key")
+            != "archive:rule_events:0"
+            or (event.get("payload_json") or {}).get("archive_ordinal") != ordinal
+            for ordinal, event in enumerate(actual)
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive rule-event checkpoint rows are missing, detached, or changed",
+                status_code=409,
+            )
+
+    def _validate_archive_prose_checkpoint(
+        self,
+        scene: SceneCard,
+        contract,
+        *,
+        product: dict[str, Any] | None = None,
+        event_ids: list[str] | None = None,
+        events: list[dict[str, Any]] | None = None,
+        require_checkpoint_hash: bool = True,
+    ) -> None:
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
+            "artifact_refs",
+            {},
+        )
+        product = product if product is not None else refs.get("archive_prose_product")
+        event_ids = event_ids if event_ids is not None else refs.get("archive_prose_event_ids")
+        events = events if events is not None else refs.get("archive_prose_events")
+        final_scene = self.session.get(FinalScene, refs.get("final_scene_row_id"))
+        extraction = product.get("extraction") if isinstance(product, dict) else None
+        if (
+            final_scene is None
+            or not isinstance(product, dict)
+            or not isinstance(extraction, dict)
+            or product
+            != self._archive_product(
+                scene=scene,
+                kind="prose_extraction",
+                outcome=extraction.get("outcome"),
+                step_key="archive:prose_event_extract:0",
+                input_hash=self._text_hash(final_scene.content),
+                extraction=extraction,
+                event_ids=event_ids,
+                events=events,
+            )
+            or not isinstance(event_ids, list)
+            or any(not isinstance(event_id, str) or not event_id for event_id in event_ids)
+            or len(event_ids) != len(set(event_ids))
+            or not isinstance(events, list)
+            or (
+                require_checkpoint_hash
+                and self._json_hash(product) != self._checkpoint_hash("archive_prose_product")
+            )
+            or (
+                require_checkpoint_hash
+                and self._json_hash(events) != self._checkpoint_hash("archive_prose_events")
+            )
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive prose-extraction checkpoint schema/owner/hash is invalid",
+                status_code=409,
+            )
+
+        expected_extraction_fields = {
+            "schema_version",
+            "outcome",
+            "events",
+            "llm_call_id",
+            "execution_id",
+            "execution_step_key",
+            "run_job_id",
+            "reason",
+            "error_code",
+        }
+        outcome = extraction.get("outcome")
+        if (
+            set(extraction) != expected_extraction_fields
+            or extraction.get("schema_version") != 1
+            or outcome
+            not in {
+                "not_invoked",
+                "rejected_before_dispatch",
+                "provider_failed",
+                "parse_failed",
+                "completed_empty",
+                "completed_events",
+            }
+            or extraction.get("execution_id") != self._execution_id
+            or extraction.get("execution_step_key")
+            != "archive:prose_event_extract:0"
+            or extraction.get("run_job_id") != self._run_job_id
+            or not isinstance(extraction.get("events"), list)
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive prose-extraction product field matrix is invalid",
+                status_code=409,
+            )
+        call_id = extraction.get("llm_call_id")
+        if outcome == "not_invoked":
+            if call_id is not None or extraction.get("error_code") is not None:
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "archive prose no-call product has a parent/error",
+                    status_code=409,
+                )
+            ledger = self.session.execute(
+                select(LlmCall).where(
+                    LlmCall.execution_id == self._execution_id,
+                    LlmCall.execution_step_key == "archive:prose_event_extract:0",
+                )
+            ).scalars().all()
+            if ledger:
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "archive prose no-call product unexpectedly has a ledger",
+                    status_code=409,
+                )
+        else:
+            if not isinstance(call_id, str) or not call_id:
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "archive prose called product has no parent id",
+                    status_code=409,
+                )
+            parent = self.session.get(LlmCall, call_id)
+            base = self._archive_event_base(scene, contract)
+            context = LLMCallContext(
+                scope_type="scene",
+                scope_id=scene.scene_id,
+                project_id=base["project_id"],
+                chapter_id=scene.chapter_id,
+                scene_id=scene.scene_id,
+                node_id="extraction",
+                step="archive:prose_event_extract:0",
+                execution_id=self._execution_id,
+                execution_step_key="archive:prose_event_extract:0",
+                run_job_id=self._run_job_id,
+                provider_execution_mode="online",
+            )
+            expected_outcome = {
+                "completed_empty": "completed",
+                "completed_events": "completed",
+                "parse_failed": "parse_failed",
+                "provider_failed": "provider_failed",
+                "rejected_before_dispatch": "rejected_before_dispatch",
+            }[outcome]
+            try:
+                validate_product_call(
+                    self.session,
+                    call_id,
+                    context,
+                    expected_outcome=expected_outcome,
+                    expected_error_code=(
+                        extraction.get("error_code")
+                        if expected_outcome
+                        in {"provider_failed", "rejected_before_dispatch"}
+                        else None
+                    ),
+                )
+            except LLMAccountingError as exc:
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "archive prose parent/attempt ledger is invalid",
+                    status_code=409,
+                    details={"llm_call_id": call_id, "error_code": exc.code},
+                ) from exc
+            if (
+                not isinstance(parent.response_payload_summary, dict)
+                or parent.response_payload_summary.get("archive_prose_product_hash")
+                != self._json_hash(product)
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "archive prose product hash is detached from its parent",
+                    status_code=409,
+                )
+            if outcome in {"completed_empty", "completed_events"}:
+                from novel_system.services.prose_event_extractor import (
+                    prose_extraction_parsed_hash,
+                )
+
+                if parent.response_payload_summary.get(
+                    "prose_extraction_parsed_hash"
+                ) != prose_extraction_parsed_hash(extraction.get("events") or []):
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "archive prose parsed output hash is detached from its parent",
+                        status_code=409,
+                    )
+        actual = self._narrative_event_snapshots(event_ids)
+        extracted_events = extraction.get("events") or []
+        if (
+            actual != events
+            or len(actual) != len(extracted_events)
+            or any(
+                event.get("scene_id") != scene.scene_id
+                or event.get("chapter_id") != scene.chapter_id
+                or event.get("confidence") != "extracted"
+                or (event.get("payload_json") or {}).get("source") != "prose"
+                or (event.get("payload_json") or {}).get("archive_execution_id")
+                != self._execution_id
+                or (event.get("payload_json") or {}).get("archive_step_key")
+                != "archive:prose_event_extract:0"
+                or (event.get("payload_json") or {}).get("archive_ordinal") != ordinal
+                or {
+                    "event_type": event.get("event_type"),
+                    "entity_id": event.get("entity_id"),
+                    "fact_key": event.get("fact_key"),
+                    "fact_value": event.get("fact_value"),
+                    "evidence": (
+                        event.get("source_text_excerpt") or ""
+                        if extracted_events[ordinal].get("evidence")
+                        else ""
+                    ),
+                }
+                != extracted_events[ordinal]
+                for ordinal, event in enumerate(actual)
+            )
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive prose event rows are missing, detached, or changed",
+                status_code=409,
+            )
+
+    def _recover_archive_prose_rejection(self) -> ProseExtractionResult | None:
+        """Restore a durable local rejection without creating a second parent call."""
+
+        from novel_system.services.prose_event_extractor import ProseExtractionResult
+
+        calls = list(
+            self.session.scalars(
+                select(LlmCall)
+                .where(
+                    LlmCall.scene_id == self._active_checkpoint_state().scene_id,
+                    LlmCall.execution_id == self._execution_id,
+                    LlmCall.execution_step_key == "archive:prose_event_extract:0",
+                )
+                .order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())
+            ).all()
+        )
+        rejected = [
+            call
+            for call in calls
+            if call.accounting_status == "rejected"
+            and call.request_dispatched_at is None
+        ]
+        if not rejected:
+            return None
+        if len(rejected) != 1 or any(
+            call is not rejected[0] and call.accounting_status != "released"
+            for call in calls
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive prose rejected tombstone ledger is ambiguous",
+                status_code=409,
+            )
+        parent = rejected[0]
+        if not isinstance(parent.error_code, str) or not parent.error_code:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive prose rejected tombstone has no error code",
+                status_code=409,
+            )
+        return ProseExtractionResult(
+            outcome="rejected_before_dispatch",
+            llm_call_id=parent.llm_call_id,
+            execution_id=self._execution_id,
+            execution_step_key="archive:prose_event_extract:0",
+            run_job_id=self._run_job_id,
+            reason="pre_dispatch_rejection",
+            error_code=parent.error_code,
+        )
+
+    def _archive_checkpoint_ref(self, key: str) -> Any:
+        return ((self._active_checkpoint_state().run_checkpoint_json or {}).get(
+            "artifact_refs", {}
+        )).get(key)
+
+    def _validate_common_archive_product(
+        self,
+        *,
+        scene: SceneCard,
+        product: Any,
+        kind: str,
+        step_key: str,
+        outcomes: set[str],
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(product, dict)
+            or product.get("schema_version") != 1
+            or product.get("kind") != kind
+            or product.get("outcome") not in outcomes
+            or product.get("execution_id") != self._execution_id
+            or product.get("scene_id") != scene.scene_id
+            or product.get("chapter_id") != scene.chapter_id
+            or product.get("step_key") != step_key
+            or not isinstance(product.get("input_hash"), str)
+            or not product.get("input_hash")
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                f"archive {kind} product schema/owner is invalid",
+                status_code=409,
+            )
+        return product
+
+    def _validate_archive_vector_product(
+        self,
+        scene: SceneCard,
+        final_scene: FinalScene,
+        product: dict[str, Any] | None = None,
+        *,
+        require_checkpoint_hash: bool = True,
+    ) -> dict[str, Any]:
+        product = product or self._archive_checkpoint_ref("archive_vector_product")
+        product = self._validate_common_archive_product(
+            scene=scene,
+            product=product,
+            kind="vector_index",
+            step_key="archive:vector_index:0",
+            outcomes={"indexed", "already_present", "non_persistent", "failed"},
+        )
+        if (
+            product.get("input_hash") != self._text_hash(final_scene.content)
+            or product.get("vector_id") != scene.scene_id
+            or product.get("text_hash")
+            != self._text_hash((final_scene.content or "")[:600])
+            or not isinstance(product.get("collection_name"), str)
+            or product.get("backend") not in {"memory", "chroma"}
+            or product.get("validation_scope")
+            != ("process_local" if product.get("backend") == "memory" else "persistent")
+            or product.get("write_status")
+            not in {"indexed", "already_present", "failed"}
+            or (
+                product.get("backend") == "memory"
+                and product.get("outcome") not in {"non_persistent", "failed"}
+            )
+            or (
+                product.get("backend") != "memory"
+                and product.get("outcome") == "non_persistent"
+            )
+            or (
+                require_checkpoint_hash
+                and self._json_hash(product)
+                != self._checkpoint_hash("archive_vector_product")
+            )
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive vector product identity/hash is invalid",
+                status_code=409,
+            )
+        if product["outcome"] == "non_persistent":
+            if product.get("error_code") is not None or product.get("write_status") not in {
+                "indexed",
+                "already_present",
+            }:
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "non-persistent vector product has invalid local write evidence",
+                    status_code=409,
+                )
+            return product
+        if product["outcome"] in {"indexed", "already_present"}:
+            if (
+                product.get("error_code") is not None
+                or product.get("write_status") != product["outcome"]
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "persistent vector product outcome does not match its write evidence",
+                    status_code=409,
+                )
+            from novel_system.services.vector_store import get_vector_store
+
+            store = get_vector_store(backend=product["backend"])
+            collection_exists = store.collection_exists(product["collection_name"])
+            if not collection_exists and product["validation_scope"] == "process_local":
+                return product
+            rows = store.load_collection(product["collection_name"]) if collection_exists else []
+            matches = [row for row in rows if row.get("id") == scene.scene_id]
+            if (
+                len(matches) != 1
+                or self._text_hash(str(matches[0].get("text") or ""))
+                != product["text_hash"]
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "archive vector product no longer matches the external index",
+                    status_code=409,
+                )
+        elif (
+            not isinstance(product.get("error_code"), str)
+            or product.get("write_status") != "failed"
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive vector failure has no stable error code",
+                status_code=409,
+            )
+        return product
+
+    def _scene_memory_inputs(self, chapter_id: str) -> list[dict[str, str]]:
+        memories = list(
+            self.session.scalars(
+                select(SceneMemory)
+                .where(
+                    SceneMemory.chapter_id == chapter_id,
+                    SceneMemory.active_flag == 1,
+                )
+                .order_by(SceneMemory.row_id.asc())
+            ).all()
+        )
+        return [
+            {
+                "row_id": memory.row_id,
+                "scene_id": memory.scene_id,
+                "chapter_id": memory.chapter_id,
+                "content_hash": self._text_hash(memory.content),
+            }
+            for memory in memories
+        ]
+
+    @staticmethod
+    def _chapter_memory_snapshot(memory: ChapterMemory) -> dict[str, Any]:
+        return {
+            "row_id": memory.row_id,
+            "chapter_id": memory.chapter_id,
+            "aggregate_stage": memory.aggregate_stage,
+            "content": memory.content,
+            "memory_kind": memory.memory_kind,
+            "source_review_id": memory.source_review_id,
+            "active_flag": memory.active_flag,
+            "runtime_eligible": memory.runtime_eligible,
+            "runtime_eligibility_basis": memory.runtime_eligibility_basis,
+            "effective_at": memory.effective_at,
+            "created_at": memory.created_at,
+        }
+
+    def _run_archive_chapter_aggregate(
+        self, scene: SceneCard, final_scene: FinalScene
+    ) -> dict[str, Any]:
+        if scene.is_chapter_last != 1:
+            return self._archive_product(
+                scene=scene,
+                kind="chapter_aggregate",
+                outcome="not_applicable",
+                step_key="archive:chapter_aggregate:0",
+                input_hash=self._text_hash(final_scene.content),
+                reason="not_chapter_last",
+                inputs=[],
+                result=None,
+                chapter_memory=None,
+            )
+        inputs = self._scene_memory_inputs(scene.chapter_id)
+        result = self.aggregator.run_final_aggregate(scene.chapter_id)
+        self.session.flush()
+        row_id = result.get("chapter_memory_row_id") if isinstance(result, dict) else None
+        memory = self.session.get(ChapterMemory, row_id) if isinstance(row_id, str) else None
+        return self._archive_product(
+            scene=scene,
+            kind="chapter_aggregate",
+            outcome=("aggregated" if memory is not None else "no_op"),
+            step_key="archive:chapter_aggregate:0",
+            input_hash=self._json_hash(inputs),
+            reason=(result or {}).get("reason") if isinstance(result, dict) else "no_result",
+            inputs=inputs,
+            result=result,
+            chapter_memory=(self._chapter_memory_snapshot(memory) if memory is not None else None),
+        )
+
+    def _validate_archive_chapter_product(
+        self,
+        scene: SceneCard,
+        product: dict[str, Any] | None = None,
+        *,
+        require_checkpoint_hash: bool = True,
+    ) -> dict[str, Any]:
+        product = product or self._archive_checkpoint_ref("archive_chapter_product")
+        product = self._validate_common_archive_product(
+            scene=scene,
+            product=product,
+            kind="chapter_aggregate",
+            step_key="archive:chapter_aggregate:0",
+            outcomes={"not_applicable", "aggregated", "no_op"},
+        )
+        if require_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash(
+            "archive_chapter_product"
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate product hash mismatch", status_code=409)
+        if scene.is_chapter_last != 1:
+            final_scene = self.session.get(
+                FinalScene,
+                self._archive_checkpoint_ref("final_scene_row_id"),
+            )
+            if (
+                product.get("outcome") != "not_applicable"
+                or product.get("reason") != "not_chapter_last"
+                or product.get("inputs") != []
+                or final_scene is None
+                or product.get("input_hash") != self._text_hash(final_scene.content)
+                or product.get("result") is not None
+                or product.get("chapter_memory") is not None
+            ):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene chapter product is invalid", status_code=409)
+            return product
+        inputs = product.get("inputs")
+        if (
+            not isinstance(inputs, list)
+            or inputs != sorted(inputs, key=lambda item: item.get("row_id", ""))
+            or product.get("input_hash") != self._json_hash(inputs)
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate input manifest is invalid", status_code=409)
+        for item in inputs:
+            memory = self.session.get(SceneMemory, item.get("row_id") if isinstance(item, dict) else None)
+            if memory is None:
+                self._raise_checkpoint_output_missing(row_id=(item or {}).get("row_id"))
+            if (
+                memory.scene_id != item.get("scene_id")
+                or memory.chapter_id != scene.chapter_id
+                or item.get("chapter_id") != scene.chapter_id
+                or self._text_hash(memory.content) != item.get("content_hash")
+            ):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate input memory changed", status_code=409)
+        snapshot = product.get("chapter_memory")
+        if product.get("outcome") == "aggregated":
+            memory = self.session.get(ChapterMemory, (snapshot or {}).get("row_id"))
+            if memory is None:
+                self._raise_checkpoint_output_missing(row_id=(snapshot or {}).get("row_id"))
+            actual = self._chapter_memory_snapshot(memory)
+            for mutable_field in (
+                "active_flag",
+                "runtime_eligible",
+                "runtime_eligibility_basis",
+            ):
+                actual[mutable_field] = snapshot.get(mutable_field)
+            expected_content = "\n".join(
+                self.session.get(SceneMemory, item["row_id"]).content
+                for item in inputs
+            )
+            if actual != snapshot or memory.content != expected_content:
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate output changed", status_code=409)
+        elif snapshot is not None:
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter no-op unexpectedly has output", status_code=409)
+        if (
+            product.get("outcome") == "no_op"
+            and isinstance(product.get("result"), dict)
+            and product["result"].get("status") == "created"
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate created result lost its output", status_code=409)
+        return product
+
+    def _volume_input_memories(self, scene: SceneCard) -> list[dict[str, str]]:
+        chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        if chapter is None or chapter.project_id is None or chapter.display_order is None:
+            return []
+        chapters = list(
+            self.session.scalars(
+                select(ChapterGoal)
+                .where(
+                    ChapterGoal.project_id == chapter.project_id,
+                    ChapterGoal.trashed_flag == 0,
+                    ChapterGoal.display_order.isnot(None),
+                    ChapterGoal.display_order <= chapter.display_order,
+                )
+                .order_by(ChapterGoal.display_order.desc())
+                .limit(5)
+            ).all()
+        )
+        chapter_ids = [item.chapter_id for item in reversed(chapters)]
+        rows = list(
+            self.session.scalars(
+                select(ChapterMemory).where(
+                    ChapterMemory.chapter_id.in_(chapter_ids),
+                    ChapterMemory.aggregate_stage == "final",
+                    ChapterMemory.active_flag == 1,
+                )
+            ).all()
+        )
+        order = {chapter_id: ordinal for ordinal, chapter_id in enumerate(chapter_ids)}
+        rows.sort(key=lambda row: (order.get(row.chapter_id, 999), row.row_id))
+        return [
+            {
+                "row_id": row.row_id,
+                "chapter_id": row.chapter_id,
+                "content_hash": self._text_hash(row.content),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _volume_snapshot(row: VolumeSummary) -> dict[str, Any]:
+        return {
+            "row_id": row.row_id,
+            "project_id": row.project_id,
+            "volume_seq": row.volume_seq,
+            "chapter_id_start": row.chapter_id_start,
+            "chapter_id_end": row.chapter_id_end,
+            "chapter_count": row.chapter_count,
+            "atmosphere_summary": row.atmosphere_summary,
+            "factual_digest": row.factual_digest,
+            "active_flag": row.active_flag,
+            "runtime_eligible": row.runtime_eligible,
+            "runtime_eligibility_basis": row.runtime_eligibility_basis,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    def _run_archive_volume_aggregate(self, scene: SceneCard, final_scene: FinalScene) -> dict[str, Any]:
+        if scene.is_chapter_last != 1:
+            return self._archive_product(
+                scene=scene, kind="volume_aggregate", outcome="not_applicable",
+                step_key="archive:volume_aggregate:0", input_hash=self._text_hash(final_scene.content),
+                reason="not_chapter_last", inputs=[], result=None, volume_summary=None,
+            )
+        inputs = self._volume_input_memories(scene)
+        try:
+            result = self.aggregator.maybe_aggregate_volume(scene.chapter_id)
+            row_id = result.get("volume_summary_row_id") if isinstance(result, dict) else None
+            row = self.session.get(VolumeSummary, row_id) if isinstance(row_id, str) else None
+            outcome = "aggregated" if row is not None else "no_op"
+            error_code = None
+        except Exception as exc:
+            _LOGGER.warning("volume aggregation degraded for chapter %s", scene.chapter_id, exc_info=True)
+            result, row, outcome, error_code = None, None, "degraded", exc.__class__.__name__
+        return self._archive_product(
+            scene=scene, kind="volume_aggregate", outcome=outcome,
+            step_key="archive:volume_aggregate:0", input_hash=self._json_hash(inputs),
+            reason=(result or {}).get("reason") if isinstance(result, dict) else ("aggregation_failed" if error_code else "no_result"),
+            error_code=error_code, inputs=inputs, result=result,
+            volume_summary=(self._volume_snapshot(row) if row is not None else None),
+        )
+
+    def _validate_archive_volume_product(
+        self, scene: SceneCard, product: dict[str, Any] | None = None, *, require_checkpoint_hash: bool = True,
+    ) -> dict[str, Any]:
+        product = product or self._archive_checkpoint_ref("archive_volume_product")
+        product = self._validate_common_archive_product(
+            scene=scene, product=product, kind="volume_aggregate", step_key="archive:volume_aggregate:0",
+            outcomes={"not_applicable", "aggregated", "no_op", "degraded"},
+        )
+        if require_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash("archive_volume_product"):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate product hash mismatch", status_code=409)
+        if scene.is_chapter_last != 1:
+            final_scene = self.session.get(
+                FinalScene,
+                self._archive_checkpoint_ref("final_scene_row_id"),
+            )
+            if product.get("outcome") != "not_applicable" or product.get("reason") != "not_chapter_last" or product.get("inputs") != []:
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene volume product is invalid", status_code=409)
+            if (
+                final_scene is None
+                or product.get("input_hash") != self._text_hash(final_scene.content)
+                or product.get("result") is not None
+                or product.get("volume_summary") is not None
+            ):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene volume no-op payload is invalid", status_code=409)
+            return product
+        inputs = product.get("inputs")
+        if not isinstance(inputs, list) or product.get("input_hash") != self._json_hash(inputs):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate input manifest is invalid", status_code=409)
+        for item in inputs:
+            row = self.session.get(ChapterMemory, item.get("row_id") if isinstance(item, dict) else None)
+            if row is None:
+                self._raise_checkpoint_output_missing(row_id=(item or {}).get("row_id"))
+            if (
+                row.chapter_id != item.get("chapter_id")
+                or self._text_hash(row.content) != item.get("content_hash")
+            ):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate input changed", status_code=409)
+        snapshot = product.get("volume_summary")
+        if product.get("outcome") == "aggregated":
+            row = self.session.get(VolumeSummary, (snapshot or {}).get("row_id"))
+            if row is None:
+                self._raise_checkpoint_output_missing(row_id=(snapshot or {}).get("row_id"))
+            actual = self._volume_snapshot(row)
+            for mutable_field in ("active_flag", "runtime_eligible", "runtime_eligibility_basis", "updated_at"):
+                actual[mutable_field] = snapshot.get(mutable_field)
+            if actual != snapshot:
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate output changed", status_code=409)
+        elif snapshot is not None:
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume non-output product has a row", status_code=409)
+        if (
+            product.get("outcome") == "no_op"
+            and isinstance(product.get("result"), dict)
+            and product["result"].get("status") == "created"
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate created result lost its output", status_code=409)
+        if product.get("outcome") == "degraded" and not isinstance(product.get("error_code"), str):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume degraded product has no error code", status_code=409)
+        return product
+
+    @staticmethod
+    def _archive_writer_evaluation_snapshot(row: WriterEvaluation) -> dict[str, Any]:
+        return {
+            "evaluation_id": row.evaluation_id,
+            "object_type": row.object_type,
+            "object_id": row.object_id,
+            "chapter_id": row.chapter_id,
+            "scene_id": row.scene_id,
+            "rubric_id": row.rubric_id,
+            "source_text_ref": row.source_text_ref,
+            "source_bundle_id": row.source_bundle_id,
+            "evaluator_llm_call_id": row.evaluator_llm_call_id,
+            "lens": row.lens,
+            "parent_evaluation_id": row.parent_evaluation_id,
+            "evidence_spans_json": list(row.evidence_spans_json or []),
+            "source_blueprint_row_id": row.source_blueprint_row_id,
+            "failure_class": row.failure_class,
+            "auto_rewrite_eligible": row.auto_rewrite_eligible,
+            "contract_field_refs_json": dict(row.contract_field_refs_json or {}),
+            "promotion_blockers_json": list(row.promotion_blockers_json or []),
+            "overall_score": row.overall_score,
+            "scores_json": dict(row.scores_json or {}),
+            "findings_json": list(row.findings_json or []),
+            "revision_brief_json": list(row.revision_brief_json or []),
+            "requires_human_review": row.requires_human_review,
+            "status": row.status,
+            "created_at": row.created_at,
+        }
+
+    def _run_archive_chapter_evaluation(
+        self, scene: SceneCard, final_scene: FinalScene
+    ) -> dict[str, Any]:
+        if scene.is_chapter_last != 1:
+            return self._archive_product(
+                scene=scene,
+                kind="chapter_near_final",
+                outcome="not_applicable",
+                step_key="archive:chapter_near_final:0",
+                input_hash=self._text_hash(final_scene.content),
+                reason="not_chapter_last",
+                evaluation=None,
+                evaluator_llm_call_id=None,
+            )
+        self._reconcile_execution_step(
+            "archive:chapter_near_final:0",
+            chapter_scope=True,
+        )
+        evaluation_result = self.near_final_service.evaluate_chapter(
+            scene.chapter_id,
+            execution_step_key="archive:chapter_near_final:0",
+        )
+        evaluation_id = evaluation_result.get("evaluation_id")
+        row = self.session.get(WriterEvaluation, evaluation_id)
+        if row is None:
+            self._raise_checkpoint_output_missing(row_id=evaluation_id)
+        snapshot = self._archive_writer_evaluation_snapshot(row)
+        product = self._archive_product(
+            scene=scene,
+            kind="chapter_near_final",
+            outcome="evaluated",
+            step_key="archive:chapter_near_final:0",
+            input_hash=self._json_hash(
+                {
+                    "chapter_product_hash": self._checkpoint_hash("archive_chapter_product"),
+                    "source_text_ref": row.source_text_ref,
+                }
+            ),
+            reason=None,
+            evaluation=dict(evaluation_result),
+            evaluation_row=snapshot,
+            evaluator_llm_call_id=row.evaluator_llm_call_id,
+        )
+        parent = self.session.get(LlmCall, row.evaluator_llm_call_id)
+        if parent is None:
+            self._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
+        parent.response_payload_summary = {
+            **dict(parent.response_payload_summary or {}),
+            "archive_chapter_near_final_product_hash": self._json_hash(product),
+        }
+        self.session.flush()
+        return product
+
+    def _validate_archive_chapter_evaluation_product(
+        self,
+        scene: SceneCard,
+        product: dict[str, Any] | None = None,
+        *,
+        require_checkpoint_hash: bool = True,
+    ) -> dict[str, Any]:
+        product = product or self._archive_checkpoint_ref(
+            "archive_chapter_evaluation_product"
+        )
+        product = self._validate_common_archive_product(
+            scene=scene,
+            product=product,
+            kind="chapter_near_final",
+            step_key="archive:chapter_near_final:0",
+            outcomes={"not_applicable", "evaluated"},
+        )
+        if require_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash(
+            "archive_chapter_evaluation_product"
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation product hash mismatch", status_code=409)
+        if scene.is_chapter_last != 1:
+            final_scene = self.session.get(
+                FinalScene,
+                self._archive_checkpoint_ref("final_scene_row_id"),
+            )
+            if (
+                product.get("outcome") != "not_applicable"
+                or product.get("reason") != "not_chapter_last"
+                or product.get("evaluation") is not None
+                or product.get("evaluator_llm_call_id") is not None
+                or final_scene is None
+                or product.get("input_hash") != self._text_hash(final_scene.content)
+            ):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene chapter evaluation is invalid", status_code=409)
+            return product
+        snapshot = product.get("evaluation_row")
+        if not isinstance(snapshot, dict) or not snapshot.get("evaluation_id"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                f"chapter evaluation product has no full row snapshot: {snapshot!r}; keys={sorted(product)!r}",
+                status_code=409,
+                details={"product_keys": sorted(product), "snapshot": snapshot},
+            )
+        row = self.session.get(WriterEvaluation, (snapshot or {}).get("evaluation_id"))
+        if row is None:
+            self._raise_checkpoint_output_missing(row_id=(snapshot or {}).get("evaluation_id"))
+        if (
+            self._archive_writer_evaluation_snapshot(row) != snapshot
+            or row.object_type != "chapter"
+            or row.object_id != scene.chapter_id
+            or row.chapter_id != scene.chapter_id
+            or row.scene_id is not None
+            or row.evaluator_llm_call_id != product.get("evaluator_llm_call_id")
+            or (product.get("evaluation") or {}).get("evaluation_id") != row.evaluation_id
+        ):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation row is detached or changed", status_code=409)
+        expected_input_hash = self._json_hash(
+            {
+                "chapter_product_hash": self._checkpoint_hash("archive_chapter_product"),
+                "source_text_ref": row.source_text_ref,
+            }
+        )
+        if product.get("input_hash") != expected_input_hash:
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation input hash mismatch", status_code=409)
+        parent = self.session.get(LlmCall, row.evaluator_llm_call_id)
+        if parent is None:
+            self._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
+        execution_mode = (
+            (parent.request_payload_summary or {}).get(ACCOUNTING_EXECUTION_MODE_KEY)
+            if isinstance(parent.request_payload_summary, dict)
+            else None
+        )
+        if execution_mode not in {"online", "offline_deterministic"}:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter evaluation parent execution mode is missing or invalid",
+                status_code=409,
+            )
+        expected_outcome = (
+            "completed"
+            if parent.accounting_status == "settled"
+            else "rejected_before_dispatch"
+            if parent.accounting_status == "rejected"
+            else "provider_failed"
+        )
+        chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        authoritative_project_id = chapter.project_id if chapter is not None else None
+        if (
+            not isinstance(authoritative_project_id, str)
+            or not authoritative_project_id
+            or (
+                scene.project_id is not None
+                and scene.project_id != authoritative_project_id
+            )
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter evaluation project ownership is inconsistent",
+                status_code=409,
+            )
+        context = LLMCallContext(
+            scope_type="chapter",
+            scope_id=scene.chapter_id,
+            project_id=authoritative_project_id,
+            chapter_id=scene.chapter_id,
+            scene_id=None,
+            node_id="chapter_near_final_review",
+            step="chapter_near_final_review",
+            execution_id=self._execution_id,
+            execution_step_key="archive:chapter_near_final:0",
+            run_job_id=self._run_job_id,
+            provider_execution_mode=execution_mode,
+        )
+        try:
+            validate_product_call(
+                self.session,
+                parent.llm_call_id,
+                context,
+                expected_outcome=expected_outcome,
+                expected_error_code=(parent.error_code if expected_outcome != "completed" else None),
+            )
+        except (LLMAccountingError, ValueError) as exc:
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation parent ledger is invalid", status_code=409) from exc
+        if (parent.response_payload_summary or {}).get(
+            "archive_chapter_near_final_product_hash"
+        ) != self._json_hash(product):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation hash is detached from parent", status_code=409)
+        return product
+
+    def _validate_archive_drift_product(
+        self, scene: SceneCard, product: dict[str, Any] | None = None, *, require_checkpoint_hash: bool = True,
+    ) -> dict[str, Any]:
+        product = product or self._archive_checkpoint_ref("archive_drift_product")
+        product = self._validate_common_archive_product(
+            scene=scene, product=product, kind="style_drift", step_key="archive:style_drift:0",
+            outcomes={"not_applicable", "no_op", "guidance_created", "already_present", "degraded"},
+        )
+        if require_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash("archive_drift_product"):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift product hash mismatch", status_code=409)
+        if scene.is_chapter_last != 1:
+            final_scene = self.session.get(
+                FinalScene,
+                self._archive_checkpoint_ref("final_scene_row_id"),
+            )
+            if (
+                product.get("outcome") != "not_applicable"
+                or product.get("reason") != "not_chapter_last"
+                or final_scene is None
+                or product.get("input_hash") != self._text_hash(final_scene.content)
+            ):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene drift product is invalid", status_code=409)
+            return product
+        if product.get("outcome") in {"guidance_created", "already_present"}:
+            row = self.session.get(LongformStructureGuidance, product.get("guidance_id"))
+            if row is None:
+                self._raise_checkpoint_output_missing(row_id=product.get("guidance_id"))
+            evidence = dict(row.evidence_json or {})
+            if (
+                row.scope_type != product.get("scope_type")
+                or row.scope_ref_id != product.get("scope_ref_id")
+                or self._text_hash(row.content) != product.get("content_hash")
+                or self._json_hash(row.recommendation_json or {}) != product.get("recommendation_hash")
+                or row.source_review_id != product.get("source_review_id")
+                or evidence.get("creation_path") != "orchestrator_style_drift"
+                or evidence.get("identity_hash") != product.get("identity_hash")
+                or evidence.get("source_chapter_id") != scene.chapter_id
+                or sorted(evidence.get("supersedes_guidance_ids") or [])
+                != sorted(product.get("supersedes_guidance_ids") or [])
+            ):
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift guidance changed", status_code=409)
+            current = row
+            seen: set[str] = set()
+            while current.status == "superseded":
+                if current.guidance_id in seen:
+                    raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift successor chain has a cycle", status_code=409)
+                seen.add(current.guidance_id)
+                current_evidence = dict(current.evidence_json or {})
+                successor_id = current_evidence.get("superseded_by_guidance_id")
+                if (
+                    not isinstance(successor_id, str)
+                    or not successor_id
+                    or current_evidence.get("superseded_by_creation_path")
+                    != "orchestrator_style_drift"
+                ):
+                    raise DomainError("RUN_CHECKPOINT_CORRUPT", "superseded style drift guidance has no successor", status_code=409)
+                successor = self.session.get(LongformStructureGuidance, successor_id)
+                successor_evidence = dict(successor.evidence_json or {}) if successor is not None else {}
+                if (
+                    successor is None
+                    or successor.scope_type != row.scope_type
+                    or successor.scope_ref_id != row.scope_ref_id
+                    or successor_evidence.get("creation_path") != "orchestrator_style_drift"
+                    or current.guidance_id
+                    not in (successor_evidence.get("supersedes_guidance_ids") or [])
+                ):
+                    raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift successor chain is invalid", status_code=409)
+                current = successor
+            if current.status != "approved" or current.runtime_eligible != 1:
+                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift successor chain has no active guidance", status_code=409)
+        if product.get("outcome") == "degraded" and not isinstance(product.get("error_code"), str):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift degraded product has no error code", status_code=409)
+        return product
+
+    def _archive_manifest(self) -> list[dict[str, Any]]:
+        entries = [
+            (4, "core_archive", "archive_core"),
+            (5, "rule_events", "archive_rule_product"),
+            (6, "prose_extraction", "archive_prose_product"),
+            (7, "vector_index", "archive_vector_product"),
+            (8, "chapter_aggregate", "archive_chapter_product"),
+            (9, "volume_aggregate", "archive_volume_product"),
+            (10, "chapter_near_final", "archive_chapter_evaluation_product"),
+            (11, "style_drift", "archive_drift_product"),
+        ]
+        hashes = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
+            "artifact_hashes", {}
+        )
+        manifest = [
+            {
+                "sub_index": sub_index,
+                "kind": kind,
+                "hash_key": hash_key,
+                "product_hash": hashes.get(hash_key),
+            }
+            for sub_index, kind, hash_key in entries
+        ]
+        if any(not isinstance(entry["product_hash"], str) for entry in manifest):
+            raise DomainError("RUN_CHECKPOINT_CORRUPT", "archive manifest is incomplete", status_code=409)
+        return manifest
+
+    def _validate_archive_prefix(
+        self,
+        *,
+        scene: SceneCard,
+        contract,
+        final_scene: FinalScene,
+        carry_notes: list[dict[str, Any]],
+        through: int,
+        allow_terminal: bool = False,
+    ) -> None:
+        if through >= 4:
+            self._validate_archive_core_checkpoint(
+                scene=scene,
+                final_scene=final_scene,
+                carry_notes=carry_notes,
+                allow_terminal=allow_terminal,
+            )
+        if through >= 5:
+            self._validate_archive_rule_events_checkpoint(scene)
+        if through >= 6:
+            self._validate_archive_prose_checkpoint(scene, contract)
+        if through >= 7:
+            self._validate_archive_vector_product(scene, final_scene)
+        if through >= 8:
+            self._validate_archive_chapter_product(scene)
+        if through >= 9:
+            self._validate_archive_volume_product(scene)
+        if through >= 10:
+            self._validate_archive_chapter_evaluation_product(scene)
+        if through >= 11:
+            self._validate_archive_drift_product(scene)
 
     def _ensure_near_final_subcheckpoints(
         self,
@@ -2719,6 +4384,42 @@ class Orchestrator:
             bundle=bundle,
             source_generation=soft_generation,
         )
+        refs = (state.run_checkpoint_json or {}).get("artifact_refs", {})
+        carry_notes = list(refs.get("carry_notes") or [])
+        if self._json_hash(carry_notes) != self._checkpoint_hash("carry_notes"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archived carry notes hash mismatch",
+                status_code=409,
+            )
+        contract = self.execution_contract_service.get_or_create(
+            scene_id,
+            actor_ref="orchestrator",
+        )
+        self._validate_archive_core_checkpoint(
+            scene=scene,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            allow_terminal=True,
+        )
+        self._validate_archive_rule_events_checkpoint(scene)
+        self._validate_archive_prose_checkpoint(scene, contract)
+        self._validate_archive_vector_product(scene, final_scene)
+        self._validate_archive_chapter_product(scene)
+        self._validate_archive_volume_product(scene)
+        self._validate_archive_chapter_evaluation_product(scene)
+        self._validate_archive_drift_product(scene)
+        manifest = refs.get("archive_manifest")
+        expected_manifest = self._archive_manifest()
+        if (
+            manifest != expected_manifest
+            or self._json_hash(manifest) != self._checkpoint_hash("archive_manifest")
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archived product manifest is incomplete or changed",
+                status_code=409,
+            )
         memory_id = self._checkpoint_artifact("scene_memory_row_id", expected_node_at_least="archived")
         memory = self.session.get(SceneMemory, memory_id) if isinstance(memory_id, str) else None
         if memory is None:
@@ -5469,14 +7170,34 @@ class Orchestrator:
             "revision_brief": near_final.get("revision_brief") or [],
         }
 
-    def _record_narrative_events(self, scene: SceneCard, contract, content: str) -> None:
+    def _record_narrative_events(
+        self,
+        scene: SceneCard,
+        contract,
+        content: str,
+        *,
+        include_prose: bool = True,
+        degrade_errors: bool = True,
+    ) -> list[str]:
         """Extract all 7 event types from approved scene and log to event sourcing.
 
         Blueprint §2: event log is the single source of truth.
         """
         try:
             from novel_system.services.narrative_event_log import NarrativeEventLog
-            log = NarrativeEventLog(self.session)
+            base_log = NarrativeEventLog(self.session)
+            event_ids: list[str] = []
+
+            class _RecordingEventLog:
+                def log_event(self, **kwargs):
+                    event = base_log.log_event(**kwargs)
+                    event_ids.append(event.event_id)
+                    return event
+
+                def __getattr__(self, name: str):
+                    return getattr(base_log, name)
+
+            log = _RecordingEventLog()
             payload = contract.payload_json or {}
             project_id = (
                 scene.project_id
@@ -5551,15 +7272,38 @@ class Orchestrator:
 
             # --- 7. (opt-in) prose-grounded events: what the TEXT actually realized,
             # not just what the spec planned. Advisory (confidence="extracted"). ---
-            self._record_prose_events(log, scene, base, content)
+            if include_prose:
+                self._record_prose_events(log, scene, base, content)
 
             self.session.flush()
+            return event_ids
         except Exception as exc:
             if is_llm_control_plane_failure(exc) or isinstance(exc, LLMAccountingError):
+                raise
+            if not degrade_errors:
                 raise
             _LOGGER.warning(
                 "narrative event recording degraded for scene %s", scene.scene_id, exc_info=True
             )
+            return []
+
+    @staticmethod
+    def _archive_event_base(scene: SceneCard, contract) -> dict[str, str]:
+        payload = contract.payload_json or {}
+        project_id = (
+            scene.project_id
+            or payload.get("project_id")
+            or (
+                scene.chapter_id.rsplit("_", 1)[0]
+                if "_" in scene.chapter_id
+                else scene.chapter_id
+            )
+        )
+        return {
+            "project_id": str(project_id),
+            "scene_id": scene.scene_id,
+            "chapter_id": scene.chapter_id,
+        }
 
     def _resolve_auto_critique_runner(self):
         """§8 gate: the independent LLM editor critic is layered on ONLY when both
@@ -5577,7 +7321,9 @@ class Orchestrator:
         scene: SceneCard,
         base: dict,
         content: str,
-    ) -> ProseExtractionResult:
+        *,
+        return_event_ids: bool = False,
+    ) -> ProseExtractionResult | tuple[ProseExtractionResult, list[str]]:
         """§2 (opt-in): extract events from the ACTUAL generated prose so model drift away
         from the spec is captured. Tagged confidence="extracted" + source="prose" → advisory
         only, never a hard consistency blocker (blueprint §15 honest-bounds). Returns an
@@ -5591,21 +7337,23 @@ class Orchestrator:
         settings = get_settings()
         extract_step_key = "archive:prose_event_extract:0"
         if not (settings.llm_enabled and getattr(settings, "llm_event_extraction_enabled", False)):
-            return ProseExtractionResult(
+            result = ProseExtractionResult(
                 outcome="not_invoked",
                 execution_id=self._execution_id,
                 execution_step_key=(extract_step_key if self._execution_id is not None else None),
                 run_job_id=self._run_job_id,
                 reason="feature_disabled",
             )
+            return (result, []) if return_event_ids else result
         if not (content and content.strip()):
-            return ProseExtractionResult(
+            result = ProseExtractionResult(
                 outcome="not_invoked",
                 execution_id=self._execution_id,
                 execution_step_key=(extract_step_key if self._execution_id is not None else None),
                 run_job_id=self._run_job_id,
                 reason="empty_content",
             )
+            return (result, []) if return_event_ids else result
         extract_context = LLMCallContext(
             scope_type="scene",
             scope_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")),
@@ -5629,8 +7377,9 @@ class Orchestrator:
             llm_runner=self.llm_runner,
             llm_context=extract_context,
         )
-        for ev in result.events:
-            log.log_event(
+        event_ids: list[str] = []
+        for ordinal, ev in enumerate(result.events):
+            event = log.log_event(
                 **base,
                 event_type=ev.event_type,
                 entity_type="relation" if ev.event_type == "relation_change" else "character",
@@ -5639,9 +7388,15 @@ class Orchestrator:
                 fact_value=ev.fact_value,
                 confidence="extracted",
                 source_text_excerpt=ev.evidence or content[:200],
-                payload={"source": "prose"},
+                payload={
+                    "source": "prose",
+                    "archive_execution_id": self._execution_id,
+                    "archive_step_key": extract_step_key,
+                    "archive_ordinal": ordinal,
+                },
             )
-        return result
+            event_ids.append(event.event_id)
+        return (result, event_ids) if return_event_ids else result
 
     def _record_relation_events(
         self, log, scene: SceneCard, base: dict, pov: str | None, all_chars: list[str],
@@ -5724,102 +7479,186 @@ class Orchestrator:
             pass  # non-critical — don't block scene finalization
 
     @staticmethod
-    def _index_scene_to_vector_store(scene: SceneCard, content: str) -> None:
-        """Index approved scene content into the vector store for semantic retrieval (§3 Track 3)."""
+    def _index_scene_to_vector_store(scene: SceneCard, content: str) -> dict[str, Any]:
+        from novel_system.services.vector_store import get_vector_store
+        from novel_system.settings import get_settings
+
+        backend = get_settings().vector_backend.lower()
+        validation_scope = "process_local" if backend == "memory" else "persistent"
+        project_id = scene.project_id or (
+            scene.chapter_id.rsplit("_", 1)[0]
+            if "_" in scene.chapter_id
+            else scene.chapter_id
+        )
+        collection_name = f"scenes_{project_id}"
+        expected_text = (content or "")[:600]
+        text_hash = Orchestrator._text_hash(expected_text)
+        base = {
+            "backend": backend,
+            "validation_scope": validation_scope,
+            "collection_name": collection_name,
+            "vector_id": scene.scene_id,
+            "text_hash": text_hash,
+        }
         try:
-            # 必须走 get_vector_store() 工厂：memory 后端是进程级单例、chroma 后端持久化。
-            # 裸 new InMemoryVectorStore() 写进的是函数返回即销毁的实例字典（审计 P-7）。
-            from novel_system.services.vector_store import get_vector_store
-            project_id = scene.project_id or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
-            collection_name = f"scenes_{project_id}"
             store = get_vector_store()
-            existing = store.load_collection(collection_name) if store.collection_exists(collection_name) else []
-            existing_ids = {doc["id"] for doc in existing}
-            if scene.scene_id not in existing_ids:
-                existing.append({"id": scene.scene_id, "text": (content or "")[:600]})
-                store.write_collection(collection_name, existing)
-        except Exception:
+            existing = (
+                store.load_collection(collection_name)
+                if store.collection_exists(collection_name)
+                else []
+            )
+            matches = [row for row in existing if row.get("id") == scene.scene_id]
+            if len(matches) > 1:
+                return {**base, "outcome": "failed", "write_status": "failed", "error_code": "VECTOR_INDEX_DUPLICATE_ID"}
+            if matches:
+                if str(matches[0].get("text") or "") != expected_text:
+                    return {**base, "outcome": "failed", "write_status": "failed", "error_code": "VECTOR_INDEX_STALE_CONTENT"}
+                return {
+                    **base,
+                    "outcome": ("non_persistent" if backend == "memory" else "already_present"),
+                    "write_status": "already_present",
+                    "error_code": None,
+                }
+            store.write_collection(collection_name, [*existing, {"id": scene.scene_id, "text": expected_text}])
+            written = store.load_collection(collection_name)
+            matches = [row for row in written if row.get("id") == scene.scene_id]
+            if len(matches) != 1 or str(matches[0].get("text") or "") != expected_text:
+                raise RuntimeError("vector write verification failed")
+            return {
+                **base,
+                "outcome": ("non_persistent" if backend == "memory" else "indexed"),
+                "write_status": "indexed",
+                "error_code": None,
+            }
+        except Exception as exc:
             _LOGGER.warning("vector store indexing degraded for scene %s", scene.scene_id, exc_info=True)
+            return {**base, "outcome": "failed", "write_status": "failed", "error_code": exc.__class__.__name__}
 
-    def _detect_and_store_style_drift(self, scene: SceneCard) -> None:
-        """Run style drift detection at chapter boundary and store correction prompt.
-
-        Blueprint §9 drift correction loop: when drift is detected at chapter end,
-        store the correction guidance scoped to the NEXT chapter so the bundle_builder
-        picks it up for subsequent generation. This closes the detect→correct feedback loop.
-        """
+    def _detect_and_store_style_drift(self, scene: SceneCard) -> dict[str, Any]:
         try:
             from novel_system.services.style_drift_detector import (
                 detect_chapter_drift,
+                drift_corrective_ptype_priority,
                 format_drift_correction_prompt,
                 format_drift_dimensions_for_bundle,
-                drift_corrective_ptype_priority,
             )
-            from novel_system.db.models import LongformStructureGuidance
-            import uuid
 
-            baseline = self._load_style_baseline(scene)
-            report = detect_chapter_drift(self.session, scene.chapter_id, baseline)
+            report = detect_chapter_drift(
+                self.session,
+                scene.chapter_id,
+                self._load_style_baseline(scene),
+            )
             if not report.has_drift:
-                return
-
+                return {"outcome": "no_op", "reason": "no_drift"}
             correction = format_drift_correction_prompt(report)
             if not correction:
-                return
-
-            # Find the next chapter to scope the correction guidance correctly
+                return {"outcome": "no_op", "reason": "empty_correction"}
             next_chapter = self._find_next_chapter(scene)
-            if next_chapter:
-                scope_type = "chapter"
-                scope_ref_id = next_chapter.chapter_id
-            else:
-                # No next chapter found — store globally so it's picked up by any future chapter
-                scope_type = "global"
-                scope_ref_id = "global"
-
-            # Supersede any prior drift guidance for the same scope
-            from novel_system.db.models import LongformStructureGuidance as LSG
-            prior_drift = self.session.execute(
-                select(LSG).where(
-                    LSG.scope_type == scope_type,
-                    LSG.scope_ref_id == scope_ref_id,
-                    LSG.guidance_id.like("drift_%"),
-                    LSG.status == "approved",
-                )
-            ).scalars().all()
-            for prior in prior_drift:
-                prior.status = "superseded"
-
-            # §9 Defect B: store both text guidance AND structured drift data
-            # so the injection service can do "show" (few-shot) in addition to "tell" (text)
+            scope_type = "chapter" if next_chapter else "global"
+            scope_ref_id = next_chapter.chapter_id if next_chapter else "global"
+            recommendation: dict[str, Any] = {}
             ptype_priority = drift_corrective_ptype_priority(report)
-            drift_bundle_data = format_drift_dimensions_for_bundle(report)
-            recommendation = {}
+            dimensions = format_drift_dimensions_for_bundle(report)
             if ptype_priority:
                 recommendation["drift_ptype_priority"] = ptype_priority
-            if drift_bundle_data:
-                recommendation["drift_dimensions"] = drift_bundle_data
-
-            guidance = LongformStructureGuidance(
-                guidance_id=f"drift_{uuid.uuid4().hex[:12]}",
-                scope_type=scope_type,
-                scope_ref_id=scope_ref_id,
-                content=correction,
-                recommendation_json=recommendation,
-                status="approved",
-                runtime_eligible=1,
-                source_review_id=f"auto_drift_{scene.chapter_id}",
+            if dimensions:
+                recommendation["drift_dimensions"] = dimensions
+            source_review_id = f"auto_drift_{scene.chapter_id}"
+            identity_hash = self._json_hash(
+                {
+                    "chapter_id": scene.chapter_id,
+                    "scope_type": scope_type,
+                    "scope_ref_id": scope_ref_id,
+                    "content": correction,
+                    "recommendation": recommendation,
+                }
             )
-            self.session.add(guidance)
+            guidance_id = f"drift_{identity_hash[:20]}"
+            guidance = self.session.get(LongformStructureGuidance, guidance_id)
+            outcome = "already_present"
+            supersedes_guidance_ids: list[str] = []
+            if guidance is None:
+                prior = list(
+                    self.session.scalars(
+                        select(LongformStructureGuidance).where(
+                            LongformStructureGuidance.scope_type == scope_type,
+                            LongformStructureGuidance.scope_ref_id == scope_ref_id,
+                            LongformStructureGuidance.guidance_id.like("drift_%"),
+                            LongformStructureGuidance.status == "approved",
+                        )
+                    ).all()
+                )
+                supersedes_guidance_ids = sorted(row.guidance_id for row in prior)
+                for row in prior:
+                    row.status = "superseded"
+                    row.runtime_eligible = 0
+                    row.evidence_json = {
+                        **dict(row.evidence_json or {}),
+                        "superseded_by_guidance_id": guidance_id,
+                        "superseded_by_creation_path": "orchestrator_style_drift",
+                    }
+                guidance = LongformStructureGuidance(
+                    guidance_id=guidance_id,
+                    scope_type=scope_type,
+                    scope_ref_id=scope_ref_id,
+                    content=correction,
+                    recommendation_json=recommendation,
+                    status="approved",
+                    runtime_eligible=1,
+                    source_review_id=source_review_id,
+                    evidence_json={
+                        "creation_path": "orchestrator_style_drift",
+                        "identity_hash": identity_hash,
+                        "source_chapter_id": scene.chapter_id,
+                        "supersedes_guidance_ids": supersedes_guidance_ids,
+                    },
+                )
+                self.session.add(guidance)
+                outcome = "guidance_created"
+            elif (
+                guidance.scope_type != scope_type
+                or guidance.scope_ref_id != scope_ref_id
+                or guidance.content != correction
+                or (guidance.recommendation_json or {}) != recommendation
+                or guidance.source_review_id != source_review_id
+                or dict(guidance.evidence_json or {}).get("creation_path")
+                != "orchestrator_style_drift"
+                or dict(guidance.evidence_json or {}).get("identity_hash")
+                != identity_hash
+                or dict(guidance.evidence_json or {}).get("source_chapter_id")
+                != scene.chapter_id
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "deterministic style drift guidance id has stale content",
+                    status_code=409,
+                )
+            else:
+                supersedes_guidance_ids = sorted(
+                    dict(guidance.evidence_json or {}).get("supersedes_guidance_ids") or []
+                )
             self.session.flush()
-            _LOGGER.info(
-                "§9 style drift correction stored: chapter %s → scope %s/%s, %d dimensions drifting",
-                scene.chapter_id, scope_type, scope_ref_id, len(report.drifts),
-            )
-        except Exception:
-            _LOGGER.warning(
-                "style drift detection degraded for chapter %s", scene.chapter_id, exc_info=True
-            )
+            return {
+                "outcome": outcome,
+                "reason": "drift_detected",
+                "guidance_id": guidance.guidance_id,
+                "scope_type": scope_type,
+                "scope_ref_id": scope_ref_id,
+                "content_hash": self._text_hash(guidance.content),
+                "recommendation_hash": self._json_hash(guidance.recommendation_json or {}),
+                "source_review_id": source_review_id,
+                "identity_hash": identity_hash,
+                "supersedes_guidance_ids": supersedes_guidance_ids,
+            }
+        except Exception as exc:
+            if isinstance(exc, DomainError) and exc.code == "RUN_CHECKPOINT_CORRUPT":
+                raise
+            _LOGGER.warning("style drift detection degraded for chapter %s", scene.chapter_id, exc_info=True)
+            return {
+                "outcome": "degraded",
+                "reason": "drift_detection_failed",
+                "error_code": getattr(exc, "code", exc.__class__.__name__),
+            }
 
     def _find_next_chapter(self, scene: SceneCard) -> ChapterGoal | None:
         """Find the next chapter after the scene's chapter, by display_order."""

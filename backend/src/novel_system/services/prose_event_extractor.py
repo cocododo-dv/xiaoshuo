@@ -19,12 +19,14 @@ parse-failed outcomes. Accounting/control-plane integrity failures are never deg
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from novel_system.db.models import LlmCall
 from novel_system.services.llm_accounting import (
     LLMAccountingError,
     LLMAccountingRejected,
@@ -79,6 +81,19 @@ Rules:
 _VALID_EVENT_TYPES = frozenset(
     {"character_state", "location_change", "character_learns", "relation_change"}
 )
+
+
+def prose_extraction_parsed_hash(events: list[dict[str, Any]]) -> str:
+    """Hash the independently normalized extractor output bound to its LLM parent."""
+
+    payload = json.dumps(
+        events,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(slots=True)
@@ -270,6 +285,27 @@ def extract_events_from_prose(
                 evidence=str(raw.get("evidence", ""))[:200],
             )
         )
+    normalized_events = [
+        {
+            "event_type": event.event_type,
+            "entity_id": event.entity_id,
+            "fact_key": event.fact_key,
+            "fact_value": event.fact_value,
+            "evidence": event.evidence,
+        }
+        for event in events
+    ]
+    parent = session.get(LlmCall, llm_call_id)
+    if parent is None:
+        raise LLMAccountingError(
+            "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+            "prose extraction parent disappeared before parsed output anchoring",
+        )
+    parent.response_payload_summary = {
+        **dict(parent.response_payload_summary or {}),
+        "prose_extraction_parsed_hash": prose_extraction_parsed_hash(normalized_events),
+    }
+    session.flush()
     return ProseExtractionResult(
         events=events,
         outcome="completed_events" if events else "completed_empty",

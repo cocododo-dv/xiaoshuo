@@ -1272,7 +1272,7 @@ def test_explicit_chapter_context_records_chapter_owned_parent_without_synthetic
     )
 
     result = runner.run(
-        scene_id="chapter_eval_CH_RUNNER",
+        scene_id=None,
         chapter_id="CH_RUNNER",
         bundle_id="bundle-chapter",
         bundle_hash="sha256:chapter",
@@ -1289,6 +1289,44 @@ def test_explicit_chapter_context_records_chapter_owned_parent_without_synthetic
     assert (parent.scope_type, parent.scope_id) == ("chapter", "CH_RUNNER")
     assert parent.scene_id is None
     assert parent.chapter_id == "CH_RUNNER"
+
+
+def test_explicit_scene_context_rejects_none_scene_before_provider_io(session) -> None:
+    _seed_durable_runner_scene(session)
+    client = _AccountedRecordingClient()
+    runner = LLMNodeRunner(
+        session,
+        llm_client=client,
+        routing_config=_routing_config(),
+        settings=_live_settings(),
+    )
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="neutral_draft",
+        step="neutral_draft",
+    )
+
+    with pytest.raises(LLMNodeExecutionError) as rejected:
+        runner.run(
+            scene_id=None,
+            chapter_id="CH_RUNNER",
+            bundle_id="bundle-runner",
+            bundle_hash="sha256:runner",
+            node_id="neutral_draft",
+            step="neutral_draft",
+            prompt=_prompt(),
+            user_prompt="Return JSON.",
+            offline_client_factory=_LegacyOfflineClient,
+            context=context,
+        )
+
+    assert rejected.value.error_code == "LLM_ACCOUNTING_CONTEXT_INVALID"
+    assert client.post_count == 0
+    assert session.execute(select(LlmCall)).scalars().all() == []
 
 
 def test_durable_online_intent_with_missing_scene_fails_before_provider_io(session) -> None:

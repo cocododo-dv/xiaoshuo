@@ -275,11 +275,14 @@ class SceneRunCheckpointService:
         execution_step_key: str,
         output_exists: bool,
         allow_local_rejected_output: bool = False,
+        ledger_scene_id: str | None = None,
+        use_owner_scene_id: bool = True,
     ) -> str:
+        effective_scene_id = scene_id if use_owner_scene_id else ledger_scene_id
         calls = self.session.execute(
             select(LlmCall)
             .where(
-                LlmCall.scene_id == scene_id,
+                LlmCall.scene_id == effective_scene_id,
                 LlmCall.execution_id == execution_id,
                 LlmCall.execution_step_key == execution_step_key,
             )
@@ -302,7 +305,7 @@ class SceneRunCheckpointService:
             calls = self.session.execute(
                 select(LlmCall)
                 .where(
-                    LlmCall.scene_id == scene_id,
+                    LlmCall.scene_id == effective_scene_id,
                     LlmCall.execution_id == execution_id,
                     LlmCall.execution_step_key == execution_step_key,
                 )

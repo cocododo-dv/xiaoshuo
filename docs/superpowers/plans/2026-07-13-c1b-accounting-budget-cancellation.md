@@ -284,24 +284,26 @@ git commit -m "feat(scene-run): resume durable node checkpoints"
 
 阶段验收记录（4C）：auto critique 与 prose extraction 已统一显式产品 envelope；called `run_task` 固定 online，offline 保存 `not_invoked/offline_unsupported`；成功、解析失败、provider 失败、发送前拒绝及规则/no-call 均绑定 typed owner、父调用、严格 physical-attempt 账本和稳定产品语义。`soft_qc_ready/sub_index=0` 同事务保存 critique/patch-failure 产品、产品 hash、独立 parsed-LLM anchor、generation provider-mode 历史快照及父账本锚点；创建期和恢复期使用同一 schema/owner/ledger/semantic 校验，released/rejected 崩溃窗口、配置 online/offline 切换、产品/owner/attempt/mode/hash 篡改均有定向阻断测试，已完成分支不重发且不重复扣账。最终验证包括 checkpoint 全量 135 passed、accounting/critique/prose/runner 166 passed、额外受影响模块 127 passed；最后一个 released-online→current-offline 组合修复后相关聚焦 66 passed。独立规格与质量复审最终均为 `APPROVED`，`compileall` 与 `git diff --check` 通过，实际数据库仍保持 revision `20260712_0064` 与原 SHA-256。本记录仍不勾选 Task 4 总体验收项；4D archive subcursor 尚未完成。
 
-- [ ] 测试 `reserve -> settle`、`reserve -> release`、重复 settle/release 幂等、reserved 永不为负。
-- [ ] 用两个独立 Session 和 barrier 测试并发预留：单 in-flight fence 只允许一个成功，失败线程不调用 provider；前者结算释放后后者可重新预留。
-- [ ] 测试 provider usage 缺失、失败、actual 高于本地 estimate 但低于 reserved；`used + reserved <= budget` 始终成立。
-- [ ] 测试 actual 高于 reserved 的不变量破坏分支：稳定错误、账本标异常、后续调用被阻止。
-- [ ] 测试预算已耗尽时 neutral/style/QC 等基线调用也不发起，不再只拦“可选支出”。有 latest-valid 时返回该稿；无稿时进入明确 blocked 状态。
-- [ ] scene-scoped 公共预留入口在 state/budget 为空时只做一次保守初始化并记录 basis；Orchestrator、独立 scene blueprint、scene quality/auto-rewrite 等入口都不得在初始化前调用 provider，也不要求每个 caller 自己记得 ensure。
-- [ ] `total_attempt_count >= attempt_budget` 与 token 不足使用同一个发送前硬门：neutral/style/QC/run_task 辅助调用全部 provider count=0，并返回区别于 token exhausted 的稳定原因。
-- [ ] physical attempt hook 在每次 dispatch 前原子检查/increment `provider_attempts_used < provider_attempt_budget`；首次失败后若只剩 0 次，LLMClient 内部 retry/degrade 的第二个 POST 必须为 0。发送前 cancel/reject 不增加 used。
-- [ ] 把 `run` 和 `run_task` 都接到 `execute_accounted_call`；`run_task` 强制接收 typed context，不提供可漏 scope 的默认值，成功和失败均落账。
-- [ ] 逐一修改 4 个生产 `run_task` caller：auto critique、prose event extractor、narrative consistency、reverse causal refine。前两条由 Orchestrator 显式传 scene/chapter/project/run_job，因此进入同一生命周期预算；无场景对象的 causal refine 也必须传明确 project/system scope。
-- [ ] AST 守卫所有生产 `run_task(...)` 调用都存在 `context=`，并用集成测试证明 auto critique/event extraction 会增加同一 scene 的 LlmCall 与 budget charged，预算不足时 caller 降级且 provider count=0。
-- [ ] auto critique 的返回产品必须携带稳定父 `llm_call_id` 与 `execution_step_key`（同一 execution 固定 step，不得由重试随机生成）；`soft_qc_ready/sub_index=0` 同事务保存 critique 产品快照、产品 hash、父 call id、step 和 execution owner。恢复先逐项验证产品/hash/call/owner，再从 soft sub1 继续；产品缺行、父/子账不完整或任一字段被篡改时稳定 `RUN_CHECKPOINT_CORRUPT`，provider call count 与 budget charged 均不得增加。规则模式/预算拒绝/降级也必须保存明确的无调用 outcome，不能把“没有 call”与“call 引用丢失”混为一谈。
-- [ ] 在 `near_final_ready/sub_index=3` 与最终 `archived` 之间建立单调 archive subcursor，并让首次运行与 `_archive_near_final_checkpoint` 走同一实现。至少逐项保存、散列并恢复验证：Archiver 的 `FinalScene(status=archived)`、`SceneMemory`、`ChapterRollingNote`、archive AttemptTracker；规则生成的 NarrativeEvent 行；可选 prose extraction 的父 call/step/owner、抽取结果及对应 NarrativeEvent 行（含显式 skipped/degraded outcome）；向量索引的幂等结果/失败 outcome；章末 `ChapterMemory` 聚合、卷聚合结果或 no-op/degraded outcome；章末 `WriterEvaluation` 及其父 call/step/owner；风格漂移 guidance 或 no-op/degraded outcome。任一步产品与本级 subcursor 同事务提交，任一步失败后同 execution 只从下一未完成步骤继续；已完成分支不得重复写副作用、调用 provider 或扣预算，缺行/错绑/hash 篡改必须阻断恢复。只有全部适用步骤验证通过后才能写最终 `archived` checkpoint。
-- [ ] 删除 `_persist_call` 中 usage 缺失记 0 的旧逻辑和 `record_usage` 旁路；所有场景扣账只走 reservation settlement。
-- [ ] 父 LlmCall 聚合所有 physical attempts；SceneDraft 等业务引用仍指向父 `llm_call_id`，不能指向某次 retry 子行。成本测试证明父/子不双计。
-- [ ] `LLMNodeRunner.run` 与 `run_task` 的 attempt 子账是强制不变量：每个真实 dispatched provider attempt（含 transport/parse retry 与 degrade hop）都必须存在 `LlmCallAttempt`，父 `LlmCall` 必须由子行聚合状态与 token；offline/no-dispatch 只能使用明确可验证的零 attempt 语义，不允许以 legacy 父行或 AttemptTracker 冒充 physical attempt。
-- [ ] Task 3D/3F 延后到本任务收紧：当 `LLMNodeRunner.run/run_task` 全部迁到 `execute_accounted_call` 后，style/de-template、auto critique、prose extraction 与章末 evaluate_chapter 的恢复校验必须移除“仅 legacy parent + AttemptTracker”兼容分支，强制校验连续 ordinal、dispatch/status、父子 token 聚合、attempt PK/FK 以及 checkpoint 的 call/step/execution owner；缺行或篡改必须 `RUN_CHECKPOINT_CORRUPT`，且 provider/budget 不增。
-- [ ] 保留外层有效稿；账本提交不得清空 `latest_valid_draft_row_id`。
+阶段验收记录（4D，范围限定）：`Orchestrator.run_scene` 的 scene-run near-final 归档路径已建立 sub4–sub11 单调 archive subcursor，分别固化并校验 core archive、规则/正文事件、向量结果、章/卷聚合、章末评价和风格漂移产品；core archive 使用 `FinalScene`、`SceneMemory`、`ChapterRollingNote`、archive `AttemptTracker` 的完整独立哈希快照，已完成分支会在恢复前重验产品、owner、父子账本和副作用，不重发 provider、不重复扣账。内存向量明确记为 `non_persistent`，持久后端仍校验外部集合；风格漂移的 `superseded` 只有存在编排器生成的可验证继任链时才有效。此完成声明**仅覆盖 scene-run archive 路径**，不代表全局归档入口统一：`backend/src/novel_system/api/routes/scenes.py` 与 `backend/src/novel_system/services/scene_quality.py` 仍直接调用 `Archiver.archive_final_scene`，尚未纳入该 subcursor，不把这两个旁路冒充已闭环。实现方 checkpoint 全量 166 passed、直接受影响回归 91 passed；独立规格复审补跑 32+78 passed，独立质量复审补跑 12 passed 并完成 checkpoint 全量 166 passed，最终规格与质量复审均为 `APPROVED`。`compileall`、AST 重复方法检查与 `git diff --check` 均通过；4D 未新增数据库迁移，canonical actual 仍为 revision `20260712_0064` 且 SHA-256 未变。Task 4 的 scene-run 账本、预算、产品与归档子游标验收项至此完成。
+
+- [x] 测试 `reserve -> settle`、`reserve -> release`、重复 settle/release 幂等、reserved 永不为负。
+- [x] 用两个独立 Session 和 barrier 测试并发预留：单 in-flight fence 只允许一个成功，失败线程不调用 provider；前者结算释放后后者可重新预留。
+- [x] 测试 provider usage 缺失、失败、actual 高于本地 estimate 但低于 reserved；`used + reserved <= budget` 始终成立。
+- [x] 测试 actual 高于 reserved 的不变量破坏分支：稳定错误、账本标异常、后续调用被阻止。
+- [x] 测试预算已耗尽时 neutral/style/QC 等基线调用也不发起，不再只拦“可选支出”。有 latest-valid 时返回该稿；无稿时进入明确 blocked 状态。
+- [x] scene-scoped 公共预留入口在 state/budget 为空时只做一次保守初始化并记录 basis；Orchestrator、独立 scene blueprint、scene quality/auto-rewrite 等入口都不得在初始化前调用 provider，也不要求每个 caller 自己记得 ensure。
+- [x] `total_attempt_count >= attempt_budget` 与 token 不足使用同一个发送前硬门：neutral/style/QC/run_task 辅助调用全部 provider count=0，并返回区别于 token exhausted 的稳定原因。
+- [x] physical attempt hook 在每次 dispatch 前原子检查/increment `provider_attempts_used < provider_attempt_budget`；首次失败后若只剩 0 次，LLMClient 内部 retry/degrade 的第二个 POST 必须为 0。发送前 cancel/reject 不增加 used。
+- [x] 把 `run` 和 `run_task` 都接到 `execute_accounted_call`；`run_task` 强制接收 typed context，不提供可漏 scope 的默认值，成功和失败均落账。
+- [x] 逐一修改 4 个生产 `run_task` caller：auto critique、prose event extractor、narrative consistency、reverse causal refine。前两条由 Orchestrator 显式传 scene/chapter/project/run_job，因此进入同一生命周期预算；无场景对象的 causal refine 也必须传明确 project/system scope。
+- [x] AST 守卫所有生产 `run_task(...)` 调用都存在 `context=`，并用集成测试证明 auto critique/event extraction 会增加同一 scene 的 LlmCall 与 budget charged，预算不足时 caller 降级且 provider count=0。
+- [x] auto critique 的返回产品必须携带稳定父 `llm_call_id` 与 `execution_step_key`（同一 execution 固定 step，不得由重试随机生成）；`soft_qc_ready/sub_index=0` 同事务保存 critique 产品快照、产品 hash、父 call id、step 和 execution owner。恢复先逐项验证产品/hash/call/owner，再从 soft sub1 继续；产品缺行、父/子账不完整或任一字段被篡改时稳定 `RUN_CHECKPOINT_CORRUPT`，provider call count 与 budget charged 均不得增加。规则模式/预算拒绝/降级也必须保存明确的无调用 outcome，不能把“没有 call”与“call 引用丢失”混为一谈。
+- [x] 在 `near_final_ready/sub_index=3` 与最终 `archived` 之间建立单调 archive subcursor，并让首次运行与 `_archive_near_final_checkpoint` 走同一实现。至少逐项保存、散列并恢复验证：Archiver 的 `FinalScene(status=archived)`、`SceneMemory`、`ChapterRollingNote`、archive AttemptTracker；规则生成的 NarrativeEvent 行；可选 prose extraction 的父 call/step/owner、抽取结果及对应 NarrativeEvent 行（含显式 skipped/degraded outcome）；向量索引的幂等结果/失败 outcome；章末 `ChapterMemory` 聚合、卷聚合结果或 no-op/degraded outcome；章末 `WriterEvaluation` 及其父 call/step/owner；风格漂移 guidance 或 no-op/degraded outcome。任一步产品与本级 subcursor 同事务提交，任一步失败后同 execution 只从下一未完成步骤继续；已完成分支不得重复写副作用、调用 provider 或扣预算，缺行/错绑/hash 篡改必须阻断恢复。只有全部适用步骤验证通过后才能写最终 `archived` checkpoint。
+- [x] 删除 `_persist_call` 中 usage 缺失记 0 的旧逻辑和 `record_usage` 旁路；所有场景扣账只走 reservation settlement。
+- [x] 父 LlmCall 聚合所有 physical attempts；SceneDraft 等业务引用仍指向父 `llm_call_id`，不能指向某次 retry 子行。成本测试证明父/子不双计。
+- [x] `LLMNodeRunner.run` 与 `run_task` 的 attempt 子账是强制不变量：每个真实 dispatched provider attempt（含 transport/parse retry 与 degrade hop）都必须存在 `LlmCallAttempt`，父 `LlmCall` 必须由子行聚合状态与 token；offline/no-dispatch 只能使用明确可验证的零 attempt 语义，不允许以 legacy 父行或 AttemptTracker 冒充 physical attempt。
+- [x] Task 3D/3F 延后到本任务收紧：当 `LLMNodeRunner.run/run_task` 全部迁到 `execute_accounted_call` 后，style/de-template、auto critique、prose extraction 与章末 evaluate_chapter 的恢复校验必须移除“仅 legacy parent + AttemptTracker”兼容分支，强制校验连续 ordinal、dispatch/status、父子 token 聚合、attempt PK/FK 以及 checkpoint 的 call/step/execution owner；缺行或篡改必须 `RUN_CHECKPOINT_CORRUPT`，且 provider/budget 不增。
+- [x] 保留外层有效稿；账本提交不得清空 `latest_valid_draft_row_id`。
 
 Run:
 

@@ -389,7 +389,7 @@ def test_orchestrator_prose_extraction_gate_open_when_flag_enabled(session, monk
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", "true")
     from sqlalchemy import select
 
-    from novel_system.db.models import NarrativeEvent
+    from novel_system.db.models import LlmCall, NarrativeEvent
     from novel_system.services.narrative_event_log import NarrativeEventLog
     from novel_system.services.orchestrator import Orchestrator
 
@@ -408,6 +408,11 @@ def test_orchestrator_prose_extraction_gate_open_when_flag_enabled(session, monk
     assert runner.calls, "extractor never called -> gate stayed closed despite flag ON"
     assert result.outcome == "completed_events"
     assert result.llm_call_id == "llmcall_prose_orchestrator"
+    from novel_system.services.prose_event_extractor import prose_extraction_parsed_hash
+    parent = session.get(LlmCall, result.llm_call_id)
+    assert parent.response_payload_summary["prose_extraction_parsed_hash"] == (
+        prose_extraction_parsed_hash(result.product_snapshot()["events"])
+    )
     rows = (
         session.execute(
             select(NarrativeEvent).where(
@@ -454,6 +459,43 @@ def test_orchestrator_prose_extraction_gate_closed_when_flag_disabled(session, m
         .all()
     )
     assert rows == []
+
+
+def test_orchestrator_prose_duplicate_events_return_direct_ordered_row_ids(
+    session, monkeypatch
+) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", "true")
+    from novel_system.db.models import NarrativeEvent
+    from novel_system.services.narrative_event_log import NarrativeEventLog
+    from novel_system.services.orchestrator import Orchestrator
+
+    duplicate = {
+        "event_type": "character_state",
+        "entity_id": "Lin",
+        "fact_key": "injury",
+        "fact_value": "arm broken",
+        "evidence": "his arm broke",
+    }
+    runner = _AccountedRunner(
+        session,
+        __import__("json").dumps({"events": [duplicate, duplicate]}),
+    )
+    orch = Orchestrator(session)
+    orch.llm_runner = runner
+    orch._execution_id = "exec-prose-duplicates"
+    result, event_ids = orch._record_prose_events(
+        NarrativeEventLog(session),
+        None,
+        {"project_id": "p_dup", "scene_id": "s_dup", "chapter_id": "c_dup"},
+        "his arm broke",
+        return_event_ids=True,
+    )
+    assert result.outcome == "completed_events"
+    assert len(event_ids) == 2
+    assert len(set(event_ids)) == 2
+    rows = [session.get(NarrativeEvent, event_id) for event_id in event_ids]
+    assert [row.payload_json["archive_ordinal"] for row in rows] == [0, 1]
 
 
 def test_extract_returns_explicit_no_call_and_completed_empty_envelopes(session) -> None:
