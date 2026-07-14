@@ -403,6 +403,148 @@ describe("SceneRunJobControl", () => {
       expect.objectContaining({ job_id: "job-created", status: "running" }),
       "s1",
     );
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/scenes/s1/run/jobs",
+      { run_policy: "strict" },
+    );
+  });
+
+  it("keeps a neutral draft non-archivable when the durable job is blocked by lifecycle budget", async () => {
+    const { mod, client } = await loadSceneRun();
+    client.apiPost.mockImplementation((url) => {
+      if (/\/api\/v1\/scenes\/s1\/run\/jobs$/.test(url)) {
+        return Promise.resolve({ job_id: "job-budget", scene_id: "s1", status: "running" });
+      }
+      return Promise.resolve({});
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/run-jobs/job-budget") {
+        return Promise.resolve({
+          job_id: "job-budget",
+          scene_id: "s1",
+          status: "blocked",
+          current_step: "blocked",
+          error_code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+          error_text: "scene token budget exhausted before dispatch",
+        });
+      }
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          neutral_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: {
+            scene_status: "bundle_built",
+            lifecycle_budget: {
+              scene_token_budget: 34200,
+              scene_tokens_used: 13615,
+              scene_tokens_reserved: 0,
+              scene_tokens_remaining: 20585,
+              baseline_tokens: 6840,
+              recommended_topup_tokens: 6840,
+              attempt_budget: 4,
+              total_attempt_count: 2,
+              provider_attempt_budget: 32,
+              provider_attempts_used: 5,
+            },
+          },
+          author_state: { author_state: "draft_ready", can_archive: true },
+        });
+      }
+      return baseGet(url);
+    });
+
+    vi.useFakeTimers();
+    let result;
+    try {
+      const pending = mod.scnRun({ sid: "ch01s1", kind: "主动场景" }, "", "");
+      await vi.runAllTimersAsync();
+      result = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(result.budgetBlock).toMatchObject({
+      code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+      topup: { extra_tokens: 6840 },
+    });
+    expect(result.gate.canArchive).toBe(false);
+    expect(result.draft.length).toBeGreaterThan(0);
+  });
+
+  it("topups only the exhausted lifecycle dimension through the audited author route", async () => {
+    const { mod, client } = await loadSceneRun();
+    client.apiPost.mockResolvedValue({ scene_token_budget: 41040 });
+
+    await mod.scnTopupBudget("ch01s1", {
+      code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+      topup: { extra_tokens: 6840 },
+    });
+
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/scenes/s1/budget/topup",
+      {
+        extra_tokens: 6840,
+        reason: "作者在起草台确认追加生命周期预算并从持久化检查点继续",
+      },
+    );
+  });
+
+  it("asks the server to resume its own budget-blocked checkpoint instead of starting a fresh execution", async () => {
+    const { mod, client } = await loadSceneRun();
+    client.apiPost.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/run/jobs") {
+        return Promise.resolve({ job_id: "job-resume-budget", scene_id: "s1", status: "completed" });
+      }
+      return Promise.resolve({});
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          style_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "near_final" },
+        });
+      }
+      return baseGet(url);
+    });
+
+    await mod.scnRun(
+      { sid: "ch01s1", kind: "主动场景" },
+      "",
+      "",
+      { resumeBudget: true },
+    );
+
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/scenes/s1/run/jobs",
+      { run_policy: "strict", resume_budget: true },
+    );
+  });
+
+  it("projects a server-archived completed run as archived instead of a blocked ready state", async () => {
+    const { mod, client } = await loadSceneRun();
+    client.apiPost.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/run/jobs") {
+        return Promise.resolve({ job_id: "job-archived", scene_id: "s1", status: "completed" });
+      }
+      return Promise.resolve({});
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          final_scene: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "archived" },
+          author_state: { author_state: "archived", can_archive: false },
+        });
+      }
+      return baseGet(url);
+    });
+
+    const result = await mod.scnRun({ sid: "ch01s1", kind: "主动场景" }, "", "");
+
+    expect(result.state).toBe("archived");
+    expect(result.gate).toMatchObject({ authorState: "archived", canArchive: false });
   });
 
   it("aborts an in-flight job-specific GET instead of merely ignoring its response", async () => {
@@ -797,7 +939,7 @@ describe("SceneRunJobControl", () => {
     await vi.waitFor(() => {
       expect(client.apiPost).toHaveBeenCalledWith(
         "/api/v1/scenes/s1/run/jobs",
-        {},
+        { run_policy: "strict" },
         expect.objectContaining({ signal: expect.anything() }),
       );
     }, T);
@@ -1018,6 +1160,14 @@ describe("作者状态门（Wave 2：无法继续 vs 有稿建议修改）", () 
     expect(gate.authorState).toBe("hard_blocked");
     expect(gate.canArchive).toBe(false);
     expect(gate.blocking[0].issue_key).toBe("missing_required_text");
+  });
+
+  it("hard QC rewrite_brief becomes an actionable author rewrite instruction", async () => {
+    const { mod } = await loadSceneRun();
+    expect(mod.scnRewriteBriefFrom({
+      hard_qc: { rewrite_brief: ["补齐推门动作", "明确主动销毁通行证"] },
+      author_state: HARD_BLOCKED_PROJECTION,
+    })).toBe("补齐推门动作；明确主动销毁通行证");
   });
 
   it("scnGateFrom：quality_warning 投影 → 可归档 + 警告随行；无投影 → null", async () => {

@@ -9,7 +9,7 @@
    键 = 后端 chapter_id（目录卡的 backendId），不是 FE slug。
    ========================================================== */
 
-import { apiGet } from "./lib/client.js";
+import { apiGet, apiPost } from "./lib/client.js";
 
 // chapterBackendId → { detail } | { error: true }
 const manuCache = {};
@@ -40,6 +40,15 @@ const WsManuStore = {
       return manuCache[chapterId];
     })();
     return manuInflight[chapterId];
+  },
+
+  /** 作者显式生成/刷新章节汇总；写成功后立即重拉成稿详情，视图不拿旧缓存冒充结果。 */
+  async aggregate(chapterId) {
+    if (!chapterId) throw new Error("缺少章节标识，无法生成章节汇总。");
+    const result = await apiPost(`/api/v1/chapters/${chapterId}/runtime/aggregate/final`, {});
+    delete manuCache[chapterId];
+    await this.refresh(chapterId);
+    return result;
   },
 
   /** 同步读：{ completion, assembled, aggregate, scenes:[{sceneId, paras, live, charCount}] } | null */

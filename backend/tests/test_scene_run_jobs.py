@@ -225,6 +225,98 @@ def test_scene_run_job_worker_uses_job_id_as_execution_id(client, monkeypatch) -
     }
 
 
+def test_author_budget_resume_job_reuses_the_server_owned_failed_execution(
+    client, session, monkeypatch
+) -> None:
+    from novel_system.services import scene_run_jobs as job_module
+    from novel_system.services.orchestrator import Orchestrator as RealOrchestrator
+
+    _create_chapter_and_scene(client)
+    first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]
+    first_job = session.get(ChapterRunJob, first["job_id"])
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    assert first_job is not None and state is not None
+    first_job.status = "blocked"
+    first_job.error_code = "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED"
+    first_job.error_text = "scene token budget exhausted before dispatch"
+    state.active_run_job_id = None
+    state.active_execution_id = first_job.job_id
+    state.run_execution_status = "failed"
+    state.run_checkpoint = "hard_qc_ready"
+    state.run_checkpoint_json = {
+        "execution_id": first_job.job_id,
+        "node_key": "hard_qc_ready",
+        "artifact_refs": {},
+        "artifact_hashes": {},
+        "superseded_execution_ids": [],
+    }
+    session.commit()
+
+    response = client.post(
+        "/api/v1/scenes/CHJOB_SC01/run/jobs?start=false",
+        json={"resume_budget": True},
+    )
+
+    assert response.status_code == 200
+    resumed_job_id = response.json()["data"]["job_id"]
+    resumed_job = session.get(ChapterRunJob, resumed_job_id)
+    assert resumed_job is not None
+    assert resumed_job.payload_json["budget_resume_parent_execution_id"] == first_job.job_id
+
+    captured: dict[str, object] = {}
+
+    class _FakeOrchestrator:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, scene_id: str, *, execution_id=None, run_job_id=None, **_kwargs) -> dict:
+            captured.update(
+                scene_id=scene_id,
+                execution_id=execution_id,
+                run_job_id=run_job_id,
+            )
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _FakeOrchestrator)
+    job_module._run_scene_job_worker(resumed_job_id)
+
+    assert captured == {
+        "scene_id": "CHJOB_SC01",
+        "execution_id": resumed_job_id,
+        "run_job_id": resumed_job_id,
+    }
+    session.expire_all()
+    resumed_state = session.get(SceneRunState, "CHJOB_SC01")
+    assert resumed_state.active_execution_id == resumed_job_id
+    assert resumed_state.run_checkpoint == "hard_qc_ready"
+    assert first_job.job_id in resumed_state.run_checkpoint_json["artifact_execution_lineage_ids"]
+    verifier = RealOrchestrator(session)
+    verifier._execution_id = resumed_job_id
+    verifier._run_job_id = resumed_job_id
+    assert verifier._checkpoint_execution_owner_matches(first_job.job_id, first_job.job_id)
+    assert not verifier._checkpoint_execution_owner_matches(first_job.job_id, "rogue-job")
+    historical_context = verifier._auto_critique_patch_context(
+        "CHJOB_SC01",
+        provider_execution_mode="online",
+        execution_id=first_job.job_id,
+        run_job_id=first_job.job_id,
+    )
+    assert historical_context.execution_id == first_job.job_id
+    assert historical_context.run_job_id == first_job.job_id
+
+
+def test_budget_resume_job_rejects_when_no_budget_blocked_execution_exists(client) -> None:
+    _create_chapter_and_scene(client)
+
+    response = client.post(
+        "/api/v1/scenes/CHJOB_SC01/run/jobs?start=false",
+        json={"resume_budget": True},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "RUN_BUDGET_RESUME_UNAVAILABLE"
+
+
 def test_scene_job_retry_reuses_execution_checkpoint_without_recharging(client, session, monkeypatch) -> None:
     from novel_system.services import scene_run_jobs as job_module
 

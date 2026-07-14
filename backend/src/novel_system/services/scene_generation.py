@@ -17,6 +17,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import DIMENSION_WEIGHTS, QUALITY_DIMENSIONS, analyze_literary_quality
 from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.llm_task_runner import (
     CONTINUITY_BUDGET_ERROR_CODE,
@@ -34,6 +35,31 @@ from novel_system.services.style_reference.injection import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_PRE_DISPATCH_ACCOUNTING_REJECTIONS = frozenset(
+    {
+        "LLM_SCENE_TOKEN_BUDGET_UNINITIALIZED",
+        "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+        "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED",
+        "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED",
+        "LLM_SCENE_CALL_IN_FLIGHT",
+        "LLM_ACCOUNTING_INTEGRITY_BLOCKED",
+    }
+)
+
+
+def _counts_as_business_attempt(exc: Exception) -> bool:
+    """A pre-dispatch accounting rejection is evidence, not a generation attempt."""
+    original = getattr(exc, "original_error", None)
+    code = str(getattr(exc, "error_code", None) or getattr(exc, "code", None) or "")
+    original_code = str(
+        getattr(original, "error_code", None) or getattr(original, "code", None) or ""
+    )
+    return not (
+        isinstance(exc, LLMAccountingRejected)
+        or isinstance(original, LLMAccountingRejected)
+        or code in _PRE_DISPATCH_ACCOUNTING_REJECTIONS
+        or original_code in _PRE_DISPATCH_ACCOUNTING_REJECTIONS
+    )
 
 
 class SceneGenerationPostprocessError(ValueError):
@@ -1717,6 +1743,7 @@ class SceneGenerationService:
             "error_code": exc.error_code,
             "message": exc.message,
             "retryable": exc.retryable,
+            "business_attempt_consumed": _counts_as_business_attempt(exc),
         }
         if prompt is not None:
             details_json["template_name"] = prompt.get("template_name")
@@ -1737,7 +1764,8 @@ class SceneGenerationService:
         )
         state.current_bundle_id = bundle["bundle_id"]
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        state.total_attempt_count += 1
+        if _counts_as_business_attempt(exc):
+            state.total_attempt_count += 1
         self.session.flush()
 
     @staticmethod
@@ -1812,6 +1840,7 @@ class SceneGenerationService:
             "error_code": error_code,
             "message": str(exc),
             "execution_step_key": execution_step_key,
+            "business_attempt_consumed": _counts_as_business_attempt(exc),
         }
         if prompt is not None:
             details_json["template_name"] = prompt.get("template_name")
@@ -1830,7 +1859,8 @@ class SceneGenerationService:
         )
         state.current_bundle_id = bundle["bundle_id"]
         state.current_bundle_hash = bundle["bundle_snapshot_hash"]
-        state.total_attempt_count += 1
+        if _counts_as_business_attempt(exc):
+            state.total_attempt_count += 1
         self.session.flush()
 
 

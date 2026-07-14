@@ -30,6 +30,7 @@ from novel_system.db.models import (
     VoiceProfile,
 )
 from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
@@ -424,6 +425,47 @@ def test_select_then_resume_archives_the_chosen_candidate(client, session) -> No
     session.refresh(gate)
     assert gate.details_json["decision_status"] == "selected"
     assert gate.status != "awaiting_review"  # gate 已闭合
+
+
+def test_selection_resume_surfaces_lifecycle_budget_boundary_as_recoverable_payload(
+    client,
+    session,
+    monkeypatch,
+) -> None:
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    chosen_row_id = gate.details_json["candidate_row_ids"][0]
+    assert client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "w3-select-budget-boundary"},
+    ).status_code == 200
+
+    def reject_at_budget(self, scene_id: str):  # noqa: ANN001, ANN202
+        raise LLMAccountingRejected(
+            "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+            "scene token budget exhausted before dispatch",
+        )
+
+    monkeypatch.setattr(Orchestrator, "_resume_after_selection_pipeline", reject_at_budget)
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-budget-boundary"},
+    )
+
+    assert resumed.status_code == 200
+    block = resumed.json()["data"]["lifecycle_budget_block"]
+    assert block == {
+        "code": "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+        "message": "scene token budget exhausted before dispatch",
+        "resume_mode": "selection",
+    }
+    state = session.get(SceneRunState, SCENE_ID)
+    assert state.run_execution_status == "waiting_selection"
+    assert state.scene_status == "awaiting_candidate_selection"
 
 
 def test_select_then_resume_accepts_completed_de_template_candidate_without_replaying_style_provider(

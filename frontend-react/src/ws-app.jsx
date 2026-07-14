@@ -287,7 +287,7 @@ function WorkSwitcher({ go }) {
 
   return (
     <React.Fragment>
-      <button className={`ws-brand ${open ? "is-open" : ""}`} onClick={() => setOpen(o => !o)}
+      <button className={`ws-brand ${open ? "is-open" : ""}`} data-testid="work-switcher" onClick={() => setOpen(o => !o)}
         aria-haspopup="true" aria-expanded={open} title="切换 / 新建作品">
         <span className="ws-brand-mark" data-accent={active.accent}>{active.mark}</span>
         <span className="ws-brand-text">
@@ -348,7 +348,7 @@ function WorkPopover({ works, activeId, onPick, onNew, onClose }) {
             );
           })}
         </div>
-        <button className="ws-wsw-new" onClick={onNew}>
+        <button className="ws-wsw-new" data-testid="work-new-open" onClick={onNew}>
           <span className="ws-wsw-new-ic"><I.Plus size={16} /></span> 新建作品
         </button>
       </div>
@@ -382,7 +382,7 @@ function NewWorkModal({ onCreate, onClose }) {
         <div className="ws-nw-body">
           <label className="ws-nw-field">
             <span className="ws-nw-lbl">书名 <em>必填</em></span>
-            <input ref={ref} className="ws-nw-input" value={title} placeholder="例如：盐镇来信"
+            <input ref={ref} className="ws-nw-input" data-testid="work-new-title" value={title} placeholder="例如：盐镇来信"
               onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
           </label>
           <label className="ws-nw-field">
@@ -392,7 +392,7 @@ function NewWorkModal({ onCreate, onClose }) {
           </label>
           <label className="ws-nw-field">
             <span className="ws-nw-lbl">一句话简介</span>
-            <textarea className="ws-nw-input ws-nw-area" value={sub} placeholder="用一句话说清这部作品是关于什么的——也可以之后在雪花里再写。"
+            <textarea className="ws-nw-input ws-nw-area" data-testid="work-new-synopsis" value={sub} placeholder="用一句话说清这部作品是关于什么的——也可以之后在雪花里再写。"
               rows={2} onChange={(e) => setSub(e.target.value)} />
           </label>
           <div className="ws-nw-row2">
@@ -419,7 +419,7 @@ function NewWorkModal({ onCreate, onClose }) {
 
         <div className="ws-nw-foot">
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
-          <button className="btn btn-accent" disabled={!canCreate} onClick={submit}>
+          <button className="btn btn-accent" data-testid="work-new-submit" disabled={!canCreate} onClick={submit}>
             <I.Plus size={15} /> 创建并进入
           </button>
         </div>

@@ -17,7 +17,7 @@ import { cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
    · 持久化：每场的运行结果存 scn-run:sid（按作品隔离），刷新不丢
    ========================================================== */
 
-const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate"];
+const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock"];
 const scnRunKey = (sid) => (wsKey ? wsKey("scn-run:" + sid) : "scn-run:" + sid);
 const scnQueueKey = () => (wsKey ? wsKey("scn-queue:v1") : "scn-queue:v1");
 
@@ -534,6 +534,67 @@ async function scnCreateCards(sid) { // eslint-disable-line no-unused-vars
   return apiPost(`/api/v1/scenes/${sceneId}/preflight/create-cards`, {});
 }
 
+function scnRewriteBriefFrom(src) {
+  const reports = [src && src.hard_qc, src && src.soft_qc, src && src.latest_qc].filter(Boolean);
+  for (const report of reports) {
+    const brief = Array.isArray(report.rewrite_brief) ? report.rewrite_brief.filter(Boolean) : [];
+    if (brief.length) return brief.join("；");
+  }
+  const projection = scnGateFrom(src);
+  return ((projection && projection.blocking) || [])
+    .map(f => f.human_readable_reason || f.message || f.issue_key || f.kind)
+    .filter(Boolean)
+    .join("；");
+}
+
+const SCN_LIFECYCLE_BUDGET_CODES = new Set([
+  "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+  "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED",
+  "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED",
+]);
+
+function scnBudgetBlock(job, workbench) {
+  const code = String((job && job.error_code) || "");
+  if (!SCN_LIFECYCLE_BUDGET_CODES.has(code)) return null;
+  const lifecycle = (workbench && workbench.scene_run_state && workbench.scene_run_state.lifecycle_budget) || {};
+  let topup;
+  let label;
+  if (code === "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED") {
+    const suggested = Number(lifecycle.recommended_topup_tokens || lifecycle.baseline_tokens || 6400);
+    topup = { extra_tokens: Math.max(1, Math.trunc(suggested)) };
+    label = "本场 token 生命周期预算已到派发边界";
+  } else if (code === "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED") {
+    topup = { extra_attempts: 1 };
+    label = "本场业务尝试预算已用完";
+  } else {
+    topup = { extra_provider_attempts: 1 };
+    label = "本场 provider 尝试预算已用完";
+  }
+  return {
+    code,
+    label,
+    message: String((job && job.error_text) || "生命周期预算耗尽；已有正文已保留"),
+    currentStep: String((job && job.current_step) || "blocked"),
+    lifecycle,
+    topup,
+  };
+}
+
+async function scnTopupBudget(sid, budgetBlock) { // eslint-disable-line no-unused-vars
+  const { apiPost } = await import("./lib/client.js");
+  const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
+  if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
+  const raw = budgetBlock && budgetBlock.topup && typeof budgetBlock.topup === "object"
+    ? budgetBlock.topup
+    : {};
+  const topup = Object.fromEntries(Object.entries(raw).filter(([, value]) => Number.isInteger(value) && value > 0));
+  if (!Object.keys(topup).length) throw new Error("没有可执行的生命周期预算追加量。");
+  return apiPost(`/api/v1/scenes/${sceneId}/budget/topup`, {
+    ...topup,
+    reason: "作者在起草台确认追加生命周期预算并从持久化检查点继续",
+  });
+}
+
 function scnRunUiAbortError() {
   const error = new Error("scene run UI tracking stopped");
   error.code = "SCENE_RUN_UI_ABORTED";
@@ -575,7 +636,11 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
   const t0 = Date.now();
   let job;
   // G3：作者改写指令随任务下发（后端注入风格生成阶段的提示词）
-  const body = note && String(note).trim() ? { author_note: String(note).trim().slice(0, 500) } : {};
+  // 起草台是作者在场的交互式工作流：严格模式把 Q2 建议停在可采纳态，
+  // 由“采纳并归档”留下明确接受记录；无 Q2 时后端仍可按契约自动完成。
+  const body = { run_policy: (lifecycle && lifecycle.runPolicy) || "strict" };
+  if (note && String(note).trim()) body.author_note = String(note).trim().slice(0, 500);
+  if (lifecycle && lifecycle.resumeBudget === true) body.resume_budget = true;
   try {
     job = await trackedPost(`/api/v1/scenes/${sceneId}/run/jobs`, body);
   } catch (e) {
@@ -609,7 +674,14 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
   const content = (wb && ((wb.final_scene && wb.final_scene.content)
     || (wb.style_draft && wb.style_draft.content)
     || (wb.neutral_draft && wb.neutral_draft.content))) || "";
+  const budgetBlock = scnBudgetBlock(last, wb);
   if (!content.trim()) {
+    if (budgetBlock) {
+      const error = new Error(`${budgetBlock.label}——可显式追加后从持久化检查点继续。`);
+      error.code = budgetBlock.code;
+      error.budgetBlock = budgetBlock;
+      throw error;
+    }
     // Fix A：异步任务现透出结构化 missing_fields（与同步 run/full 同源）→ 引导能点名缺哪些字段
     throw scnFriendly({ code: last.error_code || "", message: last.error_text || `任务以「${last.status}」结束且没有产出正文（${last.current_step || "—"}）`, details: { missing_fields: last.missing_fields || [] } });
   }
@@ -622,11 +694,25 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
   const pipeState = wb && wb.scene_run_state ? wb.scene_run_state.scene_status : last.status;
   // Wave 2：提取作者可见状态门（无法继续 vs 有稿建议修改），随运行记录持久化
   qc.gate = scnGateFrom(wb);
+  qc.rewriteBrief = scnRewriteBriefFrom(wb);
+  // reliable/无警告路径可能已经由后端原子归档。不能把 author_state=archived
+  // 的 can_archive=false 误渲染成 Q0/Q1 阻断，也不能再展示待裁决按钮。
+  qc.state = pipeState === "archived" ? "archived" : "ready";
+  qc.budgetBlock = budgetBlock;
+  if (budgetBlock) {
+    qc.gate = {
+      ...(qc.gate || { authorState: null, blocking: [], warnings: [], recommended: [] }),
+      canArchive: false,
+      blockReason: "lifecycle_budget",
+    };
+  }
   qc.log = [
     { t: tm(0), who: "system", text: "已投递后端起草任务（scenes run 管线：预检 → 蓝图 → 起草 → 硬/软双层质检）" },
     note ? { t: tm(0), who: "system", text: "改写指令已随任务下发（注入风格生成阶段，优先级最高）" } : null,
     { t: tm(secs), who: "pipeline", text: `管线结束 · 任务 ${last.status} · 场景状态 ${pipeState} · ${qc.words} 字 · 用时 ${secs}s` },
-    scnGateLog(qc.gate, tm(secs)),
+    budgetBlock
+      ? { t: tm(secs), who: "pipeline", text: `${budgetBlock.label}；已有正文与恢复点均已保留，需作者显式追加预算后续跑` }
+      : scnGateLog(qc.gate, tm(secs)),
     { t: tm(secs + 1), who: "qc", text: `本地复检：短句率 ${qc.metrics[0].val} · 句式重复 ${qc.metrics[1].val} · ${qc.verdict.risks}` },
   ].filter(Boolean);
   qc.cost = [
@@ -641,7 +727,7 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
    从 scenes workbench 恢复这一场的最新产出为一条可裁决的运行。
    队列/运行记录此前只活在 localStorage，后端 SceneRunState 才是管线真相——
    这是「起草台各自为战」的补缝。目录场景卡已 done 的按已归档呈现。 ---- */
-async function scnHydrateFromBackend(sid, { signal } = {}) {
+async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
   const { apiGet } = await import("./lib/client.js");
   scnThrowIfAborted(signal);
   const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
@@ -665,13 +751,22 @@ async function scnHydrateFromBackend(sid, { signal } = {}) {
   const hit = WsCatalog ? WsCatalog.sceneById(sid) : null;
   const reactive = ((hit && hit.scene && hit.scene.kind) || "").includes("反应");
   const qc = scnQC(paras, reactive);
-  const done = !!(hit && hit.scene && hit.scene.state === "done");
   const pipeState = (wb && wb.scene_run_state && wb.scene_run_state.scene_status) || "";
+  const done = !!(hit && hit.scene && hit.scene.state === "done") || pipeState === "archived";
   const now = new Date().toTimeString().slice(0, 8);
   qc.state = done ? "archived" : "ready";
   qc.attempt = 1;
   qc.at = Date.now();
   qc.gate = scnGateFrom(wb);
+  qc.rewriteBrief = scnRewriteBriefFrom(wb);
+  qc.budgetBlock = scnBudgetBlock(terminalJob, wb);
+  if (qc.budgetBlock) {
+    qc.gate = {
+      ...(qc.gate || { authorState: null, blocking: [], warnings: [], recommended: [] }),
+      canArchive: false,
+      blockReason: "lifecycle_budget",
+    };
+  }
   qc.attempts = [{ n: 1, time: "后端恢复", result: done ? "已归档" : "待裁决", tone: done ? "sage" : "gold", note: "从后端管线取回的最新产出" }];
   qc.log = [
     { t: now, who: "system", text: `已从后端恢复这一场的最新产出（场景状态 ${pipeState || "—"}）——运行在别处完成或页面关闭前未取回` },
@@ -819,7 +914,7 @@ function scnPickList(queuedSids) {
   } catch (e) { return []; }
 }
 
-Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
+Object.assign(window, { scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { SceneRunJobControl, scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

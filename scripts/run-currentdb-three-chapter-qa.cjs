@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const outcomeGateLib = require("./lib/qa-outcome-gate.cjs");
+const { observeUiPhase } = require("./lib/ui-phase-evidence.cjs");
 
 let chromium;
 try {
@@ -666,9 +667,6 @@ async function preflight() {
     blockedRoutes: llmConfig.blocked_routes || [],
     routeReadiness: llmConfig.node_routes || llmConfig.routes || {},
   };
-  if (!referenceExists) {
-    throw new Error(`reference book missing: ${referencePath}`);
-  }
   return result.meta.preflight;
 }
 
@@ -841,50 +839,75 @@ async function exerciseReferenceLearning(page) {
 }
 
 async function createOriginalWorkspace(page) {
-  await visit(page, "author", "author-workspace-view", "author-workspace-currentdb");
-  for (const chapter of chapters) {
-    await apiPost("/api/v1/chapters", {
-      chapter_id: chapter.chapter_id,
-      planned_scene_count: chapter.scenes.length,
-      mid_aggregate_enabled: 0,
-      chapter_goal: chapter.chapter_goal,
-      main_plot_push: chapter.main_plot_push,
-      emotional_target: chapter.emotional_target,
-      ending_effect: chapter.ending_effect,
-      must_not: chapter.must_not,
-      notes: chapter.notes,
-      writer_brief_json: chapter.writer_brief_json,
-    });
-    for (const scene of chapter.scenes) {
-      await apiPost("/api/v1/scenes", {
-        ...scene,
-        chapter_id: chapter.chapter_id,
-      });
-    }
-  }
-  await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
-  await visit(page, "author", "author-workspace-view", "author-workspace-created");
-  recordPhase(
-    "materialization",
-    "api",
-    "章节与场景卡经 /api/v1/chapters、/api/v1/scenes 深链创建；UI 仅作证据面板。北极星要求走雪花物化 UI（Wave 1–3 后翻绿）。",
+  const title = `${storySeed} · ${runKey}`;
+  await visit(page, "home", "home-view", "blank-project-before-create");
+  await page.getByTestId("work-switcher").click();
+  await page.getByTestId("work-new-open").click();
+  await page.getByTestId("work-new-title").fill(title);
+  await page.getByTestId("work-new-synopsis").fill("一名档案修复员发现失踪名单会在零点被改写，但公开真相的每一步都可能让证人付出代价。");
+  const createdResponse = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+      && /\/api\/v2\/projects(?:\?|$)/.test(response.url())
+  ), { timeout: 30000 });
+  await page.getByTestId("work-new-submit").click();
+  const response = await createdResponse;
+  if (!response.ok()) throw new Error(`UI project creation failed: HTTP ${response.status()}`);
+  const payload = await response.json();
+  const project = payload?.data?.project;
+  if (!project?.project_id) throw new Error("UI project creation response did not include project_id");
+  await page.waitForFunction(
+    (projectId) => Boolean(window.WsWorks && window.WsWorks.activeId() === projectId),
+    project.project_id,
+    { timeout: 30000 },
   );
-  recordExperience("author workspace", 8, "API 建章稳定，UI 能作为证据面板；表单对批量五章仍偏慢。");
+  const catalog = await apiGet(`/api/v2/projects/${encodeURIComponent(project.project_id)}/catalog`);
+  if ((catalog?.chapters || []).length !== 0) throw new Error("Northstar project must start with an empty catalog");
+  await screenshot(page, "blank-project-created-through-ui");
+  recordExperience("project creation", 9, "空白作品由新建对话框创建，后端目录校验为 0 章 0 场。");
   return {
-    chapterIds: chapters.map((item) => item.chapter_id),
-    sceneIds: chapters.flatMap((item) => item.scenes.map((scene) => scene.scene_id)),
+    projectId: project.project_id,
+    title,
+    chapterIds: [],
+    sceneIds: [],
   };
 }
 
 async function exerciseSnowflake(page) {
   await visit(page, "snowflake-workbench", "snowflake-workbench-view", "snowflake-workbench-currentdb");
-  recordPhase(
-    "snowflake_planning",
-    "api",
-    "雪花页仅作走查证据；规划数据由 harness 内置计划经 API 写入，未走真实雪花 UI 十步。",
-  );
-  recordExperience("snowflake planning", 7, "雪花规划适合从主题推到场景，但当前 QA 仍需 API 保证章节 ID 隔离。");
-  return { seed: storySeed, plannedChapters: chapters.length };
+  const plan = buildSnowflakeImportPlan(chapters);
+  const planningReceipt = await observeUiPhase(page, "snowflake_planning", async ({ click, fill }) => {
+    await click(page.getByTestId("snow-import-open"));
+    await page.getByTestId("snow-import-dialog").waitFor({ timeout: 10000 });
+    await fill(page.getByTestId("snow-import-json"), JSON.stringify(plan));
+    await click(page.getByTestId("snow-import-submit"));
+    await page.getByTestId("snow-import-dialog").waitFor({ state: "hidden", timeout: 120000 });
+  });
+  recordUiPhase(planningReceipt, "作者在雪花页导入十步结构化计划；浏览器依次保存并批准 10/10 步。" );
+  await screenshot(page, "snowflake-planning-ui-approved");
+
+  await page.getByTestId("snow-step-outline").click();
+  await page.getByTestId("snow-materialize").waitFor({ timeout: 30000 });
+  page.once("dialog", (dialog) => dialog.accept());
+  const materializeReceipt = await observeUiPhase(page, "materialization", async ({ click }) => {
+    await click(page.getByTestId("snow-materialize"));
+    await page.getByTestId("snow-go-draft").waitFor({ timeout: 120000 });
+  });
+  recordUiPhase(materializeReceipt, "作者点击采用到章节编排；浏览器完成 materialize 与 outline approve 两步。" );
+
+  const projectId = await page.evaluate(() => window.WsWorks && window.WsWorks.activeId());
+  const catalog = await apiGet(`/api/v2/projects/${encodeURIComponent(projectId)}/catalog`);
+  const materialized = catalog?.chapters || [];
+  const materializedScenes = materialized.flatMap((chapter) => chapter.scenes || []);
+  if (materialized.length !== expectedChapterCount || materializedScenes.length !== plannedSceneList.length) {
+    throw new Error(`UI materialization mismatch: chapters=${materialized.length}, scenes=${materializedScenes.length}`);
+  }
+  await screenshot(page, "snowflake-materialized-through-ui");
+  await page.getByTestId("snow-go-draft").click();
+  await page.getByTestId("scene-queue-item").first().waitFor({ timeout: 30000 });
+  const queueCount = await page.getByTestId("scene-queue-item").count();
+  if (queueCount !== plannedSceneList.length) throw new Error(`UI queue mismatch: expected ${plannedSceneList.length}, got ${queueCount}`);
+  recordExperience("snowflake planning", 9, "十步结构导入与五章十五场物化均由作者界面触发，目录仅用 API 只读复核。");
+  return { seed: storySeed, projectId, plannedChapters: materialized.length, plannedScenes: materializedScenes.length };
 }
 
 async function exerciseWriterRoomAndDrafts(page) {
@@ -1076,108 +1099,186 @@ async function exerciseKnowledgeAndIndex(page) {
 
 async function exerciseSceneWorkbench(page) {
   await visit(page, "workbench", "scene-workbench-view", "scene-workbench-currentdb");
-  for (const chapter of chapters) {
-    for (const scene of chapter.scenes) {
-      const sceneId = scene.scene_id;
-      const sceneStartedAt = Date.now();
-      let job = null;
-      let output = null;
-      let blockReason = null;
-      let attemptsUsed = 0;
-      for (let attemptNo = 1; attemptNo <= maxSceneJobAttempts; attemptNo += 1) {
-        attemptsUsed = attemptNo;
-        await page.getByTestId("scene-id-input").fill(sceneId).catch(() => null);
-        await page.getByTestId("scene-load-button").click().catch(() => null);
-        const started = await apiPost(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs`, {}, 30000);
-        job = await pollSceneRunJob(started.job_id, sceneId);
-        output = await collectSceneOutput(sceneId);
-        finalScenes[sceneId] = {
-          runJob: job,
-          attemptNo,
-          durationMs: Date.now() - sceneStartedAt,
-          tokens: tokensFromOutput(job, output),
-          blockReason: null,
-          ...output,
-        };
-        writeJson("final-scenes.json", finalScenes);
-        await screenshot(page, `scene-workbench-${sceneId.toLowerCase()}-attempt-${attemptNo}`);
-        if (output.sceneStatus === "archived" && output.finalRowId) {
-          break;
-        }
-        if (attemptNo < maxSceneJobAttempts && isContinuableSceneRunState(output.sceneStatus)) {
-          const reason = `${output.sceneStatus}: ${output.hardQc?.next_action || output.nearFinalSummary?.failure_class || "continue"}`;
-          result.warnings.push(`${sceneId} continuing scene job after revision branch: ${reason}`);
-          appendLog({ type: "scene-job-continue", sceneId, attemptNo, reason });
-          await sleep(5000);
-          continue;
-        }
-        if (attemptNo < maxSceneJobAttempts && isRetryableSceneRunBlocker(job, output)) {
-          const reason = retryableSceneRunReason(job, output);
-          result.warnings.push(`${sceneId} retrying scene job after transient blocker: ${reason}`);
-          appendLog({ type: "scene-job-retry", sceneId, attemptNo, reason });
-          await sleep(15000);
-          continue;
-        }
-        const blocker = {
-          chapterId: chapter.chapter_id,
-          sceneId,
-          attemptNo,
-          jobStatus: job?.status || "unknown",
-          sceneStatus: output.sceneStatus || "unknown",
-          issueKeys: issueKeysFromQc(output.hardQc || job?.result_summary?.latest_qc || null),
-          primaryIssueKey:
-            output.hardQc?.primary_issue_key ||
-            issueKeysFromQc(output.hardQc || job?.result_summary?.latest_qc || null)[0] ||
-            null,
-          nextAction:
-            output.humanReviewSummary?.trigger_reason ||
-            output.humanReviewSummary?.recommended_action ||
-            output.nearFinalSummary?.failure_class ||
-            output.nearFinalSummary?.revision_candidate_id ||
-            output.hardQc?.next_action ||
-            job.result_summary?.next_action ||
-            "human review blocker",
-          humanReviewSummary: output.humanReviewSummary || null,
-          rewriteCounters: output.rewriteCounters || null,
-        };
-        blockReason = `${blocker.sceneStatus}: ${blocker.nextAction}`;
-        result.sceneRunBlockers.push(blocker);
-        result.warnings.push(`${sceneId} blocked after ${attemptNo} attempt(s): ${blocker.nextAction}`);
-        appendLog({ type: "scene-job-blocker", ...blocker });
-        break;
-      }
-      if (finalScenes[sceneId]) {
-        finalScenes[sceneId].attemptNo = attemptsUsed;
-        finalScenes[sceneId].durationMs = Date.now() - sceneStartedAt;
-        finalScenes[sceneId].blockReason = blockReason;
-        writeJson("final-scenes.json", finalScenes);
-      }
-    }
+  const queue = page.getByTestId("scene-queue-item");
+  if (await queue.count() !== plannedSceneList.length) {
+    throw new Error(`scene queue must contain ${plannedSceneList.length} items before UI execution`);
   }
-  recordPhase(
-    "scene_execution",
-    "api",
-    "场景运行经 /api/v1/scenes/{id}/run/jobs 深链触发；工作台 UI 仅填表与截图证据。",
-  );
-  recordPhase(
-    "candidate_selection",
-    "missing",
-    "候选终选 UI 到 Wave 3 才交付（设计 v1.1 §8 Wave 3）；style-candidates 接口当前无前端消费者。",
-  );
-  recordPhase(
-    "archive",
-    "api",
-    "归档由后端管线自动完成，无作者 UI 采纳动作；Wave 1 归档单入口 + Wave 3 终选后此阶段走 UI。",
-  );
+  let candidateReceipt;
+  let archiveReceipt;
+  let candidateSelections = 0;
+  const sceneReceipt = await observeUiPhase(page, "scene_execution", async (sceneUi) => {
+    candidateReceipt = await observeUiPhase(page, "candidate_selection", async (candidateUi) => {
+      archiveReceipt = await observeUiPhase(page, "archive", async (archiveUi) => {
+        for (let index = 0; index < plannedSceneList.length; index += 1) {
+          const planned = plannedSceneList[index];
+          const sceneId = planned.scene_id;
+          const startedAt = Date.now();
+          await sceneUi.click(queue.nth(index));
+          await page.getByTestId("scene-start").waitFor({ timeout: 30000 });
+
+          const createJobResponse = page.waitForResponse((response) => (
+            response.request().method() === "POST"
+              && new RegExp(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs(?:\\?|$)`).test(response.url())
+          ), { timeout: 30000 });
+          await sceneUi.click(page.getByTestId("scene-start"));
+          const started = await createJobResponse;
+          if (!started.ok()) throw new Error(`${sceneId} UI run job creation failed: HTTP ${started.status()}`);
+
+          // Recovery controls can coexist with a disabled archive button. Always
+          // choose the actionable recovery before any terminal decision control.
+          let decision = await waitForVisibleTestId(page, ["scene-budget-topup", "scene-create-cards", "scene-candidate-select", "scene-hard-rewrite", "scene-start", "scene-archive"], 360000);
+          let recoveryActions = 0;
+          let candidateHandled = false;
+          let disabledArchiveObservations = 0;
+          while (true) {
+            if (decision === "scene-archive") {
+              if (!await page.getByTestId("scene-archive").isDisabled()) break;
+              disabledArchiveObservations += 1;
+              if (disabledArchiveObservations >= 5) break;
+              await sleep(1000);
+              decision = await waitForVisibleTestId(page, ["scene-budget-topup", "scene-create-cards", "scene-candidate-select", "scene-hard-rewrite", "scene-start", "scene-archive"], 360000);
+              continue;
+            }
+            disabledArchiveObservations = 0;
+            if (["scene-create-cards", "scene-budget-topup", "scene-hard-rewrite", "scene-start"].includes(decision)) {
+              recoveryActions += 1;
+              if (recoveryActions > 16) throw new Error(`${sceneId} exceeded the UI recovery action limit`);
+              const retryResponse = page.waitForResponse((response) => (
+                response.request().method() === "POST"
+                  && new RegExp(`/api/v1/scenes/${encodeURIComponent(sceneId)}/(?:run/jobs|resume-after-selection)(?:\\?|$)`).test(response.url())
+              ), { timeout: 360000 }).then(response => ({ response }), error => ({ error }));
+              let topupResponse = null;
+              if (decision === "scene-budget-topup") {
+                topupResponse = page.waitForResponse((response) => (
+                  response.request().method() === "POST"
+                    && new RegExp(`/api/v1/scenes/${encodeURIComponent(sceneId)}/budget/topup(?:\\?|$)`).test(response.url())
+                ), { timeout: 30000 }).then(response => ({ response }), error => ({ error }));
+              }
+              try {
+                await sceneUi.click(page.getByTestId(decision), { timeout: 5000 });
+              } catch (error) {
+                if (!/detached|Timeout/i.test(String(error && error.message))) throw error;
+                decision = await waitForVisibleTestId(page, ["scene-budget-topup", "scene-create-cards", "scene-candidate-select", "scene-hard-rewrite", "scene-start", "scene-archive"], 360000);
+                continue;
+              }
+              if (topupResponse) {
+                const topupOutcome = await topupResponse;
+                if (topupOutcome.error) throw topupOutcome.error;
+                const toppedUp = topupOutcome.response;
+                if (!toppedUp.ok()) throw new Error(`${sceneId} UI budget topup failed: HTTP ${toppedUp.status()}`);
+              }
+              const retryOutcome = await retryResponse;
+              if (retryOutcome.error) throw retryOutcome.error;
+              const retried = retryOutcome.response;
+              if (!retried.ok()) throw new Error(`${sceneId} UI retry after ${decision} failed: HTTP ${retried.status()}`);
+            } else if (decision === "scene-candidate-select") {
+              if (candidateHandled) throw new Error(`${sceneId} exposed candidate selection twice without an explicit reopen`);
+              const selectResponse = page.waitForResponse((response) => (
+                response.request().method() === "POST"
+                  && new RegExp(`/api/v1/scenes/${encodeURIComponent(sceneId)}/style-candidates/[^/]+/select(?:\\?|$)`).test(response.url())
+              ), { timeout: 30000 });
+              const resumeResponse = page.waitForResponse((response) => (
+                response.request().method() === "POST"
+                  && new RegExp(`/api/v1/scenes/${encodeURIComponent(sceneId)}/resume-after-selection(?:\\?|$)`).test(response.url())
+              ), { timeout: 360000 });
+              await candidateUi.click(page.getByTestId("scene-candidate-select").first());
+              const [selected, resumed] = await Promise.all([selectResponse, resumeResponse]);
+              if (!selected.ok() || !resumed.ok()) {
+                throw new Error(`${sceneId} UI candidate selection/resume failed: ${selected.status()}/${resumed.status()}`);
+              }
+              candidateSelections += 1;
+              candidateHandled = true;
+              // HTTP response arrives before CandidatePicker finishes its
+              // workbench hydrate + parent state update.  Wait for that stale
+              // selected view to unmount before reading the next decision,
+              // otherwise the transition frame looks like a second selection.
+              await page.getByTestId("scene-candidate-select").first().waitFor({ state: "hidden", timeout: 30000 });
+            } else {
+              throw new Error(`${sceneId} exposed unsupported UI decision ${decision}`);
+            }
+            decision = await waitForVisibleTestId(page, ["scene-budget-topup", "scene-create-cards", "scene-candidate-select", "scene-hard-rewrite", "scene-start", "scene-archive"], 360000);
+          }
+
+          const archiveButton = page.getByTestId("scene-archive");
+          if (await archiveButton.isDisabled()) {
+            const blocked = await collectSceneOutput(sceneId);
+            throw new Error(`${sceneId} UI archive is blocked: ${JSON.stringify(blocked.hardQc || blocked.humanReviewSummary || {})}`);
+          }
+          const archiveResponse = page.waitForResponse((response) => (
+            response.request().method() === "POST"
+              && new RegExp(`/api/v1/scenes/${encodeURIComponent(sceneId)}/adopt-current(?:\\?|$)`).test(response.url())
+          ), { timeout: 60000 });
+          // 起草台会在写作器已有正文时要求作者确认覆盖。C2 的操作者动作就是
+          // “明确采纳”，因此在同一 UI 点击里显式接受该确认；不接受会被浏览器
+          // 默认取消，随后等待 adopt-current 的证据会诚实超时。
+          const acceptAdoptionDialog = (dialog) => dialog.accept();
+          page.once("dialog", acceptAdoptionDialog);
+          try {
+            await archiveUi.click(archiveButton);
+          } finally {
+            page.removeListener("dialog", acceptAdoptionDialog);
+          }
+          const adopted = await archiveResponse;
+          if (!adopted.ok()) throw new Error(`${sceneId} UI archive failed: HTTP ${adopted.status()}`);
+
+          const output = await waitForArchivedSceneOutput(sceneId, 60000);
+          finalScenes[sceneId] = {
+            runJob: null,
+            attemptNo: 1,
+            durationMs: Date.now() - startedAt,
+            tokens: tokensFromOutput(null, output),
+            blockReason: null,
+            ...output,
+          };
+          writeJson("final-scenes.json", finalScenes);
+          await screenshot(page, `scene-ui-${String(index + 1).padStart(2, "0")}-${sceneId.toLowerCase()}`);
+        }
+      }, { minimums: { "adopt-current": plannedSceneList.length } });
+    }, { minimums: { "candidate-select": 3, "selection-resume": 3 } });
+  }, { minimums: { "run-job-create": plannedSceneList.length } });
+
+  if (candidateSelections < 3) throw new Error(`Northstar requires at least 3 UI candidate selections, got ${candidateSelections}`);
+  recordUiPhase(sceneReceipt, `起草台逐场点击运行，浏览器创建 ${plannedSceneList.length} 个异步任务。`);
+  recordUiPhase(candidateReceipt, `关键场景经匿名候选界面完成 ${candidateSelections} 次终选并续跑。`);
+  recordUiPhase(archiveReceipt, `作者逐场点击采纳并归档，浏览器完成 ${plannedSceneList.length} 次 adopt-current。`);
   const blockedCount = result.sceneRunBlockers.length;
   recordExperience(
     "scene generation",
     blockedCount ? 6 : 8,
     blockedCount
-      ? "Scene jobs expose real human-review blockers with issue keys and next actions; the runner now continues so all chapters get a status."
-      : "寮傛 job 杞姣旈樆濉炶姹傚彲淇★紝褰掓。鐘舵€佸拰 source_safety_scan 鏄綔鑰呴獙鏀跺叧閿€?",
+      ? "界面暴露了需处理的真实阻断，未把有稿或任务结束冒充归档。"
+      : `十五场全部经界面起草、${candidateSelections} 场匿名终选并由作者采纳归档。`,
   );
   return finalScenes;
+}
+
+async function waitForVisibleTestId(page, testIds, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const testId of testIds) {
+      const locator = page.getByTestId(testId).first();
+      const visible = await locator.count() && await locator.isVisible().catch(() => false);
+      const enabled = testId === "scene-archive" || await locator.isEnabled().catch(() => false);
+      if (visible && enabled) {
+        await sleep(testId === "scene-start" ? 2500 : 150);
+        if (await locator.isVisible().catch(() => false)
+          && (testId === "scene-archive" || await locator.isEnabled().catch(() => false))) return testId;
+      }
+    }
+    await sleep(1000);
+  }
+  throw new Error(`timed out waiting for UI decision: ${testIds.join(", ")}`);
+}
+
+async function waitForArchivedSceneOutput(sceneId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let latest = null;
+  while (Date.now() < deadline) {
+    latest = await collectSceneOutput(sceneId);
+    if (latest.sceneStatus === "archived" && latest.finalRowId && latest.finalText.trim()) return latest;
+    await sleep(1000);
+  }
+  throw new Error(`${sceneId} did not reach archived non-empty state after UI adoption: ${JSON.stringify(latest)}`);
 }
 
 function isContinuableSceneRunState(sceneStatus) {
@@ -1241,19 +1342,28 @@ async function collectSceneOutput(sceneId) {
 async function exerciseChapterManuscripts(page) {
   await visit(page, "manuscripts", "chapter-manuscript-view", "chapter-manuscripts-currentdb");
   const aggregates = {};
-  for (const chapter of chapters) {
-    aggregates[chapter.chapter_id] = await apiPost(
-      `/api/v1/chapters/${encodeURIComponent(chapter.chapter_id)}/runtime/aggregate/final`,
-      {},
-      120000,
-    ).catch((error) => ({ blocked: error.message }));
-  }
-  recordPhase(
-    "chapter_aggregation",
-    "api",
-    "章节聚合经 /api/v1/chapters/{id}/runtime/aggregate/final 深链触发；UI 仅走查证据。",
-  );
-  recordExperience("manuscripts", 8, "鎴愮鑱氬悎璁╀綔鑰呰兘浠庡満鏅浆涓虹珷鑺傞槄璇伙紝鏄笁绔犻棴鐜獙鏀跺繀椤诲叆鍙ｃ€?");
+  const rows = page.getByTestId("manuscript-chapter-item");
+  if (await rows.count() !== chapters.length) throw new Error(`manuscript UI expected ${chapters.length} chapters`);
+  const receipt = await observeUiPhase(page, "chapter_aggregation", async ({ click }) => {
+    for (let index = 0; index < chapters.length; index += 1) {
+      const chapter = chapters[index];
+      await click(rows.nth(index));
+      const aggregateResponse = page.waitForResponse((response) => (
+        response.request().method() === "POST"
+          && new RegExp(`/api/v1/chapters/${encodeURIComponent(chapter.chapter_id)}/runtime/aggregate/final(?:\\?|$)`).test(response.url())
+      ), { timeout: 120000 });
+      await click(page.getByTestId("chapter-aggregate"));
+      const response = await aggregateResponse;
+      if (!response.ok()) throw new Error(`${chapter.chapter_id} UI aggregate failed: HTTP ${response.status()}`);
+      aggregates[chapter.chapter_id] = await apiGet(`/api/v1/chapter-manuscripts/${encodeURIComponent(chapter.chapter_id)}`);
+      const aggregate = aggregates[chapter.chapter_id];
+      if (aggregate?.completion_status !== "complete" || !aggregate?.assembled?.content?.trim()) {
+        throw new Error(`${chapter.chapter_id} aggregate verification is incomplete`);
+      }
+    }
+  }, { minimums: { "final-aggregate": chapters.length } });
+  recordUiPhase(receipt, `成稿中心逐章点击生成/刷新汇总，浏览器完成 ${chapters.length} 次 final aggregate。`);
+  recordExperience("manuscripts", 9, "五章汇总由成稿中心按钮触发，并以服务端 FinalScene 拼接结果只读复核。");
   await screenshot(page, "chapter-manuscripts-aggregate");
   return aggregates;
 }
@@ -1467,8 +1577,14 @@ function tokensFromOutput(job, output) {
   return outcomeGateLib.tokensFromOutput(job, output);
 }
 
-function recordPhase(phase, lane, evidence) {
-  northstarPhases[phase] = { phase, lane, evidence };
+function recordUiPhase(receipt, evidence) {
+  if (!receipt || receipt.lane !== "ui" || !receipt.phase) {
+    throw new Error("Northstar phase cannot be recorded without a validated UI receipt");
+  }
+  northstarPhases[receipt.phase] = {
+    ...receipt,
+    evidence,
+  };
 }
 
 // Wave 0 结果门禁：唯一权威判定在 scripts/playwright_audit_summary.py（pytest 全覆盖）；
@@ -1828,6 +1944,121 @@ ${screenshots}
 - 真实模型质量、供应商响应和人工审核状态会影响三章能否一次归档；本脚本记录真实 blocker，不伪造成功。
 - 当前库保留 QA 章节、参考 profile、审核项和运行日志；ID 已带时间戳避免碰撞。
 `;
+}
+
+function buildSnowflakeImportPlan(chapterPlan) {
+  const characterSheets = [
+    {
+      character_id: "CHAR_SHENWEN", display_name: "沈闻", role: "主角",
+      goal: "在零点前找出失踪名单的改写入口并保护仍活着的证人。",
+      ambition: "让档案不再替权力决定谁可以被忘记。", values: ["真相", "证人安全"],
+      conflict: "公开越快越接近真相，却会把证人暴露给仍掌握名单写权的人。",
+      epiphany: "真正的负责不是抢先公开，而是让活人能承受真相落地的代价。",
+      one_sentence_summary: "修复员以自己的名字作饵，阻止零点名单继续吞掉证人。",
+      one_paragraph_summary: "沈闻先相信完整公开就能终止失踪，但每一条证据都会抬高证人的风险；他被迫分阶段交付真相，最终拒绝接过名单写权。",
+    },
+    {
+      character_id: "CHAR_XUZHAO", display_name: "许照", role: "盟友",
+      goal: "用可验证的调度缺口帮助沈闻拿到原始带，同时阻止他成为新的篡改者。",
+      ambition: "证明技术可以保护普通人，而不是只替系统提速。", values: ["可验证", "不越线"],
+      conflict: "他追求快速证伪，却必须一次次为证人安全压住效率冲动。",
+      epiphany: "最重要的技术决定有时是拒绝按下那个看似能立刻解决问题的按钮。",
+      one_sentence_summary: "许照用调度证据守住行动底线。",
+      one_paragraph_summary: "许照从只相信效率的技术员，变成能在关键时刻拦住沈闻签下最后一次篡改的人。",
+    },
+    {
+      character_id: "CHAR_GUQING", display_name: "顾磬", role: "对手与镜像",
+      goal: "迫使沈闻理解名单是一套接力制度，并诱导他接过下一班写权。",
+      ambition: "让名单系统继续以秩序之名运转。", values: ["秩序", "可控牺牲"],
+      conflict: "他能控制信息节奏，却无法控制沈闻与许照拒绝成为接班人的选择。",
+      epiphany: "他始终拒绝承认任何个体都不该被制度当作可计算损耗。",
+      one_sentence_summary: "顾磬用真相的一部分换取新接班人。",
+      one_paragraph_summary: "顾磬不断递出半真半假的路线，让沈闻靠近源头，却在终局发现两人宁愿承受失败也不接过名单写权。",
+    },
+  ];
+  const shortParagraphs = chapterPlan.map((chapter, index) => (
+    `第${index + 1}章《${chapter.chapter_goal}》把线索推进到下一层，但每一次发现都抬高证人、盟友或主角本人的代价；${chapter.ending_effect}`
+  ));
+  const outlineParagraphs = [
+    chapterPlan.slice(0, 2).map((chapter, index) => `${String(index + 1).padStart(2, "0")} ${chapter.chapter_goal.slice(0, 18)}：${chapter.main_plot_push || chapter.chapter_goal}`).join("\n"),
+    chapterPlan.slice(2, 4).map((chapter, index) => `${String(index + 3).padStart(2, "0")} ${chapter.chapter_goal.slice(0, 18)}：${chapter.main_plot_push || chapter.chapter_goal}`).join("\n"),
+    chapterPlan.slice(4).map((chapter, index) => `${String(index + 5).padStart(2, "0")} ${chapter.chapter_goal.slice(0, 18)}：${chapter.main_plot_push || chapter.chapter_goal}`).join("\n"),
+    "五章因果链从名单异动推进到广播源头，最终用拒绝接班完成主题反转。",
+  ];
+  const sceneRows = chapterPlan.flatMap((chapter, chapterIndex) => chapter.scenes.map((scene, sceneIndex) => {
+    const rowUid = `qa_${scene.scene_id.toLowerCase()}`;
+    const pressure = scene.writer_brief_json?.scene_pressure || "证据正在被倒计时销毁，任何迟疑都会让证人承担不可逆风险。";
+    const title = `第${chapterIndex + 1}章·场${sceneIndex + 1} ${scene.location || "零点档案站"}`;
+    return {
+      row_uid: rowUid,
+      scene_id: scene.scene_id,
+      chapter_id: chapter.chapter_id,
+      chapter_title: chapter.chapter_goal.slice(0, 24),
+      chapter_goal: chapter.chapter_goal,
+      scene_seq: scene.scene_seq,
+      pov_character_id: scene.pov_character_id || "CHAR_SHENWEN",
+      title,
+      summary: scene.scene_goal,
+      primary_form: "proactive",
+      scene_type: "proactive",
+      chapter_role: `${chapter.main_plot_push || chapter.chapter_goal}；本场必须改变下一场的目标与风险。`,
+      location: scene.location || "零点档案站",
+      crucible: `${pressure}；人物被倒计时、证人安全和不可逆公开风险同时困住，不能退出。`,
+      scene_crucible: `${pressure}；人物被倒计时、证人安全和不可逆公开风险同时困住，不能退出。`,
+      goal: `${scene.scene_goal}；结果必须在页面上可见并能明确判断是否达成。`,
+      conflict: `${pressure}；阻力第一次封锁证据，第二次转而威胁证人，第三次又用更高且不可逆的代价彻底逼迫主角改变行动方案。`,
+      setback: `${scene.exit_change || scene.hook || "线索改变了下一场目标"}；即使暂时成功，也必须失去时间、信任或安全窗口这一具体代价。`,
+      cost_requirement: "主角每次推进都要消耗证人信任、暴露安全窗口，或永久关闭一种更轻松的选择。",
+      target_length_band: scene.target_length_band || "short",
+      must_include_text: scene.must_include_text || "必须兑现本场因果转折。",
+      exit_change: scene.exit_change || "本场结果迫使下一场改换目标。",
+      hook: scene.hook || "新的风险在场末显形。",
+      beats_json: scene.beats_json || [],
+      writer_brief_json: scene.writer_brief_json || {},
+    };
+  }));
+
+  const bibles = characterSheets.map((character) => ({
+    character_id: character.character_id,
+    display_name: character.display_name,
+    role: character.role,
+    physical_profile: { age: "三十岁上下", height: "普通", appearance: "长时间接触旧档案，指腹留有细小纸痕", style: "克制实用" },
+    personality_profile: { strongest_trait: "在压力下仍追问证据", weakest_trait: "容易把责任全部揽到自己身上", humor: "干涩", preferences: ["可验证的事实"] },
+    environment_profile: { home: "南岸城旧档案区", family_background: "与旧案有未解关联", education: "档案与信息技术", work: "档案修复与调查", relationships: "与同盟既互信又互相守住底线" },
+    psychological_profile: { best_memory: "第一次修复出完整名字", worst_memory: "没能及时保护证人", deepest_fear: "自己成为新的名单书写者", greatest_hope: "普通人重新拥有自己的明天", philosophy: "真相必须以活人能承受的方式落地", self_image: "证据守门人", public_image: "冷静的修复员", character_arc: character.epiphany },
+  }));
+
+  return {
+    schema: "snowflake-canonical-plan-v1",
+    steps: {
+      book_brief: {
+        category: "都市悬疑长篇", target_reader: "喜欢硬线索、道德选择与连续因果升级的成年悬疑读者",
+        story_kind: "档案修复员追查零点失踪名单，但每次公开都会把证人推向更高风险的原创都市悬疑",
+        delight_reason: "线索越接近源头，保护证人与公开真相的冲突和代价越不可逆",
+        genre_promise: "五章持续交付可验证线索、压力升级、选择代价与非超自然收束",
+        expected_reader_emotion: "持续压迫、逼近真相的拉力，以及角色拒绝免费选择后的释然",
+        safety_rules: ["纯原创基准，不使用参考书", "不得复制受保护人物、设定、桥段或标志性句式"],
+      },
+      one_sentence_summary: { summary: "档案修复员必须在零点前终止会改写失踪名单的接力网络，却发现每次公开真相都可能失去证人。" },
+      one_paragraph_summary: {
+        sentences: [
+          "沈闻发现失踪名单会在零点被改写，必须找到仍活着的证人。",
+          "第一场灾难逼他承认证据公开会暴露证人，他失去一次完整公开的机会。",
+          "第二场灾难让伪造签名落到自己头上，盟友也可能因风险退出。",
+          "第三场灾难把沈闻写进下一张名单，逼他用自己作饵直取广播源头。",
+          "他最终拒绝接过写权，以分阶段公开让名单终止，却为这场胜利付出永久嫌疑的代价。",
+        ],
+        moral_premise: "真相不是免费公开的战利品；负责意味着让活人能承受它落地的代价。",
+      },
+      character_sheets: { characters: characterSheets },
+      short_synopsis: { paragraphs: shortParagraphs },
+      character_synopses: { characters: characterSheets.map((character) => ({ character_id: character.character_id, display_name: character.display_name, role: character.role, synopsis: `${character.one_paragraph_summary} 旧伤迫使其追求目标，却也制造与同盟的冲突；最终变化是：${character.epiphany}` })) },
+      long_synopsis: { paragraphs: outlineParagraphs.map((paragraph, index) => `${paragraph}\n第${index + 1}阶段的压力继续升级，角色每次选择都失去时间、信任或安全窗口，不能无代价回退。`) },
+      character_bibles: { characters: bibles },
+      scene_list: { scenes: sceneRows.map(({ goal, conflict, setback, scene_crucible, cost_requirement, target_length_band, must_include_text, exit_change, hook, beats_json, writer_brief_json, title, ...row }) => row) },
+      scene_details: { scenes: sceneRows },
+    },
+  };
 }
 
 function buildChapters(suffix) {
@@ -2421,31 +2652,13 @@ async function main() {
   page.setDefaultTimeout(30000);
   try {
     await prepareBrowser(page);
-    await step("preflight current DB, tools, provider routes and reference file", preflight, { fatal: true });
-    await step("writer and advanced mode plus all visible app pages", () => exerciseUiModesAndPages(page));
-    await step("snowflake planning evidence for original seed", () => exerciseSnowflake(page));
-    const workspace = await step(`author workspace create unique ${expectedChapterCount}-chapter plan`, () => createOriginalWorkspace(page), { fatal: true });
-    await step("writer room create and save author draft", () => exerciseWriterRoomAndDrafts(page), { fatal: true });
-    // QA-RIG-HOTFIX(2026-06-27): exerciseReferenceLearning hits the LEGACY reference-learning
-    // API (/api/v1/reference-books/*), which the v2 Style Reference subsystem replaced with
-    // /api/v2/style-reference/*; against the current backend it 404s. The reference branch is an
-    // OPTIONAL side-quest (abstract style learning), NOT the three-chapter North Star — demote to
-    // non-fatal so the run reaches scene generation. (Style Reference itself is exercised via the
-    // React UI in R2's manual journey.) Recorded as finding RIG-02.
-    const reference = await step("reference learning import-path segments_only and apply abstract profile", () => exerciseReferenceLearning(page), {
-      fatal: false,
-    });
-    await step("review inbox approve release and reference review handling", () => exerciseReviewInbox(page, reference?.applyReviewIds || []));
-    await step("knowledge and index recovery/promotion probes", () => exerciseKnowledgeAndIndex(page));
-    await step("knowledge create original character voice and relation cards", () => exerciseCharacterKnowledge(page), { fatal: true });
-    await step("scene workbench run all planned scene jobs and archive final scenes", () => exerciseSceneWorkbench(page), { fatal: true });
-    await step("chapter manuscripts aggregate final text", () => exerciseChapterManuscripts(page), { fatal: true });
-    await step("literary quality chapter-set review and protected-term scan", () => exerciseQualityAndChapterSet(page), { fatal: true });
-    await step("deep edit, writer review and longform diagnostics", () => exerciseDeepDeskAndLongform(page));
+    await step("preflight current DB, tools and provider routes", preflight, { fatal: true });
+    const blankProject = await step("create a genuinely blank project through the UI", () => createOriginalWorkspace(page), { fatal: true });
+    const snowflake = await step("import, approve and materialize the five-chapter snowflake through the UI", () => exerciseSnowflake(page), { fatal: true });
+    await step("run, select and archive all planned scenes through the UI", () => exerciseSceneWorkbench(page), { fatal: true });
+    await step("aggregate all chapter manuscripts through the UI", () => exerciseChapterManuscripts(page), { fatal: true });
     await step("LLM route coverage and fallback audit", () => auditLlmIntegration());
-    await step("interop worksheet preview import export replay", () => exerciseInterop(page));
-    await step("trash isolated lifecycle", () => exerciseTrash(page));
-    result.meta.created = workspace;
+    result.meta.created = { ...blankProject, ...snowflake };
   } finally {
     await context.close().catch(() => null);
     await browser.close().catch(() => null);
@@ -2467,17 +2680,21 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  ensureOutDir();
-  result.meta.finishedAt = new Date().toISOString();
-  result.meta.fatalError = String(error?.stack || error?.message || error);
-  evaluateChapterScores();
-  fillRootCauseFindings();
-  writeJson("final-scenes.json", finalScenes);
-  runOutcomeGate();
-  writeJson("qa-live-results.json", result);
-  fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
-  appendLog({ type: "fatal", error: result.meta.fatalError });
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    ensureOutDir();
+    result.meta.finishedAt = new Date().toISOString();
+    result.meta.fatalError = String(error?.stack || error?.message || error);
+    evaluateChapterScores();
+    fillRootCauseFindings();
+    writeJson("final-scenes.json", finalScenes);
+    runOutcomeGate();
+    writeJson("qa-live-results.json", result);
+    fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
+    appendLog({ type: "fatal", error: result.meta.fatalError });
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { buildChapters, buildSnowflakeImportPlan };

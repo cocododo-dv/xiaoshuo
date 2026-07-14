@@ -932,19 +932,29 @@ function s2MergeChecks(stored) {
   return base;
 }
 
+/* 把后端水合/结构化导入的稀疏缓存折成视图真正持久化的完整形状。
+   同步层和视图层共用这一条边界，避免“刚批准的服务端真相”因为 React 补齐空脚手架
+   而被误判为作者编辑，再写回成 pending_review。 */
+function s2NormalizeState(saved) {
+  const source = saved || {};
+  return {
+    ...source,
+    drafts: { ...s2DefaultDrafts(), ...(source.drafts || {}) },
+    scaffolds: s2MergeScaffolds(source.scaffolds),
+    checks: s2MergeChecks(source.checks),
+    states: { ...s2DefaultStates(), ...(source.states || {}) },
+    revs: { ...Object.fromEntries(S2_STEPS.map(s => [s.key, 0])), ...(source.revs || {}) },
+    confirmRevs: { ...(source.confirmRevs || {}) },
+    history: Array.isArray(source.history) ? source.history : [],
+    _t: source._t || Date.now(),
+  };
+}
+
 /* 导出用：把当前作品的雪花状态完整物化（含种子合并结果）。
    数据包里带上这份，导入为新作品后不再依赖种子门控也能完整还原。 */
 function s2ExportState() {
   try {
-    const saved = s2Load();
-    return {
-      ...saved,
-      drafts: { ...s2DefaultDrafts(), ...(saved.drafts || {}) },
-      scaffolds: s2MergeScaffolds(saved.scaffolds),
-      checks: s2MergeChecks(saved.checks),
-      states: { ...s2DefaultStates(), ...(saved.states || {}) },
-      _t: saved._t || Date.now(),
-    };
+    return s2NormalizeState(s2Load());
   } catch (e) { return null; }
 }
 
@@ -968,6 +978,10 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const sigRef = useSR(null);
   const [savedAt, setSavedAt] = useSS(saved._t || null);
   const [toast, setToast] = useSS(null);
+  const [importOpen, setImportOpen] = useSS(false);
+  const [importText, setImportText] = useSS("");
+  const [importBusy, setImportBusy] = useSS(false);
+  const [importError, setImportError] = useSS("");
   const [ctxOpen, setCtxOpen] = useSS(false);
   const [snapDiff, setSnapDiff] = useSS(null);   // 待预览的历史快照条目
   const [genCands, setGenCands] = useSS({});   // ai-generated candidates, keyed by step
@@ -1442,6 +1456,28 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     showToast("已重置为示例稿", "slate");
   };
 
+  const importCanonicalPlan = async () => {
+    if (importBusy) return;
+    setImportError("");
+    let parsed;
+    try { parsed = JSON.parse(importText); }
+    catch (e) { setImportError("JSON 格式无效，请检查引号、逗号和括号。"); return; }
+    if (!window.SnowSync || !window.SnowSync.importCanonicalPlan) {
+      setImportError("雪花同步服务尚未就绪，请刷新页面后重试。");
+      return;
+    }
+    setImportBusy(true);
+    try {
+      const result = await window.SnowSync.importCanonicalPlan(null, parsed);
+      if (!result.readyToMaterialize) throw new Error("十步已导入，但后端物化闸门仍未通过；请检查标为重写的步骤或场景。");
+      setImportOpen(false);
+      setImportText("");
+      showToast("结构化计划已导入 · 后端 10/10 批准", "sage");
+    } catch (e) {
+      setImportError((e && e.message) || "导入失败，请检查计划内容。");
+    } finally { setImportBusy(false); }
+  };
+
   /* export the whole snowflake as a Markdown outline (real download) */
   const exportOutline = () => {
     const workTitle = (() => { try { return WsWorks ? WsWorks.active().title : "潮汐档案"; } catch (e) { return "未命名作品"; } })();
@@ -1513,6 +1549,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
           <div className="snow-strip-actions">
             {onOverview && <button className="btn btn-ghost btn-sm" onClick={onOverview} title="回到控制塔总览"><I.Grid size={13} /> 控制塔总览</button>}
             <button className="btn btn-ghost btn-sm" onClick={resetAll} title="清空本地草稿，恢复示例"><I.Refresh size={13} /> 重置</button>
+            <button className="btn btn-ghost btn-sm" data-testid="snow-import-open" onClick={() => { setImportError(""); setImportOpen(true); }} title="从已有策划稿导入十步规范 JSON；仍逐步经过后端保存与批准闸门"><I.Download size={13} /> 导入结构</button>
             <button className="btn btn-ghost btn-sm" onClick={exportOutline} title="导出全书大纲为 Markdown"><I.UploadCloud size={13} /> 导出大纲</button>
             <button className="btn btn-accent btn-sm" onClick={() => {
               if (onOverview) { onOverview(); setTimeout(() => window.dispatchEvent(new CustomEvent("ws:ct-tab", { detail: "downstream" })), 60); }
@@ -1554,7 +1591,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
             const st = states[s.key];
             const stale = !!staleMap[s.key];
             return (
-              <button key={s.key} className={`snow-step ${activeKey === s.key ? "is-active" : ""} s-${st} ${stale ? "is-stale" : ""}`} onClick={() => setActiveKey(s.key)} title={st === "done" && beKnownUnapproved(s.key) ? "本地已确认 · 后端未批准（前序闸门未满足）" : undefined}>
+              <button key={s.key} data-testid={`snow-step-${s.key}`} className={`snow-step ${activeKey === s.key ? "is-active" : ""} s-${st} ${stale ? "is-stale" : ""}`} onClick={() => setActiveKey(s.key)} title={st === "done" && beKnownUnapproved(s.key) ? "本地已确认 · 后端未批准（前序闸门未满足）" : undefined}>
                 <span className={`sf-track-bar trk-${s.track}`} />
                 <span className="snow-step-num">{s.num}</span>
                 <span className="snow-step-body">
@@ -1692,6 +1729,12 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       {snapDiff && (
         <S2SnapDiff h={snapDiff} current={{ draft: drafts[snapDiff.key] || "", scaffold: scaffolds[snapDiff.key] }}
           onApply={() => applySnap(snapDiff)} onClose={() => setSnapDiff(null)} />
+      )}
+
+      {importOpen && (
+        <S2ImportPlanDialog value={importText} busy={importBusy} error={importError}
+          onChange={setImportText} onImport={importCanonicalPlan}
+          onClose={() => { if (!importBusy) { setImportOpen(false); setImportError(""); } }} />
       )}
 
       {toast && (
@@ -2383,7 +2426,7 @@ function S2ChapterOutline({ scaffold, onScaffold }) {
         <span className={`sf-sstat ${placeholders ? "tone-rose" : "tone-sage"}`}>{placeholders ? <><I.AlertTriangle size={11} /> {placeholders} 章占位待补</> : <><I.Check size={11} /> 骨架已立</>}</span>
         <span style={{ flex: 1 }} />
         {adopted == null ? (
-          <button className="btn btn-quiet btn-sm" onClick={adopt} disabled={!adoptable.length} title="把这份大纲落进章节编排 / 写作目录，不用再手工重建">
+          <button className="btn btn-quiet btn-sm" data-testid="snow-materialize" onClick={adopt} disabled={!adoptable.length} title="把这份大纲落进章节编排 / 写作目录，不用再手工重建">
             <I.Layout size={13} /> 采用到章节编排
           </button>
         ) : (
@@ -2391,7 +2434,7 @@ function S2ChapterOutline({ scaffold, onScaffold }) {
             <button className="btn btn-quiet btn-sm" onClick={() => { location.hash = "#author"; }}>
               <I.Check size={13} /> {adopted ? `已并入 ${adopted} 章` : "无新增（同名已存在）"} · 去编排查看
             </button>
-            <button className="btn btn-accent btn-sm" onClick={goDraft} title="把已规划好的场批量送进 AI 起草台排队，按场景卡三拍与雪花上下文起草整场">
+            <button className="btn btn-accent btn-sm" data-testid="snow-go-draft" onClick={goDraft} title="把已规划好的场批量送进 AI 起草台排队，按场景卡三拍与雪花上下文起草整场">
               <I.Play size={13} /> 去 AI 起草
             </button>
           </>
@@ -3250,6 +3293,42 @@ function S2SnapDiff({ h, current, onApply, onClose }) {
   );
 }
 
+function S2ImportPlanDialog({ value, busy, error, onChange, onImport, onClose }) {
+  useSE(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onClose]);
+  return (
+    <div className="sf-sd-scrim" role="dialog" aria-modal="true" aria-label="导入结构化雪花计划" onClick={onClose} data-testid="snow-import-dialog">
+      <div className="sf-sd-card sf-import-card" onClick={(e) => e.stopPropagation()}>
+        <header className="sf-sd-head">
+          <div>
+            <div className="sf-sd-title">导入结构化雪花计划</div>
+            <div className="sf-sd-sub">粘贴包含 <code>steps</code> 的十步规范 JSON。系统会按依赖顺序逐步保存、批准并保留版本历史。</div>
+          </div>
+          <button className="wr-drawer-x" onClick={onClose} disabled={busy} title="关闭 (Esc)"><I.X size={16} /></button>
+        </header>
+        <div className="sf-import-body">
+          <div className="sf-import-warning"><I.AlertTriangle size={14} /> 导入会为当前作品创建十步新版本；任一步失败会立即停止，不会伪装成已完成。</div>
+          <textarea data-testid="snow-import-json" value={value} disabled={busy} onChange={(e) => onChange(e.target.value)}
+            spellCheck="false" placeholder={'{\n  "steps": {\n    "book_brief": { ... },\n    "one_sentence_summary": { ... },\n    ...\n  }\n}'} />
+          {error && <div className="sf-cand-err" role="alert"><I.AlertTriangle size={13} /><span>{error}</span></div>}
+        </div>
+        <footer className="sf-sd-foot">
+          <span className="sf-sd-hint">必须包含 book_brief 至 scene_details 全部十步。</span>
+          <div className="flex gap-2">
+            <button className="btn btn-quiet btn-sm" onClick={onClose} disabled={busy}>取消</button>
+            <button className="btn btn-accent btn-sm" data-testid="snow-import-submit" onClick={onImport} disabled={busy || !value.trim()}>
+              {busy ? <I.Refresh size={13} className="sf-spin" /> : <I.Download size={13} />} {busy ? "逐步导入中…" : "导入并逐步批准"}
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 /* ---- scoped interaction styles (extends screens.css .snow-*) ---- */
 function S2Styles() {
   return (
@@ -3353,6 +3432,10 @@ function S2Styles() {
 .sf-sd-text { margin: 0; padding: 12px 13px; font-size: 12.8px; line-height: 1.9; color: var(--ink-1); white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 46vh; }
 .sf-sd-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--line-1, #eee); }
 .sf-sd-hint { font-size: 12px; color: var(--ink-3, #999); }
+.sf-import-card { width: min(900px, 94vw); }
+.sf-import-body { display: grid; gap: 10px; padding: 14px 18px; min-height: 0; overflow: auto; }
+.sf-import-warning { display: flex; align-items: center; gap: 7px; padding: 9px 11px; border-radius: 9px; background: var(--gold-wash); color: var(--ink-2); font-size: 12.5px; }
+.sf-import-body textarea { width: 100%; min-height: 46vh; resize: vertical; box-sizing: border-box; border: 1px solid var(--line-1, #ddd); border-radius: 10px; background: var(--paper-1, #faf9f7); color: var(--ink-1); padding: 12px; font: 12px/1.65 var(--font-mono, monospace); }
 @media (max-width: 760px) { .sf-sd-cols { grid-template-columns: 1fr; } }
 
 @keyframes sfSpin { to { transform: rotate(360deg); } }
@@ -3956,6 +4039,6 @@ Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2Gener
   s2Materialize: { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState } });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState };
+export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState, s2NormalizeState };
 export const S2_SCENE_SEED = S2_SCAFFOLD_SEED.scenes;
 export const s2Materialize = { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState };

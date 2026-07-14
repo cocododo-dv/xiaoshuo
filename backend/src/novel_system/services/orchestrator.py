@@ -41,6 +41,7 @@ from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.llm_accounting import (
     ACCOUNTING_EXECUTION_MODE_KEY,
     LLMAccountingError,
+    LLMAccountingRejected,
     LLMCallContext,
     is_llm_control_plane_failure,
     validate_product_call,
@@ -163,7 +164,13 @@ class Orchestrator:
                 author_note=author_note,
                 run_policy=run_policy,
             )
-            if result.get("scene_status") == "archived":
+            if result.get("scene_status") in {
+                "archived",
+                "quality_warning_pending_acceptance",
+            }:
+                # Strict mode deliberately stops with a valid draft awaiting the
+                # author's Q2/Q3 acceptance.  It is a successful execution
+                # terminal, not a failure/retry checkpoint.
                 checkpoints.mark_completed(scene_id, effective_execution_id)
             elif result.get("scene_status") == "awaiting_candidate_selection":
                 checkpoints.mark_waiting_selection(scene_id, effective_execution_id)
@@ -1534,6 +1541,8 @@ class Orchestrator:
             self._execution_id,
             payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None,
         }
+        if isinstance(payload, dict):
+            allowed.update(payload.get("artifact_execution_lineage_ids") or [])
         if not isinstance(owner_execution_id, str) or owner_execution_id not in allowed:
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -1542,6 +1551,23 @@ class Orchestrator:
                 details={"artifact_execution_id": owner_execution_id},
             )
         return owner_execution_id
+
+    def _checkpoint_execution_owner_matches(
+        self,
+        execution_id: Any,
+        run_job_id: Any,
+    ) -> bool:
+        """Match current or inherited scene-job ownership after a checkpoint handoff."""
+        if execution_id == self._execution_id:
+            return run_job_id == self._run_job_id
+        payload = self._active_checkpoint_state().run_checkpoint_json or {}
+        inherited = set(payload.get("artifact_execution_lineage_ids") or []) if isinstance(payload, dict) else set()
+        selection_origin = payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None
+        if selection_origin:
+            inherited.add(selection_origin)
+        # Scene run jobs deliberately use job_id as execution_id. A carried
+        # artifact must remain attached to that exact historical job.
+        return isinstance(execution_id, str) and execution_id in inherited and run_job_id == execution_id
 
     def _renew_owner_lease(self, *, lease_seconds: int) -> None:
         if self._lease_renewer is None:
@@ -1722,8 +1748,13 @@ class Orchestrator:
             if reused:
                 valid_owner = owner_execution_id is None
             else:
-                selection_origin = payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None
-                valid_owner = owner_execution_id in {self._execution_id, selection_origin}
+                allowed = {
+                    self._execution_id,
+                    payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None,
+                }
+                if isinstance(payload, dict):
+                    allowed.update(payload.get("artifact_execution_lineage_ids") or [])
+                valid_owner = owner_execution_id in allowed
             if not valid_owner:
                 raise DomainError("RUN_CHECKPOINT_CORRUPT", "local planning provenance is invalid", status_code=409)
             return None
@@ -1738,8 +1769,12 @@ class Orchestrator:
                     status_code=409,
                 )
         elif owner_execution_id != self._execution_id:
-            selection_origin = payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None
-            if owner_execution_id != selection_origin:
+            allowed = {
+                payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None,
+            }
+            if isinstance(payload, dict):
+                allowed.update(payload.get("artifact_execution_lineage_ids") or [])
+            if owner_execution_id not in allowed:
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
                     "current planning artifact is owned by another execution",
@@ -2241,6 +2276,7 @@ class Orchestrator:
                     )
 
         restored = 0
+        restored_business_attempts = 0
         for attempt_snapshot in snapshots.get("attempts", []):
             attempt_data = dict(attempt_snapshot)
             details = dict(attempt_data.get("details_json") or {})
@@ -2261,9 +2297,13 @@ class Orchestrator:
                 continue
             self.session.add(AttemptTracker(**attempt_data))
             restored += 1
-        if restored:
+            if details.get("business_attempt_consumed", True) is not False:
+                restored_business_attempts += 1
+        if restored_business_attempts:
             if state is not None and state.active_execution_id == execution_id:
-                state.total_attempt_count = int(state.total_attempt_count or 0) + restored
+                state.total_attempt_count = (
+                    int(state.total_attempt_count or 0) + restored_business_attempts
+                )
         self.session.flush()
 
     def _near_final_checkpoint_progress(self) -> int:
@@ -2697,10 +2737,11 @@ class Orchestrator:
                 "completed_empty",
                 "completed_events",
             }
-            or extraction.get("execution_id") != self._execution_id
+            or not self._checkpoint_execution_owner_matches(
+                extraction.get("execution_id"), extraction.get("run_job_id")
+            )
             or extraction.get("execution_step_key")
             != "archive:prose_event_extract:0"
-            or extraction.get("run_job_id") != self._run_job_id
             or not isinstance(extraction.get("events"), list)
         ):
             raise DomainError(
@@ -5888,7 +5929,9 @@ class Orchestrator:
             or parent.project_id != expected_project_id
             or parent.chapter_id != scene.chapter_id
             or parent.scene_id != scene_id
-            or parent.run_job_id != self._run_job_id
+            or not self._checkpoint_execution_owner_matches(
+                execution_id, parent.run_job_id
+            )
             or parent.execution_id != execution_id
             or parent.execution_step_key != execution_step_key
             or parent.node_id != node_id
@@ -5921,6 +5964,8 @@ class Orchestrator:
         scene_id: str,
         *,
         provider_execution_mode: str | None = None,
+        execution_id: str | None = None,
+        run_job_id: str | None = None,
     ) -> LLMCallContext:
         scene = self.session.get(SceneCard, scene_id)
         chapter = self.session.get(ChapterGoal, scene.chapter_id) if scene is not None else None
@@ -5937,9 +5982,9 @@ class Orchestrator:
             scene_id=scene_id,
             node_id="style_patch",
             step="soft_patch",
-            execution_id=self._execution_id,
+            execution_id=execution_id or self._execution_id,
             execution_step_key="soft_patch:auto_critique:0",
-            run_job_id=self._run_job_id,
+            run_job_id=run_job_id if execution_id is not None else self._run_job_id,
             provider_execution_mode=(
                 provider_execution_mode
                 or getattr(
@@ -6187,9 +6232,10 @@ class Orchestrator:
             or product.get("outcome")
             not in {"provider_failed", "rejected_before_dispatch", "parse_failed"}
             or not isinstance(product.get("llm_call_id"), str)
-            or product.get("execution_id") != self._execution_id
+            or not self._checkpoint_execution_owner_matches(
+                product.get("execution_id"), product.get("run_job_id")
+            )
             or product.get("execution_step_key") != "soft_patch:auto_critique:0"
-            or product.get("run_job_id") != self._run_job_id
             or product.get("provider_execution_mode")
             not in {"online", "offline_deterministic"}
             or not isinstance(product.get("reason"), str)
@@ -6211,6 +6257,8 @@ class Orchestrator:
         context = self._auto_critique_patch_context(
             scene_id,
             provider_execution_mode=product["provider_execution_mode"],
+            execution_id=product["execution_id"],
+            run_job_id=product["run_job_id"],
         )
         call_id = product["llm_call_id"]
         outcome = product["outcome"]
@@ -6223,6 +6271,7 @@ class Orchestrator:
             scene_id=scene_id,
             llm_call_id=call_id,
             execution_step_key=context.execution_step_key,
+            execution_id=context.execution_id,
             allowed_accounting_statuses=(expected_status,),
             allow_local_rejected_output=outcome == "rejected_before_dispatch",
         )
@@ -6510,9 +6559,10 @@ class Orchestrator:
             corrupt("auto-critique non-completed contribution field is invalid")
         expected_step = "soft_qc:auto_critique:0"
         if (
-            product.get("execution_id") != self._execution_id
+            not self._checkpoint_execution_owner_matches(
+                product.get("execution_id"), product.get("run_job_id")
+            )
             or product.get("execution_step_key") != expected_step
-            or product.get("run_job_id") != self._run_job_id
         ):
             corrupt("auto-critique checkpoint execution ownership is invalid")
 
@@ -6534,7 +6584,7 @@ class Orchestrator:
                 corrupt("auto-critique no-call outcome field matrix is invalid")
             ledger_rows = self.session.execute(
                 select(LlmCall).where(
-                    LlmCall.execution_id == self._execution_id,
+                    LlmCall.execution_id == product.get("execution_id"),
                     LlmCall.execution_step_key == expected_step,
                 )
             ).scalars().all()
@@ -6592,9 +6642,9 @@ class Orchestrator:
             scene_id=scene_id,
             node_id="soft_qc",
             step=expected_step,
-            execution_id=self._execution_id,
+            execution_id=product.get("execution_id"),
             execution_step_key=expected_step,
-            run_job_id=self._run_job_id,
+            run_job_id=product.get("run_job_id"),
             provider_execution_mode="online",
         )
         expected_status = {
@@ -6607,7 +6657,7 @@ class Orchestrator:
             scene_id=scene_id,
             llm_call_id=call_id,
             execution_step_key=expected_step,
-            execution_id=self._execution_id,
+            execution_id=product.get("execution_id"),
             allowed_accounting_statuses=(expected_status,),
             allow_local_rejected_output=outcome == "rejected_before_dispatch",
         )
@@ -7924,6 +7974,25 @@ class Orchestrator:
                 checkpoints.mark_failed(scene_id, effective_execution_id)
             self.session.commit()
             return result
+        except LLMAccountingRejected as exc:
+            # Candidate selection resume is synchronous, unlike run/jobs. A
+            # lifecycle boundary is an expected recoverable stop: return a
+            # durable payload so the UI can request an audited top-up and retry
+            # this same post-selection pipeline, never the ordinary prefix.
+            self._persist_failure_audits_or_fence(
+                scene_id,
+                effective_execution_id,
+                checkpoints,
+            )
+            state = self.session.get(SceneRunState, scene_id)
+            return self._with_author_projection(scene_id, state, {
+                "scene_status": getattr(state, "scene_status", None),
+                "lifecycle_budget_block": {
+                    "code": getattr(exc, "code", "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED"),
+                    "message": str(exc),
+                    "resume_mode": "selection",
+                },
+            })
         except Exception:
             self._persist_failure_audits_or_fence(
                 scene_id,

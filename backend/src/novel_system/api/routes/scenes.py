@@ -380,11 +380,17 @@ def create_scene_run_job(scene_id: str, request: Request, start: bool = True, se
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     _reject_manual_checkpoint_controls(payload)
     service = SceneRunJobService(session)
+    budget_resume_parent_execution_id = (
+        service.resolve_budget_resume_execution_id(scene_id)
+        if (payload or {}).get("resume_budget") is True
+        else None
+    )
     job = service.create_job(
         scene_id,
         actor_ref=actor_ref,
         author_note=(payload or {}).get("author_note"),
         run_policy=_parse_run_policy(payload),
+        budget_resume_parent_execution_id=budget_resume_parent_execution_id,
     )
     payload = service.serialize_job(job)
     session.commit()
@@ -1183,6 +1189,39 @@ def _author_draft_plain_text(html: str | None) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def _scene_lifecycle_budget_payload(state: SceneRunState) -> dict[str, int] | None:
+    """Author-safe lifecycle counters used by the explicit topup UI.
+
+    The immutable basis remains server-owned; only the single-call unit needed
+    for an informed author topup is projected. No routing or credential data is
+    exposed.
+    """
+    if state.scene_token_budget is None:
+        return None
+    budget = int(state.scene_token_budget)
+    used = int(state.scene_tokens_used or 0)
+    reserved = int(state.scene_tokens_reserved or 0)
+    basis = state.scene_budget_basis_json if isinstance(state.scene_budget_basis_json, dict) else {}
+    raw_baseline = basis.get("baseline_tokens")
+    baseline = (
+        int(raw_baseline)
+        if type(raw_baseline) is int and raw_baseline > 0
+        else max(1, budget // 5)
+    )
+    return {
+        "scene_token_budget": budget,
+        "scene_tokens_used": used,
+        "scene_tokens_reserved": reserved,
+        "scene_tokens_remaining": max(0, budget - used - reserved),
+        "baseline_tokens": baseline,
+        "recommended_topup_tokens": baseline,
+        "attempt_budget": int(state.attempt_budget),
+        "total_attempt_count": int(state.total_attempt_count or 0),
+        "provider_attempt_budget": int(state.provider_attempt_budget),
+        "provider_attempts_used": int(state.provider_attempts_used or 0),
+    }
+
+
 @router.post("/api/v1/scenes/{scene_id}/adopt-current")
 def adopt_current_scene(
     scene_id: str,
@@ -1417,6 +1456,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
                 "current_bundle_id": state.current_bundle_id,
                 "current_bundle_hash": state.current_bundle_hash,
                 "current_final_scene_row_id": state.current_final_scene_row_id,
+                "lifecycle_budget": _scene_lifecycle_budget_payload(state),
             },
             # 治理 §5.3：作者可见状态投影块（完整契约字段）
             "author_state": compute_author_state(session, scene_id, state),

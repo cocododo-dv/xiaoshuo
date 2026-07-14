@@ -284,6 +284,7 @@ function WsManuscripts({ go }) {
   });
   const [view, setView] = useSt9("read");
   const [returnOpen, setReturnOpen] = useSt9(false);
+  const [aggregateState, setAggregateState] = useSt9({ busy: false, error: "", note: "" });
   const picked = chs.find(c => c.id === pickedId) || chs[0];
   const catPicked = (catChs || []).find(c => c.id === (picked && picked.id)) || null;
   /* Wave 1 换源：选中章拉后端归档聚合；loaded 事件驱动重渲染（store 同步缓存） */
@@ -309,6 +310,19 @@ function WsManuscripts({ go }) {
   const auditPending = (c) => { try { return !!(c && isTide && parseInt(c.n, 10) === 9 && window.Lf7Bridge && !window.Lf7Bridge.isArchived(9) && window.Lf7Bridge.state().handoff9); } catch (e) { return false; } };
   const [gateArm, setGateArm] = useSt9(false);
   useEf9(() => { setGateArm(false); }, [pickedId]);
+  useEf9(() => { setAggregateState({ busy: false, error: "", note: "" }); }, [pickedId]);
+  const aggregateChapter = async () => {
+    if (!catPicked || !catPicked.backendId || !WsManuStore || aggregateState.busy) return;
+    setAggregateState({ busy: true, error: "", note: "" });
+    try {
+      const result = await WsManuStore.aggregate(catPicked.backendId);
+      manuBump(n => n + 1);
+      const status = (result && result.status) || "completed";
+      setAggregateState({ busy: false, error: "", note: status === "created" ? "章节汇总已生成" : "章节汇总已刷新" });
+    } catch (e) {
+      setAggregateState({ busy: false, error: (e && e.message) || "章节汇总失败", note: "" });
+    }
+  };
   const submitToReview = () => {
     if (!picked) return;
     if (auditPending(picked) && !gateArm) { setGateArm(true); return; }
@@ -394,7 +408,7 @@ function WsManuscripts({ go }) {
               <ul className="ms-list-items">
                 {g.items.map(c => (
                   <li key={c.id}>
-                    <button className={`ms-list-row ${pickedId === c.id ? "is-active" : ""}`} onClick={() => setPicked(c.id)}>
+                    <button className={`ms-list-row ${pickedId === c.id ? "is-active" : ""}`} data-testid="manuscript-chapter-item" data-chapter-id={c.backendId || ""} onClick={() => setPicked(c.id)}>
                       <span className="ms-list-num">{c.n}</span>
                       <span className="ms-list-body">
                         <span className="ms-list-title text-serif">{c.title}</span>
@@ -425,6 +439,13 @@ function WsManuscripts({ go }) {
             </div>
             <div className="ms-reader-tools">
               <ManuState s={picked.state} big />
+              {catPicked && catPicked.backendId && (
+                <button className="btn btn-quiet btn-sm" data-testid="chapter-aggregate" onClick={aggregateChapter} disabled={aggregateState.busy}
+                  title="以服务端归档的 FinalScene 为唯一来源，生成或刷新本章汇总">
+                  {aggregateState.busy ? <I.Refresh size={13} className="sf-spin" /> : <I.Layers size={13} />}
+                  {aggregateState.busy ? "汇总中…" : "生成/刷新章节汇总"}
+                </button>
+              )}
               {picked.state !== "writing" && (
                 <div className="seg">
                   <button className={`seg-btn ${view === "read" ? "is-active" : ""}`} onClick={() => setView("read")}>正文</button>
@@ -435,6 +456,11 @@ function WsManuscripts({ go }) {
               )}
             </div>
           </header>
+          {(aggregateState.error || aggregateState.note) && (
+            <div role={aggregateState.error ? "alert" : "status"} style={{ margin: "0 18px 10px", color: aggregateState.error ? "var(--crimson)" : "var(--sage)", fontSize: 12.5 }}>
+              {aggregateState.error || aggregateState.note}
+            </div>
+          )}
 
           {picked.state === "writing"
             ? <ManuWriting picked={picked} go={go} gate={auditPending(picked) ? (gateArm ? "armed" : "pending") : null} onSubmit={submitToReview} />

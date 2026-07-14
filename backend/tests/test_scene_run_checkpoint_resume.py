@@ -63,6 +63,7 @@ from novel_system.services.qc_engine import SoftQcDecision
 from novel_system.services.scene_generation import SceneGenerationService, StyleGenerationResult
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_run_checkpoint import (
+    RUN_CHECKPOINT_ORDER,
     SceneRunCheckpointService,
     chapter_scene_execution_id,
     idempotency_execution_id,
@@ -292,6 +293,43 @@ def test_selection_resume_checkpoint_handoff_has_one_cas_owner(session) -> None:
     assert state.active_execution_id == winner
     assert state.run_execution_status == "active"
     assert state.run_checkpoint_json == before
+
+
+def test_failed_post_selection_checkpoint_hands_off_to_a_fresh_resume_owner(session) -> None:
+    _seed_resume_scene(session)
+    scene_id = "CH_RESUME_SC01"
+    checkpoints = SceneRunCheckpointService(session)
+    origin = "idempotency:selection-origin-budget"
+    first_resume = "idempotency:selection-resume-budget-a"
+    second_resume = "idempotency:selection-resume-budget-b"
+    checkpoints.acquire_execution(scene_id, origin)
+    for node in RUN_CHECKPOINT_ORDER[: RUN_CHECKPOINT_ORDER.index("selection_wait") + 1]:
+        checkpoints.save_checkpoint(
+            scene_id=scene_id,
+            execution_id=origin,
+            node_key=node,
+            artifact_refs={"selection_context": "durable"} if node == "selection_wait" else None,
+        )
+    checkpoints.mark_waiting_selection(scene_id, origin)
+    checkpoints.acquire_selection_resume(scene_id, first_resume)
+    checkpoints.save_checkpoint(
+        scene_id=scene_id,
+        execution_id=first_resume,
+        node_key="soft_qc_ready",
+        artifact_refs={"post_selection_product": "kept"},
+    )
+    checkpoints.mark_failed(scene_id, first_resume)
+
+    claimed = checkpoints.acquire_selection_resume(scene_id, second_resume)
+
+    state = session.get(SceneRunState, scene_id)
+    assert claimed.resumed is True
+    assert state.active_execution_id == second_resume
+    assert state.run_execution_status == "active"
+    assert state.run_checkpoint == "soft_qc_ready"
+    assert state.run_checkpoint_json["artifact_refs"]["post_selection_product"] == "kept"
+    assert first_resume in state.run_checkpoint_json["artifact_execution_lineage_ids"]
+    assert first_resume in state.run_checkpoint_json["superseded_execution_ids"]
 
 
 def test_checkpoint_rejects_wrong_execution_and_out_of_order_node(session) -> None:
@@ -5093,6 +5131,7 @@ def test_strict_near_final_warning_resume_does_not_replay_eval(session) -> None:
 
     state = session.get(SceneRunState, "CH_RESUME_SC01")
     assert first["scene_status"] == second["scene_status"] == "quality_warning_pending_acceptance"
+    assert state.run_execution_status == "completed"
     assert state.run_checkpoint == "near_final_ready"
     assert state.run_checkpoint_json["sub_index"] == 0
     assert state.current_final_scene_row_id is None

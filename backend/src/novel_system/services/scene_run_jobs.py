@@ -21,6 +21,14 @@ from novel_system.services.scene_run_preflight import SceneRunPreflightService
 JOB_TYPE_SCENE_FULL = "scene_run_full"
 RUN_JOB_CANCEL_REQUESTED = "RUN_JOB_CANCEL_REQUESTED_BY_AUTHOR"
 RUN_JOB_CANCELLED = "RUN_JOB_CANCELLED_BY_AUTHOR"
+_BUDGET_REJECTION_CODES = frozenset(
+    {
+        "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED",
+        "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED",
+        "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+        "LLM_USAGE_EXCEEDS_RESERVATION",
+    }
+)
 _CANCELLED_JOB_REGISTRY: set[str] = set()
 _CANCELLED_JOB_REGISTRY_LOCK = threading.Lock()
 SCENE_RUN_STAGE_ORDER = [
@@ -61,6 +69,7 @@ class SceneRunJobService:
         actor_ref: str = "operator",
         author_note: str | None = None,
         run_policy: str = "reliable",
+        budget_resume_parent_execution_id: str | None = None,
     ) -> ChapterRunJob:
         scene = AuthorLifecycleService(self.session).require_active_scene(scene_id)
         run_preflight = SceneRunPreflightService(self.session).build(scene, {})
@@ -122,6 +131,11 @@ class SceneRunJobService:
                 **({"author_note": note} if note else {}),
                 # Wave 2：运行策略随任务下发（reliable|strict|auto，列属 Wave 3）
                 **({"run_policy": run_policy} if run_policy and run_policy != "reliable" else {}),
+                **(
+                    {"budget_resume_parent_execution_id": budget_resume_parent_execution_id}
+                    if budget_resume_parent_execution_id
+                    else {}
+                ),
             },
             result_summary_json={
                 "scene_id": scene_id,
@@ -167,6 +181,43 @@ class SceneRunJobService:
                 details={"scene_id": scene_id},
             )
         return job
+
+    def resolve_budget_resume_execution_id(self, scene_id: str) -> str:
+        """Resolve a resumable execution without accepting a client checkpoint id."""
+        state = self.session.get(SceneRunState, scene_id)
+        try:
+            latest = self.latest_job(scene_id)
+        except DomainError as exc:
+            if exc.code != "RUN_JOB_NOT_FOUND":
+                raise
+            raise DomainError(
+                "RUN_BUDGET_RESUME_UNAVAILABLE",
+                "no server-owned budget-blocked checkpoint is available to resume",
+                status_code=409,
+                details={"scene_id": scene_id, "latest_job_id": None},
+            ) from exc
+        eligible = bool(
+            state is not None
+            and state.active_execution_id
+            and state.run_execution_status == "failed"
+            and state.run_checkpoint
+            and latest.status == "blocked"
+            and latest.error_code in _BUDGET_REJECTION_CODES
+            and latest.job_id == state.active_execution_id
+        )
+        if not eligible:
+            raise DomainError(
+                "RUN_BUDGET_RESUME_UNAVAILABLE",
+                "no server-owned budget-blocked checkpoint is available to resume",
+                status_code=409,
+                details={
+                    "scene_id": scene_id,
+                    "latest_job_id": latest.job_id,
+                    "latest_status": latest.status,
+                    "latest_error_code": latest.error_code,
+                },
+            )
+        return str(state.active_execution_id)
 
     def owner_for(self, job: ChapterRunJob) -> SceneRunJobLease:
         if not job.worker_id or not job.attempt_no:
@@ -954,6 +1005,15 @@ def _run_scene_job_worker(job_id: str) -> None:
             lease_seconds=owner_lease_ttl_seconds(),
         )
         service.claim_scene_active_job(owner, scene_id)
+        budget_resume_parent = str(
+            (job.payload_json or {}).get("budget_resume_parent_execution_id") or ""
+        )
+        if budget_resume_parent:
+            SceneRunCheckpointService(session).acquire_budget_resume(
+                scene_id,
+                scene_job_execution_id(job_id),
+                expected_parent_execution_id=budget_resume_parent,
+            )
         session.commit()
         result = Orchestrator(session).run_scene(
             scene_id,
@@ -1060,12 +1120,7 @@ def _mark_worker_cancellation(
 
 
 def _is_budget_rejection(error_code: str) -> bool:
-    return error_code in {
-        "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED",
-        "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED",
-        "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
-        "LLM_USAGE_EXCEEDS_RESERVATION",
-    }
+    return error_code in _BUDGET_REJECTION_CODES
 
 
 def _elapsed_ms(started_at: str | None, finished_at: str | None) -> int:

@@ -145,7 +145,7 @@ class SceneRunCheckpointService:
         return self._result(self._state(scene_id, refresh=True), resumed=False)
 
     def acquire_selection_resume(self, scene_id: str, execution_id: str) -> ExecutionCheckpoint:
-        """Atomically hand a selection-wait checkpoint to the resume request owner."""
+        """Atomically hand a selection/post-selection checkpoint to the resume owner."""
         state = self._state(scene_id, refresh=True)
         payload = self._checkpoint_payload(state)
         self._validate_checkpoint(state, payload)
@@ -170,7 +170,17 @@ class SceneRunCheckpointService:
                 status_code=409,
                 details={"execution_id": execution_id, "status": status},
             )
-        if state.run_checkpoint != "selection_wait" or status not in {"waiting_selection", "failed"}:
+        checkpoint = state.run_checkpoint
+        post_selection_retry = (
+            status == "failed"
+            and checkpoint in RUN_CHECKPOINT_ORDER
+            and RUN_CHECKPOINT_ORDER.index(checkpoint) >= RUN_CHECKPOINT_ORDER.index("selection_wait")
+            and bool(payload.get("selection_origin_execution_id"))
+        )
+        if not (
+            (checkpoint == "selection_wait" and status in {"waiting_selection", "failed"})
+            or post_selection_retry
+        ):
             raise DomainError(
                 "RUN_EXECUTION_IN_PROGRESS",
                 "selection checkpoint is already owned by another execution",
@@ -181,12 +191,16 @@ class SceneRunCheckpointService:
         superseded = list(payload.get("superseded_execution_ids") or [])
         if current is not None and current not in superseded:
             superseded.append(current)
+        artifact_lineage = list(payload.get("artifact_execution_lineage_ids") or [])
+        if current is not None and current not in artifact_lineage:
+            artifact_lineage.append(current)
         next_payload = {
             **payload,
             "execution_id": execution_id,
             "selection_parent_execution_id": current,
             "selection_origin_execution_id": payload.get("selection_origin_execution_id") or current,
             "superseded_execution_ids": superseded,
+            "artifact_execution_lineage_ids": artifact_lineage,
         }
         handed_off = self.session.execute(
             update(SceneRunState)
@@ -194,7 +208,7 @@ class SceneRunCheckpointService:
                 SceneRunState.scene_id == scene_id,
                 SceneRunState.active_execution_id == current,
                 SceneRunState.run_execution_status == status,
-                SceneRunState.run_checkpoint == "selection_wait",
+                SceneRunState.run_checkpoint == checkpoint,
             )
             .values(
                 active_execution_id=execution_id,
@@ -209,6 +223,72 @@ class SceneRunCheckpointService:
             raise DomainError(
                 "RUN_EXECUTION_IN_PROGRESS",
                 "another selection resume owner won the checkpoint handoff",
+                status_code=409,
+                details={"active_execution_id": latest.active_execution_id},
+            )
+        self.session.flush()
+        return self._result(self._state(scene_id, refresh=True), resumed=True)
+
+    def acquire_budget_resume(
+        self,
+        scene_id: str,
+        execution_id: str,
+        *,
+        expected_parent_execution_id: str,
+    ) -> ExecutionCheckpoint:
+        """Handoff a failed macro checkpoint to a fresh server-owned execution."""
+        state = self._state(scene_id, refresh=True)
+        payload = self._checkpoint_payload(state)
+        self._validate_checkpoint(state, payload)
+        current = state.active_execution_id
+        if (
+            current != expected_parent_execution_id
+            or state.run_execution_status != "failed"
+            or not state.run_checkpoint
+        ):
+            raise DomainError(
+                "RUN_BUDGET_RESUME_UNAVAILABLE",
+                "budget checkpoint is no longer owned by the expected failed execution",
+                status_code=409,
+                details={
+                    "active_execution_id": current,
+                    "expected_parent_execution_id": expected_parent_execution_id,
+                    "status": state.run_execution_status,
+                },
+            )
+        superseded = list(payload.get("superseded_execution_ids") or [])
+        if current not in superseded:
+            superseded.append(current)
+        artifact_lineage = list(payload.get("artifact_execution_lineage_ids") or [])
+        if current not in artifact_lineage:
+            artifact_lineage.append(current)
+        next_payload = {
+            **payload,
+            "execution_id": execution_id,
+            "budget_resume_parent_execution_id": current,
+            "superseded_execution_ids": superseded,
+            "artifact_execution_lineage_ids": artifact_lineage,
+        }
+        handed_off = self.session.execute(
+            update(SceneRunState)
+            .where(
+                SceneRunState.scene_id == scene_id,
+                SceneRunState.active_execution_id == current,
+                SceneRunState.run_execution_status == "failed",
+            )
+            .values(
+                active_execution_id=execution_id,
+                run_execution_status="active",
+                run_checkpoint_json=next_payload,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if handed_off.rowcount != 1:
+            self.session.rollback()
+            latest = self._state(scene_id, refresh=True)
+            raise DomainError(
+                "RUN_EXECUTION_IN_PROGRESS",
+                "another budget resume owner won the checkpoint handoff",
                 status_code=409,
                 details={"active_execution_id": latest.active_execution_id},
             )
@@ -259,8 +339,10 @@ class SceneRunCheckpointService:
             "strategy": strategy if strategy is not None else previous.get("strategy"),
             "branch": branch if branch is not None else previous.get("branch"),
             "superseded_execution_ids": list(previous.get("superseded_execution_ids") or []),
+            "artifact_execution_lineage_ids": list(previous.get("artifact_execution_lineage_ids") or []),
             "selection_parent_execution_id": previous.get("selection_parent_execution_id"),
             "selection_origin_execution_id": previous.get("selection_origin_execution_id"),
+            "budget_resume_parent_execution_id": previous.get("budget_resume_parent_execution_id"),
         }
         state.run_checkpoint = node_key
         state.run_checkpoint_json = payload

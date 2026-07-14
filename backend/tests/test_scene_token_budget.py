@@ -782,6 +782,7 @@ def test_exhausted_budget_blocks_new_provider_dispatch_without_leaking_reservati
     assert scene_client.requests == []
     assert state.scene_tokens_reserved == 0
     assert state.provider_attempts_used == 0
+    assert state.total_attempt_count == 0
 
 
 @pytest.mark.parametrize(
@@ -802,6 +803,7 @@ def test_rerun_with_exhausted_attempt_budget_makes_zero_provider_calls(
         state.total_attempt_count = state.attempt_budget
     else:
         state.provider_attempts_used = state.provider_attempt_budget
+    attempts_before = state.total_attempt_count
     session.commit()
     client = CountingSceneClient()
 
@@ -817,6 +819,7 @@ def test_rerun_with_exhausted_attempt_budget_makes_zero_provider_calls(
     session.expire_all()
     state = session.get(SceneRunState, SCENE_ID)
     assert state.scene_tokens_reserved == 0
+    assert state.total_attempt_count == attempts_before
 
 
 # ---------- 扩容唯一入口：作者显式 topup ----------
@@ -856,6 +859,35 @@ def test_author_topup_expands_budget_with_audit(client, session) -> None:
     # audited topup must therefore remain usable instead of looking like basis drift.
     returned = ensure_scene_budget_initialized(session, SCENE_ID)
     assert returned.scene_token_budget == 1500
+
+
+def test_workbench_exposes_a_safe_lifecycle_budget_projection_for_author_topup(
+    client, session
+) -> None:
+    _seed_scene(session)
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    baseline = state.scene_budget_basis_json["baseline_tokens"]
+    state.scene_tokens_used = baseline + 37
+    state.total_attempt_count = 2
+    state.provider_attempts_used = 5
+    session.commit()
+
+    response = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench")
+
+    assert response.status_code == 200
+    budget = response.json()["data"]["scene_run_state"]["lifecycle_budget"]
+    assert budget == {
+        "scene_token_budget": baseline * 5,
+        "scene_tokens_used": baseline + 37,
+        "scene_tokens_reserved": 0,
+        "scene_tokens_remaining": baseline * 4 - 37,
+        "baseline_tokens": baseline,
+        "recommended_topup_tokens": baseline,
+        "attempt_budget": 4,
+        "total_attempt_count": 2,
+        "provider_attempt_budget": 32,
+        "provider_attempts_used": 5,
+    }
 
 
 @pytest.mark.parametrize(
