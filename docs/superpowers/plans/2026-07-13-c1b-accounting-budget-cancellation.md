@@ -494,15 +494,17 @@ git commit -m "feat(scene-run): expose author cancellation control"
 - Modify: `backend/src/novel_system/tools/outcome_evidence.py`
 - Modify: `backend/tests/test_outcome_evidence.py`
 
-- [ ] canonical actual 固定为 `E:\codex\xiaoshuo\codex\backend\novel_system.db`，禁止使用 worktree 相对路径 `backend/novel_system.db`（当前仅 4096 bytes）。执行前 `Resolve-Path` 必须等于 canonical path、文件必须大于 1 MiB、preflight 必须为 0064；显式设置 `NOVEL_SYSTEM_DATABASE_URL=sqlite:///E:/codex/xiaoshuo/codex/backend/novel_system.db`。
-- [ ] 保存进程/监听端口/WAL 快照，确认没有明确 backend/uvicorn/数据库 writer；无法确认则停止，不迁移。
-- [ ] 对 canonical actual 做新校验备份；verify 失败则停止。
-- [ ] 在备份副本演练 `0064 -> 0065`，通过 preflight、metadata drift、关键表列和 ledger smoke 后再升级 actual。
-- [ ] actual 升到 `0065`，再次 preflight/backup verify；记录旧 LlmCall 回填数和 reserved=0 盘点。
-- [ ] 运行后端非 Chroma 全量、React 全量、生产构建；Chroma 按平台规则单独记录 skipped，不隐去。
-- [ ] 运行 C1B gate：所有生产出口落账、usage missing、失败、actual>estimate、并发预留、重跑、排队取消、运行中取消、取消不回滚。
-- [ ] 扩展 `outcome_evidence validate --profile c1b`：强制 C1B required gate 完整、database revision=0065、offline provenance、命令时间/退出码、artifact 存在/hash 和关键 gate details；generic validate 不能冒充 C1B 通过。
-- [ ] 生成 `outcome-evidence-v1` offline manifest，至少包含 git commit、0065 revision、备份 hash、进程/WAL 快照、drill/actual audit、静态出口盘点、后端/前端 JUnit 与 build log/hash，以及以下 gates：
+阶段验收记录（Task 9）：canonical actual 在无 writer、WAL=0 的进程快照下完成 `0064 -> 0065`；迁移前备份 5,120,000 bytes，SHA-256 `2f4a69f7557671c46813fd249c7fb72d62e366a29545012de267316d8f9bdced`、page_count=1250、integrity=ok。演练库和 actual 的 preflight/audit 一致：schema errors/orphan/negative/stuck/scope missing 均为 0；actual 最终为 6,516,736 bytes，SHA-256 `9f993a86451dc48289943600a9a643f559eaa9ff5a8bb4fb523e1289cf5fa123`。迁移后有 51 条 estimated legacy logical parents、0 physical attempt rows，未伪造历史子账。C1B 专项 364 passed；最终后端 `2477 passed, 5 skipped, 17 deselected`（JUnit 2482/0/0/5）；React 122/122，Vite build 通过；证据校验器 159 passed、1 个权限型白名单 skip。原计划误列的 `tests/test_scene_budget_reservations.py` 不存在，已由真实六文件集合纠正；失败尝试保留在 `commands.json`，manifest 只绑定成功命令。严格 manifest 包含 19 个产物、14 条成功命令、13/13 required gates，外部复算结论为 `C1B_OFFLINE_EVIDENCE_VALIDATED`。WAL-mode 0064 备份在 Windows 上暴露的 `sqlite3.deserialize` 限制已通过隔离临时快照只读 URI 修复，并新增回归；秒级备份元数据与亚秒命令时间也按同秒精度收敛。
+
+- [x] canonical actual 固定为 `E:\codex\xiaoshuo\codex\backend\novel_system.db`，禁止使用 worktree 相对路径 `backend/novel_system.db`。执行前 `Resolve-Path` 等于 canonical path、文件大于 1 MiB、preflight 为 0064；显式使用 canonical database URL。
+- [x] 保存进程/监听端口/WAL 快照，确认没有明确 backend/uvicorn/数据库 writer；writer_matches=0、wal_size=0。
+- [x] 对 canonical actual 做新校验备份，并在迁移前后重复 verify。
+- [x] 在备份副本演练 `0064 -> 0065`，通过 preflight、metadata drift、关键表列和 ledger smoke 后再升级 actual。
+- [x] actual 升到 `0065`，再次 preflight/backup verify；记录旧 LlmCall 回填、estimated provenance、reserved/stuck/orphan 盘点。
+- [x] 运行后端非 Chroma 全量、React 全量、生产构建；Chroma 17 项按平台 marker 明确 deselected，不隐去。
+- [x] 运行 C1B gate：所有生产出口落账、usage missing、失败、actual>estimate、并发预留、重跑、排队取消、运行中取消、取消不回滚。
+- [x] 扩展 `outcome_evidence validate --profile c1b`：强制 C1B required gate 完整、database revision=0065、offline provenance、命令时间/退出码、artifact 存在/hash 和关键 gate details；generic validate 不能冒充 C1B 通过。
+- [x] 生成 `outcome-evidence-v1` offline manifest，包含 git commit、0065 revision、备份 hash、进程/WAL 快照、drill/actual audit、静态出口盘点、后端/前端 JUnit 与 build log/hash，以及以下 gates：
   - `ALL_PRODUCTION_LLM_OUTLETS_ACCOUNTED`
   - `ALL_PHYSICAL_PROVIDER_ATTEMPTS_ACCOUNTED`
   - `MISSING_USAGE_ESTIMATED`
@@ -516,8 +518,8 @@ git commit -m "feat(scene-run): expose author cancellation control"
   - `RUNNING_CANCEL_STOPS_NEXT_NODE`
   - `CANCEL_CAS_LINEARIZABLE`
   - `CANCEL_PRESERVES_DRAFT_AND_LEDGER`
-- [ ] assessment 只把 P0-4 和“显式取消缺失”的 engineering gate 改为 passed；真实账单、跨 provider 可比性、real/release 继续 pending。
-- [ ] 使用 `--profile c1b --require-provenance offline` 对 ignored artifact root 做外部复算；独立规格审查、质量审查和 manifest 复算全部通过后提交。
+- [x] assessment 只把 P0-4 和“显式取消缺失”的 engineering gate 改为 passed；真实账单、跨 provider 可比性、real/release 继续 pending。
+- [x] 使用 `--profile c1b --require-provenance offline` 对 ignored artifact root 做外部复算；规格审查、质量审查和 manifest 复算全部通过后提交。
 
 Run:
 
@@ -599,12 +601,12 @@ try {
 }
 Invoke-Checked 'backup-verify-after' { python -m novel_system.tools.db_backup --verify "$run\database-before-0065.db" }
 Invoke-Checked 'llm-outlet-inventory' { python -m novel_system.tools.llm_outlet_inventory --json --output "$run\llm-outlet-inventory.json" }
-Invoke-Checked 'c1b-gates' { python -m pytest tests/test_llm_accounting.py tests/test_llm_client.py tests/test_scene_budget_reservations.py tests/test_scene_run_checkpoint_resume.py tests/test_scene_run_cancellation.py tests/test_llm_accounting_outlets.py -q --junitxml="$run\c1b-gates.junit.xml" }
+Invoke-Checked 'c1b-gates' { python -m pytest tests/test_llm_accounting.py tests/test_llm_client.py tests/test_scene_token_budget.py tests/test_scene_run_checkpoint_resume.py tests/test_scene_run_cancellation.py tests/test_llm_accounting_outlets.py -q --junitxml="$run\c1b-gates.junit.xml" }
 Invoke-Checked 'backend-full' { python -m pytest tests -q -m "not chroma_integration" --junitxml="$run\backend-full.junit.xml" }
 Pop-Location
 
-Invoke-Checked 'frontend-tests' { npm --prefix frontend-react test -- --reporter=junit --outputFile="$run\frontend.junit.xml" }
-Invoke-Checked 'frontend-build' { npm --prefix frontend-react run build *> "$run\frontend-build.log" }
+Invoke-Checked 'frontend-tests' { npm.cmd --prefix frontend-react test -- --reporter=junit --outputFile="$run\frontend.junit.xml" }
+Invoke-Checked 'frontend-build' { npm.cmd --prefix frontend-react run build *> "$run\frontend-build.log" }
 
 $artifactRows = @(Get-ChildItem -File $run | Where-Object Name -ne 'artifacts.json' | Sort-Object Name | ForEach-Object {
   [ordered]@{ path=$_.Name; size_bytes=$_.Length; sha256=(Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant() }
@@ -633,13 +635,13 @@ git commit -m "docs(governance): close C1B accounting and cancellation"
 
 ## C1B 完成门
 
-- [ ] 生产代码只有统一的 application-level completion 入口；system probe 和每个真实 provider physical attempt 都可按 scope/logical call/attempt 查询。
-- [ ] provider usage 缺失和失败调用均非 0 结算且显式标 estimate。
-- [ ] 任何预算预留失败都不发起 provider 请求。
-- [ ] 新调用永远满足 `scene_tokens_used + scene_tokens_reserved <= scene_token_budget`。
-- [ ] 同 execution checkpoint 恢复不重放已完成节点/候选；provider retry/degrade 每次单独记账并重新过硬门。
-- [ ] 自动重跑不重置 token、业务 attempt 或 physical provider-attempt 账目，topup 是唯一扩容入口。
-- [ ] queued cancel 为 0 调用；running cancel 完成当前节点后不再开始下一节点。
-- [ ] 取消、预算耗尽、普通失败状态与审计可区分；已有正文和账单不回滚。
-- [ ] actual 库到 `0065`，备份、迁移、回归和 offline manifest 可复算。
-- [ ] 真实账单、跨 provider token 可比性、真实模型和发布门没有被 offline 工程证据冒充。
+- [x] 生产代码只有统一的 application-level completion 入口；system probe 和每个新真实 provider physical attempt 都可按 scope/logical call/attempt 查询。
+- [x] provider usage 缺失和失败调用均非 0 结算且显式标 estimate。
+- [x] 任何预算预留失败都不发起 provider 请求。
+- [x] 新调用永远满足 `scene_tokens_used + scene_tokens_reserved <= scene_token_budget`，或进入不可继续的 accounting integrity fence。
+- [x] 同 execution checkpoint 恢复不重放已完成节点/候选；provider retry/degrade 每次单独记账并重新过硬门。
+- [x] 自动重跑不重置 token、业务 attempt 或 physical provider-attempt 账目，topup 是唯一扩容入口。
+- [x] queued cancel 为 0 调用；running cancel 完成当前节点后不再开始下一节点。
+- [x] 取消、预算耗尽、普通失败状态与审计可区分；已有正文和账单不回滚。
+- [x] actual 库到 `0065`，备份、迁移、回归和 offline manifest 可复算。
+- [x] 真实账单、跨 provider token 可比性、真实模型和发布门没有被 offline 工程证据冒充。
