@@ -21,7 +21,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import LlmCall, LlmCallAttempt, SceneRunState, utcnow
+from novel_system.db.models import ChapterRunJob, LlmCall, LlmCallAttempt, SceneRunState, utcnow
 from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.llm_client import (
     LLMClientError,
@@ -779,6 +779,63 @@ def _begin_claim_transaction(session: Session) -> None:
         session.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
 
+def _assert_run_job_running(session: Session, context: LLMCallContext) -> None:
+    """Fence a new durable node against the cross-process job state."""
+
+    if context.run_job_id is None:
+        return
+    row = session.execute(
+        select(
+            ChapterRunJob.status,
+            ChapterRunJob.job_type,
+            ChapterRunJob.scene_id,
+            ChapterRunJob.chapter_id,
+            ChapterRunJob.payload_json,
+        ).where(
+            ChapterRunJob.job_id == context.run_job_id,
+        )
+    ).one_or_none()
+    payload = row.payload_json if row is not None and isinstance(row.payload_json, dict) else {}
+    ownership_matches = bool(
+        row is not None
+        and (
+            (
+                row.job_type == "scene_run_full"
+                and (context.scene_id is None or row.scene_id == context.scene_id)
+            )
+            or (
+                row.job_type == "chapter_run_full"
+                and row.chapter_id == context.chapter_id
+                and (
+                    context.scene_id is None
+                    or payload.get("current_scene_id") == context.scene_id
+                )
+            )
+        )
+    )
+    if (
+        row is not None
+        and row.status == "running"
+        and ownership_matches
+    ):
+        return
+    session.rollback()
+    if row is not None and row.status in {"cancel_requested", "cancelled"}:
+        raise LLMAccountingRejected(
+            "RUN_JOB_CANCELLED_BY_AUTHOR",
+            "scene run cancellation prevents the next provider node",
+            details={"job_id": context.run_job_id, "status": row.status},
+        )
+    raise LLMAccountingRejected(
+        "LLM_ACCOUNTING_CONTEXT_INVALID",
+        "scene run job is not the active running owner for this node",
+        details={
+            "job_id": context.run_job_id,
+            "status": row.status if row is not None else None,
+        },
+    )
+
+
 def _execution_step_conflict(existing_call: LlmCall) -> LLMAccountingError:
     details = {
         "llm_call_id": existing_call.llm_call_id,
@@ -1235,6 +1292,7 @@ def record_rejected_call(
     session.commit()
     call_id = llm_call_id or f"llmcall_{uuid.uuid4().hex}"
     _begin_claim_transaction(session)
+    _assert_run_job_running(session, context)
     _assert_execution_step_available(session, context)
     if session.get(LlmCall, call_id) is not None:
         session.rollback()
@@ -1373,6 +1431,7 @@ def execute_accounted_call(
             context.scene_id or context.scope_id,
         )
     _begin_claim_transaction(session)
+    _assert_run_job_running(session, context)
     _assert_execution_step_available(session, context)
     if session.get(LlmCall, call_id) is not None:
         session.rollback()
@@ -1583,6 +1642,8 @@ class _LedgerAttemptHook:
         estimate = estimate_request_usage(request)
         ordinal = self.attempt_count
         attempt_id = f"llmattempt_{uuid.uuid4().hex}"
+        _begin_claim_transaction(self._session)
+        _assert_run_job_running(self._session, self._context)
         scene_fence_tokens = _reserve_scene_capacity(
             self._session,
             self._context.scene_id,
@@ -1607,6 +1668,10 @@ class _LedgerAttemptHook:
         assert parent is not None
         parent.estimated_tokens += estimate.estimated_tokens
         parent.reserved_tokens += attempt_reserved_tokens
+        # This commit is the durable node-claim linearization point.  If it wins
+        # before an author cancellation, this one provider attempt is allowed to
+        # settle; cancellation then fences the next node.  The later dispatched
+        # marker intentionally remains a separate crash-recovery phase.
         self._session.commit()  # reservation transaction
         _expire_cached_scene_accounting_state(self._session, self._context.scene_id)
         self._observe("reservation_committed", attempt_id)

@@ -424,20 +424,22 @@ git commit -m "fix(budget): enforce lifecycle limits across reruns"
 - Modify: `backend/tests/test_author_state_projection.py`
 - Modify: `backend/tests/test_indexing_contracts.py`
 
-- [ ] 队列态取消：worker 未开始，0 provider calls，job=cancelled，OperationLog 两阶段或直接确认完整。
-- [ ] 运行态取消：用阻塞 fake 模拟正在执行的 provider；取消时当前调用完成并结算，下一调用 count 保持 0，已有 draft/账单不回滚。
-- [ ] 预算拒绝、普通 provider 失败、作者取消分别得到不同 job status/error/audit，不复用同一个 `failed`。
-- [ ] 重复 cancel 幂等；completed/failed/blocked 返回 409；错误码和 details 稳定。
-- [ ] queued→running 与 queued→cancelled、running→cancel_requested 全部使用条件 UPDATE/CAS 并检查 rowcount；用真实 barrier race 证明只有一个转换胜出，失败方按最终状态重读，不能用普通属性赋值覆盖。
-- [ ] worker claim 写唯一 `worker_id` 与 `lease_expires_at`；每个节点边界续租，provider 前按 request timeout+grace 延长 lease。另一进程的 cancel endpoint 只能 running→cancel_requested，不能因本地 registry 没有该 worker 就判死亡或释放 reservation。
-- [ ] 下一节点 claim 与 scene budget reservation 在同一短事务中要求 job 仍为 running；用 barrier 测 claim-vs-cancel：cancel 先提交则 provider count=0，claim 先提交则只允许当前节点完成，下一 claim 必败。
-- [ ] 创建 job 通过 `SceneRunState.active_run_job_id` CAS 原子占位；两个 Session 并发创建同场景 job 只能一个成功。terminal/cancelled 清理也用 `WHERE active_run_job_id=:job_id`，不能清掉更新 job 的锁。
-- [ ] registry 只在 DB cancel CAS 成功后置位；注入 DB busy/commit failure 时 endpoint 返回失败且 registry 不得残留取消信号。
-- [ ] worker 启动、每个编排阶段、预留前和预留后使用上述 claim；`run_job_id`、`execution_id`、step/sub-index 落每条相关 LlmCall。
-- [ ] 测试并实现“产物 commit 后再观察 cancel”的节点边界顺序；provider 已返回的有效 draft/candidate 必须保留，取消只阻止下一个节点。
-- [ ] 新增 `GET /api/v1/scenes/{scene_id}/run/jobs/latest`（或 scene-run-states 等价权威字段），返回 latest job id/status/current_step；`author_state` active job 集合纳入 cancel_requested，刷新后不依赖内存变量恢复。
-- [ ] 进程重启后以数据库 `cancel_requested` 为真值：只有 DB lease 已过期且 recovery 通过 owner+lease CAS 取得回收权，才能按 dispatch 状态结算/释放遗留 reservation、标 cancelled、清 active job；有效 lease 即使不在本进程 registry 也不得提前收口。
-- [ ] 两 service/进程语义红测：A 持有效 lease 和阻塞 provider，B cancel 只写 cancel_requested、不释放当前 call；lease 过期后 sweep 单赢家收口，任务不会永久卡非终态。
+阶段验收记录（Task 7）：scene-run job 创建通过 `SceneRunState.active_run_job_id` 的 `BEGIN IMMEDIATE`+CAS 原子占位；queued/running/cancel_requested/terminal 全部使用条件 UPDATE、rowcount 与权威重读，active lock 只按自身 job id 清理。queued cancel 保持 0 provider 并同事务写 requested/cancelled 审计；running cancel 只写 `cancel_requested`，同 owner 有效 lease 可让已 claim 节点完成账本与产物提交，下一节点被 DB fence 阻断。accounting 的 job-running fence 与 reservation/attempt claim 位于同一短事务，真实 barrier 证明 cancel-first=0 provider、claim-first=仅当前节点 1 provider；registry 只在取消事务最终 commit 后记录本进程 hint。live worker 与过期 lease recovery 共用 owner/execution-fenced checkpoint 取消语义：未 dispatch reservation release，已 dispatch 缺产品按 estimate 结算失败；有效 lease 不回收，过期 lease 双 Session 仅一赢家。恢复与普通取消保留 `usage_exceeds_reservation`、`accounting_integrity_blocked` 硬会计 fence，防止作者取消覆盖账务事故；current-step 更新前刷新 JSON，避免跨进程取消 actor/reason 被旧快照覆盖。latest API 与 author_state 只使用 DB 权威 scene/job/status，刷新不依赖 registry。实现验证为 Task 7 组合 76、取消专项 26、scene jobs+accounting+runner 123、checkpoint/lease/dispatch/recovery 9 passed；规格与并发双审最终均 `APPROVED`，无 P0/P1/P2。无 0066，canonical actual 仍为 revision `20260712_0064` 且指纹未变。
+
+- [x] 队列态取消：worker 未开始，0 provider calls，job=cancelled，OperationLog 两阶段或直接确认完整。
+- [x] 运行态取消：用阻塞 fake 模拟正在执行的 provider；取消时当前调用完成并结算，下一调用 count 保持 0，已有 draft/账单不回滚。
+- [x] 预算拒绝、普通 provider 失败、作者取消分别得到不同 job status/error/audit，不复用同一个 `failed`。
+- [x] 重复 cancel 幂等；completed/failed/blocked 返回 409；错误码和 details 稳定。
+- [x] queued→running 与 queued→cancelled、running→cancel_requested 全部使用条件 UPDATE/CAS 并检查 rowcount；用真实 barrier race 证明只有一个转换胜出，失败方按最终状态重读，不能用普通属性赋值覆盖。
+- [x] worker claim 写唯一 `worker_id` 与 `lease_expires_at`；每个节点边界续租，provider 前按 request timeout+grace 延长 lease。另一进程的 cancel endpoint 只能 running→cancel_requested，不能因本地 registry 没有该 worker 就判死亡或释放 reservation。
+- [x] 下一节点 claim 与 scene budget reservation 在同一短事务中要求 job 仍为 running；用 barrier 测 claim-vs-cancel：cancel 先提交则 provider count=0，claim 先提交则只允许当前节点完成，下一 claim 必败。
+- [x] 创建 job 通过 `SceneRunState.active_run_job_id` CAS 原子占位；两个 Session 并发创建同场景 job 只能一个成功。terminal/cancelled 清理也用 `WHERE active_run_job_id=:job_id`，不能清掉更新 job 的锁。
+- [x] registry 只在 DB cancel CAS 成功后置位；注入 DB busy/commit failure 时 endpoint 返回失败且 registry 不得残留取消信号。
+- [x] worker 启动、每个编排阶段、预留前和预留后使用上述 claim；`run_job_id`、`execution_id`、step/sub-index 落每条相关 LlmCall。
+- [x] 测试并实现“产物 commit 后再观察 cancel”的节点边界顺序；provider 已返回的有效 draft/candidate 必须保留，取消只阻止下一个节点。
+- [x] 新增 `GET /api/v1/scenes/{scene_id}/run/jobs/latest`（或 scene-run-states 等价权威字段），返回 latest job id/status/current_step；`author_state` active job 集合纳入 cancel_requested，刷新后不依赖内存变量恢复。
+- [x] 进程重启后以数据库 `cancel_requested` 为真值：只有 DB lease 已过期且 recovery 通过 owner+lease CAS 取得回收权，才能按 dispatch 状态结算/释放遗留 reservation、标 cancelled、清 active job；有效 lease 即使不在本进程 registry 也不得提前收口。
+- [x] 两 service/进程语义红测：A 持有效 lease 和阻塞 provider，B cancel 只写 cancel_requested、不释放当前 call；lease 过期后 sweep 单赢家收口，任务不会永久卡非终态。
 
 Run:
 

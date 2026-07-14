@@ -41,7 +41,7 @@ _QUALITY_WARNING_STATUSES = frozenset(
     }
 )
 
-_ACTIVE_JOB_STATUSES = frozenset({"queued", "running"})
+_ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "cancel_requested"})
 
 # error_code → generation_failed 的 recovery_action（§5.3：必须携带明确恢复动作）
 _SCENE_CARD_ERROR_CODES = frozenset(
@@ -201,19 +201,14 @@ def _recovery_action_for(job: ChapterRunJob | None) -> str:
 
 
 def _latest_scene_job(session: Session, scene_id: str) -> ChapterRunJob | None:
-    # job_id 前缀是 scene_run_jobs 的建行约定；payload_json.scene_id 才是权威归属，双重确认
-    candidates = session.execute(
+    return session.execute(
         select(ChapterRunJob)
         .where(
-            ChapterRunJob.job_type == "scene_full",
-            ChapterRunJob.job_id.like(f"scene_run_{scene_id}_%"),
+            ChapterRunJob.job_type == "scene_run_full",
+            ChapterRunJob.scene_id == scene_id,
         )
         .order_by(ChapterRunJob.created_at.desc(), ChapterRunJob.job_id.desc())
-    ).scalars().all()
-    for job in candidates:
-        if (job.payload_json or {}).get("scene_id") == scene_id:
-            return job
-    return None
+    ).scalars().first()
 
 
 def _resolve_valid_draft_row_id(session: Session, state: SceneRunState | None) -> str | None:

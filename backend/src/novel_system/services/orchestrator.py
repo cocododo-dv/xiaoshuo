@@ -16,6 +16,7 @@ from novel_system.db.models import (
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
+    ChapterRunJob,
     FinalScene,
     GenerationPlanningArtifact,
     HumanReviewEvent,
@@ -156,6 +157,7 @@ class Orchestrator:
             lease_renewer=lease_renewer,
         )
         try:
+            self._raise_if_run_cancelled()
             result = self._run_scene_pipeline(
                 scene_id,
                 author_note=author_note,
@@ -169,6 +171,17 @@ class Orchestrator:
                 checkpoints.mark_failed(scene_id, effective_execution_id)
             self.session.commit()
             return result
+        except DomainError as exc:
+            if exc.code == "RUN_JOB_CANCELLED_BY_AUTHOR":
+                checkpoints.mark_cancelled(scene_id, effective_execution_id)
+                self.session.commit()
+                raise
+            self._persist_failure_audits_or_fence(
+                scene_id,
+                effective_execution_id,
+                checkpoints,
+            )
+            raise
         except Exception:
             self._persist_failure_audits_or_fence(
                 scene_id,
@@ -1378,7 +1391,31 @@ class Orchestrator:
             strategy=strategy,
             branch=branch,
         )
+        if self._run_job_id is not None:
+            run_job = self.session.get(ChapterRunJob, self._run_job_id)
+            if run_job is not None:
+                # A cancel endpoint may have committed actor/reason while this
+                # worker was awaiting the provider.  Merge checkpoint progress
+                # into those authoritative JSON values instead of overwriting
+                # them from expire_on_commit=False identity-map state.
+                self.session.refresh(
+                    run_job,
+                    attribute_names=["payload_json", "result_summary_json"],
+                )
+                run_job.payload_json = {
+                    **dict(run_job.payload_json or {}),
+                    "current_step": node_key,
+                    **({"current_sub_index": sub_index} if sub_index is not None else {}),
+                }
+                run_job.result_summary_json = {
+                    **dict(run_job.result_summary_json or {}),
+                    "current_step": node_key,
+                    **({"current_sub_index": sub_index} if sub_index is not None else {}),
+                }
         self.session.commit()
+        # The just-produced artifact and its ledger/checkpoint are durable before
+        # observing cancellation.  Cancellation therefore fences only the next node.
+        self._raise_if_run_cancelled()
 
     def _reconcile_execution_step(
         self,
@@ -1513,6 +1550,46 @@ class Orchestrator:
             self._lease_renewer(lease_seconds=lease_seconds)
         except TypeError:
             self._lease_renewer()
+
+    def _raise_if_run_cancelled(self) -> None:
+        if self._run_job_id is None:
+            return
+        scene_id = self._active_checkpoint_state().scene_id
+        row = self.session.execute(
+            select(
+                ChapterRunJob.status,
+                ChapterRunJob.job_type,
+                ChapterRunJob.scene_id,
+                ChapterRunJob.payload_json,
+            ).where(ChapterRunJob.job_id == self._run_job_id)
+        ).one_or_none()
+        status = row.status if row is not None else None
+        payload = row.payload_json if row is not None and isinstance(row.payload_json, dict) else {}
+        ownership_matches = bool(
+            row is not None
+            and (
+                (row.job_type == "scene_run_full" and row.scene_id == scene_id)
+                or (
+                    row.job_type == "chapter_run_full"
+                    and payload.get("current_scene_id") == scene_id
+                )
+            )
+        )
+        self.session.rollback()
+        if status in {"cancel_requested", "cancelled"}:
+            raise DomainError(
+                "RUN_JOB_CANCELLED_BY_AUTHOR",
+                "scene run cancellation was observed after the durable node boundary",
+                status_code=409,
+                details={"job_id": self._run_job_id, "status": status},
+            )
+        if status != "running" or not ownership_matches:
+            raise DomainError(
+                "RUN_OWNER_LEASE_LOST",
+                "scene run job is no longer the active running owner",
+                status_code=409,
+                details={"job_id": self._run_job_id, "status": status},
+            )
 
     def _validate_budget_checkpoint(self, state: SceneRunState) -> None:
         from novel_system.services.scene_budget import (

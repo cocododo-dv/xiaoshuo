@@ -368,6 +368,28 @@ class SceneRunCheckpointService:
         state = self._state(scene_id, refresh=True)
         payload = self._checkpoint_payload(state)
         self._validate_checkpoint(state, payload)
+        if state.active_execution_id != execution_id:
+            raise self._superseded(execution_id, state.active_execution_id)
+        previous_status = state.run_execution_status
+        if previous_status == "cancelled" and state.run_checkpoint == "cancelled":
+            return
+        if previous_status in {
+            "usage_exceeds_reservation",
+            "accounting_integrity_blocked",
+        }:
+            # Author cancellation may terminate the owning job, but must never
+            # erase a durable accounting safety fence.  Keeping this checkpoint
+            # blocks a future execution until the accounting incident is repaired.
+            return
+        if previous_status not in {
+            "active",
+            "failed",
+            "completed",
+            "waiting_selection",
+        }:
+            raise self._corrupt(
+                f"cannot mark execution cancelled from {previous_status}"
+            )
         cancelled_payload = {
             **payload,
             "execution_id": execution_id,
@@ -380,7 +402,7 @@ class SceneRunCheckpointService:
             .where(
                 SceneRunState.scene_id == scene_id,
                 SceneRunState.active_execution_id == execution_id,
-                SceneRunState.run_execution_status == "active",
+                SceneRunState.run_execution_status == previous_status,
             )
             .values(
                 run_execution_status="cancelled",

@@ -38,7 +38,11 @@ from novel_system.services.projects import ProjectService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService, SceneTriageService
 from novel_system.services.scene_quality import SceneAutoRewriteService, SceneQualityService
-from novel_system.services.scene_run_jobs import SceneRunJobService, start_scene_run_job_worker
+from novel_system.services.scene_run_jobs import (
+    SceneRunJobService,
+    remember_committed_cancellation,
+    start_scene_run_job_worker,
+)
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
 from novel_system.services.style_profile import StyleScoreService
@@ -394,6 +398,40 @@ def get_run_job(job_id: str, request: Request, session: Session = Depends(get_se
     service = SceneRunJobService(session)
     job = service.get_job(job_id)
     return ok(service.serialize_job(job), req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/run-jobs/{job_id}/cancel")
+def cancel_run_job(
+    job_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    payload: dict | None = Body(default=None),
+):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    service = SceneRunJobService(session)
+    job = service.request_cancel(
+        job_id,
+        actor_ref=actor_ref,
+        reason=(payload or {}).get("reason"),
+    )
+    data = service.serialize_job(job)
+    session.commit()
+    remember_committed_cancellation(job_id)
+    return ok(data, req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v1/scenes/{scene_id}/run/jobs/latest")
+def get_latest_scene_run_job(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    service = SceneRunJobService(session)
+    return ok(
+        service.serialize_job(service.latest_job(scene_id)),
+        req_id=getattr(request.state, "request_id", None),
+    )
 
 
 @router.get("/api/v1/scene-run-states")
