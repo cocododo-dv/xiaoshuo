@@ -1529,62 +1529,78 @@ def _validate_c1b_artifact_contents(
             )
         connection: sqlite3.Connection | None = None
         try:
-            connection = sqlite3.connect(":memory:")
-            connection.deserialize(backup_snapshot)
-            connection.execute("PRAGMA query_only=ON")
-            integrity_row = connection.execute(
-                "PRAGMA integrity_check"
-            ).fetchone()
-            integrity = str(integrity_row[0]) if integrity_row else "unknown"
-            revision_rows = connection.execute(
-                "SELECT version_num FROM alembic_version"
-            ).fetchall()
-            backup_page_count = int(
-                connection.execute("PRAGMA page_count").fetchone()[0]
-            )
-            backup_tables = {
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
+            # A database whose header records WAL mode cannot be queried after
+            # ``Connection.deserialize`` on Windows: SQLite tries to resolve a
+            # journal beside the in-memory database and reports "unable to open
+            # database file".  Materialize only the already-hashed snapshot in
+            # an isolated writable directory, then inspect that exact snapshot
+            # through a read-only URI.  This keeps the TOCTOU boundary while
+            # giving SQLite a real location for any transient WAL bookkeeping.
+            with tempfile.TemporaryDirectory(
+                prefix="outcome-evidence-sqlite-"
+            ) as temp_dir:
+                snapshot_path = Path(temp_dir) / "database-before-0065.db"
+                snapshot_path.write_bytes(backup_snapshot)
+                connection = sqlite3.connect(
+                    f"{snapshot_path.resolve().as_uri()}?mode=ro",
+                    uri=True,
                 )
-            }
-            required_legacy_tables = {
-                "evaluation_experiments",
-                "evaluation_pairs",
-                "evaluation_votes",
-                "scene_run_states",
-            }
-            if not required_legacy_tables.issubset(backup_tables):
-                errors.append(
-                    "artifact 'database-before-0065.db': required 0064 tables "
-                    "are missing"
+                connection.execute("PRAGMA query_only=ON")
+                integrity_row = connection.execute(
+                    "PRAGMA integrity_check"
+                ).fetchone()
+                integrity = str(integrity_row[0]) if integrity_row else "unknown"
+                revision_rows = connection.execute(
+                    "SELECT version_num FROM alembic_version"
+                ).fetchall()
+                backup_page_count = int(
+                    connection.execute("PRAGMA page_count").fetchone()[0]
                 )
-            scene_columns = {
-                str(row[1])
-                for row in connection.execute(
-                    "PRAGMA table_info(scene_run_states)"
-                )
-            }
-            required_scene_columns = {
-                "latest_valid_draft_row_id",
-                "run_policy",
-                "scene_token_budget",
-                "scene_tokens_used",
-            }
-            if not required_scene_columns.issubset(scene_columns):
-                errors.append(
-                    "artifact 'database-before-0065.db': required 0064 "
-                    "scene_run_states columns are missing"
-                )
-            if integrity != "ok":
-                errors.append(
-                    "artifact 'database-before-0065.db': integrity is not ok"
-                )
-            if revision_rows != [("20260712_0064",)]:
-                errors.append(
-                    "artifact 'database-before-0065.db': revision must be "
-                    "'20260712_0064'"
-                )
+                backup_tables = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                required_legacy_tables = {
+                    "evaluation_experiments",
+                    "evaluation_pairs",
+                    "evaluation_votes",
+                    "scene_run_states",
+                }
+                if not required_legacy_tables.issubset(backup_tables):
+                    errors.append(
+                        "artifact 'database-before-0065.db': required 0064 tables "
+                        "are missing"
+                    )
+                scene_columns = {
+                    str(row[1])
+                    for row in connection.execute(
+                        "PRAGMA table_info(scene_run_states)"
+                    )
+                }
+                required_scene_columns = {
+                    "latest_valid_draft_row_id",
+                    "run_policy",
+                    "scene_token_budget",
+                    "scene_tokens_used",
+                }
+                if not required_scene_columns.issubset(scene_columns):
+                    errors.append(
+                        "artifact 'database-before-0065.db': required 0064 "
+                        "scene_run_states columns are missing"
+                    )
+                if integrity != "ok":
+                    errors.append(
+                        "artifact 'database-before-0065.db': integrity is not ok"
+                    )
+                if revision_rows != [("20260712_0064",)]:
+                    errors.append(
+                        "artifact 'database-before-0065.db': revision must be "
+                        "'20260712_0064'"
+                    )
+                connection.close()
+                connection = None
         except (AttributeError, sqlite3.Error) as exc:
             errors.append(
                 f"artifact 'database-before-0065.db': invalid SQLite: {exc}"
@@ -1644,7 +1660,9 @@ def _validate_c1b_artifact_contents(
             and run_started_at is not None
             and manifest_created_at is not None
             and not (
-                run_started_at <= backup_created_at <= manifest_created_at
+                run_started_at.replace(microsecond=0)
+                <= backup_created_at
+                <= manifest_created_at
             )
         ):
             errors.append(

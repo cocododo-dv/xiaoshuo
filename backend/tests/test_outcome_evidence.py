@@ -1096,6 +1096,49 @@ def test_validate_c1b_profile_accepts_complete_read_only_evidence(
     }
 
 
+def test_validate_c1b_profile_accepts_wal_mode_backup_snapshot(
+    tmp_path: Path,
+) -> None:
+    manifest_path, _ = _write_c1b_manifest(tmp_path)
+    database_path = tmp_path / "database-before-0065.db"
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+
+    database_payload = database_path.read_bytes()
+    meta_path = tmp_path / "database-before-0065.db.meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["checksum"] = hashlib.sha256(database_payload).hexdigest()
+    meta_path.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _rehash_manifest_artifact(
+        manifest_path,
+        tmp_path,
+        "database-before-0065.db",
+    )
+    _rehash_manifest_artifact(
+        manifest_path,
+        tmp_path,
+        "database-before-0065.db.meta.json",
+    )
+
+    assert _validate_c1b(manifest_path, tmp_path) == 0
+
+
+def test_validate_c1b_profile_accepts_second_precision_backup_timestamp(
+    tmp_path: Path,
+) -> None:
+    manifest_path, _ = _write_c1b_manifest(tmp_path)
+    raw = _read_raw_manifest(manifest_path)
+    for command in raw["commands"]:
+        command["started_at"] = "2026-07-13T00:00:00.500Z"
+        command["ended_at"] = "2026-07-13T00:00:00.750Z"
+    _write_raw_manifest(manifest_path, raw)
+
+    assert _validate_c1b(manifest_path, tmp_path) == 0
+
+
 @pytest.mark.parametrize(
     ("relative_path", "mutate", "expected_error"),
     [
