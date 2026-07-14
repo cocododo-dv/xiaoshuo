@@ -1406,7 +1406,7 @@ def test_selection_resume_audit_restore_fault_persists_unrecoverable_fence_in_fi
     assert failing_near_final.calls == near_calls
 
 
-def test_selection_resume_same_execution_continues_after_complete_soft_subcursor(session) -> None:
+def test_selection_resume_fresh_idempotency_execution_continues_after_complete_soft_subcursor(session) -> None:
     _seed_resume_scene(session)
     scene_id = "CH_RESUME_SC01"
     scene = session.get(SceneCard, scene_id)
@@ -1453,12 +1453,19 @@ def test_selection_resume_same_execution_continues_after_complete_soft_subcursor
         ).scalars()
     )
 
+    # A real strict run publishes the recoverable author-facing state before a
+    # later provider call reaches the lifecycle boundary.  The durable failed
+    # soft checkpoint, rather than the old selection-wait label, owns resume.
+    state.scene_status = "soft_qc_patch_required"
+    session.commit()
+
+    retry_execution_id = "idempotency:selection-soft-retry"
     result = _selection_resume_orchestrator(
         session,
         generation_client=generation_client,
         soft_qc=soft_qc,
         near_final=_PassNearFinal(session),
-    ).resume_after_selection(scene_id, execution_id=resume_execution_id)
+    ).resume_after_selection(scene_id, execution_id=retry_execution_id)
 
     assert result["scene_status"] == "archived"
     assert soft_qc.calls == 1

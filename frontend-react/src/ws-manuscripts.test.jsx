@@ -131,4 +131,19 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     await mod.WsManuStore.refresh("c1");
     expect(mod.WsManuStore.body("c1")).toBeNull();
   });
+
+  it("计划中章节一旦有归档场景，也必须进入成稿中心以提供首次聚合入口", async () => {
+    const { mod } = await loadStore();
+    expect(mod.manuscriptChapterEligible({
+      state: "planned",
+      words: { cur: 0 },
+      scenes: [{ state: "done" }],
+    })).toBe(true);
+    expect(mod.manuscriptChapterEligible({
+      state: "planned",
+      words: { cur: 0 },
+      scenes: [{ state: "planned" }],
+    })).toBe(false);
+    expect(mod.manuscriptDisplayState("planned")).toBe("plan");
+  });
 });

@@ -1106,6 +1106,7 @@ async function exerciseSceneWorkbench(page) {
   let candidateReceipt;
   let archiveReceipt;
   let candidateSelections = 0;
+  const requiredCandidateSelections = Math.min(3, plannedSceneList.length);
   const sceneReceipt = await observeUiPhase(page, "scene_execution", async (sceneUi) => {
     candidateReceipt = await observeUiPhase(page, "candidate_selection", async (candidateUi) => {
       archiveReceipt = await observeUiPhase(page, "archive", async (archiveUi) => {
@@ -1234,10 +1235,17 @@ async function exerciseSceneWorkbench(page) {
           await screenshot(page, `scene-ui-${String(index + 1).padStart(2, "0")}-${sceneId.toLowerCase()}`);
         }
       }, { minimums: { "adopt-current": plannedSceneList.length } });
-    }, { minimums: { "candidate-select": 3, "selection-resume": 3 } });
+    }, { minimums: {
+      "candidate-select": requiredCandidateSelections,
+      "selection-resume": requiredCandidateSelections,
+    } });
   }, { minimums: { "run-job-create": plannedSceneList.length } });
 
-  if (candidateSelections < 3) throw new Error(`Northstar requires at least 3 UI candidate selections, got ${candidateSelections}`);
+  if (candidateSelections < requiredCandidateSelections) {
+    throw new Error(
+      `Northstar requires at least ${requiredCandidateSelections} UI candidate selections, got ${candidateSelections}`,
+    );
+  }
   recordUiPhase(sceneReceipt, `起草台逐场点击运行，浏览器创建 ${plannedSceneList.length} 个异步任务。`);
   recordUiPhase(candidateReceipt, `关键场景经匿名候选界面完成 ${candidateSelections} 次终选并续跑。`);
   recordUiPhase(archiveReceipt, `作者逐场点击采纳并归档，浏览器完成 ${plannedSceneList.length} 次 adopt-current。`);

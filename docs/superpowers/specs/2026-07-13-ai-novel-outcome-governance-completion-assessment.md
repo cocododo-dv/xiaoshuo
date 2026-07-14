@@ -1,14 +1,47 @@
-# AI 小说系统结果闭环治理：完成度深度评估与二次收敛清单（C1B 更新版）
+# AI 小说系统结果闭环治理：完成度深度评估与二次收敛清单（C2 最小闭环更新版）
 
 > 评估日期：2026-07-14
 >
-> 评估基线：`codex/outcome-governance-closure` / `e84e15a7f5a77db1fcc295fb7c3d971108ddb2de`
+> 评估基线：`codex/outcome-governance-closure` / `d01a338` 及本轮 C2 收尾修复
 >
 > 原设计：`docs/superpowers/specs/2026-07-10-ai-novel-outcome-governance-design.md`（v1.1）
 >
 > 实施账本：`docs/outcome-governance-progress.md`
 >
-> 当前结论：**C0、C1A、C1B 的离线工程门已闭合；统一 LLM 账本、生命周期硬预算和显式取消不再是 P0 工程缺口。但原设计的结果级闭环尚未完成，当前仍不满足五章 UI 发布门、30 组真人盲评门和 30 章耐久门。**
+> 当前结论：**C0、C1A、C1B 的离线工程门已闭合；C2 已取得一份“1 章 × 1 场”的真实 UI 最小闭环，覆盖空白项目、雪花物化、真实生成、候选终选、预算追加、断点恢复、页面归档和章节聚合。但自动 outcome gate 的该次运行先于修复失败，5 章 × 3 场、恢复哈希、真人盲评和 30 章耐久门仍未通过，因此 C2 只能记为部分完成，不能发布。**
+
+---
+
+## 0. 2026-07-14 C2 精简收尾补充
+
+本轮按“只做最重要的”收缩范围，没有继续消耗真实模型执行三场或五章。已完成并验证的最小主链如下：
+
+1. 从空白项目通过 React UI 创建 `PRJ_7F82A90111`，导入并批准雪花十步，物化 `CDBQA_20260714220922_01 / SC01`。
+2. 真实场景任务进入匿名候选终选；作者在 UI 完成选择和显式预算追加。
+3. 修复两类真实恢复阻断：作者可见 `soft_qc_patch_required` 不再遮蔽持久化 `soft_qc_ready`；新的幂等续跑执行可以继承上一 HTTP 续跑的无 `run_job_id` 产物，同时场景后台任务仍要求 `run_job_id == execution_id`。
+4. 在原失败现场复验 `/resume-after-selection`：由 HTTP 409 变为 200，返回 `quality_warning`、`can_archive=true`，没有重复生成已完成产物。
+5. 通过 UI 点击“采纳并归档”，后端生成非空 `FinalScene`，权威 `scene_status=archived`；再通过成稿中心点击“生成/刷新章节汇总”，生成 active final chapter memory。
+
+新鲜结果：
+
+| 项目 | 结果 |
+|---|---|
+| 真实规模 | 1 章 × 1 场；不是五章发布样本 |
+| 场景终态 | `archived`，`final_scene_CDBQA_20260714220922_01_SC01_adopt_11804ed748`，SQLite 正文 381 字符，UI 计数 359 字 |
+| 章节聚合 | `chapter_memory_final_CDBQA_20260714220922_01_v1`，381 字符，`active_flag=1`、`runtime_eligible=1` |
+| 自动回归 | 前端 130 passed；后端关键链路 22 passed，新增新幂等续跑回归 1 passed；harness 契约 11 passed；Vite build passed |
+| 原始 outcome gate | **FAIL，保留原判定**；运行在修复前于预算续跑 409 中止，不能改写为通过 |
+| 人工续跑证据 | 两张真实 UI 截图和数据库终态证明最小链已完成；不等价于六阶段自动 gate 全绿 |
+
+仍未完成且必须保持开放：
+
+- 3 场单章、5 章 × 3 场、至少 3 次候选选择、15/15 归档、5/5 聚合均未执行。
+- 没有清缓存后的全链重放及正文/选择/聚合哈希一致性证明。
+- 本次原始 gate 的 `scene_execution/candidate_selection/archive/chapter_aggregation` 回执因中途失败仍为 missing；需要将人工续跑改造成可续接的机器回执后才能关闭自动验收缺口。
+- 归档后 `run_execution_status=failed`、`run_checkpoint=soft_qc_ready` 仍保留，页面运行任务横幅也显示旧 `awaiting_candidate_selection`。作者终态不受影响，但会误导运维判断，属于后续应修的状态一致性债务。
+- 未完成五章级 Q0/Q1、来源泄漏、真实计费、首次产稿率及 5× token 上限验证。
+
+证据索引：`docs/superpowers/evidence/20260714-c2-minimal-ui-closure.md`。因此本轮只把 UI 北极星从“未接通”提升为“最小真实链已接通”，**不关闭 C2，不宣称五章发布门通过**。
 
 ---
 
@@ -31,8 +64,8 @@
 |---|---|---|
 | 核心工程能力 | **大部分已实现** | 正文/QC/候选/POV、来源安全、统一账本、硬预算、checkpoint 和取消主干已落地 |
 | C1B 账本/预算/取消 | **离线工程门通过** | actual `0065`，13/13 gate 与严格 manifest 可复算；不代表真实账单或发布通过 |
-| 自动测试可信度 | **较高但仍属 L2** | 全量 2482 项后端收集、122 项前端与生产构建通过；不能替代真实模型、人评和浏览器全链 |
-| UI 北极星闭环 | **未完成** | harness 本身仍记录 API/missing lane |
+| 自动测试可信度 | **较高但仍属 L2** | C1B 全量 2482 项后端收集、本轮 130 项前端与生产构建通过；不能替代真实模型、人评和浏览器全链 |
+| UI 北极星闭环 | **部分完成** | 1×1 真实 UI 最小链已完成；该次自动 gate 先于修复中止，完整六阶段回执和五章规模未完成 |
 | 五章发布门 | **未通过/无新鲜证据** | 没有 15/15 真实归档与恢复产物 |
 | 30 组人类盲评 | **未执行** | 只有合成报告 |
 | 30 章耐久门 | **未执行** | 只有判定器和合成样本 |

@@ -22,6 +22,17 @@ function toParas(content) {
     .filter(Boolean);
 }
 
+function manuscriptChapterEligible(chapter) {
+  if (!chapter) return false;
+  if (chapter.state !== "planned") return true;
+  if (Number(chapter.words && chapter.words.cur) > 0) return true;
+  return (chapter.scenes || []).some((scene) => ["done", "archived"].includes(scene.state));
+}
+
+function manuscriptDisplayState(state) {
+  return state === "planned" ? "plan" : state;
+}
+
 const WsManuStore = {
   /** 拉后端章节聚合（幂等去重并发）；失败缓存 error 标记，body() 返回 null。 */
   async refresh(chapterId) {
@@ -90,4 +101,4 @@ const WsManuStore = {
 
 Object.assign(window, { WsManuStore });
 
-export { WsManuStore };
+export { WsManuStore, manuscriptChapterEligible, manuscriptDisplayState };

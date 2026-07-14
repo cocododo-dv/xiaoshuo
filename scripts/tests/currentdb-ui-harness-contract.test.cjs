@@ -43,3 +43,12 @@ test("场景预算耗尽只能经作者界面追加并续跑", () => {
   );
   assert.doesNotMatch(body, /apiPost\s*\(/);
 });
+
+test("诊断规模按计划场景数收缩候选选择门槛", () => {
+  const source = fs.readFileSync(harnessPath, "utf8");
+  const body = functionBody(source, "exerciseSceneWorkbench");
+  assert.match(body, /Math\.min\(3, plannedSceneList\.length\)/);
+  assert.match(body, /"candidate-select": requiredCandidateSelections/);
+  assert.match(body, /"selection-resume": requiredCandidateSelections/);
+  assert.doesNotMatch(body, /candidateSelections < 3/);
+});

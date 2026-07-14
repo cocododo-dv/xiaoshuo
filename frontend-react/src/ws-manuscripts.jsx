@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { rvPush } from "./ws-review.jsx";
-import { WsManuStore } from "./ws-manuscripts-store.jsx";
+import { WsManuStore, manuscriptChapterEligible, manuscriptDisplayState } from "./ws-manuscripts-store.jsx";
 
 /* global React, I */
 const { useState: useSt9, useRef: useRef9, useEffect: useEf9 } = React;
@@ -251,12 +251,12 @@ function WsManuscripts({ go }) {
   /* 订阅目录：批准 / 退回等动作写穿 WsCatalog 后这里自动刷新 */
   const catChs = useCatalogChapters ? useCatalogChapters() : (WsCatalog ? WsCatalog.get() : null);
   const chs = catChs
-    ? catChs.filter(c => c.state !== "planned").map(c => {
+    ? catChs.filter(manuscriptChapterEligible).map(c => {
         const deco = M_DECOR[c.id] || {};
         const scenes = (c.scenes || []).length;
         const liveAt = c.approvedAt ? new Date(c.approvedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
         return {
-          id: c.id, n: c.n, title: c.title, state: c.state,
+          id: c.id, n: c.n, title: c.title, state: manuscriptDisplayState(c.state),
           words: (c.words && c.words.cur) || 0, scenes,
           ver: deco.ver || "v1", at: liveAt || deco.at, by: liveAt ? "你" : deco.by,
           sceneDone: (c.scenes || []).filter(s => s.state === "done").length,
@@ -386,6 +386,7 @@ function WsManuscripts({ go }) {
     { key: "approved", label: "已批准终稿", items: chs.filter(c => c.state === "approved") },
     { key: "flow",     label: "流转中",     items: chs.filter(c => c.state === "review" || c.state === "draft") },
     { key: "writing",  label: "写作中",     items: chs.filter(c => c.state === "writing") },
+    { key: "plan",     label: "待聚合",     items: chs.filter(c => c.state === "plan") },
   ];
 
   return (

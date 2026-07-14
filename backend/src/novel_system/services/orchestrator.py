@@ -1565,9 +1565,14 @@ class Orchestrator:
         selection_origin = payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None
         if selection_origin:
             inherited.add(selection_origin)
-        # Scene run jobs deliberately use job_id as execution_id. A carried
-        # artifact must remain attached to that exact historical job.
-        return isinstance(execution_id, str) and execution_id in inherited and run_job_id == execution_id
+        if not isinstance(execution_id, str) or execution_id not in inherited:
+            return False
+        # Scene jobs deliberately use job_id as execution_id. Selection-resume
+        # requests instead own their products through an idempotency execution
+        # and therefore have no run_job_id. Both identities are durable lineage.
+        if run_job_id is None:
+            return execution_id.startswith("idempotency:")
+        return run_job_id == execution_id
 
     def _renew_owner_lease(self, *, lease_seconds: int) -> None:
         if self._lease_renewer is None:
@@ -8010,19 +8015,32 @@ class Orchestrator:
     def _resume_after_selection_pipeline(self, scene_id: str) -> dict:
         """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。
 
-        前置：场景停在 awaiting_candidate_selection 且终选 gate 已 selected。
+        前置：终选 gate 已 selected，且持久化 checkpoint 已进入终选或
+        终选后的软 QC / near-final 阶段。作者可见 scene_status 可能已提前
+        发布为可恢复的 patch/revision 状态，不能把它当作 checkpoint 真值。
         选中稿即后续批判/软 QC/near-final 的输入（§4.4 上限归人）。
         """
         scene = self.session.get(SceneCard, scene_id)
         if scene is None:
             raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
         state = self.session.get(SceneRunState, scene_id)
-        if state is None or state.scene_status != "awaiting_candidate_selection":
+        checkpoint_payload = (state.run_checkpoint_json or {}) if state is not None else {}
+        checkpoint = state.run_checkpoint if state is not None else None
+        checkpoint_is_post_selection = (
+            checkpoint in RUN_CHECKPOINT_ORDER
+            and RUN_CHECKPOINT_ORDER.index(checkpoint) >= RUN_CHECKPOINT_ORDER.index("selection_wait")
+            and bool(checkpoint_payload.get("selection_origin_execution_id"))
+        )
+        if state is None or not checkpoint_is_post_selection:
             raise DomainError(
                 "RESUME_NOT_AVAILABLE",
-                "scene is not awaiting candidate selection",
+                "scene has no resumable selection checkpoint",
                 status_code=409,
-                details={"scene_id": scene_id, "scene_status": getattr(state, "scene_status", None)},
+                details={
+                    "scene_id": scene_id,
+                    "scene_status": getattr(state, "scene_status", None),
+                    "run_checkpoint": checkpoint,
+                },
             )
         # Selection handoff bypasses the ordinary run prefix, so validate the
         # durable lifecycle budget before any optional critique/QC provider work.
