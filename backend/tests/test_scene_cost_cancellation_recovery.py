@@ -39,7 +39,7 @@ def test_budget_exhaustion_blocks_new_calls_but_keeps_draft(session):
     assert session.get(SceneDraft, "draft_CX1") is not None
 
 
-def test_over_budget_cost_still_explainable(session):
+def test_legacy_0064_over_budget_cost_remains_readable_without_becoming_normal_semantics(session):
     _scene_with_valid_draft(session, "CX2", budget=1000, used=1500)
     session.add(
         LlmCall(
@@ -51,10 +51,21 @@ def test_over_budget_cost_still_explainable(session):
     )
     session.flush()
     summary = ca.scene_cost(session, "CX2")
-    # 超预算仍可解释：over_budget=True、总成本 > 0、阶段占比存在
+    # 仅兼容读取 0064 历史脏数据；新在线调用由预留门禁阻止制造该状态。
     assert summary["budget"]["over_budget"] is True
     assert summary["total_cost"] > 0
     assert summary["phase_breakdown"]["candidate_generation"]["cost"] > 0
+    assert summary["calibers"]["estimate"]["tokens"] == 1_200
+    assert summary["calibers"]["provider_actual"]["tokens"] == 0
+    assert summary["calibers"]["budget_charged"]["tokens"] == 0
+    assert summary["attempt_observability"]["legacy_parent_without_attempt_count"] == 1
+    assert summary["attempt_observability"]["legacy_unreconstructable_tokens"] == 1_200
+    assert summary["calibers"]["estimate"]["source"].endswith(
+        "_with_legacy_total_tokens_fallback"
+    )
+    assert summary["calibers"]["budget_charged"]["source"] == (
+        "llm_calls.budget_charged_tokens"
+    )
 
 
 def test_failed_call_does_not_roll_back_draft_and_is_attributed(session):

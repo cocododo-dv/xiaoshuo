@@ -32,7 +32,8 @@ ACCOUNTING_STATUS_SQL = (
 )
 DISPATCH_KIND_SQL = (
     "dispatch_kind IN "
-    "('initial','transport_retry','response_parse_retry','missing_text_degrade','system_probe')"
+    "('initial','transport_retry','response_parse_retry','api_mode_degrade',"
+    "'structured_output_degrade','missing_text_degrade','system_probe')"
 )
 
 SCENE_COLUMNS = (

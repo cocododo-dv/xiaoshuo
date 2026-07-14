@@ -11,7 +11,7 @@
 
 口径纪律（§5.8）：
 - 跨 provider 的 token 不直接相加（分词器不同）——``tokens_by_provider`` 分列；
-- 三口径 estimate / actual / billed（当前 billed 无 prompt-cache 数据，标估算）；
+- 三口径 estimate / provider_actual / budget_charged，父调用只汇总一次；
 - 额外成本可归因（失败重试 / 重复 QC / 低分散补候选）。
 """
 
@@ -23,7 +23,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import FinalScene, LlmCall, SceneCard, SceneRunState
+from novel_system.db.models import (
+    FinalScene,
+    LlmCall,
+    LlmCallAttempt,
+    SceneCard,
+    SceneRunState,
+)
 from novel_system.services import model_independence, pricing
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,11 +83,21 @@ def _call_cost(call: LlmCall) -> dict[str, Any]:
     )
 
 
+def _attempt_cost(call: LlmCall, attempt: LlmCallAttempt) -> dict[str, Any]:
+    return pricing.compute_cost(
+        call.provider,
+        call.model,
+        attempt.prompt_tokens,
+        attempt.completion_tokens,
+        at=call.created_at,
+    )
+
+
 def _empty_phase_breakdown() -> dict[str, dict[str, Any]]:
     return {p: {"tokens": 0, "cost": 0.0, "share": 0.0, "call_count": 0} for p in _PHASES}
 
 
-def _aggregate_calls(calls: list[LlmCall]) -> dict[str, Any]:
+def _aggregate_calls(session: Session, calls: list[LlmCall]) -> dict[str, Any]:
     """把一组 LlmCall 折算为费用/阶段/provider 维度的通用聚合（scene/chapter/project 复用）。"""
     total_cost = 0.0
     total_tokens = 0
@@ -90,12 +106,43 @@ def _aggregate_calls(calls: list[LlmCall]) -> dict[str, Any]:
     phase = _empty_phase_breakdown()
     tokens_by_provider: dict[str, int] = {}
     cost_by_provider: dict[str, float] = {}
+    attempts_by_call: dict[str, list[LlmCallAttempt]] = {}
+    if calls:
+        attempts = session.execute(
+            select(LlmCallAttempt)
+            .where(LlmCallAttempt.llm_call_id.in_([call.llm_call_id for call in calls]))
+            .order_by(
+                LlmCallAttempt.llm_call_id.asc(),
+                LlmCallAttempt.provider_attempt_no.asc(),
+            )
+        ).scalars().all()
+        for attempt in attempts:
+            attempts_by_call.setdefault(attempt.llm_call_id, []).append(attempt)
+
+    estimated_tokens = 0
+    provider_actual_tokens = 0
+    budget_charged_tokens = 0
+    attempt_row_count = 0
+    physical_attempt_count = 0
+    pre_dispatch_attempt_count = 0
+    usage_estimate_count = 0
+    exception_count = 0
+    retry_attempt_count = 0
+    transport_retry_attempt_count = 0
+    response_parse_retry_attempt_count = 0
+    degrade_attempt_count = 0
+    legacy_parent_without_attempt_count = 0
+    legacy_unreconstructable_tokens = 0
     for call in calls:
         cost = _call_cost(call)
         tokens = int(call.total_tokens or 0)
         total_cost += cost["cost"]
         total_tokens += tokens
-        is_estimate = is_estimate or bool(cost["is_estimate"])
+        is_estimate = (
+            is_estimate
+            or bool(cost["is_estimate"])
+            or bool(call.usage_is_estimate)
+        )
         currency = currency or cost["currency"]
         ph = classify_phase(call.node_id, call.step)
         phase[ph]["tokens"] += tokens
@@ -104,8 +151,68 @@ def _aggregate_calls(calls: list[LlmCall]) -> dict[str, Any]:
         prov = call.provider or "unknown"
         tokens_by_provider[prov] = tokens_by_provider.get(prov, 0) + tokens
         cost_by_provider[prov] = cost_by_provider.get(prov, 0.0) + cost["cost"]
+
+        call_attempts = attempts_by_call.get(call.llm_call_id, [])
+        if call_attempts:
+            # 父调用是唯一逻辑/报表层；它的账目字段已是物理尝试之和。
+            estimated_tokens += int(call.estimated_tokens or 0)
+            budget_charged_tokens += int(call.budget_charged_tokens or 0)
+            attempt_row_count += len(call_attempts)
+            for attempt in call_attempts:
+                dispatched = attempt.request_dispatched_at is not None
+                if dispatched:
+                    physical_attempt_count += 1
+                else:
+                    pre_dispatch_attempt_count += 1
+                if dispatched and bool(attempt.usage_is_estimate):
+                    usage_estimate_count += 1
+                elif dispatched:
+                    provider_actual_tokens += int(attempt.total_tokens or 0)
+                if attempt.error_code:
+                    exception_count += 1
+                if dispatched and int(attempt.provider_attempt_no or 0) > 0:
+                    retry_attempt_count += 1
+                if dispatched and attempt.dispatch_kind == "transport_retry":
+                    # transport_retry 同时承载普通重试和连接能力降级，不能猜测拆分。
+                    transport_retry_attempt_count += 1
+                if dispatched and attempt.dispatch_kind == "response_parse_retry":
+                    response_parse_retry_attempt_count += 1
+                if dispatched and attempt.dispatch_kind in {
+                    "api_mode_degrade",
+                    "structured_output_degrade",
+                    "missing_text_degrade",
+                }:
+                    degrade_attempt_count += 1
+            continue
+
+        request_summary = call.request_payload_summary or {}
+        is_legacy_parent = "_accounting_provider_execution_mode" not in request_summary
+        if is_legacy_parent:
+            # 0064 前的父调用没有物理尝试行和新账目字段；显式兼容读取。
+            legacy_parent_without_attempt_count += 1
+            legacy_unreconstructable_tokens += tokens
+            estimated_tokens += int(call.estimated_tokens or tokens)
+            if call.usage_is_estimate is False:
+                provider_actual_tokens += tokens
+            # 0065 将 legacy charge 明确回填为 0；零值不能回退成 total。
+            budget_charged_tokens += int(call.budget_charged_tokens or 0)
+            usage_estimate_count += int(bool(call.usage_is_estimate))
+            exception_count += int(bool(call.error_code))
+        else:
+            estimated_tokens += int(call.estimated_tokens or 0)
+            budget_charged_tokens += int(call.budget_charged_tokens or 0)
     for ph in phase.values():
         ph["share"] = (ph["cost"] / total_cost) if total_cost > 0 else 0.0
+    estimate_legacy_suffix = (
+        "_with_legacy_total_tokens_fallback"
+        if legacy_parent_without_attempt_count
+        else ""
+    )
+    actual_legacy_suffix = (
+        "_with_legacy_parent_usage_fallback"
+        if legacy_parent_without_attempt_count
+        else ""
+    )
     return {
         "total_cost": total_cost,
         "total_tokens": total_tokens,
@@ -116,6 +223,36 @@ def _aggregate_calls(calls: list[LlmCall]) -> dict[str, Any]:
         "cost_by_provider": cost_by_provider,
         "phase_breakdown": phase,
         "call_count": len(calls),
+        "calibers": {
+            "estimate": {
+                "tokens": estimated_tokens,
+                "source": f"llm_calls.estimated_tokens{estimate_legacy_suffix}",
+            },
+            "provider_actual": {
+                "tokens": provider_actual_tokens,
+                "source": (
+                    "llm_call_attempts.total_tokens_with_provider_usage"
+                    f"{actual_legacy_suffix}"
+                ),
+            },
+            "budget_charged": {
+                "tokens": budget_charged_tokens,
+                "source": "llm_calls.budget_charged_tokens",
+            },
+        },
+        "attempt_observability": {
+            "attempt_row_count": attempt_row_count,
+            "physical_attempt_count": physical_attempt_count,
+            "pre_dispatch_attempt_count": pre_dispatch_attempt_count,
+            "usage_estimate_count": usage_estimate_count,
+            "exception_count": exception_count,
+            "retry_attempt_count": retry_attempt_count,
+            "transport_retry_attempt_count": transport_retry_attempt_count,
+            "response_parse_retry_attempt_count": response_parse_retry_attempt_count,
+            "degrade_attempt_count": degrade_attempt_count,
+            "legacy_parent_without_attempt_count": legacy_parent_without_attempt_count,
+            "legacy_unreconstructable_tokens": legacy_unreconstructable_tokens,
+        },
     }
 
 
@@ -150,8 +287,32 @@ def _extra_cost(session: Session, scene_id: str, calls: list[LlmCall], total_cos
                 state: SceneRunState | None) -> dict[str, Any]:
     """额外成本归因（§5.8：低分散补候选 / 失败重试 / 重复 QC）。启发式、口径已注释。"""
     ordered = sorted(calls, key=lambda c: (c.created_at or "", c.llm_call_id))
-    # 失败重试：error_code 非空的调用（跑了但没产出有效结果）
-    failed_cost = sum(_call_cost(c)["cost"] for c in ordered if c.error_code)
+    attempts_by_call: dict[str, list[LlmCallAttempt]] = {}
+    if ordered:
+        attempts = session.execute(
+            select(LlmCallAttempt).where(
+                LlmCallAttempt.llm_call_id.in_([call.llm_call_id for call in ordered])
+            )
+        ).scalars().all()
+        for attempt in attempts:
+            attempts_by_call.setdefault(attempt.llm_call_id, []).append(attempt)
+    # 新账本按失败物理尝试归因；legacy 无子账时回退父 error_code。
+    failed_cost = 0.0
+    for call in ordered:
+        call_attempts = attempts_by_call.get(call.llm_call_id, [])
+        if call_attempts:
+            failed_cost += sum(
+                _attempt_cost(call, attempt)["cost"]
+                for attempt in call_attempts
+                if attempt.request_dispatched_at is not None
+                and (
+                    attempt.error_code
+                    or attempt.accounting_status
+                    in {"failed", "usage_exceeds_reservation"}
+                )
+            )
+        elif call.error_code:
+            failed_cost += _call_cost(call)["cost"]
     # 重复 QC：QC 阶段第 2 次起
     qc_calls = [c for c in ordered if classify_phase(c.node_id, c.step) == PHASE_QC]
     repeat_qc_cost = sum(_call_cost(c)["cost"] for c in qc_calls[1:])
@@ -174,24 +335,8 @@ def scene_cost(session: Session, scene_id: str) -> dict[str, Any]:
         session.execute(select(LlmCall).where(LlmCall.scene_id == scene_id)).scalars().all()
     )
     state = session.get(SceneRunState, scene_id)
-    agg = _aggregate_calls(calls)
+    agg = _aggregate_calls(session, calls)
     budget = _budget_view(state)
-    # 三口径：actual = provider usage；billed = actual 但标估算（prompt-cache 折扣未接入）；
-    # estimate = 预算账目口径 scene_tokens_used（Wave 3 累计实际用量）。
-    actual_tokens = agg["total_tokens"]
-    calibers = {
-        "actual": {"tokens": actual_tokens, "source": "provider_usage"},
-        "billed": {
-            "tokens": actual_tokens,
-            "cost": agg["total_cost"],
-            "is_estimate": True,
-            "note": "prompt-cache 折扣未接入，等同实际",
-        },
-        "estimate": {
-            "tokens": int(state.scene_tokens_used or 0) if state else 0,
-            "note": "预算账目口径（Wave 3 累计实际用量）",
-        },
-    }
     # 评审独立性：observed（本场实际）优先，无评审调用时回退 config 口径
     judge = model_independence.observed_correlated_judge(session, scene_id)
     if judge is None:
@@ -208,7 +353,8 @@ def scene_cost(session: Session, scene_id: str) -> dict[str, Any]:
         "phase_breakdown": agg["phase_breakdown"],
         "call_count": agg["call_count"],
         "budget": budget,
-        "calibers": calibers,
+        "calibers": agg["calibers"],
+        "attempt_observability": agg["attempt_observability"],
         "extra_cost": _extra_cost(session, scene_id, calls, agg["total_cost"], state),
         "judge_independence": judge,
     }
@@ -230,7 +376,7 @@ def chapter_cost(session: Session, chapter_id: str) -> dict[str, Any]:
     calls = list(
         session.execute(select(LlmCall).where(LlmCall.chapter_id == chapter_id)).scalars().all()
     )
-    agg = _aggregate_calls(calls)
+    agg = _aggregate_calls(session, calls)
     archived = _archived_scene_ids(session, chapter_id=chapter_id)
     archived_count = len(archived)
     return {
@@ -244,6 +390,8 @@ def chapter_cost(session: Session, chapter_id: str) -> dict[str, Any]:
         "cost_by_provider": agg["cost_by_provider"],
         "phase_breakdown": agg["phase_breakdown"],
         "call_count": agg["call_count"],
+        "calibers": agg["calibers"],
+        "attempt_observability": agg["attempt_observability"],
         "archived_scene_count": archived_count,
         "tokens_per_archived_scene": (
             round(agg["total_tokens"] / archived_count) if archived_count else None
@@ -275,7 +423,7 @@ def project_cost(session: Session, project_id: str) -> dict[str, Any]:
             if call.llm_call_id not in seen:
                 calls.append(call)
                 seen.add(call.llm_call_id)
-    agg = _aggregate_calls(calls)
+    agg = _aggregate_calls(session, calls)
     archived = _archived_scene_ids(session, scene_ids=scene_ids) if scene_ids else set()
     archived_count = len(archived)
     archived_chapters = {
@@ -293,6 +441,8 @@ def project_cost(session: Session, project_id: str) -> dict[str, Any]:
         "cost_by_provider": agg["cost_by_provider"],
         "phase_breakdown": agg["phase_breakdown"],
         "call_count": agg["call_count"],
+        "calibers": agg["calibers"],
+        "attempt_observability": agg["attempt_observability"],
         "chapter_count": len(chapter_ids),
         "scene_count": len(scene_ids),
         "archived_scene_count": archived_count,

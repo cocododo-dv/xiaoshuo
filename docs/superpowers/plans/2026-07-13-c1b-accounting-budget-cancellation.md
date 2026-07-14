@@ -386,12 +386,14 @@ git commit -m "feat(accounting): cover every production LLM outlet"
 - Modify: `backend/tests/test_cost_aggregation.py`
 - Modify: `backend/tests/test_scene_cost_cancellation_recovery.py`
 
-- [ ] 验证公共预留层的一次性预算初始化在 Orchestrator 与独立 blueprint/quality 入口一致，basis 不因后续 bundle 或重跑自动扩大。
-- [ ] 删除 `_prepare_state_for_run` 对 `total_attempt_count` 的自动重置；token budget、used、reserved、attempt count/budget 都不得由自动重跑清零。
-- [ ] 重跑测试：历史 used/attempt 保留，余额不足时 provider call count 不增加；只有 topup 可扩大预算。
-- [ ] topup 支持显式 `extra_tokens`、`extra_attempts` 和/或 `extra_provider_attempts`（至少一项为正），返回并审计 token budget、业务 attempt budget、physical provider-attempt budget、used、reserved；这是三类生命周期上限的唯一扩容入口，禁止隐式清除任何 used/reserved/count。
-- [ ] 成本聚合三口径改为读取新字段：estimate、provider actual、budget charged；父 LlmCall 聚合 attempt，报表只计一层，usage estimate/异常/retry/degrade 数量可见。
-- [ ] 移除“over budget 仍正常”作为可接受主语义的旧测试，改为兼容只读历史脏数据但新调用不能制造 over-budget。
+阶段验收记录（Task 6）：scene 生命周期预算只在公共预留层一次性初始化，Orchestrator、独立 blueprint/quality 等入口共享 immutable basis；自动重跑保留 token、业务 attempt、physical provider-attempt 的 budget/used/reserved/count，余额不足时发送前拒绝。topup 扩为 `extra_tokens`、`extra_attempts`、`extra_provider_attempts` 三维任意正数组合，使用单条 SQL 对三字段原子 CAS 增量，任一 INT64 溢出整条失败；幂等审计与回放覆盖三维连续前缀，旧 token-only 记录仅按 canonical attempt 初值兼容，漂移 fail-closed。成本聚合以父 `LlmCall` 为唯一逻辑/费用层，已 dispatch 子 attempt 提供 provider actual、transport/parse/degrade、pre-dispatch rejection、usage provenance 与失败重试成本；legacy 0065 迁移语义固定为 estimate/actual/charged=`total/0/0` 并显式暴露不可重建量。真实 connectivity degradation 使用 `api_mode_degrade`、`structured_output_degrade`、`missing_text_degrade` 三类持久 kind，普通网络与解析重试分别保持 `transport_retry`、`response_parse_retry`；运行时 Literal、ORM CHECK、0065 迁移与 preflight 枚举一致。实现扩展回归 404 passed，最终定向 216 passed；独立规格复审为计划集 79、accounting/client/schema/preflight 137、隔离库迁移 1 passed，质量复审最终 `APPROVED`。canonical actual 仍为 revision `20260712_0064`，指纹未变。
+
+- [x] 验证公共预留层的一次性预算初始化在 Orchestrator 与独立 blueprint/quality 入口一致，basis 不因后续 bundle 或重跑自动扩大。
+- [x] 删除 `_prepare_state_for_run` 对 `total_attempt_count` 的自动重置；token budget、used、reserved、attempt count/budget 都不得由自动重跑清零。
+- [x] 重跑测试：历史 used/attempt 保留，余额不足时 provider call count 不增加；只有 topup 可扩大预算。
+- [x] topup 支持显式 `extra_tokens`、`extra_attempts` 和/或 `extra_provider_attempts`（至少一项为正），返回并审计 token budget、业务 attempt budget、physical provider-attempt budget、used、reserved；这是三类生命周期上限的唯一扩容入口，禁止隐式清除任何 used/reserved/count。
+- [x] 成本聚合三口径改为读取新字段：estimate、provider actual、budget charged；父 LlmCall 聚合 attempt，报表只计一层，usage estimate/异常/retry/degrade 数量可见。
+- [x] 移除“over budget 仍正常”作为可接受主语义的旧测试，改为兼容只读历史脏数据但新调用不能制造 over-budget。
 
 Run:
 

@@ -890,7 +890,7 @@ class LlmCallAttempt(Base):
             name="ck_llm_call_attempts_accounting_status",
         ),
         CheckConstraint(
-            "dispatch_kind IN ('initial','transport_retry','response_parse_retry','missing_text_degrade','system_probe')",
+            "dispatch_kind IN ('initial','transport_retry','response_parse_retry','api_mode_degrade','structured_output_degrade','missing_text_degrade','system_probe')",
             name="ck_llm_call_attempts_dispatch_kind",
         ),
         Index("ix_llm_call_attempts_call_status", "llm_call_id", "accounting_status"),

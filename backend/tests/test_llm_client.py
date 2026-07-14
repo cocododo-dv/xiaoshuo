@@ -1266,7 +1266,7 @@ def test_llm_client_attempt_hook_wraps_structured_output_degrade() -> None:
     assert response.structured_output == {"ok": True}
     assert hook.before == [
         ("attempt-1", "initial", 8),
-        ("attempt-2", "transport_retry", 8),
+        ("attempt-2", "structured_output_degrade", 8),
     ]
     assert hook.errors == [("attempt-1", "LLM_HTTP_STRUCTURED_OUTPUT_REJECTED")]
     assert hook.responses == [("attempt-2", "degrade-ok")]

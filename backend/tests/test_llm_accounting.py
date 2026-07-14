@@ -1246,8 +1246,55 @@ def test_structured_degrade_recomputes_reservation_for_rewritten_messages(sessio
 
     attempts = session.query(LlmCallAttempt).order_by(LlmCallAttempt.provider_attempt_no).all()
     assert post_count == 2
-    assert [row.dispatch_kind for row in attempts] == ["initial", "transport_retry"]
+    assert [row.dispatch_kind for row in attempts] == [
+        "initial",
+        "structured_output_degrade",
+    ]
     assert attempts[1].reserved_tokens > attempts[0].reserved_tokens
+
+
+def test_responses_to_chat_degrade_has_a_distinct_durable_attempt_kind(session) -> None:
+    accounting = _accounting_module()
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if len(paths) == 1:
+            return httpx.Response(404, json={"error": {"message": "responses unsupported"}})
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-degrade-ok",
+                "model": "api-mode-degrade-model",
+                "choices": [
+                    {
+                        "message": {"content": '{"scene_text":"ok"}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+            },
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    accounting.execute_accounted_call(
+        session,
+        client,
+        replace(_request(), model="api-mode-degrade-model"),
+        _context(accounting),
+    )
+
+    attempts = session.query(LlmCallAttempt).order_by(LlmCallAttempt.provider_attempt_no).all()
+    assert paths == ["/v1/responses", "/v1/chat/completions"]
+    assert [row.dispatch_kind for row in attempts] == ["initial", "api_mode_degrade"]
 
 
 def test_provider_attempt_budget_rejects_second_post_without_erasing_first_charge(session) -> None:

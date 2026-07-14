@@ -22,6 +22,8 @@ DISPATCH_KINDS = {
     "initial",
     "transport_retry",
     "response_parse_retry",
+    "api_mode_degrade",
+    "structured_output_degrade",
     "missing_text_degrade",
     "system_probe",
 }

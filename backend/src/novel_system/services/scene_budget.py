@@ -36,6 +36,7 @@ BUDGET_MULTIPLIER = 5
 FALLBACK_INPUT_TOKENS = 4000
 FALLBACK_OUTPUT_TOKENS = 2400
 BASELINE_WRITER_NODE = "style_draft"
+LEGACY_INITIAL_ATTEMPT_BUDGET = 4
 
 
 def _insert_scene_run_state_if_missing(session: Session, scene_id: str) -> None:
@@ -125,6 +126,10 @@ def ensure_scene_budget_initialized(
                 "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
                 "value": existing_provider_budget,
             },
+            "attempt_budget": {
+                "source": "scene_run_states.initial",
+                "value": int(state.attempt_budget),
+            },
         }
         session.execute(
             update(SceneRunState)
@@ -146,6 +151,10 @@ def ensure_scene_budget_initialized(
             "provider_attempt_budget": {
                 "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
                 "value": effective_provider_budget,
+            },
+            "attempt_budget": {
+                "source": "scene_run_states.initial",
+                "value": int(state.attempt_budget),
             },
         }
         session.execute(
@@ -186,13 +195,26 @@ def audited_scene_budget_prefixes(
 ) -> tuple[int, ...]:
     """Return every legal effective budget represented by the immutable basis + audit."""
 
+    return tuple(snapshot[0] for snapshot in _audited_scene_budget_snapshots(session, state))
+
+
+def _audited_scene_budget_snapshots(
+    session: Session,
+    state: SceneRunState,
+) -> tuple[tuple[int, int, int], ...]:
+    """Replay token, business-attempt and provider-attempt budgets together.
+
+    Old topup rows only carried ``extra_tokens``.  They remain readable with
+    zero increments for the two attempt dimensions.  New initial bases record
+    all three starting values so later topups are fully reconstructable.
+    """
+
     basis = state.scene_budget_basis_json
     basis_budget = _basis_scene_token_budget(basis)
     assert isinstance(basis, dict)
     cutoff = basis.get("topup_audit_cutoff_operation_id", 0)
     if not isinstance(cutoff, int) or isinstance(cutoff, bool) or cutoff < 0:
         raise _corrupt_budget_state("topup audit cutoff must be a non-negative integer")
-    prefixes = [basis_budget]
     topups = session.execute(
         select(OperationLog)
         .where(
@@ -203,23 +225,72 @@ def audited_scene_budget_prefixes(
         )
         .order_by(OperationLog.operation_id.asc())
     ).scalars().all()
+    normalized_topups: list[tuple[OperationLog, dict[str, Any], int, int, int]] = []
     for topup in topups:
         payload = topup.payload_json
         if not isinstance(payload, dict):
             raise _corrupt_budget_state("topup audit payload must be an object")
-        extra = payload.get("extra_tokens")
+        extras: list[int] = []
+        for field in ("extra_tokens", "extra_attempts", "extra_provider_attempts"):
+            raw = payload.get(field, 0)
+            if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+                raise _corrupt_budget_state(f"topup audit {field} must be non-negative")
+            extras.append(raw)
+        if not any(extras):
+            raise _corrupt_budget_state("topup audit must expand at least one lifecycle budget")
+        normalized_topups.append((topup, payload, extras[0], extras[1], extras[2]))
+
+    initial_attempt_budget = _basis_attempt_budget(basis)
+    if initial_attempt_budget is None:
+        # Compatibility for immutable bases written before the business-attempt
+        # dimension was captured.  The current value and the durable suffix are
+        # sufficient to recover the historical prefix without changing it.
+        initial_attempt_budget = int(state.attempt_budget) - sum(
+            row[3] for row in normalized_topups
+        )
+        if initial_attempt_budget != LEGACY_INITIAL_ATTEMPT_BUDGET:
+            raise _corrupt_budget_state(
+                "legacy initial attempt_budget differs from the canonical pre-topup value"
+            )
+    initial_provider_budget = _basis_provider_attempt_budget(basis)
+    snapshots = [(basis_budget, initial_attempt_budget, initial_provider_budget)]
+    for _topup, payload, extra_tokens, extra_attempts, extra_provider_attempts in normalized_topups:
+        previous = snapshots[-1]
+        effective = (
+            previous[0] + extra_tokens,
+            previous[1] + extra_attempts,
+            previous[2] + extra_provider_attempts,
+        )
+        if any(value > (1 << 63) - 1 for value in effective):
+            raise _corrupt_budget_state("topup audit exceeds the signed 64-bit limit")
         reported_budget = payload.get("scene_token_budget")
-        if not isinstance(extra, int) or isinstance(extra, bool) or extra <= 0:
-            raise _corrupt_budget_state("topup audit extra_tokens must be positive")
-        effective = prefixes[-1] + extra
         if (
             not isinstance(reported_budget, int)
             or isinstance(reported_budget, bool)
-            or reported_budget != effective
+            or reported_budget != effective[0]
         ):
             raise _corrupt_budget_state("topup audit scene_token_budget prefix is invalid")
-        prefixes.append(effective)
-    return tuple(prefixes)
+        for payload_field, expected_value, required in (
+            ("attempt_budget", effective[1], "extra_attempts" in payload),
+            (
+                "provider_attempt_budget",
+                effective[2],
+                "extra_provider_attempts" in payload,
+            ),
+        ):
+            reported = payload.get(payload_field)
+            if reported is None and not required:
+                continue
+            if (
+                not isinstance(reported, int)
+                or isinstance(reported, bool)
+                or reported != expected_value
+            ):
+                raise _corrupt_budget_state(
+                    f"topup audit {payload_field} prefix is invalid"
+                )
+        snapshots.append(effective)
+    return tuple(snapshots)
 
 
 def _canonical_budget_candidate(session: Session) -> tuple[int, int]:
@@ -260,6 +331,20 @@ def _basis_provider_attempt_budget(basis: object) -> int:
     return value
 
 
+def _basis_attempt_budget(basis: object) -> int | None:
+    if not isinstance(basis, dict):
+        raise _corrupt_budget_state("scene_budget_basis_json must be an object")
+    attempt_basis = basis.get("attempt_budget")
+    if attempt_basis is None:
+        return None
+    if not isinstance(attempt_basis, dict):
+        raise _corrupt_budget_state("basis attempt_budget must be an object")
+    value = attempt_basis.get("value")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise _corrupt_budget_state("basis attempt_budget.value must be a positive integer")
+    return value
+
+
 def _counter(value: object, field: str, *, positive: bool = False) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise _corrupt_budget_state(f"{field} must be an integer")
@@ -279,8 +364,8 @@ def _validate_scene_budget_state(
     if budget is None:
         budget = _counter(state.scene_token_budget, "scene_token_budget", positive=True)
     if state.scene_budget_basis_json is not None:
-        effective = audited_scene_budget_prefixes(session, state)[-1]
-        if effective != budget:
+        effective = _audited_scene_budget_snapshots(session, state)[-1]
+        if effective[0] != budget:
             raise _corrupt_budget_state("audited effective budget does not match scene_token_budget")
     used = _counter(state.scene_tokens_used, "scene_tokens_used")
     reserved = _counter(state.scene_tokens_reserved, "scene_tokens_reserved")
@@ -323,16 +408,16 @@ def _validate_scene_budget_state(
         "provider_attempt_budget",
         positive=True,
     )
-    if state.scene_budget_basis_json is not None:
-        basis_provider_budget = _basis_provider_attempt_budget(state.scene_budget_basis_json)
-        if basis_provider_budget != provider_budget:
-            raise _corrupt_budget_state(
-                "basis provider_attempt_budget.value does not match provider_attempt_budget"
-            )
+    if state.scene_budget_basis_json is not None and effective[2] != provider_budget:
+        raise _corrupt_budget_state(
+            "audited provider_attempt_budget does not match provider_attempt_budget"
+        )
     if provider_used > provider_budget:
         raise _corrupt_budget_state("provider attempts used exceeds its lifecycle budget")
     total_attempts = _counter(state.total_attempt_count, "total_attempt_count")
     attempt_budget = _counter(state.attempt_budget, "attempt_budget", positive=True)
+    if state.scene_budget_basis_json is not None and effective[1] != attempt_budget:
+        raise _corrupt_budget_state("audited attempt_budget does not match attempt_budget")
     if total_attempts > attempt_budget:
         raise _corrupt_budget_state("total attempts used exceeds its business attempt budget")
 
@@ -415,6 +500,10 @@ def ensure_budget(
                 "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
                 "value": effective_provider_budget,
             },
+            "attempt_budget": {
+                "source": "scene_run_states.initial",
+                "value": int(state.attempt_budget),
+            },
         }
         return
 
@@ -431,6 +520,10 @@ def ensure_budget(
         "provider_attempt_budget": {
             "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
             "value": effective_provider_budget,
+        },
+        "attempt_budget": {
+            "source": "scene_run_states.initial",
+            "value": int(state.attempt_budget),
         },
     }
 

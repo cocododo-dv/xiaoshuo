@@ -991,22 +991,29 @@ def topup_scene_budget(
     session: Session = Depends(get_session),
     payload: dict | None = Body(default=None),
 ):
-    """Wave 3（§5.5/§7.12）：作者显式追加场景 token 预算——唯一扩容入口，留审计。"""
+    """作者显式追加 token/业务尝试/provider 尝试预算；唯一扩容入口，留审计。"""
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload or {}
-    raw_extra_tokens = body.get("extra_tokens")
-    if (
-        type(raw_extra_tokens) is not int
-        or raw_extra_tokens <= 0
-        or raw_extra_tokens > INT64_MAX
-    ):
+    raw_extras = {
+        "extra_tokens": body.get("extra_tokens", 0),
+        "extra_attempts": body.get("extra_attempts", 0),
+        "extra_provider_attempts": body.get("extra_provider_attempts", 0),
+    }
+    invalid_fields = {
+        field: value
+        for field, value in raw_extras.items()
+        if type(value) is not int or value < 0 or value > INT64_MAX
+    }
+    if invalid_fields or not any(value > 0 for value in raw_extras.values() if type(value) is int):
         raise DomainError(
             "INVALID_BUDGET_TOPUP",
-            "extra_tokens must be a positive integer",
+            "topup values must be non-negative integers and at least one must be positive",
             status_code=422,
-            details={"extra_tokens": raw_extra_tokens, "max_scene_token_budget": INT64_MAX},
+            details={**raw_extras, "max_lifecycle_budget": INT64_MAX},
         )
-    extra_tokens = raw_extra_tokens
+    extra_tokens = raw_extras["extra_tokens"]
+    extra_attempts = raw_extras["extra_attempts"]
+    extra_provider_attempts = raw_extras["extra_provider_attempts"]
     reason = str(body.get("reason") or "").strip()[:300]
 
     def _topup(session: Session) -> dict[str, Any]:
@@ -1015,34 +1022,65 @@ def topup_scene_budget(
 
         AuthorLifecycleService(session).require_active_scene(scene_id)
         ensure_scene_budget_initialized(session, scene_id)
-        new_budget = session.execute(
+        updated_budgets = session.execute(
             update(SceneRunState)
             .where(
                 SceneRunState.scene_id == scene_id,
                 SceneRunState.scene_token_budget.is_not(None),
                 SceneRunState.scene_token_budget <= INT64_MAX - extra_tokens,
+                SceneRunState.attempt_budget <= INT64_MAX - extra_attempts,
+                SceneRunState.provider_attempt_budget
+                <= INT64_MAX - extra_provider_attempts,
             )
-            .values(scene_token_budget=SceneRunState.scene_token_budget + extra_tokens)
-            .returning(SceneRunState.scene_token_budget)
-        ).scalar_one_or_none()
-        if new_budget is None:
-            current_budget = session.scalar(
-                select(SceneRunState.scene_token_budget).where(
-                    SceneRunState.scene_id == scene_id
+            .values(
+                scene_token_budget=SceneRunState.scene_token_budget + extra_tokens,
+                attempt_budget=SceneRunState.attempt_budget + extra_attempts,
+                provider_attempt_budget=(
+                    SceneRunState.provider_attempt_budget + extra_provider_attempts
+                ),
+            )
+            .returning(
+                SceneRunState.scene_token_budget,
+                SceneRunState.attempt_budget,
+                SceneRunState.provider_attempt_budget,
+            )
+            .execution_options(synchronize_session=False)
+        ).one_or_none()
+        if updated_budgets is None:
+            current = session.execute(
+                select(
+                    SceneRunState.scene_token_budget,
+                    SceneRunState.attempt_budget,
+                    SceneRunState.provider_attempt_budget,
+                ).where(SceneRunState.scene_id == scene_id)
+            ).one()
+            details = {
+                "extra_tokens": extra_tokens,
+                "scene_token_budget": current.scene_token_budget,
+                "max_scene_token_budget": INT64_MAX,
+            }
+            if extra_attempts or extra_provider_attempts:
+                details.update(
+                    {
+                        "extra_attempts": extra_attempts,
+                        "attempt_budget": current.attempt_budget,
+                        "extra_provider_attempts": extra_provider_attempts,
+                        "provider_attempt_budget": current.provider_attempt_budget,
+                        "max_lifecycle_budget": INT64_MAX,
+                    }
                 )
-            )
             raise DomainError(
                 "INVALID_BUDGET_TOPUP",
-                "scene token budget topup exceeds the signed 64-bit limit",
+                "lifecycle budget topup exceeds the signed 64-bit limit",
                 status_code=422,
-                details={
-                    "extra_tokens": extra_tokens,
-                    "scene_token_budget": current_budget,
-                    "max_scene_token_budget": INT64_MAX,
-                },
+                details=details,
             )
+        new_budget, new_attempt_budget, new_provider_attempt_budget = map(
+            int, updated_budgets
+        )
         state = session.get(SceneRunState, scene_id)
         assert state is not None
+        session.refresh(state)
         session.add(
             OperationLog(
                 event_type="scene_budget_topup",
@@ -1050,18 +1088,30 @@ def topup_scene_budget(
                 object_ref=scene_id,
                 payload_json={
                     "extra_tokens": extra_tokens,
+                    "extra_attempts": extra_attempts,
+                    "extra_provider_attempts": extra_provider_attempts,
                     "reason": reason,
                     "actor_ref": actor_ref,
-                    "scene_token_budget": int(new_budget),
+                    "scene_token_budget": new_budget,
                     "scene_tokens_used": int(state.scene_tokens_used or 0),
+                    "scene_tokens_reserved": int(state.scene_tokens_reserved or 0),
+                    "attempt_budget": new_attempt_budget,
+                    "total_attempt_count": int(state.total_attempt_count or 0),
+                    "provider_attempt_budget": new_provider_attempt_budget,
+                    "provider_attempts_used": int(state.provider_attempts_used or 0),
                 },
             )
         )
         session.flush()
         return {
             "scene_id": scene_id,
-            "scene_token_budget": int(new_budget),
+            "scene_token_budget": new_budget,
             "scene_tokens_used": int(state.scene_tokens_used or 0),
+            "scene_tokens_reserved": int(state.scene_tokens_reserved or 0),
+            "attempt_budget": new_attempt_budget,
+            "total_attempt_count": int(state.total_attempt_count or 0),
+            "provider_attempt_budget": new_provider_attempt_budget,
+            "provider_attempts_used": int(state.provider_attempts_used or 0),
         }
 
     result, status = execute_with_idempotency(
@@ -1069,7 +1119,13 @@ def topup_scene_budget(
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/budget/topup",
-        payload={"scene_id": scene_id, "extra_tokens": extra_tokens, "reason": reason},
+        payload={
+            "scene_id": scene_id,
+            "extra_tokens": extra_tokens,
+            "extra_attempts": extra_attempts,
+            "extra_provider_attempts": extra_provider_attempts,
+            "reason": reason,
+        },
         action=lambda: _topup(session),
         actor_ref=actor_ref,
     )

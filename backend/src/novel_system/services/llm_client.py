@@ -401,12 +401,17 @@ class LLMClient(OnlineAccountedExecution):
                 degraded = _degrade_request_after_failure(req, exc, provider_config)
                 if degraded is None:
                     raise
+                previous_req = req
                 req, reason = degraded
                 hops += 1
                 dispatch_kind = (
                     "missing_text_degrade"
                     if isinstance(exc, LLMResponseError) and exc.code == "LLM_RESPONSE_MISSING_TEXT"
-                    else "transport_retry"
+                    else (
+                        "api_mode_degrade"
+                        if previous_req.api_mode != req.api_mode
+                        else "structured_output_degrade"
+                    )
                 )
                 logger.warning(
                     "llm connectivity degrade [%d/%d] node=%s provider=%s status=%s: %s",
