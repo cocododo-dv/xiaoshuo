@@ -1563,7 +1563,9 @@ def test_accepted_soft_risk_lets_matching_soft_qc_rerun_continue_with_audit(sess
     assert finalize.details_json["soft_risk_acceptance_event_id"] == event_id
 
 
-def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(session) -> None:
+def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(
+    client, session
+) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, "CH100_SC01")
     state.current_style_draft_row_id = "draft_style_old"
@@ -1593,8 +1595,18 @@ def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(se
     state.current_human_review_event_id = "human_review_stale_from_previous_block"
     state.total_attempt_count = state.attempt_budget
     attempts_before_rerun = state.total_attempt_count
-    state.attempt_budget += 10
     session.commit()
+
+    topup = client.post(
+        "/api/v1/scenes/CH100_SC01/budget/topup",
+        headers={"X-Idempotency-Key": "qc-stale-pointer-rerun-attempt-topup"},
+        json={
+            "extra_attempts": 10,
+            "reason": "exercise the successful rerun after an exhausted lifecycle budget",
+        },
+    )
+    assert topup.status_code == 200, topup.text
+    session.expire_all()
 
     rerun = _make_orchestrator(
         session,
