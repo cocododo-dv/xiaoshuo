@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { s2ExportState } from "./ws-snow.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
 
 /* global React, I */
 /* ==========================================================
@@ -19,6 +20,281 @@ import { WsCatalog } from "./ws-catalog.jsx";
 const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate"];
 const scnRunKey = (sid) => (wsKey ? wsKey("scn-run:" + sid) : "scn-run:" + sid);
 const scnQueueKey = () => (wsKey ? wsKey("scn-queue:v1") : "scn-queue:v1");
+
+const RUN_JOB_POLLING_STATUSES = new Set(["queued", "running", "cancel_requested"]);
+const RUN_JOB_CANCELABLE_STATUSES = new Set(["queued", "running"]);
+const RUN_JOB_TERMINAL_STATUSES = new Set(["cancelled", "completed", "failed", "blocked"]);
+const RUN_JOB_STATUS_LABELS = {
+  queued: "排队中",
+  running: "运行中",
+  cancel_requested: "正在取消",
+  cancelled: "已取消",
+  completed: "已完成",
+  failed: "运行失败",
+  blocked: "已阻断",
+};
+
+function runJobErrorText(error) {
+  const code = error && error.code ? String(error.code) : "REQUEST_FAILED";
+  const message = error && error.message ? String(error.message) : "请求失败";
+  const details = error && error.details && typeof error.details === "object"
+    ? Object.entries(error.details)
+      .filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`)
+      .join(" · ")
+    : "";
+  return `${code} · ${message}${details ? ` · ${details}` : ""}`;
+}
+
+function isRunJobStateRegression(currentJob, nextJob) {
+  if (!currentJob || !nextJob || currentJob.job_id !== nextJob.job_id) return false;
+  if (RUN_JOB_TERMINAL_STATUSES.has(currentJob.status)) {
+    return currentJob.status !== nextJob.status;
+  }
+  if (currentJob.status === "cancel_requested") {
+    return nextJob.status === "queued" || nextJob.status === "running";
+  }
+  return currentJob.status === "running" && nextJob.status === "queued";
+}
+
+function SceneRunJobControl({
+  sceneId,
+  observedJob = null,
+  onJobChange = null,
+  pollIntervalMs = 2000,
+}) {
+  const [job, setJob] = React.useState(null);
+  const [loading, setLoading] = React.useState(Boolean(sceneId));
+  const [cancelling, setCancelling] = React.useState(false);
+  const [errorText, setErrorText] = React.useState("");
+  const jobRef = React.useRef(null);
+  const sceneRef = React.useRef(sceneId || "");
+  const epochRef = React.useRef(0);
+  const requestVersionRef = React.useRef(0);
+  const cancelInFlightRef = React.useRef(false);
+  const refreshInFlightRef = React.useRef(false);
+  const refreshAbortRef = React.useRef(null);
+  const cancelAbortRef = React.useRef(null);
+  const onJobChangeRef = React.useRef(onJobChange);
+
+  React.useEffect(() => {
+    onJobChangeRef.current = onJobChange;
+  }, [onJobChange]);
+
+  const publishJob = React.useCallback((nextJob, epoch = epochRef.current) => {
+    if (epoch !== epochRef.current) return false;
+    const expectedSceneId = sceneRef.current;
+    if (
+      nextJob
+      && nextJob.scene_id
+      && expectedSceneId
+      && String(nextJob.scene_id) !== String(expectedSceneId)
+    ) {
+      return false;
+    }
+    if (isRunJobStateRegression(jobRef.current, nextJob)) return false;
+    jobRef.current = nextJob || null;
+    setJob(nextJob || null);
+    if (onJobChangeRef.current) onJobChangeRef.current(nextJob || null);
+    return true;
+  }, []);
+
+  const refreshLatest = React.useCallback(async ({ silent = false, epoch = epochRef.current, force = false } = {}) => {
+    const targetSceneId = sceneRef.current;
+    if (!targetSceneId || epoch !== epochRef.current || (refreshInFlightRef.current && !force)) return null;
+    if (force && refreshAbortRef.current) refreshAbortRef.current.abort();
+    const requestVersion = requestVersionRef.current + 1;
+    requestVersionRef.current = requestVersion;
+    const controller = new AbortController();
+    refreshAbortRef.current = controller;
+    refreshInFlightRef.current = true;
+    if (!silent) setLoading(true);
+    try {
+      const latest = await getLatestSceneRunJob(targetSceneId, { signal: controller.signal });
+      if (requestVersion !== requestVersionRef.current) return null;
+      if (publishJob(latest, epoch) && !silent) setErrorText("");
+      return latest;
+    } catch (error) {
+      if (epoch !== epochRef.current || requestVersion !== requestVersionRef.current) return null;
+      if (error && (error.status === 404 || error.code === "RUN_JOB_NOT_FOUND")) {
+        publishJob(null, epoch);
+        if (!silent) setErrorText("");
+        return null;
+      }
+      if (!silent) setErrorText(runJobErrorText(error));
+      return null;
+    } finally {
+      if (refreshAbortRef.current === controller) refreshAbortRef.current = null;
+      if (epoch === epochRef.current && requestVersion === requestVersionRef.current) {
+        refreshInFlightRef.current = false;
+        if (!silent) setLoading(false);
+      }
+    }
+  }, [publishJob]);
+
+  React.useEffect(() => {
+    const epoch = epochRef.current + 1;
+    epochRef.current = epoch;
+    requestVersionRef.current += 1;
+    if (refreshAbortRef.current) refreshAbortRef.current.abort();
+    if (cancelAbortRef.current) cancelAbortRef.current.abort();
+    refreshAbortRef.current = null;
+    cancelAbortRef.current = null;
+    sceneRef.current = sceneId || "";
+    refreshInFlightRef.current = false;
+    cancelInFlightRef.current = false;
+    jobRef.current = null;
+    setCancelling(false);
+    setErrorText("");
+    publishJob(null, epoch);
+    if (!sceneId) {
+      setLoading(false);
+      return () => {
+        if (epochRef.current === epoch) epochRef.current += 1;
+      };
+    }
+    void refreshLatest({ epoch });
+    return () => {
+      if (epochRef.current === epoch) epochRef.current += 1;
+      if (refreshAbortRef.current) refreshAbortRef.current.abort();
+      if (cancelAbortRef.current) cancelAbortRef.current.abort();
+      refreshAbortRef.current = null;
+      cancelAbortRef.current = null;
+      refreshInFlightRef.current = false;
+      cancelInFlightRef.current = false;
+    };
+  }, [sceneId, publishJob, refreshLatest]);
+
+  React.useEffect(() => {
+    if (!observedJob || !sceneId) return;
+    // A POST response is newer than any latest request already in flight.
+    requestVersionRef.current += 1;
+    if (refreshAbortRef.current) refreshAbortRef.current.abort();
+    refreshAbortRef.current = null;
+    refreshInFlightRef.current = false;
+    publishJob(observedJob);
+  }, [observedJob, sceneId, publishJob]);
+
+  React.useEffect(() => {
+    if (!sceneId || !job || !RUN_JOB_POLLING_STATUSES.has(job.status)) return undefined;
+    const timer = window.setInterval(() => {
+      void refreshLatest({ silent: true });
+    }, Math.max(1, pollIntervalMs));
+    return () => window.clearInterval(timer);
+  }, [sceneId, job && job.job_id, job && job.status, pollIntervalMs, refreshLatest]);
+
+  const requestCancellation = React.useCallback(async () => {
+    const currentJob = job;
+    if (
+      !currentJob
+      || !RUN_JOB_CANCELABLE_STATUSES.has(currentJob.status)
+      || cancelInFlightRef.current
+    ) {
+      return;
+    }
+    const epoch = epochRef.current;
+    requestVersionRef.current += 1;
+    if (refreshAbortRef.current) refreshAbortRef.current.abort();
+    refreshAbortRef.current = null;
+    refreshInFlightRef.current = false;
+    cancelInFlightRef.current = true;
+    const controller = new AbortController();
+    cancelAbortRef.current = controller;
+    setCancelling(true);
+    setErrorText("");
+    try {
+      const nextJob = await cancelRunJob(currentJob.job_id, { signal: controller.signal });
+      if (epoch !== epochRef.current) return;
+      if (
+        !jobRef.current
+        || jobRef.current.job_id !== currentJob.job_id
+      ) {
+        await refreshLatest({ silent: true, epoch, force: true });
+        return;
+      }
+      requestVersionRef.current += 1;
+      refreshInFlightRef.current = false;
+      publishJob(nextJob, epoch);
+    } catch (error) {
+      if (epoch !== epochRef.current) return;
+      if (
+        !jobRef.current
+        || jobRef.current.job_id !== currentJob.job_id
+        || !RUN_JOB_CANCELABLE_STATUSES.has(jobRef.current.status)
+      ) {
+        await refreshLatest({ silent: true, epoch, force: true });
+        return;
+      }
+      setErrorText(runJobErrorText(error));
+      if (error && error.status === 409) {
+        await refreshLatest({ silent: true, epoch, force: true });
+      }
+    } finally {
+      if (cancelAbortRef.current === controller) cancelAbortRef.current = null;
+      if (epoch === epochRef.current) {
+        cancelInFlightRef.current = false;
+        setCancelling(false);
+      }
+    }
+  }, [job, publishJob, refreshLatest]);
+
+  if (!sceneId) return null;
+
+  const status = job && job.status ? job.status : "none";
+  const statusLabel = loading && !job
+    ? "正在恢复运行任务"
+    : (RUN_JOB_STATUS_LABELS[status] || (job ? status : "暂无运行任务"));
+  const showCancel = Boolean(job && RUN_JOB_CANCELABLE_STATUSES.has(status));
+  const showCancelling = Boolean(job && status === "cancel_requested");
+
+  return (
+    <div
+      className="scn2-decide is-wait"
+      data-testid="scene-run-job-control"
+      data-status={status}
+      data-job-id={(job && job.job_id) || ""}
+    >
+      <div
+        className="scn2-decide-sum"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {RUN_JOB_POLLING_STATUSES.has(status) && <span className="scn2-spin" aria-hidden="true" />}
+        <span>
+          运行任务 · {statusLabel}
+          {job && job.current_step ? ` · ${job.current_step}` : ""}
+        </span>
+      </div>
+      <div className="scn2-decide-acts">
+        {errorText && <span role="alert" data-testid="scene-run-cancel-error">{errorText}</span>}
+        {showCancel && (
+          <button
+            type="button"
+            className="btn btn-accent btn-sm"
+            data-testid="scene-run-cancel-button"
+            disabled={cancelling}
+            aria-disabled={cancelling ? "true" : "false"}
+            onClick={requestCancellation}
+          >
+            {cancelling ? "正在提交取消…" : "取消运行"}
+          </button>
+        )}
+        {showCancelling && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            data-testid="scene-run-cancel-button"
+            disabled
+            aria-disabled="true"
+          >
+            取消处理中
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function scnRunLoad(sid) {
   try { return JSON.parse(localStorage.getItem(scnRunKey(sid))) || null; } catch (e) { return null; }
@@ -258,28 +534,78 @@ async function scnCreateCards(sid) { // eslint-disable-line no-unused-vars
   return apiPost(`/api/v1/scenes/${sceneId}/preflight/create-cards`, {});
 }
 
-async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-vars
+function scnRunUiAbortError() {
+  const error = new Error("scene run UI tracking stopped");
+  error.code = "SCENE_RUN_UI_ABORTED";
+  return error;
+}
+
+function scnThrowIfAborted(signal) {
+  if (signal && signal.aborted) throw scnRunUiAbortError();
+}
+
+function scnPollDelay(delayMs, signal) {
+  scnThrowIfAborted(signal);
+  if (!signal) return new Promise(resolve => setTimeout(resolve, delayMs));
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = () => {
+      clearTimeout(timer);
+      reject(scnRunUiAbortError());
+    };
+    const timer = setTimeout(finish, delayMs);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-line no-unused-vars
   const { apiGet, apiPost } = await import("./lib/client.js");
+  const signal = lifecycle && lifecycle.signal;
+  const trackedGet = (path) => signal ? apiGet(path, { signal }) : apiGet(path);
+  const trackedPost = (path, body) => signal ? apiPost(path, body, { signal }) : apiPost(path, body);
+  scnThrowIfAborted(signal);
   const sceneId = WsCatalog && WsCatalog.__backendSceneId
     ? await WsCatalog.__backendSceneId(item.sid)
     : null;
+  scnThrowIfAborted(signal);
   if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
   const t0 = Date.now();
   let job;
   // G3：作者改写指令随任务下发（后端注入风格生成阶段的提示词）
   const body = note && String(note).trim() ? { author_note: String(note).trim().slice(0, 500) } : {};
-  try { job = await apiPost(`/api/v1/scenes/${sceneId}/run/jobs`, body); } catch (e) { throw scnFriendly(e); }
+  try {
+    job = await trackedPost(`/api/v1/scenes/${sceneId}/run/jobs`, body);
+  } catch (e) {
+    scnThrowIfAborted(signal);
+    throw scnFriendly(e);
+  }
+  scnThrowIfAborted(signal);
+  try {
+    if (lifecycle && typeof lifecycle.onJobCreated === "function") {
+      lifecycle.onJobCreated(job, sceneId);
+    }
+  } catch (e) {}
   const TERMINAL = ["completed", "blocked", "failed", "cancelled"];
   let last = job;
   const deadline = Date.now() + 5 * 60 * 1000;
   while (!TERMINAL.includes(last.status)) {
     if (Date.now() > deadline) throw new Error("起草超时（5 分钟）——后台任务可能仍在运行，稍后可在质检台查看产出。");
-    await new Promise(r => setTimeout(r, 2000));
-    try { last = await apiGet(`/api/v1/run-jobs/${job.job_id}`); } catch (e) {}
+    await scnPollDelay(2000, signal);
+    scnThrowIfAborted(signal);
+    try {
+      last = await trackedGet(`/api/v1/run-jobs/${job.job_id}`);
+    } catch (e) {
+      scnThrowIfAborted(signal);
+    }
   }
+  scnThrowIfAborted(signal);
   /* 终态后先看产出：需人工审阅的 blocked 也可能已有草稿，照实呈现 */
   let wb = null;
-  try { wb = await apiGet(`/api/v1/scenes/${sceneId}/workbench`); } catch (e) {}
+  try { wb = await trackedGet(`/api/v1/scenes/${sceneId}/workbench`); } catch (e) {}
+  scnThrowIfAborted(signal);
   const content = (wb && ((wb.final_scene && wb.final_scene.content)
     || (wb.style_draft && wb.style_draft.content)
     || (wb.neutral_draft && wb.neutral_draft.content))) || "";
@@ -315,12 +641,21 @@ async function scnRun(item, note, prevText) { // eslint-disable-line no-unused-v
    从 scenes workbench 恢复这一场的最新产出为一条可裁决的运行。
    队列/运行记录此前只活在 localStorage，后端 SceneRunState 才是管线真相——
    这是「起草台各自为战」的补缝。目录场景卡已 done 的按已归档呈现。 ---- */
-async function scnHydrateFromBackend(sid) {
+async function scnHydrateFromBackend(sid, { signal } = {}) {
   const { apiGet } = await import("./lib/client.js");
+  scnThrowIfAborted(signal);
   const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
+  scnThrowIfAborted(signal);
   if (!sceneId) return null;
   let wb = null;
-  try { wb = await apiGet(`/api/v1/scenes/${sceneId}/workbench`); } catch (e) { return null; }
+  try {
+    wb = signal
+      ? await apiGet(`/api/v1/scenes/${sceneId}/workbench`, { signal })
+      : await apiGet(`/api/v1/scenes/${sceneId}/workbench`);
+  } catch (e) {
+    scnThrowIfAborted(signal);
+    return null;
+  }
   const content = (wb && ((wb.final_scene && wb.final_scene.content)
     || (wb.style_draft && wb.style_draft.content)
     || (wb.neutral_draft && wb.neutral_draft.content))) || "";
@@ -487,4 +822,4 @@ function scnPickList(queuedSids) {
 Object.assign(window, { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+export { SceneRunJobControl, scnRun, scnCreateCards, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

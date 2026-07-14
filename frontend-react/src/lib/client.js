@@ -153,6 +153,15 @@ function normalizeRequestError(error, clientRequestId = null) {
   if (error instanceof ApiRequestError) {
     return error;
   }
+  if (error && error.name === "AbortError") {
+    return new ApiRequestError("请求已取消。", {
+      code: "REQUEST_ABORTED",
+      status: 0,
+      details: { retryable: true, reachedServer: null },
+      clientRequestId,
+      retryable: true,
+    });
+  }
   if (error instanceof Error) {
     if (error.code || error.status) {
       return error;
@@ -203,17 +212,17 @@ async function parseEnvelope(response, clientRequestId = null) {
   return payload?.data;
 }
 
-export async function apiGet(path) {
+export async function apiGet(path, { signal } = {}) {
   const clientRequestId = buildClientRequestId();
   try {
-    const response = await fetch(buildUrl(path));
+    const response = await fetch(buildUrl(path), { signal });
     return parseEnvelope(response, clientRequestId);
   } catch (error) {
     throw normalizeRequestError(error, clientRequestId);
   }
 }
 
-export async function apiPost(path, body = {}) {
+export async function apiPost(path, body = {}, { signal } = {}) {
   const clientRequestId = buildClientRequestId();
   const { key, signature } = acquireIdempotencyKey("POST", path, body);
   try {
@@ -226,6 +235,7 @@ export async function apiPost(path, body = {}) {
         "X-Client-Request-Id": clientRequestId,
       },
       body: JSON.stringify(body),
+      signal,
     });
     const data = await parseEnvelope(response, clientRequestId);
     releaseIdempotencyKey(signature);
@@ -238,6 +248,14 @@ export async function apiPost(path, body = {}) {
     }
     throw normalized;
   }
+}
+
+export function cancelRunJob(jobId, options) {
+  return apiPost(`/api/v1/run-jobs/${encodeURIComponent(jobId)}/cancel`, {}, options);
+}
+
+export function getLatestSceneRunJob(sceneId, options) {
+  return apiGet(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs/latest`, options);
 }
 
 export async function apiPatch(path, body = {}) {

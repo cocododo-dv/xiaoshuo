@@ -462,10 +462,12 @@ git commit -m "feat(scene-run): add explicit cancellable jobs"
 - Modify: `frontend-react/src/ws-scene-run.jsx`
 - Modify: `frontend-react/src/ws-scene-run.test.jsx`
 
-- [ ] API client 增 `cancelRunJob(jobId)` 与 `getLatestSceneRunJob(sceneId)`，复用幂等 key 规则。
-- [ ] running/queued/cancel_requested 显示可访问的状态与取消按钮；点击后禁用重复提交并继续轮询到 terminal cancelled。
-- [ ] completed/failed/blocked 不显示可执行取消按钮；409 显示明确不可取消原因。
-- [ ] React 测试覆盖请求、状态切换、重复点击；刷新/重新进入时从 latest-job 权威 API 恢复 cancel_requested/cancelled job，不依赖函数局部 `job_id` 或 localStorage。
+阶段验收记录（Task 8）：计划原列的 `ws-scene-run.jsx` 仅是运行工具，真实 React 页面与 scene 生命周期位于 `ws-scene.jsx`，因此最小扩展该第 4 个生产文件完成实际挂载，未修改 CSS/lockfile/后端。API client 增加 latest/cancel 并复用幂等 key 与错误契约；`SceneRunJobControl` 以 latest DB API 为唯一持续真相，POST 创建回包仅作一次 seed，queued/running/cancel_requested 与四类 terminal 状态可访问展示。取消 mutation 使用 version+job id 防止迟到 A 覆盖新 B，GET/POST 真实透传 AbortSignal；scene 切换/卸载清 timer 与 pending fetch，旧 scene 响应被 epoch 丢弃。终态 hydrate 会修复 stale running，但保留 cached ready/archived 有效成果；authoritative job 同时 overlay 主舞台、队列行与统计，刷新/空缓存可从后端首场和 latest 恢复，不依赖 localStorage。409 显示稳定 reason/details 并刷新权威状态，网络重试复用同一幂等 key。专项 45 passed，React 全量 14 files/122 tests，production build 通过；规格与并发审查最终均 `APPROVED`，无 P0/P1/P2。canonical actual 指纹未变。
+
+- [x] API client 增 `cancelRunJob(jobId)` 与 `getLatestSceneRunJob(sceneId)`，复用幂等 key 规则。
+- [x] running/queued/cancel_requested 显示可访问的状态与取消按钮；点击后禁用重复提交并继续轮询到 terminal cancelled。
+- [x] completed/failed/blocked 不显示可执行取消按钮；409 显示明确不可取消原因。
+- [x] React 测试覆盖请求、状态切换、重复点击；刷新/重新进入时从 latest-job 权威 API 恢复 cancel_requested/cancelled job，不依赖函数局部 `job_id` 或 localStorage。
 
 Run:
 
