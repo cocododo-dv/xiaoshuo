@@ -35,6 +35,7 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import NEAR_FINAL_REWRITE_TYPE, NEAR_FINAL_RUBRIC_ID
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.projects import ProjectService
+from novel_system.services.reference_safety import ReferenceSafetyService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService, SceneTriageService
 from novel_system.services.scene_quality import SceneAutoRewriteService, SceneQualityService
@@ -45,7 +46,7 @@ from novel_system.services.scene_run_jobs import (
     start_scene_run_job_worker,
 )
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
-from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
+from novel_system.services.source_safety import source_profile_ids_from_snapshot
 from novel_system.services.style_profile import StyleScoreService
 from novel_system.services.text_validation import validate_user_text_payload
 from novel_system.services.writer_review import WriterReviewService, normalize_scene_writer_brief
@@ -1335,7 +1336,7 @@ def adopt_current_scene(
         # 2) 确定性来源安全守卫（Q0 红线；Q0–Q3 分级阻断策略随 Wave 2 落地）
         target_content = final.content if final is not None else (content or "")
         bundle = session.get(SceneBundle, state.current_bundle_id) if state.current_bundle_id else None
-        scan = scan_source_safety(
+        scan = ReferenceSafetyService(session).scan_runtime_text(
             target_content,
             source_profile_ids=source_profile_ids_from_snapshot(
                 bundle.frozen_snapshot_json if bundle else None
@@ -1430,7 +1431,7 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     neutral = session.get(SceneDraft, state.current_neutral_draft_row_id) if state.current_neutral_draft_row_id else None
     style = session.get(SceneDraft, state.current_style_draft_row_id) if state.current_style_draft_row_id else None
     final = session.get(FinalScene, state.current_final_scene_row_id) if state.current_final_scene_row_id else None
-    source_safety_scan = scan_source_safety(
+    source_safety_scan = ReferenceSafetyService(session).scan_runtime_text(
         final.content if final else "",
         source_profile_ids=source_profile_ids_from_snapshot(bundle.frozen_snapshot_json if bundle else None),
     )

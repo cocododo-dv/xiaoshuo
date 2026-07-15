@@ -52,3 +52,12 @@ test("诊断规模按计划场景数收缩候选选择门槛", () => {
   assert.match(body, /"selection-resume": requiredCandidateSelections/);
   assert.doesNotMatch(body, /candidateSelections < 3/);
 });
+
+test("发布 QA 优先连接 React 主前端而非 legacy Vue", () => {
+  const source = fs.readFileSync(harnessPath, "utf8");
+  const start = source.indexOf("function resolveFrontendUrl(");
+  const end = source.indexOf("function resolveApiBase(", start);
+  const body = source.slice(start, end);
+  assert.ok(body.indexOf('readRunFile("frontend-react.url")') < body.indexOf('readRunFile("frontend.url")'));
+  assert.match(body, /PLAYWRIGHT_FRONTEND_PORT \|\| "5174"/);
+});

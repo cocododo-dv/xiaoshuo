@@ -115,6 +115,8 @@ const DECISION_LABEL = {
   keep_optional: "未证增益 · 保持可选",
   disable: "显著更差 · 建议关闭",
   need_more_samples: "样本不足",
+  not_eligible_for_policy: "证据不合格 · 不得调整默认",
+  replication_required: "需新一批真人复验",
 };
 
 function WsEval() {
@@ -173,6 +175,9 @@ function WsEval() {
             <li>token 倍率：{st.report.token_cost ? st.report.token_cost.token_multiplier : "—"}</li>
             <li>互异快照：{st.report.distinct_snapshot_count}
               （伪重复守卫 {st.report.pseudo_replication_ok ? "OK" : "⚠"}）</li>
+            <li>证据：{st.report.evidence_provenance || "未知"}
+              （冻结清单 {st.report.frozen_manifest_verified ? "已核验" : "未核验"}，
+              策略门 {st.report.policy_evidence_eligible ? "可用" : "拒绝"}）</li>
             <li><b>决定：{DECISION_LABEL[st.report.decision] || st.report.decision}</b>
               {st.report.requires_fresh_replication ? "（消融升级前须再取一批 30 组复验）" : ""}</li>
           </ul>

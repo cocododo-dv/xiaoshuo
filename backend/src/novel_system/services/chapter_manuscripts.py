@@ -16,7 +16,8 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
-from novel_system.services.source_safety import scan_source_safety, source_profile_ids_from_snapshot
+from novel_system.services.reference_safety import ReferenceSafetyService
+from novel_system.services.source_safety import source_profile_ids_from_snapshot
 from novel_system.services.writer_review import WriterReviewService
 
 
@@ -39,7 +40,7 @@ class ChapterManuscriptService:
         scene_entries = [self._scene_entry(scene, scene_states.get(scene.scene_id)) for scene in scenes]
         assembled = self._assembled_payload(scene_entries)
         aggregate = self._aggregate_payload(self._resolve_final_aggregate(chapter_id, chapter_state))
-        source_safety_scan = scan_source_safety(
+        source_safety_scan = ReferenceSafetyService(self.session).scan_runtime_text(
             [assembled["content"], aggregate["content"] if aggregate else ""],
             source_profile_ids=self._source_profile_ids_for_entries(scene_entries),
         )

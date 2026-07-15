@@ -40,8 +40,22 @@ def _clean_report(tokens_early=5000, tokens_late=5000):
         chapters.append(_chapter(i, tokens=tok))
     return {
         "chapters": chapters,
+        "evidence": {"provenance": "real_model", "run_id": "run-30-v1", "manifest_hash": "sha256:test"},
         "latency_p95_ms": {"catalog": 800, "scene_state": 900, "chapter_manuscript": 1500},
-        "db_size_samples": [{"after_chapter": 5, "bytes": 10 ** 6}],
+        "restart_checks": [
+            {"after_chapter": point, "verified": True, "state_hash_match": True}
+            for point in (5, 10, 20, 30)
+        ],
+        "db_size_samples": [
+            {"after_chapter": point, "bytes": point * 10 ** 6}
+            for point in (5, 10, 15, 20, 25, 30)
+        ],
+        "foreign_key_audit": {
+            "decision": "defer_with_rationale",
+            "pragma_foreign_keys": 0,
+            "orphan_count": 0,
+            "rationale": "先完成真实耐久采样，再单独启用 FK 并跑全量回归。",
+        },
     }
 
 
@@ -123,3 +137,30 @@ def test_stratify_by_model_no_cross_mixing():
     assert by_model["gpt-5-mini"]["high_cross_chapter_repetition"] == 0
     assert by_model["gpt-5"]["high_cross_chapter_repetition"] == 1
     assert by_model["gpt-5"]["high_voice_drift_unresolved"] == 0
+
+
+def test_synthetic_report_cannot_pass_real_endurance_gate():
+    report = _clean_report()
+    report["evidence"]["provenance"] = "synthetic"
+    verdict = em.evaluate_endurance(report)
+    assert verdict["passed"] is False
+    assert "EVIDENCE_PROVENANCE_NOT_REAL_MODEL" in verdict["failures"]
+
+
+def test_missing_latency_restart_db_samples_and_fk_decision_fail_closed():
+    report = _clean_report()
+    report["latency_p95_ms"].pop("catalog")
+    report["restart_checks"] = []
+    report["db_size_samples"] = []
+    report["foreign_key_audit"] = {}
+    failures = em.evaluate_endurance(report)["failures"]
+    assert "P95_SAMPLE_MISSING: catalog" in failures
+    assert any(item.startswith("RESTART_CHECKS_MISSING") for item in failures)
+    assert any(item.startswith("DB_SIZE_SAMPLES_MISSING") for item in failures)
+    assert "FK_DECISION_MISSING" in failures
+
+
+def test_duplicate_or_missing_chapter_indexes_fail():
+    report = _clean_report()
+    report["chapters"][-1]["chapter_index"] = 29
+    assert "CHAPTER_INDEX_SET_INVALID" in em.evaluate_endurance(report)["failures"]

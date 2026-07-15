@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from novel_system.db.models import ChapterMemory, ChapterState, FinalScene, RevisionCandidate, SceneRunState, WriterEvaluation
+from novel_system.db.models import (
+    ChapterMemory,
+    ChapterState,
+    FinalScene,
+    RevisionCandidate,
+    SceneBundle,
+    SceneRunState,
+    StyleReferenceBook,
+    StyleReferenceProfile,
+    WriterEvaluation,
+)
 
 
 def _create_chapter(client, chapter_id: str, *, goal: str = "Draft a chapter") -> None:
@@ -172,6 +182,58 @@ def test_chapter_manuscript_detail_scans_current_manuscript_for_protected_source
     assert scan["blocked_terms"] == ["龙族", "楚子航"]
     assert scan["source_profile_ids"] == []
     assert scan["checked_at"]
+
+
+def test_chapter_manuscript_scans_dynamic_terms_from_scene_reference_profile(client, session) -> None:
+    _create_chapter(client, "CHM251", goal="Scan dynamic reference terms")
+    _create_scene(client, "CHM251_SC01", chapter_id="CHM251", scene_seq=1, is_chapter_last=1)
+    row_id = _finalize_scene(session, "CHM251_SC01", "CHM251", "Professor Meridian opened the archive.")
+    session.add(
+        StyleReferenceBook(
+            book_id="refbook_dynamic_chapter",
+            title="Public source",
+            source_kind="path",
+            cloud_policy="local_only",
+            text_checksum="dynamic-chapter-checksum",
+        )
+    )
+    session.add(
+        StyleReferenceProfile(
+            profile_id="refprofile_dynamic_chapter",
+            book_id="refbook_dynamic_chapter",
+            run_id="run_dynamic_chapter",
+            title="Dynamic safety",
+            status="active",
+            profile_json={
+                "source_safety": {
+                    "ready": True,
+                    "profile_id": "refprofile_dynamic_chapter",
+                    "protected_terms": ["Professor Meridian"],
+                    "distinctive_phrases": [],
+                    "scene_bridges": [],
+                }
+            },
+        )
+    )
+    bundle = SceneBundle(
+        bundle_id="bundle_CHM251_SC01",
+        scene_id="CHM251_SC01",
+        chapter_id="CHM251",
+        bundle_snapshot_hash="hash_CHM251_SC01",
+        frozen_snapshot_json={
+            "source_version_refs": {"reference_profile_ids": ["refprofile_dynamic_chapter"]},
+        },
+    )
+    session.get(FinalScene, row_id).source_bundle_id = bundle.bundle_id
+    session.get(FinalScene, row_id).source_bundle_hash = bundle.bundle_snapshot_hash
+    session.add(bundle)
+    session.commit()
+
+    scan = client.get("/api/v1/chapter-manuscripts/CHM251").json()["data"]["source_safety_scan"]
+
+    assert scan["safe"] is False
+    assert scan["source_profile_ids"] == ["refprofile_dynamic_chapter"]
+    assert any(risk["risk_type"] == "exact_term" for risk in scan["risks"])
 
 
 def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(client, session) -> None:

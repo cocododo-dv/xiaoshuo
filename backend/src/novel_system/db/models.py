@@ -1985,6 +1985,11 @@ class EvaluationExperiment(Base):
     # §6.2 项目隔离：实验快照须与作者近期生产终选场隔离（另建种子项目或时间隔离）。
     isolation_mode: Mapped[str | None] = mapped_column(String, nullable=True)
     snapshot_source_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    # synthetic 默认拒绝进入生产策略门；只有显式声明 human 且冻结题包完整时，
+    # 报告才允许给出可执行的默认策略决定。
+    evidence_provenance: Mapped[str] = mapped_column(String, default="synthetic")
+    frozen_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    frozen_pair_manifest_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 

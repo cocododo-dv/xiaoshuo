@@ -30,6 +30,7 @@ from novel_system.services.resolver import Resolver
 from novel_system.services.character_continuity import CHARACTER_CONTRACT_VERSION, build_character_contract_digest
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
+from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief, writer_brief_has_content
 
 
@@ -95,6 +96,23 @@ class BundleBuilder:
             "chapter_goal": chapter.chapter_id,
             "scene_card": scene.scene_id,
         }
+        reference_layers = InjectionService(self.session).resolve_binding_layers(
+            scene.project_id,
+            "scene_generation",
+            character_ids=list(
+                dict.fromkeys(
+                    value
+                    for value in [scene.pov_character_id, *(scene.onstage_chars_json or [])]
+                    if value
+                )
+            ),
+            scene_id=scene.scene_id,
+        )
+        reference_profile_ids = list(dict.fromkeys(layer.profile_id for layer in reference_layers))
+        if reference_profile_ids:
+            # 来源画像必须进入冻结 bundle 的版本引用：归档/回放时据此加载动态
+            # protected_terms / scene_bridges，不能只在 prompt 注入侧短暂可见。
+            source_version_refs["reference_profile_ids"] = reference_profile_ids
         ordered_injections = [
             {"slot": "chapter_goal", "ref_id": chapter.chapter_id, "digest_key": "chapter_goal"},
             {"slot": "scene_card", "ref_id": scene.scene_id, "digest_key": "scene_card"},

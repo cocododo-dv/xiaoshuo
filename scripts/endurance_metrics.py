@@ -37,6 +37,8 @@ from typing import Any
 TOKENS_RATIO_CAP = 1.5
 P95_CAP_MS = 2000
 READ_ENDPOINTS = ("catalog", "scene_state", "chapter_manuscript")
+RESTART_CHECKPOINTS = (5, 10, 20, 30)
+DB_SAMPLE_CHECKPOINTS = (5, 10, 15, 20, 25, 30)
 
 
 def _archived_scene_tokens(chapters: list[dict[str, Any]]) -> tuple[int, int]:
@@ -109,11 +111,33 @@ def evaluate_endurance(report: dict[str, Any], *, total_chapters: int = 30) -> d
     chapters = list(report.get("chapters") or [])
     failures: list[str] = []
 
+    # 0) 真实运行 provenance。合成 30 章只能测判定器，不能冒充发布证据。
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    if evidence.get("provenance") != "real_model":
+        failures.append("EVIDENCE_PROVENANCE_NOT_REAL_MODEL")
+    if not str(evidence.get("run_id") or "").strip() or not str(evidence.get("manifest_hash") or "").strip():
+        failures.append("RUN_MANIFEST_MISSING")
+
     # 1) 全 N 章归档
     archived = [c for c in chapters if c.get("archived")]
+    chapter_indexes = [int(c.get("chapter_index", 0)) for c in chapters]
+    expected_indexes = list(range(1, total_chapters + 1))
+    if sorted(chapter_indexes) != expected_indexes:
+        failures.append("CHAPTER_INDEX_SET_INVALID")
     if len(chapters) < total_chapters or len(archived) < total_chapters:
         failures.append(
             f"CHAPTER_COVERAGE_SHORTFALL: archived {len(archived)}/{total_chapters}"
+        )
+    unarchived_scenes = sum(
+        1
+        for chapter in chapters
+        for scene in (chapter.get("scenes") or [])
+        if not scene.get("archived")
+    )
+    empty_chapters = sum(1 for chapter in chapters if not (chapter.get("scenes") or []))
+    if unarchived_scenes or empty_chapters:
+        failures.append(
+            f"SCENE_ARCHIVE_INCOMPLETE: unarchived={unarchived_scenes}, empty_chapters={empty_chapters}"
         )
 
     # 2) Q0/Q1 与来源泄漏 0
@@ -150,18 +174,63 @@ def evaluate_endurance(report: dict[str, Any], *, total_chapters: int = 30) -> d
     p95 = report.get("latency_p95_ms") or {}
     for ep in READ_ENDPOINTS:
         val = p95.get(ep)
-        if val is not None and float(val) >= P95_CAP_MS:
+        if val is None:
+            failures.append(f"P95_SAMPLE_MISSING: {ep}")
+        elif float(val) >= P95_CAP_MS:
             failures.append(f"P95_TOO_SLOW: {ep}={val}ms >= {P95_CAP_MS}ms")
+
+    # 6) 固定恢复采样点必须真实重启并核验恢复哈希。
+    restart_rows = report.get("restart_checks") if isinstance(report.get("restart_checks"), list) else []
+    verified_restarts = {
+        int(row.get("after_chapter", 0))
+        for row in restart_rows
+        if isinstance(row, dict) and row.get("verified") is True and row.get("state_hash_match") is True
+    }
+    required_restarts = {point for point in RESTART_CHECKPOINTS if point <= total_chapters}
+    missing_restarts = sorted(required_restarts - verified_restarts)
+    if missing_restarts:
+        failures.append(f"RESTART_CHECKS_MISSING: {missing_restarts}")
+
+    # 7) 每五章数据库大小样本，供增长率与容量决策复算。
+    db_samples = report.get("db_size_samples") if isinstance(report.get("db_size_samples"), list) else []
+    sampled_points = {
+        int(row.get("after_chapter", 0))
+        for row in db_samples
+        if isinstance(row, dict) and isinstance(row.get("bytes"), int) and row.get("bytes") >= 0
+    }
+    required_db_samples = {point for point in DB_SAMPLE_CHECKPOINTS if point <= total_chapters}
+    missing_db_samples = sorted(required_db_samples - sampled_points)
+    if missing_db_samples:
+        failures.append(f"DB_SIZE_SAMPLES_MISSING: {missing_db_samples}")
+
+    # 8) FK 不能无限悬置：要么已启用并证明零孤儿，要么给出审计后的明确延期理由。
+    fk_audit = report.get("foreign_key_audit") if isinstance(report.get("foreign_key_audit"), dict) else {}
+    fk_decision = str(fk_audit.get("decision") or "")
+    orphan_count = fk_audit.get("orphan_count")
+    if orphan_count != 0:
+        failures.append("FK_ORPHAN_AUDIT_NOT_CLEAN")
+    if fk_decision == "enable":
+        if fk_audit.get("pragma_foreign_keys") != 1:
+            failures.append("FK_ENABLE_DECISION_NOT_APPLIED")
+    elif fk_decision == "defer_with_rationale":
+        if not str(fk_audit.get("rationale") or "").strip():
+            failures.append("FK_DEFERRAL_RATIONALE_MISSING")
+    else:
+        failures.append("FK_DECISION_MISSING")
 
     return {
         "passed": not failures,
         "failures": failures,
         "total_chapters_expected": total_chapters,
         "chapters_archived": len(archived),
+        "evidence_provenance": evidence.get("provenance"),
+        "run_id": evidence.get("run_id"),
         "tokens_ratio_21_30_vs_1_10": ratio,
         "buckets": bucket_by_five(chapters),
         "by_model": stratify_by_model(chapters),
-        "db_size_samples": report.get("db_size_samples") or [],
+        "restart_checks": restart_rows,
+        "db_size_samples": db_samples,
+        "foreign_key_audit": fk_audit,
     }
 
 

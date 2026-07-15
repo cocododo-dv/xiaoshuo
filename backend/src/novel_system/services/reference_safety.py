@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import select
@@ -80,6 +81,33 @@ class ReferenceSafetyService:
         source_profile_ids: list[str] | None = None,
         object_ref: str | None = None,
     ) -> dict[str, Any]:
+        result, profile_count = self._scan_with_profiles(
+            text,
+            source_profile_ids=source_profile_ids,
+        )
+        result["object_ref"] = object_ref
+        result["profile_count"] = profile_count
+        return result
+
+    def scan_runtime_text(
+        self,
+        texts: str | Iterable[str | None],
+        *,
+        source_profile_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """按运行时 bundle 的画像来源执行动态扫描，保持既有 scan payload 形状。"""
+        result, _ = self._scan_with_profiles(
+            texts,
+            source_profile_ids=source_profile_ids,
+        )
+        return result
+
+    def _scan_with_profiles(
+        self,
+        texts: str | Iterable[str | None],
+        *,
+        source_profile_ids: list[str] | None,
+    ) -> tuple[dict[str, Any], int]:
         profile_ids = [item for item in (source_profile_ids or []) if isinstance(item, str) and item.strip()]
         profiles = []
         if profile_ids:
@@ -94,13 +122,11 @@ class ReferenceSafetyService:
             if isinstance(source_safety, dict):
                 safety_profiles.append(source_safety)
         result = scan_source_safety(
-            text or "",
+            texts,
             source_profile_ids=profile_ids,
             reference_safety_profiles=safety_profiles,
         )
-        result["object_ref"] = object_ref
-        result["profile_count"] = len(safety_profiles)
-        return result
+        return result, len(safety_profiles)
 
     def _latest_profile(self, book_id: str) -> StyleReferenceProfile | None:
         return self.session.execute(

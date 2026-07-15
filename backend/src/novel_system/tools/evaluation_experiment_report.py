@@ -28,12 +28,20 @@ from novel_system.services.best_of_n_blind_eval import (
 )
 
 
-def report_from_pairs(pairs: list[dict[str, Any]], *, is_ablation: bool = True) -> dict[str, Any]:
+def report_from_pairs(
+    pairs: list[dict[str, Any]],
+    *,
+    is_ablation: bool = True,
+    evidence_provenance: str = "synthetic",
+    frozen_manifest_verified: bool = False,
+    isolation_verified: bool = False,
+) -> dict[str, Any]:
     """纯函数：从冻结对+投票折叠出可复算报告（不碰 DB）。"""
     result = BlindEvalResult()
     token_treatment = token_control = 0.0
     snapshot_hashes: set[str] = set()
     durations: list[int] = []
+    anonymous_vote_count = 0
     for pair in pairs:
         h = pair.get("scene_snapshot_hash")
         if h is not None:
@@ -49,6 +57,8 @@ def report_from_pairs(pairs: list[dict[str, Any]], *, is_ablation: bool = True) 
             result.unvoted += 1
             continue
         dur = pair.get("duration_ms")
+        if not str(pair.get("reviewer_ref") or "").strip():
+            anonymous_vote_count += 1
         if isinstance(dur, int):
             durations.append(dur)
         vote = str(vote).strip().lower()
@@ -66,10 +76,31 @@ def report_from_pairs(pairs: list[dict[str, Any]], *, is_ablation: bool = True) 
     decision = default_strategy_decision(result, is_ablation=is_ablation)
     total = len(pairs)
     token_multiplier = (token_treatment / token_control) if token_control else None
+    pseudo_replication_ok = (len(snapshot_hashes) == total) if snapshot_hashes else False
+    eligibility_reasons: list[str] = []
+    if evidence_provenance != "human":
+        eligibility_reasons.append("evidence_provenance_not_human")
+    if not frozen_manifest_verified:
+        eligibility_reasons.append("frozen_manifest_not_verified")
+    if not isolation_verified:
+        eligibility_reasons.append("evaluation_isolation_not_verified")
+    if not pseudo_replication_ok:
+        eligibility_reasons.append("snapshot_pseudo_replication_detected")
+    if decision.non_tie_n < 30:
+        eligibility_reasons.append("fewer_than_30_non_tie_votes")
+    if anonymous_vote_count:
+        eligibility_reasons.append("anonymous_vote_provenance_present")
+    policy_evidence_eligible = not eligibility_reasons
+    if not policy_evidence_eligible:
+        policy_decision = "not_eligible_for_policy"
+    elif decision.decision == "upgrade_to_default" and decision.requires_fresh_replication:
+        policy_decision = "replication_required"
+    else:
+        policy_decision = decision.decision
     return {
         "total_pairs": total,
         "distinct_snapshot_count": len(snapshot_hashes),
-        "pseudo_replication_ok": (len(snapshot_hashes) == total) if snapshot_hashes else None,
+        "pseudo_replication_ok": pseudo_replication_ok,
         "treatment_wins": result.treatment_wins,
         "control_wins": result.control_wins,
         "ties": result.ties,
@@ -80,9 +111,20 @@ def report_from_pairs(pairs: list[dict[str, Any]], *, is_ablation: bool = True) 
         "p_value": decision.p_value,
         "min_wins_threshold": decision.min_wins,
         "significant": decision.significant,
-        "decision": decision.decision,
+        "statistical_decision": decision.decision,
+        "evidence_provenance": evidence_provenance,
+        "frozen_manifest_verified": frozen_manifest_verified,
+        "isolation_verified": isolation_verified,
+        "policy_evidence_eligible": policy_evidence_eligible,
+        "policy_eligibility_reasons": eligibility_reasons,
+        "decision": policy_decision,
         "requires_fresh_replication": decision.requires_fresh_replication,
-        "rationale": decision.rationale,
+        "statistical_rationale": decision.rationale,
+        "rationale": (
+            decision.rationale
+            if policy_evidence_eligible
+            else "统计结果仅供诊断，不能调整生产默认：" + ", ".join(eligibility_reasons)
+        ),
         "token_multiplier": round(token_multiplier, 4) if token_multiplier is not None else None,
         "avg_vote_duration_ms": round(sum(durations) / len(durations), 1) if durations else None,
     }
@@ -122,7 +164,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.from_json:
         with open(args.from_json, encoding="utf-8") as fh:
             payload = json.load(fh)
-        report = report_from_pairs(payload.get("pairs") or [])
+        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        report = report_from_pairs(
+            payload.get("pairs") or [],
+            evidence_provenance=str(evidence.get("provenance") or "synthetic"),
+            frozen_manifest_verified=evidence.get("frozen_manifest_verified") is True,
+            isolation_verified=evidence.get("isolation_verified") is True,
+            is_ablation=evidence.get("is_ablation", True) is True,
+        )
     else:
         from novel_system.db.session import SessionLocal
         from novel_system.services.evaluation_experiment import EvaluationExperimentService

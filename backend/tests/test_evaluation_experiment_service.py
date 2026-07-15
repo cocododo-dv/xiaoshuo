@@ -11,9 +11,9 @@ def _svc(session):
     return EvaluationExperimentService(session)
 
 
-def _seed_30_pairs(svc, exp_id, *, treatment_pref: bool = True, wins: int = 21, ties: int = 0):
+def _seed_30_pairs(svc, exp_id, *, wins: int = 21, ties: int = 0, freeze: bool = False):
     """建 30 对（30 个互异快照），模拟：wins 对选 treatment、其余选 control、ties 对平局。"""
-    left_control = 0
+    votes = []
     for i in range(30):
         pair = svc.add_pair(
             exp_id, scene_snapshot_hash=f"snap_{i:03d}",
@@ -26,7 +26,11 @@ def _seed_30_pairs(svc, exp_id, *, treatment_pref: bool = True, wins: int = 21, 
             choice = slot                                 # 选中 treatment
         else:
             choice = "right" if slot == "left" else "left"  # 选中 control
-        svc.record_vote(pair.pair_id, choice=choice, reviewer_ref="u1", duration_ms=1000)
+        votes.append((pair.pair_id, choice))
+    if freeze:
+        svc.freeze_experiment(exp_id)
+    for pair_id, choice in votes:
+        svc.record_vote(pair_id, choice=choice, reviewer_ref="u1", duration_ms=1000)
 
 
 def test_create_experiment_persists(session) -> None:
@@ -40,6 +44,7 @@ def test_create_experiment_persists(session) -> None:
     assert exp.experiment_id
     assert exp.treatment_policy_json["best_of_n"] is True
     assert exp.isolation_mode == "seed_project"
+    assert exp.evidence_provenance == "synthetic"
 
 
 def test_add_pair_blinds_and_records_hidden_key(session) -> None:
@@ -130,7 +135,7 @@ def test_record_vote_rejects_changed_choice(session) -> None:
     assert ei.value.code == "VOTE_ALREADY_RECORDED"
 
 
-def test_report_upgrade_on_21_of_30(session) -> None:
+def test_synthetic_report_cannot_upgrade_policy_on_21_of_30(session) -> None:
     svc = _svc(session)
     exp = svc.create_experiment(name="BoN", treatment_policy={"best_of_n": True})
     _seed_30_pairs(svc, exp.experiment_id, wins=21, ties=0)
@@ -140,7 +145,9 @@ def test_report_upgrade_on_21_of_30(session) -> None:
     assert report["treatment_wins"] == 21
     assert report["preference_rate"] == pytest.approx(0.70, abs=1e-2)
     assert report["p_value"] < 0.05
-    assert report["decision"] == "upgrade_to_default"
+    assert report["statistical_decision"] == "upgrade_to_default"
+    assert report["decision"] == "not_eligible_for_policy"
+    assert report["policy_evidence_eligible"] is False
     assert report["distinct_snapshot_count"] == 30       # 30 组来自 30 个互异快照
     assert report["pseudo_replication_ok"] is True
 
@@ -151,7 +158,8 @@ def test_report_keep_optional_on_20_of_30(session) -> None:
     _seed_30_pairs(svc, exp.experiment_id, wins=20, ties=0)
     session.commit()
     report = svc.build_report(exp.experiment_id)
-    assert report["decision"] == "keep_optional"
+    assert report["statistical_decision"] == "keep_optional"
+    assert report["decision"] == "not_eligible_for_policy"
 
 
 def test_report_ties_recorded_not_in_denominator(session) -> None:
@@ -163,6 +171,69 @@ def test_report_ties_recorded_not_in_denominator(session) -> None:
     report = svc.build_report(exp.experiment_id)
     assert report["ties"] == 5
     assert report["non_tie_n"] == 25
+
+
+def test_human_frozen_report_is_eligible_for_policy(session) -> None:
+    svc = _svc(session)
+    exp = svc.create_experiment(
+        name="BoN 真人盲评",
+        treatment_policy={"best_of_n": True},
+        control_policy={"best_of_n": False},
+        evidence_provenance="human",
+        isolation_mode="seed_project",
+        snapshot_source_ref="project:blind-eval-seed-v1",
+    )
+    _seed_30_pairs(svc, exp.experiment_id, wins=21, freeze=True)
+    session.commit()
+
+    report = svc.build_report(exp.experiment_id)
+
+    assert report["frozen_manifest_verified"] is True
+    assert report["policy_evidence_eligible"] is True
+    assert report["decision"] == "upgrade_to_default"
+
+
+def test_human_vote_requires_frozen_pool_and_reviewer(session) -> None:
+    svc = _svc(session)
+    exp = svc.create_experiment(
+        name="human",
+        evidence_provenance="human",
+        isolation_mode="seed_project",
+        snapshot_source_ref="project:seed",
+    )
+    first = None
+    for i in range(30):
+        pair = svc.add_pair(
+            exp.experiment_id,
+            scene_snapshot_hash=f"human_{i}",
+            treatment_text=f"T{i}",
+            control_text=f"C{i}",
+        )
+        first = first or pair
+    with pytest.raises(DomainError) as before_freeze:
+        svc.record_vote(first.pair_id, choice="left", reviewer_ref="u1")
+    assert before_freeze.value.code == "HUMAN_EVIDENCE_NOT_FROZEN"
+
+    svc.freeze_experiment(exp.experiment_id)
+    with pytest.raises(DomainError) as missing_reviewer:
+        svc.record_vote(first.pair_id, choice="left")
+    assert missing_reviewer.value.code == "HUMAN_REVIEWER_REQUIRED"
+
+
+def test_freeze_rejects_small_pool_and_blocks_later_pairs(session) -> None:
+    svc = _svc(session)
+    exp = svc.create_experiment(name="small")
+    svc.add_pair(exp.experiment_id, scene_snapshot_hash="one", treatment_text="T", control_text="C")
+    with pytest.raises(DomainError) as too_small:
+        svc.freeze_experiment(exp.experiment_id)
+    assert too_small.value.code == "EVALUATION_POOL_TOO_SMALL"
+
+    for i in range(1, 30):
+        svc.add_pair(exp.experiment_id, scene_snapshot_hash=f"snap_{i}", treatment_text=f"T{i}", control_text=f"C{i}")
+    svc.freeze_experiment(exp.experiment_id)
+    with pytest.raises(DomainError) as frozen:
+        svc.add_pair(exp.experiment_id, scene_snapshot_hash="late", treatment_text="T", control_text="C")
+    assert frozen.value.code == "EXPERIMENT_FROZEN"
 
 
 # ===========================================================================
@@ -188,7 +259,8 @@ def test_tool_report_from_pairs_reproducible() -> None:
     assert r1 == r2                                   # 同输入同输出（可复算）
     assert r1["treatment_wins"] == 21
     assert r1["non_tie_n"] == 30
-    assert r1["decision"] == "upgrade_to_default"
+    assert r1["statistical_decision"] == "upgrade_to_default"
+    assert r1["decision"] == "not_eligible_for_policy"
     assert r1["p_value"] < 0.05
     assert r1["token_multiplier"] == 5.0
     assert r1["distinct_snapshot_count"] == 30

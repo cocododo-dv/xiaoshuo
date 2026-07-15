@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import random
 import uuid
 from typing import Any
@@ -25,6 +27,7 @@ from novel_system.db.models import (
     EvaluationExperiment,
     EvaluationPair,
     EvaluationVote,
+    utcnow,
 )
 from novel_system.services.best_of_n_blind_eval import (
     BlindEvalResult,
@@ -33,6 +36,8 @@ from novel_system.services.best_of_n_blind_eval import (
 from novel_system.services.errors import DomainError
 
 _VALID_CHOICES = ("left", "right", "tie")
+_VALID_PROVENANCE = ("synthetic", "human")
+_VALID_ISOLATION_MODES = ("seed_project", "time_isolated")
 
 
 class EvaluationExperimentService:
@@ -52,8 +57,16 @@ class EvaluationExperimentService:
         control_policy: dict[str, Any] | None = None,
         isolation_mode: str | None = None,
         snapshot_source_ref: str | None = None,
+        evidence_provenance: str = "synthetic",
         experiment_id: str | None = None,
     ) -> EvaluationExperiment:
+        evidence_provenance = str(evidence_provenance or "synthetic").strip().lower()
+        if evidence_provenance not in _VALID_PROVENANCE:
+            raise DomainError(
+                "INVALID_EVIDENCE_PROVENANCE",
+                f"evidence_provenance must be one of {_VALID_PROVENANCE}",
+                status_code=422,
+            )
         exp = EvaluationExperiment(
             experiment_id=experiment_id or f"exp_{uuid.uuid4().hex[:16]}",
             name=name,
@@ -62,6 +75,7 @@ class EvaluationExperimentService:
             control_policy_json=control_policy or {},
             isolation_mode=isolation_mode,
             snapshot_source_ref=snapshot_source_ref,
+            evidence_provenance=evidence_provenance,
             status="collecting",
         )
         self.session.add(exp)
@@ -81,8 +95,15 @@ class EvaluationExperimentService:
         seed: int | None = None,
         pair_id: str | None = None,
     ) -> EvaluationPair:
-        if self.session.get(EvaluationExperiment, experiment_id) is None:
+        experiment = self.session.get(EvaluationExperiment, experiment_id)
+        if experiment is None:
             raise DomainError("EXPERIMENT_NOT_FOUND", f"experiment {experiment_id} not found", status_code=404)
+        if experiment.status != "collecting":
+            raise DomainError(
+                "EXPERIMENT_FROZEN",
+                "frozen evaluation experiments cannot accept new pairs",
+                status_code=409,
+            )
         # §6.2：每快照至多一对，防伪重复。
         existing = self.session.execute(
             select(EvaluationPair.pair_id).where(
@@ -122,17 +143,64 @@ class EvaluationExperimentService:
         self.session.flush()
         return pair
 
+    def freeze_experiment(self, experiment_id: str) -> EvaluationExperiment:
+        """冻结盲评题包并封存完整性哈希；冻结后禁止再增删对比对。"""
+        experiment = self.session.get(EvaluationExperiment, experiment_id)
+        if experiment is None:
+            raise DomainError("EXPERIMENT_NOT_FOUND", f"experiment {experiment_id} not found", status_code=404)
+        pairs = self._experiment_pairs(experiment_id)
+        if experiment.status == "frozen":
+            current_hash = self._pair_manifest_hash(pairs)
+            if current_hash != experiment.frozen_pair_manifest_hash:
+                raise DomainError(
+                    "EXPERIMENT_MANIFEST_TAMPERED",
+                    "the frozen evaluation pair manifest no longer matches",
+                    status_code=409,
+                )
+            return experiment
+        if experiment.status != "collecting":
+            raise DomainError("EXPERIMENT_NOT_COLLECTING", "experiment cannot be frozen from its current status", 409)
+        contrast_count = sum(1 for pair in pairs if not pair.no_contrast)
+        if contrast_count < 30:
+            raise DomainError(
+                "EVALUATION_POOL_TOO_SMALL",
+                "at least 30 contrastive pairs from distinct snapshots are required before freezing",
+                status_code=422,
+                details={"total_pairs": len(pairs), "contrastive_pairs": contrast_count, "required": 30},
+            )
+        if experiment.evidence_provenance == "human":
+            if experiment.isolation_mode not in _VALID_ISOLATION_MODES or not str(
+                experiment.snapshot_source_ref or ""
+            ).strip():
+                raise DomainError(
+                    "HUMAN_EVIDENCE_ISOLATION_REQUIRED",
+                    "human evidence requires seed_project/time_isolated and a snapshot_source_ref",
+                    status_code=422,
+                )
+        experiment.frozen_pair_manifest_hash = self._pair_manifest_hash(pairs)
+        experiment.frozen_at = utcnow()
+        experiment.status = "frozen"
+        self.session.flush()
+        return experiment
+
     # ------------------------------------------------------------------
     # 盲化取对 / 投票
     # ------------------------------------------------------------------
 
     def next_pair(self, experiment_id: str, *, reviewer_ref: str | None = None) -> dict[str, str] | None:
         """返回下一个（该 reviewer）未投票的对——**只出 pair_id + 左右纯文本**，无任何元数据。"""
+        experiment = self.session.get(EvaluationExperiment, experiment_id)
+        if experiment is None:
+            raise DomainError("EXPERIMENT_NOT_FOUND", f"experiment {experiment_id} not found", status_code=404)
+        if experiment.evidence_provenance == "human" and experiment.status != "frozen":
+            raise DomainError(
+                "HUMAN_EVIDENCE_NOT_FROZEN",
+                "human evaluation pairs are available only after the pool is frozen",
+                status_code=409,
+            )
         voted_pair_ids = set(
             self.session.execute(
-                select(EvaluationVote.pair_id).where(
-                    EvaluationVote.reviewer_ref == reviewer_ref
-                )
+                select(EvaluationVote.pair_id)
             ).scalars().all()
         )
         pairs = self.session.execute(
@@ -164,21 +232,36 @@ class EvaluationExperimentService:
             raise DomainError(
                 "INVALID_VOTE_CHOICE", f"choice must be one of {_VALID_CHOICES}", status_code=422,
             )
-        if self.session.get(EvaluationPair, pair_id) is None:
+        pair = self.session.get(EvaluationPair, pair_id)
+        if pair is None:
             raise DomainError("PAIR_NOT_FOUND", f"pair {pair_id} not found", status_code=404)
+        experiment = self.session.get(EvaluationExperiment, pair.experiment_id)
+        if experiment is None:
+            raise DomainError("EXPERIMENT_NOT_FOUND", "the pair's experiment was not found", status_code=404)
+        reviewer_ref = str(reviewer_ref or "").strip() or None
+        if experiment.evidence_provenance == "human":
+            if experiment.status != "frozen":
+                raise DomainError(
+                    "HUMAN_EVIDENCE_NOT_FROZEN",
+                    "human votes are accepted only after the evaluation pool is frozen",
+                    status_code=409,
+                )
+            if reviewer_ref is None:
+                raise DomainError(
+                    "HUMAN_REVIEWER_REQUIRED",
+                    "human evidence votes require a non-empty reviewer_ref",
+                    status_code=422,
+                )
 
         existing = self.session.execute(
-            select(EvaluationVote).where(
-                EvaluationVote.pair_id == pair_id,
-                EvaluationVote.reviewer_ref == reviewer_ref,
-            )
+            select(EvaluationVote).where(EvaluationVote.pair_id == pair_id)
         ).scalars().first()
         if existing is not None:
-            if existing.choice == choice:
+            if existing.choice == choice and existing.reviewer_ref == reviewer_ref:
                 return existing  # 幂等：同选择重复提交返回同一票，不双计
             raise DomainError(
                 "VOTE_ALREADY_RECORDED",
-                "该 reviewer 已对本对投票；盲评首次判断即定，改选需另建实验或显式重开（防事后偏倚）。",
+                "this pair already has its single blind-evaluation outcome vote",
                 status_code=409,
             )
 
@@ -202,17 +285,14 @@ class EvaluationExperimentService:
         if exp is None:
             raise DomainError("EXPERIMENT_NOT_FOUND", f"experiment {experiment_id} not found", status_code=404)
 
-        pairs = self.session.execute(
-            select(EvaluationPair)
-            .where(EvaluationPair.experiment_id == experiment_id)
-            .order_by(EvaluationPair.created_at.asc(), EvaluationPair.pair_id.asc())
-        ).scalars().all()
+        pairs = self._experiment_pairs(experiment_id)
 
         result = BlindEvalResult()
         token_treatment = 0.0
         token_control = 0.0
         durations: list[int] = []
         snapshot_hashes: set[str] = set()
+        anonymous_vote_count = 0
 
         for pair in pairs:
             snapshot_hashes.add(pair.scene_snapshot_hash)
@@ -226,6 +306,8 @@ class EvaluationExperimentService:
             if vote is None:
                 result.unvoted += 1
                 continue
+            if not str(vote.reviewer_ref or "").strip():
+                anonymous_vote_count += 1
             if vote.duration_ms is not None:
                 durations.append(vote.duration_ms)
             if vote.choice == "tie":
@@ -243,17 +325,50 @@ class EvaluationExperimentService:
         total_pairs = len(pairs)
         decisive = result.decisive
         token_multiplier = (token_treatment / token_control) if token_control else None
+        pseudo_replication_ok = len(snapshot_hashes) == total_pairs
+        manifest_verified = bool(
+            exp.status == "frozen"
+            and exp.frozen_pair_manifest_hash
+            and exp.frozen_pair_manifest_hash == self._pair_manifest_hash(pairs)
+        )
+        eligibility_reasons: list[str] = []
+        if exp.evidence_provenance != "human":
+            eligibility_reasons.append("evidence_provenance_not_human")
+        if not manifest_verified:
+            eligibility_reasons.append("frozen_manifest_not_verified")
+        if exp.isolation_mode not in _VALID_ISOLATION_MODES or not str(exp.snapshot_source_ref or "").strip():
+            eligibility_reasons.append("evaluation_isolation_not_verified")
+        if not pseudo_replication_ok:
+            eligibility_reasons.append("snapshot_pseudo_replication_detected")
+        if decisive < 30:
+            eligibility_reasons.append("fewer_than_30_non_tie_votes")
+        if anonymous_vote_count:
+            eligibility_reasons.append("anonymous_vote_provenance_present")
+        policy_evidence_eligible = not eligibility_reasons
+        if not policy_evidence_eligible:
+            policy_decision = "not_eligible_for_policy"
+            policy_rationale = "统计结果仅供诊断，不能调整生产默认：" + ", ".join(eligibility_reasons)
+        elif decision.decision == "upgrade_to_default" and decision.requires_fresh_replication:
+            policy_decision = "replication_required"
+            policy_rationale = "统计门已通过，但消融实验在升级默认前必须用新一批 30 组非平局真人票复验。"
+        else:
+            policy_decision = decision.decision
+            policy_rationale = decision.rationale
 
         return {
             "experiment_id": exp.experiment_id,
             "name": exp.name,
             "hypothesis": exp.hypothesis,
             "status": exp.status,
+            "evidence_provenance": exp.evidence_provenance,
+            "frozen_at": exp.frozen_at,
+            "frozen_pair_manifest_hash": exp.frozen_pair_manifest_hash,
+            "frozen_manifest_verified": manifest_verified,
             "isolation": {"mode": exp.isolation_mode, "source_ref": exp.snapshot_source_ref},
             "total_pairs": total_pairs,
             "distinct_snapshot_count": len(snapshot_hashes),
             # §6.2 伪重复守卫：30 组必须来自 30 个互异快照。
-            "pseudo_replication_ok": len(snapshot_hashes) == total_pairs,
+            "pseudo_replication_ok": pseudo_replication_ok,
             "treatment_wins": result.treatment_wins,
             "control_wins": result.control_wins,
             "ties": result.ties,
@@ -266,10 +381,18 @@ class EvaluationExperimentService:
             "p_value": decision.p_value,
             "min_wins_threshold": decision.min_wins,
             "significant": decision.significant,
-            "decision": decision.decision,
-            "module_conclusion": _module_conclusion(decision.decision),
+            "statistical_decision": decision.decision,
+            "policy_evidence_eligible": policy_evidence_eligible,
+            "policy_eligibility_reasons": eligibility_reasons,
+            "decision": policy_decision,
+            "module_conclusion": _module_conclusion(policy_decision),
             "requires_fresh_replication": decision.requires_fresh_replication,
-            "rationale": decision.rationale,
+            "statistical_rationale": decision.rationale,
+            "rationale": policy_rationale,
+            "recommended_production_policy": {
+                "best_of_n_default_enabled": policy_decision == "upgrade_to_default",
+                "actionable": policy_decision in {"upgrade_to_default", "keep_optional", "disable"},
+            },
             "token_cost": {
                 "treatment_total": token_treatment,
                 "control_total": token_control,
@@ -289,6 +412,29 @@ class EvaluationExperimentService:
             .order_by(EvaluationVote.created_at.asc(), EvaluationVote.vote_id.asc())
         ).scalars().first()
 
+    def _experiment_pairs(self, experiment_id: str) -> list[EvaluationPair]:
+        return self.session.execute(
+            select(EvaluationPair)
+            .where(EvaluationPair.experiment_id == experiment_id)
+            .order_by(EvaluationPair.created_at.asc(), EvaluationPair.pair_id.asc())
+        ).scalars().all()
+
+    @staticmethod
+    def _pair_manifest_hash(pairs: list[EvaluationPair]) -> str:
+        payload = [
+            {
+                "pair_id": pair.pair_id,
+                "scene_snapshot_hash": pair.scene_snapshot_hash,
+                "left_text_sha256": hashlib.sha256((pair.left_text or "").encode("utf-8")).hexdigest(),
+                "right_text_sha256": hashlib.sha256((pair.right_text or "").encode("utf-8")).hexdigest(),
+                "blind_mapping": pair.blind_mapping_json or {},
+                "no_contrast": int(pair.no_contrast or 0),
+            }
+            for pair in pairs
+        ]
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 def _module_conclusion(decision: str) -> str:
     return {
@@ -296,4 +442,6 @@ def _module_conclusion(decision: str) -> str:
         "keep_optional": "downgrade",     # 未证增益——降级为可选（§8 项 7）
         "disable": "disable",             # 显著更差——关闭
         "need_more_samples": "pending",
+        "not_eligible_for_policy": "pending",
+        "replication_required": "pending",
     }.get(decision, "pending")

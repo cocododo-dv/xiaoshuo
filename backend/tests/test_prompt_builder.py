@@ -10,6 +10,11 @@ from novel_system.db.models import (
     SceneCard,
     SceneMemory,
     SceneRunState,
+    StoryProject,
+    StyleReferenceBook,
+    StyleReferenceInjectionBinding,
+    StyleReferenceProfile,
+    StyleReferenceRun,
     StyleObservation,
     StyleRule,
 )
@@ -66,6 +71,73 @@ def _bundle_snapshot() -> dict:
             ),
         },
     }
+
+
+def test_bundle_snapshot_carries_active_reference_profile_provenance(session) -> None:
+    session.add(
+        StoryProject(
+            project_id="PROJ_REF_PROV",
+            title="Reference provenance",
+            outline_text="",
+            planning_mode="snowflake",
+        )
+    )
+    session.add(
+        ChapterGoal(
+            chapter_id="CH_REF_PROV",
+            project_id="PROJ_REF_PROV",
+            planned_scene_count=1,
+            chapter_goal="Keep reference provenance in the frozen bundle.",
+        )
+    )
+    session.add(
+        SceneCard(
+            scene_id="CH_REF_PROV_SC01",
+            chapter_id="CH_REF_PROV",
+            project_id="PROJ_REF_PROV",
+            scene_seq=1,
+            onstage_chars_json=[],
+            scene_goal="Draft an original scene with auditable reference provenance.",
+        )
+    )
+    session.add(SceneRunState(scene_id="CH_REF_PROV_SC01"))
+    session.add(
+        StyleReferenceBook(
+            book_id="sr_book_ref_prov",
+            title="Public domain source",
+            source_kind="path",
+            cloud_policy="segments_only",
+            text_checksum="checksum-ref-prov",
+            stats_json={"rights_declaration": {"declared": True, "send_rights": True}},
+        )
+    )
+    session.add(StyleReferenceRun(run_id="sr_run_ref_prov", book_id="sr_book_ref_prov", status="done"))
+    session.add(
+        StyleReferenceProfile(
+            profile_id="sr_profile_ref_prov",
+            book_id="sr_book_ref_prov",
+            run_id="sr_run_ref_prov",
+            title="Audited profile",
+            status="active",
+            profile_json={"style_features": ["abstract craft only"]},
+        )
+    )
+    session.add(
+        StyleReferenceInjectionBinding(
+            binding_id="sr_bind_ref_prov",
+            profile_id="sr_profile_ref_prov",
+            scope="project",
+            scope_ref_id="PROJ_REF_PROV",
+            task_type="scene_generation",
+            strategy="A",
+            status="active",
+        )
+    )
+    session.commit()
+
+    snapshot = BundleBuilder(session).build("CH_REF_PROV_SC01")["snapshot"]
+
+    assert snapshot["source_version_refs"]["reference_profile_ids"] == ["sr_profile_ref_prov"]
 
 
 def test_prompt_builder_includes_required_sections_and_stable_hash() -> None:

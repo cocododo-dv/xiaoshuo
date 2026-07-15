@@ -39,6 +39,7 @@ def test_create_experiment(client) -> None:
     data = _create(client, hypothesis="Best-of-N 提升偏好", isolation_mode="seed_project")
     assert data["experiment_id"]
     assert data["isolation_mode"] == "seed_project"
+    assert data["evidence_provenance"] == "synthetic"
 
 
 def test_next_pair_response_leaks_no_metadata(client) -> None:
@@ -115,7 +116,9 @@ def test_report_reproducible_verdict(client) -> None:
     assert report["non_tie_n"] == 30
     assert report["treatment_wins"] == 21
     assert report["p_value"] < 0.05
-    assert report["decision"] == "upgrade_to_default"
+    assert report["statistical_decision"] == "upgrade_to_default"
+    assert report["decision"] == "not_eligible_for_policy"
+    assert report["policy_evidence_eligible"] is False
     assert report["distinct_snapshot_count"] == 30
     assert report["token_cost"]["token_multiplier"] == 5.0
 

@@ -12,6 +12,8 @@ from novel_system.db.models import (
     SceneBundle,
     SceneCard,
     SceneRunState,
+    StyleReferenceBook,
+    StyleReferenceProfile,
     VoiceProfile,
 )
 
@@ -256,6 +258,72 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(client, 
     assert scan["blocked_terms"] == ["路明非", "卡塞尔"]
     assert scan["source_profile_ids"] == ["refprofile_longzu_safe", "STYLE_LONGZU_ABSTRACT"]
     assert scan["checked_at"]
+
+
+def test_workbench_payload_loads_dynamic_safety_terms_from_bound_profile(client, session: Session) -> None:
+    create_chapter(client, "CH921D")
+    create_scene(client, chapter_id="CH921D", scene_id="CH921D_SC01")
+    seed_voice_profile(session)
+    seed_relation_profile(session)
+    session.add(
+        StyleReferenceBook(
+            book_id="refbook_dynamic_workbench",
+            title="Public source",
+            source_kind="path",
+            cloud_policy="local_only",
+            text_checksum="dynamic-workbench-checksum",
+        )
+    )
+    session.add(
+        StyleReferenceProfile(
+            profile_id="refprofile_dynamic_workbench",
+            book_id="refbook_dynamic_workbench",
+            run_id="run_dynamic_workbench",
+            title="Dynamic safety",
+            status="active",
+            profile_json={
+                "source_safety": {
+                    "ready": True,
+                    "profile_id": "refprofile_dynamic_workbench",
+                    "protected_terms": ["Professor Meridian"],
+                    "distinctive_phrases": [],
+                    "scene_bridges": [],
+                }
+            },
+        )
+    )
+    bundle = SceneBundle(
+        bundle_id="bundle_CH921D_SC01_v1",
+        scene_id="CH921D_SC01",
+        chapter_id="CH921D",
+        bundle_snapshot_hash="hash_CH921D_SC01_v1",
+        frozen_snapshot_json={
+            "source_version_refs": {"reference_profile_ids": ["refprofile_dynamic_workbench"]},
+        },
+    )
+    final = FinalScene(
+        row_id="final_scene_CH921D_SC01_v1",
+        scene_id="CH921D_SC01",
+        chapter_id="CH921D",
+        content="Professor Meridian crossed the original station.",
+        status="archived",
+        source_bundle_id=bundle.bundle_id,
+        source_bundle_hash=bundle.bundle_snapshot_hash,
+    )
+    state = session.get(SceneRunState, "CH921D_SC01")
+    state.scene_status = "archived"
+    state.current_bundle_id = bundle.bundle_id
+    state.current_bundle_hash = bundle.bundle_snapshot_hash
+    state.current_final_scene_row_id = final.row_id
+    session.add_all([bundle, final])
+    session.commit()
+
+    scan = client.get("/api/v1/scenes/CH921D_SC01/workbench").json()["data"]["source_safety_scan"]
+
+    assert scan["safe"] is False
+    assert scan["blocked_terms"] == []
+    assert scan["source_profile_ids"] == ["refprofile_dynamic_workbench"]
+    assert any(risk["risk_type"] == "exact_term" for risk in scan["risks"])
 
 
 def test_workbench_payload_includes_latest_anti_template_quality_summary(client, session: Session) -> None:

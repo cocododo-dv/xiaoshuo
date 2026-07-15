@@ -3,6 +3,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const outcomeGateLib = require("./lib/qa-outcome-gate.cjs");
 const { observeUiPhase } = require("./lib/ui-phase-evidence.cjs");
+const { loadReferenceQaProfile } = require("./lib/reference-qa-profile.cjs");
 
 let chromium;
 try {
@@ -12,6 +13,7 @@ try {
 }
 
 const repoRoot = path.resolve(__dirname, "..");
+const referenceProfile = loadReferenceQaProfile({ repoRoot });
 const backendDir = path.join(repoRoot, "backend");
 const codexRunDir = path.join(repoRoot, ".codex-run");
 const runTimestamp = formatTimestamp(new Date());
@@ -30,14 +32,15 @@ const logPath = path.join(outDir, "run-log.ndjson");
 let frontendUrl = resolveFrontendUrl();
 let apiBase = resolveApiBase();
 const operatorRef = process.env.PLAYWRIGHT_OPERATOR_REF || `qa.currentdb.three-chapter.${runKey}`;
-const referencePath = process.env.REFERENCE_BOOK_PATH || "C:\\Users\\duwei\\Downloads\\龙族.txt";
-const referenceCloudPolicy = "segments_only";
+const referencePath = referenceProfile.referencePath;
+const referenceCloudPolicy = referenceProfile.cloudPolicy;
+const referenceRightsDeclaration = referenceProfile.rightsDeclaration;
 const maxSceneJobAttempts = Number(process.env.SCENE_JOB_ATTEMPTS || "3");
 // Wave 0（结果闭环治理设计 v1.1 §8）：章节数参数化，第一阶段基准固定 5 章 × 每章 3 场。
 // 结果门禁（scripts/playwright_audit_summary.py --outcome-gate）是唯一权威判定：
 // 任何计划场景缺少非空后端归档正文，整次运行退出码非零——与步骤 ok 标志无关。
-const expectedChapterCount = Math.max(1, Number(process.env.QA_CHAPTER_COUNT || "5"));
-const expectedScenesPerChapter = Math.max(1, Number(process.env.QA_SCENES_PER_CHAPTER || "3"));
+const expectedChapterCount = referenceProfile.expectedChapterCount;
+const expectedScenesPerChapter = referenceProfile.expectedScenesPerChapter;
 const terminalJobStatuses = new Set([
   "archived",
   "blocked",
@@ -48,23 +51,7 @@ const terminalJobStatuses = new Set([
   "manual_review_required",
 ]);
 
-const protectedTerms = [
-  "龙族",
-  "江南",
-  "路明非",
-  "楚子航",
-  "恺撒",
-  "诺诺",
-  "陈墨瞳",
-  "卡塞尔",
-  "昂热",
-  "龙王",
-  "白王",
-  "黑王",
-  "青铜与火",
-  "血统",
-  "屠龙",
-];
+const protectedTerms = referenceProfile.protectedTerms;
 
 const chapters = buildChapters(runKey)
   .slice(0, expectedChapterCount)
@@ -88,8 +75,13 @@ const result = {
     apiBase,
     operatorRef,
     storySeed,
+    referenceLaneId: referenceProfile.laneId,
+    referenceProfilePath: referenceProfile.profilePath,
     referencePath,
+    referenceSourceBasis: referenceProfile.sourceBasis,
+    referenceSourceAttribution: referenceProfile.sourceAttribution,
     referenceCloudPolicy,
+    referenceRightsDeclaration,
     currentDb: true,
     noReset: !resetAuthorState,
     resetAuthorState,
@@ -106,6 +98,8 @@ const result = {
   chapterScores: {},
   chapterSetReview: null,
   protectedTermScan: {},
+  referenceLearning: null,
+  sourceSafetyGate: null,
   llmRouteCoverage: null,
   llmFallbackAudit: null,
   rootCauseFindings: [],
@@ -126,9 +120,11 @@ function readBooleanEnv(name) {
 function resolveFrontendUrl() {
   return (
     process.env.PLAYWRIGHT_FRONTEND_URL ||
+    // 当前发布目标是 React 主前端；legacy Vue 仅保留兼容入口，不能覆盖主线 QA。
+    readRunFile("frontend-react.url") ||
     readRunFile("frontend.url") ||
     readRunFile("vite.url") ||
-    `http://127.0.0.1:${process.env.PLAYWRIGHT_FRONTEND_PORT || "5173"}`
+    `http://127.0.0.1:${process.env.PLAYWRIGHT_FRONTEND_PORT || "5174"}`
   );
 }
 
@@ -760,81 +756,146 @@ function throwReferenceLearningBlocker(context) {
   throw error;
 }
 
-async function exerciseReferenceLearning(page) {
+async function waitForStyleReferenceRun(runId, timeoutMs = 1200000) {
+  const deadline = Date.now() + timeoutMs;
+  let latest = null;
+  while (Date.now() < deadline) {
+    const payload = await apiGet(`/api/v2/style-reference/runs/${encodeURIComponent(runId)}`, 60000);
+    latest = payload.run || payload;
+    if (["done", "failed", "cancelled"].includes(latest.status)) {
+      return latest;
+    }
+    await sleep(3000);
+  }
+  throw new Error(`style reference run ${runId} timed out after ${timeoutMs}ms; latest=${JSON.stringify(compactData(latest))}`);
+}
+
+function sameFilePath(left, right) {
+  if (!left || !right) return false;
+  const normalizedLeft = path.resolve(String(left)).replaceAll("\\", "/").toLowerCase();
+  const normalizedRight = path.resolve(String(right)).replaceAll("\\", "/").toLowerCase();
+  return normalizedLeft === normalizedRight;
+}
+
+function assertReusableReferenceBook(book) {
+  const rights = book?.stats_json?.rights_declaration || {};
+  if (book.cloud_policy !== referenceCloudPolicy) {
+    throw new Error(`existing reference book cloud_policy mismatch: ${book.cloud_policy} != ${referenceCloudPolicy}`);
+  }
+  if (
+    referenceCloudPolicy !== "local_only" &&
+    !(rights.declared === true && rights.send_rights === true)
+  ) {
+    throw new Error("existing reference book lacks declared=true and send_rights=true");
+  }
+}
+
+async function exerciseReferenceLearning(page, projectId) {
   await visit(page, "reference", "reference-learning-view", "reference-learning-currentdb");
-  const imported = await apiPost(
-    "/api/v1/reference-books/import-path",
+  const listed = await apiGet("/api/v2/style-reference/books", 60000);
+  let book = (listed.books || []).find((item) => sameFilePath(item.source_path, referencePath)) || null;
+  let reusedBook = Boolean(book);
+  let importSafety = book?.stats_json?.safety || null;
+  if (book) {
+    assertReusableReferenceBook(book);
+  } else {
+    const imported = await apiPost(
+      "/api/v2/style-reference/books/import-path",
+      {
+        file_path: referencePath,
+        title: `${storySeed} 抽象参考 ${runKey}`,
+        author_label: "abstract-reference-only",
+        cloud_policy: referenceCloudPolicy,
+        rights_declaration: referenceRightsDeclaration,
+      },
+      180000,
+    );
+    book = imported.book;
+    importSafety = imported.safety || null;
+  }
+  const bookId = book?.book_id;
+  if (!bookId) {
+    throwReferenceLearningBlocker({ book, reusedBook, reason: "import did not return book_id" });
+  }
+
+  const listedProfiles = await apiGet(
+    `/api/v2/style-reference/profiles?book_id=${encodeURIComponent(bookId)}`,
+    60000,
+  );
+  let profile = (listedProfiles.profiles || []).find(
+    (item) => ["active", "draft"].includes(item.status) && item.profile_json?.source_safety?.ready === true,
+  ) || null;
+  let runId = profile?.run_id || null;
+  let reusedProfile = Boolean(profile);
+  if (!profile) {
+    const started = await apiPost(
+      `/api/v2/style-reference/books/${encodeURIComponent(bookId)}/runs`,
+      { layers: ["language", "narrative", "scene", "theme"], background: false, force: true },
+      1200000,
+    );
+    runId = started.run_id;
+    let run = started;
+    if (run.status === "running" || run.status === "pending") {
+      run = await waitForStyleReferenceRun(runId);
+    }
+    if (run.status !== "done") {
+      throwReferenceLearningBlocker({ bookId, runId, run });
+    }
+    const synthesized = await apiPost(
+      `/api/v2/style-reference/runs/${encodeURIComponent(runId)}/synthesize`,
+      {},
+      600000,
+    );
+    profile = synthesized.profile;
+    const safetyExtraction = await apiPost(
+      `/api/v2/style-reference/books/${encodeURIComponent(bookId)}/safety-profile/extract`,
+      {},
+      120000,
+    );
+    profile = safetyExtraction.profile || profile;
+  }
+  if (!profile?.profile_id || profile.profile_json?.source_safety?.ready !== true) {
+    throwReferenceLearningBlocker({ bookId, runId, profile, reusedProfile });
+  }
+
+  const applyResult = await apiPost(
+    `/api/v2/style-reference/profiles/${encodeURIComponent(profile.profile_id)}/apply`,
     {
-      file_path: referencePath,
-      title: `${storySeed} 抽象参考 ${runKey}`,
-      author_label: "abstract-reference-only",
-      cloud_policy: referenceCloudPolicy,
-      analysis_focus: "style_structure",
+      scope: "project",
+      scope_ref_id: projectId,
+      task_type: "scene_generation",
+      strategy: "A",
+      include_positive: true,
+      include_forbidden: true,
+      include_metric: false,
     },
     120000,
   );
-  const bookId = imported.book_id || imported.book?.book_id;
-  const started = await apiPost(`/api/v1/reference-books/${encodeURIComponent(bookId)}/runs`, { batch_size: 6 }, 60000);
-  const runId = started.run?.run_id || started.run_id;
-  const firstAdvance = await apiPost(
-    `/api/v1/reference-books/${encodeURIComponent(bookId)}/runs/${encodeURIComponent(runId)}/advance`,
-    {},
-    600000,
-  ).catch((error) => ({ blocked: error.message, code: error.code || null }));
-  const profileAdvance = firstAdvance.profile
-    ? firstAdvance
-    : await apiPost(
-        `/api/v1/reference-books/${encodeURIComponent(bookId)}/runs/${encodeURIComponent(runId)}/advance`,
-        {},
-        600000,
-      ).catch((error) => ({ blocked: error.message, code: error.code || null }));
-  const tree = await apiGet(`/api/v1/reference-books/${encodeURIComponent(bookId)}/learning-tree`, 60000).catch((error) => ({
-    blocked: error.message,
-  }));
-  const detail = await apiGet(`/api/v1/reference-books/${encodeURIComponent(bookId)}`, 60000).catch((error) => ({ blocked: error.message }));
-  const profile =
-    profileAdvance.profile ||
-    detail.profiles?.find((item) => item.run_id === runId && item.status === "ready") ||
-    detail.profiles?.find((item) => item.status === "ready") ||
-    detail.profiles?.[0] ||
-    null;
-  if (!profile?.profile_id || (profile.status && profile.status !== "ready")) {
-    throwReferenceLearningBlocker({
-      bookId,
-      runId,
-      firstAdvance,
-      profileAdvance,
-      detailStatus: detail.status || detail.book?.status || null,
-      profileCount: Array.isArray(detail.profiles) ? detail.profiles.length : 0,
-      treeSummary: tree.summary || null,
-    });
-  }
-  let applyResult = null;
-  if (profile?.profile_id) {
-    applyResult = await apiPost(`/api/v1/reference-books/${encodeURIComponent(bookId)}/profiles/${encodeURIComponent(profile.profile_id)}/apply`, {
-      scope: "chapter",
-      scope_ref_id: chapters[0].chapter_id,
-    }).catch((error) => ({ blocked: error.message }));
-  }
-  if (applyResult?.blocked) {
-    throwReferenceLearningBlocker({
-      bookId,
-      runId,
-      profileId: profile.profile_id,
-      applyBlocked: applyResult.blocked,
-    });
+  const activeProfile = await apiGet(
+    `/api/v2/style-reference/profiles/${encodeURIComponent(profile.profile_id)}`,
+    60000,
+  );
+  profile = activeProfile.profile || profile;
+  if (profile.status !== "active" || !applyResult.binding_id) {
+    throwReferenceLearningBlocker({ bookId, runId, profile, applyResult });
   }
   await screenshot(page, "reference-learning-segments-only");
-  recordExperience("reference learning", profile?.profile_id ? 8 : 6, "segments_only 更符合版权安全，但 profile 阶段的等待和阻塞信息仍是信任关键。");
+  recordExperience("reference learning", 8, "公有领域语料、显式权属、动态安全画像和项目级绑定均已进入可追溯运行链。");
   return {
     bookId,
     runId,
+    reusedBook,
+    reusedProfile,
     cloudPolicy: referenceCloudPolicy,
-    profileId: profile?.profile_id || null,
-    profileKeys: Object.keys(profile?.profile_json || profile?.payload_json || {}),
-    learningTreeSummary: tree.summary || null,
-    applyReviewIds: (applyResult?.reviews || []).map((item) => item.review_id),
-    blocked: firstAdvance.blocked || profileAdvance.blocked || detail.blocked || applyResult?.blocked || null,
+    rightsDeclaration: book.stats_json?.rights_declaration || referenceRightsDeclaration,
+    importSafety,
+    profileId: profile.profile_id,
+    profileStatus: profile.status,
+    profileKeys: Object.keys(profile.profile_json || {}),
+    safetyReady: profile.profile_json?.source_safety?.ready === true,
+    safetySummary: profile.profile_json?.source_safety?.summary || null,
+    bindingId: applyResult.binding_id,
+    applyReviewIds: applyResult.review_ids || [],
   };
 }
 
@@ -1599,7 +1660,7 @@ function recordUiPhase(receipt, evidence) {
 // outcome 结构组装与判定器调用在 scripts/lib/qa-outcome-gate.cjs（两个 harness 共用）。
 // 判定器不可执行时按失败处理，不得视为通过。
 function runOutcomeGate() {
-  return outcomeGateLib.runOutcomeGate({
+  const outcomePassed = outcomeGateLib.runOutcomeGate({
     repoRoot,
     outDir,
     pythonExecutable,
@@ -1612,6 +1673,53 @@ function runOutcomeGate() {
     writeJson,
     appendLog,
   });
+  const expectedProfileId = result.referenceLearning?.profileId || null;
+  const failures = [];
+  if (!expectedProfileId || result.referenceLearning?.safetyReady !== true) {
+    failures.push("reference safety profile is missing or not ready");
+  }
+  for (const chapter of chapters) {
+    const chapterScan = result.protectedTermScan[chapter.chapter_id];
+    if (!chapterScan || chapterScan.safe !== true) {
+      failures.push(`${chapter.chapter_id}: protected-term scan did not pass`);
+    }
+    for (const scene of chapter.scenes) {
+      const scan = finalScenes[scene.scene_id]?.source_safety_scan;
+      if (!scan || scan.safe !== true) {
+        failures.push(`${scene.scene_id}: runtime source-safety scan did not pass`);
+        continue;
+      }
+      if (expectedProfileId && !(scan.source_profile_ids || []).includes(expectedProfileId)) {
+        failures.push(`${scene.scene_id}: runtime scan lacks bound reference profile ${expectedProfileId}`);
+      }
+      if ((scan.blocked_terms || []).length || (scan.risks || []).length) {
+        failures.push(`${scene.scene_id}: runtime scan reported blocked terms or dynamic risks`);
+      }
+    }
+  }
+  result.sourceSafetyGate = {
+    passed: failures.length === 0,
+    expectedProfileId,
+    checkedSceneCount: plannedSceneList.length,
+    failures,
+    verdictPath: "source-safety-gate-verdict.md",
+  };
+  fs.writeFileSync(
+    path.join(outDir, "source-safety-gate-verdict.md"),
+    `# Source Safety Gate\n\n- verdict: **${failures.length === 0 ? "PASS" : "FAIL"}**\n- expected_profile_id: ${expectedProfileId || "missing"}\n- checked_scenes: ${plannedSceneList.length}\n\n${
+      failures.length ? failures.map((item) => `- ${item}`).join("\n") : "- no failures"
+    }\n`,
+    "utf8",
+  );
+  if (outcomePassed && failures.length) {
+    result.outcomeGate = {
+      ...result.outcomeGate,
+      passed: false,
+      error: "source safety gate FAIL",
+    };
+  }
+  appendLog({ type: "source-safety-gate", passed: failures.length === 0, failures });
+  return outcomePassed && failures.length === 0;
 }
 
 function scoreByTokens(text, tokens) {
@@ -2662,11 +2770,16 @@ async function main() {
     await prepareBrowser(page);
     await step("preflight current DB, tools and provider routes", preflight, { fatal: true });
     const blankProject = await step("create a genuinely blank project through the UI", () => createOriginalWorkspace(page), { fatal: true });
+    result.referenceLearning = await step(
+      "learn and bind the audited public-domain reference profile",
+      () => exerciseReferenceLearning(page, blankProject.projectId),
+      { fatal: true },
+    );
     const snowflake = await step("import, approve and materialize the five-chapter snowflake through the UI", () => exerciseSnowflake(page), { fatal: true });
     await step("run, select and archive all planned scenes through the UI", () => exerciseSceneWorkbench(page), { fatal: true });
     await step("aggregate all chapter manuscripts through the UI", () => exerciseChapterManuscripts(page), { fatal: true });
     await step("LLM route coverage and fallback audit", () => auditLlmIntegration());
-    result.meta.created = { ...blankProject, ...snowflake };
+    result.meta.created = { ...blankProject, ...snowflake, referenceProfileId: result.referenceLearning.profileId };
   } finally {
     await context.close().catch(() => null);
     await browser.close().catch(() => null);

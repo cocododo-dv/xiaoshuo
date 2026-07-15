@@ -29,6 +29,7 @@ class CreateExperimentRequest(BaseModel):
     control_policy: dict[str, Any] = {}
     isolation_mode: str | None = None
     snapshot_source_ref: str | None = None
+    evidence_provenance: str = "synthetic"
 
 
 class AddPairRequest(BaseModel):
@@ -60,6 +61,9 @@ def _experiment_dict(exp: EvaluationExperiment) -> dict[str, Any]:
         "status": exp.status,
         "isolation_mode": exp.isolation_mode,
         "snapshot_source_ref": exp.snapshot_source_ref,
+        "evidence_provenance": exp.evidence_provenance,
+        "frozen_at": exp.frozen_at,
+        "frozen_pair_manifest_hash": exp.frozen_pair_manifest_hash,
         "created_at": exp.created_at,
     }
 
@@ -101,7 +105,26 @@ def create_experiment(payload: CreateExperimentRequest, request: Request, sessio
                 control_policy=payload.control_policy,
                 isolation_mode=payload.isolation_mode,
                 snapshot_source_ref=payload.snapshot_source_ref,
+                evidence_provenance=payload.evidence_provenance,
             )
+        ),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
+@router.post("/api/v1/evaluation-experiments/{experiment_id}/freeze")
+def freeze_experiment(experiment_id: str, request: Request, session: Session = Depends(get_session)):
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/evaluation-experiments/{experiment_id}/freeze",
+        payload={"experiment_id": experiment_id},
+        action=lambda: _experiment_dict(
+            EvaluationExperimentService(session).freeze_experiment(experiment_id)
         ),
         actor_ref=actor_ref,
     )

@@ -652,7 +652,7 @@ class Orchestrator:
         # Wave 3（§5.5）：关键场景在候选生成后暂停编排——确定性坏稿淘汰 →
         # 匿名终选 gate；作者选择后经 resume-after-selection 从批判修订/QC 继续。
         # 「§6.3 终选决定质量上界，归人」从推荐信号升级为强制暂停。
-        if criticality.human_gate:
+        if criticality.human_gate and len(candidates) > 1:
             offered_row_ids = self._offer_candidates_for_selection(scene, state, bundle, candidates)
             if offered_row_ids is not None:
                 content_by_row_id = {candidate.row_id: candidate.content for candidate in candidates}
@@ -7855,14 +7855,19 @@ class Orchestrator:
         except Exception:
             return None
 
-    @staticmethod
-    def _best_of_n_count(contract, *, criticality=None) -> int:
-        from novel_system.settings import get_settings
-        if not get_settings().llm_enabled:
+    def _best_of_n_count(self, contract, *, criticality=None) -> int:
+        from novel_system.services.outcome_governance_policy import load_outcome_governance_policy
+        if self.scene_generation_service._llm_runner.provider_execution_mode != "online":
             return 1
+        policy_enabled = load_outcome_governance_policy().best_of_n_default_enabled
         if criticality is not None:
+            explicit_full_rigor = "constraint_intensity_full_rigor" in (criticality.reasons or [])
+            if not explicit_full_rigor and not policy_enabled:
+                return 1
             # Wave 3（§5.5 成本分配）：初始 N；低分散在预算内渐进补到 max_best_of_n
             return criticality.initial_best_of_n
+        if not policy_enabled:
+            return 1
         payload = contract.payload_json or {}
         crucible = payload.get("scene_crucible") or ""
         if crucible and len(crucible) > 10:

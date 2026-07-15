@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from novel_system.db.models import (
     FinalScene,
+    SceneBundle,
     SceneDraft,
     SceneRunState,
+    StyleReferenceBook,
+    StyleReferenceProfile,
 )
 from novel_system.services.archiver import Archiver
 from tests.test_chapter_manuscripts import _create_chapter, _create_scene
@@ -141,6 +144,70 @@ def test_adopt_source_safety_blocked_keeps_draft(client, session):
     assert state.scene_status != "archived"
     finals = session.query(FinalScene).filter(FinalScene.scene_id == "scene_adopt_4").all()
     assert not [f for f in finals if f.status == "archived"]
+
+
+def test_adopt_blocks_dynamic_term_from_bound_reference_profile(client, session):
+    _create_chapter(client, "chapter_adopt_dynamic")
+    _create_scene(client, "scene_adopt_dynamic", chapter_id="chapter_adopt_dynamic", scene_seq=1)
+    draft_row_id = _seed_style_draft(
+        session,
+        "scene_adopt_dynamic",
+        "chapter_adopt_dynamic",
+        content="Professor Meridian arrived with a different archive key.",
+    )
+    session.add(
+        StyleReferenceBook(
+            book_id="refbook_dynamic_adopt",
+            title="Public source",
+            source_kind="path",
+            cloud_policy="local_only",
+            text_checksum="dynamic-adopt-checksum",
+        )
+    )
+    session.add(
+        StyleReferenceProfile(
+            profile_id="refprofile_dynamic_adopt",
+            book_id="refbook_dynamic_adopt",
+            run_id="run_dynamic_adopt",
+            title="Dynamic safety",
+            status="active",
+            profile_json={
+                "source_safety": {
+                    "ready": True,
+                    "profile_id": "refprofile_dynamic_adopt",
+                    "protected_terms": ["Professor Meridian"],
+                    "distinctive_phrases": [],
+                    "scene_bridges": [],
+                }
+            },
+        )
+    )
+    bundle = SceneBundle(
+        bundle_id="bundle_scene_adopt_dynamic",
+        scene_id="scene_adopt_dynamic",
+        chapter_id="chapter_adopt_dynamic",
+        bundle_snapshot_hash="hash_scene_adopt_dynamic",
+        frozen_snapshot_json={
+            "source_version_refs": {"reference_profile_ids": ["refprofile_dynamic_adopt"]},
+        },
+    )
+    state = session.get(SceneRunState, "scene_adopt_dynamic")
+    state.current_bundle_id = bundle.bundle_id
+    state.current_bundle_hash = bundle.bundle_snapshot_hash
+    session.add(bundle)
+    session.commit()
+
+    response = client.post(
+        "/api/v1/scenes/scene_adopt_dynamic/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-dynamic"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "SOURCE_SAFETY_BLOCKED"
+    session.expire_all()
+    assert session.get(SceneDraft, draft_row_id) is not None
+    assert session.get(SceneRunState, "scene_adopt_dynamic").scene_status != "archived"
 
 
 def test_adopt_promotes_existing_unarchived_final_scene(client, session):
