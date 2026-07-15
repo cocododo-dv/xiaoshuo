@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 import uuid
 from typing import Any
@@ -92,6 +93,7 @@ class EvaluationExperimentService:
         treatment_ref: str | None = None,
         control_ref: str | None = None,
         token_cost: dict[str, Any] | None = None,
+        genre: str | None = None,
         seed: int | None = None,
         pair_id: str | None = None,
     ) -> EvaluationPair:
@@ -138,6 +140,7 @@ class EvaluationExperimentService:
             blind_mapping_json={"treatment_slot": slot},
             token_cost_json=token_cost or {},
             no_contrast=1 if treatment_text == control_text else 0,
+            genre=str(genre or "").strip() or None,
         )
         self.session.add(pair)
         self.session.flush()
@@ -293,6 +296,7 @@ class EvaluationExperimentService:
         durations: list[int] = []
         snapshot_hashes: set[str] = set()
         anonymous_vote_count = 0
+        by_genre: dict[str, dict[str, int]] = {}
 
         for pair in pairs:
             snapshot_hashes.add(pair.scene_snapshot_hash)
@@ -306,18 +310,26 @@ class EvaluationExperimentService:
             if vote is None:
                 result.unvoted += 1
                 continue
+            genre_bucket = by_genre.setdefault(
+                pair.genre or "unlabeled",
+                {"voted_pairs": 0, "treatment_wins": 0, "control_wins": 0, "ties": 0},
+            )
+            genre_bucket["voted_pairs"] += 1
             if not str(vote.reviewer_ref or "").strip():
                 anonymous_vote_count += 1
             if vote.duration_ms is not None:
                 durations.append(vote.duration_ms)
             if vote.choice == "tie":
                 result.ties += 1
+                genre_bucket["ties"] += 1
                 continue
             treatment_slot = (pair.blind_mapping_json or {}).get("treatment_slot")
             if vote.choice == treatment_slot:
                 result.treatment_wins += 1
+                genre_bucket["treatment_wins"] += 1
             else:
                 result.control_wins += 1
+                genre_bucket["control_wins"] += 1
 
         is_ablation = bool((exp.treatment_policy_json or {}).get("ablation") or (exp.control_policy_json or {}).get("ablation"))
         decision = default_strategy_decision(result, is_ablation=is_ablation)
@@ -376,6 +388,20 @@ class EvaluationExperimentService:
             "unvoted": result.unvoted,
             "non_tie_n": decisive,
             "preference_rate": decision.preference_rate,
+            # 95% Wilson 区间（非平局票上的 treatment 偏好率）；分题材拆分供审计。
+            "preference_ci95": _wilson_ci95(result.treatment_wins, decisive),
+            "by_genre": {
+                genre: {
+                    **tally,
+                    "non_tie_n": tally["treatment_wins"] + tally["control_wins"],
+                    "preference_rate": (
+                        round(tally["treatment_wins"] / (tally["treatment_wins"] + tally["control_wins"]), 4)
+                        if (tally["treatment_wins"] + tally["control_wins"])
+                        else None
+                    ),
+                }
+                for genre, tally in sorted(by_genre.items())
+            },
             "tie_rate": round(result.ties / total_pairs, 4) if total_pairs else 0.0,
             "no_contrast_rate": round(result.no_contrast / total_pairs, 4) if total_pairs else 0.0,
             "p_value": decision.p_value,
@@ -429,11 +455,24 @@ class EvaluationExperimentService:
                 "right_text_sha256": hashlib.sha256((pair.right_text or "").encode("utf-8")).hexdigest(),
                 "blind_mapping": pair.blind_mapping_json or {},
                 "no_contrast": int(pair.no_contrast or 0),
+                "genre": pair.genre,
             }
             for pair in pairs
         ]
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _wilson_ci95(successes: int, n: int) -> dict[str, float] | None:
+    """非平局票上 treatment 偏好率的 95% Wilson 置信区间。"""
+    if n <= 0:
+        return None
+    z = 1.959963984540054
+    p = successes / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return {"low": round(max(0.0, center - margin), 4), "high": round(min(1.0, center + margin), 4)}
 
 
 def _module_conclusion(decision: str) -> str:

@@ -31,7 +31,7 @@
 - Q0/Q1 阻断项为 0；运行退出码与 outcome gate 一致。
 - 保存配置快照、运行日志、最终场景、门禁判定和汇总报告。
 
-当前进度（2026-07-15）：固定配置、权属传递、动态保护词扫描、归档 provenance、预检入口和契约测试已完成。真实运行已进入 React 主线并成功创建项目、导入参考书；在首次 `style_ref_extract_language` 调用处被外部服务拒绝，错误为“该令牌状态不可用”。失败证据位于 `output/playwright/currentdb-three-chapter-qa-20260715-160316`。因此工程门已完成，真实 15 场门仍为阻塞状态，不能记作通过。
+当前进度（2026-07-15）：固定配置、权属传递、动态保护词扫描、归档 provenance、预检入口和契约测试已完成；契约测试（`scripts/tests/`）已接入 GitHub CI 与 `verify_windows.ps1` 门禁。此前一次真实运行尝试在首次 `style_ref_extract_language` 调用处被外部服务拒绝（“该令牌状态不可用”），但其输出目录 `output/playwright/currentdb-three-chapter-qa-20260715-160316` 不在本仓库内（`output/playwright/` 整体被 gitignore，本机检出中也不存在该目录）——按证据规则 2，该次尝试**不可回指原始产物，不作为证据引用**。harness 现已在每次运行结束时把 `report.md` / `outcome-gate-verdict.md` / `source-safety-gate-verdict.md` 自动归档到可入库的 `docs/evidence/<运行目录名>/`，后续运行以该归档为准。工程门已完成，真实 15 场门仍为阻塞状态，不能记作通过。
 
 ### C3：30 组真人盲评与默认策略门
 
@@ -45,7 +45,7 @@
 - 输出胜率、置信区间、分题材差异、成本/延迟差异及审计清单。
 - 仅在预先声明的阈值满足后修改默认策略；否则保持现状。
 
-完成门：30 组均取得合格真人评审，审计来源完整，统计脚本可复算，默认策略决定有明确记录。当前已补齐 fail-closed 证据门：真人题包必须先冻结至少 30 个互异对比对并封存哈希，要求隔离来源和非空评审者；合成票即使达到 21/30，也只能产生统计诊断，不能调整生产策略。`config/outcome-governance-policy.json` 当前明确保持默认单发，作者仍可通过单场“全强度”显式开启 Best-of-N。真实 30 个非平局选择尚未发生，因此 C3 仍未完成。
+完成门：30 组均取得合格真人评审，审计来源完整，统计脚本可复算，默认策略决定有明确记录。当前已补齐 fail-closed 证据门：真人题包必须先冻结至少 30 个互异对比对并封存哈希，要求隔离来源和非空评审者；合成票即使达到 21/30，也只能产生统计诊断，不能调整生产策略。报告现已输出偏好率的 95% Wilson 置信区间与分题材（`genre`）拆分；题材标签随对比对入库并进入冻结清单哈希，冻结后改标签会被判定为篡改。`config/outcome-governance-policy.json` 当前明确保持默认单发，作者仍可通过单场“全强度”显式开启 Best-of-N。真实 30 个非平局选择尚未发生，因此 C3 仍未完成。
 
 ### C4：真实 30 章耐久、性能与 FK 决策
 
@@ -53,7 +53,7 @@
 
 执行内容：
 
-- 连续生成和归档 30 章，每 5 章执行一次进程重启与恢复检查。
+- 连续生成和归档 30 章，在第 5/10/20/30 章后执行进程重启与恢复哈希检查（与判定器 `RESTART_CHECKPOINTS` 一致），每 5 章采集一次数据库大小样本。
 - 采集场景执行、候选生成、归档、章节聚合的 p50/p95、失败率、重试率和资源占用。
 - 对运行中断、重复提交、账本围栏和归档恢复做故障注入。
 - 运行全量孤儿数据盘点，并记录 FK 开启前后的测试结果。
@@ -98,7 +98,7 @@
 ## 5. 当前只保留的三个外部执行任务
 
 1. 修复已配置 provider 的令牌状态，重跑 `node scripts/run-public-domain-source-safety-five-chapter-qa.cjs`。
-2. 用真实候选创建 `evidence_provenance=human` 的隔离实验，冻结题包并完成 30 个非平局选择；报告合格后才可运行 `python -m novel_system.tools.evaluation_policy_apply --db <experiment_id>`。
+2. 用真实候选创建 `evidence_provenance=human` 的隔离实验，冻结题包并完成 30 个非平局选择；报告合格后才可运行 `python -m novel_system.tools.evaluation_policy_apply --experiment <experiment_id>`（隔离实验库不在默认库时加 `--database-url <实验库URL>`）。
 3. 运行真实 30 章并将报告交给 `python scripts/endurance_metrics.py <report.json>`；根据零孤儿盘点和全量回归明确记录 FK 为启用或延期。
 
 C5、UI 美化、外围页面、大文件拆分、更多模型和文学质量实验均不进入本轮提交范围。

@@ -171,6 +171,14 @@ function WsEval() {
           <ul>
             <li>偏好率：{Math.round((st.report.preference_rate || 0) * 100)}%
               （treatment {st.report.treatment_wins}/{st.report.non_tie_n}，平局 {st.report.ties}）</li>
+            <li>95% 置信区间（Wilson）：{st.report.preference_ci95
+              ? `${Math.round(st.report.preference_ci95.low * 100)}%–${Math.round(st.report.preference_ci95.high * 100)}%`
+              : "—"}</li>
+            {st.report.by_genre && Object.keys(st.report.by_genre).length > 0 && (
+              <li>分题材：{Object.entries(st.report.by_genre)
+                .map(([genre, tally]) => `${genre} ${tally.treatment_wins}/${tally.non_tie_n}`)
+                .join("，")}</li>
+            )}
             <li>双侧精确二项 p：{st.report.p_value}（最小胜场阈值 {st.report.min_wins_threshold}）</li>
             <li>token 倍率：{st.report.token_cost ? st.report.token_cost.token_multiplier : "—"}</li>
             <li>互异快照：{st.report.distinct_snapshot_count}

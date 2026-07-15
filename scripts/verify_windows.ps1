@@ -41,6 +41,9 @@ if (-not $FrontendOnly) {
 }
 
 if (-not $BackendOnly) {
+    # Governance QA lane contract tests (scripts/tests) run from the repo root.
+    Invoke-NativeStep -Label "Script contract tests (scripts/tests)" -WorkingDirectory $repoRoot -FilePath "node" -ArgumentList @("--test", "scripts/tests")
+
     # React mainline (frontend-react) is the default frontend gate: vitest unit tests + build.
     Invoke-NativeStep -Label "React frontend tests" -WorkingDirectory $reactDir -FilePath "npm.cmd" -ArgumentList @("test")
     Invoke-NativeStep -Label "React frontend build" -WorkingDirectory $reactDir -FilePath "npm.cmd" -ArgumentList @("run", "build")

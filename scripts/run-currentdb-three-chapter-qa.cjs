@@ -5,11 +5,14 @@ const outcomeGateLib = require("./lib/qa-outcome-gate.cjs");
 const { observeUiPhase } = require("./lib/ui-phase-evidence.cjs");
 const { loadReferenceQaProfile } = require("./lib/reference-qa-profile.cjs");
 
-let chromium;
-try {
-  ({ chromium } = require("../frontend/node_modules/playwright"));
-} catch {
-  ({ chromium } = require("playwright"));
+// playwright 惰性加载：scripts/tests 契约测试只 require 本模块取纯函数
+// （buildChapters 等），不得因缺浏览器依赖而在加载期崩溃。
+function resolveChromium() {
+  try {
+    return require("../frontend/node_modules/playwright").chromium;
+  } catch {
+    return require("playwright").chromium;
+  }
 }
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -165,6 +168,24 @@ function readRunFile(fileName) {
 
 function ensureOutDir() {
   fs.mkdirSync(outDir, { recursive: true });
+}
+
+// 证据规则 2：结论必须能回指原始产物。output/playwright/ 被 .gitignore，
+// 所以汇总报告与门禁判定必须另存一份到可入库路径 docs/evidence/。
+const durableEvidenceDir = path.join(repoRoot, "docs", "evidence", outDirName);
+
+function archiveDurableEvidence() {
+  const names = ["report.md", "outcome-gate-verdict.md", "source-safety-gate-verdict.md"];
+  try {
+    fs.mkdirSync(durableEvidenceDir, { recursive: true });
+    for (const name of names) {
+      const source = path.join(outDir, name);
+      if (fs.existsSync(source)) fs.copyFileSync(source, path.join(durableEvidenceDir, name));
+    }
+    console.log(`durable evidence archived: ${durableEvidenceDir}`);
+  } catch (error) {
+    console.error(`durable evidence archive failed: ${error?.message || error}`);
+  }
 }
 
 function writeJson(name, payload) {
@@ -2006,6 +2027,7 @@ ${gateBlock}
 - 参考书：${referencePath}
 - 参考策略：${referenceCloudPolicy}
 - 输出目录：${outDir}
+- 持久证据（非 gitignore，可回指）：${durableEvidenceDir}
 - 脏工作树：${preview(result.meta.preflight?.gitStatus || "clean", 500)}
 
 ## 步骤证据（仅诊断，不构成成稿判定）
@@ -2762,7 +2784,7 @@ async function main() {
   if (resetAuthorState || manageDevServices) {
     await step("prepare clean author state and local services", prepareCleanRunEnvironment, { fatal: true });
   }
-  const browser = await chromium.launch({ headless: true });
+  const browser = await resolveChromium().launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
@@ -2792,6 +2814,7 @@ async function main() {
     const gatePassed = runOutcomeGate();
     writeJson("qa-live-results.json", result);
     fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
+    archiveDurableEvidence();
     if (!gatePassed) {
       process.exitCode = 1;
       console.error(
@@ -2812,6 +2835,7 @@ if (require.main === module) {
     runOutcomeGate();
     writeJson("qa-live-results.json", result);
     fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
+    archiveDurableEvidence();
     appendLog({ type: "fatal", error: result.meta.fatalError });
     console.error(error);
     process.exitCode = 1;

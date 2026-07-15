@@ -41,6 +41,7 @@ class AddPairRequest(BaseModel):
     treatment_ref: str | None = None
     control_ref: str | None = None
     token_cost: dict[str, Any] = {}
+    genre: str | None = None
 
 
 class VoteRequest(BaseModel):
@@ -75,6 +76,7 @@ def _pair_admin_dict(pair: EvaluationPair) -> dict[str, Any]:
         "experiment_id": pair.experiment_id,
         "scene_snapshot_hash": pair.scene_snapshot_hash,
         "no_contrast": pair.no_contrast,
+        "genre": pair.genre,
     }
 
 
@@ -150,6 +152,7 @@ def add_pair(experiment_id: str, payload: AddPairRequest, request: Request, sess
                 treatment_ref=payload.treatment_ref,
                 control_ref=payload.control_ref,
                 token_cost=payload.token_cost,
+                genre=payload.genre,
             )
         ),
         actor_ref=actor_ref,

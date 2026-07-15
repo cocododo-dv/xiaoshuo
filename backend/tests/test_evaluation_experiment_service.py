@@ -264,3 +264,62 @@ def test_tool_report_from_pairs_reproducible() -> None:
     assert r1["p_value"] < 0.05
     assert r1["token_multiplier"] == 5.0
     assert r1["distinct_snapshot_count"] == 30
+
+
+# ===========================================================================
+# 分题材差异 + Wilson 置信区间 + 题材标签进入冻结清单（防赛后改标签）
+# ===========================================================================
+
+def test_report_includes_wilson_ci_and_genre_breakdown(session) -> None:
+    svc = _svc(session)
+    exp = svc.create_experiment(name="genre")
+    genres = ["悬疑", "悬疑", "悬疑", "都市", "都市", None]
+    for i, genre in enumerate(genres):
+        pair = svc.add_pair(
+            exp.experiment_id, scene_snapshot_hash=f"snap_{i}",
+            treatment_text=f"T{i}", control_text=f"C{i}", genre=genre,
+        )
+        slot = pair.blind_mapping_json["treatment_slot"]
+        if genre == "悬疑":
+            choice = slot                                    # treatment 胜
+        elif genre == "都市":
+            choice = "right" if slot == "left" else "left"   # control 胜
+        else:
+            choice = "tie"
+        svc.record_vote(pair.pair_id, choice=choice, reviewer_ref="u1")
+    report = svc.build_report(exp.experiment_id)
+    assert report["by_genre"]["悬疑"] == {
+        "voted_pairs": 3, "treatment_wins": 3, "control_wins": 0, "ties": 0,
+        "non_tie_n": 3, "preference_rate": 1.0,
+    }
+    assert report["by_genre"]["都市"]["preference_rate"] == 0.0
+    assert report["by_genre"]["unlabeled"]["ties"] == 1
+    ci = report["preference_ci95"]                # 3/5 非平局票
+    assert ci["low"] == pytest.approx(0.2307, abs=2e-3)
+    assert ci["high"] == pytest.approx(0.8824, abs=2e-3)
+
+
+def test_wilson_ci_saturates_on_30_straight_wins(session) -> None:
+    svc = _svc(session)
+    exp = svc.create_experiment(name="ci30")
+    _seed_30_pairs(svc, exp.experiment_id, wins=30)
+    ci = svc.build_report(exp.experiment_id)["preference_ci95"]
+    assert ci["low"] > 0.85
+    assert ci["high"] == 1.0
+
+
+def test_frozen_manifest_detects_genre_tampering(session) -> None:
+    svc = _svc(session)
+    exp = svc.create_experiment(name="tamper")
+    pairs = [
+        svc.add_pair(exp.experiment_id, scene_snapshot_hash=f"snap_{i}",
+                     treatment_text=f"T{i}", control_text=f"C{i}", genre="悬疑")
+        for i in range(30)
+    ]
+    svc.freeze_experiment(exp.experiment_id)
+    pairs[0].genre = "都市"
+    session.flush()
+    with pytest.raises(DomainError) as tampered:
+        svc.freeze_experiment(exp.experiment_id)
+    assert tampered.value.code == "EXPERIMENT_MANIFEST_TAMPERED"
+    assert svc.build_report(exp.experiment_id)["frozen_manifest_verified"] is False

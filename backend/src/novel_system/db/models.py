@@ -2009,6 +2009,8 @@ class EvaluationPair(Base):
     blind_mapping_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     token_cost_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     no_contrast: Mapped[int] = mapped_column(Integer, default=0)
+    # 题材标签（可选）：报告分题材差异用；进入冻结清单哈希，冻结后改标签即篡改。
+    genre: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
