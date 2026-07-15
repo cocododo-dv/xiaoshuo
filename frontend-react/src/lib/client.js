@@ -338,6 +338,29 @@ export async function apiAdminPost(path, body = {}, adminToken = "") {
   }
 }
 
+export async function apiAdminDelete(path, adminToken = "") {
+  const clientRequestId = buildClientRequestId();
+  const { key, signature } = acquireIdempotencyKey("DELETE", path, undefined);
+  try {
+    const headers = {
+      "X-Idempotency-Key": key,
+      "X-Operator-Ref": getOperatorRef(),
+      "X-Client-Request-Id": clientRequestId,
+    };
+    if (adminToken) headers["X-Admin-Token"] = adminToken;
+    const response = await fetch(buildUrl(path), { method: "DELETE", headers });
+    const data = await parseEnvelope(response, clientRequestId);
+    releaseIdempotencyKey(signature);
+    return data;
+  } catch (error) {
+    const normalized = normalizeRequestError(error, clientRequestId);
+    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
+      releaseIdempotencyKey(signature);
+    }
+    throw normalized;
+  }
+}
+
 export async function apiDelete(path) {
   const clientRequestId = buildClientRequestId();
   const { key, signature } = acquireIdempotencyKey("DELETE", path, undefined);

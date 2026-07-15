@@ -503,6 +503,58 @@ class SceneRunCheckpointService:
                 )
         self.session.flush()
 
+    def finalize_after_author_archive(self, scene_id: str) -> bool:
+        """作者采纳归档后，把无主执行残留收敛为终态 archived 视图。
+
+        adopt-current 不持有 execution：上一次执行留下的
+        run_execution_status=failed / run_checkpoint=soft_qc_ready 在归档后
+        仍是数据库真值，会误导运维与后续恢复判断（C2 证据点名的状态一致性
+        债务）。只收敛无主终态执行（failed/cancelled/completed）；活跃执行
+        （active/waiting_selection）有 owner 不得抢占，会计安全栅栏
+        （usage_exceeds_reservation/accounting_integrity_blocked）在事故修复
+        前必须保留阻断，二者都不收敛。原状态/断点写入 checkpoint JSON 审计。
+        """
+        state = self._state(scene_id, refresh=True)
+        current = state.active_execution_id
+        status = state.run_execution_status
+        if current is None or status not in _TERMINAL_EXECUTION_STATUSES:
+            return False
+        if status == "completed" and state.run_checkpoint == "archived":
+            return False
+        try:
+            payload = self._checkpoint_payload(state)
+        except DomainError:
+            # 残留 JSON 已损坏也不阻断归档收敛——以最小 payload 重建终态视图
+            payload = {}
+        finalized_payload = {
+            **payload,
+            "execution_id": current,
+            "node_key": "archived",
+            "finalized_by": "author_adoption",
+            "finalized_from_status": status,
+            "finalized_from_node": state.run_checkpoint,
+            "finalized_at": utcnow(),
+        }
+        changed = self.session.execute(
+            update(SceneRunState)
+            .where(
+                SceneRunState.scene_id == scene_id,
+                SceneRunState.active_execution_id == current,
+                SceneRunState.run_execution_status == status,
+            )
+            .values(
+                run_execution_status="completed",
+                run_checkpoint="archived",
+                run_checkpoint_json=finalized_payload,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if changed.rowcount != 1:
+            # 并发下有新执行刚完成 claim —— 残留已被接管，不再收敛
+            return False
+        self.session.flush()
+        return True
+
     def mark_waiting_selection(self, scene_id: str, execution_id: str) -> None:
         state = self._state(scene_id, refresh=True)
         if state.run_checkpoint != "selection_wait":

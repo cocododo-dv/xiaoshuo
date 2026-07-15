@@ -103,6 +103,54 @@ def test_completion_probe_success_missing_usage_http_and_transport_are_accounted
     assert calls[0].response_payload_summary["request_id"] == "req-actual"
 
 
+def test_completion_probe_reservation_covers_real_provider_usage(client, session, monkeypatch) -> None:
+    """回归:探活曾申报 max_output_tokens=1(预留 9),而 wire 载荷允许 8 个输出 token、
+    厂商模板化 prompt 计 11 → 实际 19 > 预留,连接明明成功却被
+    LLM_USAGE_EXCEEDS_RESERVATION 拦截。申报预算调大后,真实用量(含思考型模型
+    超发 reasoning tokens 的极端情况)必须能落账 settled 并放行探活结果。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+
+    def fake_models(url: str, **_kwargs):
+        return httpx.Response(200, json={"data": [{"id": "probe-model"}]})
+
+    monkeypatch.setattr("novel_system.services.system_config.httpx.get", fake_models)
+    usages = [
+        {"prompt_tokens": 11, "completion_tokens": 8, "total_tokens": 19},      # 实测 sensenova 案例
+        {"prompt_tokens": 11, "completion_tokens": 700, "total_tokens": 711},   # 思考型后端不截断 reasoning
+    ]
+    for usage in usages:
+        def fake_completion(*_args, _usage=usage, **_kwargs):
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "pong"}}], "usage": _usage},
+            )
+
+        monkeypatch.setattr("novel_system.services.llm_accounting.httpx.post", fake_completion)
+        response = client.post(
+            "/api/v1/system-config/test-provider",
+            headers=ADMIN_HEADERS,
+            json={
+                "provider": "openai_compatible",
+                "base_url": "https://probe.test/v1",
+                "credential_mode": "none",
+                "model": "probe-model",
+                "api_mode": "chat",
+                "check_completion": True,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["ok"] is True, data["message"]
+        assert data["checks"]["completion"]["ok"] is True
+        assert data["checks"]["completion"]["error_code"] is None
+
+    session.expire_all()
+    calls = list(session.scalars(select(LlmCall).where(LlmCall.node_id == "provider_probe")))
+    assert len(calls) == len(usages)
+    assert all(call.accounting_status == "settled" for call in calls)
+    assert all(call.total_tokens <= call.reserved_tokens for call in calls)
+
+
 def test_repo_model_config_declares_independent_provider_attempt_budget() -> None:
     config_path = Path(__file__).resolve().parents[2] / "config" / "models.yaml"
 
@@ -748,6 +796,85 @@ def test_llm_provider_default_can_be_changed_without_leaking_secret(client, monk
     overview = client.get("/api/v1/system-config/llm")
     assert overview.status_code == 200
     assert overview.json()["data"]["default_provider_id"] == "openai_backup"
+
+
+def test_llm_provider_delete_removes_secret_and_reassigns_default(client, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    for provider_id, api_key in (("openai_primary", "sk-primary-secret"), ("openai_backup", "sk-backup-secret")):
+        response = client.post(
+            "/api/v1/system-config/llm/providers",
+            headers=ADMIN_HEADERS,
+            json={
+                "provider_id": provider_id,
+                "provider_type": "openai",
+                "base_url": "https://api.openai.example/v1",
+                "enabled": True,
+                "credential_mode": "api_key",
+                "api_mode": "responses",
+                "models": ["gpt-5.4"],
+                "api_key": api_key,
+            },
+        )
+        assert response.status_code == 200
+
+    # 一条节点路由指向即将删除的服务 → 删除响应应把它列为 orphaned
+    route_response = client.post(
+        "/api/v1/system-config/llm/node-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "node_routing": {
+                "project_outline_plan": {
+                    "provider": "openai",
+                    "provider_id": "openai_primary",
+                    "model": "gpt-5.4",
+                    "temperature": 0.25,
+                    "max_output_tokens": 3200,
+                    "response_format": "json_object",
+                    "reasoning_level": "medium",
+                    "api_mode": "responses",
+                }
+            },
+            "activate": True,
+        },
+    )
+    assert route_response.status_code == 200
+
+    delete_response = client.delete(
+        "/api/v1/system-config/llm/providers/openai_primary",
+        headers=ADMIN_HEADERS,
+    )
+    assert delete_response.status_code == 200
+    assert "sk-primary-secret" not in delete_response.text
+    payload = delete_response.json()["data"]
+    assert payload["deleted_provider_id"] == "openai_primary"
+    assert payload["default_provider_id"] == "openai_backup"
+    assert payload["orphaned_route_node_ids"] == ["project_outline_plan"]
+
+    secret_ids = set(session.execute(select(SystemSecret.secret_id)).scalars())
+    assert "llm_provider:openai_primary:api_key" not in secret_ids
+    assert "llm_provider:openai_backup:api_key" in secret_ids
+
+    overview = client.get("/api/v1/system-config/llm").json()["data"]
+    assert "openai_primary" not in overview["providers"]
+    assert overview["default_provider_id"] == "openai_backup"
+    orphaned_route = overview["node_routes"]["project_outline_plan"]
+    assert orphaned_route["ready"] is not True
+
+    missing_response = client.delete(
+        "/api/v1/system-config/llm/providers/never_existed",
+        headers=ADMIN_HEADERS,
+    )
+    assert missing_response.status_code == 404
+    assert missing_response.json()["error"]["code"] == "CONFIG_PROVIDER_NOT_FOUND"
+
+
+def test_llm_overview_reports_admin_runtime_flags(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    runtime = client.get("/api/v1/system-config/llm").json()["data"]["runtime"]
+    assert runtime == {"admin_configured": True, "secret_configured": True}
 
 
 def test_llm_config_supports_local_openai_compatible_without_secret(client, session, monkeypatch) -> None:

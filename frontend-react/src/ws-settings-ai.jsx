@@ -92,6 +92,7 @@ function ProviderCard({ id, provider, state, onEdit, setFlash }) {
   const typeLabel = catalog[provider.provider_type]?.label || provider.provider_type;
   const probe = state.probes[id];
   const busyProbe = state.busy[`probe:${id}`];
+  const busyDelete = state.busy[`delete:${id}`];
   const keyHint = provider.credential_mode === "none"
     ? "免密钥"
     : (provider.secret?.configured ? `密钥 ${provider.secret.hint || "已配置"}` : "密钥未配置");
@@ -99,6 +100,25 @@ function ProviderCard({ id, provider, state, onEdit, setFlash }) {
   const toggleEnabled = (on) => {
     WsAiProviders.saveProvider({ ...provider, provider_id: id, enabled: on })
       .catch((error) => setFlash({ tone: "err", text: errText(error, "更新服务状态失败。") }));
+  };
+
+  const remove = () => {
+    if (!window.confirm(`确认删除服务「${id}」?它的密钥会一并从后端删除;仍指向它的节点路由会变为未就绪。`)) return;
+    WsAiProviders.deleteProvider(id)
+      .then((result) => {
+        const orphaned = result?.orphaned_route_node_ids || [];
+        setFlash(orphaned.length ? {
+          tone: "ok",
+          text: `服务「${id}」已删除。有 ${orphaned.length} 个 AI 节点的路由仍指向它,已标记为未就绪。`,
+          action: {
+            label: "一键补齐路由",
+            run: () => WsAiProviders.syncMissing({})
+              .then((r) => setFlash({ tone: "ok", text: `已用默认服务补齐 ${r.synced_node_ids?.length ?? 0} 个节点的路由。` }))
+              .catch((error) => setFlash({ tone: "err", text: errText(error, "补齐路由失败。") })),
+          },
+        } : { tone: "ok", text: `服务「${id}」已删除。` });
+      })
+      .catch((error) => setFlash({ tone: "err", text: errText(error, "删除服务失败。") }));
   };
 
   return (
@@ -128,6 +148,9 @@ function ProviderCard({ id, provider, state, onEdit, setFlash }) {
           </button>
         )}
         <button className="btn btn-ghost" onClick={() => onEdit(id)}>编辑</button>
+        <button className="btn btn-ghost" disabled={busyDelete} style={{ color: "var(--rose, #b04a4a)" }} onClick={remove}>
+          {busyDelete ? "删除中…" : "删除"}
+        </button>
       </div>
       {probe && (
         <div className="set-readonly" style={{
@@ -239,7 +262,7 @@ function ProviderForm({ state, preset, editingId, onDone, setFlash }) {
   };
 
   return (
-    <div className="card-flat" style={{ padding: "14px 16px", marginTop: 8 }}>
+    <div className="card-flat" style={{ padding: "14px 16px", margin: editing ? "0 0 8px" : "8px 0 0" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
         <strong>{editing ? `编辑「${editingId}」` : `添加:${preset.label_zh}`}</strong>
         {!editing && preset.notes_zh && <span className="set-row-hint" style={{ marginTop: 0 }}>{preset.notes_zh}</span>}
@@ -331,14 +354,20 @@ function PresetPicker({ state, onPick, onClose }) {
 
 /* ===== 模型服务 Section ===== */
 function ProvidersSection({ state, setFlash }) {
-  const [mode, setMode] = useState(null); // null | "pick" | {preset} | {editingId}
+  const [addMode, setAddMode] = useState(null); // null | "pick" | {preset} —— 只管添加流程
+  const [editing, setEditing] = useState({});   // { [provider_id]: true } —— 每张卡独立原位展开编辑
   const providers = state.overview?.providers || {};
   const ids = Object.keys(providers);
 
   const openAdd = () => {
     WsAiProviders.loadPresets().catch((error) => setFlash({ tone: "err", text: errText(error, "加载预设目录失败。") }));
-    setMode("pick");
+    setAddMode("pick");
   };
+  const openEdit = (id) => {
+    WsAiProviders.loadPresets().catch(() => {});
+    setEditing(e => ({ ...e, [id]: true }));
+  };
+  const closeEdit = (id) => setEditing(({ [id]: _closed, ...rest }) => rest);
 
   return (
     <Section title="模型服务" desc="接入各家模型或第三方中转;密钥加密存于后端,本机只留管理令牌。">
@@ -347,20 +376,19 @@ function ProvidersSection({ state, setFlash }) {
           还没有接入任何模型服务。点「添加模型服务」,选择厂商即可开始。
         </div>
       )}
-      {ids.map(id => (
+      {ids.map(id => editing[id] ? (
+        <ProviderForm key={id} state={state} preset={null} editingId={id}
+          onDone={() => closeEdit(id)} setFlash={setFlash} />
+      ) : (
         <ProviderCard key={id} id={id} provider={providers[id]} state={state}
-          onEdit={(eid) => { WsAiProviders.loadPresets().catch(() => {}); setMode({ editingId: eid }); }}
-          setFlash={setFlash} />
+          onEdit={openEdit} setFlash={setFlash} />
       ))}
-      {mode === null && (
+      {addMode === null && (
         <div><button className="btn btn-primary" onClick={openAdd}><I.Plus size={14} /> 添加模型服务</button></div>
       )}
-      {mode === "pick" && <PresetPicker state={state} onPick={(p) => setMode({ preset: p })} onClose={() => setMode(null)} />}
-      {mode && mode.preset && (
-        <ProviderForm state={state} preset={mode.preset} editingId={null} onDone={() => setMode(null)} setFlash={setFlash} />
-      )}
-      {mode && mode.editingId && (
-        <ProviderForm state={state} preset={null} editingId={mode.editingId} onDone={() => setMode(null)} setFlash={setFlash} />
+      {addMode === "pick" && <PresetPicker state={state} onPick={(p) => setAddMode({ preset: p })} onClose={() => setAddMode(null)} />}
+      {addMode && addMode.preset && (
+        <ProviderForm state={state} preset={addMode.preset} editingId={null} onDone={() => setAddMode(null)} setFlash={setFlash} />
       )}
     </Section>
   );

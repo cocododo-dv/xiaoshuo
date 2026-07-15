@@ -38,7 +38,7 @@
 - 3 场单章、5 章 × 3 场、至少 3 次候选选择、15/15 归档、5/5 聚合均未执行。
 - 没有清缓存后的全链重放及正文/选择/聚合哈希一致性证明。
 - 本次原始 gate 的 `scene_execution/candidate_selection/archive/chapter_aggregation` 回执因中途失败仍为 missing；需要将人工续跑改造成可续接的机器回执后才能关闭自动验收缺口。
-- 归档后 `run_execution_status=failed`、`run_checkpoint=soft_qc_ready` 仍保留，页面运行任务横幅也显示旧 `awaiting_candidate_selection`。作者终态不受影响，但会误导运维判断，属于后续应修的状态一致性债务。
+- ~~归档后 `run_execution_status=failed`、`run_checkpoint=soft_qc_ready` 仍保留，页面运行任务横幅也显示旧 `awaiting_candidate_selection`。作者终态不受影响，但会误导运维判断，属于后续应修的状态一致性债务。~~ **2026-07-14 已修**：归档事务内收敛无主终态执行残留（活跃执行与会计安全栅栏刻意不动），job 视图层叠加权威 `scene_status` 并收敛 `current_step`，前端横幅归档后强制重取，已归档场景幂等重放可自愈历史残留；后端 5 项 + 前端 1 项回归见账本「C2 后续」节。此修复不推进 C2 或任何发布门状态。
 - 未完成五章级 Q0/Q1、来源泄漏、真实计费、首次产稿率及 5× token 上限验证。
 
 证据索引：`docs/superpowers/evidence/20260714-c2-minimal-ui-closure.md`。因此本轮只把 UI 北极星从“未接通”提升为“最小真实链已接通”，**不关闭 C2，不宣称五章发布门通过**。
@@ -338,7 +338,7 @@
 
 ### P1-6 结构收敛未完成
 
-- `orchestrator.py` 约 1316 行、`ws-snow.jsx` 约 3961 行、`models.py` 约 2172 行、`qc_engine.py` 约 1829 行。
+- `orchestrator.py` 约 8,345 行（本文初版误写为 1316 行——那是 Wave 0 时期的规模；在本评估自身基线 `d01a338` 上已是 8,327 行，结构债务远大于原表述）、`ws-snow.jsx` 约 4,044 行、`models.py` 约 2,367 行、`qc_engine.py` 约 2,056 行（2026-07-14 实测）。
 - `ws-app.jsx` 仍静态导入主要页面，没有 React 路由级 lazy load。
 - 当前主 JS gzip 约 379KB，已达到体积目标，但单 chunk 与静态导入仍增加启动、变更和回归风险。
 

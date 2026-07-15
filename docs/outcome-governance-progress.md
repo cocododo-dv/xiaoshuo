@@ -696,3 +696,47 @@ cd frontend-react && NODE_OPTIONS="--require ./crypto-polyfill.cjs" npm run buil
 （7d 收集器是其判定逻辑）；FK 实际启用（7b 工具+迁移就绪，待全量存量盘点为 0）。
 **留后续独立提交（§11.8）**：item 6 大文件拆分（orchestrator/ws-scene-run/ws-snow）+
 item 7 React 路由级懒加载（主 chunk <500KB gzip）——纯结构重构、回归风险高，与行为改动分离。
+
+## C2 后续：归档后运行残留态收敛（状态一致性债务）—— 工程实现已完成（2026-07-14）
+
+> 对应 `docs/superpowers/specs/2026-07-13-ai-novel-outcome-governance-completion-assessment.md` §0
+> 点名的待修项：「归档后 `run_execution_status=failed`、`run_checkpoint=soft_qc_ready` 仍保留，
+> 页面运行任务横幅也显示旧 `awaiting_candidate_selection`」（C2 证据
+> `docs/superpowers/evidence/20260714-c2-minimal-ui-closure.md` §3 的已知债务）。
+
+### 交付内容
+
+1. **归档事务内收敛无主执行残留**：`SceneRunCheckpointService.finalize_after_author_archive`
+   （`services/scene_run_checkpoint.py`）——adopt-current 成功归档后，把无主**终态**执行
+   （failed/cancelled/completed）CAS 收敛为 `run_execution_status=completed`、
+   `run_checkpoint=archived`；原状态/断点写入 checkpoint JSON 审计字段
+   （`finalized_by=author_adoption` / `finalized_from_status` / `finalized_from_node`），历史不被抹除。
+   两类边界**刻意不收敛**：活跃执行（active/waiting_selection，有 owner 不得抢占）与会计安全
+   栅栏（usage_exceeds_reservation / accounting_integrity_blocked，事故修复前必须保留阻断，
+   与 `mark_cancelled` 同一红线）。CAS 失败（并发新执行刚 claim）静默放弃。收敛结果以
+   `run_residue_finalized` 布尔透出在 adopt 响应中。已归档幂等重放路径同样收敛——修复前
+   遗留残留的历史场景（如 C2 真实库）作者重点一次「采纳并归档」即自愈。
+2. **job 视图层收敛（不改写历史）**：`SceneRunJobService.serialize_job` 叠加权威
+   `scene_status` 字段；场景已归档且 job 非活跃（queued/running/cancel_requested 之外）时，
+   视图层 `current_step` 收敛为 `archived`——job 行的 `payload_json`/`result_summary_json`
+   仍保留原暂停点真值。
+3. **前端横幅刷新**：终态 job 不轮询，归档成功后横幅原本停留旧暂停点。
+   `SceneRunJobControl` 新增 `refreshSignal` prop（`ws-scene-run.jsx`），`ws-scene.jsx`
+   归档成功后递增，强制重取 latest（此时后端视图已收敛为 archived）。
+4. **harness 过期声明清理**（评估 P0-1 完成条件遗留项）：删除
+   `run-currentdb-three-chapter-qa.cjs` 报告模板中「候选终选 UI 到 Wave 3 交付、预期红灯」
+   的过期硬编码说明，改为陈述六阶段 UI 回执要求。
+
+### 测试（先列断言再实现）
+
+- `tests/test_scene_adopt_archive.py` 新增 5 项：failed@soft_qc_ready 残留收敛且新执行可
+  claim / 会计栅栏不被抹除（`run_residue_finalized=false`）/ 活跃执行不被抢占 /
+  已归档场景幂等重放自愈历史残留 / latest job 视图收敛为 archived 且 job 行历史 payload
+  不被改写。
+- `ws-scene-run.test.jsx` 新增 1 项：终态 job 无 refreshSignal 不自刷新；refreshSignal
+  递增后横幅收敛为 archived。
+
+### 诚实边界
+
+- 本项只关闭 C2 证据点名的**状态一致性工程债务**，不推进 C2 本身、五章发布门、真人盲评
+  或 30 章耐久门的任何状态；harness 六阶段自动回执在 5 章 × 3 场规模下仍未有通过记录。

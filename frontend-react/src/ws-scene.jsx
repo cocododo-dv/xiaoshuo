@@ -417,6 +417,8 @@ function WsSceneDemo({ go, t, demo = true }) {
   const [activeBackendScene, setActiveBackendScene] = useSt8(null);
   const [observedRunJob, setObservedRunJob] = useSt8(null);
   const [authoritativeRunJob, setAuthoritativeRunJob] = useSt8(null);
+  /* 归档成功后递增：让终态运行任务横幅重取 latest（后端视图已收敛为 archived）。 */
+  const [runJobRefreshTick, setRunJobRefreshTick] = useSt8(0);
 
   /* Task 8：scene 变更时重新解析后端 scene id；旧解析和旧 latest 响应都不得覆盖新场景。 */
   useEf8(() => {
@@ -661,6 +663,7 @@ function WsSceneDemo({ go, t, demo = true }) {
       const nr = { ...r, state: "archived", justArchived: true, archivedAt: new Date().toLocaleString("zh-CN") };
       setRuns(m => ({ ...m, [sc.id]: nr }));
       if (scnRunSave) scnRunSave(sc.sid, nr);
+      setRunJobRefreshTick(t => t + 1);
       return;
     }
     setOutcomes(o => ({ ...o, [pickedId]: "archived" }));
@@ -701,6 +704,7 @@ function WsSceneDemo({ go, t, demo = true }) {
             sceneId={activeBackendSceneId}
             observedJob={observedRunJob && observedRunJob.sceneId === activeBackendSceneId ? observedRunJob.job : null}
             onJobChange={(job) => setAuthoritativeRunJob({ sceneId: activeBackendSceneId, job })}
+            refreshSignal={runJobRefreshTick}
           />
         )}
         <Pipeline scene={scene} state={renderState} />

@@ -157,6 +157,21 @@ def save_system_config_llm_provider(
     )
 
 
+@router.delete("/api/v1/system-config/llm/providers/{provider_id}")
+def delete_system_config_llm_provider(
+    provider_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    require_admin_token(x_admin_token, client_host=_client_host(request))
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    return ok(
+        SystemConfigService(session).delete_llm_provider(provider_id=provider_id, actor_ref=actor_ref),
+        req_id=getattr(request.state, "request_id", None),
+    )
+
+
 @router.post("/api/v1/system-config/llm/providers/{provider_id}/default")
 def set_default_system_config_llm_provider(
     provider_id: str,

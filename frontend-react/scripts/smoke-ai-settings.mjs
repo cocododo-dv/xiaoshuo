@@ -119,6 +119,16 @@ await check("连接测试:不可达地址返回失败但不崩", async () => {
   if (!note) throw new Error("probe failure note missing");
 });
 
+await check("删除服务:卡片原位删除 → 后端配置移除(路由留作 orphan 待补齐)", async () => {
+  const card = page.locator(`.card-flat:has-text("${PROVIDER_ID}")`);
+  await card.locator('button:has-text("删除")').click(); // confirm dialog 自动接受
+  await page.waitForTimeout(1800);
+  if (await page.locator(`.card-flat:has-text("${PROVIDER_ID}")`).count()) throw new Error("card still visible");
+  const overview = await api("/api/v1/system-config/llm");
+  if (overview.providers[PROVIDER_ID]) throw new Error("provider still in overview");
+  // 复跑收敛:下一轮「添加服务」用同 id 重建,orphan 路由随之恢复 ready
+});
+
 await browser.close();
 const uniq = [...new Set(errors)];
 if (uniq.length) { console.log(`\n${uniq.length} page errors:`); uniq.slice(0, 10).forEach(e => console.log(" -", e.slice(0, 300))); }

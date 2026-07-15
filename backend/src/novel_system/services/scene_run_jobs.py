@@ -361,13 +361,22 @@ class SceneRunJobService:
         scene_id = job.scene_id or payload.get("scene_id") or summary.get("scene_id")
         latest_qc = summary.get("latest_qc") or self._latest_qc_summary(str(scene_id or ""))
         error_details = dict(summary.get("error_details") or {})
+        # C2 状态一致性债务：job 视图叠加权威场景态。场景已归档且 job 已终结时，
+        # current_step 不再展示旧暂停点（如 awaiting_candidate_selection）——
+        # 历史真值仍在 payload/result_summary 里，只有视图层收敛。
+        scene_state = self.session.get(SceneRunState, str(scene_id)) if scene_id else None
+        scene_status = scene_state.scene_status if scene_state else None
+        current_step = payload.get("current_step") or summary.get("current_step") or job.status
+        if scene_status == "archived" and job.status not in {"queued", "running", "cancel_requested"}:
+            current_step = "archived"
         return {
             "job_id": job.job_id,
             "chapter_id": job.chapter_id,
             "scene_id": scene_id,
             "job_type": job.job_type,
             "status": job.status,
-            "current_step": payload.get("current_step") or summary.get("current_step") or job.status,
+            "scene_status": scene_status,
+            "current_step": current_step,
             "stage_order": payload.get("stage_order") or SCENE_RUN_STAGE_ORDER,
             "started_at": job.started_at,
             "finished_at": job.finished_at,

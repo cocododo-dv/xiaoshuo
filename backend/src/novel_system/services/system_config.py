@@ -64,6 +64,8 @@ YAML_CONFIG_FILES = {
 LLM_API_KEY_SECRET_ID = "llm_api_key"
 LLM_PROVIDER_SECRET_PREFIX = "llm_provider"
 LLM_NODE_STATUSES = llm_node_statuses()
+# 探活调用向记账层申报的输出预算(详见 _probe_completion 内注释)
+PROBE_ACCOUNTING_OUTPUT_BUDGET = 1024
 
 
 def repo_config_dir() -> Path:
@@ -565,6 +567,11 @@ class SystemConfigService:
         return {
             "provider_catalog": _provider_catalog(),
             "default_provider_id": llm_payload.get("default_provider_id") or next(iter(providers.keys()), None),
+            # runtime 随 overview 带出,管理面前端无需再拉全量 /system-config(含全部历史快照)
+            "runtime": {
+                "admin_configured": bool(_admin_token()),
+                "secret_configured": bool(_config_secret()),
+            },
             "providers": providers,
             "node_catalog": node_catalog,
             "node_routes": node_routes,
@@ -736,6 +743,62 @@ class SystemConfigService:
         return {
             "default_provider_id": provider_id,
             "provider": self._serialize_provider(provider_id, providers[provider_id]),
+            "snapshot": _serialize_snapshot(snapshot),
+        }
+
+    def delete_llm_provider(self, *, provider_id: str, actor_ref: str) -> dict[str, Any]:
+        provider_id = _required_text(provider_id, "provider_id")
+        llm_payload = self._current_api_llm_payload()
+        providers = _provider_payloads_from_llm(llm_payload)
+        if provider_id not in providers:
+            raise DomainError("CONFIG_PROVIDER_NOT_FOUND", f"provider {provider_id} was not found", status_code=404)
+        providers.pop(provider_id)
+        llm_payload["providers"] = providers
+        if llm_payload.get("default_provider_id") == provider_id:
+            next_default = next(iter(providers.keys()), None)
+            if next_default is None:
+                llm_payload.pop("default_provider_id", None)
+            else:
+                llm_payload["default_provider_id"] = next_default
+        llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
+        llm_payload.setdefault("timeout_seconds", 30.0)
+        snapshot = self._store_config_snapshot(
+            category="api",
+            parsed={"llm": llm_payload},
+            validation={"ok": True, "message": "api config is valid"},
+            status="active",
+            active=True,
+            actor_ref=actor_ref,
+        )
+        secret = self.session.get(SystemSecret, llm_provider_api_key_secret_id(provider_id))
+        if secret is not None:
+            self.session.delete(secret)
+        # 节点路由不随删而清:仍指向该服务的路由会被就绪检查标为 blocked,
+        # 这里带回清单,前端可提示「一键补齐路由」切到默认服务。
+        current_models = dict(self._category_payload("models").get("parsed") or {})
+        orphaned_route_node_ids = sorted(
+            node_id
+            for node_id, route in dict(current_models.get("node_routing") or {}).items()
+            if isinstance(route, dict) and str(route.get("provider_id") or "") == provider_id
+        )
+        self.session.add(
+            OperationLog(
+                event_type="system_config_llm_provider_deleted",
+                object_type="system_config",
+                object_ref=snapshot.snapshot_id,
+                payload_json={
+                    "actor_ref": actor_ref,
+                    "provider_id": provider_id,
+                    "default_provider_id": llm_payload.get("default_provider_id"),
+                    "orphaned_route_node_ids": orphaned_route_node_ids,
+                },
+            )
+        )
+        self.session.commit()
+        return {
+            "deleted_provider_id": provider_id,
+            "default_provider_id": llm_payload.get("default_provider_id"),
+            "orphaned_route_node_ids": orphaned_route_node_ids,
             "snapshot": _serialize_snapshot(snapshot),
         }
 
@@ -1858,11 +1921,16 @@ def _probe_completion(
             "endpoint": None,
             "message": f"completion check skipped for provider {provider}",
         }
+    # 记账申报的输出预算必须 ≥ adapter 探活载荷真正允许的输出(各家 wire 上限 8),
+    # 并给两类真实偏差留余量:厂商对话模板使 prompt 计数高于本地估算(实测 ping=11 vs 估 8)、
+    # 思考型后端可能不按 max_tokens 截断 reasoning tokens。曾申报 1 → 预留 9 < 实际 19,
+    # 探活必然触发 LLM_USAGE_EXCEEDS_RESERVATION 拦截(probe 是 system scope,不入场景预算,
+    # 超配无成本)。
     request = LLMRequest(
         model=model,
         messages=[{"role": "user", "content": "ping"}],
         temperature=0.0,
-        max_output_tokens=1,
+        max_output_tokens=PROBE_ACCOUNTING_OUTPUT_BUDGET,
         response_format="text",
         provider=provider,
         timeout_seconds=timeout_seconds,

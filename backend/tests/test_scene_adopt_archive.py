@@ -255,3 +255,170 @@ def test_manuscript_detail_scene_entry_carries_content(client, session):
     detail = client.get("/api/v1/chapter-manuscripts/chapter_adopt_8").json()["data"]
     entries = [s for s in detail["scenes"] if s["scene_id"] == "scene_adopt_8"]
     assert entries and entries[0]["final_scene"]["content"] == "逐场正文全文。"
+
+
+# ---------------------------------------------------------------------------
+# C2 状态一致性债务（评估 §0）：归档后无主执行残留必须在同一事务收敛，
+# 会计安全栅栏与活跃执行不得被覆盖；job 视图层收敛为 archived。
+# ---------------------------------------------------------------------------
+
+
+def _seed_run_residue(session, scene_id: str, *, status: str, checkpoint: str | None = "soft_qc_ready", execution_id: str = "exec_residue_1") -> None:
+    state = session.get(SceneRunState, scene_id)
+    state.active_execution_id = execution_id
+    state.run_execution_status = status
+    state.run_checkpoint = checkpoint
+    state.run_checkpoint_json = (
+        {"execution_id": execution_id, "node_key": checkpoint}
+        if checkpoint
+        else {"execution_id": execution_id}
+    )
+    session.commit()
+
+
+def test_adopt_finalizes_failed_run_residue(client, session):
+    """failed@soft_qc_ready 残留在归档事务内收敛为 completed/archived。"""
+    _create_chapter(client, "chapter_adopt_9")
+    _create_scene(client, "scene_adopt_9", chapter_id="chapter_adopt_9", scene_seq=1)
+    _seed_style_draft(session, "scene_adopt_9", "chapter_adopt_9", content="残留收敛正文。")
+    _seed_run_residue(session, "scene_adopt_9", status="failed")
+
+    response = client.post(
+        "/api/v1/scenes/scene_adopt_9/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-9"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["run_residue_finalized"] is True
+
+    session.expire_all()
+    state = session.get(SceneRunState, "scene_adopt_9")
+    assert state.run_execution_status == "completed"
+    assert state.run_checkpoint == "archived"
+    payload = state.run_checkpoint_json
+    # 原状态/断点保留在审计字段，历史不被抹除
+    assert payload["finalized_by"] == "author_adoption"
+    assert payload["finalized_from_status"] == "failed"
+    assert payload["finalized_from_node"] == "soft_qc_ready"
+    assert payload["node_key"] == "archived"
+    assert payload["execution_id"] == "exec_residue_1"
+
+    # 收敛后的终态是可接管的：新执行 claim 不会撞 RUN_EXECUTION_IN_PROGRESS
+    from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
+
+    checkpoint = SceneRunCheckpointService(session).acquire_execution("scene_adopt_9", "exec_residue_2")
+    assert checkpoint.execution_id == "exec_residue_2"
+    assert checkpoint.resumed is False
+
+
+def test_adopt_keeps_accounting_fence_untouched(client, session):
+    """会计安全栅栏（usage_exceeds_reservation）在事故修复前不得被归档抹除。"""
+    _create_chapter(client, "chapter_adopt_10")
+    _create_scene(client, "scene_adopt_10", chapter_id="chapter_adopt_10", scene_seq=1)
+    _seed_style_draft(session, "scene_adopt_10", "chapter_adopt_10", content="栅栏保留正文。")
+    _seed_run_residue(session, "scene_adopt_10", status="usage_exceeds_reservation")
+
+    response = client.post(
+        "/api/v1/scenes/scene_adopt_10/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-10"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["run_residue_finalized"] is False
+
+    session.expire_all()
+    state = session.get(SceneRunState, "scene_adopt_10")
+    assert state.run_execution_status == "usage_exceeds_reservation"
+    assert state.run_checkpoint == "soft_qc_ready"
+
+
+def test_adopt_leaves_live_execution_untouched(client, session):
+    """活跃执行有 owner：归档不得抢占其执行栅栏。"""
+    _create_chapter(client, "chapter_adopt_11")
+    _create_scene(client, "scene_adopt_11", chapter_id="chapter_adopt_11", scene_seq=1)
+    _seed_style_draft(session, "scene_adopt_11", "chapter_adopt_11", content="活跃执行正文。")
+    _seed_run_residue(session, "scene_adopt_11", status="active")
+
+    response = client.post(
+        "/api/v1/scenes/scene_adopt_11/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-11"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["run_residue_finalized"] is False
+
+    session.expire_all()
+    state = session.get(SceneRunState, "scene_adopt_11")
+    assert state.run_execution_status == "active"
+    assert state.run_checkpoint == "soft_qc_ready"
+
+
+def test_adopt_replay_heals_legacy_residue_on_archived_scene(client, session):
+    """修复前已归档但残留 failed 的历史场景：幂等重放 adopt 即自愈。"""
+    _create_chapter(client, "chapter_adopt_13")
+    _create_scene(client, "scene_adopt_13", chapter_id="chapter_adopt_13", scene_seq=1)
+    _seed_style_draft(session, "scene_adopt_13", "chapter_adopt_13", content="历史残留自愈正文。")
+
+    first = client.post(
+        "/api/v1/scenes/scene_adopt_13/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-13"},
+    )
+    assert first.status_code == 200
+    # 模拟修复前的历史库形态：归档后残留 failed@soft_qc_ready
+    _seed_run_residue(session, "scene_adopt_13", status="failed", execution_id="exec_legacy_13")
+
+    replay = client.post(
+        "/api/v1/scenes/scene_adopt_13/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-13-heal"},
+    )
+    assert replay.status_code == 200
+    data = replay.json()["data"]
+    assert data["already_archived"] is True
+    assert data["run_residue_finalized"] is True
+
+    session.expire_all()
+    state = session.get(SceneRunState, "scene_adopt_13")
+    assert state.run_execution_status == "completed"
+    assert state.run_checkpoint == "archived"
+
+
+def test_latest_job_view_converges_to_archived(client, session):
+    """job 视图层收敛：场景归档后 latest 不再展示旧 awaiting_candidate_selection。"""
+    from novel_system.db.models import ChapterRunJob
+
+    _create_chapter(client, "chapter_adopt_12")
+    _create_scene(client, "scene_adopt_12", chapter_id="chapter_adopt_12", scene_seq=1)
+    _seed_style_draft(session, "scene_adopt_12", "chapter_adopt_12", content="视图收敛正文。")
+    session.add(
+        ChapterRunJob(
+            job_id="job_adopt_12",
+            chapter_id="chapter_adopt_12",
+            scene_id="scene_adopt_12",
+            status="completed",
+            job_type="scene_run_full",
+            payload_json={"scene_id": "scene_adopt_12", "current_step": "awaiting_candidate_selection"},
+        )
+    )
+    session.commit()
+
+    before = client.get("/api/v1/scenes/scene_adopt_12/run/jobs/latest").json()["data"]
+    assert before["current_step"] == "awaiting_candidate_selection"
+    assert before["scene_status"] != "archived"
+
+    adopted = client.post(
+        "/api/v1/scenes/scene_adopt_12/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-12"},
+    )
+    assert adopted.status_code == 200
+
+    after = client.get("/api/v1/scenes/scene_adopt_12/run/jobs/latest").json()["data"]
+    assert after["scene_status"] == "archived"
+    assert after["current_step"] == "archived"
+    # 历史真值不被改写：job 行本身的 payload 仍保留原暂停点
+    session.expire_all()
+    job = session.get(ChapterRunJob, "job_adopt_12")
+    assert job.payload_json["current_step"] == "awaiting_candidate_selection"
+    assert job.status == "completed"

@@ -331,6 +331,42 @@ describe("SceneRunJobControl", () => {
     }, T);
   });
 
+  it("refreshSignal refetches a terminal job so the banner converges to archived", async () => {
+    // C2 状态一致性债务：归档后终态 job 不轮询，横幅停在旧暂停点
+    // （awaiting_candidate_selection）；父组件归档成功后递增 refreshSignal
+    // 强制重取 latest，后端视图层已把 current_step 收敛为 archived。
+    const { mod, client } = await loadSceneRun();
+    client.getLatestSceneRunJob
+      .mockResolvedValueOnce({
+        job_id: "job-adopt",
+        scene_id: "SC01",
+        status: "completed",
+        current_step: "awaiting_candidate_selection",
+      })
+      .mockResolvedValue({
+        job_id: "job-adopt",
+        scene_id: "SC01",
+        status: "completed",
+        current_step: "archived",
+        scene_status: "archived",
+      });
+
+    const view = await renderRunJobControl(mod.SceneRunJobControl, { sceneId: "SC01" });
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("awaiting_candidate_selection");
+    }, T);
+    // 终态 job 不轮询：没有 refreshSignal 时不会自己刷新
+    expect(client.getLatestSceneRunJob).toHaveBeenCalledTimes(1);
+
+    await view.rerender({ sceneId: "SC01", refreshSignal: 1 });
+
+    await vi.waitFor(() => {
+      expect(view.host.querySelector('[role="status"]')?.textContent).toContain("archived");
+    }, T);
+    expect(client.getLatestSceneRunJob).toHaveBeenCalledTimes(2);
+    expect(view.host.querySelector('[data-testid="scene-run-job-control"]')?.dataset.status).toBe("completed");
+  });
+
   it("still shows a cancel network failure when an intervening latest poll remains on job A", async () => {
     const { mod, client } = await loadSceneRun();
     client.getLatestSceneRunJob.mockResolvedValue({

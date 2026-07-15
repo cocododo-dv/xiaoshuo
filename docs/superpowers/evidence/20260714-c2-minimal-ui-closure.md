@@ -39,6 +39,7 @@
 | ChapterMemory | final，381 字符，`active_flag=1`，`runtime_eligible=1`，basis=`direct_read` |
 
 需保留的状态债务：归档后 `run_execution_status=failed`、`run_checkpoint=soft_qc_ready` 仍在，页面运行任务横幅仍显示旧 `awaiting_candidate_selection`。权威作者态和成稿不受影响，但运维/展示会被误导。
+（2026-07-14 后续附注：该债务已在后续提交中修复——归档事务收敛无主执行残留 + job 视图层收敛，见 `docs/outcome-governance-progress.md` 的「C2 后续」节。本证据文档其余内容保持当时事实不变。）
 
 ## 4. 新鲜回归
 

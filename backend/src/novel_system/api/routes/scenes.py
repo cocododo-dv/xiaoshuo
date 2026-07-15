@@ -38,6 +38,7 @@ from novel_system.services.projects import ProjectService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService, SceneTriageService
 from novel_system.services.scene_quality import SceneAutoRewriteService, SceneQualityService
+from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.services.scene_run_jobs import (
     SceneRunJobService,
     remember_committed_cancellation,
@@ -1250,13 +1251,16 @@ def adopt_current_scene(
             session.add(state)
             session.flush()
 
-        # 已归档：幂等返回现状，不重复归档
+        # 已归档：幂等返回现状，不重复归档；顺带收敛修复前遗留的运行残留
+        # （如 C2 真实库中 failed@soft_qc_ready 的历史残留，作者重点一次即自愈）
         if state.scene_status == "archived" and state.current_final_scene_row_id:
+            residue_finalized = SceneRunCheckpointService(session).finalize_after_author_archive(scene_id)
             return {
                 "scene_id": scene_id,
                 "scene_status": "archived",
                 "final_scene_row_id": state.current_final_scene_row_id,
                 "already_archived": True,
+                "run_residue_finalized": residue_finalized,
                 "author_state": compute_author_state(session, scene_id, state),
             }
 
@@ -1383,12 +1387,16 @@ def adopt_current_scene(
             final.row_id,
             carry_notes_json=carry_notes,
         )
+        # C2 状态一致性债务：归档后无主执行残留（failed@soft_qc_ready 等）
+        # 在同一事务内收敛为 completed/archived，运维/展示不再被误导
+        run_residue_finalized = SceneRunCheckpointService(session).finalize_after_author_archive(scene_id)
         return {
             "scene_id": scene_id,
             "scene_status": archive_result["scene_status"],
             "final_scene_row_id": final.row_id,
             "scene_memory_row_id": archive_result["scene_memory_row_id"],
             "source_safety_scan": scan,
+            "run_residue_finalized": run_residue_finalized,
             "author_state": compute_author_state(session, scene_id, state),
         }
 

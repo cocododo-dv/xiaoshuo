@@ -62,6 +62,7 @@ function SceneRunJobControl({
   observedJob = null,
   onJobChange = null,
   pollIntervalMs = 2000,
+  refreshSignal = 0,
 }) {
   const [job, setJob] = React.useState(null);
   const [loading, setLoading] = React.useState(Boolean(sceneId));
@@ -174,6 +175,13 @@ function SceneRunJobControl({
     refreshInFlightRef.current = false;
     publishJob(observedJob);
   }, [observedJob, sceneId, publishJob]);
+
+  /* 归档等页面动作后由父组件递增 refreshSignal：终态 job 不轮询，
+     不刷新的话横幅会停留在旧暂停点（如 awaiting_candidate_selection）。 */
+  React.useEffect(() => {
+    if (!sceneId || !refreshSignal) return;
+    void refreshLatest({ silent: true, force: true });
+  }, [refreshSignal, sceneId, refreshLatest]);
 
   React.useEffect(() => {
     if (!sceneId || !job || !RUN_JOB_POLLING_STATUSES.has(job.status)) return undefined;

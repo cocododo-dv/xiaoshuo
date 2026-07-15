@@ -1,5 +1,5 @@
 import React from "react";
-import { apiAdminGet, apiAdminPost, apiGet } from "./lib/client.js";
+import { apiAdminDelete, apiAdminGet, apiAdminPost, apiGet } from "./lib/client.js";
 
 /* ==========================================================
    WsAiProviders — AI 模型接入 store(设置 → AI 模型)
@@ -50,18 +50,18 @@ const WsAiProviders = {
     aipNotify();
   },
 
+  /* 只拉 /llm 一个接口:overview 自带 runtime.admin_configured。
+     (旧实现每次都并拉全量 /system-config——它带全部历史快照,已到 MB 级,
+     是「保存服务」按钮迟迟不结束的主因。) */
   async refresh() {
     aipPatch({ loading: true, error: null });
     try {
-      const [overview, root] = await Promise.all([
-        apiGet("/api/v1/system-config/llm"),
-        apiGet("/api/v1/system-config").catch(() => null),
-      ]);
+      const overview = await apiGet("/api/v1/system-config/llm");
       aipPatch({
         loading: false,
         loaded: true,
         overview,
-        adminConfigured: Boolean(root?.runtime?.admin_configured),
+        adminConfigured: Boolean(overview?.runtime?.admin_configured),
       });
       return overview;
     } catch (error) {
@@ -83,6 +83,24 @@ const WsAiProviders = {
     aipBusy(key, true);
     try {
       const result = await apiAdminPost("/api/v1/system-config/llm/providers", payload, adminToken());
+      await WsAiProviders.refresh();
+      return result;
+    } finally {
+      aipBusy(key, false);
+    }
+  },
+
+  /* 删除一个模型服务(连同后端密钥);节点路由不随删,orphaned 列表随返回值带回 */
+  async deleteProvider(providerId) {
+    const key = `delete:${providerId}`;
+    aipBusy(key, true);
+    try {
+      const result = await apiAdminDelete(
+        `/api/v1/system-config/llm/providers/${encodeURIComponent(providerId)}`, adminToken(),
+      );
+      const probes = { ...AIP.probes };
+      delete probes[providerId];
+      aipPatch({ probes });
       await WsAiProviders.refresh();
       return result;
     } finally {
