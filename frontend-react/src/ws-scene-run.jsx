@@ -875,7 +875,7 @@ async function scnAdoptToDoc(sid, draft, gate) {
   }
   // 2) 归档成功 → 正文写穿 author-drafts 主路径（WrDocs 缓存+PATCH）
   try {
-    if (window.WrDocs) window.WrDocs.save(sid, html);
+    if (window.WrDocs) await window.WrDocs.save(sid, html);
     else localStorage.setItem(key, html);
   } catch (e) { return { ok: false, reason: "写入失败" }; }
   const hit = WsCatalog.sceneById(sid);

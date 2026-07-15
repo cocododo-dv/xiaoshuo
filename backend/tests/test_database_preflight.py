@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,66 @@ from novel_system.tools.database_preflight import inspect_database
 
 HEAD_REVISION = "20260713_0065"
 PREVIOUS_REVISION = "20260712_0064"
+EVIDENCE_GATE_REVISION = "20260715_0066"
+PAIR_GENRE_REVISION = "20260715_0067"
+NARRATIVE_POSITION_REVISION = "20260715_0068"
+LATEST_REVISION = "20260715_0069"
+
+
+def _migrate_database(
+    path: Path,
+    revision: str,
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    from novel_system.db.session import reset_engine
+
+    fake_root = tmp_path / f"migration-root-{revision}"
+    backups_dir = fake_root / "backups"
+    backups_dir.mkdir(parents=True)
+    (backups_dir / "style_reference_legacy_preflight.json").write_text(
+        "[]",
+        encoding="utf-8",
+    )
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "alembic"))
+    with monkeypatch.context() as migration_env:
+        migration_env.setenv(
+            "NOVEL_SYSTEM_DATABASE_URL",
+            f"sqlite:///{path.as_posix()}",
+        )
+        migration_env.setenv("STYLE_REFERENCE_REPO_ROOT", str(fake_root))
+        reset_engine()
+        try:
+            command.upgrade(config, revision)
+        finally:
+            reset_engine()
+
+
+def _drop_columns(
+    path: Path,
+    columns_by_table: dict[str, tuple[str, ...]],
+) -> None:
+    with sqlite3.connect(path) as connection:
+        for table_name, column_names in columns_by_table.items():
+            table_identifier = database_preflight._quote_identifier(table_name)
+            existing = {
+                str(row[1])
+                for row in connection.execute(f"PRAGMA table_info({table_identifier})")
+            }
+            for column_name in column_names:
+                if column_name not in existing:
+                    continue
+                column_identifier = database_preflight._quote_identifier(column_name)
+                connection.execute(
+                    f"ALTER TABLE {table_identifier} DROP COLUMN {column_identifier}"
+                )
 
 
 def _make_ready_database(
@@ -554,6 +615,115 @@ def test_revision_aliases_select_the_canonical_schema_profiles(tmp_path):
     assert c1b["ready"] is True
     assert c1b["expected_revision_canonical"] == HEAD_REVISION
     assert c1b["llm_call_attempt_orphan_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("0066", EVIDENCE_GATE_REVISION),
+        ("0067", PAIR_GENRE_REVISION),
+        ("0068", NARRATIVE_POSITION_REVISION),
+        ("0069", LATEST_REVISION),
+    ],
+)
+def test_new_revision_aliases_resolve_to_canonical_revisions(alias, canonical):
+    assert database_preflight.REVISION_ALIASES[alias] == canonical
+    assert database_preflight.REVISION_ALIASES[canonical] == canonical
+
+
+def test_fresh_0069_database_passes_head_preflight(tmp_path, monkeypatch):
+    database_path = tmp_path / "fresh-0069.db"
+    _migrate_database(
+        database_path,
+        LATEST_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+
+    result = inspect_database(database_path, "0069")
+
+    assert result["revision"] == LATEST_REVISION
+    assert result["expected_revision_canonical"] == LATEST_REVISION
+    assert result["missing_tables"] == []
+    assert result["missing_columns"] == {}
+    assert result["schema_errors"] == []
+    assert result["ready"] is True, result
+
+
+def test_0069_preflight_rejects_missing_canonical_columns(tmp_path, monkeypatch):
+    database_path = tmp_path / "0069-missing-canonical-column.db"
+    _migrate_database(
+        database_path,
+        LATEST_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+    _drop_columns(database_path, {"final_scenes": ("content_hash",)})
+
+    result = inspect_database(database_path, LATEST_REVISION)
+
+    assert result["ready"] is False
+    assert "content_hash" in result["missing_columns"]["final_scenes"]
+    assert result["schema_errors"] == []
+
+
+def test_0069_preflight_rejects_missing_narrative_index(tmp_path, monkeypatch):
+    database_path = tmp_path / "0069-missing-narrative-index.db"
+    _migrate_database(
+        database_path,
+        LATEST_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP INDEX ix_narrative_events_project_entity_scene")
+
+    result = inspect_database(database_path, LATEST_REVISION)
+
+    assert result["ready"] is False
+    assert {
+        "kind": "index",
+        "table": "narrative_events",
+        "name": "ix_narrative_events_project_entity_scene",
+        "expected": {
+            "columns": ["project_id", "entity_id", "scene_id"],
+            "unique": False,
+            "origin": "c",
+            "partial": False,
+        },
+        "actual": None,
+    } in result["schema_errors"]
+
+
+def test_0068_profile_does_not_require_0069_columns(tmp_path, monkeypatch):
+    database_path = tmp_path / "fresh-0068.db"
+    _migrate_database(
+        database_path,
+        NARRATIVE_POSITION_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+    _drop_columns(
+        database_path,
+        {
+            table_name: tuple(contracts)
+            for table_name, contracts in (
+                database_preflight.AUTHOR_CANONICAL_COLUMN_CONTRACTS.items()
+            )
+        },
+    )
+    with sqlite3.connect(database_path) as connection:
+        final_scene_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(final_scenes)")
+        }
+    assert "content_hash" not in final_scene_columns
+
+    result = inspect_database(database_path, "0068")
+
+    assert result["ready"] is True
+    assert result["expected_revision_canonical"] == NARRATIVE_POSITION_REVISION
+    assert result["missing_columns"] == {}
+    assert result["schema_errors"] == []
 
 
 def test_unknown_expected_revision_fails_closed_even_when_database_stamp_matches(tmp_path):

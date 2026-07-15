@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -30,6 +30,8 @@ from novel_system.db.models import (
     SceneCard,
 )
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+from novel_system.services.narrative_position import NarrativePositionService
+from novel_system.services.errors import DomainError
 
 
 EVENT_TYPES = (
@@ -122,6 +124,101 @@ class ConsistencyReport:
 class NarrativeEventLog:
     def __init__(self, session: Session) -> None:
         self.session = session
+        self.positions = NarrativePositionService(session)
+
+    def _event_statement(
+        self,
+        project_id: str,
+        *,
+        before_scene_id: str | None = None,
+        up_to_scene_id: str | None = None,
+        up_to_scene_seq: int | None = None,
+        descending: bool = False,
+    ):
+        boundaries = sum(
+            value is not None
+            for value in (before_scene_id, up_to_scene_id, up_to_scene_seq)
+        )
+        if boundaries > 1:
+            raise DomainError(
+                "NARRATIVE_CURSOR_CONFLICT",
+                "use exactly one narrative boundary",
+                status_code=400,
+            )
+        statement = self.positions.event_statement(project_id)
+        if before_scene_id is not None:
+            cursor = self.positions.cursor_for_scene(project_id, before_scene_id)
+            statement = self.positions.before(statement, cursor)
+        elif up_to_scene_id is not None:
+            cursor = self.positions.cursor_for_scene(project_id, up_to_scene_id)
+            statement = self.positions.before(statement, cursor, inclusive=True)
+        elif up_to_scene_seq is not None:
+            self._require_unambiguous_legacy_cursor(project_id)
+            # Backward compatibility for callers that operate on a one-chapter
+            # project.  New runtime paths always pass a scene id.
+            statement = statement.where(SceneCard.scene_seq <= up_to_scene_seq)
+        return self.positions.ordered_events(statement, descending=descending)
+
+    def _require_unambiguous_legacy_cursor(self, project_id: str) -> None:
+        chapter_ids = set(
+            self.session.execute(
+                select(SceneCard.chapter_id)
+                .join(ChapterGoal, ChapterGoal.chapter_id == SceneCard.chapter_id)
+                .where(
+                    SceneCard.trashed_flag == 0,
+                    ChapterGoal.trashed_flag == 0,
+                    or_(
+                        SceneCard.project_id == project_id,
+                        ChapterGoal.project_id == project_id,
+                    ),
+                )
+                .distinct()
+            ).scalars().all()
+        )
+        if not chapter_ids:
+            chapter_ids = set(
+                self.session.execute(
+                    select(NarrativeEvent.chapter_id)
+                    .where(NarrativeEvent.project_id == project_id)
+                    .distinct()
+                ).scalars().all()
+            )
+        if len(chapter_ids) > 1:
+            raise DomainError(
+                "NARRATIVE_CURSOR_AMBIGUOUS",
+                "scene_seq is chapter-local; use a scene_id boundary for multi-chapter replay",
+                status_code=400,
+            )
+
+    def events(
+        self,
+        project_id: str,
+        *,
+        before_scene_id: str | None = None,
+        up_to_scene_id: str | None = None,
+        up_to_scene_seq: int | None = None,
+        event_type: str | None = None,
+        entity_id: str | None = None,
+        fact_key: str | None = None,
+        descending: bool = False,
+        limit: int | None = None,
+    ) -> list[NarrativeEvent]:
+        statement = self._event_statement(
+            project_id,
+            before_scene_id=before_scene_id,
+            up_to_scene_id=up_to_scene_id,
+            up_to_scene_seq=up_to_scene_seq,
+            descending=descending,
+        )
+        if event_type is not None:
+            statement = statement.where(NarrativeEvent.event_type == event_type)
+        if entity_id is not None:
+            statement = statement.where(NarrativeEvent.entity_id == entity_id)
+        if fact_key is not None:
+            statement = statement.where(NarrativeEvent.fact_key == fact_key)
+        if limit is not None:
+            statement = statement.limit(limit)
+        return list(self.session.execute(statement).scalars().all())
 
     def log_event(
         self,
@@ -141,13 +238,19 @@ class NarrativeEventLog:
         source_text_excerpt: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> NarrativeEvent:
-        scene_seq = self._scene_seq(scene_id)
+        cursor = self.positions.cursor_for_scene(project_id, scene_id)
+        if cursor.chapter_id != chapter_id:
+            raise DomainError(
+                "NARRATIVE_EVENT_CHAPTER_MISMATCH",
+                f"scene '{scene_id}' belongs to chapter '{cursor.chapter_id}', not '{chapter_id}'",
+                status_code=409,
+            )
         event = NarrativeEvent(
             event_id=f"nevt_{uuid.uuid4().hex[:16]}",
             project_id=project_id,
             scene_id=scene_id,
             chapter_id=chapter_id,
-            scene_seq=scene_seq,
+            scene_seq=cursor.scene_seq,
             event_type=event_type,
             entity_type=entity_type,
             entity_id=entity_id,
@@ -176,18 +279,21 @@ class NarrativeEventLog:
         project_id: str,
         *,
         up_to_scene_seq: int | None = None,
+        up_to_scene_id: str | None = None,
+        before_scene_id: str | None = None,
     ) -> CharacterState:
         """Replay events to reconstruct character state. Latest fact per key wins."""
         query = (
-            select(NarrativeEvent)
+            self._event_statement(
+                project_id,
+                before_scene_id=before_scene_id,
+                up_to_scene_id=up_to_scene_id,
+                up_to_scene_seq=up_to_scene_seq,
+            )
             .where(
-                NarrativeEvent.project_id == project_id,
                 NarrativeEvent.entity_id == character_id,
             )
-            .order_by(NarrativeEvent.scene_seq.asc(), NarrativeEvent.created_at.asc())
         )
-        if up_to_scene_seq is not None:
-            query = query.where(NarrativeEvent.scene_seq <= up_to_scene_seq)
 
         events = self.session.execute(query).scalars().all()
         state = CharacterState(character_id=character_id)
@@ -195,7 +301,7 @@ class NarrativeEventLog:
             existing = state.facts.get(evt.fact_key)
             if (
                 existing is not None
-                and existing.scene_seq == evt.scene_seq
+                and existing.scene_id == evt.scene_id
                 and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
             ):
                 continue  # 同场景内 advisory 不得反超高置信 spec 事实
@@ -218,19 +324,22 @@ class NarrativeEventLog:
         project_id: str,
         *,
         up_to_scene_seq: int | None = None,
+        up_to_scene_id: str | None = None,
+        before_scene_id: str | None = None,
     ) -> EntityState:
         """Replay events to reconstruct any entity's state. Latest fact per key wins."""
         query = (
-            select(NarrativeEvent)
+            self._event_statement(
+                project_id,
+                before_scene_id=before_scene_id,
+                up_to_scene_id=up_to_scene_id,
+                up_to_scene_seq=up_to_scene_seq,
+            )
             .where(
-                NarrativeEvent.project_id == project_id,
                 NarrativeEvent.entity_type == entity_type,
                 NarrativeEvent.entity_id == entity_id,
             )
-            .order_by(NarrativeEvent.scene_seq.asc(), NarrativeEvent.created_at.asc())
         )
-        if up_to_scene_seq is not None:
-            query = query.where(NarrativeEvent.scene_seq <= up_to_scene_seq)
 
         events = self.session.execute(query).scalars().all()
         state = EntityState(entity_type=entity_type, entity_id=entity_id)
@@ -238,7 +347,7 @@ class NarrativeEventLog:
             existing = state.facts.get(evt.fact_key)
             if (
                 existing is not None
-                and existing.scene_seq == evt.scene_seq
+                and existing.scene_id == evt.scene_id
                 and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
             ):
                 continue  # 同场景内 advisory 不得反超高置信 spec 事实
@@ -260,10 +369,15 @@ class NarrativeEventLog:
         project_id: str,
         *,
         up_to_scene_seq: int | None = None,
+        up_to_scene_id: str | None = None,
+        before_scene_id: str | None = None,
     ) -> EntityState:
         """Replay location events to reconstruct location state."""
         return self.project_entity_state(
-            "location", location_id, project_id, up_to_scene_seq=up_to_scene_seq,
+            "location", location_id, project_id,
+            up_to_scene_seq=up_to_scene_seq,
+            up_to_scene_id=up_to_scene_id,
+            before_scene_id=before_scene_id,
         )
 
     def project_item_state(
@@ -272,10 +386,15 @@ class NarrativeEventLog:
         project_id: str,
         *,
         up_to_scene_seq: int | None = None,
+        up_to_scene_id: str | None = None,
+        before_scene_id: str | None = None,
     ) -> EntityState:
         """Replay item events to reconstruct item state."""
         return self.project_entity_state(
-            "item", item_id, project_id, up_to_scene_seq=up_to_scene_seq,
+            "item", item_id, project_id,
+            up_to_scene_seq=up_to_scene_seq,
+            up_to_scene_id=up_to_scene_id,
+            before_scene_id=before_scene_id,
         )
 
     def known_facts_for_character(
@@ -284,19 +403,22 @@ class NarrativeEventLog:
         project_id: str,
         *,
         up_to_scene_seq: int | None = None,
+        up_to_scene_id: str | None = None,
+        before_scene_id: str | None = None,
     ) -> list[ProjectedFact]:
         """All facts an entity has accumulated up to a scene — for POV filtering."""
         query = (
-            select(NarrativeEvent)
+            self._event_statement(
+                project_id,
+                before_scene_id=before_scene_id,
+                up_to_scene_id=up_to_scene_id,
+                up_to_scene_seq=up_to_scene_seq,
+            )
             .where(
-                NarrativeEvent.project_id == project_id,
                 NarrativeEvent.entity_id == character_id,
                 NarrativeEvent.event_type == "character_learns",
             )
-            .order_by(NarrativeEvent.scene_seq.asc(), NarrativeEvent.created_at.asc())
         )
-        if up_to_scene_seq is not None:
-            query = query.where(NarrativeEvent.scene_seq <= up_to_scene_seq)
 
         events = self.session.execute(query).scalars().all()
         return [
@@ -315,18 +437,17 @@ class NarrativeEventLog:
     def all_facts_at_scene(
         self,
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None = None,
+        *,
+        scene_id: str | None = None,
     ) -> dict[str, CharacterState]:
         """Project all character states at a given scene. Returns {character_id: CharacterState}."""
-        events = self.session.execute(
-            select(NarrativeEvent)
-            .where(
-                NarrativeEvent.project_id == project_id,
-                NarrativeEvent.entity_type == "character",
-                NarrativeEvent.scene_seq <= scene_seq,
-            )
-            .order_by(NarrativeEvent.scene_seq.asc(), NarrativeEvent.created_at.asc())
-        ).scalars().all()
+        query = self._event_statement(
+            project_id,
+            up_to_scene_id=scene_id,
+            up_to_scene_seq=scene_seq if scene_id is None else None,
+        ).where(NarrativeEvent.entity_type == "character")
+        events = self.session.execute(query).scalars().all()
 
         states: dict[str, CharacterState] = {}
         for evt in events:
@@ -334,7 +455,7 @@ class NarrativeEventLog:
             existing = state.facts.get(evt.fact_key)
             if (
                 existing is not None
-                and existing.scene_seq == evt.scene_seq
+                and existing.scene_id == evt.scene_id
                 and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
             ):
                 continue  # 同场景内 advisory 不得反超高置信 spec 事实
@@ -353,20 +474,20 @@ class NarrativeEventLog:
     def all_entities_at_scene(
         self,
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None = None,
+        *,
+        scene_id: str | None = None,
     ) -> dict[str, dict[str, EntityState]]:
         """Project all entity states at a given scene.
 
         Returns {entity_type: {entity_id: EntityState}} for every entity type.
         """
-        events = self.session.execute(
-            select(NarrativeEvent)
-            .where(
-                NarrativeEvent.project_id == project_id,
-                NarrativeEvent.scene_seq <= scene_seq,
-            )
-            .order_by(NarrativeEvent.scene_seq.asc(), NarrativeEvent.created_at.asc())
-        ).scalars().all()
+        query = self._event_statement(
+            project_id,
+            up_to_scene_id=scene_id,
+            up_to_scene_seq=scene_seq if scene_id is None else None,
+        )
+        events = self.session.execute(query).scalars().all()
 
         by_type: dict[str, dict[str, EntityState]] = {}
         for evt in events:
@@ -378,7 +499,7 @@ class NarrativeEventLog:
             existing = state.facts.get(evt.fact_key)
             if (
                 existing is not None
-                and existing.scene_seq == evt.scene_seq
+                and existing.scene_id == evt.scene_id
                 and _confidence_rank(existing.confidence) > _confidence_rank(evt.confidence)
             ):
                 continue  # 同场景内 advisory 不得反超高置信 spec 事实
@@ -407,7 +528,7 @@ class NarrativeEventLog:
         Checks hard facts (location, physical_state, alive) against text content.
         This is the "one incremental consistency check" from blueprint §17 Action B.
         """
-        scene_seq = self._scene_seq(scene_id)
+        self.positions.cursor_for_scene(project_id, scene_id)
         if character_ids:
             chars = character_ids
         else:
@@ -434,7 +555,9 @@ class NarrativeEventLog:
         known_locations |= {v.lower() for v in loc_values if v}
 
         for char_id in chars:
-            state = self.project_character_state(char_id, project_id, up_to_scene_seq=scene_seq - 1)
+            state = self.project_character_state(
+                char_id, project_id, before_scene_id=scene_id,
+            )
             for fact_key, projected in state.facts.items():
                 if fact_key not in _CHECKABLE_FACT_KEYS:
                     continue
@@ -488,11 +611,13 @@ class NarrativeEventLog:
                 "narrative consistency LLM execution requires explicit accounting context",
             )
 
-        scene_seq = self._scene_seq(scene_id)
+        self.positions.cursor_for_scene(project_id, scene_id)
         chars = character_ids or self._characters_in_project(project_id)
         fact_lines: list[str] = []
         for char_id in chars:
-            state = self.project_character_state(char_id, project_id, up_to_scene_seq=scene_seq - 1)
+            state = self.project_character_state(
+                char_id, project_id, before_scene_id=scene_id,
+            )
             for fact_key, projected in state.facts.items():
                 if fact_key in _CHECKABLE_FACT_KEYS:
                     fact_lines.append(f"- {char_id}.{fact_key} = {projected.fact_value}")
@@ -534,8 +659,9 @@ class NarrativeEventLog:
     def format_state_for_prompt(
         self,
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None = None,
         *,
+        scene_id: str | None = None,
         pov_character_id: str | None = None,
         onstage_character_ids: list[str] | None = None,
     ) -> str:
@@ -552,14 +678,20 @@ class NarrativeEventLog:
             )
             return PovKnowledgeProjection(self.session).format_state_for_prompt(
                 project_id, scene_seq,
+                scene_id=scene_id,
                 pov_character_id=pov_character_id,
                 onstage_character_ids=onstage_character_ids,
             )
+        boundary = (
+            {"before_scene_id": scene_id}
+            if scene_id is not None
+            else {"up_to_scene_seq": int(scene_seq or 0) - 1}
+        )
         chars = onstage_character_ids or self._characters_in_project(project_id)
         lines: list[str] = []
         lines.append("## Authoritative Character State (from event log, do NOT contradict)")
         for char_id in chars:
-            state = self.project_character_state(char_id, project_id, up_to_scene_seq=scene_seq - 1)
+            state = self.project_character_state(char_id, project_id, **boundary)
             if not state.facts:
                 continue
             lines.append(f"\n### {char_id}")
@@ -568,7 +700,7 @@ class NarrativeEventLog:
 
         if pov_character_id:
             known = self.known_facts_for_character(
-                pov_character_id, project_id, up_to_scene_seq=scene_seq - 1,
+                pov_character_id, project_id, **boundary,
             )
             if known:
                 lines.append(f"\n### POV知识边界 ({pov_character_id} 已知信息)")
@@ -580,7 +712,7 @@ class NarrativeEventLog:
             loc_lines: list[str] = []
             for loc_id in location_ids:
                 state = self.project_entity_state(
-                    "location", loc_id, project_id, up_to_scene_seq=scene_seq - 1,
+                    "location", loc_id, project_id, **boundary,
                 )
                 if state.facts:
                     loc_lines.append(f"\n### {loc_id}")
@@ -595,7 +727,7 @@ class NarrativeEventLog:
             item_lines: list[str] = []
             for item_id in item_ids:
                 state = self.project_entity_state(
-                    "item", item_id, project_id, up_to_scene_seq=scene_seq - 1,
+                    "item", item_id, project_id, **boundary,
                 )
                 if state.facts:
                     item_lines.append(f"\n### {item_id}")
@@ -610,9 +742,10 @@ class NarrativeEventLog:
     def information_asymmetry_digest(
         self,
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None,
         onstage_character_ids: list[str],
         *,
+        scene_id: str | None = None,
         pov_character_id: str | None = None,
     ) -> str:
         """Blueprint §2/§11: format information gaps between onstage characters for prompt injection.
@@ -630,8 +763,14 @@ class NarrativeEventLog:
             )
             return PovKnowledgeProjection(self.session).information_asymmetry_digest(
                 project_id, scene_seq, onstage_character_ids,
+                scene_id=scene_id,
                 pov_character_id=pov_character_id,
             )
+        boundary = (
+            {"before_scene_id": scene_id}
+            if scene_id is not None
+            else {"up_to_scene_seq": int(scene_seq or 0) - 1}
+        )
         if len(onstage_character_ids) < 2:
             return ""
 
@@ -643,10 +782,10 @@ class NarrativeEventLog:
         false_beliefs: dict[str, list[str]] = {}
 
         for char_id in onstage_character_ids:
-            facts = self.known_facts_for_character(char_id, project_id, up_to_scene_seq=scene_seq - 1)
+            facts = self.known_facts_for_character(char_id, project_id, **boundary)
             knowledge[char_id] = {f"{f.fact_key}:{f.fact_value}" for f in facts}
 
-            state = self.project_character_state(char_id, project_id, up_to_scene_seq=scene_seq - 1)
+            state = self.project_character_state(char_id, project_id, **boundary)
             for fk, pf in state.facts.items():
                 if fk == "secret_held_by":
                     secrets.setdefault(char_id, []).append(pf.fact_value)
@@ -717,10 +856,11 @@ class NarrativeEventLog:
 
     def downstream_events(self, event_id: str) -> list[NarrativeEvent]:
         """Return immediate children — events whose causal_predecessor_id == *event_id*."""
-        query = (
-            select(NarrativeEvent)
-            .where(NarrativeEvent.causal_predecessor_id == event_id)
-            .order_by(NarrativeEvent.scene_seq.asc(), NarrativeEvent.created_at.asc())
+        parent = self.session.get(NarrativeEvent, event_id)
+        if parent is None:
+            return []
+        query = self._event_statement(parent.project_id).where(
+            NarrativeEvent.causal_predecessor_id == event_id
         )
         return list(self.session.execute(query).scalars().all())
 
@@ -729,6 +869,8 @@ class NarrativeEventLog:
         project_id: str,
         *,
         up_to_scene_seq: int | None = None,
+        up_to_scene_id: str | None = None,
+        before_scene_id: str | None = None,
     ) -> list[dict[str, str]]:
         """Identify foreshadow obligations that have not yet been resolved.
 
@@ -742,28 +884,21 @@ class NarrativeEventLog:
         where *status* is ``"fulfilled"`` or ``"unfulfilled"``.
         """
         # 1. Collect all events that carry obligations
-        plant_query = (
-            select(NarrativeEvent)
-            .where(
-                NarrativeEvent.project_id == project_id,
-                NarrativeEvent.obligation_ids.isnot(None),
-            )
-            .order_by(NarrativeEvent.scene_seq.asc(), NarrativeEvent.created_at.asc())
-        )
-        if up_to_scene_seq is not None:
-            plant_query = plant_query.where(NarrativeEvent.scene_seq <= up_to_scene_seq)
+        plant_query = self._event_statement(
+            project_id,
+            before_scene_id=before_scene_id,
+            up_to_scene_id=up_to_scene_id,
+            up_to_scene_seq=up_to_scene_seq,
+        ).where(NarrativeEvent.obligation_ids.isnot(None))
         plant_events = self.session.execute(plant_query).scalars().all()
 
         # 2. Collect all foreshadow_resolve events in the project
-        resolve_query = (
-            select(NarrativeEvent)
-            .where(
-                NarrativeEvent.project_id == project_id,
-                NarrativeEvent.event_type == "foreshadow_resolve",
-            )
-        )
-        if up_to_scene_seq is not None:
-            resolve_query = resolve_query.where(NarrativeEvent.scene_seq <= up_to_scene_seq)
+        resolve_query = self._event_statement(
+            project_id,
+            before_scene_id=before_scene_id,
+            up_to_scene_id=up_to_scene_id,
+            up_to_scene_seq=up_to_scene_seq,
+        ).where(NarrativeEvent.event_type == "foreshadow_resolve")
         resolve_events = self.session.execute(resolve_query).scalars().all()
 
         # Build a set of resolved obligation IDs.
@@ -801,24 +936,24 @@ class NarrativeEventLog:
 
         Kept to ~20 lines to stay within prompt budget.
         """
-        scene_seq = self._scene_seq(scene_id)
+        self.positions.cursor_for_scene(project_id, scene_id)
         lines: list[str] = ["## Causal Context"]
 
         # --- Recent causal events for onstage characters ---
         char_ids = onstage_character_ids or self._characters_in_project(project_id)
         if char_ids:
             recent_query = (
-                select(NarrativeEvent)
+                self._event_statement(
+                    project_id,
+                    before_scene_id=scene_id,
+                    descending=True,
+                )
                 .where(
-                    NarrativeEvent.project_id == project_id,
                     NarrativeEvent.entity_id.in_(char_ids),
                     NarrativeEvent.causal_predecessor_id.isnot(None),
                 )
-                .order_by(NarrativeEvent.scene_seq.desc(), NarrativeEvent.created_at.desc())
                 .limit(8)
             )
-            if scene_seq > 0:
-                recent_query = recent_query.where(NarrativeEvent.scene_seq < scene_seq)
             recent = list(self.session.execute(recent_query).scalars().all())
             recent.reverse()  # chronological
 
@@ -828,12 +963,12 @@ class NarrativeEventLog:
                 for evt in recent:
                     lines.append(
                         f"- [{evt.entity_id}] {evt.event_type}: "
-                        f"{evt.fact_key}={evt.fact_value} (scene {evt.scene_seq})"
+                        f"{evt.fact_key}={evt.fact_value} (scene {evt.scene_id})"
                     )
 
         # --- Unfulfilled obligations ---
         obligations = self.find_unfulfilled_obligations(
-            project_id, up_to_scene_seq=scene_seq - 1 if scene_seq > 0 else None,
+            project_id, before_scene_id=scene_id,
         )
         unfulfilled = [o for o in obligations if o["status"] == "unfulfilled"]
         if unfulfilled:

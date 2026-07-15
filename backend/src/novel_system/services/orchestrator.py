@@ -7196,7 +7196,10 @@ class Orchestrator:
                 scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id
             )
             return PovKnowledgeProjection(self.session).redact_brief(
-                brief, project_id, scene.scene_seq or 0,
+                brief,
+                project_id,
+                None,
+                scene_id=scene.scene_id,
                 pov_character_id=pov,
                 onstage_character_ids=scene.onstage_chars_json or [],
             )

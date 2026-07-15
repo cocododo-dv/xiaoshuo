@@ -28,6 +28,40 @@ def _headers(key: str) -> dict[str, str]:
     return {"X-Idempotency-Key": key}
 
 
+def _all_clear_literary_analysis(_content: str):
+    from novel_system.services.literary_quality import QUALITY_DIMENSIONS
+
+    return (
+        {
+            dimension: {"risk": False, "score": 1.0, "evidence": ""}
+            for dimension in QUALITY_DIMENSIONS
+        },
+        [],
+    )
+
+
+def _install_llm_candidate(monkeypatch, content: str, *, llm_call_id: str) -> None:
+    class FakeAutoRewriteRunner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        def run(self, **kwargs):
+            assert kwargs["node_id"] == "scene_auto_rewrite"
+            return SimpleNamespace(
+                llm_call_id=llm_call_id,
+                response=SimpleNamespace(
+                    structured_output={"scene_text": content, "rewrite_notes": ["test candidate"]}
+                ),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr(
+        "novel_system.services.scene_quality.LLMNodeRunner",
+        FakeAutoRewriteRunner,
+        raising=False,
+    )
+
+
 def _seed_scene(session, *, content: str, forbidden_text: str = "不能改名林岑，也不能删除盐钟残片。") -> None:
     session.add(
         ChapterGoal(
@@ -131,7 +165,13 @@ def test_quality_contract_generates_fixed_fields_preserves_chinese_and_hashes_st
     assert rows[0].contract_hash == first_contract["contract_hash"]
 
 
-def test_auto_rewrite_full_scene_can_promote_and_rollback_without_overwriting_author_draft(client, session) -> None:
+def test_auto_rewrite_full_scene_can_promote_and_rollback_without_overwriting_author_draft(
+    client, session, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.analyze_literary_quality",
+        _all_clear_literary_analysis,
+    )
     _seed_scene(
         session,
         content="林岑看着盐钟残片。她忽然意识到真相很重要。最后，一切都变得不同了。",
@@ -233,10 +273,209 @@ def test_auto_rewrite_uses_llm_candidate_when_live(client, session, monkeypatch)
     assert session.get(LlmCall, "llm_call_scene_auto_rewrite_test").provider == "fake"
 
 
-def test_auto_rewrite_routes_language_only_failure_to_local_patch(client, session) -> None:
+def test_auto_rewrite_scans_actual_candidate_instead_of_safe_source(client, session, monkeypatch) -> None:
+    _install_llm_candidate(
+        monkeypatch,
+        "林岑握住盐钟残片，把幸存者阿砚推给许望。路明非站在门口等她选择。",
+        llm_call_id="llm_candidate_source_leak",
+    )
+    _seed_scene(
+        session,
+        content="林岑握住盐钟残片，让幸存者阿砚先跟许望离开。她必须留下承担代价。",
+    )
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/auto-rewrite",
+        headers=_headers("rewrite-candidate-source-leak"),
+    )
+
+    assert response.status_code == 200
+    run = response.json()["data"]["run"]
+    assert run["status"] == "blocked"
+    assert run["candidate_draft_row_id"]
+    assert "source_safety" in run["promotion_blockers"]
+    assert run["gate_results"]["source_safety"]["safe"] is False
+    assert "路明非" in session.get(SceneDraft, run["candidate_draft_row_id"]).content
+
+
+def test_auto_rewrite_safe_candidate_can_repair_unsafe_source(client, session, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.analyze_literary_quality",
+        _all_clear_literary_analysis,
+    )
+    _install_llm_candidate(
+        monkeypatch,
+        (
+            "林岑攥住盐钟残片，把幸存者阿砚交给许望。她必须在公开录音和保护阿砚之间选择，"
+            "门外脚步逼近，她撕毁通行证作为代价，随后推开雾门。"
+        ),
+        llm_call_id="llm_candidate_repairs_source",
+    )
+    _seed_scene(session, content="路明非站在门口，旧稿仍带有受保护来源词。")
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/auto-rewrite",
+        headers=_headers("rewrite-repairs-unsafe-source"),
+    )
+
+    assert response.status_code == 200
+    run = response.json()["data"]["run"]
+    assert run["status"] == "candidate_ready"
+    assert run["gate_results"]["source_safety"]["safe"] is True
+    assert run["gate_results"]["promotable"] is True
+
+
+def test_auto_rewrite_cannot_use_author_waiver_for_machine_promotion(
+    client, session, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.analyze_literary_quality",
+        _all_clear_literary_analysis,
+    )
+    monkeypatch.setattr(
+        "novel_system.services.human_review_manager.HumanReviewManager.accepted_soft_risk_waiver",
+        lambda *_args, **_kwargs: {
+            "event_id": "review_machine_waiver",
+            "reason": "author accepted an ordinary-delivery warning",
+            "actor_ref": "author",
+            "qc_report_id": "qc_machine_waiver",
+        },
+    )
+    _install_llm_candidate(
+        monkeypatch,
+        "林岑必须在公开证据和保护幸存者之间选择，她撕毁通行证作为代价。",
+        llm_call_id="llm_candidate_machine_waiver",
+    )
+    _seed_scene(
+        session,
+        content="林岑握住盐钟残片，让幸存者阿砚先跟许望离开。她必须留下承担代价。",
+    )
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/auto-rewrite",
+        headers=_headers("rewrite-machine-waiver"),
+    )
+
+    assert response.status_code == 200
+    run = response.json()["data"]["run"]
+    assert run["status"] == "blocked"
+    assert run["gate_results"]["promotable"] is False
+    assert "continuity:missing_required_text" in run["promotion_blockers"]
+    assert run["gate_results"]["final_text_gate"]["continuity"]["waiver"] is None
+
+
+def test_auto_rewrite_gate_scores_are_computed_from_candidate(client, session) -> None:
+    _seed_scene(
+        session,
+        content="林岑看着盐钟残片。她忽然意识到真相很重要。最后，一切都变得不同了。",
+    )
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/auto-rewrite",
+        headers=_headers("rewrite-real-scores"),
+    )
+
+    assert response.status_code == 200
+    gate = response.json()["data"]["run"]["gate_results"]
+    nested_scores = gate["final_text_gate"]["literary_quality"]["scores"]
+    assert gate["scores"] == nested_scores
+    assert gate["scores"] != {
+        "character_scene_core": 0.86,
+        "ending_drive": 0.82,
+        "choice_pressure": 0.83,
+    }
+
+
+def test_auto_rewrite_promote_rescans_mutated_candidate(client, session, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.analyze_literary_quality",
+        _all_clear_literary_analysis,
+    )
+    _install_llm_candidate(
+        monkeypatch,
+        (
+            "林岑攥住盐钟残片，把幸存者阿砚交给许望。她必须在公开录音和保护阿砚之间选择，"
+            "门外脚步逼近，她撕毁通行证作为代价，随后推开雾门。"
+        ),
+        llm_call_id="llm_candidate_toctou",
+    )
+    _seed_scene(session, content="林岑握住盐钟残片，决定先保护幸存者阿砚，并让许望守住门。")
+    rewrite = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/auto-rewrite",
+        headers=_headers("rewrite-toctou"),
+    )
+    run = rewrite.json()["data"]["run"]
+    assert run["status"] == "candidate_ready"
+
+    draft = session.get(SceneDraft, run["candidate_draft_row_id"])
+    draft.content = "路明非替换了候选正文。"
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/auto-rewrite-runs/{run['run_id']}/promote",
+        headers=_headers("promote-toctou"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "AUTO_REWRITE_NOT_PROMOTABLE"
+    session.expire_all()
+    assert session.get(SceneRunState, SCENE_ID).current_final_scene_row_id == FINAL_ROW_ID
+    assert session.query(FinalScene).filter(FinalScene.scene_id == SCENE_ID).count() == 1
+
+
+def test_auto_rewrite_promote_rejects_safe_candidate_hash_change(client, session, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.analyze_literary_quality",
+        _all_clear_literary_analysis,
+    )
+    _install_llm_candidate(
+        monkeypatch,
+        (
+            "林岑攥住盐钟残片，把幸存者阿砚交给许望。她必须在公开录音和保护阿砚之间选择，"
+            "门外脚步逼近，她撕毁通行证作为代价，随后推开雾门。"
+        ),
+        llm_call_id="llm_candidate_safe_toctou",
+    )
+    _seed_scene(session, content="林岑握住盐钟残片，让幸存者阿砚先跟许望离开。她必须留下承担代价。")
+    rewrite = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/auto-rewrite",
+        headers=_headers("rewrite-safe-toctou"),
+    )
+    run = rewrite.json()["data"]["run"]
+    assert run["status"] == "candidate_ready"
+    recorded_hash = run["gate_results"]["content_hash"]
+
+    draft = session.get(SceneDraft, run["candidate_draft_row_id"])
+    draft.content = (
+        "林岑捏着盐钟残片，让幸存者阿砚跟许望走。她必须在公开录音和保护阿砚之间选择，"
+        "于是烧掉通行证承担代价，转身走进雾门。"
+    )
+    session.commit()
+
+    response = client.post(
+        f"/api/v1/auto-rewrite-runs/{run['run_id']}/promote",
+        headers=_headers("promote-safe-toctou"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "AUTO_REWRITE_NOT_PROMOTABLE"
+    details = response.json()["error"]["details"]
+    assert details["recorded_content_hash"] == recorded_hash
+    assert details["actual_content_hash"] != recorded_hash
+    session.expire_all()
+    assert session.get(SceneRunState, SCENE_ID).current_final_scene_row_id == FINAL_ROW_ID
+    assert session.query(FinalScene).filter(FinalScene.scene_id == SCENE_ID).count() == 1
+
+
+def test_auto_rewrite_routes_language_only_failure_to_local_patch(client, session, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.analyze_literary_quality",
+        _all_clear_literary_analysis,
+    )
     _seed_scene(
         session,
         content=(
+            "林岑把盐钟残片交给许望，先让幸存者阿砚离开船坞。"
             "林岑必须选择公开证据还是先保护幸存者。她选择先保护幸存者，代价是暂时背负隐瞒真相的嫌疑。"
             "她低头看着录音，沉默了片刻。许望低头看着录音，沉默了片刻。"
             "林岑低头看着录音，沉默了片刻。"

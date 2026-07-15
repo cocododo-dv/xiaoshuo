@@ -430,6 +430,14 @@ class TimelineEvent(Base):
 
 class ChapterGoal(Base):
     __tablename__ = "chapter_goals"
+    __table_args__ = (
+        Index(
+            "ix_chapter_goals_project_display_order",
+            "project_id",
+            "display_order",
+            "chapter_id",
+        ),
+    )
 
     chapter_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str | None] = mapped_column(ForeignKey("story_projects.project_id"), nullable=True)
@@ -458,6 +466,15 @@ class ChapterGoal(Base):
 
 class SceneCard(Base):
     __tablename__ = "scene_cards"
+    __table_args__ = (
+        Index(
+            "ix_scene_cards_project_chapter_seq",
+            "project_id",
+            "chapter_id",
+            "scene_seq",
+            "scene_id",
+        ),
+    )
 
     scene_id: Mapped[str] = mapped_column(String, primary_key=True)
     chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"))
@@ -601,6 +618,10 @@ class SceneRunState(Base):
     run_checkpoint: Mapped[str | None] = mapped_column(String, nullable=True)
     run_checkpoint_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     active_run_job_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 作者稿提升为权威正文后，叙事事件是否已明确与当前 FinalScene 对齐。
+    # v1 只允许作者显式确认 facts_unchanged；需要事件重建的稿件不得静默放行。
+    narrative_sync_status: Mapped[str] = mapped_column(String, default="synced")
+    narrative_sync_final_scene_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
@@ -1151,6 +1172,10 @@ class AuthorDraft(Base):
     source_text_ref: Mapped[str] = mapped_column(String)
     content: Mapped[str] = mapped_column(Text)
     revision_no: Mapped[int] = mapped_column(Integer, default=1)
+    # 草稿保存与权威正文提升是两个独立动作；这两个字段记录最近一次成功提升，
+    # 也为 promote-canonical 提供 revision + FinalScene 双重 CAS 的持久化证据。
+    last_promoted_revision_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_promoted_final_scene_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="current")
     created_by: Mapped[str] = mapped_column(String, default="author_draft")
     updated_by: Mapped[str] = mapped_column(String, default="author_draft")
@@ -1358,9 +1383,16 @@ class FinalScene(Base):
     scene_id: Mapped[str] = mapped_column(String)
     chapter_id: Mapped[str] = mapped_column(String)
     content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="approved")
     source_bundle_id: Mapped[str] = mapped_column(String)
     source_bundle_hash: Mapped[str] = mapped_column(String)
+    source_kind: Mapped[str] = mapped_column(String, default="generation")
+    source_author_draft_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_author_draft_revision_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parent_final_scene_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    superseded_by_final_scene_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str] = mapped_column(String, default="system")
     generation_llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
@@ -1924,6 +1956,18 @@ class NarrativeEvent(Base):
     __table_args__ = (
         Index("ix_narrative_events_entity_scene", "entity_id", "scene_seq"),
         Index("ix_narrative_events_project_scene", "project_id", "scene_seq"),
+        Index(
+            "ix_narrative_events_project_chapter_scene",
+            "project_id",
+            "chapter_id",
+            "scene_id",
+        ),
+        Index(
+            "ix_narrative_events_project_entity_scene",
+            "project_id",
+            "entity_id",
+            "scene_id",
+        ),
     )
 
 

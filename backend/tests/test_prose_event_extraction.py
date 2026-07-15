@@ -367,6 +367,7 @@ def test_extracted_events_logged_as_advisory(session) -> None:
     )
     assert len(events.events) == 1
 
+    _seed_event_scene(session, "p1", "c1", "s1")
     log = NarrativeEventLog(session)
     ev = events.events[0]
     logged = log.log_event(
@@ -402,6 +403,7 @@ def test_orchestrator_prose_extraction_gate_open_when_flag_enabled(session, monk
     orch.llm_runner = runner
     log = NarrativeEventLog(session)
     base = {"project_id": "p_pe", "scene_id": "s_pe", "chapter_id": "c_pe"}
+    _seed_event_scene(session, "p_pe", "c_pe", "s_pe")
     result = orch._record_prose_events(log, None, base, "林远的右臂被斩断了。")
     session.flush()
 
@@ -484,6 +486,7 @@ def test_orchestrator_prose_duplicate_events_return_direct_ordered_row_ids(
     orch = Orchestrator(session)
     orch.llm_runner = runner
     orch._execution_id = "exec-prose-duplicates"
+    _seed_event_scene(session, "p_dup", "c_dup", "s_dup")
     result, event_ids = orch._record_prose_events(
         NarrativeEventLog(session),
         None,
@@ -757,3 +760,26 @@ def test_prose_control_plane_failure_crosses_recording_catches(session, monkeypa
     with pytest.raises(type(error)) as outer:
         orch._record_narrative_events(scene, contract, "prose")
     assert outer.value is error
+# Event rows are position-addressed; unit tests that exercise the recorder need
+# the same minimal catalog identity as the production archive path.
+def _seed_event_scene(session, project_id: str, chapter_id: str, scene_id: str) -> None:
+    from novel_system.db.models import ChapterGoal, SceneCard
+
+    session.add(
+        ChapterGoal(
+            chapter_id=chapter_id,
+            project_id=project_id,
+            chapter_goal="event extraction",
+            display_order=1,
+        )
+    )
+    session.add(
+        SceneCard(
+            scene_id=scene_id,
+            chapter_id=chapter_id,
+            project_id=project_id,
+            scene_seq=1,
+            scene_goal="event extraction",
+        )
+    )
+    session.flush()

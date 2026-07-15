@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.services.author_drafts import AuthorDraftService
+from novel_system.services.canonical_manuscripts import CanonicalSceneService
+from novel_system.services.idempotency import execute_with_idempotency
 
 router = APIRouter(tags=["author-drafts"])
 
@@ -38,6 +40,38 @@ def save_author_draft(draft_id: str, payload: dict, request: Request, session: S
     result = AuthorDraftService(session).save(draft_id, payload, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.post("/api/v1/author-drafts/{draft_id}/promote-canonical")
+def promote_author_draft_canonical(
+    draft_id: str,
+    request: Request,
+    payload: dict | None = None,
+    session: Session = Depends(get_session),
+):
+    """Promote one saved scene AuthorDraft revision into canonical FinalScene.
+
+    The v1 safety subset accepts only an explicit ``facts_unchanged`` assertion.
+    Revisions that need narrative-event reconciliation fail closed with 409.
+    """
+
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    body = payload or {}
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/author-drafts/{draft_id}/promote-canonical",
+        payload={"draft_id": draft_id, **body},
+        action=lambda: CanonicalSceneService(session).promote_author_draft(
+            draft_id,
+            body,
+            actor_ref=actor_ref,
+        ),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.get("/api/v1/author-drafts/{draft_id}/events")

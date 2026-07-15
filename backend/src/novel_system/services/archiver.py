@@ -13,6 +13,8 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.chapter_state import ensure_chapter_state
+from novel_system.services.errors import DomainError
+from novel_system.services.final_text_gate import FinalTextGateService
 
 
 class Archiver:
@@ -33,6 +35,30 @@ class Archiver:
         state = self.session.get(SceneRunState, scene_id)
         if final_scene is None or state is None or final_scene.scene_id != scene_id:
             raise ValueError("archive target is missing or detached from scene state")
+        # Every archive path converges here. Validate the exact FinalScene text,
+        # not whichever upstream draft happened to be checked previously.
+        final_text_gate = FinalTextGateService(self.session).evaluate(
+            scene_id=scene_id,
+            content=final_scene.content,
+            source_bundle_id=final_scene.source_bundle_id,
+        )
+        FinalTextGateService.raise_if_not_archivable(final_text_gate, scene_id=scene_id)
+        actual_content_hash = str(final_text_gate["content_hash"])
+        persisted_content_hash = (final_scene.content_hash or "").strip()
+        if persisted_content_hash and persisted_content_hash != actual_content_hash:
+            raise DomainError(
+                "FINAL_SCENE_CONTENT_HASH_MISMATCH",
+                "stored final-scene content hash does not match the exact text being archived",
+                status_code=409,
+                details={
+                    "scene_id": scene_id,
+                    "final_scene_row_id": final_scene_row_id,
+                    "stored_content_hash": persisted_content_hash,
+                    "actual_content_hash": actual_content_hash,
+                    "final_text_gate": final_text_gate,
+                },
+            )
+        final_scene.content_hash = actual_content_hash
         # 目录冷启动章可能没有状态行（审计 P-1）：缺行补建而不是 None 解引用崩掉整跑
         chapter_state = ensure_chapter_state(self.session, final_scene.chapter_id)
 
@@ -139,6 +165,7 @@ class Archiver:
                     "final_scene_row_id": final_scene_row_id,
                     "qc_report_id": qc_report_id,
                     "execution_id": execution_id,
+                    "final_text_gate": _gate_audit_summary(final_text_gate),
                 },
             )
             self.session.add(archive_attempt)
@@ -149,6 +176,7 @@ class Archiver:
             "chapter_rolling_note_row_id": rolling.row_id,
             "archive_attempt_id": archive_attempt.attempt_id,
             "scene_status": state.scene_status,
+            "final_text_gate": final_text_gate,
         }
 
 
@@ -157,3 +185,18 @@ def _scene_memory_row_id(scene_id: str, final_scene_row_id: str) -> str:
     if final_scene_row_id.startswith(final_prefix):
         return f"scene_memory_{scene_id}{final_scene_row_id[len(final_prefix):]}"
     return f"scene_memory_{scene_id}_{final_scene_row_id}"
+
+
+def _gate_audit_summary(result: dict[str, Any]) -> dict[str, Any]:
+    literary = result.get("literary_quality") or {}
+    return {
+        "schema_version": result.get("schema_version"),
+        "content_hash": result.get("content_hash"),
+        "source_bundle_id": result.get("source_bundle_id"),
+        "archivable": bool(result.get("archivable")),
+        "auto_promotable": bool(result.get("auto_promotable")),
+        "archive_blockers": list(result.get("archive_blockers") or []),
+        "promotion_blockers": list(result.get("promotion_blockers") or []),
+        "literary_scores": dict(literary.get("scores") or {}),
+        "risky_dimensions": list(literary.get("risky_dimensions") or []),
+    }

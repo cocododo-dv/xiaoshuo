@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
+import { WrCanonicalControl } from "./wr-canonical-control.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { wrDeepUnmark, wrDeepScan, wrDxLog, wrDeepMark, wrDeepAdopt, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, WrDeepDrawer } from "./ws-deep.jsx";
 import { OrchestrationSignals } from "./ws-signals.jsx";
@@ -331,8 +332,9 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const [chrome, setChrome] = useWS(true);
   const [wordCount, setWordCount] = useWS(0);
   const [session, setSession] = useWS(2140);
-  const [saved, setSaved] = useWS("已保存");
+  const [saved, setSaved] = useWS("草稿已保存");
   const [savedAt, setSavedAt] = useWS(null);
+  const [canonicalStatus, setCanonicalStatus] = useWS("unknown");
   const [nextCue, setNextCue] = useWS(false);
   const [nextDismissed, setNextDismissed] = useWS(false);
   const [snowSrc, setSnowSrc] = useWS(null);
@@ -384,28 +386,78 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const dirtyRef = useWR(false);  // 有未落盘的改动
 
   /* 真·自动保存：正文落盘 + 字数增量回写目录/作品 */
-  const persistDoc = useWC(() => {
+  const persistDoc = useWC(async () => {
     const el = editorRef.current;
-    if (!el || !activeScene) return;
+    if (!el || !activeScene) return false;
     /* FE-ALIGN P3：正文落 author-drafts 主路径（WrDocs 缓存写通 + PATCH），
        字数 rollup 由保存响应回流目录/统计 */
-    try { WrDocs.save(activeScene, wrCleanHTML(el)); } catch (e) {}
-    const count = wrCountOf(el);
-    if (WsCatalog) { try { WsCatalog.recordSceneWords(activeScene, count, baselineRef.current); } catch (e) {} }
-    baselineRef.current = count;
-    dirtyRef.current = false;
-    setSaved("已保存"); setSavedAt(Date.now());
+    try {
+      await WrDocs.save(activeScene, wrCleanHTML(el));
+      const count = wrCountOf(el);
+      if (WsCatalog) { try { WsCatalog.recordSceneWords(activeScene, count, baselineRef.current); } catch (e) {} }
+      baselineRef.current = count;
+      dirtyRef.current = false;
+      setSaved("草稿已保存"); setSavedAt(Date.now());
+      const state = WrDocs.state(activeScene);
+      setCanonicalStatus(state && state.canonicalDirty === false ? "current" : "dirty");
+      return true;
+    } catch (e) {
+      dirtyRef.current = true;
+      setSaved("草稿保存失败");
+      return false;
+    }
   }, [activeScene]);
   const schedulePersist = useWC(() => {
-    setSaved("正在保存…");
+    setSaved("正在保存草稿…");
+    setCanonicalStatus("dirty");
     dirtyRef.current = true;
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(persistDoc, 900);
+    saveTimer.current = setTimeout(() => { void persistDoc(); }, 900);
   }, [persistDoc]);
   /* 离开场景 / 卸载前把未落盘的改动冲掉 */
   const persistRef = useWR(persistDoc);
   persistRef.current = persistDoc;
   useWE(() => () => { clearTimeout(saveTimer.current); }, []);
+
+  const promoteCanonical = useWC(async () => {
+    if (!activeScene) return;
+    clearTimeout(saveTimer.current);
+    if (dirtyRef.current) {
+      setSaved("正在保存草稿…");
+      const savedOk = await persistDoc();
+      if (!savedOk) {
+        try { window.alert("草稿尚未保存到服务端，不能提升为权威正文。请先重试保存。"); } catch (e) {}
+        return;
+      }
+    }
+    let confirmed = false;
+    try {
+      confirmed = window.confirm(
+        "请确认：本次修改只调整文字表达，没有改变人物、时间、地点、物品或剧情结果等故事事实。\n\n" +
+        "若事实有变化，请取消并先完成事实核对；当前版本不会静默沿用旧事件。",
+      );
+    } catch (e) { confirmed = false; }
+    if (!confirmed) return;
+
+    setCanonicalStatus("promoting");
+    try {
+      await WrDocs.promote(activeScene, { narrativeEffect: "facts_unchanged" });
+      setCanonicalStatus("current");
+      try { window.alert("草稿已提升为权威正文，场景记忆与章节汇总已同步重建。"); } catch (e) {}
+    } catch (e) {
+      const code = e && e.code;
+      setCanonicalStatus(code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED" ? "reconcile" : "error");
+      let message = "权威正文提升失败，草稿仍安全保留。请稍后重试。";
+      if (code === "CANONICAL_BASE_CONFLICT" || code === "AUTHOR_DRAFT_CONFLICT") {
+        message = "草稿或权威正文已在别处更新。请刷新、比较最新版本后再提升。";
+      } else if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") {
+        message = "这次修改涉及故事事实，必须先核对叙事事件，系统不会静默沿用旧事实。";
+      } else if (code === "CHAPTER_APPROVED_LOCKED") {
+        message = "该章节已批准锁定，需要先明确重开章节，才能更新权威正文。";
+      }
+      try { window.alert(message); } catch (ignored) {}
+    }
+  }, [activeScene, persistDoc]);
 
   useWE(() => {
     const inField = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
@@ -455,7 +507,10 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   useWE(() => {
     const el = editorRef.current;
     if (!el) return;
-    if (!activeScene) { el.innerHTML = ""; setWordCount(0); return; }
+    if (!activeScene) { el.innerHTML = ""; setWordCount(0); setCanonicalStatus("unknown"); return; }
+    setSaved("草稿已加载");
+    const initialState = WrDocs.state(activeScene);
+    setCanonicalStatus(initialState && initialState.canonicalDirty === false ? "current" : "dirty");
     /* FE-ALIGN P3：同步读 WrDocs 缓存（兼容旧 wr-doc 本地键），后台水合服务端草稿 */
     let stored = null;
     try { stored = WrDocs.load(activeScene); } catch (e) {}
@@ -479,15 +534,26 @@ function WriterRoom({ t, setTweak, onExit, go }) {
         baselineRef.current = wrCountOf(el);
         recount();
       }
+      setSaved("草稿已保存");
+      const state = WrDocs.state(activeScene);
+      setCanonicalStatus(state && state.canonicalDirty === false ? "current" : "dirty");
+    };
+    const onDocState = (e) => {
+      if (!e || !e.detail || e.detail.sid !== activeScene) return;
+      if (e.detail.lastSaveError) setSaved("草稿保存失败");
+      else if (!e.detail.dirty) setSaved("草稿已保存");
+      setCanonicalStatus(e.detail.canonicalDirty === false ? "current" : "dirty");
     };
     window.addEventListener("ws:wr-doc-loaded", onDocLoaded);
+    window.addEventListener("ws:wr-doc-state", onDocState);
     /* 离开这个场景（或卸载）时，把未落盘的改动用「当时的」场景 id 冲掉 */
     const sid = activeScene;
     return () => {
       window.removeEventListener("ws:wr-doc-loaded", onDocLoaded);
+      window.removeEventListener("ws:wr-doc-state", onDocState);
       clearTimeout(saveTimer.current);
       if (dirtyRef.current && el && sid) {
-        try { WrDocs.save(sid, wrCleanHTML(el)); } catch (e) {}
+        try { void WrDocs.save(sid, wrCleanHTML(el)).catch(() => {}); } catch (e) {}
         try { WsCatalog && WsCatalog.recordSceneWords(sid, wrCountOf(el), baselineRef.current); } catch (e) {}
         dirtyRef.current = false;
       }
@@ -911,7 +977,12 @@ function WriterRoom({ t, setTweak, onExit, go }) {
           </div>
           <div className="wr-top-spacer" />
           <div className="wr-stat">
-            <span className={`wr-save ${saved !== "已保存" ? "saving" : ""}`}><span className="wr-save-dot" />{saved}</span>
+            <WrCanonicalControl
+              saveStatus={saved}
+              canonicalStatus={canonicalStatus}
+              disabled={!activeScene}
+              onPromote={promoteCanonical}
+            />
             <span className="wr-stat-time" title="本节写作时长"><I.Clock size={13} /><b>{fmtElapsed(elapsed)}</b></span>
             <span className="wr-count-wrap" title="本场字数 / 目标">
               <GoalRing pct={goalPct} />

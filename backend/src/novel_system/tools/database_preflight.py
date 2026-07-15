@@ -29,11 +29,34 @@ LEGACY_REQUIRED_COLUMNS = {
 
 LEGACY_REVISION = "20260712_0064"
 C1B_REVISION = "20260713_0065"
+EVIDENCE_GATE_REVISION = "20260715_0066"
+PAIR_GENRE_REVISION = "20260715_0067"
+NARRATIVE_POSITION_REVISION = "20260715_0068"
+AUTHOR_CANONICAL_REVISION = "20260715_0069"
 REVISION_ALIASES = {
     "0064": LEGACY_REVISION,
     LEGACY_REVISION: LEGACY_REVISION,
     "0065": C1B_REVISION,
     C1B_REVISION: C1B_REVISION,
+    "0066": EVIDENCE_GATE_REVISION,
+    EVIDENCE_GATE_REVISION: EVIDENCE_GATE_REVISION,
+    "0067": PAIR_GENRE_REVISION,
+    PAIR_GENRE_REVISION: PAIR_GENRE_REVISION,
+    "0068": NARRATIVE_POSITION_REVISION,
+    NARRATIVE_POSITION_REVISION: NARRATIVE_POSITION_REVISION,
+    "0069": AUTHOR_CANONICAL_REVISION,
+    AUTHOR_CANONICAL_REVISION: AUTHOR_CANONICAL_REVISION,
+}
+REVISION_SEQUENCE = (
+    LEGACY_REVISION,
+    C1B_REVISION,
+    EVIDENCE_GATE_REVISION,
+    PAIR_GENRE_REVISION,
+    NARRATIVE_POSITION_REVISION,
+    AUTHOR_CANONICAL_REVISION,
+)
+REVISION_RANK = {
+    revision: index for index, revision in enumerate(REVISION_SEQUENCE)
 }
 C1B_REQUIRED_TABLES = LEGACY_REQUIRED_TABLES + (
     "llm_calls",
@@ -91,6 +114,78 @@ C1B_REQUIRED_COLUMNS = {
         "created_at",
     ),
     "chapter_run_jobs": ("scene_id", "created_at"),
+}
+
+EVIDENCE_GATE_REQUIRED_TABLES = C1B_REQUIRED_TABLES
+EVIDENCE_GATE_REQUIRED_COLUMNS = {
+    **C1B_REQUIRED_COLUMNS,
+    "evaluation_experiments": (
+        "evidence_provenance",
+        "frozen_at",
+        "frozen_pair_manifest_hash",
+    ),
+}
+
+PAIR_GENRE_REQUIRED_TABLES = EVIDENCE_GATE_REQUIRED_TABLES
+PAIR_GENRE_REQUIRED_COLUMNS = {
+    **EVIDENCE_GATE_REQUIRED_COLUMNS,
+    "evaluation_pairs": ("genre",),
+}
+
+NARRATIVE_POSITION_REQUIRED_TABLES = PAIR_GENRE_REQUIRED_TABLES + (
+    "chapter_goals",
+    "scene_cards",
+    "narrative_events",
+)
+NARRATIVE_POSITION_REQUIRED_COLUMNS = {
+    **PAIR_GENRE_REQUIRED_COLUMNS,
+    "chapter_goals": ("project_id", "display_order", "chapter_id"),
+    "scene_cards": ("project_id", "chapter_id", "scene_seq", "scene_id"),
+    "narrative_events": ("project_id", "chapter_id", "scene_id", "entity_id"),
+}
+
+AUTHOR_CANONICAL_REQUIRED_TABLES = NARRATIVE_POSITION_REQUIRED_TABLES + (
+    "author_drafts",
+    "final_scenes",
+)
+AUTHOR_CANONICAL_REQUIRED_COLUMNS = {
+    **NARRATIVE_POSITION_REQUIRED_COLUMNS,
+    "scene_run_states": NARRATIVE_POSITION_REQUIRED_COLUMNS["scene_run_states"]
+    + (
+        "narrative_sync_status",
+        "narrative_sync_final_scene_row_id",
+    ),
+    "author_drafts": (
+        "last_promoted_revision_no",
+        "last_promoted_final_scene_row_id",
+    ),
+    "final_scenes": (
+        "content_hash",
+        "source_kind",
+        "source_author_draft_id",
+        "source_author_draft_revision_no",
+        "parent_final_scene_row_id",
+        "superseded_by_final_scene_row_id",
+        "created_by",
+    ),
+}
+
+SCHEMA_PROFILES = {
+    LEGACY_REVISION: (LEGACY_REQUIRED_TABLES, LEGACY_REQUIRED_COLUMNS),
+    C1B_REVISION: (C1B_REQUIRED_TABLES, C1B_REQUIRED_COLUMNS),
+    EVIDENCE_GATE_REVISION: (
+        EVIDENCE_GATE_REQUIRED_TABLES,
+        EVIDENCE_GATE_REQUIRED_COLUMNS,
+    ),
+    PAIR_GENRE_REVISION: (PAIR_GENRE_REQUIRED_TABLES, PAIR_GENRE_REQUIRED_COLUMNS),
+    NARRATIVE_POSITION_REVISION: (
+        NARRATIVE_POSITION_REQUIRED_TABLES,
+        NARRATIVE_POSITION_REQUIRED_COLUMNS,
+    ),
+    AUTHOR_CANONICAL_REVISION: (
+        AUTHOR_CANONICAL_REQUIRED_TABLES,
+        AUTHOR_CANONICAL_REQUIRED_COLUMNS,
+    ),
 }
 
 C1B_COLUMN_CONTRACTS = {
@@ -195,6 +290,103 @@ C1B_INDEX_CONTRACTS = {
         "chapter_run_jobs",
         ("scene_id", "created_at"),
     ),
+}
+
+EVIDENCE_GATE_COLUMN_CONTRACTS = {
+    "evaluation_experiments": {
+        "evidence_provenance": {
+            "type": "VARCHAR",
+            "not_null": True,
+        },
+        "frozen_at": {"type": "VARCHAR", "not_null": False, "default": None},
+        "frozen_pair_manifest_hash": {
+            "type": "VARCHAR",
+            "not_null": False,
+            "default": None,
+        },
+    },
+}
+
+PAIR_GENRE_COLUMN_CONTRACTS = {
+    "evaluation_pairs": {
+        "genre": {"type": "VARCHAR", "not_null": False, "default": None},
+    },
+}
+
+NARRATIVE_POSITION_INDEX_CONTRACTS = {
+    "ix_chapter_goals_project_display_order": (
+        "chapter_goals",
+        ("project_id", "display_order", "chapter_id"),
+    ),
+    "ix_scene_cards_project_chapter_seq": (
+        "scene_cards",
+        ("project_id", "chapter_id", "scene_seq", "scene_id"),
+    ),
+    "ix_narrative_events_project_chapter_scene": (
+        "narrative_events",
+        ("project_id", "chapter_id", "scene_id"),
+    ),
+    "ix_narrative_events_project_entity_scene": (
+        "narrative_events",
+        ("project_id", "entity_id", "scene_id"),
+    ),
+}
+
+AUTHOR_CANONICAL_COLUMN_CONTRACTS = {
+    "author_drafts": {
+        "last_promoted_revision_no": {
+            "type": "INTEGER",
+            "not_null": False,
+            "default": None,
+        },
+        "last_promoted_final_scene_row_id": {
+            "type": "VARCHAR",
+            "not_null": False,
+            "default": None,
+        },
+    },
+    "final_scenes": {
+        "content_hash": {"type": "VARCHAR", "not_null": False, "default": None},
+        "source_kind": {
+            "type": "VARCHAR",
+            "not_null": True,
+        },
+        "source_author_draft_id": {
+            "type": "VARCHAR",
+            "not_null": False,
+            "default": None,
+        },
+        "source_author_draft_revision_no": {
+            "type": "INTEGER",
+            "not_null": False,
+            "default": None,
+        },
+        "parent_final_scene_row_id": {
+            "type": "VARCHAR",
+            "not_null": False,
+            "default": None,
+        },
+        "superseded_by_final_scene_row_id": {
+            "type": "VARCHAR",
+            "not_null": False,
+            "default": None,
+        },
+        "created_by": {
+            "type": "VARCHAR",
+            "not_null": True,
+        },
+    },
+    "scene_run_states": {
+        "narrative_sync_status": {
+            "type": "VARCHAR",
+            "not_null": True,
+        },
+        "narrative_sync_final_scene_row_id": {
+            "type": "VARCHAR",
+            "not_null": False,
+            "default": None,
+        },
+    },
 }
 
 
@@ -354,16 +546,27 @@ def _index_columns(
     return indexes
 
 
-def _inspect_c1b_schema(
+def _revision_at_least(
+    canonical_revision: str | None,
+    minimum_revision: str,
+) -> bool:
+    if canonical_revision not in REVISION_RANK:
+        return False
+    return REVISION_RANK[canonical_revision] >= REVISION_RANK[minimum_revision]
+
+
+def _inspect_column_contracts(
     connection: sqlite3.Connection,
     tables: set[str],
+    contracts_by_table: dict[str, dict[str, dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
-    for table_name, contracts in C1B_COLUMN_CONTRACTS.items():
+    for table_name, contracts in contracts_by_table.items():
         if table_name not in tables:
             continue
         columns = {
             str(row[1]): {
+                "type": str(row[2] or "").strip().upper(),
                 "not_null": bool(row[3]),
                 "default": _normalized_default(row[4]),
             }
@@ -372,8 +575,11 @@ def _inspect_c1b_schema(
             )
         }
         for column_name, expected in contracts.items():
-            actual = columns.get(column_name)
-            if actual is not None and actual != expected:
+            metadata = columns.get(column_name)
+            if metadata is None:
+                continue
+            actual = {key: metadata[key] for key in expected}
+            if actual != expected:
                 errors.append(
                     {
                         "kind": "column_contract",
@@ -383,6 +589,46 @@ def _inspect_c1b_schema(
                         "actual": actual,
                     }
                 )
+    return errors
+
+
+def _inspect_index_contracts(
+    connection: sqlite3.Connection,
+    tables: set[str],
+    contracts: dict[str, tuple[str, tuple[str, ...]]],
+) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    index_cache: dict[str, dict[str, dict[str, Any]]] = {}
+    for name, (table_name, expected_columns) in contracts.items():
+        if table_name not in tables:
+            continue
+        if table_name not in index_cache:
+            index_cache[table_name] = _index_columns(connection, table_name)
+        actual = index_cache[table_name].get(name)
+        expected = {
+            "columns": list(expected_columns),
+            "unique": False,
+            "origin": "c",
+            "partial": False,
+        }
+        if actual != expected:
+            errors.append(
+                {
+                    "kind": "index",
+                    "table": table_name,
+                    "name": name,
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+    return errors
+
+
+def _inspect_c1b_schema(
+    connection: sqlite3.Connection,
+    tables: set[str],
+) -> list[dict[str, Any]]:
+    errors = _inspect_column_contracts(connection, tables, C1B_COLUMN_CONTRACTS)
 
     for table_name, expected_columns in C1B_PRIMARY_KEY_CONTRACTS.items():
         if table_name not in tables:
@@ -485,37 +731,62 @@ def _inspect_c1b_schema(
                 }
             )
 
-    index_cache: dict[str, dict[str, dict[str, Any]]] = {}
-    for name, (table_name, expected_columns) in C1B_INDEX_CONTRACTS.items():
-        if table_name not in tables:
-            continue
-        if table_name not in index_cache:
-            index_cache[table_name] = _index_columns(connection, table_name)
-        indexes = index_cache[table_name]
-        actual = indexes.get(name)
-        expected = {
-            "columns": list(expected_columns),
-            "unique": False,
-            "origin": "c",
-            "partial": False,
-        }
-        if actual != expected:
-            errors.append(
-                {
-                    "kind": "index",
-                    "table": table_name,
-                    "name": name,
-                    "expected": expected,
-                    "actual": actual,
-                }
-            )
+    errors.extend(
+        _inspect_index_contracts(connection, tables, C1B_INDEX_CONTRACTS)
+    )
     return errors
 
 
-def _schema_profile(canonical_revision: str | None) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
-    if canonical_revision == C1B_REVISION:
-        return C1B_REQUIRED_TABLES, C1B_REQUIRED_COLUMNS
-    return LEGACY_REQUIRED_TABLES, LEGACY_REQUIRED_COLUMNS
+def _inspect_revision_schema(
+    connection: sqlite3.Connection,
+    tables: set[str],
+    canonical_revision: str | None,
+) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    if _revision_at_least(canonical_revision, C1B_REVISION):
+        errors.extend(_inspect_c1b_schema(connection, tables))
+    if _revision_at_least(canonical_revision, EVIDENCE_GATE_REVISION):
+        errors.extend(
+            _inspect_column_contracts(
+                connection,
+                tables,
+                EVIDENCE_GATE_COLUMN_CONTRACTS,
+            )
+        )
+    if _revision_at_least(canonical_revision, PAIR_GENRE_REVISION):
+        errors.extend(
+            _inspect_column_contracts(
+                connection,
+                tables,
+                PAIR_GENRE_COLUMN_CONTRACTS,
+            )
+        )
+    if _revision_at_least(canonical_revision, NARRATIVE_POSITION_REVISION):
+        errors.extend(
+            _inspect_index_contracts(
+                connection,
+                tables,
+                NARRATIVE_POSITION_INDEX_CONTRACTS,
+            )
+        )
+    if _revision_at_least(canonical_revision, AUTHOR_CANONICAL_REVISION):
+        errors.extend(
+            _inspect_column_contracts(
+                connection,
+                tables,
+                AUTHOR_CANONICAL_COLUMN_CONTRACTS,
+            )
+        )
+    return errors
+
+
+def _schema_profile(
+    canonical_revision: str | None,
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    return SCHEMA_PROFILES.get(
+        canonical_revision,
+        (LEGACY_REQUIRED_TABLES, LEGACY_REQUIRED_COLUMNS),
+    )
 
 
 def inspect_database(
@@ -575,13 +846,15 @@ def inspect_database(
             if missing:
                 missing_columns[table] = missing
         result["missing_columns"] = missing_columns
-        schema_errors: list[dict[str, Any]] = []
-        if canonical_revision == C1B_REVISION:
-            schema_errors = _inspect_c1b_schema(connection, tables)
+        schema_errors = _inspect_revision_schema(
+            connection,
+            tables,
+            canonical_revision,
+        )
         result["schema_errors"] = schema_errors
 
         attempt_orphan_count: int | None = None
-        if canonical_revision == C1B_REVISION and {
+        if _revision_at_least(canonical_revision, C1B_REVISION) and {
             "llm_calls",
             "llm_call_attempts",
         } <= tables:

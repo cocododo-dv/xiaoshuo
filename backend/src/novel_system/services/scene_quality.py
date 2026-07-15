@@ -23,20 +23,27 @@ from novel_system.db.models import (
 )
 from novel_system.services.archiver import Archiver
 from novel_system.services.errors import DomainError
+from novel_system.services.final_text_gate import (
+    CHARACTER_SCENE_CORE_MIN as PROMOTION_SCORE_MIN,
+    CHOICE_PRESSURE_MIN,
+    ENDING_DRIVE_MIN,
+    FinalTextGateService,
+)
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import analyze_literary_quality
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
-from novel_system.services.source_safety import scan_source_safety
 from novel_system.settings import get_settings
 
 
 CONTRACT_VERSION = "scene_quality_contract_v1"
-STRUCTURE_FAILURE_DIMENSIONS = {
+STRUCTURE_FAILURE_DIMENSIONS = (
     "no_choice_scene",
     "choice_pressure",
     "ending_drive",
-}
-LANGUAGE_FAILURE_DIMENSIONS = {
+)
+# Ordered by routing priority so ``failure_class`` is stable across processes;
+# a set made the selected primary finding depend on Python hash randomization.
+LANGUAGE_FAILURE_DIMENSIONS = (
     "model_voice",
     "template_action_reuse",
     "repetitive_action",
@@ -46,12 +53,7 @@ LANGUAGE_FAILURE_DIMENSIONS = {
     "image_field_reuse",
     "syntax_monotony",
     "false_clarity",
-}
-PROMOTION_SCORE_MIN = 0.80
-ENDING_DRIVE_MIN = 0.78
-CHOICE_PRESSURE_MIN = 0.78
-
-
+)
 class SceneQualityService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -266,9 +268,6 @@ class SceneAutoRewriteService:
         state = self.session.get(SceneRunState, scene_id)
         source_final = self._source_final(scene, state)
         blockers = self._hard_blockers(scene_id)
-        source_safety = scan_source_safety(source_final.content if source_final else "")
-        if not source_safety.get("safe", True):
-            blockers.append("reference_safety")
 
         diagnosis = self._diagnose(source_final.content if source_final else "")
         branch = _branch_for(mode=mode, diagnosis=diagnosis, blockers=blockers)
@@ -276,13 +275,8 @@ class SceneAutoRewriteService:
         promotion_blockers = _promotion_blockers_for(branch=branch, mode=mode, blockers=blockers)
         candidate_row_id = None
         llm_call_id = None
-        gate_results = _gate_results(
-            branch=branch,
-            mode=mode,
-            blockers=promotion_blockers,
-            diagnosis=diagnosis,
-            source_safety=source_safety,
-        )
+        inspected_content = source_final.content if source_final else ""
+        inspected_bundle_id = source_final.source_bundle_id if source_final else None
 
         if branch in {"full_scene", "local_patch"}:
             candidate_content = None
@@ -293,7 +287,11 @@ class SceneAutoRewriteService:
                     contract=contract,
                     branch=branch,
                     diagnosis=diagnosis,
-                    gate_results=gate_results,
+                    gate_results={
+                        "promotable": False,
+                        "risky_dimensions": diagnosis.get("risky_dimensions", []),
+                        "status": "candidate_not_yet_evaluated",
+                    },
                 )
             else:
                 # Deterministic local policy creates a candidate without pretending
@@ -307,6 +305,38 @@ class SceneAutoRewriteService:
                 llm_call_id=llm_call_id,
                 content_override=candidate_content,
             )
+            candidate = self.session.get(SceneDraft, candidate_row_id)
+            if candidate is None:
+                raise DomainError("AUTO_REWRITE_DRAFT_MISSING", "candidate draft not found", status_code=500)
+            inspected_content = candidate.content
+            inspected_bundle_id = candidate.source_bundle_id
+
+        final_text_gate = FinalTextGateService(self.session).evaluate(
+            scene_id=scene.scene_id,
+            content=inspected_content,
+            source_bundle_id=inspected_bundle_id,
+            allow_author_waiver=False,
+        )
+        promotion_blockers = list(
+            dict.fromkeys(
+                [
+                    *promotion_blockers,
+                    *(
+                        final_text_gate.get("promotion_blockers") or []
+                        if branch in {"full_scene", "local_patch"}
+                        else []
+                    ),
+                ]
+            )
+        )
+        gate_results = _gate_results(
+            branch=branch,
+            mode=mode,
+            blockers=promotion_blockers,
+            diagnosis=diagnosis,
+            final_text_gate=final_text_gate,
+        )
+        if branch in {"full_scene", "local_patch"}:
             if not gate_results["promotable"]:
                 status = "blocked"
 
@@ -375,26 +405,60 @@ class SceneAutoRewriteService:
         if state is None:
             raise DomainError("SCENE_STATE_MISSING", "scene run state not found", status_code=404)
 
+        # Re-scan the exact draft at promotion time. The candidate may have been
+        # edited or otherwise changed after the run-level gate was recorded.
+        promotion_gate = FinalTextGateService(self.session).evaluate(
+            scene_id=run.scene_id,
+            content=draft.content,
+            source_bundle_id=draft.source_bundle_id,
+            allow_author_waiver=False,
+        )
+        recorded_content_hash = str((run.gate_results_json or {}).get("content_hash") or "")
+        if (
+            not recorded_content_hash
+            or recorded_content_hash != promotion_gate.get("content_hash")
+            or not promotion_gate.get("auto_promotable")
+        ):
+            raise DomainError(
+                "AUTO_REWRITE_NOT_PROMOTABLE",
+                "candidate no longer passes the final-text promotion gate",
+                status_code=409,
+                details={
+                    "run_id": run.run_id,
+                    "recorded_content_hash": recorded_content_hash,
+                    "actual_content_hash": promotion_gate.get("content_hash"),
+                    "final_text_gate": promotion_gate,
+                },
+            )
+
         promoted_row_id = _next_auto_final_row_id(self.session, run.scene_id)
         final = FinalScene(
             row_id=promoted_row_id,
             scene_id=run.scene_id,
             chapter_id=run.chapter_id,
             content=draft.content,
+            content_hash=promotion_gate["content_hash"],
             source_bundle_id=draft.source_bundle_id,
             source_bundle_hash=draft.source_bundle_hash,
             generation_llm_call_id=draft.generation_llm_call_id,
         )
         self.session.add(final)
         self.session.flush()
+        # 治理 §5.2 归档单入口：提升也经 Archiver 事务（统一 archived 词表 +
+        # 重建 SceneMemory/滚动笔记）——直接置 scene_status 会让记忆链留在旧正文
+        archive_result = Archiver(self.session).archive_final_scene(run.scene_id, final.row_id)
         run.promoted_final_scene_row_id = final.row_id
         run.rollback_target_final_scene_row_id = run.source_final_scene_row_id
         run.status = "promoted"
         run.actor_ref = actor_ref or run.actor_ref
+        run.gate_results_json = {
+            **(run.gate_results_json or {}),
+            "promotable": True,
+            "promotion_recheck": promotion_gate,
+            "archive_recheck": archive_result.get("final_text_gate"),
+        }
+        run.promotion_blockers_json = []
         state.current_final_scene_row_id = final.row_id
-        # 治理 §5.2 归档单入口：提升也经 Archiver 事务（统一 archived 词表 +
-        # 重建 SceneMemory/滚动笔记）——直接置 scene_status 会让记忆链留在旧正文
-        Archiver(self.session).archive_final_scene(run.scene_id, final.row_id)
         self.session.add(
             AttemptTracker(
                 scene_id=run.scene_id,
@@ -422,9 +486,9 @@ class SceneAutoRewriteService:
         target = self.session.get(FinalScene, run.rollback_target_final_scene_row_id)
         if target is None:
             raise DomainError("AUTO_REWRITE_ROLLBACK_TARGET_MISSING", "rollback target final scene not found", status_code=404)
-        state.current_final_scene_row_id = target.row_id
         # 治理 §5.2 归档单入口：回滚同样经 Archiver（记忆链指回旧正文）
         Archiver(self.session).archive_final_scene(run.scene_id, target.row_id)
+        state.current_final_scene_row_id = target.row_id
         run.status = "rolled_back"
         run.actor_ref = actor_ref or run.actor_ref
         self.session.add(
@@ -711,18 +775,18 @@ def _gate_results(
     mode: str,
     blockers: list[str],
     diagnosis: dict[str, Any],
-    source_safety: dict[str, Any],
+    final_text_gate: dict[str, Any],
 ) -> dict[str, Any]:
-    scores = {
-        "character_scene_core": 0.86 if branch in {"full_scene", "local_patch"} and not blockers else 0.0,
-        "ending_drive": 0.82 if branch in {"full_scene", "local_patch"} and not blockers else 0.0,
-        "choice_pressure": 0.83 if branch in {"full_scene", "local_patch"} and not blockers else 0.0,
-    }
+    literary = final_text_gate.get("literary_quality") or {}
+    scores = dict(literary.get("scores") or {})
+    scores.setdefault("character_scene_core", 0.0)
+    scores.setdefault("ending_drive", 0.0)
+    scores.setdefault("choice_pressure", 0.0)
     promotable = (
         mode != "diagnose_only"
         and branch in {"full_scene", "local_patch"}
         and not blockers
-        and bool(source_safety.get("safe", True))
+        and bool(final_text_gate.get("auto_promotable"))
         and scores["character_scene_core"] >= PROMOTION_SCORE_MIN
         and scores["ending_drive"] >= ENDING_DRIVE_MIN
         and scores["choice_pressure"] >= CHOICE_PRESSURE_MIN
@@ -735,8 +799,10 @@ def _gate_results(
             "ending_drive_min": ENDING_DRIVE_MIN,
             "choice_pressure_min": CHOICE_PRESSURE_MIN,
         },
-        "risky_dimensions": diagnosis.get("risky_dimensions", []),
-        "source_safety": source_safety,
+        "risky_dimensions": literary.get("risky_dimensions", diagnosis.get("risky_dimensions", [])),
+        "source_safety": final_text_gate.get("source_safety") or {},
+        "content_hash": final_text_gate.get("content_hash"),
+        "final_text_gate": final_text_gate,
     }
 
 

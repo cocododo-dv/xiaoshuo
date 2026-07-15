@@ -44,6 +44,24 @@
    Top-right stat cluster — save · session clock · goal ring
    ========================================================== */
 .wr-stat { display: inline-flex; align-items: center; gap: 12px; }
+.wr-publish-state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.wr-canonical-state {
+  font-size: 11.5px; color: var(--ink-3); font-weight: 600;
+  padding: 4px 8px; border: 1px solid var(--line-1); border-radius: 999px;
+  background: color-mix(in srgb, var(--paper-2) 55%, transparent);
+}
+.wr-canonical-state.is-current { color: var(--sage); border-color: color-mix(in srgb, var(--sage) 35%, var(--line-1)); }
+.wr-canonical-state.is-dirty, .wr-canonical-state.is-promoting { color: var(--gold); }
+.wr-canonical-state.is-error, .wr-canonical-state.is-reconcile { color: var(--crimson); }
+.wr-canonical-promote {
+  border: 1px solid var(--line-2); border-radius: 7px; background: var(--paper-1);
+  color: var(--ink-2); padding: 5px 9px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.wr-canonical-promote:hover:not(:disabled) { color: var(--crimson); border-color: color-mix(in srgb, var(--crimson) 35%, var(--line-2)); background: var(--crimson-wash); }
+.wr-canonical-promote:disabled { cursor: default; opacity: 0.52; }
+.wr-save.is-error { color: var(--crimson); }
+.wr-save.is-error .wr-save-dot { background: var(--crimson); animation: none; }
 .wr-stat-time {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; font-weight: 500;

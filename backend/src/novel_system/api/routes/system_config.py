@@ -283,6 +283,7 @@ class ReconciliationRequest(BaseModel):
 
     project_id: str
     up_to_scene_seq: int | None = None
+    up_to_scene_id: str | None = None
     create_review_items: bool = False
 
 
@@ -302,6 +303,7 @@ def run_event_reconciliation(
     findings = svc.reconcile_project(
         payload.project_id,
         up_to_scene_seq=payload.up_to_scene_seq,
+        up_to_scene_id=payload.up_to_scene_id,
         create_review_items=payload.create_review_items,
     )
     session.commit()

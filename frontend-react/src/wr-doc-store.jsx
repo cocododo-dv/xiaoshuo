@@ -42,7 +42,64 @@ function metaKeyOf(sid) {
 
 function meta(sid) {
   const key = metaKeyOf(sid);
-  return docMeta[key] || (docMeta[key] = { draftId: null, revision: 0, hydrated: false, dirty: false, chain: Promise.resolve() });
+  return docMeta[key] || (docMeta[key] = {
+    draftId: null,
+    revision: 0,
+    hydrated: false,
+    dirty: false,
+    chain: Promise.resolve(),
+    serverContent: "",
+    currentFinalSceneRowId: null,
+    lastPromotedRevisionNo: null,
+    lastPromotedFinalSceneRowId: null,
+    canonicalDirty: true,
+    lastSaveError: null,
+  });
+}
+
+function finalIdFromRef(ref) {
+  if (typeof ref !== "string" || !ref.startsWith("final_scene:")) return null;
+  return ref.slice("final_scene:".length) || null;
+}
+
+function absorbServerState(m, data) {
+  const draft = data && data.draft;
+  if (draft) {
+    if (draft.draft_id) m.draftId = draft.draft_id;
+    if (Number.isInteger(draft.revision_no)) m.revision = draft.revision_no;
+    if (Object.prototype.hasOwnProperty.call(draft, "content")) m.serverContent = draft.content || "";
+    if (Object.prototype.hasOwnProperty.call(draft, "last_promoted_revision_no")) {
+      m.lastPromotedRevisionNo = draft.last_promoted_revision_no;
+    }
+    if (Object.prototype.hasOwnProperty.call(draft, "last_promoted_final_scene_row_id")) {
+      m.lastPromotedFinalSceneRowId = draft.last_promoted_final_scene_row_id;
+    }
+    if (typeof draft.canonical_dirty === "boolean") m.canonicalDirty = draft.canonical_dirty;
+    else if (Number.isInteger(draft.revision_no)) m.canonicalDirty = draft.revision_no !== m.lastPromotedRevisionNo;
+  }
+  if (data && Object.prototype.hasOwnProperty.call(data, "runtime_final_ref")) {
+    m.currentFinalSceneRowId = finalIdFromRef(data.runtime_final_ref);
+  }
+}
+
+function stateSnapshot(sid) {
+  const m = meta(sid);
+  return {
+    draftId: m.draftId,
+    revision: m.revision,
+    dirty: m.dirty,
+    canonicalDirty: m.canonicalDirty,
+    currentFinalSceneRowId: m.currentFinalSceneRowId,
+    lastPromotedRevisionNo: m.lastPromotedRevisionNo,
+    lastPromotedFinalSceneRowId: m.lastPromotedFinalSceneRowId,
+    lastSaveError: m.lastSaveError,
+  };
+}
+
+function notifyState(sid) {
+  try {
+    window.dispatchEvent(new CustomEvent("ws:wr-doc-state", { detail: { sid, ...stateSnapshot(sid) } }));
+  } catch (e) {}
 }
 
 function cacheRead(sid) {
@@ -82,12 +139,8 @@ async function ensureDraft(sid) {
   const sceneId = await backendSceneId(sid);
   if (!sceneId) return m;
   const data = await apiPost(`/api/v1/author-drafts/scene/${sceneId}/ensure`, {});
-  const draft = data && data.draft;
-  if (draft) {
-    m.draftId = draft.draft_id;
-    m.revision = draft.revision_no;
-    m.serverContent = draft.content || "";
-  }
+  absorbServerState(m, data);
+  notifyState(sid);
   return m;
 }
 
@@ -138,21 +191,26 @@ async function hydrate(sid) {
 
 async function pushSave(sid, html) {
   const m = meta(sid);
-  await ensureDraft(sid);
-  if (!m.draftId) return; // 目录尚未就绪（如乐观新场景）：缓存已写，稍后重试
   try {
+    await ensureDraft(sid);
+    if (!m.draftId) {
+      throw Object.assign(new Error("场景尚未就绪，草稿未保存到服务端"), { code: "AUTHOR_DRAFT_UNAVAILABLE" });
+    }
     const data = await apiPatch(`/api/v1/author-drafts/${m.draftId}`, {
       content: html,
       base_revision_no: m.revision,
     });
-    const draft = data && data.draft;
-    if (draft) m.revision = draft.revision_no;
+    absorbServerState(m, data);
     m.dirty = false;
+    m.lastSaveError = null;
     pendingClear(sid); // 保存成功：消费跨会话失败标记
     if (data && data.words_rollup && window.WsCatalog && window.WsCatalog.__applyWordsRollup) {
       window.WsCatalog.__applyWordsRollup(sid, data.words_rollup);
     }
+    notifyState(sid);
+    return data;
   } catch (e) {
+    m.lastSaveError = e;
     if (e && e.code === "AUTHOR_DRAFT_CONFLICT") {
       // 服务端已被改（另一端保存）：以服务端为准重新水合。
       // 审计 P-12：覆盖前把本地未保存稿留一份副本，避免较新的本地编辑无痕丢失。
@@ -177,6 +235,8 @@ async function pushSave(sid, html) {
       pendingWrite(sid);
       console.warn("[WrDocs] 正文保存失败（缓存已留底，下次保存重试）:", e);
     }
+    notifyState(sid);
+    throw e;
   }
 }
 
@@ -281,12 +341,51 @@ const WrDocs = {
   },
   /* 写：缓存即时落地，API 串行保存（按 sid 链式，避免乱序覆盖） */
   save(sid, html) {
-    if (!sid) return;
+    if (!sid) return Promise.reject(Object.assign(new Error("缺少场景标识"), { code: "AUTHOR_DRAFT_SCENE_REQUIRED" }));
     cacheWrite(sid, html);
     const m = meta(sid);
     m.dirty = true;
-    m.chain = m.chain.then(() => pushSave(sid, html)).catch(() => {});
-    return m.chain;
+    m.canonicalDirty = true;
+    m.lastSaveError = null;
+    notifyState(sid);
+    // 调用方拿到本次保存的真实结果；内部队列单独吞掉失败，保证下次保存仍能继续。
+    const operation = m.chain.catch(() => {}).then(() => pushSave(sid, html));
+    m.chain = operation.catch(() => {});
+    return operation;
+  },
+  /* 当前草稿、保存与权威正文同步状态的只读快照。 */
+  state(sid) {
+    if (!sid) return null;
+    return stateSnapshot(sid);
+  },
+  /* 把已成功保存的场景草稿显式提升为权威正文。v1 仅支持“事实未变”。 */
+  async promote(sid, options = {}) {
+    if (!sid) throw Object.assign(new Error("缺少场景标识"), { code: "AUTHOR_DRAFT_SCENE_REQUIRED" });
+    const m = meta(sid);
+    await m.chain;
+    if (m.lastSaveError) throw m.lastSaveError;
+    await ensureDraft(sid);
+    if (!m.draftId) {
+      throw Object.assign(new Error("场景尚未就绪，无法提升权威正文"), { code: "AUTHOR_DRAFT_UNAVAILABLE" });
+    }
+    if (m.dirty) {
+      throw Object.assign(new Error("草稿仍有未保存改动"), { code: "AUTHOR_DRAFT_UNSAVED" });
+    }
+    const expectedFinal = Object.prototype.hasOwnProperty.call(options, "expectedCurrentFinalSceneRowId")
+      ? options.expectedCurrentFinalSceneRowId
+      : m.currentFinalSceneRowId;
+    const data = await apiPost(`/api/v1/author-drafts/${m.draftId}/promote-canonical`, {
+      base_revision_no: m.revision,
+      expected_current_final_scene_row_id: expectedFinal == null ? null : expectedFinal,
+      narrative_effect: options.narrativeEffect || "facts_unchanged",
+      accepted_warning_codes: options.acceptedWarningCodes || [],
+    });
+    m.currentFinalSceneRowId = data.final_scene_row_id;
+    m.lastPromotedRevisionNo = data.draft_revision_no;
+    m.lastPromotedFinalSceneRowId = data.final_scene_row_id;
+    m.canonicalDirty = Boolean(data.canonical_dirty);
+    notifyState(sid);
+    return data;
   },
   /* 当前在写场景预热（目录装载后调用） */
   hydrateActive() {

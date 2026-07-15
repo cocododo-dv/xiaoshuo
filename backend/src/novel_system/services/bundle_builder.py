@@ -652,7 +652,8 @@ class BundleBuilder:
             # PovKnowledgeProjection 做减法投影，隐藏非 POV 秘密内容（硬 QC 仍读全量）。
             text = log.format_state_for_prompt(
                 project_id,
-                scene.scene_seq or 0,
+                None,
+                scene_id=scene.scene_id,
                 pov_character_id=scene.pov_character_id,
                 onstage_character_ids=scene.onstage_chars_json,
             )
@@ -990,7 +991,12 @@ class BundleBuilder:
             if len(onstage) < 2:
                 return None
             svc = RelationshipMatrixService(self.session)
-            matrix = svc.build_matrix(project_id, scene.scene_seq or 0, onstage)
+            matrix = svc.build_matrix(
+                project_id,
+                None,
+                onstage,
+                scene_id=scene.scene_id,
+            )
             if not matrix.edges:
                 return None
             prompt = svc.format_for_prompt(matrix)
@@ -1017,7 +1023,10 @@ class BundleBuilder:
             # Wave 4（§5.6）：写作提示词走 POV 减法投影——传 pov 后，他人秘密/错误信念
             # 内容被抑制，只保留 POV 独有认知与内容无关的盲区提示。
             text = log.information_asymmetry_digest(
-                project_id, scene.scene_seq or 0, onstage,
+                project_id,
+                None,
+                onstage,
+                scene_id=scene.scene_id,
                 pov_character_id=scene.pov_character_id,
             )
             return text if text else None

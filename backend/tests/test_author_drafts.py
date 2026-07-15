@@ -183,6 +183,42 @@ def test_ensure_and_save_chapter_and_scene_author_drafts_without_overwriting_run
     assert {row.event_type for row in session.query(AuthorDraftEvent).all()} >= {"created", "edited"}
 
 
+def test_scene_draft_is_dirty_when_runtime_final_pointer_moves_after_promotion(client, session) -> None:
+    _create_chapter(client, "AD_POINTER", planned_scene_count=1)
+    _create_scene(client, "AD_POINTER_SC01", chapter_id="AD_POINTER", scene_seq=1, is_chapter_last=1)
+    first_final_id = _finalize_scene(session, "AD_POINTER_SC01", "AD_POINTER", "作者已确认的正文。")
+    ensured = client.post("/api/v1/author-drafts/scene/AD_POINTER_SC01/ensure")
+    assert ensured.status_code == 200
+    draft_data = ensured.json()["data"]["draft"]
+    assert draft_data["canonical_dirty"] is True
+
+    draft = session.get(AuthorDraft, draft_data["draft_id"])
+    assert draft is not None
+    draft.last_promoted_revision_no = draft.revision_no
+    draft.last_promoted_final_scene_row_id = first_final_id
+    session.commit()
+
+    clean = client.get("/api/v1/author-drafts/scene/AD_POINTER_SC01/current")
+    assert clean.status_code == 200
+    assert clean.json()["data"]["runtime_final_ref"] == f"final_scene:{first_final_id}"
+    assert clean.json()["data"]["draft"]["canonical_dirty"] is False
+
+    second_final_id = _finalize_scene(
+        session,
+        "AD_POINTER_SC01",
+        "AD_POINTER",
+        "自动重写切换出的另一版正文。",
+        suffix="v2",
+    )
+    drifted = client.post("/api/v1/author-drafts/scene/AD_POINTER_SC01/ensure")
+    assert drifted.status_code == 200
+    payload = drifted.json()["data"]
+    assert payload["runtime_final_ref"] == f"final_scene:{second_final_id}"
+    assert payload["draft"]["revision_no"] == 1
+    assert payload["draft"]["last_promoted_final_scene_row_id"] == first_final_id
+    assert payload["draft"]["canonical_dirty"] is True
+
+
 def test_author_draft_save_uses_optimistic_locking(client, session) -> None:
     _create_chapter(client, "AD200", planned_scene_count=1)
     _create_scene(client, "AD200_SC01", chapter_id="AD200", scene_seq=1, is_chapter_last=1)

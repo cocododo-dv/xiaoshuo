@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     ChapterGoal,
     ChapterMemory,
+    SceneCard,
     SceneMemory,
     VolumeSummary,
 )
@@ -127,17 +128,56 @@ class Aggregator:
                 "chapter_memory_row_id": None,
             }
 
-        scene_memories = self.session.execute(
+        active_memories = list(self.session.execute(
             select(SceneMemory)
             .where(SceneMemory.chapter_id == chapter_id, SceneMemory.active_flag == 1)
-            .order_by(SceneMemory.row_id.asc())
-        ).scalars().all()
-        if not scene_memories:
+        ).scalars().all())
+        if not active_memories:
             return {
                 "status": "no_op",
                 "reason": "no_scene_memories",
                 "chapter_memory_row_id": None,
             }
+
+        scene_ids = {memory.scene_id for memory in active_memories}
+        scenes = list(self.session.execute(
+            select(SceneCard).where(
+                SceneCard.scene_id.in_(scene_ids),
+                SceneCard.chapter_id == chapter_id,
+                SceneCard.trashed_flag == 0,
+            )
+        ).scalars().all())
+        scene_by_id = {scene.scene_id: scene for scene in scenes}
+        orphan_ids = sorted(scene_ids - set(scene_by_id))
+        if orphan_ids:
+            return {
+                "status": "blocked",
+                "reason": "scene_memory_position_orphan",
+                "chapter_memory_row_id": None,
+                "scene_ids": orphan_ids,
+            }
+
+        counts: dict[str, int] = {}
+        for memory in active_memories:
+            counts[memory.scene_id] = counts.get(memory.scene_id, 0) + 1
+        ambiguous_ids = sorted(scene_id for scene_id, count in counts.items() if count > 1)
+        if ambiguous_ids:
+            return {
+                "status": "blocked",
+                "reason": "active_scene_memory_ambiguous",
+                "chapter_memory_row_id": None,
+                "scene_ids": ambiguous_ids,
+            }
+
+        scene_memories = sorted(
+            active_memories,
+            key=lambda memory: (
+                int(scene_by_id[memory.scene_id].scene_seq or 0),
+                memory.scene_id,
+                memory.created_at or "",
+                memory.row_id,
+            ),
+        )
 
         content = "\n".join(memory.content for memory in scene_memories)
         existing_finals = self.session.execute(

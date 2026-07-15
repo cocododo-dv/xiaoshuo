@@ -57,6 +57,16 @@ def _seed_catalog_style_scene(session, project_id: str = "projp6"):
 def test_narrative_state_digest_uses_scene_project_id(session):
     """P-6：目录式 chapter_id 下，权威状态注入必须按 scene.project_id 命中事件。"""
     scene = _seed_catalog_style_scene(session)
+    session.add(
+        SceneCard(
+            scene_id="earlier_scene",
+            chapter_id=scene.chapter_id,
+            project_id=scene.project_id,
+            scene_seq=1,
+            scene_goal="earlier",
+        )
+    )
+    session.flush()
     log = NarrativeEventLog(session)
     log.log_event(
         project_id=scene.project_id,
@@ -68,7 +78,7 @@ def test_narrative_state_digest_uses_scene_project_id(session):
         fact_key="injury",
         fact_value="左臂骨折",
     )
-    # 事件挂在 scene_seq=0（earlier_scene 无卡片），当前场景 seq=2 → 应可见
+    # 事件位于同章前一场，当前场景应能按权威目录位置读取。
     digest = BundleBuilder(session)._narrative_state_digest(scene)
     assert digest is not None, "有事件时权威状态注入不应为空"
     assert "左臂骨折" in digest

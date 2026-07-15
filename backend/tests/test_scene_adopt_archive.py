@@ -7,8 +7,15 @@
 
 from __future__ import annotations
 
+import hashlib
+
+import pytest
+
 from novel_system.db.models import (
+    AttemptTracker,
     FinalScene,
+    SceneCard,
+    SceneMemory,
     SceneBundle,
     SceneDraft,
     SceneRunState,
@@ -16,6 +23,7 @@ from novel_system.db.models import (
     StyleReferenceProfile,
 )
 from novel_system.services.archiver import Archiver
+from novel_system.services.errors import DomainError
 from tests.test_chapter_manuscripts import _create_chapter, _create_scene
 
 
@@ -288,6 +296,181 @@ def test_archiver_marks_final_scene_archived(session):
     result = Archiver(session).archive_final_scene("scene_unit_1", "final_unit_1")
     assert result["scene_status"] == "archived"
     assert session.get(FinalScene, "final_unit_1").status == "archived"
+
+
+def test_archiver_blocks_unsafe_actual_final_text(client, session):
+    _create_chapter(client, "chapter_archive_gate_source")
+    _create_scene(
+        client,
+        "scene_archive_gate_source",
+        chapter_id="chapter_archive_gate_source",
+        scene_seq=1,
+    )
+    final = FinalScene(
+        row_id="final_archive_gate_source_v1",
+        scene_id="scene_archive_gate_source",
+        chapter_id="chapter_archive_gate_source",
+        content="他抬头看见路明非站在门口。",
+        status="near_final_ready",
+        source_bundle_id="bundle_archive_gate_source",
+        source_bundle_hash="hash_archive_gate_source",
+    )
+    session.add(final)
+    session.flush()
+
+    with pytest.raises(DomainError) as exc_info:
+        Archiver(session).archive_final_scene(final.scene_id, final.row_id)
+
+    assert exc_info.value.code == "SOURCE_SAFETY_BLOCKED"
+    assert final.status == "near_final_ready"
+    assert session.query(SceneMemory).filter(SceneMemory.scene_id == final.scene_id).count() == 0
+    assert session.query(AttemptTracker).filter(
+        AttemptTracker.scene_id == final.scene_id,
+        AttemptTracker.step == "archive",
+    ).count() == 0
+
+
+def test_archiver_fails_closed_when_source_safety_is_unavailable(client, session, monkeypatch):
+    _create_chapter(client, "chapter_archive_gate_unavailable")
+    _create_scene(
+        client,
+        "scene_archive_gate_unavailable",
+        chapter_id="chapter_archive_gate_unavailable",
+        scene_seq=1,
+    )
+    final = FinalScene(
+        row_id="final_archive_gate_unavailable_v1",
+        scene_id="scene_archive_gate_unavailable",
+        chapter_id="chapter_archive_gate_unavailable",
+        content="她在雨里收起信封，转身走向码头。",
+        status="near_final_ready",
+        source_bundle_id="bundle_archive_gate_unavailable",
+        source_bundle_hash="hash_archive_gate_unavailable",
+    )
+    session.add(final)
+    session.flush()
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("scanner offline")
+
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.ReferenceSafetyService.scan_runtime_text",
+        unavailable,
+    )
+
+    with pytest.raises(DomainError) as exc_info:
+        Archiver(session).archive_final_scene(final.scene_id, final.row_id)
+
+    assert exc_info.value.code == "SOURCE_SAFETY_UNAVAILABLE"
+    assert final.content_hash is None
+    assert final.status == "near_final_ready"
+    assert session.query(SceneMemory).filter(SceneMemory.scene_id == final.scene_id).count() == 0
+    assert session.query(AttemptTracker).filter(
+        AttemptTracker.scene_id == final.scene_id,
+        AttemptTracker.step == "archive",
+    ).count() == 0
+
+
+def test_archiver_blocks_verified_continuity_issue(client, session):
+    _create_chapter(client, "chapter_archive_gate_continuity")
+    _create_scene(
+        client,
+        "scene_archive_gate_continuity",
+        chapter_id="chapter_archive_gate_continuity",
+        scene_seq=1,
+    )
+    scene = session.get(SceneCard, "scene_archive_gate_continuity")
+    scene.forbidden_text = "不可出现的暗号"
+    final = FinalScene(
+        row_id="final_archive_gate_continuity_v1",
+        scene_id=scene.scene_id,
+        chapter_id=scene.chapter_id,
+        content="她在墙上写下不可出现的暗号。",
+        status="near_final_ready",
+        source_bundle_id="bundle_archive_gate_continuity",
+        source_bundle_hash="hash_archive_gate_continuity",
+    )
+    session.add(final)
+    session.flush()
+
+    with pytest.raises(DomainError) as exc_info:
+        Archiver(session).archive_final_scene(final.scene_id, final.row_id)
+
+    assert exc_info.value.code == "FINAL_TEXT_CONTINUITY_BLOCKED"
+    blockers = exc_info.value.details["final_text_gate"]["archive_blockers"]
+    assert "continuity:forbidden_text" in blockers
+    assert final.status == "near_final_ready"
+
+
+def test_archiver_keeps_literary_findings_advisory(client, session):
+    _create_chapter(client, "chapter_archive_gate_literary")
+    _create_scene(
+        client,
+        "scene_archive_gate_literary",
+        chapter_id="chapter_archive_gate_literary",
+        scene_seq=1,
+    )
+    final = FinalScene(
+        row_id="final_archive_gate_literary_v1",
+        scene_id="scene_archive_gate_literary",
+        chapter_id="chapter_archive_gate_literary",
+        content="她看着门。她看着灯。她看着空椅子。最后，一切都变得不同了。",
+        status="near_final_ready",
+        source_bundle_id="bundle_archive_gate_literary",
+        source_bundle_hash="hash_archive_gate_literary",
+    )
+    session.add(final)
+    session.flush()
+
+    result = Archiver(session).archive_final_scene(final.scene_id, final.row_id)
+
+    gate = result["final_text_gate"]
+    assert gate["archivable"] is True
+    assert gate["auto_promotable"] is False
+    assert gate["literary_quality"]["risky_dimensions"]
+    assert gate["content_hash"] == hashlib.sha256(final.content.encode("utf-8")).hexdigest()
+    assert final.content_hash == gate["content_hash"]
+    assert final.status == "archived"
+    attempt = session.get(AttemptTracker, result["archive_attempt_id"])
+    assert attempt.details_json["final_text_gate"]["content_hash"] == gate["content_hash"]
+
+
+def test_archiver_blocks_persisted_content_hash_mismatch_before_side_effects(client, session):
+    _create_chapter(client, "chapter_archive_gate_hash")
+    _create_scene(
+        client,
+        "scene_archive_gate_hash",
+        chapter_id="chapter_archive_gate_hash",
+        scene_seq=1,
+    )
+    final = FinalScene(
+        row_id="final_archive_gate_hash_v1",
+        scene_id="scene_archive_gate_hash",
+        chapter_id="chapter_archive_gate_hash",
+        content="她推开门，雨声从院子里涌了进来。",
+        content_hash="0" * 64,
+        status="near_final_ready",
+        source_bundle_id="bundle_archive_gate_hash",
+        source_bundle_hash="hash_archive_gate_hash",
+    )
+    session.add(final)
+    session.flush()
+
+    with pytest.raises(DomainError) as exc_info:
+        Archiver(session).archive_final_scene(final.scene_id, final.row_id)
+
+    assert exc_info.value.code == "FINAL_SCENE_CONTENT_HASH_MISMATCH"
+    assert exc_info.value.details["stored_content_hash"] == "0" * 64
+    assert exc_info.value.details["actual_content_hash"] == hashlib.sha256(
+        final.content.encode("utf-8")
+    ).hexdigest()
+    assert final.content_hash == "0" * 64
+    assert final.status == "near_final_ready"
+    assert session.query(SceneMemory).filter(SceneMemory.scene_id == final.scene_id).count() == 0
+    assert session.query(AttemptTracker).filter(
+        AttemptTracker.scene_id == final.scene_id,
+        AttemptTracker.step == "archive",
+    ).count() == 0
 
 
 def test_adopt_updates_latest_valid_pointer(client, session):

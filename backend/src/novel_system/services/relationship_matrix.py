@@ -79,8 +79,10 @@ class RelationshipMatrixService:
     def build_matrix(
         self,
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None,
         onstage_character_ids: list[str],
+        *,
+        scene_id: str | None = None,
     ) -> RelationshipMatrix:
         """Build the relationship matrix for onstage characters.
 
@@ -90,7 +92,12 @@ class RelationshipMatrixService:
         stored_edges = self._load_stored_edges(project_id)
         onstage_set = set(onstage_character_ids)
 
-        knowledge = self._load_knowledge_sets(project_id, scene_seq, onstage_character_ids)
+        knowledge = self._load_knowledge_sets(
+            project_id,
+            scene_seq,
+            onstage_character_ids,
+            scene_id=scene_id,
+        )
 
         edges: list[RelationshipEdge] = []
         seen_pairs: set[tuple[str, str]] = set()
@@ -234,8 +241,10 @@ class RelationshipMatrixService:
     def _load_knowledge_sets(
         self,
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None,
         character_ids: list[str],
+        *,
+        scene_id: str | None = None,
     ) -> dict[str, set[str]]:
         """Load what each character knows at the given scene seq."""
         try:
@@ -244,7 +253,12 @@ class RelationshipMatrixService:
             knowledge: dict[str, set[str]] = {}
             for char_id in character_ids:
                 facts = log.known_facts_for_character(
-                    char_id, project_id, up_to_scene_seq=scene_seq - 1,
+                    char_id,
+                    project_id,
+                    before_scene_id=scene_id,
+                    up_to_scene_seq=(
+                        int(scene_seq or 0) - 1 if scene_id is None else None
+                    ),
                 )
                 knowledge[char_id] = {f"{f.fact_key}:{f.fact_value}" for f in facts}
             return knowledge

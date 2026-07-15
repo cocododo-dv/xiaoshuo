@@ -24,6 +24,7 @@ from novel_system.db.models import (
     StoryCharacter,
 )
 from novel_system.services.narrative_event_log import NarrativeEventLog
+from novel_system.services.errors import DomainError
 
 logger = logging.getLogger(__name__)
 
@@ -85,14 +86,20 @@ class EventReconciliationService:
         project_id: str,
         *,
         up_to_scene_seq: Optional[int] = None,
+        up_to_scene_id: Optional[str] = None,
         create_review_items: bool = False,
     ) -> list[DriftFinding]:
         """Run full reconciliation for a project. Returns all drift findings."""
         findings: list[DriftFinding] = []
 
-        findings.extend(self._reconcile_characters(project_id, up_to_scene_seq))
-        findings.extend(self._reconcile_locations(project_id, up_to_scene_seq))
-        findings.extend(self._reconcile_items(project_id, up_to_scene_seq))
+        boundary, marker_seq = self._projection_boundary(
+            project_id,
+            up_to_scene_seq=up_to_scene_seq,
+            up_to_scene_id=up_to_scene_id,
+        )
+        findings.extend(self._reconcile_characters(project_id, boundary, marker_seq))
+        findings.extend(self._reconcile_locations(project_id, boundary, marker_seq))
+        findings.extend(self._reconcile_items(project_id, boundary, marker_seq))
 
         # Persist findings
         for f in findings:
@@ -116,7 +123,7 @@ class EventReconciliationService:
     # ------------------------------------------------------------------
 
     def _reconcile_characters(
-        self, project_id: str, up_to_scene_seq: Optional[int]
+        self, project_id: str, boundary: dict[str, object], marker_seq: int
     ) -> list[DriftFinding]:
         """Compare event log character state vs StoryCharacter table."""
         findings: list[DriftFinding] = []
@@ -127,15 +134,10 @@ class EventReconciliationService:
             .all()
         )
 
-        if up_to_scene_seq is None:
-            up_to_scene_seq = self._latest_scene_seq(project_id)
-        if up_to_scene_seq is None:
-            return findings
-
         for char in characters:
             # Delegate replay to NarrativeEventLog
             state = self._event_log.project_character_state(
-                char.character_id, project_id, up_to_scene_seq=up_to_scene_seq
+                char.character_id, project_id, **boundary
             )
             projected = state.as_dict()
             if not projected:
@@ -163,7 +165,7 @@ class EventReconciliationService:
                             fact_key=fact_key,
                             event_log_value=event_value,
                             entity_table_value=table_value,
-                            scene_seq=up_to_scene_seq,
+                            scene_seq=marker_seq,
                             severity=severity,
                         )
                     )
@@ -171,7 +173,7 @@ class EventReconciliationService:
         return findings
 
     def _reconcile_locations(
-        self, project_id: str, up_to_scene_seq: Optional[int]
+        self, project_id: str, boundary: dict[str, object], marker_seq: int
     ) -> list[DriftFinding]:
         """Compare event log location state vs LibraryEntity table."""
         findings: list[DriftFinding] = []
@@ -182,15 +184,10 @@ class EventReconciliationService:
             .all()
         )
 
-        if up_to_scene_seq is None:
-            up_to_scene_seq = self._latest_scene_seq(project_id)
-        if up_to_scene_seq is None:
-            return findings
-
         for loc in locations:
             # Delegate replay to NarrativeEventLog
             state = self._event_log.project_location_state(
-                loc.entity_id, project_id, up_to_scene_seq=up_to_scene_seq
+                loc.entity_id, project_id, **boundary
             )
             projected = state.as_dict()
             if not projected:
@@ -211,7 +208,7 @@ class EventReconciliationService:
                             fact_key=fact_key,
                             event_log_value=event_value,
                             entity_table_value=table_value,
-                            scene_seq=up_to_scene_seq,
+                            scene_seq=marker_seq,
                             severity=severity,
                         )
                     )
@@ -219,7 +216,7 @@ class EventReconciliationService:
         return findings
 
     def _reconcile_items(
-        self, project_id: str, up_to_scene_seq: Optional[int]
+        self, project_id: str, boundary: dict[str, object], marker_seq: int
     ) -> list[DriftFinding]:
         """Compare event log item state vs LibraryEntity table."""
         findings: list[DriftFinding] = []
@@ -230,15 +227,10 @@ class EventReconciliationService:
             .all()
         )
 
-        if up_to_scene_seq is None:
-            up_to_scene_seq = self._latest_scene_seq(project_id)
-        if up_to_scene_seq is None:
-            return findings
-
         for item in items:
             # Delegate replay to NarrativeEventLog
             state = self._event_log.project_item_state(
-                item.entity_id, project_id, up_to_scene_seq=up_to_scene_seq
+                item.entity_id, project_id, **boundary
             )
             projected = state.as_dict()
             if not projected:
@@ -259,7 +251,7 @@ class EventReconciliationService:
                             fact_key=fact_key,
                             event_log_value=event_value,
                             entity_table_value=table_value,
-                            scene_seq=up_to_scene_seq,
+                            scene_seq=marker_seq,
                             severity=severity,
                         )
                     )
@@ -269,6 +261,26 @@ class EventReconciliationService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _projection_boundary(
+        self,
+        project_id: str,
+        *,
+        up_to_scene_seq: Optional[int],
+        up_to_scene_id: Optional[str],
+    ) -> tuple[dict[str, object], int]:
+        if up_to_scene_seq is not None and up_to_scene_id is not None:
+            raise DomainError(
+                "NARRATIVE_CURSOR_CONFLICT",
+                "use either up_to_scene_id or up_to_scene_seq, not both",
+                status_code=400,
+            )
+        if up_to_scene_id is not None:
+            cursor = self._event_log.positions.cursor_for_scene(project_id, up_to_scene_id)
+            return {"up_to_scene_id": up_to_scene_id}, cursor.scene_seq
+        if up_to_scene_seq is not None:
+            return {"up_to_scene_seq": up_to_scene_seq}, up_to_scene_seq
+        return {}, self._latest_scene_seq(project_id) or 0
 
     def _latest_scene_seq(self, project_id: str) -> Optional[int]:
         """Get the latest scene_seq from the event log for a project."""

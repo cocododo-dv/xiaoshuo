@@ -37,6 +37,7 @@ from novel_system.services.narrative_event_log import (
     INFORMATION_ASYMMETRY_FACT_KEYS,
     NarrativeEventLog,
 )
+from novel_system.services.narrative_position import NarrativePositionService
 
 # 秘密性质的信息不对称键——这些键的**内容**受 POV 过滤；其余事实为公共。
 _SECRET_CONTENT_KEYS = ("secret_held_by", "believes_false")
@@ -59,25 +60,27 @@ class PovKnowledgeProjection:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.log = NarrativeEventLog(session)
+        self.positions = NarrativePositionService(session)
 
     # ------------------------------------------------------------------
     # 知识归属查询
     # ------------------------------------------------------------------
 
     def _pov_learns_events(
-        self, pov_character_id: str, project_id: str, up_to_scene_seq: int,
+        self,
+        pov_character_id: str,
+        project_id: str,
+        up_to_scene_seq: int | None = None,
+        *,
+        before_scene_id: str | None = None,
     ) -> list[NarrativeEvent]:
-        query = (
-            select(NarrativeEvent)
-            .where(
-                NarrativeEvent.project_id == project_id,
-                NarrativeEvent.entity_id == pov_character_id,
-                NarrativeEvent.event_type == "character_learns",
-                NarrativeEvent.scene_seq <= up_to_scene_seq,
-            )
-            .order_by(NarrativeEvent.scene_seq.asc(), NarrativeEvent.created_at.asc())
+        return self.log.events(
+            project_id,
+            before_scene_id=before_scene_id,
+            up_to_scene_seq=up_to_scene_seq if before_scene_id is None else None,
+            entity_id=pov_character_id,
+            event_type="character_learns",
         )
-        return list(self.session.execute(query).scalars().all())
 
     @staticmethod
     def _is_suspected(event: NarrativeEvent) -> bool:
@@ -85,36 +88,59 @@ class PovKnowledgeProjection:
         return str(payload.get("knowledge_status") or "").strip().lower() == "suspected"
 
     def _pov_learned_values(
-        self, pov_character_id: str, project_id: str, up_to_scene_seq: int,
+        self,
+        pov_character_id: str,
+        project_id: str,
+        up_to_scene_seq: int | None = None,
+        *,
+        before_scene_id: str | None = None,
     ) -> set[str]:
         return {
             e.fact_value
-            for e in self._pov_learns_events(pov_character_id, project_id, up_to_scene_seq)
+            for e in self._pov_learns_events(
+                pov_character_id,
+                project_id,
+                up_to_scene_seq,
+                before_scene_id=before_scene_id,
+            )
         }
 
     def _onstage_public_values(
-        self, project_id: str, pov_character_id: str, up_to_scene_seq: int,
+        self,
+        project_id: str,
+        pov_character_id: str,
+        up_to_scene_seq: int | None = None,
+        *,
+        before_scene_id: str | None = None,
     ) -> set[str]:
         """回填启发式：POV 在场场景断言的公共事实 → POV 已知（防饿死上下文，§5.6）。
 
         只取公共事实（非秘密键）；秘密不因"在场"默认已知（保守策略）。
         """
-        scene_rows = self.session.execute(
-            select(SceneCard.scene_id, SceneCard.onstage_chars_json, SceneCard.scene_seq)
-            .where(SceneCard.project_id == project_id, SceneCard.scene_seq <= up_to_scene_seq)
-        ).all()
+        if before_scene_id is not None:
+            scene_rows = [
+                (scene.scene_id, scene.onstage_chars_json, scene.scene_seq)
+                for scene in self.positions.scenes_before(project_id, before_scene_id)
+            ]
+        else:
+            scene_rows = self.session.execute(
+                select(SceneCard.scene_id, SceneCard.onstage_chars_json, SceneCard.scene_seq)
+                .where(
+                    SceneCard.project_id == project_id,
+                    SceneCard.scene_seq <= int(up_to_scene_seq or 0),
+                )
+            ).all()
         onstage_scene_ids = {
             sid for sid, onstage, _seq in scene_rows
             if isinstance(onstage, list) and pov_character_id in onstage
         }
         if not onstage_scene_ids:
             return set()
-        events = self.session.execute(
-            select(NarrativeEvent).where(
-                NarrativeEvent.project_id == project_id,
-                NarrativeEvent.scene_seq <= up_to_scene_seq,
-            )
-        ).scalars().all()
+        events = self.log.events(
+            project_id,
+            before_scene_id=before_scene_id,
+            up_to_scene_seq=up_to_scene_seq if before_scene_id is None else None,
+        )
         return {
             e.fact_value
             for e in events
@@ -122,55 +148,96 @@ class PovKnowledgeProjection:
         }
 
     def pov_known_fact_values(
-        self, project_id: str, scene_seq: int, pov_character_id: str,
+        self,
+        project_id: str,
+        scene_seq: int | None,
+        pov_character_id: str,
+        *,
+        scene_id: str | None = None,
     ) -> set[str]:
         """POV 已知的全部事实值集合——供脱敏与信息盲区判定。"""
-        up_to = scene_seq - 1
+        up_to = int(scene_seq or 0) - 1
+        boundary = (
+            {"before_scene_id": scene_id}
+            if scene_id is not None
+            else {"up_to_scene_seq": up_to}
+        )
         values: set[str] = set()
-        own = self.log.project_character_state(pov_character_id, project_id, up_to_scene_seq=up_to)
+        own = self.log.project_character_state(pov_character_id, project_id, **boundary)
         values |= {pf.fact_value for pf in own.facts.values()}
-        values |= self._pov_learned_values(pov_character_id, project_id, up_to)
-        values |= self._onstage_public_values(project_id, pov_character_id, up_to)
+        values |= self._pov_learned_values(
+            pov_character_id,
+            project_id,
+            up_to if scene_id is None else None,
+            before_scene_id=scene_id,
+        )
+        values |= self._onstage_public_values(
+            project_id,
+            pov_character_id,
+            up_to if scene_id is None else None,
+            before_scene_id=scene_id,
+        )
         return values
 
     def _secret_known_to_pov(
         self, secret_value: str, owner_id: str, pov_character_id: str,
-        project_id: str, up_to_scene_seq: int,
+        project_id: str, up_to_scene_seq: int | None = None,
+        *,
+        before_scene_id: str | None = None,
     ) -> bool:
         if owner_id == pov_character_id:
             return True
         # 秘密已显式向 POV 揭示？
-        revealed = self.session.execute(
-            select(NarrativeEvent.fact_value).where(
-                NarrativeEvent.project_id == project_id,
-                NarrativeEvent.entity_id == owner_id,
-                NarrativeEvent.fact_key == "revealed_to",
-                NarrativeEvent.scene_seq <= up_to_scene_seq,
+        revealed = [
+            event.fact_value
+            for event in self.log.events(
+                project_id,
+                before_scene_id=before_scene_id,
+                up_to_scene_seq=(up_to_scene_seq if before_scene_id is None else None),
+                entity_id=owner_id,
+                fact_key="revealed_to",
             )
-        ).scalars().all()
+        ]
         if pov_character_id in revealed:
             return True
         # POV 是否已获知该秘密内容（character_learns）？
-        if secret_value in self._pov_learned_values(pov_character_id, project_id, up_to_scene_seq):
+        if secret_value in self._pov_learned_values(
+            pov_character_id,
+            project_id,
+            up_to_scene_seq if before_scene_id is None else None,
+            before_scene_id=before_scene_id,
+        ):
             return True
         return False
 
     def suppressed_secret_values(
-        self, project_id: str, scene_seq: int, pov_character_id: str,
+        self, project_id: str, scene_seq: int | None, pov_character_id: str,
         onstage_character_ids: list[str] | None = None,
+        *,
+        scene_id: str | None = None,
     ) -> set[str]:
         """非 POV 角色持有、且 POV 不知的秘密/错误信念内容集合。"""
-        up_to = scene_seq - 1
+        up_to = int(scene_seq or 0) - 1
+        boundary = (
+            {"before_scene_id": scene_id}
+            if scene_id is not None
+            else {"up_to_scene_seq": up_to}
+        )
         chars = onstage_character_ids or self.log._characters_in_project(project_id)
         values: set[str] = set()
         for char_id in chars:
             if char_id == pov_character_id:
                 continue
-            state = self.log.project_character_state(char_id, project_id, up_to_scene_seq=up_to)
+            state = self.log.project_character_state(char_id, project_id, **boundary)
             for key in _SECRET_CONTENT_KEYS:
                 pf = state.facts.get(key)
                 if pf and not self._secret_known_to_pov(
-                    pf.fact_value, char_id, pov_character_id, project_id, up_to,
+                    pf.fact_value,
+                    char_id,
+                    pov_character_id,
+                    project_id,
+                    up_to if scene_id is None else None,
+                    before_scene_id=scene_id,
                 ):
                     values.add(pf.fact_value)
         return values
@@ -182,8 +249,9 @@ class PovKnowledgeProjection:
     def format_state_for_prompt(
         self,
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None,
         *,
+        scene_id: str | None = None,
         pov_character_id: str | None = None,
         onstage_character_ids: list[str] | None = None,
     ) -> str:
@@ -193,10 +261,18 @@ class PovKnowledgeProjection:
         """
         if not pov_character_id:
             return self.log.format_state_for_prompt(
-                project_id, scene_seq, onstage_character_ids=onstage_character_ids,
+                project_id,
+                scene_seq,
+                scene_id=scene_id,
+                onstage_character_ids=onstage_character_ids,
             )
 
-        up_to = scene_seq - 1
+        up_to = int(scene_seq or 0) - 1
+        boundary = (
+            {"before_scene_id": scene_id}
+            if scene_id is not None
+            else {"up_to_scene_seq": up_to}
+        )
         chars = onstage_character_ids or self.log._characters_in_project(project_id)
         lines: list[str] = [
             "## Authoritative Character State (from event log, do NOT contradict)",
@@ -204,7 +280,7 @@ class PovKnowledgeProjection:
         suppressed_owners: list[str] = []
 
         for char_id in chars:
-            state = self.log.project_character_state(char_id, project_id, up_to_scene_seq=up_to)
+            state = self.log.project_character_state(char_id, project_id, **boundary)
             if not state.facts:
                 continue
             visible: list[tuple[str, str]] = []
@@ -212,6 +288,7 @@ class PovKnowledgeProjection:
                 if key in INFORMATION_ASYMMETRY_FACT_KEYS:
                     if char_id == pov_character_id or self._secret_known_to_pov(
                         value, char_id, pov_character_id, project_id, up_to,
+                        before_scene_id=scene_id,
                     ):
                         visible.append((key, value))
                     elif key in _SECRET_CONTENT_KEYS and char_id not in suppressed_owners:
@@ -228,7 +305,12 @@ class PovKnowledgeProjection:
         # POV 已知 / 怀疑（character_learns 分流）
         known_regular: list[tuple[str, str]] = []
         suspected: list[tuple[str, str]] = []
-        for evt in self._pov_learns_events(pov_character_id, project_id, up_to):
+        for evt in self._pov_learns_events(
+            pov_character_id,
+            project_id,
+            up_to if scene_id is None else None,
+            before_scene_id=scene_id,
+        ):
             (suspected if self._is_suspected(evt) else known_regular).append(
                 (evt.fact_key, evt.fact_value)
             )
@@ -251,11 +333,23 @@ class PovKnowledgeProjection:
                 )
 
         # 地点 / 物品状态（公共，保持全量实现一致）
-        lines.extend(self._entity_state_lines(project_id, up_to))
+        lines.extend(
+            self._entity_state_lines(
+                project_id,
+                up_to if scene_id is None else None,
+                before_scene_id=scene_id,
+            )
+        )
 
         return "\n".join(lines) if len(lines) > 1 else ""
 
-    def _entity_state_lines(self, project_id: str, up_to_scene_seq: int) -> list[str]:
+    def _entity_state_lines(
+        self,
+        project_id: str,
+        up_to_scene_seq: int | None,
+        *,
+        before_scene_id: str | None = None,
+    ) -> list[str]:
         out: list[str] = []
         for entity_type, header in (
             ("location", "## Authoritative Location State (from event log, do NOT contradict)"),
@@ -265,7 +359,11 @@ class PovKnowledgeProjection:
             block: list[str] = []
             for eid in ids:
                 state = self.log.project_entity_state(
-                    entity_type, eid, project_id, up_to_scene_seq=up_to_scene_seq,
+                    entity_type,
+                    eid,
+                    project_id,
+                    up_to_scene_seq=(up_to_scene_seq if before_scene_id is None else None),
+                    before_scene_id=before_scene_id,
                 )
                 if state.facts:
                     block.append(f"\n### {eid}")
@@ -279,9 +377,10 @@ class PovKnowledgeProjection:
     def information_asymmetry_digest(
         self,
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None,
         onstage_character_ids: list[str],
         *,
+        scene_id: str | None = None,
         pov_character_id: str | None = None,
     ) -> str:
         """POV 视角的信息不对称摘要——只显示 POV 独有认知，他人独有内容仅给盲区提示。
@@ -290,12 +389,20 @@ class PovKnowledgeProjection:
         """
         if not pov_character_id:
             return self.log.information_asymmetry_digest(
-                project_id, scene_seq, onstage_character_ids,
+                project_id,
+                scene_seq,
+                onstage_character_ids,
+                scene_id=scene_id,
             )
         if len(onstage_character_ids) < 2:
             return ""
 
-        up_to = scene_seq - 1
+        up_to = int(scene_seq or 0) - 1
+        boundary = (
+            {"before_scene_id": scene_id}
+            if scene_id is not None
+            else {"up_to_scene_seq": up_to}
+        )
         lines: list[str] = [
             "## Information Asymmetry (POV-filtered, do NOT leak hidden content)",
         ]
@@ -303,7 +410,7 @@ class PovKnowledgeProjection:
         pov_knows = {
             f"{f.fact_key}:{f.fact_value}"
             for f in self.log.known_facts_for_character(
-                pov_character_id, project_id, up_to_scene_seq=up_to,
+                pov_character_id, project_id, **boundary,
             )
         }
         exclusive_lines: list[str] = []
@@ -314,12 +421,12 @@ class PovKnowledgeProjection:
             other_knows = {
                 f"{f.fact_key}:{f.fact_value}"
                 for f in self.log.known_facts_for_character(
-                    other, project_id, up_to_scene_seq=up_to,
+                    other, project_id, **boundary,
                 )
             }
             for fact in sorted(pov_knows - other_knows):
                 exclusive_lines.append(f"  - {fact}")
-            other_state = self.log.project_character_state(other, project_id, up_to_scene_seq=up_to)
+            other_state = self.log.project_character_state(other, project_id, **boundary)
             has_secret = any(other_state.facts.get(k) for k in _SECRET_CONTENT_KEYS)
             if (other_knows - pov_knows) or has_secret:
                 if other not in blind_owners:
@@ -338,7 +445,7 @@ class PovKnowledgeProjection:
             for owner in blind_owners:
                 lines.append(f"  - 角色 {owner} 掌握 {pov_character_id} 未知的信息")
 
-        pov_state = self.log.project_character_state(pov_character_id, project_id, up_to_scene_seq=up_to)
+        pov_state = self.log.project_character_state(pov_character_id, project_id, **boundary)
         own_secrets = [pov_state.facts[k].fact_value for k in _SECRET_CONTENT_KEYS if pov_state.facts.get(k)]
         if own_secrets:
             lines.append(f"\n### {pov_character_id} 自身秘密/信念")
@@ -377,8 +484,9 @@ class PovKnowledgeProjection:
         self,
         findings: list[Any],
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None,
         *,
+        scene_id: str | None = None,
         pov_character_id: str | None = None,
         onstage_character_ids: list[str] | None = None,
     ) -> tuple[list[Any], list[Any]]:
@@ -391,7 +499,11 @@ class PovKnowledgeProjection:
         if not findings or not pov_character_id:
             return list(findings), []
         suppressed = self.suppressed_secret_values(
-            project_id, scene_seq, pov_character_id, onstage_character_ids,
+            project_id,
+            scene_seq,
+            pov_character_id,
+            onstage_character_ids,
+            scene_id=scene_id,
         )
         if not suppressed:
             return list(findings), []
@@ -416,14 +528,16 @@ class PovKnowledgeProjection:
         self,
         brief_lines: list[str],
         project_id: str,
-        scene_seq: int,
+        scene_seq: int | None,
         *,
+        scene_id: str | None = None,
         pov_character_id: str | None = None,
         onstage_character_ids: list[str] | None = None,
     ) -> list[str]:
         """从自动补丁 brief（``list[str]`` 指令）中剔除引用非 POV 秘密的条目。"""
         safe, _redacted = self.desensitize_findings(
             list(brief_lines), project_id, scene_seq,
+            scene_id=scene_id,
             pov_character_id=pov_character_id,
             onstage_character_ids=onstage_character_ids,
         )

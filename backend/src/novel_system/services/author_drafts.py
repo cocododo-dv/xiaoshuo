@@ -54,6 +54,8 @@ AUTHOR_DRAFT_EVENT_TYPES = {
     "proposal_rejected",
 }
 
+_RUNTIME_FINAL_UNAVAILABLE = object()
+
 DESK_DEFAULT_MODE = "write_first"
 AUTHOR_PROPOSAL_TRIAD = ("structure_candidate", "passage_candidate", "language_candidate")
 AUTHOR_PROPOSAL_APPLY_MODES = {"replace", "append", "new_version", "local_patch", "range_replace", "paragraph_replace"}
@@ -877,10 +879,20 @@ class AuthorDraftService:
         }
 
     def _draft_response(self, draft: AuthorDraft) -> dict[str, Any]:
-        return {
-            "draft": self.serialize_draft(draft),
-            **self._desk_context(draft),
-        }
+        desk_context = self._desk_context(draft)
+        runtime_ref = desk_context.get("runtime_final_ref")
+        runtime_final_id = (
+            runtime_ref.removeprefix("final_scene:")
+            if isinstance(runtime_ref, str) and runtime_ref.startswith("final_scene:")
+            else None
+        )
+        serialized = self.serialize_draft(
+            draft,
+            current_final_scene_row_id=(
+                runtime_final_id if draft.object_type == "scene" else _RUNTIME_FINAL_UNAVAILABLE
+            ),
+        )
+        return {"draft": serialized, **desk_context}
 
     def _desk_context(self, draft: AuthorDraft) -> dict[str, Any]:
         runtime_final_ref = None
@@ -1097,9 +1109,23 @@ class AuthorDraftService:
         return {"candidate": self.serialize_structure_candidate(candidate)}
 
     @staticmethod
-    def serialize_draft(row: AuthorDraft | None) -> dict[str, Any] | None:
+    def serialize_draft(
+        row: AuthorDraft | None,
+        *,
+        current_final_scene_row_id: str | None | object = _RUNTIME_FINAL_UNAVAILABLE,
+    ) -> dict[str, Any] | None:
         if row is None:
             return None
+        canonical_dirty = row.last_promoted_revision_no != row.revision_no
+        if row.object_type == "scene":
+            # Without runtime state, never claim that a scene is canonical. Desk
+            # responses pass the pointer explicitly and therefore remain exact.
+            canonical_dirty = bool(
+                canonical_dirty
+                or current_final_scene_row_id is _RUNTIME_FINAL_UNAVAILABLE
+                or not row.last_promoted_final_scene_row_id
+                or current_final_scene_row_id != row.last_promoted_final_scene_row_id
+            )
         return {
             "draft_id": row.draft_id,
             "object_type": row.object_type,
@@ -1107,6 +1133,9 @@ class AuthorDraftService:
             "source_text_ref": row.source_text_ref,
             "content": row.content,
             "revision_no": row.revision_no,
+            "last_promoted_revision_no": row.last_promoted_revision_no,
+            "last_promoted_final_scene_row_id": row.last_promoted_final_scene_row_id,
+            "canonical_dirty": canonical_dirty,
             "status": row.status,
             "created_by": row.created_by,
             "updated_by": row.updated_by,

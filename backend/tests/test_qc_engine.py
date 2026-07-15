@@ -65,7 +65,7 @@ class FakeSceneClient(AccountedGenerateMixin):
             usage = {"input_tokens": 111, "output_tokens": 29, "total_tokens": 140}
         elif len(self.requests) == 2:
             payload = {
-                "scene_text": "Provider-generated style scene text.",
+                "scene_text": "Provider-generated style scene text. A red envelope changes hands.",
                 "style_notes": ["leaned harder into rhythm and inner tension"],
             }
             request_id = "resp_style_001"
@@ -73,7 +73,7 @@ class FakeSceneClient(AccountedGenerateMixin):
             usage = {"input_tokens": 121, "output_tokens": 33, "total_tokens": 154}
         else:
             payload = {
-                "scene_text": "Provider-generated patched scene text.",
+                "scene_text": "Provider-generated patched scene text. A red envelope changes hands.",
                 "style_notes": ["applied one controlled patch pass"],
             }
             request_id = "resp_patch_001"
@@ -659,7 +659,7 @@ def test_run_scene_hard_qc_pass_persists_report_and_continues(session) -> None:
     assert soft_report.next_action == "pass"
     assert state.current_qc_report_id == soft_report.qc_report_id
     assert state.current_human_review_event_id is None
-    assert style_draft.content == "Provider-generated style scene text."
+    assert style_draft.content == "Provider-generated style scene text. A red envelope changes hands."
     assert final_scene.content == style_draft.content
     assert final_scene.generation_llm_call_id == style_draft.generation_llm_call_id
     assert state.current_style_draft_row_id == style_draft.row_id
@@ -754,7 +754,7 @@ def test_run_scene_soft_qc_patch_rechecks_before_finalize(session) -> None:
     assert len(reports) == 2
     assert reports[0].next_action == "patch"
     assert reports[1].next_action == "pass"
-    assert patch_draft.content == "Provider-generated patched scene text."
+    assert patch_draft.content == "Provider-generated patched scene text. A red envelope changes hands."
     assert patch_draft.content != style_draft.content
     assert final_scene.content == patch_draft.content
     assert final_scene.generation_llm_call_id == patch_draft.generation_llm_call_id

@@ -7,9 +7,31 @@
 
 from __future__ import annotations
 
-from novel_system.db.models import SnowflakeScenePlan
+from novel_system.db.models import ChapterGoal, SceneCard, SnowflakeScenePlan
 from novel_system.services.causal_chain_validator import CausalChainValidator
 from novel_system.services.narrative_event_log import NarrativeEventLog
+
+
+def _seed_event_scenes(session, project_id: str, *scene_ids: str) -> None:
+    session.add(
+        ChapterGoal(
+            chapter_id="ch1",
+            project_id=project_id,
+            chapter_goal="events",
+            display_order=1,
+        )
+    )
+    for seq, scene_id in enumerate(scene_ids, start=1):
+        session.add(
+            SceneCard(
+                scene_id=scene_id,
+                chapter_id="ch1",
+                project_id=project_id,
+                scene_seq=seq,
+                scene_goal="event",
+            )
+        )
+    session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +91,7 @@ def test_causal_valid_backward_link_not_flagged(session):
 # NE-G1c: 同场景内 advisory(extracted) 不得反超高置信 spec 事实
 # ---------------------------------------------------------------------------
 def test_extracted_event_does_not_override_high_confidence_spec(session):
+    _seed_event_scenes(session, "PROJ_NE", "sc1")
     log = NarrativeEventLog(session)
     common = dict(
         project_id="PROJ_NE", chapter_id="ch1", scene_id="sc1",
@@ -87,6 +110,7 @@ def test_extracted_event_does_not_override_high_confidence_spec(session):
 
 def test_later_high_confidence_event_still_wins(session):
     """对照：跨场景的后续高置信事件应正常更新状态（confidence 守卫不能冻结状态演进）。"""
+    _seed_event_scenes(session, "PROJ_EVO", "sc1", "sc2")
     log = NarrativeEventLog(session)
     base = dict(
         project_id="PROJ_EVO", chapter_id="ch1",
