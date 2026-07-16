@@ -11,6 +11,10 @@ const QA_ROOTS = [
 ];
 const FULL_CLOUD_RUNNER = path.resolve(process.cwd(), "../scripts/run-longzu-full-cloud-qa.cjs");
 const CURRENT_DB_RUNNER = path.resolve(process.cwd(), "../scripts/run-currentdb-three-chapter-qa.cjs");
+const PUBLIC_DOMAIN_REFERENCE_PROFILE = path.resolve(
+  process.cwd(),
+  "../config/qa/public-domain-source-safety-five-chapter.json",
+);
 const require = createRequire(import.meta.url);
 
 describe("three-chapter QA script portability", () => {
@@ -100,6 +104,7 @@ describe("three-chapter QA script portability", () => {
       chapters,
       finalScenes: {
         CHOR01: {
+          sceneStatus: "archived",
           finalRowId: "final_scene_CHOR01_SC01_v1",
           finalText: "林岑发现证据，于是决定保护许望。盐钟、潮汛、档案、监听、船坞和指腹共同形成追踪风险。",
           source_safety_scan: { safe: true, blocked_terms: [] },
@@ -109,7 +114,7 @@ describe("three-chapter QA script portability", () => {
       manualRemarks: { CHOR01: "人工复核：保留克制感。" },
     });
 
-    expect(chapterScores.CHOR01.finalRowId).toBe("final_scene_CHOR01_SC01_v1");
+    expect(chapterScores.CHOR01.finalRowIds).toEqual(["final_scene_CHOR01_SC01_v1"]);
     expect(chapterScores.CHOR01.sourceLeakRisk).toBe(10);
     expect(chapterScores.CHOR01.languageTexture).toBeGreaterThanOrEqual(8);
     expect(chapterScores.CHOR01.manualRemark).toBe("人工复核：保留克制感。");
@@ -118,11 +123,15 @@ describe("three-chapter QA script portability", () => {
 
   it("defines the current-DB three-chapter QA runner with unique artifacts and safety scans", () => {
     const script = readFileSync(CURRENT_DB_RUNNER, "utf8");
+    const referenceProfile = JSON.parse(readFileSync(PUBLIC_DOMAIN_REFERENCE_PROFILE, "utf8"));
 
     expect(script).toContain("currentdb-three-chapter-qa-");
     expect(script).toContain("玻璃雨停在零点");
-    expect(script).toContain("C:\\\\Users\\\\duwei\\\\Downloads\\\\龙族.txt");
-    expect(script).toContain("segments_only");
+    expect(script).toContain("loadReferenceQaProfile({ repoRoot })");
+    expect(script).toContain("referenceProfile.sourceBasis");
+    expect(referenceProfile.source_basis).toBe("public_domain");
+    expect(referenceProfile.cloud_policy).toBe("segments_only");
+    expect(script).not.toContain("C:\\\\Users\\\\duwei\\\\Downloads\\\\龙族.txt");
     expect(script).toContain("protectedTerms");
     expect(script).toContain("/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs");
     expect(script).toContain("/api/v1/literary-quality/chapter-set-review");

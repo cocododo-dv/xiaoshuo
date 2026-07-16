@@ -9,6 +9,8 @@ const laneEnv = {
   QA_REFERENCE_PROFILE_PATH: profilePath,
   QA_CHAPTER_COUNT: "5",
   QA_SCENES_PER_CHAPTER: "3",
+  QA_MANAGE_DEV_SERVICES: "1",
+  QA_FIXED_RELEASE_GATE: "1",
   PLAYWRIGHT_OPERATOR_REF: process.env.PLAYWRIGHT_OPERATOR_REF || "qa.public-domain-source-safety-five-chapter",
 };
 

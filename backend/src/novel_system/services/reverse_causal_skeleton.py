@@ -25,6 +25,7 @@ class CausalLink:
     character_state_before: str
     character_state_after: str
     depends_on_index: int | None = None
+    scene_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -36,6 +37,21 @@ class ReverseCausalSkeleton:
     @property
     def opening_state(self) -> str | None:
         return self.chain[0].character_state_before if self.chain else None
+
+    @property
+    def scene_anchor_mode(self) -> str:
+        """Return how scene anchors may be used for readiness evaluation.
+
+        A chain is intentionally all-or-nothing: complete anchors select stable
+        ``scene_id`` evaluation, no anchors select the legacy ordinal fallback,
+        and partial anchors are invalid rather than silently mixing both models.
+        """
+        anchored_count = sum(1 for link in self.chain if _normalized_scene_id(link.scene_id))
+        if anchored_count == 0:
+            return "ordinal_fallback"
+        if anchored_count == len(self.chain):
+            return "scene_id"
+        return "partial"
 
     def validate_chain_integrity(self) -> list[str]:
         """Check that each link's before-state matches the previous link's after-state."""
@@ -55,6 +71,8 @@ def build_reverse_skeleton(
     controlling_idea: str,
     ending_description: str,
     major_turning_points: list[dict[str, str]] | None = None,
+    *,
+    ending_scene_id: str | None = None,
 ) -> ReverseCausalSkeleton:
     """Build a reverse causal skeleton from ending to beginning.
 
@@ -66,7 +84,9 @@ def build_reverse_skeleton(
         controlling_idea: The one-sentence theme judgment (e.g., "残缺本身也可以是完整的")
         ending_description: What happens at the ending
         major_turning_points: Optional list of dicts with 'description' and 'why' keys,
-            ordered from ending backward toward opening.
+            ordered from ending backward toward opening. Each point may carry a
+            ``scene_id`` anchor.
+        ending_scene_id: Optional stable scene anchor for the ending link.
     """
     skeleton = ReverseCausalSkeleton(
         controlling_idea=controlling_idea,
@@ -80,6 +100,7 @@ def build_reverse_skeleton(
             why_necessary=f"This is the ending that proves the controlling idea: {controlling_idea}",
             character_state_before="approaching final confrontation",
             character_state_after="controlling idea proven through action",
+            scene_id=ending_scene_id,
         ))
         return skeleton
 
@@ -93,6 +114,7 @@ def build_reverse_skeleton(
             character_state_before=point.get("state_before", ""),
             character_state_after=point.get("state_after", ""),
             depends_on_index=i - 1 if i > 0 else None,
+            scene_id=point.get("scene_id"),
         ))
 
     skeleton.chain.append(CausalLink(
@@ -102,6 +124,7 @@ def build_reverse_skeleton(
         character_state_before=skeleton.chain[-1].character_state_after if skeleton.chain else "",
         character_state_after="controlling idea proven",
         depends_on_index=len(skeleton.chain) - 1,
+        scene_id=ending_scene_id,
     ))
 
     return skeleton
@@ -132,6 +155,22 @@ class CausalGap:
     why: str
 
 
+@dataclass(slots=True, frozen=True)
+class CausalDiagnostic:
+    """Machine-readable explanation of how readiness was (or was not) evaluated."""
+
+    code: str
+    message: str
+    context: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "context": dict(self.context),
+        }
+
+
 @dataclass(slots=True)
 class CausalReadiness:
     """Result of a causal prerequisite check for a specific scene.
@@ -144,6 +183,7 @@ class CausalReadiness:
     ready: bool
     unresolved: list[CausalGap]
     blocking: bool
+    diagnostics: list[CausalDiagnostic] = field(default_factory=list)
 
     def format_for_prompt(self) -> str:
         """Format unresolved prerequisites as a prompt-injectable warning."""
@@ -270,87 +310,171 @@ def format_skeleton_for_prompt(skeleton: ReverseCausalSkeleton) -> str:
 
 def validate_scene_causal_readiness(
     skeleton: ReverseCausalSkeleton,
-    scene_index: int,
+    scene_index: int | None = None,
     *,
-    completed_scenes: list[int],
+    completed_scenes: list[int] | None = None,
+    scene_id: str | None = None,
+    completed_scene_ids: list[str] | None = None,
     strict: bool = False,
 ) -> CausalReadiness:
-    """Check if all causal prerequisites for scene *scene_index* are satisfied.
+    """Check causal prerequisites using one unambiguous addressing model.
 
-    Walks the skeleton chain to find which :class:`CausalLink` entries are
-    prerequisites for the given scene.  A link is a prerequisite when:
-
-    1. Its ``step_index`` is less than *scene_index*, **and**
-    2. There exists a later link whose ``depends_on_index`` equals its
-       ``step_index`` and that later link's ``step_index`` equals
-       *scene_index* — **or** the link is a transitive dependency of such
-       a link.
-
-    In the simpler (and more common) linear-chain case every link with
-    ``step_index < scene_index`` is a prerequisite.
-
-    A prerequisite is *satisfied* when its ``step_index`` appears in
-    *completed_scenes*.
-
-    Args:
-        skeleton: The reverse causal skeleton for the project.
-        scene_index: The scene about to be generated.
-        completed_scenes: Indices of scenes already completed.
-        strict: When True, unresolved prerequisites make the result
-                *blocking* (``ready=False``).  When False the result is
-                advisory (``ready=True``) even if prerequisites remain.
-
-    Returns:
-        :class:`CausalReadiness` with pass/block status and the list of
-        unresolved prerequisites rendered as :class:`CausalGap` instances.
+    Fully anchored chains are evaluated by ``scene_id``. Legacy chains with
+    zero anchors retain ordinal behavior and emit an observable fallback
+    diagnostic. Partially anchored chains are not evaluated: mixing scene IDs
+    and ordinals would make the result depend on accidental catalog order.
     """
     if not skeleton.chain:
         return CausalReadiness(ready=True, unresolved=[], blocking=False)
 
-    completed = set(completed_scenes)
+    anchor_mode = skeleton.scene_anchor_mode
+    if anchor_mode == "partial":
+        anchored_steps = [
+            link.step_index for link in skeleton.chain
+            if _normalized_scene_id(link.scene_id)
+        ]
+        unanchored_steps = [
+            link.step_index for link in skeleton.chain
+            if not _normalized_scene_id(link.scene_id)
+        ]
+        return _diagnostic_only_readiness(
+            CausalDiagnostic(
+                code="CAUSAL_ANCHORS_PARTIAL",
+                message=(
+                    "causal readiness was not evaluated because scene anchors "
+                    "must cover either every causal link or none"
+                ),
+                context={
+                    "anchored_step_indices": anchored_steps,
+                    "unanchored_step_indices": unanchored_steps,
+                    "total_links": len(skeleton.chain),
+                },
+            )
+        )
 
-    # Build a quick index: step_index → CausalLink
+    if anchor_mode == "scene_id":
+        return _validate_anchored_scene_readiness(
+            skeleton,
+            scene_id=scene_id,
+            completed_scene_ids=completed_scene_ids,
+            strict=strict,
+        )
+
+    fallback_diagnostic = CausalDiagnostic(
+        code="CAUSAL_READINESS_ORDINAL_FALLBACK",
+        message="legacy causal skeleton has no scene_id anchors; ordinal compatibility mode was used",
+        context={"total_links": len(skeleton.chain)},
+    )
+    if scene_index is None or completed_scenes is None:
+        return _diagnostic_only_readiness(
+            CausalDiagnostic(
+                code="CAUSAL_ORDINAL_CONTEXT_MISSING",
+                message="ordinal fallback could not run because ordinal scene context was incomplete",
+                context={
+                    "scene_index_present": scene_index is not None,
+                    "completed_scenes_present": completed_scenes is not None,
+                },
+            ),
+            fallback_diagnostic,
+        )
+
+    return _evaluate_readiness_by_step(
+        skeleton,
+        target_step_index=scene_index,
+        completed_step_indices=set(completed_scenes),
+        strict=strict,
+        diagnostics=[fallback_diagnostic],
+    )
+
+
+def _validate_anchored_scene_readiness(
+    skeleton: ReverseCausalSkeleton,
+    *,
+    scene_id: str | None,
+    completed_scene_ids: list[str] | None,
+    strict: bool,
+) -> CausalReadiness:
+    normalized_anchor_pairs = [
+        (_normalized_scene_id(link.scene_id), link)
+        for link in skeleton.chain
+    ]
+    anchors = [anchor for anchor, _link in normalized_anchor_pairs if anchor is not None]
+    duplicate_anchors = sorted({anchor for anchor in anchors if anchors.count(anchor) > 1})
+    if duplicate_anchors:
+        return _diagnostic_only_readiness(
+            CausalDiagnostic(
+                code="CAUSAL_ANCHORS_DUPLICATE",
+                message="causal readiness was not evaluated because scene_id anchors are not unique",
+                context={"duplicate_scene_ids": duplicate_anchors},
+            )
+        )
+
+    normalized_target = _normalized_scene_id(scene_id)
+    if normalized_target is None or completed_scene_ids is None:
+        return _diagnostic_only_readiness(
+            CausalDiagnostic(
+                code="CAUSAL_ANCHORED_CONTEXT_MISSING",
+                message="scene_id readiness could not run because anchored scene context was incomplete",
+                context={
+                    "scene_id_present": normalized_target is not None,
+                    "completed_scene_ids_present": completed_scene_ids is not None,
+                },
+            )
+        )
+
+    link_by_scene_id = {
+        anchor: link for anchor, link in normalized_anchor_pairs if anchor is not None
+    }
+    target_link = link_by_scene_id.get(normalized_target)
+    if target_link is None:
+        return _diagnostic_only_readiness(
+            CausalDiagnostic(
+                code="CAUSAL_SCENE_NOT_ANCHORED",
+                message="current scene is not represented by the fully anchored causal skeleton",
+                context={"scene_id": normalized_target},
+            )
+        )
+
+    completed_ids = {
+        normalized
+        for completed_scene_id in completed_scene_ids
+        if (normalized := _normalized_scene_id(completed_scene_id)) is not None
+    }
+    completed_step_indices = {
+        link.step_index
+        for anchor, link in normalized_anchor_pairs
+        if anchor in completed_ids
+    }
+    return _evaluate_readiness_by_step(
+        skeleton,
+        target_step_index=target_link.step_index,
+        completed_step_indices=completed_step_indices,
+        strict=strict,
+        diagnostics=[],
+    )
+
+
+def _evaluate_readiness_by_step(
+    skeleton: ReverseCausalSkeleton,
+    *,
+    target_step_index: int,
+    completed_step_indices: set[int],
+    strict: bool,
+    diagnostics: list[CausalDiagnostic],
+) -> CausalReadiness:
+
     by_index: dict[int, CausalLink] = {
         link.step_index: link for link in skeleton.chain
     }
+    prereq_indices = _prerequisite_step_indices(
+        skeleton,
+        target_step_index=target_step_index,
+        by_index=by_index,
+    )
 
-    # Collect direct prerequisite step indices for *scene_index* by walking
-    # the dependency edges backward.
-    prereq_indices: set[int] = set()
-
-    def _collect_prereqs(idx: int) -> None:
-        link = by_index.get(idx)
-        if link is None or link.depends_on_index is None:
-            return
-        dep = link.depends_on_index
-        if dep not in prereq_indices:
-            prereq_indices.add(dep)
-            _collect_prereqs(dep)
-
-    # If *scene_index* itself is in the chain, walk its explicit deps.
-    if scene_index in by_index:
-        _collect_prereqs(scene_index)
-    else:
-        # scene_index not explicitly in the chain — treat every earlier
-        # step as a prerequisite (linear-chain fallback).
-        prereq_indices = {
-            link.step_index for link in skeleton.chain
-            if link.step_index < scene_index
-        }
-
-    # Also include any link that has step_index < scene_index whose
-    # depends_on_index points to a link with step_index < scene_index,
-    # when those links are not yet captured (handles chains where the
-    # target scene is not the direct dependent but inherits the causal
-    # need transitively through the linear ordering).
-    for link in skeleton.chain:
-        if link.step_index < scene_index:
-            prereq_indices.add(link.step_index)
-
-    # Determine which prerequisites are unresolved.
     unresolved: list[CausalGap] = []
     for idx in sorted(prereq_indices):
-        if idx in completed:
+        if idx in completed_step_indices:
             continue
         link = by_index.get(idx)
         desc = link.description if link else f"step {idx}"
@@ -366,7 +490,59 @@ def validate_scene_causal_readiness(
         ready=not blocking,
         unresolved=unresolved,
         blocking=blocking,
+        diagnostics=diagnostics,
     )
+
+
+def _prerequisite_step_indices(
+    skeleton: ReverseCausalSkeleton,
+    *,
+    target_step_index: int,
+    by_index: dict[int, CausalLink],
+) -> set[int]:
+    prereq_indices: set[int] = set()
+
+    def _collect_prereqs(idx: int) -> None:
+        link = by_index.get(idx)
+        if link is None or link.depends_on_index is None:
+            return
+        dependency = link.depends_on_index
+        if dependency not in prereq_indices:
+            prereq_indices.add(dependency)
+            _collect_prereqs(dependency)
+
+    if target_step_index in by_index:
+        _collect_prereqs(target_step_index)
+    else:
+        prereq_indices = {
+            link.step_index
+            for link in skeleton.chain
+            if link.step_index < target_step_index
+        }
+
+    # Preserve the historical linear-chain behavior in both addressing modes.
+    for link in skeleton.chain:
+        if link.step_index < target_step_index:
+            prereq_indices.add(link.step_index)
+    return prereq_indices
+
+
+def _diagnostic_only_readiness(
+    *diagnostics: CausalDiagnostic,
+) -> CausalReadiness:
+    return CausalReadiness(
+        ready=True,
+        unresolved=[],
+        blocking=False,
+        diagnostics=list(diagnostics),
+    )
+
+
+def _normalized_scene_id(scene_id: Any) -> str | None:
+    if not isinstance(scene_id, str):
+        return None
+    normalized = scene_id.strip()
+    return normalized or None
 
 
 def format_causal_readiness_warning(readiness: CausalReadiness) -> str:

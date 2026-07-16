@@ -13,6 +13,7 @@ import pytest
 
 from novel_system.db.models import (
     AttemptTracker,
+    ChapterGoal,
     FinalScene,
     SceneCard,
     SceneMemory,
@@ -21,6 +22,7 @@ from novel_system.db.models import (
     SceneRunState,
     StyleReferenceBook,
     StyleReferenceProfile,
+    StyleReferenceRun,
 )
 from novel_system.services.archiver import Archiver
 from novel_system.services.errors import DomainError
@@ -172,6 +174,16 @@ def test_adopt_blocks_dynamic_term_from_bound_reference_profile(client, session)
             text_checksum="dynamic-adopt-checksum",
         )
     )
+    session.flush()
+    session.add(
+        StyleReferenceRun(
+            run_id="run_dynamic_adopt",
+            book_id="refbook_dynamic_adopt",
+            status="done",
+            phase="done",
+        )
+    )
+    session.flush()
     session.add(
         StyleReferenceProfile(
             profile_id="refprofile_dynamic_adopt",
@@ -279,6 +291,23 @@ def test_adopt_falls_back_to_author_draft(client, session):
 
 def test_archiver_marks_final_scene_archived(session):
     """单元级：归档事务统一写 FinalScene.status=archived（词表统一）。"""
+    session.add(
+        ChapterGoal(
+            chapter_id="chapter_unit_1",
+            planned_scene_count=1,
+            chapter_goal="Archive one valid scene",
+        )
+    )
+    session.flush()
+    session.add(
+        SceneCard(
+            scene_id="scene_unit_1",
+            chapter_id="chapter_unit_1",
+            scene_seq=1,
+            scene_goal="Archive the final manuscript",
+        )
+    )
+    session.flush()
     session.add(
         FinalScene(
             row_id="final_unit_1",

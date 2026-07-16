@@ -216,6 +216,10 @@ def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(cl
             stats_json={},
         )
     )
+    # SQLite FK enforcement is enabled in runtime.  Keep the fixture's write
+    # order identical to the product contract instead of relying on ORM table
+    # ordering for objects that do not declare relationships.
+    session.flush()
     session.add(
         StyleReferenceRun(
             run_id="RUN_STYLE",
@@ -225,6 +229,7 @@ def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(cl
             coverage_json={},
         )
     )
+    session.flush()
     session.add(
         StyleReferenceProfile(
             profile_id="PROFILE_READY",

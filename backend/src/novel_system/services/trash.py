@@ -30,6 +30,7 @@ from novel_system.db.models import (
     SnowflakeArtifact,
     SnowflakeAssistantTurn,
     SnowflakeCharacterPlan,
+    SnowflakeRevisionLink,
     SnowflakeScenePlan,
     SnowflakeSceneTriageItem,
     SnowflakeStepRun,
@@ -220,6 +221,7 @@ class TrashService:
             GenerationPlanningArtifact,
             HumanReviewEvent,
             LlmCall,
+            LlmCallAttempt,
             LongformDiagnosticCard,
             LongformStructureGuidance,
             NarrativeEvent,
@@ -330,13 +332,18 @@ class TrashService:
                     | ReviewItem.chapter_id.in_(chapter_ids or [""])
                 )
             )
-        self.session.execute(
-            delete(LlmCall).where(
-                (LlmCall.project_id == project_id)
-                | LlmCall.scene_id.in_(scene_ids or [""])
-                | LlmCall.chapter_id.in_(chapter_ids or [""])
-            )
+        llm_call_scope = (
+            (LlmCall.project_id == project_id)
+            | LlmCall.scene_id.in_(scene_ids or [""])
+            | LlmCall.chapter_id.in_(chapter_ids or [""])
         )
+        llm_call_ids = select(LlmCall.llm_call_id).where(llm_call_scope)
+        # 运行连接默认强制 FK；仍显式按子→父删除，既让维护期开关关闭时安全，
+        # 也让删除意图与审计范围保持清晰。
+        self.session.execute(
+            delete(LlmCallAttempt).where(LlmCallAttempt.llm_call_id.in_(llm_call_ids))
+        )
+        self.session.execute(delete(LlmCall).where(llm_call_scope))
         if chapter_ids:
             self.session.execute(delete(ForeshadowTracker).where(ForeshadowTracker.chapter_id.in_(chapter_ids)))
 
@@ -349,6 +356,7 @@ class TrashService:
             self.session.execute(delete(ChapterGoal).where(ChapterGoal.chapter_id.in_(chapter_ids)))
 
         for model in (
+            SnowflakeRevisionLink,
             SnowflakeSceneTriageItem,
             SnowflakeScenePlan,
             SnowflakeCharacterPlan,

@@ -6,6 +6,7 @@ from novel_system.db.models import (
     ChapterState,
     ForeshadowTracker,
     SceneCard,
+    StoryProject,
 )
 from novel_system.services.foreshadow_lifecycle import (
     ForeshadowLifecycleService,
@@ -30,10 +31,65 @@ def _seed_chapter_with_scenes(session, *, n_scenes: int = 20) -> str:
     return chapter_id
 
 
-def _add_foreshadow(session, *, foreshadow_id: str, chapter_id: str, scene_id: str, status: str = "open") -> None:
-    session.add(ForeshadowTracker(
+def _seed_project_with_repeating_scene_sequences(
+    session,
+    *,
+    project_id: str = "FS_PROJECT",
+) -> tuple[ChapterGoal, ChapterGoal]:
+    chapters = (
+        ChapterGoal(
+            chapter_id="FS_PROJECT_CH_A",
+            project_id=project_id,
+            display_order=1,
+            planned_scene_count=8,
+            chapter_goal="first chapter",
+        ),
+        ChapterGoal(
+            chapter_id="FS_PROJECT_CH_B",
+            project_id=project_id,
+            display_order=2,
+            planned_scene_count=8,
+            chapter_goal="second chapter",
+        ),
+    )
+    session.add(
+        StoryProject(
+            project_id=project_id,
+            title="Foreshadow project",
+            outline_text="Two chapters used to verify project-wide foreshadow order.",
+        )
+    )
+    session.flush()
+    session.add_all(chapters)
+    session.flush()
+    for chapter in chapters:
+        for scene_seq in range(1, 9):
+            session.add(
+                SceneCard(
+                    scene_id=f"{chapter.chapter_id}_SC{scene_seq:02d}",
+                    chapter_id=chapter.chapter_id,
+                    project_id=project_id,
+                    scene_seq=scene_seq,
+                    scene_goal=f"Scene {scene_seq}",
+                )
+            )
+    session.flush()
+    return chapters
+
+
+def _add_foreshadow(
+    session,
+    *,
+    foreshadow_id: str,
+    chapter_id: str,
+    scene_id: str,
+    status: str = "open",
+    project_id: str | None = None,
+) -> ForeshadowTracker:
+    tracker = ForeshadowTracker(
         row_id=f"fs_row_{foreshadow_id}",
         foreshadow_id=foreshadow_id,
+        project_id=project_id,
         chapter_id=chapter_id,
         scene_id=scene_id,
         text=f"Foreshadow: {foreshadow_id}",
@@ -41,8 +97,10 @@ def _add_foreshadow(session, *, foreshadow_id: str, chapter_id: str, scene_id: s
         active_flag=1,
         runtime_eligible=1,
         runtime_eligibility_basis="direct_read",
-    ))
+    )
+    session.add(tracker)
     session.flush()
+    return tracker
 
 
 def test_overdue_foreshadow_triggers_payoff_action(session) -> None:
@@ -137,3 +195,149 @@ def test_consecutive_without_payoff_detection(session) -> None:
     # passed whether or not the check fired. Made it actually falsifiable.)
     assert report.density_warning is not None, "consecutive-no-payoff warning did not fire"
     assert "without any foreshadow payoff" in report.density_warning
+
+
+def test_project_health_counts_scene_distance_across_chapters(session) -> None:
+    project_id = "FS_PROJECT"
+    first_chapter, _second_chapter = _seed_project_with_repeating_scene_sequences(
+        session,
+        project_id=project_id,
+    )
+    _add_foreshadow(
+        session,
+        foreshadow_id="FS_CROSS_CHAPTER",
+        project_id=project_id,
+        chapter_id=first_chapter.chapter_id,
+        scene_id=f"{first_chapter.chapter_id}_SC01",
+    )
+    session.commit()
+
+    report = ForeshadowLifecycleService(session).project_health_report(project_id)
+
+    # Both chapters restart scene_seq at 1. The planted scene is nevertheless
+    # fifteen canonical scene positions behind the project tail.
+    assert report.overdue == ["FS_CROSS_CHAPTER"]
+
+
+def test_project_health_recomputes_overdue_after_chapter_reorder(session) -> None:
+    project_id = "FS_PROJECT"
+    first_chapter, second_chapter = _seed_project_with_repeating_scene_sequences(
+        session,
+        project_id=project_id,
+    )
+    tracker = _add_foreshadow(
+        session,
+        foreshadow_id="FS_REORDER",
+        project_id=project_id,
+        chapter_id=first_chapter.chapter_id,
+        scene_id=f"{first_chapter.chapter_id}_SC01",
+    )
+    session.commit()
+    tracker_identity = (
+        tracker.row_id,
+        tracker.chapter_id,
+        tracker.scene_id,
+        tracker.tracker_status,
+    )
+    service = ForeshadowLifecycleService(session)
+
+    assert service.project_health_report(project_id).overdue == ["FS_REORDER"]
+
+    first_chapter.display_order = 2
+    second_chapter.display_order = 1
+    session.commit()
+
+    assert service.project_health_report(project_id).overdue == []
+    session.refresh(tracker)
+    assert (
+        tracker.row_id,
+        tracker.chapter_id,
+        tracker.scene_id,
+        tracker.tracker_status,
+    ) == tracker_identity
+
+
+def test_project_health_conservatively_ignores_unresolvable_plant_scene(session) -> None:
+    project_id = "FS_PROJECT"
+    first_chapter, _second_chapter = _seed_project_with_repeating_scene_sequences(
+        session,
+        project_id=project_id,
+    )
+    _add_foreshadow(
+        session,
+        foreshadow_id="FS_MISSING_PLANT",
+        project_id=project_id,
+        chapter_id=first_chapter.chapter_id,
+        scene_id="FS_PROJECT_SCENE_DOES_NOT_EXIST",
+    )
+    session.commit()
+
+    report = ForeshadowLifecycleService(session).project_health_report(project_id)
+
+    assert report.total_open == 1
+    assert report.without_planned_reinforcement == 1
+    assert report.overdue == []
+    assert report.unresolved_plants == [
+        {
+            "code": "FORESHADOW_PLANT_SCENE_UNRESOLVED",
+            "foreshadow_id": "FS_MISSING_PLANT",
+            "scene_id": "FS_PROJECT_SCENE_DOES_NOT_EXIST",
+            "reason": "plant scene is missing from the active project narrative catalog",
+        }
+    ]
+
+
+def test_scene_actions_carry_open_foreshadow_across_chapter_boundary(session) -> None:
+    project_id = "FS_PROJECT"
+    first_chapter, second_chapter = _seed_project_with_repeating_scene_sequences(
+        session,
+        project_id=project_id,
+    )
+    # Exercise the legacy rows created before project_id was consistently set:
+    # membership must be derived from the authoritative chapter catalog.
+    _add_foreshadow(
+        session,
+        foreshadow_id="FS_CROSS_CHAPTER_ACTION",
+        project_id=None,
+        chapter_id=first_chapter.chapter_id,
+        scene_id=f"{first_chapter.chapter_id}_SC01",
+    )
+    session.commit()
+
+    report = ForeshadowLifecycleService(session).scene_actions(
+        f"{second_chapter.chapter_id}_SC08"
+    )
+
+    payoff_actions = [action for action in report.actions if action.action == "payoff"]
+    assert [action.foreshadow_id for action in payoff_actions] == [
+        "FS_CROSS_CHAPTER_ACTION"
+    ]
+    assert report.open_count == 1
+    assert report.overdue_count == 1
+
+
+def test_legacy_local_reinforcement_sequence_does_not_match_another_chapter(session) -> None:
+    project_id = "FS_PROJECT"
+    first_chapter, second_chapter = _seed_project_with_repeating_scene_sequences(
+        session,
+        project_id=project_id,
+    )
+    tracker = _add_foreshadow(
+        session,
+        foreshadow_id="FS_LOCAL_PLAN",
+        project_id=project_id,
+        chapter_id=first_chapter.chapter_id,
+        scene_id=f"{first_chapter.chapter_id}_SC01",
+    )
+    tracker.reinforce_plan_json = [{"target_scene_seq": 2, "method": "legacy local"}]
+    session.commit()
+
+    report = ForeshadowLifecycleService(session).scene_actions(
+        f"{second_chapter.chapter_id}_SC02"
+    )
+
+    assert not any(
+        action.foreshadow_id == "FS_LOCAL_PLAN"
+        and action.reason.startswith("Pre-planned")
+        for action in report.actions
+    )

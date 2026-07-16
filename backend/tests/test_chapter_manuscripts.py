@@ -9,6 +9,7 @@ from novel_system.db.models import (
     SceneRunState,
     StyleReferenceBook,
     StyleReferenceProfile,
+    StyleReferenceRun,
     WriterEvaluation,
 )
 
@@ -197,6 +198,16 @@ def test_chapter_manuscript_scans_dynamic_terms_from_scene_reference_profile(cli
             text_checksum="dynamic-chapter-checksum",
         )
     )
+    session.flush()
+    session.add(
+        StyleReferenceRun(
+            run_id="run_dynamic_chapter",
+            book_id="refbook_dynamic_chapter",
+            status="done",
+            phase="done",
+        )
+    )
+    session.flush()
     session.add(
         StyleReferenceProfile(
             profile_id="refprofile_dynamic_chapter",

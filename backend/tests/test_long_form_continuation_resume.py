@@ -5,7 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from novel_system.db.models import AttemptTracker, LlmCall, SceneCard, SceneDraft, SceneRunState
+from novel_system.db.models import (
+    AttemptTracker,
+    ChapterGoal,
+    LlmCall,
+    SceneCard,
+    SceneDraft,
+    SceneRunState,
+    StoryProject,
+)
 from novel_system.services.llm_task_runner import (
     begin_llm_execution,
     current_llm_execution_id,
@@ -110,6 +118,15 @@ class _SegmentLedgerRunner:
 
 def _service(session, monkeypatch, *, fail_once_step: str | None = None):  # noqa: ANN201
     scene = _scene()
+    session.add(StoryProject(project_id=scene.project_id, title="Continuation", outline_text=""))
+    session.add(
+        ChapterGoal(
+            chapter_id=scene.chapter_id,
+            project_id=scene.project_id,
+            planned_scene_count=1,
+            chapter_goal="continue durably",
+        )
+    )
     session.add(scene)
     session.add(SceneRunState(scene_id=scene.scene_id, scene_status="ready"))
     session.flush()

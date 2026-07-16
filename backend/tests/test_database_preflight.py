@@ -16,6 +16,7 @@ EVIDENCE_GATE_REVISION = "20260715_0066"
 PAIR_GENRE_REVISION = "20260715_0067"
 NARRATIVE_POSITION_REVISION = "20260715_0068"
 LATEST_REVISION = "20260715_0069"
+QUALITY_EVIDENCE_REVISION = "20260715_0070"
 
 
 def _migrate_database(
@@ -134,6 +135,35 @@ def _make_ready_database(
         connection.execute("CREATE TABLE evaluation_experiments (id INTEGER PRIMARY KEY)")
         connection.execute("CREATE TABLE evaluation_pairs (id INTEGER PRIMARY KEY)")
         connection.execute("CREATE TABLE evaluation_votes (id INTEGER PRIMARY KEY)")
+        # Orphan governance scans these relations independently from the
+        # minimum revision schema profile.  A database advertised as ready
+        # must provide the complete scanner dependency graph.
+        connection.executescript(
+            """
+            CREATE TABLE story_projects (project_id TEXT PRIMARY KEY);
+            CREATE TABLE snowflake_step_runs (
+                step_run_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL
+            );
+            CREATE TABLE snowflake_scene_plans (
+                scene_plan_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL
+            );
+            CREATE TABLE snowflake_revision_links (
+                revision_link_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                source_step_key TEXT NOT NULL,
+                source_step_run_id TEXT,
+                affected_kind TEXT NOT NULL,
+                affected_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                FOREIGN KEY (project_id) REFERENCES story_projects(project_id)
+            );
+            """
+        )
         if c1b:
             if not structural_contract:
                 connection.executescript(
@@ -369,6 +399,8 @@ def test_ready_database_matches_required_schema_and_revision(tmp_path):
     result = inspect_database(database_path, HEAD_REVISION)
 
     assert result["ready"] is True
+    assert result["foreign_keys"] == 1
+    assert result["orphan_integrity"]["blocking_missing_dependencies"] == {}
     assert result["integrity"] == "ok"
     assert result["missing_tables"] == []
     assert result["missing_columns"] == {}
@@ -624,6 +656,7 @@ def test_revision_aliases_select_the_canonical_schema_profiles(tmp_path):
         ("0067", PAIR_GENRE_REVISION),
         ("0068", NARRATIVE_POSITION_REVISION),
         ("0069", LATEST_REVISION),
+        ("0070", QUALITY_EVIDENCE_REVISION),
     ],
 )
 def test_new_revision_aliases_resolve_to_canonical_revisions(alias, canonical):
@@ -648,6 +681,173 @@ def test_fresh_0069_database_passes_head_preflight(tmp_path, monkeypatch):
     assert result["missing_columns"] == {}
     assert result["schema_errors"] == []
     assert result["ready"] is True, result
+
+
+def test_fresh_0070_database_passes_quality_evidence_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "fresh-0070.db"
+    _migrate_database(
+        database_path,
+        QUALITY_EVIDENCE_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+
+    result = inspect_database(database_path, "0070")
+
+    assert result["revision"] == QUALITY_EVIDENCE_REVISION
+    assert result["expected_revision_canonical"] == QUALITY_EVIDENCE_REVISION
+    assert result["missing_tables"] == []
+    assert result["missing_columns"] == {}
+    assert result["schema_errors"] == []
+    assert result["foreign_keys"] == 1
+    assert result["ready"] is True, result
+
+
+def test_0070_preflight_rejects_missing_quality_evidence_index(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "0070-missing-quality-index.db"
+    _migrate_database(
+        database_path,
+        QUALITY_EVIDENCE_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP INDEX ix_quality_benchmark_manifests_hash")
+
+    result = inspect_database(database_path, QUALITY_EVIDENCE_REVISION)
+
+    assert result["ready"] is False
+    assert {
+        "kind": "index",
+        "table": "quality_benchmark_manifests",
+        "name": "ix_quality_benchmark_manifests_hash",
+        "expected": {
+            "columns": ["manifest_hash"],
+            "unique": True,
+            "origin": "c",
+            "partial": False,
+        },
+        "actual": None,
+    } in result["schema_errors"]
+
+
+def test_0070_preflight_rejects_column_only_quality_evidence_table(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "0070-column-only-quality-table.db"
+    _migrate_database(
+        database_path,
+        QUALITY_EVIDENCE_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("DROP TABLE quality_value_observations")
+        connection.execute(
+            """
+            CREATE TABLE quality_value_observations (
+                observation_id VARCHAR NOT NULL,
+                result_id VARCHAR NOT NULL,
+                reviewer_ref VARCHAR NOT NULL,
+                provenance VARCHAR NOT NULL,
+                source_text_hash VARCHAR,
+                edited_text_hash VARCHAR,
+                human_edit_distance INTEGER,
+                human_edit_distance_ratio FLOAT,
+                first_usable BOOLEAN,
+                follow_read_intent INTEGER,
+                created_at VARCHAR NOT NULL
+            )
+            """
+        )
+
+    result = inspect_database(database_path, QUALITY_EVIDENCE_REVISION)
+
+    assert result["ready"] is False
+    errors = [
+        error
+        for error in result["schema_errors"]
+        if error.get("table") == "quality_value_observations"
+    ]
+    assert {error["kind"] for error in errors} == {
+        "primary_key",
+        "check_constraint",
+        "foreign_key",
+        "unique_constraint",
+        "index",
+    }
+
+
+@pytest.mark.parametrize(
+    ("runtime_policy", "expected_error", "valid"),
+    [
+        ("off", "sqlite_foreign_key_runtime_policy_disabled", True),
+        ("not-a-boolean", "sqlite_foreign_key_runtime_policy_invalid", False),
+    ],
+)
+def test_preflight_rejects_disabled_or_invalid_runtime_fk_policy(
+    tmp_path,
+    monkeypatch,
+    runtime_policy,
+    expected_error,
+    valid,
+):
+    database_path = tmp_path / f"runtime-fk-{runtime_policy}.db"
+    _migrate_database(
+        database_path,
+        QUALITY_EVIDENCE_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+    monkeypatch.setenv("NOVEL_SYSTEM_SQLITE_FOREIGN_KEYS_ENABLED", runtime_policy)
+
+    result = inspect_database(database_path, QUALITY_EVIDENCE_REVISION)
+    # The suite-wide database fixture tears its engine down before pytest
+    # unwinds this test's monkeypatch fixture.  Restore the strict setting here
+    # so an intentionally malformed value cannot poison fixture teardown.
+    monkeypatch.delenv("NOVEL_SYSTEM_SQLITE_FOREIGN_KEYS_ENABLED", raising=False)
+
+    assert result["ready"] is False
+    assert result["error"] == expected_error
+    assert result["foreign_keys"] == 1
+    assert result["runtime_foreign_key_policy"] == {
+        "enabled": False,
+        "valid": valid,
+        "source": "environment",
+        "raw": runtime_policy,
+    }
+
+
+def test_0070_preflight_rejects_missing_generation_policy_hash(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "0070-missing-generation-policy-hash.db"
+    _migrate_database(
+        database_path,
+        QUALITY_EVIDENCE_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+    _drop_columns(
+        database_path,
+        {"quality_benchmark_runs": ("generation_policy_hash",)},
+    )
+
+    result = inspect_database(database_path, QUALITY_EVIDENCE_REVISION)
+
+    assert result["ready"] is False
+    assert "generation_policy_hash" in result["missing_columns"][
+        "quality_benchmark_runs"
+    ]
 
 
 def test_0069_preflight_rejects_missing_canonical_columns(tmp_path, monkeypatch):
@@ -721,6 +921,8 @@ def test_0068_profile_does_not_require_0069_columns(tmp_path, monkeypatch):
     result = inspect_database(database_path, "0068")
 
     assert result["ready"] is True
+    assert result["foreign_keys"] == 1
+    assert result["orphan_integrity"]["blocking_missing_dependencies"] == {}
     assert result["expected_revision_canonical"] == NARRATIVE_POSITION_REVISION
     assert result["missing_columns"] == {}
     assert result["schema_errors"] == []
@@ -836,3 +1038,130 @@ def test_cli_atomically_writes_utf8_json_output(tmp_path, capsys):
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert json.loads(raw.decode("utf-8"))["ready"] is True
     assert list(output_path.parent.glob(f".{output_path.name}.*.tmp")) == []
+
+
+def test_preflight_fails_closed_for_unknown_foreign_key_orphans(tmp_path):
+    database_path = tmp_path / "unknown-fk-orphan.db"
+    _make_ready_database(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE unrelated_parents (
+                parent_id TEXT PRIMARY KEY
+            );
+            CREATE TABLE unrelated_children (
+                child_id TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL,
+                FOREIGN KEY (parent_id) REFERENCES unrelated_parents(parent_id)
+            );
+            INSERT INTO unrelated_children VALUES ('child-orphan', 'missing-parent');
+            """
+        )
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert result["llm_call_attempt_orphan_count"] == 0
+    assert result["orphan_integrity"]["active_record_count"] == 0
+    assert result["foreign_key_violations"]["count"] == 1
+    assert result["foreign_key_violations"]["by_child_table"] == {
+        "unrelated_children": 1
+    }
+    assert result["error"] == "foreign_key_violations=1"
+
+
+def test_preflight_distinguishes_exported_and_remediated_orphans(tmp_path):
+    from novel_system.tools.orphan_quarantine import apply_evidence, export_evidence
+
+    database_path = tmp_path / "snowflake-orphan.db"
+    evidence_path = tmp_path / "orphan-evidence.jsonl"
+    _make_ready_database(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO snowflake_revision_links VALUES (
+                'revision-orphan', 'missing-project', 'book_brief', NULL,
+                'scene_plan', 'future-id', 'project was purged', 'open', 'now', NULL
+            )
+            """
+        )
+
+    unhandled = inspect_database(database_path, HEAD_REVISION)
+    exported = export_evidence(database_path, evidence_path)
+    pending = inspect_database(
+        database_path,
+        HEAD_REVISION,
+        orphan_evidence_path=evidence_path,
+    )
+
+    assert unhandled["ready"] is False
+    assert unhandled["snowflake_revision_link_orphan_count"] == 1
+    assert unhandled["orphan_integrity"]["status"] == "unhandled"
+    assert unhandled["foreign_key_violations"]["count"] == 1
+    assert pending["ready"] is False
+    assert pending["orphan_integrity"]["status"] == "exported_pending_apply"
+
+    apply_evidence(
+        database_path,
+        evidence_path,
+        confirm_sha256=exported["evidence_sha256"],
+        backup_path=tmp_path / "pre-apply.db",
+        receipt_path=tmp_path / "apply-receipt.json",
+    )
+    remediated = inspect_database(
+        database_path,
+        HEAD_REVISION,
+        orphan_evidence_path=evidence_path,
+    )
+
+    assert remediated["ready"] is True
+    assert remediated["snowflake_revision_link_orphan_count"] == 0
+    assert remediated["foreign_key_violations"]["count"] == 0
+    assert (
+        remediated["orphan_integrity"]["status"]
+        == "remediated_with_verified_export"
+    )
+
+
+def test_preflight_fails_closed_when_orphan_scanner_dependency_is_missing(tmp_path):
+    database_path = tmp_path / "missing-scan-dependency.db"
+    _make_ready_database(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE snowflake_scene_plans")
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert result["orphan_integrity"]["missing_dependencies"] == {
+        "snowflake_revision_links": ["snowflake_scene_plans"]
+    }
+    assert result["orphan_integrity"]["blocking_missing_dependencies"] == {
+        "snowflake_revision_links": ["snowflake_scene_plans"]
+    }
+    assert result["error"] == (
+        "orphan_scan_missing_dependencies=snowflake_revision_links"
+    )
+
+
+def test_preflight_rejects_unsupported_snowflake_affected_kind(tmp_path):
+    database_path = tmp_path / "unsupported-affected-kind.db"
+    _make_ready_database(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("INSERT INTO story_projects VALUES ('p1')")
+        connection.execute(
+            """
+            INSERT INTO snowflake_revision_links VALUES (
+                'revision-unsupported', 'p1', 'book_brief', NULL,
+                'future_kind', 'future-id', 'unknown target type', 'open', 'now', NULL
+            )
+            """
+        )
+
+    result = inspect_database(database_path, HEAD_REVISION)
+
+    assert result["ready"] is False
+    assert result["snowflake_revision_link_orphan_count"] == 1
+    assert result["orphan_integrity"]["active_counts_by_reason"] == {
+        "unsupported_affected_kind": 1
+    }
+    assert result["foreign_key_violations"]["count"] == 0

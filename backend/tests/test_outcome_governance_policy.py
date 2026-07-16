@@ -66,7 +66,7 @@ def test_keep_optional_report_disables_default(tmp_path) -> None:
     assert load_outcome_governance_policy(path).best_of_n_default_enabled is False
 
 
-def test_best_of_n_is_optional_by_default_but_explicit_full_rigor_still_opts_in() -> None:
+def test_best_of_n_is_optional_by_default_and_full_rigor_cannot_bypass_evidence() -> None:
     from novel_system.services.orchestrator import Orchestrator
 
     contract = SimpleNamespace(payload_json={"scene_crucible": "x" * 50})
@@ -79,4 +79,4 @@ def test_best_of_n_is_optional_by_default_but_explicit_full_rigor_still_opts_in(
     )
 
     assert Orchestrator._best_of_n_count(orchestrator, contract, criticality=automatic) == 1
-    assert Orchestrator._best_of_n_count(orchestrator, contract, criticality=explicit) == 3
+    assert Orchestrator._best_of_n_count(orchestrator, contract, criticality=explicit) == 1

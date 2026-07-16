@@ -1,11 +1,10 @@
-"""存量孤儿盘点（结果闭环治理设计 §8 Wave 7 项 4 / §11 规则 10）。
+"""遗留关系孤儿诊断器（只读，不能单独作为发布门）。
 
-SQLite 未启用 ``PRAGMA foreign_keys=ON``（`db/session.py` 只设 WAL + busy_timeout），
-删除靠手工级联——新表/新路径可能重新产生孤儿。**启用 FK 前必须先盘点**（§11.10）。
-
-本工具**只读**：扫描「父行已不存在」的孤儿（child.fk 非空且不在 parent.pk 集合里）。
-产出 `{table: [orphan_ids]}` + 计数；CLI 退出码：有孤儿=1、干净=0（可接发布门）。
-配套修复迁移 `20260712_0064_purge_orphans` 幂等删除盘点到的孤儿（FK-reverse 序）。
+应用连接现在默认强制 ``PRAGMA foreign_keys=ON``；完整发布判定必须使用
+``novel_system.tools.database_preflight``，历史隔离处置使用
+``novel_system.tools.orphan_quarantine``。本模块保留给 0064 迁移及旧关系清单的
+兼容诊断，但任何缺表、缺列或 SQL 失败都会 fail-closed，绝不再把未完成扫描
+报告成 ``clean=true``。
 """
 
 from __future__ import annotations
@@ -20,6 +19,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from novel_system.db.session import SessionLocal
+
+
+class OrphanInventoryIncomplete(RuntimeError):
+    """A registered legacy relation could not be audited completely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,13 +79,17 @@ def _orphan_ids(session: Session, rel: OrphanRelation) -> list[str]:
 
 
 def scan_orphans(session: Session) -> dict[str, list[str]]:
-    """返回 {child_table: [orphan pk ids]}，只含有孤儿的表。缺表跳过（渐进）。"""
+    """返回有孤儿的旧关系；任一登记关系无法检查时拒绝给出干净结论。"""
     found: dict[str, list[str]] = {}
     for rel in ORPHAN_RELATIONS:
         try:
             ids = _orphan_ids(session, rel)
-        except Exception:  # 表缺失/结构差异 → 跳过而非崩（盘点应尽力完整）
-            continue
+        except Exception as exc:
+            raise OrphanInventoryIncomplete(
+                "legacy_orphan_scan_incomplete="
+                f"{rel.child_table}.{rel.child_fk}->"
+                f"{rel.parent_table}.{rel.parent_pk}:{type(exc).__name__}"
+            ) from exc
         if ids:
             found.setdefault(rel.child_table, [])
             for oid in ids:
@@ -105,12 +112,25 @@ def orphan_report(session: Session) -> dict[str, Any]:
 
 
 def _main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="存量孤儿盘点（Wave 7 §8/§11.10，只读）")
+    parser = argparse.ArgumentParser(
+        description="遗留关系孤儿诊断（只读；发布请使用 database_preflight）"
+    )
     parser.add_argument("--json", action="store_true", help="输出完整 JSON 报告")
     args = parser.parse_args(argv)
     session = SessionLocal()
     try:
-        report = orphan_report(session)
+        try:
+            report = orphan_report(session)
+        except OrphanInventoryIncomplete as exc:
+            report = {
+                "clean": False,
+                "complete": False,
+                "error": str(exc),
+                "relations_checked": 0,
+                "total_orphans": None,
+                "by_table": {},
+                "orphans": {},
+            }
     finally:
         session.close()
     if args.json:
@@ -120,6 +140,8 @@ def _main(argv: list[str] | None = None) -> int:
               f"total_orphans={report['total_orphans']} clean={report['clean']}")
         for tbl, n in report["by_table"].items():
             print(f"  {tbl}: {n}")
+    if not report.get("complete", True):
+        return 2
     return 0 if report["clean"] else 1
 
 

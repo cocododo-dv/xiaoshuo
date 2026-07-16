@@ -72,6 +72,26 @@ from novel_system.services.scene_run_checkpoint import (
 
 
 def _state(session, *, scene_id: str = "SC_CHECKPOINT") -> SceneRunState:
+    project_id = f"P_{scene_id}"
+    chapter_id = f"CH_{scene_id}"
+    session.add(StoryProject(project_id=project_id, title="Checkpoint", outline_text=""))
+    session.add(
+        ChapterGoal(
+            chapter_id=chapter_id,
+            project_id=project_id,
+            planned_scene_count=1,
+            chapter_goal="checkpoint",
+        )
+    )
+    session.add(
+        SceneCard(
+            scene_id=scene_id,
+            chapter_id=chapter_id,
+            project_id=project_id,
+            scene_seq=1,
+            scene_goal="checkpoint",
+        )
+    )
     state = SceneRunState(scene_id=scene_id)
     session.add(state)
     session.commit()
@@ -1222,13 +1242,18 @@ def _selection_resume_orchestrator(
     soft_qc,
     near_final,
 ) -> Orchestrator:
-    return Orchestrator(
+    orchestrator = Orchestrator(
         session,
         scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
         hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
         soft_qc_engine=soft_qc,
         near_final_service=near_final,
     )
+    # These tests exercise the selection hand-off itself.  Production Best-of-N
+    # remains evidence-gated and default-off; this dedicated harness explicitly
+    # models an already-authorized two-candidate cell.
+    orchestrator._best_of_n_count = lambda _contract, *, criticality=None: 2
+    return orchestrator
 
 
 def test_unexpected_hard_qc_prompt_failure_is_fail_closed_without_report_or_checkpoint(session) -> None:
@@ -5692,11 +5717,11 @@ def test_archive_vector_external_write_is_reused_after_cursor_crash(session) -> 
             hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
         )
 
-    original = Orchestrator._index_scene_to_vector_store
     first = orchestrator()
+    original = first._index_scene_to_vector_store
 
-    def _write_then_crash(scene, content):  # noqa: ANN001, ANN202
-        result = original(scene, content)
+    def _write_then_crash(scene, content, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        result = original(scene, content, **kwargs)
         assert result["outcome"] in {"indexed", "already_present", "non_persistent"}
         raise RuntimeError("crash after vector write")
 

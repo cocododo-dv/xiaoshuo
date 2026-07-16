@@ -26,6 +26,7 @@ from novel_system.db.models import (
     IdempotencyKey,
     InteropArtifact,
     LlmCall,
+    LlmCallAttempt,
     LongformDiagnosticCard,
     LongformStructureGuidance,
     NarrativePattern,
@@ -175,6 +176,11 @@ def _seed_author_state(session) -> None:
                 current_chapter_id="CH_RESET_SNOW",
                 approved_chapter_ids_json=[],
             ),
+        ]
+    )
+    session.flush()
+    session.add_all(
+        [
             OutlinePlan(
                 plan_id="plan_reset_outline",
                 project_id="PRJ_RESET_OUTLINE",
@@ -191,6 +197,11 @@ def _seed_author_state(session) -> None:
                 plan_json={"source": "snowflake_method", "chapters": [{"chapter_id": "CH_RESET_SNOW"}]},
                 approved_at="2026-04-28T00:00:00+00:00",
             ),
+        ]
+    )
+    session.flush()
+    session.add_all(
+        [
             SnowflakeArtifact(
                 artifact_id="artifact_reset_book_brief",
                 project_id="PRJ_RESET_SNOW",
@@ -240,6 +251,11 @@ def _seed_author_state(session) -> None:
                 target_length_band="medium",
                 status="approved",
             ),
+        ]
+    )
+    session.flush()
+    session.add_all(
+        [
             SnowflakeSceneTriageItem(
                 triage_id="triage_reset",
                 project_id="PRJ_RESET_SNOW",
@@ -296,6 +312,11 @@ def _seed_author_state(session) -> None:
                 ending_effect="turn back",
                 writer_brief_json={"source": "project_outline_plan"},
             ),
+        ]
+    )
+    session.flush()
+    session.add_all(
+        [
             ChapterState(
                 chapter_id="CH_RESET_SNOW",
                 current_phase="drafting",
@@ -324,6 +345,11 @@ def _seed_author_state(session) -> None:
                 scene_type="scene",
                 is_chapter_last=1,
             ),
+        ]
+    )
+    session.flush()
+    session.add_all(
+        [
             SceneRunState(
                 scene_id="SC_RESET_SNOW_01",
                 scene_status="archived",
@@ -912,6 +938,25 @@ def _seed_author_state(session) -> None:
 def _seed_all(session) -> None:
     _seed_preserved_state(session)
     _seed_author_state(session)
+    session.flush()
+    session.add_all(
+        [
+            LlmCallAttempt(
+                attempt_id="attempt_reference_preserved",
+                llm_call_id="llm_call_reference_profile",
+                provider_attempt_no=0,
+                dispatch_kind="initial",
+                accounting_status="settled",
+            ),
+            LlmCallAttempt(
+                attempt_id="attempt_author_deleted",
+                llm_call_id="llm_call_author_scene",
+                provider_attempt_no=0,
+                dispatch_kind="initial",
+                accounting_status="settled",
+            ),
+        ]
+    )
     session.commit()
 
 
@@ -925,6 +970,7 @@ def test_collect_reset_summary_is_dry_run_and_preserves_reference_audit_traces(s
     assert summary["planned_counts"]["story_projects"] == 2
     assert summary["planned_counts"]["review_items"] == 2
     assert summary["planned_counts"]["llm_calls"] == 1
+    assert summary["planned_counts"]["llm_call_attempts"] == 1
     assert "reference_books" not in summary["planned_counts"]
     assert summary["preserved_domains"] == [
         "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
@@ -947,6 +993,7 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
     assert summary["deleted_counts"]["story_projects"] == 2
     assert summary["deleted_counts"]["review_items"] == 2
     assert summary["deleted_counts"]["llm_calls"] == 1
+    assert summary["deleted_counts"]["llm_call_attempts"] == 1
 
     deleted_models = [
         StoryProject,
@@ -1011,6 +1058,8 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
     assert all(_count(session, model) == 0 for model in deleted_models)
     assert _count(session, ReviewItem) == 1
     assert _count(session, LlmCall) == 1
+    assert _count(session, LlmCallAttempt) == 1
+    assert session.get(LlmCallAttempt, "attempt_reference_preserved") is not None
     assert session.get(ReviewItem, "review_reference_finding") is not None
     assert session.get(LlmCall, "llm_call_reference_profile") is not None
     assert _count(session, SystemConfigSnapshot) == 1

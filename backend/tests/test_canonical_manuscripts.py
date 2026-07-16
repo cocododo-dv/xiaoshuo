@@ -45,6 +45,7 @@ def _seed_scene(
             approved_chapter_ids_json=[chapter_id] if approved else [],
         )
     )
+    session.flush()
     session.add(
         ChapterGoal(
             chapter_id=chapter_id,
@@ -54,6 +55,7 @@ def _seed_scene(
             chapter_goal="作者正文必须成为唯一真相",
         )
     )
+    session.flush()
     session.add(ChapterState(chapter_id=chapter_id, aggregate_block_reason="none"))
     session.add(
         SceneCard(
@@ -65,6 +67,7 @@ def _seed_scene(
             is_chapter_last=1,
         )
     )
+    session.flush()
     session.add(
         SceneRunState(
             scene_id=scene_id,

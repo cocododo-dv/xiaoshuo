@@ -9,11 +9,50 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session as SqlAlchemySession
 
-from novel_system.db.models import ChapterRunJob, LlmCall, LlmCallAttempt, OperationLog, SceneDraft, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    ChapterRunJob,
+    LlmCall,
+    LlmCallAttempt,
+    OperationLog,
+    SceneCard,
+    SceneDraft,
+    SceneRunState,
+    StoryProject,
+)
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_jobs import SceneRunJobService
 from tests.test_scene_run_jobs import _create_chapter_and_scene
+
+
+def _seed_owned_scene(session) -> None:
+    """Create the authoritative owner chain required by ``SceneRunState``."""
+    session.add_all(
+        [
+            StoryProject(
+                project_id="PRJ01",
+                title="Scene cancellation integration",
+                outline_text="Test-owned outline",
+            ),
+            ChapterGoal(
+                chapter_id="CH01",
+                project_id="PRJ01",
+                planned_scene_count=1,
+                chapter_goal="Exercise scene-run cancellation",
+            ),
+            SceneCard(
+                scene_id="SC01",
+                chapter_id="CH01",
+                project_id="PRJ01",
+                scene_seq=1,
+                scene_goal="Exercise cancellation boundaries",
+                onstage_chars_json=[],
+                beats_json=[],
+            ),
+        ]
+    )
+    session.flush()
 
 
 def _create_queued_job(client) -> dict:
@@ -110,6 +149,7 @@ def test_cancel_rejects_non_cancel_terminal_status_with_stable_details(
 
 
 def test_terminal_cleanup_is_fenced_to_its_own_active_job(session) -> None:
+    _seed_owned_scene(session)
     state = SceneRunState(scene_id="SC01", active_run_job_id="new-job")
     old_job = ChapterRunJob(
         job_id="old-job",
@@ -195,6 +235,7 @@ def test_expired_cancel_requested_recovery_has_one_owner_cas_winner(session) -> 
     from novel_system.services.scene_run_jobs import recover_expired_cancel_requested_jobs
 
     expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    _seed_owned_scene(session)
     session.add_all(
         [
             SceneRunState(
@@ -252,6 +293,7 @@ def test_valid_cancel_requested_lease_is_not_recovered(session) -> None:
     from novel_system.services.scene_run_jobs import recover_expired_cancel_requested_jobs
 
     valid = (datetime.now(UTC) + timedelta(seconds=120)).isoformat()
+    _seed_owned_scene(session)
     session.add_all(
         [
             SceneRunState(scene_id="SC01", active_run_job_id="valid-cancel"),
@@ -278,6 +320,7 @@ def test_valid_cancel_requested_lease_is_not_recovered(session) -> None:
 def test_cancelled_checkpoint_idempotency_is_fenced_to_active_execution(session) -> None:
     from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
+    _seed_owned_scene(session)
     session.add(
         SceneRunState(
             scene_id="SC01",
@@ -309,6 +352,7 @@ def test_author_cancel_preserves_accounting_hard_checkpoint_fence(
     hard_status: str,
 ) -> None:
     job_id = f"cancel-hard-fence-{hard_status}"
+    _seed_owned_scene(session)
     session.add_all(
         [
             SceneRunState(
@@ -373,6 +417,7 @@ def test_cancel_before_next_reservation_makes_zero_provider_calls(session) -> No
     )
     from novel_system.services.llm_client import LLMRequest
 
+    _seed_owned_scene(session)
     session.add_all(
         [
             SceneRunState(
@@ -447,6 +492,7 @@ def test_running_cancel_settles_current_call_preserves_product_and_blocks_next(s
     )
     from novel_system.services.llm_client import LLMRequest, LLMResponse
 
+    _seed_owned_scene(session)
     job = ChapterRunJob(
         job_id="job-cancel-during-provider",
         scene_id="SC01",
@@ -605,6 +651,7 @@ def test_reservation_claim_and_cancel_start_on_barrier_have_one_linearized_outco
     from novel_system.services.llm_client import LLMRequest, LLMResponse
 
     job_id = "job-reservation-cancel-race"
+    _seed_owned_scene(session)
     session.add_all(
         [
             SceneRunState(
@@ -812,6 +859,7 @@ def test_expired_cancellation_reconciles_reservation_from_dispatch_truth(
 
     expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
     dispatched_at = "2026-07-14T01:02:03+00:00" if dispatched else None
+    _seed_owned_scene(session)
     session.add_all(
         [
             SceneRunState(

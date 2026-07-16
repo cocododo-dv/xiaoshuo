@@ -763,8 +763,16 @@ def test_prose_control_plane_failure_crosses_recording_catches(session, monkeypa
 # Event rows are position-addressed; unit tests that exercise the recorder need
 # the same minimal catalog identity as the production archive path.
 def _seed_event_scene(session, project_id: str, chapter_id: str, scene_id: str) -> None:
-    from novel_system.db.models import ChapterGoal, SceneCard
+    from novel_system.db.models import ChapterGoal, SceneCard, StoryProject
 
+    session.add(
+        StoryProject(
+            project_id=project_id,
+            title="Prose event extraction",
+            outline_text="",
+        )
+    )
+    session.flush()
     session.add(
         ChapterGoal(
             chapter_id=chapter_id,
@@ -773,6 +781,7 @@ def _seed_event_scene(session, project_id: str, chapter_id: str, scene_id: str) 
             display_order=1,
         )
     )
+    session.flush()
     session.add(
         SceneCard(
             scene_id=scene_id,

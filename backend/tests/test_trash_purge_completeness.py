@@ -21,6 +21,7 @@ from novel_system.db.models import (
     ForeshadowTracker,
     HumanReviewEvent,
     LlmCall,
+    LlmCallAttempt,
     NarrativeEvent,
     QcReport,
     ReviewItem,
@@ -29,12 +30,14 @@ from novel_system.db.models import (
     SceneDraft,
     SceneMemory,
     SceneRunState,
+    SnowflakeRevisionLink,
     StoryProject,
     VolumeSummary,
     WriterEvaluation,
     utcnow,
 )
 from novel_system.services.trash import TrashService
+from novel_system.tools.seed_fe_demo_works import cleanup_fe_demo_works
 
 
 PROJECT_ID = "proj_purge"
@@ -47,12 +50,15 @@ def _seed_full_project(session) -> None:
         project_id=PROJECT_ID, title="T", outline_text="o",
         planning_mode="snowflake", trashed_flag=1, trashed_at=utcnow(), trashed_by="op",
     ))
+    session.flush()
     session.add(ChapterGoal(chapter_id=CHAPTER_ID, project_id=PROJECT_ID, chapter_goal="g"))
+    session.flush()
     session.add(ChapterState(chapter_id=CHAPTER_ID))
     session.add(SceneCard(
         scene_id=SCENE_ID, chapter_id=CHAPTER_ID, project_id=PROJECT_ID,
         scene_seq=1, scene_goal="推进",
     ))
+    session.flush()
     session.add(SceneRunState(scene_id=SCENE_ID))
     # —— 正文/运行时派生行（修复前全部漏删）——
     session.add(SceneDraft(
@@ -97,6 +103,38 @@ def _seed_full_project(session) -> None:
             scope_type="project",
             scope_id=PROJECT_ID,
             project_id=PROJECT_ID,
+        )
+    )
+    session.flush()
+    session.commit()
+    session.add_all(
+        [
+            LlmCallAttempt(
+                attempt_id="llm_attempt_1",
+                llm_call_id="llm1",
+                provider_attempt_no=0,
+                dispatch_kind="initial",
+                accounting_status="settled",
+            ),
+            LlmCallAttempt(
+                attempt_id="llm_attempt_2",
+                llm_call_id="llm2",
+                provider_attempt_no=0,
+                dispatch_kind="initial",
+                accounting_status="settled",
+            ),
+        ]
+    )
+    session.add(
+        SnowflakeRevisionLink(
+            revision_link_id="snowflake_revision_purge",
+            project_id=PROJECT_ID,
+            source_step_key="book_brief",
+            source_step_run_id=None,
+            affected_kind="future_kind",
+            affected_id="future-id",
+            reason="project purge must remove the audit link",
+            status="open",
         )
     )
     session.add(HumanReviewEvent(event_id="hre1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID))
@@ -151,6 +189,12 @@ def test_purge_project_leaves_no_residual_rows(session):
         "attempt_tracker": session.query(AttemptTracker).filter_by(scene_id=SCENE_ID),
         "llm_calls(scene)": session.query(LlmCall).filter_by(scene_id=SCENE_ID),
         "llm_calls(project)": session.query(LlmCall).filter_by(project_id=PROJECT_ID),
+        "llm_call_attempts": session.query(LlmCallAttempt).filter(
+            LlmCallAttempt.attempt_id.in_(["llm_attempt_1", "llm_attempt_2"])
+        ),
+        "snowflake_revision_links": session.query(SnowflakeRevisionLink).filter_by(
+            project_id=PROJECT_ID
+        ),
         "human_review_events": session.query(HumanReviewEvent).filter_by(scene_id=SCENE_ID),
         "narrative_events": session.query(NarrativeEvent).filter_by(project_id=PROJECT_ID),
         "volume_summaries": session.query(VolumeSummary).filter_by(project_id=PROJECT_ID),
@@ -166,3 +210,33 @@ def test_purge_project_leaves_no_residual_rows(session):
         if count:
             residuals[table] = count
     assert not residuals, f"purge 后仍有残留: {residuals}"
+
+
+def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
+    session.add(
+        StoryProject(
+            project_id="tide",
+            title="Demo",
+            outline_text="demo",
+            planning_mode="snowflake",
+        )
+    )
+    session.flush()
+    session.add(
+        SnowflakeRevisionLink(
+            revision_link_id="demo-revision-link",
+            project_id="tide",
+            source_step_key="book_brief",
+            source_step_run_id=None,
+            affected_kind="future_kind",
+            affected_id="future-id",
+            reason="demo reseed",
+            status="open",
+        )
+    )
+    session.flush()
+
+    cleanup_fe_demo_works(session)
+
+    assert session.get(SnowflakeRevisionLink, "demo-revision-link") is None
+    assert session.get(StoryProject, "tide") is None

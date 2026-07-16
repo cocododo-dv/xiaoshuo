@@ -8,7 +8,15 @@ from dataclasses import replace
 import httpx
 import pytest
 
-from novel_system.db.models import LlmCall, LlmCallAttempt, SceneDraft, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    LlmCall,
+    LlmCallAttempt,
+    SceneCard,
+    SceneDraft,
+    SceneRunState,
+    StoryProject,
+)
 from novel_system.db.session import SessionLocal
 from novel_system.services.llm_client import LLMClient, LLMRequest, LLMResponse
 
@@ -56,6 +64,47 @@ def _scene_context(accounting, scene_id: str):
         execution_id="execution-1",
         execution_step_key="neutral_draft",
     )
+
+
+def _seed_scene_parent(session, scene_id: str) -> None:
+    """Seed the project/chapter/scene authority chain for scene accounting."""
+    if session.get(StoryProject, "project-1") is None:
+        session.add(
+            StoryProject(
+                project_id="project-1",
+                title="LLM accounting integration",
+                outline_text="Test-owned outline",
+            )
+        )
+        session.flush()
+    if session.get(ChapterGoal, "chapter-1") is None:
+        session.add(
+            ChapterGoal(
+                chapter_id="chapter-1",
+                project_id="project-1",
+                planned_scene_count=1,
+                chapter_goal="Exercise scene accounting",
+            )
+        )
+        session.flush()
+    if session.get(SceneCard, scene_id) is None:
+        session.add(
+            SceneCard(
+                scene_id=scene_id,
+                chapter_id="chapter-1",
+                project_id="project-1",
+                scene_seq=1,
+                scene_goal="Exercise one accounted provider call",
+                onstage_chars_json=[],
+                beats_json=[],
+            )
+        )
+        session.flush()
+
+
+def _scene_run_state(session, *, scene_id: str, **kwargs) -> SceneRunState:
+    _seed_scene_parent(session, scene_id)
+    return SceneRunState(scene_id=scene_id, **kwargs)
 
 
 def test_request_estimate_includes_message_overhead_output_and_utf8_reservation() -> None:
@@ -255,7 +304,8 @@ def test_explicit_offline_zero_usage_settles_parent_without_physical_attempt(ses
     accounting = _accounting_module()
     scene_id = "scene-offline"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=100,
             provider_attempt_budget=5,
@@ -342,6 +392,7 @@ def test_online_wrapper_forwards_attempt_hook_and_is_fully_accounted(session) ->
 def test_scene_online_call_initializes_missing_budget_before_parent_and_dispatch(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-budget-auto-init"
+    _seed_scene_parent(session, scene_id)
 
     class AccountedClient(accounting.OnlineAccountedExecution):
         post_count = 0
@@ -393,7 +444,14 @@ def test_scene_online_call_initializes_missing_budget_before_parent_and_dispatch
 def test_duplicate_identical_after_response_callback_is_idempotent(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-duplicate-response-callback"
-    session.add(SceneRunState(scene_id=scene_id, scene_token_budget=10_000, provider_attempt_budget=5))
+    session.add(
+        _scene_run_state(
+            session,
+            scene_id=scene_id,
+            scene_token_budget=10_000,
+            provider_attempt_budget=5,
+        )
+    )
     session.commit()
 
     class DuplicateResponseClient(accounting.OnlineAccountedExecution):
@@ -435,7 +493,14 @@ def test_duplicate_identical_after_response_callback_is_idempotent(session) -> N
 def test_conflicting_duplicate_provider_callback_fails_stably_without_double_charge(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-conflicting-response-callback"
-    session.add(SceneRunState(scene_id=scene_id, scene_token_budget=10_000, provider_attempt_budget=5))
+    session.add(
+        _scene_run_state(
+            session,
+            scene_id=scene_id,
+            scene_token_budget=10_000,
+            provider_attempt_budget=5,
+        )
+    )
     session.commit()
 
     class ConflictingResponseClient(accounting.OnlineAccountedExecution):
@@ -484,7 +549,14 @@ def test_conflicting_duplicate_provider_callback_fails_stably_without_double_cha
 def test_duplicate_identical_after_error_callback_is_idempotent(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-duplicate-error-callback"
-    session.add(SceneRunState(scene_id=scene_id, scene_token_budget=10_000, provider_attempt_budget=5))
+    session.add(
+        _scene_run_state(
+            session,
+            scene_id=scene_id,
+            scene_token_budget=10_000,
+            provider_attempt_budget=5,
+        )
+    )
     session.commit()
 
     class DuplicateErrorClient(accounting.OnlineAccountedExecution):
@@ -559,7 +631,8 @@ def test_online_wrapper_that_drops_hook_never_leaves_a_live_parent(session) -> N
     accounting = _accounting_module()
     scene_id = "scene-wrapper-drops-hook"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             provider_attempt_budget=5,
@@ -645,7 +718,8 @@ def test_online_capability_exception_without_attempt_is_conservatively_audited(s
     accounting = _accounting_module()
     scene_id = "scene-capability-exception"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             provider_attempt_budget=5,
@@ -684,7 +758,8 @@ def test_online_capability_return_with_dispatched_but_unsettled_attempt_is_block
     accounting = _accounting_module()
     scene_id = "scene-missing-after-response"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             provider_attempt_budget=5,
@@ -763,7 +838,8 @@ def test_online_capability_exception_with_dispatched_but_unsettled_attempt_is_bl
     accounting = _accounting_module()
     scene_id = "scene-missing-after-error"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             provider_attempt_budget=5,
@@ -806,9 +882,11 @@ def test_untracked_dispatch_keeps_child_audit_when_scene_budget_is_uninitialized
 ) -> None:
     accounting = _accounting_module()
     scene_id = f"scene-untracked-{state_kind}"
+    _seed_scene_parent(session, scene_id)
     if state_kind == "null_budget":
         session.add(
-            SceneRunState(
+            _scene_run_state(
+                session,
                 scene_id=scene_id,
                 scene_token_budget=None,
                 provider_attempt_budget=5,
@@ -1068,7 +1146,8 @@ def test_unexpected_post_exception_settles_accounting_without_reservation_leak(s
     accounting = _accounting_module()
     scene_id = "scene-post-runtime-error"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             provider_attempt_budget=5,
@@ -1301,7 +1380,8 @@ def test_provider_attempt_budget_rejects_second_post_without_erasing_first_charg
     accounting = _accounting_module()
     scene_id = "scene-attempt-budget"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=10_000,
             provider_attempt_budget=1,
@@ -1349,7 +1429,8 @@ def test_token_budget_rejection_before_dispatch_has_no_post_attempt_or_charge(se
     accounting = _accounting_module()
     scene_id = "scene-token-budget"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1,
             provider_attempt_budget=5,
@@ -1396,7 +1477,8 @@ def test_business_attempt_budget_rejection_is_distinct_and_has_zero_provider_io(
     accounting = _accounting_module()
     scene_id = "scene-business-attempt-budget"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=10_000,
             total_attempt_count=4,
@@ -1444,7 +1526,8 @@ def test_business_attempt_budget_race_after_reservation_releases_fence_before_pr
     accounting = _accounting_module()
     scene_id = "scene-business-attempt-race"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=10_000,
             total_attempt_count=0,
@@ -1523,7 +1606,8 @@ def test_scene_accounting_refreshes_cached_run_state_after_settlement(session) -
     accounting = _accounting_module()
     scene_id = "scene-cached-settlement"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             provider_attempt_budget=5,
@@ -1707,7 +1791,8 @@ def test_recovery_releases_reserved_but_undispatched_attempt_and_allows_retry(se
     accounting = _accounting_module()
     scene_id = "scene-reservation-crash"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=10_000,
             provider_attempt_budget=5,
@@ -1793,7 +1878,8 @@ def test_recovery_charges_dispatched_unknown_attempt_and_same_call_is_not_resent
     accounting = _accounting_module()
     scene_id = "scene-dispatch-crash"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=10_000,
             provider_attempt_budget=5,
@@ -1885,7 +1971,8 @@ def test_release_idempotence_does_not_hide_a_different_nonzero_fence(session) ->
     accounting = _accounting_module()
     scene_id = "scene-release-fence-conflict"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=10_000,
             scene_tokens_reserved=321,
@@ -1905,7 +1992,8 @@ def test_non_object_provider_response_conservatively_settles_child_without_reser
     accounting = _accounting_module()
     scene_id = "scene-invalid-provider-response"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=10_000,
             provider_attempt_budget=5,
@@ -1982,7 +2070,8 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
     accounting = _accounting_module()
     scene_id = "scene-usage-over-reservation"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=50_000,
             provider_attempt_budget=5,
@@ -2087,7 +2176,8 @@ def test_known_usage_overage_past_budget_still_blocks_later_dispatch_with_stable
     reservation = accounting.estimate_request_usage(request).reserved_tokens
     budget = 50_000
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=budget,
             scene_tokens_used=budget - reservation,
@@ -2156,7 +2246,8 @@ def test_success_overage_details_identify_offending_attempt_after_retry(session)
     accounting = _accounting_module()
     scene_id = "scene-retry-success-overage"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             provider_attempt_budget=5,
@@ -2237,7 +2328,8 @@ def test_failed_provider_response_with_overage_keeps_parent_child_audit_consiste
     accounting = _accounting_module()
     scene_id = "scene-failed-overage"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             provider_attempt_budget=5,
@@ -2291,7 +2383,8 @@ def test_scene_budget_fence_allows_one_inflight_post_and_loser_retries_after_set
     accounting = _accounting_module()
     scene_id = "scene-concurrent-budget"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=1_000,
             scene_tokens_used=100,
@@ -2408,7 +2501,8 @@ def test_null_scene_token_budget_is_initialized_before_online_attempt(session) -
     accounting = _accounting_module()
     scene_id = "scene-null-budget-compat"
     session.add(
-        SceneRunState(
+        _scene_run_state(
+            session,
             scene_id=scene_id,
             scene_token_budget=None,
             provider_attempt_budget=5,
@@ -2456,6 +2550,7 @@ def test_null_scene_token_budget_is_initialized_before_online_attempt(session) -
 def test_missing_scene_run_state_is_initialized_before_online_attempt(session) -> None:
     accounting = _accounting_module()
     post_count = 0
+    _seed_scene_parent(session, "missing-scene-state")
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal post_count

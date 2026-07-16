@@ -120,7 +120,7 @@ class FakeDeTemplateClient(AccountedGenerateMixin):
         )
 
 
-def _seed_scene(session) -> None:
+def _seed_scene(session, *, must_include_text: str | None = "A red envelope changes hands.") -> None:
     session.add(StoryProject(project_id="PROJECT100", title="Scene generation", outline_text=""))
     session.add(
         ChapterGoal(
@@ -142,7 +142,7 @@ def _seed_scene(session) -> None:
             location="Clocktower Roof",
             scene_goal="Force both characters to reveal what they know.",
             beats_json=["arrival", "reveal", "standoff"],
-            must_include_text="A red envelope changes hands.",
+            must_include_text=must_include_text,
             target_length_band="short",
             scene_type="reunion",
             is_chapter_last=0,
@@ -199,7 +199,9 @@ def _seed_scene_blueprint(session) -> None:
 
 
 def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -> None:
-    _seed_scene(session)
+    # This test isolates persistence/lineage. Continuity blocking for a missing
+    # must-include fact is exercised explicitly by the offline test below.
+    _seed_scene(session, must_include_text=None)
     fake_client = FakeSceneClient()
 
     orchestrator = Orchestrator(
@@ -705,14 +707,17 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
     assert state.current_style_draft_row_id is None
 
 
-def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch) -> None:
+def test_offline_fallback_keeps_drafts_but_cannot_archive_missing_required_fact(session, monkeypatch) -> None:
     _seed_scene(session)
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_BASE_URL", raising=False)
 
     orchestrator = Orchestrator(session)
-    result = orchestrator.run_scene("CH100_SC01")
+    with pytest.raises(DomainError) as blocked:
+        orchestrator.run_scene("CH100_SC01")
+    assert blocked.value.code == "FINAL_TEXT_CONTINUITY_BLOCKED"
+    assert "continuity:missing_required_text" in blocked.value.details["final_text_gate"]["archive_blockers"]
     session.commit()
 
     llm_calls = session.execute(
@@ -728,6 +733,7 @@ def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch)
         select(SceneDraft).where(SceneDraft.stage == "style_draft")
     ).scalars().one()
     final_scene = session.execute(select(FinalScene)).scalars().one()
+    assert final_scene.status == "near_final_ready"
 
     assert {"neutral_draft", "hard_qc", "style_draft", "soft_qc"}.issubset(llm_calls_by_step)
     assert all(llm_call.provider == "offline_deterministic" for llm_call in llm_calls)
@@ -742,8 +748,6 @@ def test_run_scene_uses_offline_fallback_when_llm_disabled(session, monkeypatch)
     assert style_draft.content != neutral_draft.content
     assert style_draft.generation_llm_call_id == style_llm_call.llm_call_id
     assert final_scene.content == style_draft.content
-    assert final_scene.generation_llm_call_id == style_draft.generation_llm_call_id
-    assert result["current_bundle_id"]
 
 
 def test_generate_style_draft_candidates_returns_sorted_list(session) -> None:

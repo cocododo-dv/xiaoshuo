@@ -6,7 +6,7 @@ POV 投影脱敏：引用了非 POV 已知秘密的 finding 不得进入自动�
 """
 from __future__ import annotations
 
-from novel_system.db.models import ChapterGoal, ChapterState, SceneCard
+from novel_system.db.models import ChapterGoal, ChapterState, SceneCard, StoryProject
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.pov_knowledge_projection import PovKnowledgeProjection
 
@@ -15,7 +15,13 @@ CHAPTER = "CH_DESENS01"
 
 
 def _seed(session) -> None:
-    session.add(ChapterGoal(chapter_id=CHAPTER, planned_scene_count=2, chapter_goal="d"))
+    session.add(StoryProject(project_id=PROJECT, title="POV desensitization", outline_text=""))
+    session.add(ChapterGoal(
+        chapter_id=CHAPTER,
+        project_id=PROJECT,
+        planned_scene_count=2,
+        chapter_goal="d",
+    ))
     session.add(ChapterState(chapter_id=CHAPTER, current_phase="drafting"))
     for seq in (1, 2):
         session.add(SceneCard(

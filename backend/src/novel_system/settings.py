@@ -10,6 +10,7 @@ class Settings:
     database_url: str
     vector_backend: str
     vector_store_dir: Path
+    sqlite_foreign_keys_enabled: bool = True
     chroma_collection_prefix: str = "novel_system"
     idempotency_ttl_seconds: int = 90
     verify_lease_ttl_seconds: int = 180
@@ -48,6 +49,18 @@ def _get_bool_env(name: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _get_strict_bool_env(name: str, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean (1/0, true/false, yes/no, on/off)")
+
+
 def _get_float_env(name: str, default: float) -> float:
     raw_value = os.environ.get(name)
     if raw_value is None:
@@ -70,6 +83,10 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     database_url = os.environ.get(
         "NOVEL_SYSTEM_DATABASE_URL",
         "sqlite:///./novel_system.db",
+    )
+    sqlite_foreign_keys_enabled = _get_strict_bool_env(
+        "NOVEL_SYSTEM_SQLITE_FOREIGN_KEYS_ENABLED",
+        True,
     )
     vector_backend = os.environ.get("NOVEL_SYSTEM_VECTOR_BACKEND", "chroma")
     vector_store_dir = Path(
@@ -107,6 +124,7 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         database_url=database_url,
         vector_backend=vector_backend,
         vector_store_dir=vector_store_dir,
+        sqlite_foreign_keys_enabled=sqlite_foreign_keys_enabled,
         chroma_collection_prefix=chroma_collection_prefix,
         llm_provider=llm_provider,
         llm_base_url=llm_base_url,

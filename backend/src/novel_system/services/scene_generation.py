@@ -443,6 +443,17 @@ class SceneGenerationService:
         _project_weights = get_dimension_weights(
             scene.project_id, self.session,
         ) if scene and scene.project_id else None
+        if scene is not None:
+            try:
+                from novel_system.services.quality_strategy import QualityStrategyResolver
+
+                resolved_strategy = QualityStrategyResolver(self.session).resolve_for_scene(scene)
+                if resolved_strategy.matched_policy_id is not None:
+                    _project_weights = resolved_strategy.weights
+            except Exception:
+                # Ranking is fail-soft for the single-candidate path.  The N>1
+                # authorization itself fails closed in Orchestrator.
+                pass
 
         try:
             task_config = self._llm_runner.task_config("style_draft")

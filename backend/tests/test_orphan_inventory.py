@@ -1,8 +1,4 @@
-"""Wave 7（§8 项 4 / §11.10）：存量孤儿盘点（只读）+ 修复迁移前置。
-
-FK 未启用 → child.fk 可指向不存在的 parent（孤儿）。盘点工具找出它们；启用 FK 前必须
-先盘点+修复（§11.10）。修复迁移 20260712_0064 幂等删除盘点到的孤儿。
-"""
+"""0064 遗留关系孤儿诊断（只读）与迁移兼容测试。"""
 from __future__ import annotations
 
 import importlib.util
@@ -75,6 +71,27 @@ def test_report_counts_and_by_table(session):
     assert report["total_orphans"] == 2
     assert report["by_table"]["scene_run_states"] == 2
     assert report["clean"] is False
+
+
+def test_scan_fails_closed_when_a_registered_relation_cannot_be_checked(
+    session,
+    monkeypatch,
+):
+    original = oi._orphan_ids
+
+    def fail_one_relation(active_session, relation):
+        if relation is oi.ORPHAN_RELATIONS[0]:
+            raise RuntimeError("simulated missing table")
+        return original(active_session, relation)
+
+    monkeypatch.setattr(oi, "_orphan_ids", fail_one_relation)
+
+    try:
+        oi.orphan_report(session)
+    except oi.OrphanInventoryIncomplete as exc:
+        assert "legacy_orphan_scan_incomplete=" in str(exc)
+    else:  # pragma: no cover - regression guard
+        raise AssertionError("incomplete legacy scan must not report clean")
 
 
 def test_migration_purges_orphans(session):

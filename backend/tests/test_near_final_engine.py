@@ -97,6 +97,7 @@ def _seed_scene(session, *, is_chapter_last: int = 0) -> None:
         SceneCard(
             scene_id=SCENE_ID,
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             scene_seq=1,
             pov_character_id="林岑",
             onstage_chars_json=["林岑", "许望", "幸存者阿砚"],

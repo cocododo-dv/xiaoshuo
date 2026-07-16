@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from novel_system.db.models import SceneRunState
+from novel_system.db.models import ChapterGoal, SceneCard, SceneRunState, StoryProject
 
 
 class _FakeResponse:
@@ -23,6 +23,35 @@ class _FakeResponse:
         self.text = text
         self.structured_output = None
         self.llm_call_id = llm_call_id
+
+
+def _seed_owned_scene(session) -> None:
+    """Create the authoritative owner chain required by ``SceneRunState``."""
+    session.add_all(
+        [
+            StoryProject(
+                project_id="P_AUTO",
+                title="Auto critique integration",
+                outline_text="Test-owned outline",
+            ),
+            ChapterGoal(
+                chapter_id="CH_AUTO",
+                project_id="P_AUTO",
+                planned_scene_count=1,
+                chapter_goal="Exercise the independent editor critic",
+            ),
+            SceneCard(
+                scene_id="SC_AUTO",
+                chapter_id="CH_AUTO",
+                project_id="P_AUTO",
+                scene_seq=1,
+                scene_goal="Produce an editor critique",
+                onstage_chars_json=[],
+                beats_json=[],
+            ),
+        ]
+    )
+    session.flush()
 
 
 def _llm_context():
@@ -461,6 +490,7 @@ def test_llm_critique_failure_envelope_preserves_parent_and_owner(
     from novel_system.services.auto_critique import llm_auto_critique
 
     context = _owned_llm_context()
+    _seed_owned_scene(session)
     session.add(SceneRunState(scene_id=context.scene_id, scene_tokens_reserved=0))
     _seed_failure_ledger(session, context=context, outcome=outcome, error_code=error_code)
     error = _task_error(code=error_code, rejected=outcome == "rejected_before_dispatch")
@@ -494,6 +524,7 @@ def test_llm_critique_rejected_physical_gate_ledger_is_strictly_validated(
     from novel_system.services.llm_accounting import LLMAccountingError
 
     context = _owned_llm_context()
+    _seed_owned_scene(session)
     error_code = "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED"
     session.add(SceneRunState(scene_id=context.scene_id, scene_tokens_reserved=0))
     parent = LlmCall(

@@ -697,6 +697,7 @@ def _build_causal_skeleton_from_synopsis(
                     "description": link.description,
                     "why_necessary": link.why_necessary,
                     "depends_on_index": link.depends_on_index,
+                    "scene_id": link.scene_id,
                 }
                 for link in skeleton.chain
             ],

@@ -443,6 +443,8 @@ class TestOrchestrationSignalsEndpoint:
         assert data["criticality"]["level"] == "critical"
         # health/budget/drift keys present even when empty
         assert "foreshadow_health" in data
+        assert data["foreshadow_health"]["unresolved_plant_count"] == 0
+        assert data["foreshadow_health"]["unresolved_plants"] == []
         assert "theme_budget" in data
         assert "style_drift" in data
 

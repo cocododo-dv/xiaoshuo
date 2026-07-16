@@ -108,6 +108,7 @@ def _create_chapter(session: Session, payload: dict) -> dict:
     if chapter is None:
         chapter = ChapterGoal(**payload)
         session.add(chapter)
+        session.flush()
     else:
         if chapter.trashed_flag == 1:
             raise DomainError("CHAPTER_TRASHED", "chapter is currently in author trash")

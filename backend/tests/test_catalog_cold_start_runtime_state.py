@@ -8,9 +8,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from novel_system.db.models import (
+    ChapterGoal,
     ChapterState,
     FinalScene,
+    SceneCard,
     SceneMemory,
     SceneRunState,
     StoryProject,
@@ -19,6 +23,7 @@ from novel_system.services.archiver import Archiver
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.catalog import CatalogService
 from novel_system.services.chapter_state import ensure_chapter_state
+from novel_system.services.errors import DomainError
 
 
 def _make_project(session, project_id: str = "proj_cold") -> StoryProject:
@@ -31,6 +36,24 @@ def _make_project(session, project_id: str = "proj_cold") -> StoryProject:
     session.add(project)
     session.flush()
     return project
+
+
+def _make_chapter_without_state(
+    session,
+    *,
+    chapter_id: str,
+    project_id: str,
+) -> ChapterGoal:
+    project = _make_project(session, project_id)
+    chapter = ChapterGoal(
+        chapter_id=chapter_id,
+        project_id=project.project_id,
+        chapter_goal="cold-start chapter",
+    )
+    session.add(chapter)
+    session.flush()
+    assert session.get(ChapterState, chapter_id) is None
+    return chapter
 
 
 def test_catalog_create_chapter_creates_chapter_state(session):
@@ -50,6 +73,21 @@ def test_catalog_create_chapter_creates_chapter_state(session):
 
 def test_archiver_survives_missing_chapter_state(session):
     """存量库中已存在的无状态行章：归档段补建而不是 None 解引用。"""
+    chapter = _make_chapter_without_state(
+        session,
+        chapter_id="chapter_without_state",
+        project_id="project_without_state",
+    )
+    session.add(
+        SceneCard(
+            scene_id="scene_cold_1",
+            chapter_id=chapter.chapter_id,
+            project_id=chapter.project_id,
+            scene_seq=1,
+            scene_goal="archive the valid cold-start scene",
+        )
+    )
+    session.flush()
     session.add(
         FinalScene(
             row_id="fs_cold_1",
@@ -78,15 +116,33 @@ def test_archiver_survives_missing_chapter_state(session):
 
 
 def test_aggregator_final_aggregate_survives_missing_chapter_state(session):
-    result = Aggregator(session).run_final_aggregate("chapter_without_state_2")
+    chapter = _make_chapter_without_state(
+        session,
+        chapter_id="chapter_without_state_2",
+        project_id="project_without_state_2",
+    )
+    result = Aggregator(session).run_final_aggregate(chapter.chapter_id)
     # 无场景记忆 → no_op，但不允许 AttributeError；状态行应已补建
     assert result["status"] == "no_op"
     assert session.get(ChapterState, "chapter_without_state_2") is not None
 
 
 def test_ensure_chapter_state_is_idempotent(session):
-    first = ensure_chapter_state(session, "chapter_idem")
+    chapter = _make_chapter_without_state(
+        session,
+        chapter_id="chapter_idem",
+        project_id="project_idem",
+    )
+    first = ensure_chapter_state(session, chapter.chapter_id)
     first.chapter_passed_scene_count = 3
     session.flush()
     second = ensure_chapter_state(session, "chapter_idem")
     assert second is first or second.chapter_passed_scene_count == 3
+
+
+def test_ensure_chapter_state_rejects_missing_chapter(session):
+    with pytest.raises(DomainError) as exc_info:
+        ensure_chapter_state(session, "missing_chapter")
+
+    assert exc_info.value.code == "CHAPTER_NOT_FOUND"
+    assert exc_info.value.status_code == 404

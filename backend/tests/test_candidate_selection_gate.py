@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
@@ -39,6 +40,32 @@ from tests.accounted_llm_fakes import AccountedGenerateMixin
 PROJECT_ID = "PROJECT300"
 SCENE_ID = "CH300_SC01"
 CHAPTER_ID = "CH300"
+
+
+@pytest.fixture(autouse=True)
+def _qualified_quality_evidence_for_candidate_gate_tests(monkeypatch) -> None:
+    """Candidate-gate mechanics run under an explicitly pre-authorized cell.
+
+    Governance/default-off behavior is covered in test_quality_evidence_stage2;
+    these tests exercise the downstream multi-candidate selection state machine.
+    """
+
+    from novel_system.services.literary_quality import DIMENSION_WEIGHTS
+    from novel_system.services.quality_strategy import QualityStrategyResolver
+
+    monkeypatch.setattr(
+        QualityStrategyResolver,
+        "resolve_for_scene",
+        lambda _self, _scene: SimpleNamespace(
+            best_of_n_enabled=True,
+            best_of_n_n=3,
+            genre="悬疑",
+            scene_function="advance",
+            blockers=(),
+            matched_policy_id="test:qualified-human-evidence",
+            weights=dict(DIMENSION_WEIGHTS),
+        ),
+    )
 
 
 def _response(payload: dict, *, request_id: str) -> LLMResponse:

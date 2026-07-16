@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -22,9 +24,17 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
+from novel_system.services.narrative_position import NarrativePositionService
 from novel_system.services.project_backtracks import ProjectBacktrackService
 
 EXECUTION_CONTRACT_VERSION = "scene_execution_contract_v1"
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class SceneCausalReadinessAssessment:
+    warning: str | None = None
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SceneExecutionContractService:
@@ -69,10 +79,13 @@ class SceneExecutionContractService:
         payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
 
         # §4 Causal readiness — check reverse causal skeleton prerequisites.
-        causal_warning = self._check_causal_readiness(scene, project)
-        if causal_warning:
-            payload["causal_readiness_warning"] = causal_warning
+        causal_assessment = self._check_causal_readiness(scene, project)
+        if causal_assessment is not None and causal_assessment.warning:
+            payload["causal_readiness_warning"] = causal_assessment.warning
             missing_fields.append("causal_prerequisite(advisory)")
+        if causal_assessment is not None and causal_assessment.diagnostics:
+            payload["causal_readiness_diagnostics"] = causal_assessment.diagnostics
+            missing_fields.append("causal_readiness_diagnostic(advisory)")
 
         blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
         status = "active" if not blocking_fields else "blocked"
@@ -327,11 +340,62 @@ class SceneExecutionContractService:
             "project": {
                 "project_id": project.project_id if project is not None else None,
                 "reference_profile_ids": self._reference_profile_ids(project) if project is not None else [],
+                "causal_readiness_basis_hash": self._causal_readiness_basis_hash(project),
             },
             "blueprint_json": dict(blueprint.blueprint_json or {}) if blueprint is not None else {},
             "reference_rules": reference_rules,
             "contract_version": EXECUTION_CONTRACT_VERSION,
         }
+
+    def _causal_readiness_basis_hash(
+        self,
+        project: StoryProject | None,
+    ) -> str | None:
+        if project is None:
+            return None
+        skeleton_basis: dict[str, Any] | None = None
+        for step_key in ("scene_details", "long_synopsis"):
+            artifact = self.session.execute(
+                select(SnowflakeArtifact)
+                .where(
+                    SnowflakeArtifact.project_id == project.project_id,
+                    SnowflakeArtifact.step_key == step_key,
+                )
+                .order_by(SnowflakeArtifact.version.desc())
+            ).scalars().first()
+            if (
+                artifact is not None
+                and artifact.artifact_json
+                and artifact.artifact_json.get("causal_skeleton")
+            ):
+                skeleton_basis = {
+                    "artifact_id": artifact.artifact_id,
+                    "version": artifact.version,
+                    "causal_skeleton": artifact.artifact_json["causal_skeleton"],
+                }
+                break
+        if skeleton_basis is None:
+            return None
+        position_service = NarrativePositionService(self.session)
+        ordered_scenes = position_service.ordered_scenes(project.project_id)
+        ordered_scene_ids = [scene.scene_id for scene in ordered_scenes]
+        completed_scene_ids = self._canonical_completed_scene_ids(
+            project.project_id,
+            position_service=position_service,
+        )
+        return hashlib.sha256(
+            canonical_json(
+                {
+                    "ordered_scene_ids": ordered_scene_ids,
+                    "completed_scene_ids": [
+                        scene_id
+                        for scene_id in ordered_scene_ids
+                        if scene_id in completed_scene_ids
+                    ],
+                    "skeleton": skeleton_basis,
+                }
+            ).encode("utf-8")
+        ).hexdigest()
 
     def _reference_rules(self, project: StoryProject | None) -> dict[str, list[str]]:
         if project is None:
@@ -367,10 +431,8 @@ class SceneExecutionContractService:
 
     def _check_causal_readiness(
         self, scene: SceneCard, project: StoryProject | None,
-    ) -> str | None:
-        """§4 Causal readiness: check the reverse causal skeleton for unresolved
-        prerequisites at this scene's position.  Returns a prompt-injectable
-        warning string, or None if no skeleton exists or all prerequisites met."""
+    ) -> SceneCausalReadinessAssessment | None:
+        """Evaluate advisory causal readiness and retain machine diagnostics."""
         if project is None:
             return None
         try:
@@ -405,6 +467,7 @@ class SceneExecutionContractService:
                     character_state_before=link.get("state_before") or link.get("character_state_before"),
                     character_state_after=link.get("state_after") or link.get("character_state_after"),
                     depends_on_index=link.get("depends_on_index"),
+                    scene_id=link.get("scene_id"),
                 )
                 for i, link in enumerate(chain_data)
             ]
@@ -414,28 +477,100 @@ class SceneExecutionContractService:
                 chain=chain,
             )
 
-            # Determine completed scenes (those with FinalScene)
-            completed_seqs = [
-                row[0] for row in
-                self.session.execute(
-                    select(SceneCard.scene_seq).join(
-                        FinalScene, FinalScene.scene_id == SceneCard.scene_id
-                    ).where(SceneCard.project_id == project.project_id)
-                ).all()
-            ]
+            # Skeleton step indices are project-wide narrative positions. A
+            # chapter-local scene_seq cannot distinguish CH01/SC01 from
+            # CH02/SC01 and becomes stale after a catalog reorder.
+            position_service = NarrativePositionService(self.session)
+            ordered_scenes = position_service.ordered_scenes(project.project_id)
+            scene_ordinal_by_id = {
+                positioned_scene.scene_id: ordinal
+                for ordinal, positioned_scene in enumerate(ordered_scenes, start=1)
+            }
+            scene_ordinal = scene_ordinal_by_id.get(scene.scene_id)
+            # ReverseCausalSkeleton.step_index is zero-based while catalog
+            # scene ordinals are one-based.
+            scene_step_index = scene_ordinal - 1 if scene_ordinal is not None else None
+            completed_scene_ids = {
+                *self._canonical_completed_scene_ids(
+                    project.project_id,
+                    position_service=position_service,
+                )
+            }
+            completed_scene_step_indices = sorted(
+                scene_ordinal_by_id[completed_scene_id] - 1
+                for completed_scene_id in completed_scene_ids
+                if completed_scene_id in scene_ordinal_by_id
+            )
 
             readiness = validate_scene_causal_readiness(
-                skeleton, scene.scene_seq,
-                completed_scenes=completed_seqs,
+                skeleton,
+                scene_step_index,
+                completed_scenes=completed_scene_step_indices,
+                scene_id=scene.scene_id,
+                completed_scene_ids=sorted(completed_scene_ids),
                 strict=False,  # advisory by default — author can enable strict per-project
             )
-            if readiness.unresolved:
-                return readiness.format_for_prompt()
-            return None
+            return SceneCausalReadinessAssessment(
+                warning=readiness.format_for_prompt() if readiness.unresolved else None,
+                diagnostics=[diagnostic.as_dict() for diagnostic in readiness.diagnostics],
+            )
 
-        except Exception:
-            # Causal readiness is advisory — never block on internal errors
-            return None
+        except Exception as exc:
+            # Causal readiness stays advisory, but evaluation failure must not
+            # masquerade as a clean result.
+            logger.exception(
+                "causal_readiness_evaluation_failed",
+                extra={
+                    "event_code": "CAUSAL_READINESS_INTERNAL_ERROR",
+                    "project_id": project.project_id,
+                    "scene_id": scene.scene_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return SceneCausalReadinessAssessment(
+                diagnostics=[
+                    {
+                        "code": "CAUSAL_READINESS_INTERNAL_ERROR",
+                        "message": "causal readiness evaluation failed; generation remains advisory",
+                        "context": {
+                            "project_id": project.project_id,
+                            "scene_id": scene.scene_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    }
+                ]
+            )
+
+    def _canonical_completed_scene_ids(
+        self,
+        project_id: str,
+        *,
+        position_service: NarrativePositionService | None = None,
+    ) -> set[str]:
+        """Return only scenes whose runtime pointer names the authority row.
+
+        ``final_scenes`` is append-only history after author-draft promotion.  A
+        historical/superseded row must never satisfy a causal prerequisite merely
+        because it still exists.  The scene is complete only when the current
+        ``SceneRunState`` pointer resolves to a ``FinalScene`` for that same scene.
+        """
+
+        positions = position_service or NarrativePositionService(self.session)
+        statement = (
+            positions.scene_statement(project_id)
+            .join(SceneRunState, SceneRunState.scene_id == SceneCard.scene_id)
+            .join(
+                FinalScene,
+                and_(
+                    FinalScene.row_id == SceneRunState.current_final_scene_row_id,
+                    FinalScene.scene_id == SceneCard.scene_id,
+                ),
+            )
+        )
+        return {
+            completed_scene.scene_id
+            for completed_scene in self.session.execute(statement).scalars().all()
+        }
 
     def _require_scene(self, scene_id: str) -> SceneCard:
         scene = self.session.get(SceneCard, scene_id)

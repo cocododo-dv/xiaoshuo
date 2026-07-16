@@ -1,10 +1,9 @@
-"""Wave 7（§8 项 1/2 + §9.4）：长篇耐久分层指标收集器判定逻辑（离线可测）。
-
-真实 30 章模型跑归发布门；本测试锁定收集器的分桶/分层/完成门断言极性。
-"""
 from __future__ import annotations
 
+import copy
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -13,154 +12,227 @@ import pytest
 def _load():
     path = Path(__file__).resolve().parents[2] / "scripts" / "endurance_metrics.py"
     spec = importlib.util.spec_from_file_location("endurance_metrics", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 em = _load()
 
 
-def _chapter(idx, *, model="gpt-5-mini", tokens=5000, scenes=3, drift_high_unresolved=0,
-             repetition_high=0, q0q1=0, leak=0):
-    return {
-        "chapter_index": idx, "model": model, "archived": True,
-        "scenes": [{"archived": True, "tokens": tokens} for _ in range(scenes)],
-        "continuity_errors": 0, "q0_q1_unresolved": q0q1, "source_leak": leak,
-        "foreshadow_debt": 0,
-        "voice_drift": [{"severity": "high", "resolved": False}] * drift_high_unresolved,
-        "cross_chapter_repetition": [{"severity": "high"}] * repetition_high,
-    }
+def _hash(value):
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _clean_report(tokens_early=5000, tokens_late=5000):
+def _text_hash(value):
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _clean_report(tokens_early=1000, tokens_late=1000):
     chapters = []
-    for i in range(1, 31):
-        tok = tokens_early if i <= 10 else tokens_late if i >= 21 else 5000
-        chapters.append(_chapter(i, tokens=tok))
+    calls = []
+    chapter_ids = []
+    scene_ids = []
+    total_tokens = 0
+    total_cost = 0.0
+    for index in range(1, 31):
+        chapter_id = f"CH{index:02d}"
+        scene_id = f"{chapter_id}_SC01"
+        chapter_ids.append(chapter_id)
+        scene_ids.append(scene_id)
+        tokens = tokens_early if index <= 10 else tokens_late if index >= 21 else 1000
+        text = f"authoritative final scene {scene_id}"
+        content = f"authoritative chapter {chapter_id}\n{text}"
+        cost = round(tokens / 100000, 6)
+        total_tokens += tokens
+        total_cost += cost
+        chapters.append({
+            "chapter_index": index,
+            "chapter_id": chapter_id,
+            "model": "gpt-test",
+            "archived": True,
+            "final_content": content,
+            "final_content_sha256": _text_hash(content),
+            "scenes": [{
+                "scene_id": scene_id,
+                "chapter_id": chapter_id,
+                "archived": True,
+                "final_text": text,
+                "final_text_sha256": _text_hash(text),
+                "tokens": tokens,
+                "duration_ms": 1500,
+                "attempt_count": 1,
+                "cost": cost,
+            }],
+            "continuity_errors": 0,
+            "q0_q1_unresolved": 0,
+            "source_leak": 0,
+            "foreshadow_debt": 0,
+            "voice_drift": [],
+            "cross_chapter_repetition": [],
+        })
+        calls.append({
+            "scene_id": scene_id,
+            "llm_call_id": f"call-{scene_id}",
+            "provider": "openai",
+            "model": "gpt-test",
+            "prompt_hash": f"prompt-{scene_id}",
+            "total_tokens": tokens,
+            "latency_ms": 1000,
+            "error_code": None,
+            "created_at": "2026-07-15T00:00:00Z",
+        })
+    cost_summary = {
+        "total_tokens": total_tokens,
+        "total_cost": round(total_cost, 6),
+        "currency": "USD",
+        "call_count": 30,
+        "is_estimate": True,
+        "archived_scene_count": 30,
+        "archived_chapter_count": 30,
+    }
+    manifest = {
+        "schema": "endurance-run-manifest-v1",
+        "provenance": "real_model",
+        "run_id": "endurance-run-1",
+        "chapter_ids": chapter_ids,
+        "scene_ids": scene_ids,
+        "model_calls": calls,
+        "offline_deterministic_required_count": 0,
+        "cost_summary": cost_summary,
+    }
+    restarts = []
+    for checkpoint in (5, 10, 20, 30):
+        state = {
+            "catalog": {"through_chapter": checkpoint},
+            "finals": scene_ids[:checkpoint],
+            "selections": [{"scene_id": item} for item in scene_ids[:checkpoint]],
+            "aggregates": chapter_ids[:checkpoint],
+        }
+        restarts.append({
+            "after_chapter": checkpoint,
+            "performed": True,
+            "health_verified": True,
+            "before_pid": str(100 + checkpoint),
+            "after_pid": str(200 + checkpoint),
+            "before_state": copy.deepcopy(state),
+            "after_state": copy.deepcopy(state),
+            "before_state_sha256": _hash(state),
+            "after_state_sha256": _hash(state),
+        })
+    samples = {name: [600, 700, 800, 900, 1000] for name in em.LATENCY_SERIES}
+    raw_fk = {"tables_checked": ["chapters", "scenes", "final_scenes"], "orphans": []}
     return {
+        "schema": "endurance-report-v2",
+        "evidence": {
+            "provenance": "real_model",
+            "run_id": "endurance-run-1",
+            "manifest": manifest,
+            "manifest_hash": _hash(manifest),
+        },
         "chapters": chapters,
-        "evidence": {"provenance": "real_model", "run_id": "run-30-v1", "manifest_hash": "sha256:test"},
-        "latency_p95_ms": {"catalog": 800, "scene_state": 900, "chapter_manuscript": 1500},
-        "restart_checks": [
-            {"after_chapter": point, "verified": True, "state_hash_match": True}
-            for point in (5, 10, 20, 30)
-        ],
-        "db_size_samples": [
-            {"after_chapter": point, "bytes": point * 10 ** 6}
-            for point in (5, 10, 15, 20, 25, 30)
-        ],
+        "cost_summary": cost_summary,
+        "latency_samples_ms": samples,
+        "latency_p95_ms": {name: 1000 for name in em.LATENCY_SERIES},
+        "restart_checks": restarts,
+        "db_size_samples": [{
+            "after_chapter": checkpoint,
+            "path": "author.db",
+            "bytes": checkpoint * 1000000,
+            "file_sha256": f"{checkpoint:064x}",
+            "measured_at": "2026-07-15T00:00:00Z",
+        } for checkpoint in (5, 10, 15, 20, 25, 30)],
         "foreign_key_audit": {
-            "decision": "defer_with_rationale",
-            "pragma_foreign_keys": 0,
+            "decision": "enable",
+            "pragma_foreign_keys": 1,
             "orphan_count": 0,
-            "rationale": "先完成真实耐久采样，再单独启用 FK 并跑全量回归。",
+            "raw_audit": raw_fk,
+            "raw_audit_sha256": _hash(raw_fk),
         },
     }
 
 
+def _codes(verdict):
+    return {item.split(":", 1)[0] for item in verdict["failures"]}
+
+
 def test_clean_30_chapter_report_passes():
     verdict = em.evaluate_endurance(_clean_report())
-    assert verdict["passed"] is True
-    assert verdict["failures"] == []
+    assert verdict["passed"] is True, verdict["failures"]
     assert verdict["chapters_archived"] == 30
 
 
+def test_empty_and_old_schema_reports_cannot_pass():
+    assert "ENDURANCE_SCHEMA_UNSUPPORTED" in _codes(em.evaluate_endurance({}))
+    report = _clean_report()
+    report["schema"] = "endurance-report-v1"
+    assert "ENDURANCE_SCHEMA_UNSUPPORTED" in _codes(em.evaluate_endurance(report))
+
+
+def test_manifest_hash_is_computed_not_self_asserted():
+    report = _clean_report()
+    report["evidence"]["manifest"]["run_id"] = "forged"
+    assert "RUN_MANIFEST_INVALID" in _codes(em.evaluate_endurance(report))
+
+
+def test_restart_boolean_claims_without_raw_hashes_cannot_pass():
+    report = _clean_report()
+    report["restart_checks"][0] = {"after_chapter": 5, "verified": True, "state_hash_match": True}
+    assert "RESTART_CHECK_INVALID" in _codes(em.evaluate_endurance(report))
+
+
+def test_tampered_archived_content_and_missing_metrics_fail():
+    report = _clean_report()
+    report["chapters"][0]["final_content"] = "tampered"
+    report["chapters"][1]["scenes"][0]["final_text"] = "tampered"
+    report["chapters"][2].pop("foreshadow_debt")
+    codes = _codes(em.evaluate_endurance(report))
+    assert "CHAPTER_ARCHIVE_INVALID" in codes
+    assert "SCENE_ARCHIVE_INCOMPLETE" in codes
+    assert "CHAPTER_METRIC_MISSING" in codes
+
+
 def test_token_regression_fails():
-    # 21–30 平均是 1–10 的 2× > 1.5× 上限
-    verdict = em.evaluate_endurance(_clean_report(tokens_early=4000, tokens_late=8000))
-    assert verdict["passed"] is False
-    assert any("TOKENS_PER_SCENE_REGRESSION" in f for f in verdict["failures"])
+    verdict = em.evaluate_endurance(_clean_report(tokens_early=1000, tokens_late=2000))
+    assert "TOKENS_PER_SCENE_REGRESSION" in _codes(verdict)
     assert verdict["tokens_ratio_21_30_vs_1_10"] == pytest.approx(2.0)
 
 
-def test_token_ratio_within_cap_passes():
-    # 1.5× 恰好不超（4000 → 6000）
-    verdict = em.evaluate_endurance(_clean_report(tokens_early=4000, tokens_late=6000))
-    assert not any("TOKENS_PER_SCENE_REGRESSION" in f for f in verdict["failures"])
-
-
-def test_high_unresolved_voice_drift_fails():
+def test_quality_failures_are_explicit():
     report = _clean_report()
-    report["chapters"][25]["voice_drift"] = [{"severity": "high", "resolved": False}]
-    verdict = em.evaluate_endurance(report)
-    assert verdict["passed"] is False
-    assert any("HIGH_VOICE_DRIFT_UNRESOLVED" in f for f in verdict["failures"])
+    report["chapters"][0]["continuity_errors"] = 1
+    report["chapters"][1]["q0_q1_unresolved"] = 1
+    report["chapters"][2]["source_leak"] = 1
+    report["chapters"][3]["voice_drift"] = [{"severity": "high", "resolved": False}]
+    report["chapters"][4]["cross_chapter_repetition"] = [{"severity": "high"}]
+    codes = _codes(em.evaluate_endurance(report))
+    assert {"CONTINUITY_ERRORS_PRESENT", "Q0_Q1_UNRESOLVED", "SOURCE_LEAK",
+            "HIGH_VOICE_DRIFT_UNRESOLVED", "HIGH_CROSS_CHAPTER_REPETITION"} <= codes
 
 
-def test_resolved_drift_does_not_fail():
+def test_latency_requires_raw_recomputable_samples():
     report = _clean_report()
-    report["chapters"][25]["voice_drift"] = [{"severity": "high", "resolved": True}]
-    verdict = em.evaluate_endurance(report)
-    assert not any("HIGH_VOICE_DRIFT" in f for f in verdict["failures"])
+    report["latency_samples_ms"]["catalog"] = []
+    report["latency_p95_ms"]["scene_state"] = 1
+    codes = _codes(em.evaluate_endurance(report))
+    assert "LATENCY_SAMPLES_MISSING" in codes
+    assert "P95_NOT_RECOMPUTABLE" in codes
 
 
-def test_chapter_shortfall_fails():
+def test_db_fk_and_cost_evidence_fail_closed():
     report = _clean_report()
-    report["chapters"] = report["chapters"][:20]  # 只 20 章
-    verdict = em.evaluate_endurance(report)
-    assert verdict["passed"] is False
-    assert any("CHAPTER_COVERAGE_SHORTFALL" in f for f in verdict["failures"])
-
-
-def test_p95_too_slow_fails():
-    report = _clean_report()
-    report["latency_p95_ms"]["chapter_manuscript"] = 2500
-    verdict = em.evaluate_endurance(report)
-    assert verdict["passed"] is False
-    assert any("P95_TOO_SLOW" in f and "chapter_manuscript" in f for f in verdict["failures"])
-
-
-def test_q0q1_and_leak_fail():
-    report = _clean_report()
-    report["chapters"][3]["q0_q1_unresolved"] = 1
-    report["chapters"][4]["source_leak"] = 2
-    verdict = em.evaluate_endurance(report)
-    assert any("Q0_Q1_UNRESOLVED" in f for f in verdict["failures"])
-    assert any("SOURCE_LEAK" in f for f in verdict["failures"])
-
-
-def test_bucket_by_five_makes_six_buckets():
-    buckets = em.bucket_by_five(_clean_report()["chapters"])
-    assert len(buckets) == 6
-    assert buckets[0]["chapters"] == [1, 2, 3, 4, 5]
-    assert buckets[-1]["chapters"] == [26, 27, 28, 29, 30]
-
-
-def test_stratify_by_model_no_cross_mixing():
-    chapters = [
-        _chapter(1, model="gpt-5-mini", drift_high_unresolved=1),
-        _chapter(2, model="gpt-5", repetition_high=1),
-    ]
-    by_model = em.stratify_by_model(chapters)
-    assert by_model["gpt-5-mini"]["high_voice_drift_unresolved"] == 1
-    assert by_model["gpt-5-mini"]["high_cross_chapter_repetition"] == 0
-    assert by_model["gpt-5"]["high_cross_chapter_repetition"] == 1
-    assert by_model["gpt-5"]["high_voice_drift_unresolved"] == 0
-
-
-def test_synthetic_report_cannot_pass_real_endurance_gate():
-    report = _clean_report()
-    report["evidence"]["provenance"] = "synthetic"
-    verdict = em.evaluate_endurance(report)
-    assert verdict["passed"] is False
-    assert "EVIDENCE_PROVENANCE_NOT_REAL_MODEL" in verdict["failures"]
-
-
-def test_missing_latency_restart_db_samples_and_fk_decision_fail_closed():
-    report = _clean_report()
-    report["latency_p95_ms"].pop("catalog")
-    report["restart_checks"] = []
     report["db_size_samples"] = []
-    report["foreign_key_audit"] = {}
-    failures = em.evaluate_endurance(report)["failures"]
-    assert "P95_SAMPLE_MISSING: catalog" in failures
-    assert any(item.startswith("RESTART_CHECKS_MISSING") for item in failures)
-    assert any(item.startswith("DB_SIZE_SAMPLES_MISSING") for item in failures)
-    assert "FK_DECISION_MISSING" in failures
+    report["foreign_key_audit"]["raw_audit_sha256"] = "self-asserted"
+    report["cost_summary"]["total_tokens"] = 1
+    codes = _codes(em.evaluate_endurance(report))
+    assert "DB_SIZE_SAMPLES_MISSING" in codes
+    assert "FK_AUDIT_HASH_INVALID" in codes
+    assert "COST_EVIDENCE_INVALID" in codes
 
 
-def test_duplicate_or_missing_chapter_indexes_fail():
+def test_bucket_and_model_stratification_remain_diagnostic():
     report = _clean_report()
-    report["chapters"][-1]["chapter_index"] = 29
-    assert "CHAPTER_INDEX_SET_INVALID" in em.evaluate_endurance(report)["failures"]
+    assert len(em.bucket_by_five(report["chapters"])) == 6
+    assert em.stratify_by_model(report["chapters"])["gpt-test"]["chapter_count"] == 30

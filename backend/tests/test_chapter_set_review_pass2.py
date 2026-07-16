@@ -13,6 +13,7 @@ from novel_system.db.models import (
     FinalScene,
     SceneCard,
     SceneRunState,
+    StoryProject,
 )
 
 
@@ -26,6 +27,15 @@ def _seed_chapter(
 ) -> str:
     scene_id = f"{chapter_id}_SC01"
     final_row_id = f"final_scene_{scene_id}_v1"
+    if project_id is not None:
+        session.add(
+            StoryProject(
+                project_id=project_id,
+                title=f"Project {project_id}",
+                outline_text="Literary quality overview scope test",
+            )
+        )
+        session.flush()
     session.add(
         ChapterGoal(
             chapter_id=chapter_id,
@@ -37,6 +47,7 @@ def _seed_chapter(
             ending_effect="结尾留下必须处理的钩子。",
         )
     )
+    session.flush()
     session.add(ChapterState(chapter_id=chapter_id, current_phase="drafting"))
     session.add(
         SceneCard(
@@ -50,6 +61,7 @@ def _seed_chapter(
             hook="新的悬念浮出。",
         )
     )
+    session.flush()
     session.add(
         SceneRunState(
             scene_id=scene_id,

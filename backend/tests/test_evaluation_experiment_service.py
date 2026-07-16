@@ -173,7 +173,7 @@ def test_report_ties_recorded_not_in_denominator(session) -> None:
     assert report["non_tie_n"] == 25
 
 
-def test_human_frozen_report_is_eligible_for_policy(session) -> None:
+def test_human_frozen_report_without_hidden_manifest_is_not_policy_evidence(session) -> None:
     svc = _svc(session)
     exp = svc.create_experiment(
         name="BoN 真人盲评",
@@ -189,8 +189,9 @@ def test_human_frozen_report_is_eligible_for_policy(session) -> None:
     report = svc.build_report(exp.experiment_id)
 
     assert report["frozen_manifest_verified"] is True
-    assert report["policy_evidence_eligible"] is True
-    assert report["decision"] == "upgrade_to_default"
+    assert report["policy_evidence_eligible"] is False
+    assert "hidden_benchmark_manifest_not_verified" in report["policy_eligibility_reasons"]
+    assert report["decision"] == "not_eligible_for_policy"
 
 
 def test_human_vote_requires_frozen_pool_and_reviewer(session) -> None:
@@ -218,6 +219,9 @@ def test_human_vote_requires_frozen_pool_and_reviewer(session) -> None:
     with pytest.raises(DomainError) as missing_reviewer:
         svc.record_vote(first.pair_id, choice="left")
     assert missing_reviewer.value.code == "HUMAN_REVIEWER_REQUIRED"
+    with pytest.raises(DomainError) as automated_reviewer:
+        svc.record_vote(first.pair_id, choice="left", reviewer_ref="model:gpt")
+    assert automated_reviewer.value.code == "HUMAN_REVIEWER_REQUIRED"
 
 
 def test_freeze_rejects_small_pool_and_blocks_later_pairs(session) -> None:

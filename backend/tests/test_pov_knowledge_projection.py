@@ -8,7 +8,7 @@ test_consistency_validation_realistic.py 的守卫测试锁定。
 """
 from __future__ import annotations
 
-from novel_system.db.models import ChapterGoal, ChapterState, SceneCard
+from novel_system.db.models import ChapterGoal, ChapterState, SceneCard, StoryProject
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.pov_knowledge_projection import PovKnowledgeProjection
 
@@ -17,7 +17,13 @@ CHAPTER = "CH_POV01"
 
 
 def _seed(session, *, onstage: dict[int, list[str]] | None = None) -> None:
-    session.add(ChapterGoal(chapter_id=CHAPTER, planned_scene_count=3, chapter_goal="pov"))
+    session.add(StoryProject(project_id=PROJECT, title="POV projection", outline_text=""))
+    session.add(ChapterGoal(
+        chapter_id=CHAPTER,
+        project_id=PROJECT,
+        planned_scene_count=3,
+        chapter_goal="pov",
+    ))
     session.add(ChapterState(chapter_id=CHAPTER, current_phase="drafting"))
     onstage = onstage or {}
     for seq in (1, 2, 3):

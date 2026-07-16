@@ -233,6 +233,8 @@ class ProjectService:
                 "reference_safety": list((plan.plan_json or {}).get("reference_safety") or REFERENCE_SAFETY_RULES),
                 **dict(chapter_plan.get("writer_brief_json") or {}),
             }
+            # ChapterState/SceneCard both carry immediate SQLite FKs to this row.
+            self.session.flush()
 
             state = self.session.get(ChapterState, chapter.chapter_id)
             if state is None:
@@ -279,6 +281,9 @@ class ProjectService:
                     "reference_safety": list((plan.plan_json or {}).get("reference_safety") or REFERENCE_SAFETY_RULES),
                     **dict(scene_plan.get("writer_brief_json") or {}),
                 }
+                # SceneRunState has an immediate FK to SceneCard and the ORM models
+                # intentionally do not declare relationships for dependency ordering.
+                self.session.flush()
 
                 if self.session.get(SceneRunState, scene.scene_id) is None:
                     self.session.add(SceneRunState(scene_id=scene.scene_id, scene_status="ready"))

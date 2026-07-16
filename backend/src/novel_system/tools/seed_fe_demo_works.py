@@ -381,6 +381,28 @@ def _seed_tide_anchors(session: Session) -> None:
 
 
 def cleanup_fe_demo_works(session: Session) -> None:
+    from novel_system.db.models import (
+        ChapterAuditFinding,
+        ChapterContract,
+        ChapterState,
+        LibraryEntity,
+        LibraryRelation,
+        LongformAnchor,
+        OutlinePlan,
+        ProjectBacktrackItem,
+        SceneBundle,
+        SceneRunState,
+        SnowflakeArtifact,
+        SnowflakeAssistantTurn,
+        SnowflakeCharacterPlan,
+        SnowflakeRevisionLink,
+        SnowflakeScenePlan,
+        SnowflakeSceneTriageItem,
+        StagedBackfill,
+        StoryCharacter,
+        TimelineEvent,
+    )
+
     scene_ids = [
         row
         for row in session.execute(
@@ -393,13 +415,50 @@ def cleanup_fe_demo_works(session: Session) -> None:
                 AuthorDraft.object_type == "scene", AuthorDraft.object_id.in_(scene_ids)
             )
         )
-    from novel_system.db.models import LongformAnchor
+        session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
+        session.execute(delete(SceneBundle).where(SceneBundle.scene_id.in_(scene_ids)))
+    chapter_ids = [
+        row
+        for row in session.execute(
+            select(ChapterGoal.chapter_id).where(
+                ChapterGoal.project_id.in_(DEMO_WORK_IDS)
+            )
+        ).scalars()
+    ]
+    if scene_ids or chapter_ids:
+        session.execute(
+            delete(StagedBackfill).where(
+                StagedBackfill.scene_id.in_(scene_ids or [""])
+                | StagedBackfill.chapter_id.in_(chapter_ids or [""])
+            )
+        )
+    if chapter_ids:
+        session.execute(
+            delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids))
+        )
 
-    session.execute(delete(LongformAnchor).where(LongformAnchor.project_id.in_(DEMO_WORK_IDS)))
     session.execute(delete(SceneCard).where(SceneCard.project_id.in_(DEMO_WORK_IDS)))
     session.execute(delete(ChapterGoal).where(ChapterGoal.project_id.in_(DEMO_WORK_IDS)))
-    session.execute(delete(SnowflakeStepRun).where(SnowflakeStepRun.project_id.in_(DEMO_WORK_IDS)))
-    session.execute(delete(ProjectWritingStats).where(ProjectWritingStats.project_id.in_(DEMO_WORK_IDS)))
+    for model in (
+        SnowflakeSceneTriageItem,
+        SnowflakeRevisionLink,
+        SnowflakeScenePlan,
+        SnowflakeCharacterPlan,
+        SnowflakeAssistantTurn,
+        SnowflakeStepRun,
+        SnowflakeArtifact,
+        ChapterAuditFinding,
+        ChapterContract,
+        LibraryRelation,
+        LibraryEntity,
+        TimelineEvent,
+        StoryCharacter,
+        LongformAnchor,
+        ProjectBacktrackItem,
+        OutlinePlan,
+        ProjectWritingStats,
+    ):
+        session.execute(delete(model).where(model.project_id.in_(DEMO_WORK_IDS)))
     session.execute(delete(StoryProject).where(StoryProject.project_id.in_(DEMO_WORK_IDS)))
     session.flush()
 

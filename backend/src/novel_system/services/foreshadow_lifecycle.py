@@ -10,10 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ForeshadowTracker, SceneCard
+from novel_system.db.models import ChapterGoal, ForeshadowTracker, SceneCard
+from novel_system.services.narrative_position import NarrativePositionService
 
 
 MAX_PLANTS_PER_SCENE = 3
@@ -41,6 +42,7 @@ class ForeshadowHealthReport:
     density_warning: str | None = None
     open_count: int = 0
     overdue_count: int = 0
+    unresolved_plants: list[dict[str, str | None]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -51,6 +53,7 @@ class ForeshadowAggregateHealth:
     with_theme_tag: int = 0
     without_theme_tag: int = 0
     overdue: list[str] = field(default_factory=list)
+    unresolved_plants: list[dict[str, str | None]] = field(default_factory=list)
 
 
 class ForeshadowLifecycleService:
@@ -69,7 +72,19 @@ class ForeshadowLifecycleService:
 
         scene_seq = scene.scene_seq or 0
         chapter_id = scene.chapter_id
-        open_foreshadows = self._open_foreshadows(chapter_id)
+        project_id = self._project_id_for_scene(scene)
+        ordered_scene_ordinal_by_id: dict[str, int] | None = None
+        current_scene_ordinal: int | None = None
+        if project_id is not None:
+            ordered_scenes = NarrativePositionService(self.session).ordered_scenes(project_id)
+            ordered_scene_ordinal_by_id = {
+                positioned_scene.scene_id: ordinal
+                for ordinal, positioned_scene in enumerate(ordered_scenes, start=1)
+            }
+            current_scene_ordinal = ordered_scene_ordinal_by_id.get(scene.scene_id)
+            open_foreshadows = self.project_open_foreshadows(project_id)
+        else:
+            open_foreshadows = self._open_foreshadows(chapter_id)
         report = ForeshadowHealthReport(
             scene_id=scene_id,
             scene_seq=scene_seq,
@@ -84,10 +99,27 @@ class ForeshadowLifecycleService:
             )
 
         for fs in open_foreshadows:
-            plant_seq = self._plant_scene_seq(fs)
-            if plant_seq is None:
+            if ordered_scene_ordinal_by_id is not None:
+                plant_ordinal = ordered_scene_ordinal_by_id.get(fs.scene_id or "")
+                if plant_ordinal is None or current_scene_ordinal is None:
+                    report.unresolved_plants.append(
+                        self._unresolved_plant_diagnostic(fs)
+                    )
+                    continue
+                scenes_since_plant = current_scene_ordinal - plant_ordinal
+            else:
+                plant_seq = self._plant_scene_seq(fs)
+                if plant_seq is None:
+                    report.unresolved_plants.append(
+                        self._unresolved_plant_diagnostic(fs)
+                    )
+                    continue
+                scenes_since_plant = scene_seq - plant_seq
+
+            # A future plant may already exist in the outline catalog. It is not
+            # active narrative history yet and cannot request reinforcement.
+            if scenes_since_plant < 0:
                 continue
-            scenes_since_plant = scene_seq - plant_seq
 
             if scenes_since_plant >= MAX_SCENES_WITHOUT_PAYOFF:
                 report.actions.append(ForeshadowAction(
@@ -102,7 +134,13 @@ class ForeshadowLifecycleService:
                 report.overdue_count += 1
                 continue
 
-            planned_action = self._check_planned_reinforcement(fs, scene_seq)
+            planned_action = self._check_planned_reinforcement(
+                fs,
+                scene_seq,
+                current_chapter_id=chapter_id,
+                current_scene_id=scene.scene_id,
+                current_scene_ordinal=current_scene_ordinal,
+            )
             if planned_action is not None:
                 report.actions.append(planned_action)
             elif scenes_since_plant >= REINFORCE_INTERVAL_SCENES and scenes_since_plant % REINFORCE_INTERVAL_SCENES < 2:
@@ -127,12 +165,19 @@ class ForeshadowLifecycleService:
     def format_foreshadow_directives(self, scene_id: str) -> str | None:
         """Format foreshadow lifecycle actions as a prompt section."""
         report = self.scene_actions(scene_id)
-        if not report.actions and not report.density_warning:
+        if not report.actions and not report.density_warning and not report.unresolved_plants:
             return None
 
         lines = ["## Foreshadow Lifecycle Directives"]
         if report.density_warning:
             lines.append(f"WARNING: {report.density_warning}")
+
+        for diagnostic in report.unresolved_plants:
+            lines.append(
+                "WARNING: unresolved foreshadow plant "
+                f"[{diagnostic['foreshadow_id']}] scene={diagnostic['scene_id'] or 'missing'}; "
+                "age-based reinforcement was not evaluated."
+            )
 
         for action in report.actions:
             theme_suffix = f" [theme: {action.theme_tag}]" if action.theme_tag else ""
@@ -177,23 +222,56 @@ class ForeshadowLifecycleService:
         return report
 
     def _check_planned_reinforcement(
-        self, fs: ForeshadowTracker, current_scene_seq: int,
+        self,
+        fs: ForeshadowTracker,
+        current_scene_seq: int,
+        *,
+        current_chapter_id: str | None = None,
+        current_scene_id: str | None = None,
+        current_scene_ordinal: int | None = None,
     ) -> ForeshadowAction | None:
         """Check if any pre-planned reinforcement point matches the current scene."""
         plan = fs.reinforce_plan_json
         if not plan:
             return None
         for entry in plan:
+            target_scene_id = str(entry.get("target_scene_id") or "").strip()
+            target_scene_ordinal = entry.get("target_scene_ordinal")
+            target_chapter_id = str(entry.get("target_chapter_id") or "").strip()
             target_seq = entry.get("target_scene_seq")
-            if target_seq is None:
-                continue
-            if abs(current_scene_seq - target_seq) <= PLANNED_REINFORCE_TOLERANCE:
+            matches = False
+            target_label: str | int | None = None
+            if target_scene_id:
+                matches = target_scene_id == current_scene_id
+                target_label = target_scene_id
+            elif target_scene_ordinal is not None and current_scene_ordinal is not None:
+                if isinstance(target_scene_ordinal, int) and not isinstance(target_scene_ordinal, bool):
+                    matches = (
+                        abs(current_scene_ordinal - target_scene_ordinal)
+                        <= PLANNED_REINFORCE_TOLERANCE
+                    )
+                    target_label = target_scene_ordinal
+            elif target_seq is not None:
+                # Legacy scene_seq is chapter-local. Never reinterpret it across
+                # chapters unless an explicit target_chapter_id is supplied.
+                same_chapter = (
+                    target_chapter_id == current_chapter_id
+                    if target_chapter_id
+                    else fs.chapter_id == current_chapter_id
+                )
+                if same_chapter and isinstance(target_seq, int) and not isinstance(target_seq, bool):
+                    matches = (
+                        abs(current_scene_seq - target_seq)
+                        <= PLANNED_REINFORCE_TOLERANCE
+                    )
+                    target_label = target_seq
+            if matches:
                 return ForeshadowAction(
                     foreshadow_id=fs.foreshadow_id,
                     action="reinforce",
                     text=fs.text,
                     urgency="medium",
-                    reason=f"Pre-planned reinforcement at scene {target_seq}.",
+                    reason=f"Pre-planned reinforcement at scene {target_label}.",
                     method=entry.get("method"),
                     theme_tag=fs.theme_tag,
                 )
@@ -209,6 +287,23 @@ class ForeshadowLifecycleService:
             )
             .order_by(ForeshadowTracker.created_at.asc())
         ).scalars().all())
+
+    def _project_id_for_scene(self, scene: SceneCard) -> str | None:
+        if scene.project_id:
+            return scene.project_id
+        chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        return chapter.project_id if chapter is not None else None
+
+    @staticmethod
+    def _unresolved_plant_diagnostic(
+        fs: ForeshadowTracker,
+    ) -> dict[str, str | None]:
+        return {
+            "code": "FORESHADOW_PLANT_SCENE_UNRESOLVED",
+            "foreshadow_id": fs.foreshadow_id,
+            "scene_id": fs.scene_id,
+            "reason": "plant scene is missing from the active project narrative catalog",
+        }
 
     def _plant_scene_seq(self, fs: ForeshadowTracker) -> int | None:
         if fs.scene_id is None:
@@ -366,8 +461,15 @@ class ForeshadowLifecycleService:
         """
         return list(self.session.execute(
             select(ForeshadowTracker)
+            .outerjoin(ChapterGoal, ChapterGoal.chapter_id == ForeshadowTracker.chapter_id)
             .where(
-                ForeshadowTracker.project_id == project_id,
+                or_(
+                    ForeshadowTracker.project_id == project_id,
+                    and_(
+                        ForeshadowTracker.project_id.is_(None),
+                        ChapterGoal.project_id == project_id,
+                    ),
+                ),
                 ForeshadowTracker.tracker_status == "open",
                 ForeshadowTracker.active_flag == 1,
             )
@@ -382,6 +484,12 @@ class ForeshadowLifecycleService:
         """
         open_foreshadows = self.project_open_foreshadows(project_id)
         report = ForeshadowAggregateHealth(total_open=len(open_foreshadows))
+        ordered_scenes = NarrativePositionService(self.session).ordered_scenes(project_id)
+        scene_ordinal_by_id = {
+            scene.scene_id: ordinal
+            for ordinal, scene in enumerate(ordered_scenes, start=1)
+        }
+        latest_scene_ordinal = len(ordered_scenes)
 
         for fs in open_foreshadows:
             if fs.reinforce_plan_json:
@@ -394,19 +502,16 @@ class ForeshadowLifecycleService:
             else:
                 report.without_theme_tag += 1
 
-            plant_seq = self._plant_scene_seq(fs)
-            if plant_seq is not None:
-                # Cross-chapter overdue: use absolute scene sequence
-                latest_seq = self._latest_project_scene_seq(project_id)
-                if latest_seq - plant_seq >= MAX_SCENES_WITHOUT_PAYOFF:
-                    report.overdue.append(fs.foreshadow_id)
+            plant_ordinal = scene_ordinal_by_id.get(fs.scene_id or "")
+            if plant_ordinal is None:
+                # Broken/trashed legacy references remain visible in aggregate
+                # coverage but cannot be assigned a trustworthy age. Surface
+                # that uncertainty instead of presenting the item as healthy.
+                report.unresolved_plants.append(
+                    self._unresolved_plant_diagnostic(fs)
+                )
+                continue
+            if latest_scene_ordinal - plant_ordinal >= MAX_SCENES_WITHOUT_PAYOFF:
+                report.overdue.append(fs.foreshadow_id)
 
         return report
-
-    def _latest_project_scene_seq(self, project_id: str) -> int:
-        """Highest scene_seq across all chapters in a project."""
-        result = self.session.execute(
-            select(func.max(SceneCard.scene_seq))
-            .where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
-        ).scalar()
-        return result or 0

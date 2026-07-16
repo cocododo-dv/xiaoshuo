@@ -5,10 +5,12 @@ GET /api/v1/scenes/{id}/orchestration-signals 一读拿到。
 """
 from __future__ import annotations
 
-from novel_system.db.models import LlmCall, SceneCard, SceneRunState
+from novel_system.db.models import ChapterGoal, LlmCall, SceneCard, SceneRunState, StoryProject
 
 
 def _seed(session):
+    session.add(StoryProject(project_id="OP", title="Orchestration signals", outline_text=""))
+    session.add(ChapterGoal(chapter_id="OCH1", project_id="OP", chapter_goal="g", planned_scene_count=1))
     session.add(SceneCard(scene_id="OS1", chapter_id="OCH1", project_id="OP", scene_seq=1, scene_goal="g"))
     session.add(SceneRunState(scene_id="OS1", scene_token_budget=1000, scene_tokens_used=300,
                               criticality_level="critical"))

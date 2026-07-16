@@ -262,6 +262,7 @@ class AuthorLifecycleService:
             run_state = self.session.get(SceneRunState, scene.scene_id)
             if run_state is not None:
                 self.session.delete(run_state)
+                self.session.flush()
             self.session.delete(scene)
             self._normalize_active_last_scene(scene.chapter_id)
             processed.append({"scene_id": scene_id})
@@ -350,12 +351,16 @@ class AuthorLifecycleService:
                 state = self.session.get(SceneRunState, scene_id)
                 if state is not None:
                     self.session.delete(state)
+            self.session.flush()
+            for scene_id in scene_ids:
                 scene = self.session.get(SceneCard, scene_id)
                 if scene is not None:
                     self.session.delete(scene)
+            self.session.flush()
             chapter_state = self.session.get(ChapterState, chapter_id)
             if chapter_state is not None:
                 self.session.delete(chapter_state)
+                self.session.flush()
             self.session.delete(chapter)
             processed.append({"chapter_id": chapter_id, "scene_ids": scene_ids})
         self.session.flush()

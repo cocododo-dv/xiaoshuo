@@ -68,6 +68,7 @@ const plannedSceneList = chapters.flatMap((chapter) =>
   chapter.scenes.map((scene) => ({ chapter_id: chapter.chapter_id, scene_id: scene.scene_id })),
 );
 const finalScenes = {}; // 按 scene_id 键控的每场结果记录
+const candidateSelectionEvents = [];
 const northstarPhases = {}; // 北极星六阶段通道记录（ui / api / missing），如实填报
 const result = {
   meta: {
@@ -103,6 +104,10 @@ const result = {
   protectedTermScan: {},
   referenceLearning: null,
   sourceSafetyGate: null,
+  chapterAggregates: null,
+  candidateSelectionEvents,
+  costEvidence: null,
+  recoveryEvidence: null,
   llmRouteCoverage: null,
   llmFallbackAudit: null,
   rootCauseFindings: [],
@@ -175,16 +180,55 @@ function ensureOutDir() {
 const durableEvidenceDir = path.join(repoRoot, "docs", "evidence", outDirName);
 
 function archiveDurableEvidence() {
-  const names = ["report.md", "outcome-gate-verdict.md", "source-safety-gate-verdict.md"];
+  const names = [
+    "qa-live-results.json",
+    "outcome-gate.json",
+    "final-scenes.json",
+    "candidate-selection-events.json",
+    "cost-evidence.json",
+    "recovery-evidence.json",
+    "run-log.ndjson",
+    "qa-config-snapshot.json",
+    "report.md",
+    "outcome-gate-verdict.md",
+    "source-safety-gate-verdict.md",
+  ];
   try {
     fs.mkdirSync(durableEvidenceDir, { recursive: true });
+    const entries = [];
     for (const name of names) {
       const source = path.join(outDir, name);
-      if (fs.existsSync(source)) fs.copyFileSync(source, path.join(durableEvidenceDir, name));
+      if (!fs.existsSync(source)) throw new Error(`required raw evidence is missing: ${name}`);
+      fs.copyFileSync(source, path.join(durableEvidenceDir, name));
+      const bytes = fs.readFileSync(source);
+      entries.push({ path: name, bytes: bytes.length, sha256: outcomeGateLib.sha256Bytes(bytes) });
     }
+    const screenshots = result.screenshots.map((item) => path.resolve(repoRoot, item));
+    if (!screenshots.length) throw new Error("at least one raw screenshot is required");
+    fs.mkdirSync(path.join(durableEvidenceDir, "screenshots"), { recursive: true });
+    for (const source of screenshots) {
+      if (!fs.existsSync(source)) throw new Error(`required screenshot is missing: ${source}`);
+      const relative = `screenshots/${path.basename(source)}`;
+      fs.copyFileSync(source, path.join(durableEvidenceDir, relative));
+      const bytes = fs.readFileSync(source);
+      entries.push({ path: relative, bytes: bytes.length, sha256: outcomeGateLib.sha256Bytes(bytes) });
+    }
+    const manifest = {
+      schema: "five-chapter-evidence-archive-v1",
+      run_id: operatorRef,
+      created_at: new Date().toISOString(),
+      entries,
+    };
+    fs.writeFileSync(
+      path.join(durableEvidenceDir, "evidence-manifest.json"),
+      JSON.stringify(manifest, null, 2),
+      "utf8",
+    );
     console.log(`durable evidence archived: ${durableEvidenceDir}`);
+    return { passed: true, directory: durableEvidenceDir, manifest };
   } catch (error) {
     console.error(`durable evidence archive failed: ${error?.message || error}`);
+    return { passed: false, directory: durableEvidenceDir, error: String(error?.message || error) };
   }
 }
 
@@ -1256,6 +1300,8 @@ async function exerciseSceneWorkbench(page) {
               if (!retried.ok()) throw new Error(`${sceneId} UI retry after ${decision} failed: HTTP ${retried.status()}`);
             } else if (decision === "scene-candidate-select") {
               if (candidateHandled) throw new Error(`${sceneId} exposed candidate selection twice without an explicit reopen`);
+              const candidateButton = page.getByTestId("scene-candidate-select").first();
+              const selectedRowFromDom = await candidateButton.getAttribute("data-candidate-row-id");
               const selectResponse = page.waitForResponse((response) => (
                 response.request().method() === "POST"
                   && new RegExp(`/api/v1/scenes/${encodeURIComponent(sceneId)}/style-candidates/[^/]+/select(?:\\?|$)`).test(response.url())
@@ -1264,11 +1310,27 @@ async function exerciseSceneWorkbench(page) {
                 response.request().method() === "POST"
                   && new RegExp(`/api/v1/scenes/${encodeURIComponent(sceneId)}/resume-after-selection(?:\\?|$)`).test(response.url())
               ), { timeout: 360000 });
-              await candidateUi.click(page.getByTestId("scene-candidate-select").first());
+              await candidateUi.click(candidateButton);
               const [selected, resumed] = await Promise.all([selectResponse, resumeResponse]);
               if (!selected.ok() || !resumed.ok()) {
                 throw new Error(`${sceneId} UI candidate selection/resume failed: ${selected.status()}/${resumed.status()}`);
               }
+              const selectedPayload = await selected.json().catch(() => null);
+              const selectedFromUrl = decodeURIComponent(
+                selected.url().match(/\/style-candidates\/([^/]+)\/select(?:\?|$)/)?.[1] || "",
+              );
+              candidateSelectionEvents.push({
+                scene_id: sceneId,
+                selected_row_id: selectedRowFromDom
+                  || selectedPayload?.data?.selected_row_id
+                  || selectedPayload?.selected_row_id
+                  || selectedFromUrl
+                  || null,
+                selection_event_id: selectedPayload?.data?.selection_event_id
+                  || selectedPayload?.selection_event_id
+                  || null,
+              });
+              writeJson("candidate-selection-events.json", candidateSelectionEvents);
               candidateSelections += 1;
               candidateHandled = true;
               // HTTP response arrives before CandidatePicker finishes its
@@ -1307,7 +1369,6 @@ async function exerciseSceneWorkbench(page) {
           const output = await waitForArchivedSceneOutput(sceneId, 60000);
           finalScenes[sceneId] = {
             runJob: null,
-            attemptNo: 1,
             durationMs: Date.now() - startedAt,
             tokens: tokensFromOutput(null, output),
             blockReason: null,
@@ -1456,6 +1517,134 @@ async function exerciseChapterManuscripts(page) {
   recordExperience("manuscripts", 9, "五章汇总由成稿中心按钮触发，并以服务端 FinalScene 拼接结果只读复核。");
   await screenshot(page, "chapter-manuscripts-aggregate");
   return aggregates;
+}
+
+function recoverySnapshotHashes(raw) {
+  return {
+    catalog_sha256: outcomeGateLib.sha256Canonical(raw.catalog),
+    content_sha256: outcomeGateLib.sha256Canonical(raw.scenes),
+    selection_sha256: outcomeGateLib.sha256Canonical(raw.selections),
+    aggregate_sha256: outcomeGateLib.sha256Canonical(raw.aggregates),
+    state_sha256: outcomeGateLib.sha256Canonical(raw),
+  };
+}
+
+async function collectRecoverySnapshot() {
+  const chapterPayload = await apiGet("/api/v1/chapters", 60000);
+  const chapterRows = Array.isArray(chapterPayload) ? chapterPayload : (chapterPayload.items || []);
+  const plannedChapterIds = new Set(chapters.map((chapter) => chapter.chapter_id));
+  const catalog = {
+    chapters: chapterRows
+      .filter((chapter) => plannedChapterIds.has(chapter.chapter_id))
+      .map((chapter) => ({
+        chapter_id: chapter.chapter_id,
+        scene_ids: chapters.find((item) => item.chapter_id === chapter.chapter_id).scenes.map((scene) => scene.scene_id),
+      }))
+      .sort((left, right) => left.chapter_id.localeCompare(right.chapter_id)),
+  };
+  const scenes = {};
+  const selections = [];
+  for (const planned of plannedSceneList) {
+    const output = await collectSceneOutput(planned.scene_id);
+    scenes[planned.scene_id] = {
+      chapter_id: planned.chapter_id,
+      final_row_id: output.finalRowId,
+      final_text: output.finalText,
+      final_text_sha256: outcomeGateLib.sha256Text(output.finalText),
+      scene_status: output.sceneStatus,
+    };
+    const candidatePayload = await apiGet(
+      `/api/v1/scenes/${encodeURIComponent(planned.scene_id)}/style-candidates`,
+      60000,
+    );
+    const rows = Array.isArray(candidatePayload)
+      ? candidatePayload
+      : (candidatePayload.items || candidatePayload.candidates || []);
+    const selected = candidatePayload.selection
+      || rows.find((row) => row.selected === true || row.is_selected === true)
+      || null;
+    const selectedRowId = candidatePayload.selected_row_id
+      || candidatePayload.selected_candidate_id
+      || selected?.selected_row_id
+      || selected?.row_id
+      || selected?.candidate_id
+      || null;
+    if (selectedRowId) {
+      selections.push({
+        scene_id: planned.scene_id,
+        selected_row_id: selectedRowId,
+        selection_event_id: candidatePayload.selection_event_id || selected?.selection_event_id || selected?.event_id || null,
+      });
+    }
+  }
+  selections.sort((left, right) => left.scene_id.localeCompare(right.scene_id));
+  const aggregates = {};
+  for (const chapter of chapters) {
+    const raw = await apiGet(`/api/v1/chapter-manuscripts/${encodeURIComponent(chapter.chapter_id)}`, 60000);
+    const content = raw?.assembled?.content ?? raw?.content ?? "";
+    aggregates[chapter.chapter_id] = {
+      chapter_id: chapter.chapter_id,
+      scene_ids: raw?.assembled?.scene_ids || chapter.scenes.map((scene) => scene.scene_id),
+      completion_status: raw?.completion_status || null,
+      content,
+      content_sha256: outcomeGateLib.sha256Text(content),
+    };
+  }
+  const raw = { catalog, scenes, selections, aggregates };
+  return { ...raw, hashes: recoverySnapshotHashes(raw) };
+}
+
+async function exerciseControlledRecovery(page) {
+  if (!manageDevServices) {
+    throw new Error("release recovery evidence requires QA_MANAGE_DEV_SERVICES=1");
+  }
+  const before = await collectRecoverySnapshot();
+  const beforePid = readRunFile("backend.pid");
+  if (!beforePid) throw new Error("backend.pid missing before controlled restart");
+  await page.evaluate(async () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    if (globalThis.caches) {
+      await Promise.all((await caches.keys()).map((key) => caches.delete(key)));
+    }
+  });
+  await page.context().clearCookies();
+  runNativeCommand("controlled recovery stop", path.join(repoRoot, "stop-dev.cmd"), [], {
+    cwd: repoRoot,
+  });
+  runNativeCommand("controlled recovery start", path.join(repoRoot, "start-dev.cmd"), [], {
+    cwd: repoRoot,
+    stdioMode: "ignore",
+    timeoutMs: 180000,
+  });
+  refreshRuntimeUrls();
+  const afterPid = readRunFile("backend.pid");
+  if (!afterPid) throw new Error("backend.pid missing after controlled restart");
+  await apiGet("/api/v1/chapters", 60000);
+  await page.goto(frontendUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+  await prepareBrowser(page);
+  const after = await collectRecoverySnapshot();
+  const evidence = {
+    schema: "five-chapter-recovery-v1",
+    cache_clear: {
+      performed: true,
+      local_storage_cleared: true,
+      session_storage_cleared: true,
+      cookies_cleared: true,
+      cache_storage_cleared: true,
+    },
+    backend_restart: {
+      performed: true,
+      health_verified: true,
+      before_pid: beforePid,
+      after_pid: afterPid,
+      pid_changed: beforePid !== afterPid,
+    },
+    before,
+    after,
+  };
+  writeJson("recovery-evidence.json", evidence);
+  return evidence;
 }
 
 // Earlier first-blocker scene-run logic was removed; current runs collect blockers and continue across all three chapters.
@@ -1691,6 +1880,17 @@ function runOutcomeGate() {
     expectedChapterCount,
     expectedScenesPerChapter,
     northstarPhases,
+    chapterAggregates: result.chapterAggregates,
+    candidateSelectionEvents,
+    costEvidence: result.costEvidence,
+    recoveryEvidence: result.recoveryEvidence,
+    offlineDeterministicRequiredCount: Number(
+      result.llmFallbackAudit?.offline_deterministic_required_count ?? -1,
+    ),
+    runId: operatorRef,
+    projectId: result.meta.created?.projectId || null,
+    laneId: result.meta.referenceLaneId,
+    referenceSourceBasis: result.meta.referenceSourceBasis,
     writeJson,
     appendLog,
   });
@@ -2799,9 +2999,25 @@ async function main() {
     );
     const snowflake = await step("import, approve and materialize the five-chapter snowflake through the UI", () => exerciseSnowflake(page), { fatal: true });
     await step("run, select and archive all planned scenes through the UI", () => exerciseSceneWorkbench(page), { fatal: true });
-    await step("aggregate all chapter manuscripts through the UI", () => exerciseChapterManuscripts(page), { fatal: true });
+    result.chapterAggregates = await step(
+      "aggregate all chapter manuscripts through the UI",
+      () => exerciseChapterManuscripts(page),
+      { fatal: true },
+    );
     await step("LLM route coverage and fallback audit", () => auditLlmIntegration());
     result.meta.created = { ...blankProject, ...snowflake, referenceProfileId: result.referenceLearning.profileId };
+    const costEnvelope = await step(
+      "collect project token and cost evidence",
+      () => apiGet(`/api/v2/projects/${encodeURIComponent(blankProject.projectId)}/cost-summary`, 60000),
+      { fatal: true },
+    );
+    result.costEvidence = costEnvelope?.summary || null;
+    writeJson("cost-evidence.json", result.costEvidence);
+    result.recoveryEvidence = await step(
+      "clear browser caches, restart backend, and verify authoritative hashes",
+      () => exerciseControlledRecovery(page),
+      { fatal: true },
+    );
   } finally {
     await context.close().catch(() => null);
     await browser.close().catch(() => null);
@@ -2809,13 +3025,27 @@ async function main() {
     fillRootCauseFindings();
     result.meta.finishedAt = new Date().toISOString();
     writeJson("final-scenes.json", finalScenes);
+    writeJson("candidate-selection-events.json", candidateSelectionEvents);
+    writeJson("cost-evidence.json", result.costEvidence);
+    writeJson("recovery-evidence.json", result.recoveryEvidence);
+    writeJson("qa-config-snapshot.json", {
+      schema: "five-chapter-qa-config-v1",
+      run_id: operatorRef,
+      lane_id: result.meta.referenceLaneId,
+      expected_chapters: expectedChapterCount,
+      expected_scenes_per_chapter: expectedScenesPerChapter,
+      reference_source_basis: result.meta.referenceSourceBasis,
+      reference_profile_id: result.referenceLearning?.profileId || null,
+      route_coverage: result.llmRouteCoverage,
+    });
     // Wave 0：结果门禁是唯一权威判定——步骤全绿但任一计划场景无非空归档正文，
     // 退出码必须非零（删除"步骤完成即通过"的旧语义）。
     const gatePassed = runOutcomeGate();
     writeJson("qa-live-results.json", result);
     fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
-    archiveDurableEvidence();
-    if (!gatePassed) {
+    const archive = archiveDurableEvidence();
+    result.evidenceArchive = archive;
+    if (!gatePassed || !archive.passed) {
       process.exitCode = 1;
       console.error(
         `outcome gate FAIL: 五章基准要求 ${expectedChapterCount} 章 × ${expectedScenesPerChapter} 场全部存在非空后端归档正文；详见 ${path.join(outDir, "outcome-gate-verdict.md")}`,
@@ -2832,10 +3062,23 @@ if (require.main === module) {
     evaluateChapterScores();
     fillRootCauseFindings();
     writeJson("final-scenes.json", finalScenes);
+    writeJson("candidate-selection-events.json", candidateSelectionEvents);
+    writeJson("cost-evidence.json", result.costEvidence);
+    writeJson("recovery-evidence.json", result.recoveryEvidence);
+    writeJson("qa-config-snapshot.json", {
+      schema: "five-chapter-qa-config-v1",
+      run_id: operatorRef,
+      lane_id: result.meta.referenceLaneId,
+      expected_chapters: expectedChapterCount,
+      expected_scenes_per_chapter: expectedScenesPerChapter,
+      reference_source_basis: result.meta.referenceSourceBasis,
+      reference_profile_id: result.referenceLearning?.profileId || null,
+      route_coverage: result.llmRouteCoverage,
+    });
     runOutcomeGate();
     writeJson("qa-live-results.json", result);
     fs.writeFileSync(path.join(outDir, "report.md"), buildReport(), "utf8");
-    archiveDurableEvidence();
+    result.evidenceArchive = archiveDurableEvidence();
     appendLog({ type: "fatal", error: result.meta.fatalError });
     console.error(error);
     process.exitCode = 1;

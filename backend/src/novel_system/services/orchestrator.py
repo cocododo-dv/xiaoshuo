@@ -527,7 +527,12 @@ class Orchestrator:
 
         # Wave 3（§5.5 成本分配）：初始 N（关键 3/标准 2/过渡 1），低分散在预算内
         # 渐进补候选至上限（关键 5/标准 3）——不再一次生成后整批无上限重试。
+        self._best_of_n_policy_cap = None
         n_candidates = self._best_of_n_count(contract, criticality=criticality)
+        authorized_max_candidates = self._best_of_n_max_count(
+            criticality=criticality,
+            initial_count=n_candidates,
+        )
         candidate_summaries: list[dict[str, Any]] = []
         if self._checkpoint_reached("style_ready"):
             candidates = self._load_style_checkpoint_candidates(scene_id)
@@ -580,7 +585,7 @@ class Orchestrator:
                     neutral_content=neutral_content,
                     author_note=author_note,
                     n_candidates=n_candidates,
-                    max_candidates=criticality.max_best_of_n if criticality else n_candidates,
+                    max_candidates=authorized_max_candidates,
                     step_reconciler=self._reconcile_execution_step,
                     resume_bases=resume_bases,
                     resume_products=resume_products,
@@ -1159,7 +1164,11 @@ class Orchestrator:
             through=6,
         )
         if progress < 7:
-            vector_result = self._index_scene_to_vector_store(scene, final_scene.content)
+            vector_result = self._index_scene_to_vector_store(
+                scene,
+                final_scene.content,
+                project_id=self._resolve_scene_project_id(scene, contract),
+            )
             vector_product = self._archive_product(
                 scene=scene,
                 kind="vector_index",
@@ -7192,9 +7201,7 @@ class Orchestrator:
             pov = scene.pov_character_id or payload.get("pov_character_id")
             if not pov:
                 return brief
-            project_id = scene.project_id or payload.get("project_id") or (
-                scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id
-            )
+            project_id = self._resolve_scene_project_id(scene, contract)
             return PovKnowledgeProjection(self.session).redact_brief(
                 brief,
                 project_id,
@@ -7358,11 +7365,7 @@ class Orchestrator:
 
             log = _RecordingEventLog()
             payload = contract.payload_json or {}
-            project_id = (
-                scene.project_id
-                or payload.get("project_id")
-                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
-            )
+            project_id = self._resolve_scene_project_id(scene, contract)
             pov = scene.pov_character_id or payload.get("pov_character_id")
             onstage = scene.onstage_chars_json or []
             all_chars = list(dict.fromkeys(([pov] if pov else []) + [c for c in onstage if c != pov]))
@@ -7446,18 +7449,27 @@ class Orchestrator:
             )
             return []
 
-    @staticmethod
-    def _archive_event_base(scene: SceneCard, contract) -> dict[str, str]:
-        payload = contract.payload_json or {}
-        project_id = (
-            scene.project_id
-            or payload.get("project_id")
-            or (
-                scene.chapter_id.rsplit("_", 1)[0]
-                if "_" in scene.chapter_id
-                else scene.chapter_id
-            )
+    def _resolve_scene_project_id(self, scene: SceneCard, contract=None) -> str:
+        """Resolve project ownership from catalog parents before legacy ID guesses."""
+        chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        payload = getattr(contract, "payload_json", None) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        for candidate in (
+            scene.project_id,
+            chapter.project_id if chapter is not None else None,
+            payload.get("project_id"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return (
+            scene.chapter_id.rsplit("_", 1)[0]
+            if "_" in scene.chapter_id
+            else scene.chapter_id
         )
+
+    def _archive_event_base(self, scene: SceneCard, contract) -> dict[str, str]:
+        project_id = self._resolve_scene_project_id(scene, contract)
         return {
             "project_id": str(project_id),
             "scene_id": scene.scene_id,
@@ -7638,18 +7650,23 @@ class Orchestrator:
             pass  # non-critical — don't block scene finalization
 
     @staticmethod
-    def _index_scene_to_vector_store(scene: SceneCard, content: str) -> dict[str, Any]:
+    def _index_scene_to_vector_store(
+        scene: SceneCard,
+        content: str,
+        *,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         from novel_system.services.vector_store import get_vector_store
         from novel_system.settings import get_settings
 
         backend = get_settings().vector_backend.lower()
         validation_scope = "process_local" if backend == "memory" else "persistent"
-        project_id = scene.project_id or (
+        resolved_project_id = project_id or scene.project_id or (
             scene.chapter_id.rsplit("_", 1)[0]
             if "_" in scene.chapter_id
             else scene.chapter_id
         )
-        collection_name = f"scenes_{project_id}"
+        collection_name = f"scenes_{resolved_project_id}"
         expected_text = (content or "")[:600]
         text_hash = Orchestrator._text_hash(expected_text)
         base = {
@@ -7859,23 +7876,53 @@ class Orchestrator:
             return None
 
     def _best_of_n_count(self, contract, *, criticality=None) -> int:
-        from novel_system.services.outcome_governance_policy import load_outcome_governance_policy
+        self._best_of_n_policy_cap = 1
         if self.scene_generation_service._llm_runner.provider_execution_mode != "online":
             return 1
-        policy_enabled = load_outcome_governance_policy().best_of_n_default_enabled
-        if criticality is not None:
-            explicit_full_rigor = "constraint_intensity_full_rigor" in (criticality.reasons or [])
-            if not explicit_full_rigor and not policy_enabled:
-                return 1
-            # Wave 3（§5.5 成本分配）：初始 N；低分散在预算内渐进补到 max_best_of_n
-            return criticality.initial_best_of_n
-        if not policy_enabled:
+        scene_id = str(getattr(contract, "scene_id", "") or "").strip()
+        if not scene_id or not hasattr(self, "session"):
             return 1
-        payload = contract.payload_json or {}
-        crucible = payload.get("scene_crucible") or ""
-        if crucible and len(crucible) > 10:
-            return 3
-        return 1
+        try:
+            from novel_system.services.quality_strategy import QualityStrategyResolver
+
+            resolved = QualityStrategyResolver(self.session).resolve_for_scene(scene_id)
+        except Exception as exc:
+            _LOGGER.warning("quality strategy resolution failed closed for scene %s: %s", scene_id, exc)
+            return 1
+        if not resolved.best_of_n_enabled:
+            _LOGGER.info(
+                "Best-of-N remains disabled for scene %s cell=%s/%s blockers=%s",
+                scene_id,
+                resolved.genre,
+                resolved.scene_function,
+                resolved.blockers,
+            )
+            return 1
+        policy_n = max(1, int(resolved.best_of_n_n))
+        self._best_of_n_policy_cap = policy_n
+        if criticality is not None:
+            # Criticality is still the cost allocator, while the evidence policy
+            # is the hard authorization.  Full-rigor UI intent cannot bypass it.
+            return max(1, min(policy_n, int(criticality.initial_best_of_n)))
+        return policy_n
+
+    def _best_of_n_max_count(self, *, criticality=None, initial_count: int) -> int:
+        """Cap progressive candidate expansion by the evidence authorization.
+
+        A ``None`` cap means a legacy/test override replaced ``_best_of_n_count``;
+        preserving the criticality maximum keeps those explicit harnesses stable.
+        The real resolver always records an integer cap.
+        """
+
+        criticality_max = (
+            int(criticality.max_best_of_n)
+            if criticality is not None
+            else max(1, int(initial_count))
+        )
+        policy_cap = getattr(self, "_best_of_n_policy_cap", None)
+        if policy_cap is None:
+            return max(1, criticality_max)
+        return max(1, min(criticality_max, int(policy_cap)))
 
     def _offer_candidates_for_selection(self, scene, state, bundle, candidates) -> list[str] | None:
         """Wave 3（§4.4/§5.5）：确定性坏稿淘汰后建立匿名候选终选 gate。

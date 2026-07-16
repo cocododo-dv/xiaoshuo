@@ -2032,6 +2032,14 @@ class EvaluationExperiment(Base):
     # synthetic 默认拒绝进入生产策略门；只有显式声明 human 且冻结题包完整时，
     # 报告才允许给出可执行的默认策略决定。
     evidence_provenance: Mapped[str] = mapped_column(String, default="synthetic")
+    # Hidden benchmark contents stay outside the production database.  Only the
+    # frozen manifest/rubric hashes are bound to a human blind-evaluation run.
+    # Kept as an explicit reference rather than a physical FK because SQLite
+    # cannot add that FK to the long-lived experiment table without rebuilding
+    # it.  QualityEvidenceService validates the frozen manifest fail-closed.
+    benchmark_manifest_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    benchmark_manifest_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    hidden_rubric_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     frozen_at: Mapped[str | None] = mapped_column(String, nullable=True)
     frozen_pair_manifest_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
@@ -2055,6 +2063,14 @@ class EvaluationPair(Base):
     no_contrast: Mapped[int] = mapped_column(Integer, default=0)
     # 题材标签（可选）：报告分题材差异用；进入冻结清单哈希，冻结后改标签即篡改。
     genre: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 场景功能必须参与冻结哈希与分层报告，不能只是展示标签。
+    scene_function: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Hidden-manifest experiments bind both arms to completed benchmark results
+    # for one exact frozen case.  These are service-validated references because
+    # SQLite cannot add physical FKs to this long-lived table without rebuilding.
+    treatment_benchmark_result_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    control_benchmark_result_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    benchmark_case_id_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
@@ -2066,6 +2082,225 @@ class EvaluationVote(Base):
     choice: Mapped[str] = mapped_column(String)  # left | right | tie
     reviewer_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# 第二阶段质量证据：隐藏题包只落不可逆哈希；生成结果、真人价值观测与
+# 题材×场景功能策略分开存证。任何表都不保存隐藏答案或 rubric 正文。
+# ---------------------------------------------------------------------------
+
+
+class QualityBenchmarkManifest(Base):
+    __tablename__ = "quality_benchmark_manifests"
+    __table_args__ = (
+        CheckConstraint("case_count > 0", name="ck_quality_benchmark_manifests_case_count_positive"),
+        CheckConstraint("split_kind = 'hidden'", name="ck_quality_benchmark_manifests_hidden_split"),
+        CheckConstraint(
+            "status IN ('frozen','retired')",
+            name="ck_quality_benchmark_manifests_status",
+        ),
+        Index("ix_quality_benchmark_manifests_hash", "manifest_hash", unique=True),
+    )
+
+    manifest_id: Mapped[str] = mapped_column(String, primary_key=True)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    manifest_version: Mapped[str] = mapped_column(String)
+    split_kind: Mapped[str] = mapped_column(String, default="hidden", server_default="hidden")
+    manifest_hash: Mapped[str] = mapped_column(String)
+    public_cases_hash: Mapped[str] = mapped_column(String)
+    rubric_hash: Mapped[str] = mapped_column(String)
+    case_count: Mapped[int] = mapped_column(Integer)
+    isolation_mode: Mapped[str] = mapped_column(String)
+    storage_ref: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, default="frozen", server_default="frozen")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class QualityStrategyPolicy(Base):
+    __tablename__ = "quality_strategy_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "best_of_n_n >= 1 AND best_of_n_n <= 5",
+            name="ck_quality_strategy_policies_best_of_n_positive",
+        ),
+        CheckConstraint(
+            "policy_version >= 1",
+            name="ck_quality_strategy_policies_version_positive",
+        ),
+        CheckConstraint(
+            "best_of_n_requested IN (0,1)",
+            name="ck_quality_strategy_policies_best_of_n_boolean",
+        ),
+        CheckConstraint(
+            "status IN ('active','retired')",
+            name="ck_quality_strategy_policies_status",
+        ),
+        UniqueConstraint(
+            "genre",
+            "scene_function",
+            "policy_version",
+            name="uq_quality_strategy_policy_scope_version",
+        ),
+        Index(
+            "ix_quality_strategy_policies_scope_status",
+            "genre",
+            "scene_function",
+            "status",
+        ),
+    )
+
+    policy_id: Mapped[str] = mapped_column(String, primary_key=True)
+    policy_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    genre: Mapped[str] = mapped_column(String, default="*", server_default="*")
+    scene_function: Mapped[str] = mapped_column(String, default="*", server_default="*")
+    weights_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    thresholds_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    best_of_n_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    best_of_n_n: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    evidence_experiment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evaluation_experiments.experiment_id"),
+        nullable=True,
+    )
+    benchmark_manifest_id: Mapped[str | None] = mapped_column(
+        ForeignKey("quality_benchmark_manifests.manifest_id"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String, default="active", server_default="active")
+    created_by: Mapped[str] = mapped_column(String, default="operator", server_default="operator")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class QualityBenchmarkRun(Base):
+    __tablename__ = "quality_benchmark_runs"
+    __table_args__ = (
+        CheckConstraint("case_count_expected > 0", name="ck_quality_benchmark_runs_expected_positive"),
+        CheckConstraint("case_count_recorded >= 0", name="ck_quality_benchmark_runs_recorded_nonnegative"),
+        CheckConstraint(
+            "status IN ('collecting','completed','invalid')",
+            name="ck_quality_benchmark_runs_status",
+        ),
+        CheckConstraint(
+            "generation_arm IN ('treatment','control','unassigned')",
+            name="ck_quality_benchmark_runs_generation_arm",
+        ),
+        Index("ix_quality_benchmark_runs_manifest_status", "manifest_id", "status"),
+    )
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    manifest_id: Mapped[str] = mapped_column(ForeignKey("quality_benchmark_manifests.manifest_id"))
+    manifest_hash: Mapped[str] = mapped_column(String)
+    rubric_hash: Mapped[str] = mapped_column(String)
+    policy_id: Mapped[str | None] = mapped_column(
+        ForeignKey("quality_strategy_policies.policy_id"),
+        nullable=True,
+    )
+    generator_ref: Mapped[str] = mapped_column(String)
+    generation_policy_hash: Mapped[str] = mapped_column(String)
+    generation_arm: Mapped[str] = mapped_column(String, default="unassigned", server_default="unassigned")
+    status: Mapped[str] = mapped_column(String, default="collecting", server_default="collecting")
+    case_count_expected: Mapped[int] = mapped_column(Integer)
+    case_count_recorded: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class QualityBenchmarkResult(Base):
+    __tablename__ = "quality_benchmark_results"
+    __table_args__ = (
+        CheckConstraint(
+            "cost_tokens IS NULL OR cost_tokens >= 0",
+            name="ck_quality_benchmark_results_cost_nonnegative",
+        ),
+        CheckConstraint(
+            "latency_ms IS NULL OR latency_ms >= 0",
+            name="ck_quality_benchmark_results_latency_nonnegative",
+        ),
+        CheckConstraint(
+            "cost_micros IS NULL OR cost_micros >= 0",
+            name="ck_quality_benchmark_results_cost_micros_nonnegative",
+        ),
+        CheckConstraint(
+            "((cost_micros IS NULL AND cost_currency IS NULL AND cost_basis IS NULL) OR "
+            "(cost_micros IS NOT NULL AND cost_currency IS NOT NULL AND cost_basis IS NOT NULL))",
+            name="ck_quality_benchmark_results_cost_tuple_complete",
+        ),
+        CheckConstraint(
+            "cost_basis IS NULL OR cost_basis IN ('estimated','actual','billed')",
+            name="ck_quality_benchmark_results_cost_basis",
+        ),
+        CheckConstraint(
+            "prompt_leakage_check = 'passed'",
+            name="ck_quality_benchmark_results_prompt_leakage_passed",
+        ),
+        UniqueConstraint("run_id", "case_id_hash", name="uq_quality_benchmark_result_run_case"),
+        Index(
+            "ix_quality_benchmark_results_strategy_cell",
+            "genre",
+            "scene_function",
+            "run_id",
+        ),
+    )
+
+    result_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("quality_benchmark_runs.run_id"))
+    case_id_hash: Mapped[str] = mapped_column(String)
+    genre: Mapped[str] = mapped_column(String)
+    scene_function: Mapped[str] = mapped_column(String)
+    artifact_ref: Mapped[str] = mapped_column(String)
+    generation_input_hash: Mapped[str] = mapped_column(String)
+    generation_prompt_hash: Mapped[str] = mapped_column(String)
+    output_hash: Mapped[str] = mapped_column(String)
+    prompt_leakage_check: Mapped[str] = mapped_column(
+        String,
+        default="passed",
+        server_default="passed",
+    )
+    automated_metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    cost_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_micros: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_currency: Mapped[str | None] = mapped_column(String, nullable=True)
+    cost_basis: Mapped[str | None] = mapped_column(String, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class QualityValueObservation(Base):
+    __tablename__ = "quality_value_observations"
+    __table_args__ = (
+        CheckConstraint("provenance = 'human'", name="ck_quality_value_observations_human_only"),
+        CheckConstraint(
+            "human_edit_distance IS NULL OR human_edit_distance >= 0",
+            name="ck_quality_value_observations_edit_distance_nonnegative",
+        ),
+        CheckConstraint(
+            "human_edit_distance_ratio IS NULL OR "
+            "(human_edit_distance_ratio >= 0 AND human_edit_distance_ratio <= 1)",
+            name="ck_quality_value_observations_edit_ratio_range",
+        ),
+        CheckConstraint(
+            "follow_read_intent IS NULL OR (follow_read_intent >= 1 AND follow_read_intent <= 5)",
+            name="ck_quality_value_observations_follow_read_range",
+        ),
+        UniqueConstraint(
+            "result_id",
+            "reviewer_ref",
+            name="uq_quality_value_observation_result_reviewer",
+        ),
+        Index("ix_quality_value_observations_result", "result_id"),
+    )
+
+    observation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    result_id: Mapped[str] = mapped_column(ForeignKey("quality_benchmark_results.result_id"))
+    reviewer_ref: Mapped[str] = mapped_column(String)
+    provenance: Mapped[str] = mapped_column(String)
+    source_text_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    edited_text_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    human_edit_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    human_edit_distance_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_usable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    follow_read_intent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
@@ -2407,8 +2642,8 @@ class StyleReferenceFindingFeedback(Base):
     )
 
     feedback_id: Mapped[str] = mapped_column(String, primary_key=True)
-    # ondelete CASCADE:删除 finding 时 DB 级联清理反馈(若 FK 强制);purge_derived_data
-    # 另有显式删除兜底(SQLite 默认未启用 PRAGMA foreign_keys,故二者并存)。
+    # ondelete CASCADE：运行连接默认强制 FK；purge_derived_data 仍显式删除，
+    # 作为维护期开关关闭时的兜底并保留清晰的删除审计顺序。
     finding_id: Mapped[str] = mapped_column(
         ForeignKey("style_reference_findings.finding_id", ondelete="CASCADE")
     )

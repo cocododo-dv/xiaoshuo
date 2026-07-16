@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -100,8 +101,15 @@ def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> Non
     backend_dir = Path(__file__).resolve().parents[1]
     cfg = Config(str(backend_dir / "alembic.ini"))
     cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    audit_logger = logging.getLogger(
+        "novel_system.services.metadata_isolation_audit_sentinel"
+    )
+    original_logger_disabled = audit_logger.disabled
+    audit_logger.disabled = False
+    audit_logger_preserved = False
     try:
         command.upgrade(cfg, "head")
+        audit_logger_preserved = not audit_logger.disabled
         migrated_engine = sa.create_engine(f"sqlite:///{migrated_db}")
         create_all_engine = sa.create_engine(f"sqlite:///{create_all_db}")
         try:
@@ -112,8 +120,12 @@ def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> Non
             migrated_engine.dispose()
             create_all_engine.dispose()
     finally:
+        audit_logger.disabled = original_logger_disabled
         reset_engine()  # restore engine singleton for subsequent tests
 
+    assert audit_logger_preserved, (
+        "in-process Alembic migration disabled an existing application audit logger"
+    )
     assert from_migrations["tables"] == from_models["tables"], (
         "Tables differ between migrations and ORM models. "
         f"only-in-migrations={sorted(from_migrations['tables'] - from_models['tables'])}, "

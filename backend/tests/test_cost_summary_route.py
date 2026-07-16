@@ -4,10 +4,26 @@ project / chapter / scene 三级下钻；空项目不 500。
 """
 from __future__ import annotations
 
-from novel_system.db.models import FinalScene, LlmCall, SceneCard, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    FinalScene,
+    LlmCall,
+    SceneCard,
+    SceneRunState,
+    StoryProject,
+)
 
 
 def _seed(session):
+    session.add(StoryProject(project_id="RP", title="Route cost summary", outline_text=""))
+    session.add(
+        ChapterGoal(
+            chapter_id="RCH1",
+            project_id="RP",
+            planned_scene_count=1,
+            chapter_goal="Summarize one archived scene",
+        )
+    )
     session.add(SceneCard(scene_id="RS1", chapter_id="RCH1", project_id="RP", scene_seq=1, scene_goal="g"))
     session.add(SceneRunState(scene_id="RS1", scene_token_budget=1000, scene_tokens_used=300))
     session.add(

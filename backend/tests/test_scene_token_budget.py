@@ -133,6 +133,7 @@ def _seed_scene(session) -> None:
         SceneCard(
             scene_id=SCENE_ID,
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             scene_seq=1,
             pov_character_id="CHAR_A",
             onstage_chars_json=["CHAR_A", "CHAR_B"],

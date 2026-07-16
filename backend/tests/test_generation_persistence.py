@@ -436,7 +436,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-        assert version_row == ("20260713_0065",)
+        assert version_row == ("20260715_0070",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -596,7 +596,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260713_0065",)
+    assert version_row == ("20260715_0070",)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -1254,9 +1254,11 @@ def _seed_dynamic_0006_materialized_generation_rows(db_path: Path) -> None:
                 status,
                 source_bundle_id,
                 source_bundle_hash,
+                source_kind,
+                created_by,
                 generation_llm_call_id,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "final_existing",
@@ -1266,6 +1268,8 @@ def _seed_dynamic_0006_materialized_generation_rows(db_path: Path) -> None:
                 "approved",
                 "bundle_existing",
                 "bundle_hash_existing",
+                "generation",
+                "migration-test",
                 "llm_call_existing",
                 "2026-04-14T00:00:00+00:00",
             ),

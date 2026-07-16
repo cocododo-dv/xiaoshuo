@@ -31,6 +31,7 @@ from novel_system.db.models import (
     IdempotencyKey,
     InteropArtifact,
     LlmCall,
+    LlmCallAttempt,
     LongformDiagnosticCard,
     LongformStructureGuidance,
     NarrativePattern,
@@ -157,6 +158,12 @@ def _reset_targets() -> list[ResetTarget]:
         ResetTarget("chapter_run_jobs", ChapterRunJob),
         ResetTarget("attempt_tracker", AttemptTracker),
         ResetTarget("interop_artifacts", InteropArtifact),
+        ResetTarget(
+            "llm_call_attempts",
+            LlmCallAttempt,
+            id_attr="attempt_id",
+            collect_ids=_llm_call_attempt_ids_to_delete,
+        ),
         ResetTarget("llm_calls", LlmCall, id_attr="llm_call_id", collect_ids=_llm_call_ids_to_delete),
         ResetTarget("staged_backfill", StagedBackfill),
         ResetTarget("auto_rewrite_runs", AutoRewriteRun),
@@ -221,14 +228,31 @@ def _review_item_ids_to_delete(session: Session) -> list[str]:
 
 
 def _llm_call_ids_to_delete(session: Session) -> list[str]:
+    preserved_call_ids = _preserved_llm_call_ids(session)
+    return sorted(
+        call.llm_call_id
+        for call in session.execute(select(LlmCall)).scalars().all()
+        if call.llm_call_id not in preserved_call_ids
+    )
+
+
+def _llm_call_attempt_ids_to_delete(session: Session) -> list[str]:
+    preserved_call_ids = _preserved_llm_call_ids(session)
+    return sorted(
+        attempt.attempt_id
+        for attempt in session.execute(select(LlmCallAttempt)).scalars().all()
+        if attempt.llm_call_id not in preserved_call_ids
+    )
+
+
+def _preserved_llm_call_ids(session: Session) -> set[str]:
     call_ids: list[str] = []
     calls = session.execute(select(LlmCall)).scalars().all()
     for call in calls:
         node_id = str(call.node_id or "").strip()
         if any(node_id.startswith(prefix) for prefix in PRESERVED_LLM_NODE_PREFIXES):
-            continue
-        call_ids.append(call.llm_call_id)
-    return sorted(call_ids)
+            call_ids.append(call.llm_call_id)
+    return set(call_ids)
 
 
 def _count_rows(session: Session, model: type[Any]) -> int:

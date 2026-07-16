@@ -15,6 +15,7 @@ from novel_system.db.models import (
     StyleReferenceBook,
     StyleReferenceParagraph,
     StyleReferenceProfile,
+    StyleReferenceRun,
     VoiceProfile,
     WriterEvaluation,
 )
@@ -270,6 +271,7 @@ def test_reference_safety_extracts_profile_and_scans_exact_and_fuzzy_leakage(cli
             stats_json={},
         )
     )
+    session.flush()
     session.add(
         StyleReferenceParagraph(
             paragraph_id="sr_para_safety_001",
@@ -283,6 +285,15 @@ def test_reference_safety_extracts_profile_and_scans_exact_and_fuzzy_leakage(cli
             classifier_confidence=0.98,
         )
     )
+    session.add(
+        StyleReferenceRun(
+            run_id="run_safety",
+            book_id="refbook_safety",
+            status="done",
+            phase="done",
+        )
+    )
+    session.flush()
     session.add(
         StyleReferenceProfile(
             profile_id="refprofile_safety",

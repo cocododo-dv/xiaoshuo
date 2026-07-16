@@ -384,8 +384,14 @@ def test_knowledge_directory_tracks_direct_vector_summary_and_foreshadow_objects
 def test_bundle_builder_includes_new_knowledge_sources_in_snapshot(client, session) -> None:
     _seed_story(client)
     session.add(StoryProject(project_id="PROJECT_KNOWLEDGE", title="Knowledge", outline_text=""))
+    session.flush()
     session.get(ChapterGoal, "CH001").project_id = "PROJECT_KNOWLEDGE"
-    session.get(SceneCard, "CH001_SC01").project_id = "PROJECT_KNOWLEDGE"
+    scene = session.get(SceneCard, "CH001_SC01")
+    scene.project_id = "PROJECT_KNOWLEDGE"
+    # This test exercises bundle-source materialization, not the deterministic
+    # required-text gate.  The offline generator is intentionally generic, so
+    # remove the unrelated fixture requirement before running the full scene.
+    scene.must_include_text = None
     session.commit()
 
     reviews = [

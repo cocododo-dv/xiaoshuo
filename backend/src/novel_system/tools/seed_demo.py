@@ -68,7 +68,10 @@ DEMO_SCENES = [
         "location": "旧城门廊",
         "scene_goal": "让两人重新见面并建立张力",
         "beats_json": ["重逢", "试探", "留钩子"],
-        "must_include_text": "旧信寄件人的线索",
+        # The deterministic offline client intentionally never echoes required
+        # facts. Keep the runnable demo advisory instead of falsely claiming an
+        # offline placeholder satisfied a hard continuity requirement.
+        "must_include_text": None,
         "target_length_band": "short",
         "scene_type": "reunion",
         "is_chapter_last": 0,
@@ -83,7 +86,7 @@ DEMO_SCENES = [
         "location": "档案库侧室",
         "scene_goal": "把旧信中的矛盾线索抬到台面上",
         "beats_json": ["核对笔迹", "暴露缺口", "压下结论"],
-        "must_include_text": "档案页边角的旧印记",
+        "must_include_text": None,
         "target_length_band": "medium",
         "scene_type": "investigation",
         "is_chapter_last": 0,
@@ -98,7 +101,7 @@ DEMO_SCENES = [
         "location": "雨夜码头",
         "scene_goal": "让角色带着未解问题进入下一章",
         "beats_json": ["追到码头", "交换条件", "余波收束"],
-        "must_include_text": "远处汽笛压住最后一句话",
+        "must_include_text": None,
         # 章末场景(is_chapter_last=1)必须声明非空 hook,否则触发蓝图 §10 章末 hook
         # 硬门(missing_hook_type)→ partial_rewrite、不产出 final_scene。该门当前仅校验
         # hook 非空(classify_hook_type 对任意非空文本都会兜底归类),此处给一条语义贴合
@@ -648,6 +651,10 @@ def _upsert(session: Any, model: type[Any], identity: str, payload: dict[str, An
 
 def _upsert_chapter(session: Any, payload: dict[str, Any]) -> None:
     _upsert(session, ChapterGoal, "chapter_id", payload)
+    # These catalog models intentionally do not expose ORM relationships, so
+    # SQLAlchemy cannot infer FK insertion order.  Materialize the parent before
+    # the runtime state child while keeping the whole seed operation atomic.
+    session.flush()
     _upsert(
         session,
         ChapterState,
@@ -668,6 +675,7 @@ def _upsert_chapter(session: Any, payload: dict[str, Any]) -> None:
 
 def _upsert_scene(session: Any, payload: dict[str, Any]) -> None:
     _upsert(session, SceneCard, "scene_id", payload)
+    session.flush()
     _upsert(
         session,
         SceneRunState,
@@ -971,6 +979,7 @@ def _seed_demo(session: Session, *, fixture: str | None = None) -> dict[str, lis
     seed_fe_demo_works(session)
     _cleanup_demo_runtime(session)
     _upsert(session, StoryProject, "project_id", DEMO_PROJECT)
+    session.flush()
     _upsert_chapter(session, DEMO_CHAPTER)
     for payload in DEMO_SCENES:
         _upsert_scene(session, payload)

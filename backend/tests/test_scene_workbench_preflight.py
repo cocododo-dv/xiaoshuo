@@ -14,6 +14,7 @@ from novel_system.db.models import (
     SceneRunState,
     StyleReferenceBook,
     StyleReferenceProfile,
+    StyleReferenceRun,
     VoiceProfile,
 )
 
@@ -274,6 +275,16 @@ def test_workbench_payload_loads_dynamic_safety_terms_from_bound_profile(client,
             text_checksum="dynamic-workbench-checksum",
         )
     )
+    session.flush()
+    session.add(
+        StyleReferenceRun(
+            run_id="run_dynamic_workbench",
+            book_id="refbook_dynamic_workbench",
+            status="done",
+            phase="done",
+        )
+    )
+    session.flush()
     session.add(
         StyleReferenceProfile(
             profile_id="refprofile_dynamic_workbench",

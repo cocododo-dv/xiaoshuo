@@ -141,6 +141,7 @@ def _create_scene(session: Session, payload: dict) -> dict:
             }
         scene = SceneCard(**payload)
         session.add(scene)
+        session.flush()
     else:
         if scene.trashed_flag == 1:
             raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
@@ -775,6 +776,8 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
             "without_planned_reinforcement": health.without_planned_reinforcement,
             "overdue_count": len(health.overdue),
             "overdue_ids": health.overdue,
+            "unresolved_plant_count": len(health.unresolved_plants),
+            "unresolved_plants": health.unresolved_plants,
         }
     except Exception:
         signals["foreshadow_health"] = None
