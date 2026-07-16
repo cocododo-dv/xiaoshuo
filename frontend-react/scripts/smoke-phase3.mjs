@@ -55,19 +55,31 @@ await check("主页（dashboard 兜底 + 目录同源）渲染", async () => {
 });
 
 await check("编排台改章题 → 后端落库 + 主页一致", async () => {
-  await page.evaluate(() => {
-    const chs = window.WsCatalog.get();
-    window.WsCatalog.set(chs.map((c, i) => (i === 0 ? { ...c, title: "P3改名·盐钟残片" } : c)));
-  });
-  await page.waitForTimeout(1500);
+  // 第 1 章已批准并锁定；通过编排台编辑当前进行中的第 8 章，覆盖真实 UI 保存路径。
+  await page.evaluate(() => { location.hash = "#author"; });
+  await page.waitForSelector('.arr-card:has-text("返回的潮声")');
+  await page.click('.arr-card:has-text("返回的潮声")');
+  const titleInput = page.locator('input[aria-label="章节标题"]');
+  await titleInput.fill("P3改名·返回的潮声");
+  await titleInput.press("Enter");
+  await page.waitForFunction(async (apiBase) => {
+    const body = await fetch(`${apiBase}/api/v2/projects/tide/catalog`).then(r => r.json());
+    return body.data.chapters[7].title === "P3改名·返回的潮声";
+  }, API);
   const tree = await api("/api/v2/projects/tide/catalog");
-  if (tree.chapters[0].title !== "P3改名·盐钟残片") throw new Error(`backend title: ${tree.chapters[0].title}`);
-  // 还原
-  await page.evaluate(() => {
-    const chs = window.WsCatalog.get();
-    window.WsCatalog.set(chs.map((c, i) => (i === 0 ? { ...c, title: "盐钟残片" } : c)));
-  });
-  await page.waitForTimeout(1200);
+  if (tree.chapters[7].title !== "P3改名·返回的潮声") throw new Error(`backend title: ${tree.chapters[7].title}`);
+  await page.evaluate(() => { location.hash = "#home"; });
+  await page.waitForSelector(".hm-chaps");
+  if (!(await page.textContent(".hm-chaps")).includes("P3改名·返回的潮声")) throw new Error("home title not refreshed");
+  // 仍经编排台还原，避免后续检查继承临时标题。
+  await page.evaluate(() => { location.hash = "#author"; });
+  await page.waitForSelector('input[aria-label="章节标题"]');
+  await page.fill('input[aria-label="章节标题"]', "返回的潮声");
+  await page.press('input[aria-label="章节标题"]', "Enter");
+  await page.waitForFunction(async (apiBase) => {
+    const body = await fetch(`${apiBase}/api/v2/projects/tide/catalog`).then(r => r.json());
+    return body.data.chapters[7].title === "返回的潮声";
+  }, API);
 });
 
 await check("写作器加场景 → 后端可见", async () => {

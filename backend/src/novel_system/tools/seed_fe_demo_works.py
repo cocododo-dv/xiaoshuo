@@ -645,45 +645,47 @@ def _seed_tide_review_cards(session: Session) -> None:
     ).scalars().all()
     by_no = {index + 1: chapter for index, chapter in enumerate(chapters)}
     cards = ReviewCardService(session)
-    if 6 in by_no:
+    # import_catalog 会把显式 current 章之前的历史前缀规范化为 approved；
+    # 可执行的 demo effect 必须指向 current 章，不能再改已锁定的第 6/7 章。
+    if 8 in by_no:
         cards.create_card(
             {
                 "project_id": "tide",
                 "kind": "decision",
                 "priority": 2,
-                "title": "第 6 章标题在两个候选间未定",
+                "title": "第 8 章标题在两个候选间未定",
                 "source": "章节编排",
-                "where": "第 6 章 · 标题",
-                "detail": "「周岚的钥匙」直白点题、呼应线索；「她留下的钥匙」更含蓄、留悬念。选定后会直接改写目录里第 6 章的标题。",
-                "options": ["周岚的钥匙", "她留下的钥匙"],
-                "dedupe_key": "demo:tide:ch06-title",
+                "where": "第 8 章 · 标题",
+                "detail": "「返回的潮声」强调线索回返；「潮声归来」更简洁、更像章末钩子。选定后会直接改写目录里第 8 章的标题。",
+                "options": ["返回的潮声", "潮声归来"],
+                "dedupe_key": "demo:tide:ch08-title",
                 "actions": [
-                    {"label": "用「周岚的钥匙」", "intent": "primary", "op": "resolve",
-                     "effect": {"type": "rename_chapter", "chapter_id": by_no[6].chapter_id, "title": "周岚的钥匙"}},
-                    {"label": "用「她留下的钥匙」", "intent": "ghost", "op": "resolve",
-                     "effect": {"type": "rename_chapter", "chapter_id": by_no[6].chapter_id, "title": "她留下的钥匙"}},
+                    {"label": "用「返回的潮声」", "intent": "primary", "op": "resolve",
+                     "effect": {"type": "rename_chapter", "chapter_id": by_no[8].chapter_id, "title": "返回的潮声"}},
+                    {"label": "用「潮声归来」", "intent": "ghost", "op": "resolve",
+                     "effect": {"type": "rename_chapter", "chapter_id": by_no[8].chapter_id, "title": "潮声归来"}},
                     {"label": "再想想", "intent": "quiet", "op": "snooze"},
                 ],
             },
             actor_ref="demo_seed",
         )
-    if 7 in by_no:
+    if 8 in by_no:
         cards.create_card(
             {
                 "project_id": "tide",
                 "kind": "qc",
                 "priority": 2,
-                "title": "第 7 章节奏过快，建议补一段反应场景",
+                "title": "第 8 章节奏过快，建议补一段反应场景",
                 "source": "文学质检",
-                "where": "第 7 章 · SC 03 之后",
-                "detail": "连续三个主动场景之间没有喘息，读者情绪曲线缺少回落。建议在 SC 03 后插入 200–400 字的反应节拍，让林岑消化「钥匙」的发现。采纳会直接在目录第 7 章 SC 03 后插入一个待写的反应场。",
-                "dedupe_key": "demo:tide:ch07-reaction",
+                "where": "第 8 章 · SC 03 之后",
+                "detail": "连续三个主动场景之间没有喘息，读者情绪曲线缺少回落。建议在 SC 03 后插入 200–400 字的反应节拍，让林岑消化「第二份备份」的发现。采纳会直接在目录第 8 章 SC 03 后插入一个待写的反应场。",
+                "dedupe_key": "demo:tide:ch08-reaction",
                 "actions": [
                     {"label": "去章节编排看结构", "intent": "primary", "op": "nav", "nav_to": "author"},
                     {"label": "采纳 · 插入反应场", "intent": "ghost", "op": "resolve",
-                     "effect": {"type": "insert_scene", "chapter_id": by_no[7].chapter_id, "at": 3,
+                     "effect": {"type": "insert_scene", "chapter_id": by_no[8].chapter_id, "at": 3,
                                 "scene": {"title": "回廊喘息 · 反应拍", "kind": "reactive", "state": "todo",
-                                          "brief": {"reaction": "让林岑消化「钥匙」的发现", "dilemma": "夜班时间所剩无几", "decision": "（待规划）"}}}},
+                                          "brief": {"reaction": "让林岑消化「第二份备份」的发现", "dilemma": "夜班时间所剩无几", "decision": "（待规划）"}}}},
                     {"label": "忽略", "intent": "quiet", "op": "resolve"},
                 ],
             },

@@ -108,7 +108,11 @@ await check("高级路由:展开矩阵 + 缺失路由补齐(或已齐)", async (
   if (overview.missing_active_routes.length !== 0) {
     throw new Error(`still missing: ${overview.missing_active_routes.slice(0, 5)}`);
   }
-  if (overview.readiness.ready !== true) throw new Error("readiness not ready after sync");
+  // 此检查只验证路由矩阵已配置完整。全局 readiness 还会受历史路由所指服务是否
+  // 存在/启用/可解密影响，不应与“缺失路由补齐”混为一个断言。
+  if (overview.readiness.configured_route_count !== overview.readiness.active_route_count) {
+    throw new Error(`configured routes: ${overview.readiness.configured_route_count}/${overview.readiness.active_route_count}`);
+  }
 });
 
 await check("连接测试:不可达地址返回失败但不崩", async () => {

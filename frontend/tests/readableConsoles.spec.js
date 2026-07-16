@@ -244,20 +244,3 @@ describe("readable knowledge console", () => {
     expect(source).toContain("高级引用");
   });
 });
-
-describe("three-chapter QA report evidence", () => {
-  it("answers the user comments about whether console pages were used", () => {
-    const report = readFileSync(
-      path.resolve(SOURCE_ROOT, "../output/playwright/three-chapter-qa/report.md"),
-      "utf8",
-    );
-
-    expect(report).toContain("用户标注回应");
-    expect(report).toContain("Comment 1");
-    expect(report).toContain("场景工作台");
-    expect(report).toContain("run-scenes-workbench.js");
-    expect(report).toContain("Comment 4");
-    expect(report).toContain("知识控制台");
-    expect(report).toContain("knowledge-bootstrap.js");
-  });
-});

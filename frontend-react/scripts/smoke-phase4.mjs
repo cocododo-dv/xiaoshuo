@@ -39,7 +39,7 @@ await page.waitForTimeout(2000);
 await check("删整部书（盐镇来信）→ 切换器消失", async () => {
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
-  await page.click('.ws-wsw-row:has-text("盐镇来信") .ws-wsw-del');
+  await page.click('.ws-wsw-item:has-text("盐镇来信") .ws-wsw-del');
   await page.waitForTimeout(1500);
   await page.keyboard.press("Escape");
   await page.click(".ws-brand");

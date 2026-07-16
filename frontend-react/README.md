@@ -46,9 +46,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -IncludeLegacyVue
 
 ## 结构约定
 
-- `src/` 最初由设计原型迁移而来，现在是持续维护的正式源代码；不要重新运行旧 codemod 覆盖现有实现。
+- `src/` 是持续维护的正式源代码；早期设计原型和一次性迁移脚本已经退役，不要从历史提交重新生成或覆盖现有实现。
 - `src/main.jsx` 的样式导入顺序具有层叠语义，调整时必须做视觉回归。
-- `window.*` 与部分同步 store 是迁移期兼容接缝，新增代码优先使用模块导出。
+- `window.*` 与部分同步 store 是现有运行时兼容接缝，新增代码优先使用模块导出；若要移除接缝，必须先补齐对应的 store 与跨视图回归。
 - API 错误统一为 `ApiRequestError`；界面应优先使用稳定 `code` 和 `details`，不要解析错误文案。
 - 新项目不得回退到 `潮汐档案` 的人物、剧情或候选种子。
 
@@ -70,6 +70,12 @@ npx vitest run src/wr-doc-store.test.jsx src/wr-recovery-center.test.jsx src/ws-
 npx vitest run src/ws-scene-run.test.jsx src/lib/client.test.js
 npx vitest run src/ws-chapter-run.test.jsx src/ws-manuscripts.test.jsx src/ws-manuscripts-flow.test.jsx
 npm run build
+```
+
+仓库级 React 契约 E2E 由根目录脚本启动隔离后端、前端并自动清理。请从仓库根目录运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify_react_e2e.ps1
 ```
 
 运行安全细节见 [`../docs/runtime-safety.md`](../docs/runtime-safety.md)，长篇最终状态见 [`../docs/longform-runtime-contract.md`](../docs/longform-runtime-contract.md)。

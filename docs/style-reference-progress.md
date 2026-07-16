@@ -1,7 +1,7 @@
 # Style Reference 模块重构 — 进度总览
 
 > 依据《风格参考模块重构执行手册 v1.1》。本文件随 PR 推进滚动更新。
-> 更新日期:2026-05-31 · 分支 `main` · 24 commits(22 PR + 2 hotfix)
+> 历史实施账本，最后功能记录截至 2026-07-08；Phase 3 立项 A/B/C 已全部完成。当前运行边界以 `README.md`、`docs/runtime-safety.md` 和代码为准。
 > 测试规模:后端目标 ~343 测试 / 前端 524 测试(57 文件)+ smoke,全绿。
 
 ## 一、阶段与 commit 清单

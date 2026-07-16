@@ -1,5 +1,7 @@
 # 风格参考模块（style_reference）重构执行手册 v1.1
 
+> 状态复核（2026-07-16）：本文是已完成重构的设计基线，不是待执行任务书。Phase 3 A/B/C 均已落地；文中的历史文件行数、迁移编号和“待删除/待新增”措辞保留原始决策语境。当前运行事实以代码、`docs/runtime-safety.md` 和 `docs/style-reference-progress.md` 为准。
+>
 > 本文档是 style_reference 模块重构的**最终可执行指令书**,版本 v1.1。
 >
 > **版本说明：** v1.0 由 Claude Code 基于现有 `reference_learning.py` 产出工程骨架。v1.1 在 v1.0 基础上完成 26 项修订,补齐了能力建模层的关键设计(MetricsEngine、Forbidden Pattern、自适应阈值、抄袭事前预防、输入量门槛、Evidence 两级重试、classifier 锚定校准、风格强度滑块、长文本防漂移、双路径 validate 等)。

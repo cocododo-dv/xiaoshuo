@@ -126,6 +126,34 @@ def test_resolve_executes_effect_in_transaction(client):
     assert bad.json()["error"]["code"] == "REVIEW_EFFECT_UNKNOWN"
 
 
+def test_seeded_review_effects_target_the_editable_current_chapter(client, session):
+    """演示卡不能指向 import_catalog 已规范化为 approved 的历史前缀章。"""
+    seed_fe_demo_works(session)
+    session.commit()
+
+    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    insert = next(item for item in items if item["title"].startswith("第 8 章节奏过快"))
+    rename = next(item for item in items if item["title"] == "第 8 章标题在两个候选间未定")
+
+    inserted = _post(
+        client,
+        f"/api/v1/review-items/{insert['id']}/resolve",
+        {"project_id": "tide", "action_index": 1},
+    )
+    assert inserted.status_code == 200, inserted.text
+
+    renamed = _post(
+        client,
+        f"/api/v1/review-items/{rename['id']}/resolve",
+        {"project_id": "tide", "action_index": 1},
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    chapter = client.get("/api/v2/projects/tide/catalog").json()["data"]["chapters"][7]
+    assert chapter["title"] == "潮声归来"
+    assert any(scene["title"] == "回廊喘息 · 反应拍" for scene in chapter["scenes"])
+
+
 def test_resolve_bind_style_profile_forwards_injection_config(client, session):
     """风格参考 apply 决策卡(带 bind_style_profile effect + 注入配置)在收件箱批准后,
     应真正创建携带 config 的 binding —— 前端 apply 按钮依赖的端到端契约。"""

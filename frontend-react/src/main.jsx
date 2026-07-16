@@ -1,6 +1,6 @@
 import React from "react";
-// 入口装配（Phase 1）。CSS 与模块均按 design/index.html 的原始引用顺序导入 —
-// 两者的顺序都有语义（CSS 层叠 / window 注册先后），禁止重排。
+// 正式入口装配。CSS 与模块的顺序同时承载层叠和运行时注册语义；
+// 调整顺序前必须补齐单元测试、构建与视觉回归。
 import "./styles.css";
 import "./screens.css";
 import "./wr-redesign.css";
@@ -67,7 +67,7 @@ import { App } from "./ws-app.jsx";
 import { mountWrRecoveryCenter } from "./wr-recovery-center.jsx";
 import ReactDOMClient from "react-dom/client";
 
-// 原型的 store 是模块级单例 + 副作用订阅，StrictMode 双挂载会暴露非幂等订阅；
-// 保真优先不包 StrictMode（陷阱 T4），治理留到 Phase 8。
+// 现有 store 是模块级单例并带副作用订阅，StrictMode 双挂载会触发非幂等订阅；
+// 在这些订阅完成幂等化之前，不要直接启用 StrictMode。
 ReactDOMClient.createRoot(document.getElementById("root")).render(React.createElement(App));
 mountWrRecoveryCenter();

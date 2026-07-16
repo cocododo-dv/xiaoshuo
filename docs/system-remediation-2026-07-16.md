@@ -32,15 +32,16 @@
 
 ## 最终自动化证据
 
-以下结果均来自最终整改代码状态：
+以下结果分为整改完成时的全量基线和本轮仓库清理后的复核结果。测试数量是对应运行时间点的证据，不应被解释为后续提交的动态计数；当前命令与发布门以[发布检查清单](release-checklist.md)为准。
 
 - React 前端：`27 files / 214 tests passed`；生产构建通过。当前产物为 JS `1,351.29 kB`（gzip `422.03 kB`）、CSS `440.80 kB`（gzip `69.45 kB`），体积告警已作为下方性能盲区保留。
-- 旧 Vue 兼容层：`59 files / 545 tests passed`；smoke 通过；生产构建通过。
-- 后端正式 non-Chroma 全量：共收集 `2778` 项（另有 `17` 个外部 Chroma 项未纳入该标记集），分成 4 个 shard 执行，4 个 shard 均 `exit 0`；合计 `2773 passed, 5 skipped`。
-- 受影响领域交叉回归：包含真实 Chroma，`299 passed`。
+- 旧 Vue 兼容层：`59 files / 541 tests passed`；smoke 通过；生产构建通过。测试数减少的 4 项只读取已退役的一次性 QA 产物，不属于运行时能力回归。
+- 整改基线的后端正式 non-Chroma 全量：当时共收集 `2778` 项（另有 `17` 个外部 Chroma 项未纳入该标记集），分成 4 个 shard 执行，4 个 shard 均 `exit 0`；合计 `2773 passed, 5 skipped`。
+- 整改基线的受影响领域交叉回归：包含真实 Chroma，`299 passed`。
 - Pydantic 并发告警清理：对应目标测试以 `-W error::pydantic.warnings.UnsupportedFieldAttributeWarning` 执行，`1 passed`，未再产生该告警。
 - 数据库：从空库迁移到唯一 head `20260716_0073` 成功；`database_preflight` 返回 `ready: true`、`integrity: ok`，外键与孤儿记录检查均通过。
-- 浏览器 E2E：在隔离数据库和真实开发服务器上覆盖 `2 个作品 × 16 个视图 = 32 页`，保存 32 张截图；前端 HTTP 200，`/live=live`、`/ready=ready`。`console`、`pageerror`、`requestfailed`、HTTP 4xx/5xx、error boundary 与 crawl exception 均为 0。爬虫留下的 2 条启发式提示已人工复核为误报：雪花字段中的“错误信念”不是系统错误；`Ctrl+K` 命令面板可实际打开，只是爬虫使用了旧类名。进一步核实了 tide 10 章、salt 3 章、批准章结构和正文只读、缺场景时生成动作禁用、演示归档完全只读以及雪花 01–10 步。证据见 [findings.json](../output/playwright/e2e-final/crawl/findings.json) 与 [页面截图](../output/playwright/e2e-final/crawl/shots)。
+- 浏览器 E2E：在隔离数据库和真实开发服务器上覆盖 `2 个作品 × 16 个视图 = 32 页`，保存 32 张截图；前端 HTTP 200，`/live=live`、`/ready=ready`。`console`、`pageerror`、`requestfailed`、HTTP 4xx/5xx、error boundary 与 crawl exception 均为 0。爬虫留下的 2 条启发式提示已人工复核为误报：雪花字段中的“错误信念”不是系统错误；`Ctrl+K` 命令面板可实际打开，只是爬虫使用了旧类名。进一步核实了 tide 10 章、salt 3 章、批准章结构和正文只读、缺场景时生成动作禁用、演示归档完全只读以及雪花 01–10 步。原始截图与 `findings.json` 属于可再生成的本机运行产物，按仓库策略保存在被忽略的 `output/playwright/e2e-final/`，不作为长期文档链接；复跑入口见 [发布检查清单](release-checklist.md)。
+- 本轮清理复核：`test_review_cards.py` 为 `9 passed`；React 契约 E2E 的 Phase 2–7、AI 设置和 QA UI 全部通过，QA UI 为 `10 passed / 0 failed / 1 skipped`（单章临时项目不在隔离后端，按脚本设计跳过）。该复核同时确认演示待办 effect 只作用于可编辑的当前章，不再触碰已批准锁定章。
 
 后端正式 non-Chroma 分片结果：
 

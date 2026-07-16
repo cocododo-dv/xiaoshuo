@@ -38,10 +38,9 @@ GitHub Actions (`.github/workflows/ci.yml`) gates three jobs on every PR/push: *
 **Schema-drift guard** (`backend/tests/test_metadata_isolation.py::test_migration_built_schema_matches_orm_models`) — the most important non-obvious gotcha. The test suite builds the schema via `Base.metadata.create_all`, but dev/prod build it via Alembic `upgrade head` (`auto_create_tables` defaults to `False`). This test builds it **both** ways and diffs tables/columns/named-indexes, because an ORM model that gains a column/index **without a matching migration** still passes every test yet 500s at runtime (`OperationalError: no such column`) — which silently kills `start-dev` (its health probe hits `GET /api/v1/chapters`). If it fails: write the missing migration, **or** declare the missing index in the model's `__table_args__`. Run: `cd backend; python -m pytest tests/test_metadata_isolation.py`.
 
 ### Frontend (React, primary) — `frontend-react/`
-The production frontend (FE 主线对齐 D1): the 「潮汐工作台」 high-fidelity prototype
-(`codex-patches/FE-主线对齐/design/`) engineered as Vite + React 18. `start-dev.cmd`
-serves it on `http://127.0.0.1:5174` and opens it by default; the Vue frontend (5173)
-is legacy/backup.
+The production frontend is the maintained Vite + React 18 「潮汐工作台」 in
+`frontend-react/`. `start-dev.cmd` serves it on `http://127.0.0.1:5174` and opens it
+by default; the Vue frontend on 5173 is an explicit legacy compatibility lane.
 
 ```powershell
 cd frontend-react
@@ -50,7 +49,7 @@ npm run dev        # http://127.0.0.1:5174
 npm run build
 ```
 
-Architecture rules (see `codex-patches/FE-主线对齐/契约附录-store缝合面.md`):
+Architecture rules:
 - **Store layer only**: views keep the prototype's store contracts — `WsWorks` / `WsCatalog` /
   `WsTrashStore` / `WsReview` (the review store) / `WsLibrary` / `Lf7Bridge`. These are **runtime
   globals attached to `window`** (`Object.assign(window, {...})`) from kebab-case files
@@ -65,7 +64,7 @@ Architecture rules (see `codex-patches/FE-主线对齐/契约附录-store缝合�
   dynamic import (the active work falls back to a `__loading__` placeholder until a seeded
   `/api/v2/projects` resolves with a real `project_id`). Run `npm test` (or the `verify_windows.ps1`
   React gate / GitHub CI). Keep tests falsifiable — verify rollback/alert paths actually trip.
-- `src/lib/client.js` mirrors the Vue client contract (envelope / X-Idempotency-Key /
+- `src/lib/client.js` owns the shared client contract (envelope / X-Idempotency-Key /
   X-Operator-Ref / `novel-system-api-base` localStorage override).
 - localStorage holds only UI preferences and read caches of backend truth
   (`wr-doc:*` is a write-through cache of author-drafts); business writes all go
@@ -81,7 +80,8 @@ Architecture rules (see `codex-patches/FE-主线对齐/契约附录-store缝合�
   default gate. **Gotcha**: a fresh `alembic upgrade head` aborts on migration `20260523_0036`'s
   legacy-backup guard unless `backups/style_reference_legacy_*.json` exists; the e2e lane satisfies
   it via that migration's `STYLE_REFERENCE_REPO_ROOT` test override pointed at a placeholder backup.
-- Progress ledger & deferred items: `codex-patches/FE-主线对齐/PROGRESS.md`.
+- Current user and engineering documentation is indexed in `docs/README.md`; dated plans and
+  evidence describe their original run and are not the current runtime contract.
 
 ### Frontend (Vue 3 + Vite + Pinia, legacy)
 Located in `frontend/`.

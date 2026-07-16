@@ -27,7 +27,8 @@ Use this checklist before converting a Draft PR to ready state or treating the c
 
 ## Seeded browser E2E acceptance
 
-- Record the `npm run test:e2e` result in the PR
+- Record the `scripts/verify_react_e2e.ps1` result in the PR; this is the production React browser gate.
+- If the optional legacy Vue lane was also run, record `cd frontend && npm run test:e2e` separately and label it as compatibility evidence.
 - Record the fixture operator identities: `ops.chapter.e2e`, `ops.scene-llm.e2e`, `ops.runtime.e2e`, `ops.knowledge.e2e`, and `ops.interop.e2e`
 - Confirm the lane covers `Scene Workbench` chapter runtime backfill / manual hold / final aggregate on `CH200_SC01`
 - Confirm the lane covers the focused `Scene Workbench` LLM pipeline on `CH001_SC01`: run button -> deterministic generation evidence -> hard/soft QC pass -> final archive

@@ -42,7 +42,17 @@ if (-not $FrontendOnly) {
 
 if (-not $BackendOnly) {
     # Governance QA lane contract tests (scripts/tests) run from the repo root.
-    Invoke-NativeStep -Label "Script contract tests (scripts/tests)" -WorkingDirectory $repoRoot -FilePath "node" -ArgumentList @("--test", "scripts/tests")
+    # Node on Windows does not expand a directory argument into test files; pass the
+    # maintained *.test.cjs files explicitly so this lane behaves like CI.
+    $scriptTestFiles = @(
+        Get-ChildItem -Path (Join-Path $repoRoot "scripts\tests") -Filter "*.test.cjs" -File |
+            Sort-Object Name |
+            ForEach-Object { $_.FullName }
+    )
+    if ($scriptTestFiles.Count -eq 0) {
+        throw "No script contract tests found under scripts/tests."
+    }
+    Invoke-NativeStep -Label "Script contract tests (scripts/tests)" -WorkingDirectory $repoRoot -FilePath "node" -ArgumentList (@("--test") + $scriptTestFiles)
 
     # React mainline (frontend-react) is the default frontend gate: vitest unit tests + build.
     Invoke-NativeStep -Label "React frontend tests" -WorkingDirectory $reactDir -FilePath "npm.cmd" -ArgumentList @("test")

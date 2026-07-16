@@ -274,13 +274,12 @@ INLINE_PROMPTS: dict[str, dict[str, Any]] = {
             (
                 "user_prompt 骨架（_case_user_prompt 动态拼装，逐行 f-string）",
                 "Case ID: {case.case_id}\nTitle: {case.title}\n\n## Writing Task\n{case.prompt}\n\n"
-                "## Evaluation Constraints\nrequired terms: …\nstyle cues: …\ncharacter contradiction cues: …\n"
-                "dialogue edge cues: …\nimage necessity cues: …\nending drive cues: …\nchoice pressure cues: …\n"
-                "image variety cues: …\nbanned terms: …\nmodel voice banned terms: …\n"
-                "expository dialogue banned terms: …\nsummary ending banned terms: …\n"
+                "## Explicit Story Requirements\nrequired story elements: …\n"
                 "length band: {min_chars}-{max_chars} characters\n\n"
+                "The literary scoring rubric is hidden. Write a coherent scene naturally; "
+                "do not list or keyword-stuff cues.\n\n"
                 'Return JSON exactly like: {"scene_text": "..."}',
-                ["## Writing Task", "## Evaluation Constraints", "length band:"],
+                ["## Writing Task", "## Explicit Story Requirements", "The literary scoring rubric is hidden."],
             ),
         ],
         "note": "评测 live 生成：LLM 只负责按评测用例写场景，打分是规则引擎（literary_quality 21 维），不是 LLM 评委。",
@@ -1509,7 +1508,7 @@ UNITS: list[dict[str, Any]] = [
         "purpose": "文学质量评测的 live 通道：按评测用例（config/evals/literary_small.yaml）生成候选场景，交给规则引擎打分（LLM 不当评委）。",
         "trigger": "api/routes/literary_eval.py → LiteraryEvalRunner.run（live 模式）；报告写 NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH。",
         "call_chain": [(f"{SVC}/literary_eval.py", "response = execute_accounted_call(", 1, "LLMLiteraryCaseGenerator.__call__ 统一记账")],
-        "inputs": "内联 system_prompt + _case_user_prompt（用例 prompt + 各类 cues/banned terms + 长度带）。",
+        "inputs": "内联 system_prompt + _case_user_prompt（用例 prompt + 必需故事元素 + 长度带；评分 cues/banned terms 明确不暴露给生成模型）。",
         "output_contract": "{scene_text}（缺失 → ValueError）。",
         "parser_refs": [(f"{SVC}/literary_eval.py", 'structured_output.get("scene_text")', 1)],
         "failure": "异常上抛（评测路径，可容忍失败）。",

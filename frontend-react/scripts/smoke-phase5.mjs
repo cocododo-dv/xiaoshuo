@@ -25,6 +25,16 @@ async function check(label, fn) {
 
 const api = async (p) => (await page.evaluate(async (u) => (await fetch(u)).json(), API + p)).data;
 
+async function waitForCatalog(predicate, timeoutMs = 10_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const catalog = await api("/api/v2/projects/tide/catalog");
+    if (predicate(catalog)) return catalog;
+    await page.waitForTimeout(200);
+  }
+  return api("/api/v2/projects/tide/catalog");
+}
+
 await page.goto(BASE);
 await page.evaluate((apiBase) => {
   localStorage.clear();
@@ -40,32 +50,32 @@ await check("收件箱来自后端（含 demo 卡 + 派生卡）", async () => {
   await page.evaluate(() => { location.hash = "#review"; });
   await page.waitForTimeout(1500);
   const body = await page.textContent("body");
-  if (!body.includes("第 6 章标题在两个候选间未定")) throw new Error("demo decision card missing");
+  if (!body.includes("第 8 章标题在两个候选间未定")) throw new Error("demo decision card missing");
   if (!body.includes("已起草未确认")) throw new Error("derived snowflake card missing");
 });
 
 await check("QC 卡「采纳·插入反应场」→ 目录真的多一个反应场（后端事务）", async () => {
-  const before = (await api("/api/v2/projects/tide/catalog")).chapters[6].scenes.length;
-  // 展开第 7 章 QC 卡并点采纳
-  await page.click('.rv-item:has-text("第 7 章节奏过快")');
+  const before = (await api("/api/v2/projects/tide/catalog")).chapters[7].scenes.length;
+  // 展开当前第 8 章 QC 卡并点采纳（历史前缀章已批准并锁定）。
+  const card = page.locator('.rv-item:has-text("第 8 章节奏过快")');
+  await card.click();
   await page.waitForTimeout(400);
-  await page.click('button:has-text("采纳 · 插入反应场")');
-  await page.waitForTimeout(2000);
-  const ch07 = (await api("/api/v2/projects/tide/catalog")).chapters[6];
-  if (ch07.scenes.length !== before + 1) throw new Error(`scenes ${before} -> ${ch07.scenes.length}`);
-  const inserted = ch07.scenes.find(s => s.title === "回廊喘息 · 反应拍");
+  await card.locator('button:has-text("采纳 · 插入反应场")').click();
+  const ch08 = (await waitForCatalog(catalog => catalog.chapters[7].scenes.length === before + 1)).chapters[7];
+  if (ch08.scenes.length !== before + 1) throw new Error(`scenes ${before} -> ${ch08.scenes.length}`);
+  const inserted = ch08.scenes.find(s => s.title === "回廊喘息 · 反应拍");
   if (!inserted) throw new Error("inserted scene missing");
   if (inserted.kind !== "reactive") throw new Error("kind wrong");
   if (inserted.seq !== 4) throw new Error(`at position: seq=${inserted.seq}`);
 });
 
 await check("决策卡选项 → rename effect 落库", async () => {
-  await page.click('.rv-item:has-text("第 6 章标题在两个候选间未定")');
+  const card = page.locator('.rv-item:has-text("第 8 章标题在两个候选间未定")');
+  await card.click();
   await page.waitForTimeout(400);
-  await page.click('button:has-text("用「她留下的钥匙」")');
-  await page.waitForTimeout(2000);
-  const tree = await api("/api/v2/projects/tide/catalog");
-  if (tree.chapters[5].title !== "她留下的钥匙") throw new Error(`title: ${tree.chapters[5].title}`);
+  await card.locator('button:has-text("用「潮声归来」")').click();
+  const tree = await waitForCatalog(catalog => catalog.chapters[7].title === "潮声归来");
+  if (tree.chapters[7].title !== "潮声归来") throw new Error(`title: ${tree.chapters[7].title}`);
 });
 
 await check("badge = priority 1 的 open 数（处理后减少）", async () => {
